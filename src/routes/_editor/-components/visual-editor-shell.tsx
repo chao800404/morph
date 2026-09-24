@@ -282,6 +282,11 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import {
+  awaitsOwnSave,
+  planPreviewSync,
+  waitForOwnSaves,
+} from "@/lib/storefront/editor/preview-sync-plan";
+import {
   EditorPublishMediaCheck,
   publishConfirmation,
   publishMediaCheckQuery,
@@ -2572,6 +2577,28 @@ export function VisualEditorShell({
     },
     [postEditorToPreviewMessage],
   );
+  // Once per set of files: every keystroke re-sends them, and one notice
+  // says everything the next hundred would.
+  const lastStaleNoticeRef = useRef<string | null>(null);
+  /** What this tab last wrote into the shared preview, by path. */
+  const previewWrittenRef = useRef(new Map<string, string>());
+  /** The latest sync this tab sent for each path, to tell a retry is moot. */
+  const previewSyncSequenceRef = useRef(0);
+  const lastPreviewSyncByPathRef = useRef(new Map<string, number>());
+  const postPreviewThemeFilesRef = useRef<
+    ((...args: Parameters<typeof postPreviewThemeFiles>) => number) | null
+  >(null);
+  const reportStalePreviewSync = useCallback((stalePaths: string[]) => {
+    const key = [...stalePaths].sort().join("\n");
+    if (lastStaleNoticeRef.current === key) return;
+    lastStaleNoticeRef.current = key;
+    const names = stalePaths.slice(0, 3).join(", ");
+    const more = stalePaths.length > 3 ? ` and ${stalePaths.length - 3} more` : "";
+    toast.warning(
+      `Another tab saved newer versions of ${names}${more}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
+      { duration: 20_000 },
+    );
+  }, []);
   const postPreviewThemeFiles = useCallback(
     (
       files: Array<{ path: string; content: string }>,
@@ -2582,6 +2609,8 @@ export function VisualEditorShell({
           key: string;
           readySequence: number;
         };
+        /** Sent again once this tab's own save returned; see `awaitsOwnSave`. */
+        retryAfterOwnSave?: boolean;
       },
     ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
@@ -2597,6 +2626,52 @@ export function VisualEditorShell({
           styleRevision,
         };
       }
+      // A fresh preview holds the saved files, not what this tab wrote into
+      // the one before it.
+      if (options?.initialSync) previewWrittenRef.current = new Map();
+      const planned = planPreviewSync(
+        files,
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(context.storefront.id, context.theme.id),
+        previewWrittenRef.current,
+      );
+      // Every revision is told to the page, written or not. It is the
+      // handshake the page stamps its selection reports with, and the editor
+      // accepts only a report on the latest revision it asked for; a revision
+      // the page never heard of would make every later click on the canvas
+      // look stale.
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-theme-files",
+        files: planned.map(({ path, content }) => ({ path, content })),
+        styleRevision,
+        ...(options?.renderDocument === undefined
+          ? {}
+          : { renderDocument: options.renderDocument }),
+      });
+      // The preview already holds everything this tab has saved, so there is
+      // nothing to write and no hot update coming to confirm.
+      if (planned.length === 0) {
+        if (targetPreviewKey) {
+          confirmPreviewStyleRevision({
+            previewKey: targetPreviewKey,
+            styleRevision,
+          });
+        }
+        return styleRevision;
+      }
+      const sequence = ++previewSyncSequenceRef.current;
+      for (const file of planned) {
+        lastPreviewSyncByPathRef.current.set(file.path, sequence);
+      }
+      // Only a write the server made is announced as written: that is what
+      // makes the page pull the hot update and confirm the revision.
+      const announceWritten = () => {
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-theme-files-written",
+          styleRevision,
+        });
+      };
       // Files always go through the real preview server's filesystem. Vite
       // watches those files and applies them through HMR, preserving component
       // state. A write failure is also a reliable container-liveness signal,
@@ -2605,7 +2680,7 @@ export function VisualEditorShell({
         data: {
           storefrontId: context.storefront.id,
           themeId: context.theme.id,
-          files,
+          files: planned,
         },
       })
         .then((result) => {
@@ -2619,6 +2694,9 @@ export function VisualEditorShell({
             result.data.changed.length === 0 &&
             targetPreviewKey
           ) {
+            for (const file of planned) {
+              previewWrittenRef.current.set(file.path, file.content);
+            }
             confirmPreviewStyleRevision({
               previewKey: targetPreviewKey,
               styleRevision,
@@ -2626,13 +2704,60 @@ export function VisualEditorShell({
             return;
           }
           if (result?.success === true) {
-            postEditorToPreviewMessage(
-              previewIframeRef.current?.contentWindow,
-              {
-                type: "morph:storefront-preview-theme-files-written",
+            for (const file of planned) {
+              previewWrittenRef.current.set(file.path, file.content);
+            }
+            announceWritten();
+            return;
+          }
+          // Nothing was written: another tab has saved newer versions. The
+          // preview is fine and shows that save; this tab is what is behind,
+          // so it is told so rather than reconnected.
+          if (result?.success === false && "stalePaths" in result) {
+            const stalePaths = result.stalePaths as string[];
+            const workspaceStore = useThemeWorkspaceStore.getState();
+            // This tab's own save may have landed a moment ago and not yet
+            // come back. Tried once more when it has, unless a later sync of
+            // the same files has been sent meanwhile.
+            if (
+              !options?.retryAfterOwnSave &&
+              awaitsOwnSave(
+                stalePaths,
+                workspaceStore.getWorkspaceFiles(
+                  context.storefront.id,
+                  context.theme.id,
+                ),
+              )
+            ) {
+              void waitForOwnSaves(
+                () =>
+                  useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(context.storefront.id, context.theme.id),
+                stalePaths,
+              ).then(() => {
+                const superseded = stalePaths.some(
+                  (path) =>
+                    lastPreviewSyncByPathRef.current.get(path) !== sequence,
+                );
+                if (superseded) return;
+                postPreviewThemeFilesRef.current?.(files, {
+                  ...options,
+                  retryAfterOwnSave: true,
+                });
+              });
+              return;
+            }
+            reportStalePreviewSync(stalePaths);
+            // Nothing changed on the page, so this revision is what it shows
+            // now: confirmed as such, which also ends a first sync. The notice
+            // above is what says this tab's edit is not in it.
+            if (targetPreviewKey) {
+              confirmPreviewStyleRevision({
+                previewKey: targetPreviewKey,
                 styleRevision,
-              },
-            );
+              });
+            }
             return;
           }
           if (targetPreviewKey) {
@@ -2655,19 +2780,17 @@ export function VisualEditorShell({
             at: Date.now(),
           });
         });
-      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-        type: "morph:storefront-preview-update-theme-files",
-        files,
-        styleRevision,
-        ...(options?.renderDocument === undefined
-          ? {}
-          : { renderDocument: options.renderDocument }),
-      });
       schedulePreviewRemeasureRef.current();
       return styleRevision;
     },
-    [confirmPreviewStyleRevision, context.storefront.id, context.theme.id],
+    [
+      confirmPreviewStyleRevision,
+      context.storefront.id,
+      context.theme.id,
+      reportStalePreviewSync,
+    ],
   );
+  postPreviewThemeFilesRef.current = postPreviewThemeFiles;
   useEffect(() => {
     if (
       !previewKey ||

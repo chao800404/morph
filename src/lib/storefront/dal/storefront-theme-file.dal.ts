@@ -15,7 +15,7 @@ import { starterThemeWorkspaceFiles } from "@/lib/storefront/starter-theme-files
 import { deriveThemeSourceIndex } from "../theme-source-index";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { firstOrNull } from "@/lib/db/single-row";
-import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { ThemeSourceIndex } from "../theme-source-index";
 import {
   isThemeRouteSourcePath,
@@ -461,6 +461,47 @@ export const storefrontThemeFileDal = {
     }
 
     return this.listFiles(storefrontId, themeId);
+  },
+
+  /** The saved version and content of the given paths that exist. */
+  async listSavedFiles(
+    storefrontId: string,
+    themeId: string,
+    paths: readonly string[],
+  ): Promise<Map<string, { version: number; content: string }>> {
+    const saved = new Map<string, { version: number; content: string }>();
+    const unique = [...new Set(paths)];
+    if (unique.length === 0) return saved;
+    const db = await getDb();
+    // Bound parameters are limited on D1; three go to the scope below.
+    const batchSize = 50;
+    for (let index = 0; index < unique.length; index += batchSize) {
+      const rows = await db
+        .select({
+          path: storefrontThemeFiles.path,
+          version: storefrontThemeFiles.version,
+          content: storefrontThemeFiles.content,
+        })
+        .from(storefrontThemeFiles)
+        .where(
+          and(
+            eq(storefrontThemeFiles.storefrontId, storefrontId),
+            eq(storefrontThemeFiles.themeId, themeId),
+            isNull(storefrontThemeFiles.deletedAt),
+            inArray(
+              storefrontThemeFiles.path,
+              unique.slice(index, index + batchSize),
+            ),
+          ),
+        );
+      for (const row of rows) {
+        saved.set(row.path, {
+          version: row.version ?? 1,
+          content: row.content,
+        });
+      }
+    }
+    return saved;
   },
 
   /**
