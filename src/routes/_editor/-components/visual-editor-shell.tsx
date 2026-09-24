@@ -2636,10 +2636,23 @@ export function VisualEditorShell({
           .getWorkspaceFiles(context.storefront.id, context.theme.id),
         previewWrittenRef.current,
       );
+      // Every revision is told to the page, written or not. It is the
+      // handshake the page stamps its selection reports with, and the editor
+      // accepts only a report on the latest revision it asked for; a revision
+      // the page never heard of would make every later click on the canvas
+      // look stale.
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-theme-files",
+        files: planned.map(({ path, content }) => ({ path, content })),
+        styleRevision,
+        ...(options?.renderDocument === undefined
+          ? {}
+          : { renderDocument: options.renderDocument }),
+      });
       // The preview already holds everything this tab has saved, so there is
       // nothing to write and no hot update coming to confirm.
       if (planned.length === 0) {
-        if (options?.initialSync && targetPreviewKey) {
+        if (targetPreviewKey) {
           confirmPreviewStyleRevision({
             previewKey: targetPreviewKey,
             styleRevision,
@@ -2651,21 +2664,10 @@ export function VisualEditorShell({
       for (const file of planned) {
         lastPreviewSyncByPathRef.current.set(file.path, sequence);
       }
-      // Told to the page only once the files are written, and together with
-      // the notice that they were. Announced before the write, a sync the
-      // server then refused left the page waiting on a revision that the next
-      // unrelated hot update would have acknowledged as applied.
+      // Only a write the server made is announced as written: that is what
+      // makes the page pull the hot update and confirm the revision.
       const announceWritten = () => {
-        const frame = previewIframeRef.current?.contentWindow;
-        postEditorToPreviewMessage(frame, {
-          type: "morph:storefront-preview-update-theme-files",
-          files: planned.map(({ path, content }) => ({ path, content })),
-          styleRevision,
-          ...(options?.renderDocument === undefined
-            ? {}
-            : { renderDocument: options.renderDocument }),
-        });
-        postEditorToPreviewMessage(frame, {
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-theme-files-written",
           styleRevision,
         });
@@ -2747,8 +2749,10 @@ export function VisualEditorShell({
               return;
             }
             reportStalePreviewSync(stalePaths);
-            // A first sync still ends: the page shows the saved source.
-            if (options?.initialSync && targetPreviewKey) {
+            // Nothing changed on the page, so this revision is what it shows
+            // now: confirmed as such, which also ends a first sync. The notice
+            // above is what says this tab's edit is not in it.
+            if (targetPreviewKey) {
               confirmPreviewStyleRevision({
                 previewKey: targetPreviewKey,
                 styleRevision,
