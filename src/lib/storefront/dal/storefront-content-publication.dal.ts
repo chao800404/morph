@@ -15,7 +15,7 @@ import type {
   StorefrontContentPublicationDTO,
   StorefrontContentPublicationItemDTO,
 } from "@/lib/storefront/dto/storefront-content-publication.dto";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
 
 export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
@@ -530,63 +530,82 @@ export const storefrontContentPublicationDal = {
   },
 
   /**
-   * A publication's documents, each with the name an author knows it by: a
-   * route path for a route's own document, `/pages/<handle>` for a page, and
-   * the template's name otherwise.
+   * The documents a publish of `templateId` would put live, each with the name
+   * an author knows it by.
+   *
+   * Mirrors how a publication is assembled: the template being published and
+   * the shell (which travels with every publish) at their drafts, and every
+   * other template and page at what is already published. Checked before the
+   * publish is confirmed, so it answers about the release the author is about
+   * to make rather than the one already out.
    */
-  async listPublishedDocumentsWithLabels(
-    publicationId: string,
-  ): Promise<{ label: string; document: unknown }[]> {
+  async listDocumentsForPublish(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+  }): Promise<{ label: string; document: unknown }[]> {
     const db = await getDb();
-    const scope = and(
-      eq(storefrontContentPublicationItems.publicationId, publicationId),
-      isNull(storefrontContentPublicationItems.deletedAt),
-    );
-    const [templates, pages] = await Promise.all([
-      db
-        .select({
-          document: storefrontThemeTemplateRevisions.document,
-          name: storefrontThemeTemplates.name,
-          routePath: storefrontThemeTemplates.routePath,
-        })
-        .from(storefrontContentPublicationItems)
-        .innerJoin(
-          storefrontThemeTemplateRevisions,
-          eq(
-            storefrontContentPublicationItems.revisionId,
-            storefrontThemeTemplateRevisions.id,
-          ),
-        )
-        .innerJoin(
-          storefrontThemeTemplates,
-          eq(
-            storefrontThemeTemplateRevisions.templateId,
-            storefrontThemeTemplates.id,
-          ),
-        )
-        .where(scope),
+    const templates = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        type: storefrontThemeTemplates.type,
+        name: storefrontThemeTemplates.name,
+        routePath: storefrontThemeTemplates.routePath,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+        publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      );
+    const templateRevisions = new Map<string, string>();
+    for (const template of templates) {
+      const revisionId =
+        template.id === data.templateId || template.type === "layout"
+          ? template.draftRevisionId
+          : template.publishedRevisionId;
+      if (revisionId) {
+        templateRevisions.set(revisionId, template.routePath ?? template.name);
+      }
+    }
+
+    const [revisionRows, pages] = await Promise.all([
+      templateRevisions.size > 0
+        ? db
+            .select({
+              id: storefrontThemeTemplateRevisions.id,
+              document: storefrontThemeTemplateRevisions.document,
+            })
+            .from(storefrontThemeTemplateRevisions)
+            .where(
+              inArray(storefrontThemeTemplateRevisions.id, [
+                ...templateRevisions.keys(),
+              ]),
+            )
+        : Promise.resolve([]),
       db
         .select({
           document: storefrontPageRevisions.document,
           handle: storefrontPages.handle,
         })
-        .from(storefrontContentPublicationItems)
+        .from(storefrontPages)
         .innerJoin(
           storefrontPageRevisions,
-          eq(
-            storefrontContentPublicationItems.revisionId,
-            storefrontPageRevisions.id,
+          eq(storefrontPageRevisions.id, storefrontPages.publishedRevisionId),
+        )
+        .where(
+          and(
+            eq(storefrontPages.storefrontId, data.storefrontId),
+            isNull(storefrontPages.deletedAt),
           ),
-        )
-        .innerJoin(
-          storefrontPages,
-          eq(storefrontPageRevisions.pageId, storefrontPages.id),
-        )
-        .where(scope),
+        ),
     ]);
     return [
-      ...templates.map((row) => ({
-        label: row.routePath ?? row.name,
+      ...revisionRows.map((row) => ({
+        label: templateRevisions.get(row.id) ?? "",
         document: row.document as unknown,
       })),
       ...pages.map((row) => ({

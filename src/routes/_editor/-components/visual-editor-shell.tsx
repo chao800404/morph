@@ -281,6 +281,12 @@ import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
+import {
+  EditorPublishMediaCheck,
+  publishConfirmation,
+  publishMediaCheckQuery,
+  publishMediaCheckState,
+} from "./editor-publish-media-check";
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 
 /**
@@ -943,14 +949,6 @@ export function VisualEditorShell({
         }),
       ]);
       toast.success(result.message);
-      // The release is live either way; this names the images visitors will
-      // see broken, so the author can fix them.
-      if (
-        "legacyMediaWarning" in result.data &&
-        result.data.legacyMediaWarning
-      ) {
-        toast.warning(result.data.legacyMediaWarning, { duration: 15_000 });
-      }
     },
     onError: () => toast.error("Failed to publish theme"),
   });
@@ -1508,6 +1506,19 @@ export function VisualEditorShell({
   });
   const [isPublishNoteOpen, setIsPublishNoteOpen] = useState(false);
   const [publishNote, setPublishNote] = useState("");
+  // Checked when the confirmation opens, so broken images are named before
+  // the release goes live rather than after.
+  const publishMediaCheck = publishMediaCheckState(
+    useQuery({
+      ...publishMediaCheckQuery({
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+        templateId: activeTemplate?.id ?? "",
+      }),
+      enabled: isPublishNoteOpen && Boolean(activeTemplate?.id),
+    }),
+  );
+  const publishConfirm = publishConfirmation(publishMediaCheck);
   /**
    * Stops waiting on a build, and on an explicit cancel also stops the build.
    *
@@ -7460,7 +7471,7 @@ export function VisualEditorShell({
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
-                      void confirmPublish();
+                      if (!publishConfirm.disabled) void confirmPublish();
                     }
                   }}
                 />
@@ -7468,6 +7479,7 @@ export function VisualEditorShell({
                   You can rename it later from Release history.
                 </p>
               </div>
+              <EditorPublishMediaCheck state={publishMediaCheck} />
               <div className="flex justify-end gap-2">
                 <Button
                   type="button"
@@ -7482,9 +7494,10 @@ export function VisualEditorShell({
                   variant="form"
                   size="xs"
                   data-publish-confirm
+                  disabled={publishConfirm.disabled}
                   onClick={() => void confirmPublish()}
                 >
-                  Publish
+                  {publishConfirm.label}
                 </Button>
               </div>
             </PopoverContent>
