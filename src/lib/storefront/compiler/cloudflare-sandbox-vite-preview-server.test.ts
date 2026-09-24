@@ -276,15 +276,21 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     );
   });
 
-  it("tears the container down when Vite never becomes ready", async () => {
+  it("stops only its own Vite when it never becomes ready, and leaves the shared sandbox", async () => {
     const harness = createSession("silent");
     const result = await startWith(harness, {}, { readyTimeoutMs: 20 });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errorMessage).toContain("PREVIEW_SERVER_TIMEOUT");
+    // The process this start launched, by its id — nothing else.
     expect(harness.killed).toEqual(["proc-1"]);
-    expect(harness.destroyed).toBe(1);
+    // Other tabs share this sandbox; it is not this start's to destroy.
+    expect(harness.destroyed).toBe(0);
+    // The next start must not trust what this one left.
+    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+      "dirty",
+    );
   });
 
   it("reports an exit before readiness rather than waiting out the timeout", async () => {
@@ -294,7 +300,10 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errorMessage).toContain("PREVIEW_SERVER_EXITED");
-    expect(harness.destroyed).toBe(1);
+    expect(harness.destroyed).toBe(0);
+    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+      "dirty",
+    );
   });
 
   it("lets an idle container be reclaimed", async () => {
@@ -652,7 +661,70 @@ describe("asking twice for the same preview", () => {
     expect(result.stage).toBe("preview-server-restart");
     expect(result.errorMessage).toContain("PREVIEW_SERVER_STOP_TIMEOUT");
     expect(harness.commands).toEqual([]);
-    expect(harness.destroyed).toBe(1);
+    // Fails closed without taking the shared sandbox down with it.
+    expect(harness.destroyed).toBe(0);
+    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+      "dirty",
+    );
+  });
+
+  it("leaves a Vite another request just started alone", async () => {
+    const harness = withRunningVite(createSession("ready"));
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+    // The first look finds the old server; by the time this start is ready to
+    // replace it, another request already has.
+    let looks = 0;
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => {
+        looks += 1;
+        return [
+          {
+            id: looks === 1 ? "already-running" : "someone-elses",
+            command:
+              "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+            status: "running",
+          },
+        ];
+      };
+
+    const result = await startWith(harness, {}, { readyTimeoutMs: 50 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorMessage).toContain("PREVIEW_SERVER_BUSY");
+    expect(harness.killed).toEqual([]);
+    expect(harness.commands).toEqual([]);
+    expect(harness.destroyed).toBe(0);
+    // The other request is finishing the same start; it is not undone.
+    expect(
+      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH),
+    ).not.toBe("dirty");
+  });
+
+  it("does not stop a Vite that already stopped on its own", async () => {
+    const harness = withRunningVite(createSession("ready"));
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+    let looks = 0;
+    (harness.session as { listProcesses?: unknown }).listProcesses =
+      async () => {
+        looks += 1;
+        return looks === 1
+          ? [
+              {
+                id: "already-running",
+                command:
+                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                status: "running",
+              },
+            ]
+          : [];
+      };
+
+    const result = await startWith(harness);
+
+    expect(result.ok).toBe(true);
+    expect(harness.killed).toEqual([]);
+    expect(harness.commands).toHaveLength(1);
   });
 
   it("still starts one when the container has none", async () => {
@@ -749,20 +821,21 @@ describe("recording what a start decided", () => {
       concurrentAtEntry: 0,
       workspace: {
         reused: false,
-        // Draft content is written twice: its own module, and inlined into
-        // the Vite config's content plugin. So a content edit alone changes
-        // a platform file too, and Vite reloads its config for it.
+        // Draft content lives in its snapshot module and the data file the
+        // dev server reads; the code and the Vite config do not carry it.
         change: {
           comparable: true,
-          byKind: { "preview-content": 1, "theme-source": 0, platform: 1 },
+          byKind: { "preview-content": 2, "theme-source": 0, platform: 0 },
           samplePaths: [
-            "/workspace/src/morph/preview-content.ts",
-            "/workspace/vite.config.ts",
+            "/workspace/.morph-preview-content.json",
+            "/workspace/src/morph/preview-content-snapshot.ts",
           ],
         },
+        update: "content-only",
       },
-      vite: { action: "restarted", runningProcessId: "already-running" },
-      destroyed: null,
+      // So the running server and every page it serves are left alone.
+      vite: { action: "reused", runningProcessId: "already-running" },
+      failedClosed: null,
     });
   });
 
@@ -786,7 +859,7 @@ describe("recording what a start decided", () => {
     expect(start.vite.action).toBe("restarted");
   });
 
-  it("records why it destroyed the shared sandbox", async () => {
+  it("records why it failed closed", async () => {
     const harness = createSession("silent");
     const log = observe();
     const result = await startWith(harness, {}, { readyTimeoutMs: 20 });
@@ -795,13 +868,13 @@ describe("recording what a start decided", () => {
 
     expect(result.ok).toBe(false);
     expect(
-      events.find((entry) => entry.event === "destroy")?.fields,
+      events.find((entry) => entry.event === "fail-closed")?.fields,
     ).toMatchObject({ previewId: "preview-1", reason: "vite-timeout" });
     expect(lastStart(events)).toMatchObject({
       outcome: "failed",
-      destroyed: "vite-timeout",
+      failedClosed: "vite-timeout",
     });
-    expect(harness.destroyed).toBe(1);
+    expect(harness.destroyed).toBe(0);
   });
 
   it("never writes the preview address into the log", async () => {
@@ -815,6 +888,111 @@ describe("recording what a start decided", () => {
       events.map((entry) => JSON.stringify(entry.fields)).join("\n"),
     ).not.toContain("sbx-tok");
     expect(lastStart(events).address).toMatchObject({ reused: false });
+  });
+
+  it("writes only the content snapshot when only content changed, and keeps Vite", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+    harness.writePaths.length = 0;
+
+    const result = await startWith(harness, {
+      previewContent: contentFor("two"),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.timings.reusedProcess).toBe(true);
+    expect(harness.killed).toEqual([]);
+    expect(harness.commands).toHaveLength(1);
+    expect(harness.writePaths).toEqual([
+      "/workspace/src/morph/preview-content-snapshot.ts",
+      "/workspace/.morph-preview-content.json",
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    ]);
+    expect(
+      harness.written.get("/workspace/src/morph/preview-content-snapshot.ts"),
+    ).toContain("two");
+  });
+
+  it("rewrites everything and restarts when the marker says dirty, even for content", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+
+    const log = observe();
+    await startWith(harness, { previewContent: contentFor("two") });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.vite.action).toBe("restarted");
+  });
+
+  it("does not trust a manifest the marker does not name", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+    // A start wrote a new manifest and stopped before its marker: the files on
+    // disk may be anywhere between the two workspaces.
+    const manifest = JSON.parse(
+      harness.written.get(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH)!,
+    );
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+      JSON.stringify({ ...manifest, fingerprint: "a-later-start" }),
+    );
+
+    const log = observe();
+    await startWith(harness, { previewContent: contentFor("two") });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.vite.action).toBe("restarted");
+  });
+
+  it("does not trust a manifest written before fingerprints were recorded", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+      JSON.stringify(
+        JSON.parse(harness.written.get(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH)!)
+          .files,
+      ),
+    );
+
+    const log = observe();
+    await startWith(harness, { previewContent: contentFor("two") });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+  });
+
+  it("restarts when source changed, content or not", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { previewContent: contentFor("one") });
+    withRunningVite(harness);
+
+    const log = observe();
+    await startWith(harness, {
+      previewContent: contentFor("two"),
+      files: THEME.map((file) =>
+        file.path === "src/components/Hero.tsx"
+          ? { ...file, content: `${file.content}\n// changed` }
+          : file,
+      ),
+    });
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.vite.action).toBe("restarted");
   });
 
   it("keeps the manifest beside the marker across a rewrite", async () => {

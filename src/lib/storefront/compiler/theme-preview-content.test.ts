@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   createThemePreviewContentSnapshot,
+  themePreviewContentDataSource,
   themePreviewContentModuleSource,
   themePreviewContentPluginSource,
+  themePreviewContentSnapshotModuleSource,
 } from "./theme-preview-content";
 
 describe("Live Preview draft content", () => {
@@ -117,7 +119,7 @@ describe("Live Preview draft content", () => {
     expect(snapshot.shell?.slots).toEqual({ header: { heading: "Shell" } });
 
     // The resolver the preview runs, taken the way the dev-server plugin takes it.
-    const source = themePreviewContentModuleSource(snapshot);
+    const source = themePreviewContentModuleSource();
     const body = source
       .slice(
         source.indexOf("function templateTypeForPath"),
@@ -147,13 +149,31 @@ describe("Live Preview draft content", () => {
       pages: {},
     } as const;
 
-    expect(themePreviewContentPluginSource(snapshot)).toContain(
-      'url.pathname !== "/_morph/content"',
+    const plugin = themePreviewContentPluginSource();
+    expect(plugin).toContain('url.pathname !== "/_morph/content"');
+    // The server endpoint reads the snapshot per request instead of carrying
+    // it, so a content change is no longer a change to the Vite config.
+    expect(plugin).toContain('".morph-preview-content.json"');
+    expect(plugin).toContain("fs.readFileSync(dataPath");
+    expect(plugin).not.toContain("Draft");
+    expect(themePreviewContentDataSource(snapshot)).toContain('heading":"Draft');
+    expect(themePreviewContentSnapshotModuleSource(snapshot)).toBe(
+      `export default ${JSON.stringify(snapshot)};\n`,
     );
-    const module = themePreviewContentModuleSource(snapshot);
+
+    const module = themePreviewContentModuleSource();
     expect(module).toContain("window.fetch =");
     expect(module).toContain("updatePreviewContent");
-    expect(module).toContain('heading":"Draft');
+    // The code holds no content, so a new snapshot never changes it...
+    expect(module).not.toContain("Draft");
+    expect(module).toContain(
+      'import initialSnapshot from "./preview-content-snapshot"',
+    );
+    // ...and a new snapshot is accepted without being applied, so a page
+    // already showing its author's live edits is neither reset nor reloaded.
+    expect(module).toContain(
+      'import.meta.hot.accept("./preview-content-snapshot", () => {})',
+    );
     expect(module).toContain("morph:storefront-preview-catalog-request");
     expect(module).toContain("morph:storefront-preview-catalog-response");
     expect(module).toContain("/^\\/api\\/store\\/products");

@@ -1,3 +1,4 @@
+import { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH } from "./theme-workspace-path";
 import type {
   StorefrontPageDocument,
   StorefrontTemplateType,
@@ -9,6 +10,25 @@ import {
 
 export const THEME_PREVIEW_CONTENT_PATH = "/_morph/content";
 export const THEME_PREVIEW_CONTENT_MODULE_PATH = "src/morph/preview-content.ts";
+/**
+ * The draft content a page loads with, apart from the code that serves it.
+ *
+ * Content changes far more often than the preview's code, and one preview
+ * container serves every tab its author has open. Kept in its own module, a
+ * newer snapshot written when another tab starts the preview is a data update
+ * those pages accept and ignore, rather than a code change that reloads them.
+ */
+export const THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH =
+  "src/morph/preview-content-snapshot.ts";
+/**
+ * The same snapshot for the dev server's own content endpoint, read on each
+ * request. Outside the module graph, so rewriting it reloads nothing; and not
+ * inlined in the Vite config any more, so a content change is not a config
+ * change that restarts the server.
+ */
+export { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH };
+
+const EMPTY_PREVIEW_CONTENT = { templates: {}, pages: {} } as const;
 
 export type ThemePreviewContentSnapshot = Readonly<{
   templates: Partial<
@@ -137,17 +157,41 @@ export async function createThemePreviewContentSnapshot(args: {
   return { templates, pages, routes, shell };
 }
 
-/** Source installed only in a preview workspace. */
-export function themePreviewContentModuleSource(
-  snapshot: ThemePreviewContentSnapshot,
+/** The snapshot module a preview page loads its initial content from. */
+export function themePreviewContentSnapshotModuleSource(
+  snapshot: ThemePreviewContentSnapshot = EMPTY_PREVIEW_CONTENT,
 ): string {
+  return `export default ${JSON.stringify(snapshot)};\n`;
+}
+
+/** The snapshot as the dev server's content endpoint reads it. */
+export function themePreviewContentDataSource(
+  snapshot: ThemePreviewContentSnapshot = EMPTY_PREVIEW_CONTENT,
+): string {
+  return JSON.stringify(snapshot);
+}
+
+/**
+ * Source installed only in a preview workspace. It holds no content itself,
+ * so it is the same for every snapshot and never changes with one.
+ */
+export function themePreviewContentModuleSource(): string {
   return `import {
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
   readPreviewRuntimeChannel,
 } from "./preview/preview-protocol";
+import initialSnapshot from "./preview-content-snapshot";
 
-const snapshot = ${JSON.stringify(snapshot)};
+// A page keeps the snapshot it loaded with: the author's live edits are applied
+// to it, and replacing it would throw them away. A newer snapshot is written
+// when another tab starts this shared preview, and it is for pages loaded
+// after that — so the update is accepted here and deliberately not applied,
+// which also keeps it from reloading this page.
+const snapshot = initialSnapshot;
+if (import.meta.hot) {
+  import.meta.hot.accept("./preview-content-snapshot", () => {});
+}
 const previewChannel = readPreviewRuntimeChannel(window.location.href);
 const pendingCatalogRequests = new Map();
 let nextCatalogRequestId = 0;
@@ -263,11 +307,15 @@ window.fetch = (input, init) => {
 `;
 }
 
-/** Vite middleware source for the initial route load, before the bridge runs. */
-export function themePreviewContentPluginSource(
-  snapshot: ThemePreviewContentSnapshot,
-): string {
-  const source = themePreviewContentModuleSource(snapshot);
+/**
+ * Vite middleware source for the initial route load, before the bridge runs.
+ *
+ * Reads the snapshot from the workspace on each request rather than carrying
+ * it: inlined, every content change was a change to the Vite config itself.
+ * The generated config imports `fs` and `path`.
+ */
+export function themePreviewContentPluginSource(): string {
+  const source = themePreviewContentModuleSource();
   const bodyStart = source.indexOf("function templateTypeForPath");
   const bodyEnd = source.indexOf("export function updatePreviewContent");
   const resolver = source
@@ -279,7 +327,8 @@ export function themePreviewContentPluginSource(
   return `{
   name: "morph-preview-content",
   configureServer(server) {
-    const snapshot = ${JSON.stringify(snapshot)};
+    const dataPath = path.join(server.config.root, ${JSON.stringify(THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH)});
+    let snapshot = ${JSON.stringify(EMPTY_PREVIEW_CONTENT)};
     ${resolver}
     server.middlewares.use((req, res, next) => {
       const url = new URL(req.url || "/", "http://preview.invalid");
@@ -288,6 +337,11 @@ export function themePreviewContentPluginSource(
         res.statusCode = 405;
         res.end("Method Not Allowed");
         return;
+      }
+      try {
+        snapshot = JSON.parse(fs.readFileSync(dataPath, "utf8"));
+      } catch {
+        snapshot = ${JSON.stringify(EMPTY_PREVIEW_CONTENT)};
       }
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
