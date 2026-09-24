@@ -124,6 +124,11 @@ import { InspectorSegmentedSwitch } from "./style-inspector/inspector-segmented-
 import { InspectorBreakpointIndicator } from "./style-inspector/inspector-breakpoint-indicator";
 import { EditorMediaField } from "./editor-media-field";
 import {
+  canStoreLibraryAsset,
+  imageFieldStorage,
+  imageFieldValue,
+} from "@/lib/storefront/editor/image-field-storage";
+import {
   InspectorLengthControl,
   inspectorLengthUtility,
   resolveInspectorLength,
@@ -257,6 +262,16 @@ type EditorStyleInspectorProps = {
   view?: "styles" | "content";
   disabled?: boolean;
 };
+
+/**
+ * Shown where a Theme types its image as a plain string. Such a field keeps
+ * only a URL, so it cannot say which library asset was chosen, and a library
+ * URL saved there renders for the author and for no visitor.
+ */
+const STRING_IMAGE_FIELD_HINT =
+  "This field stores the image as a URL, so it cannot use the Asset library. " +
+  "To choose from Assets, declare it in the component's contentFields as " +
+  'image: { type: "image" }, saved as { src, alt }.';
 
 const THEME_PALETTE_COLORS = [
   {
@@ -3263,6 +3278,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         : contentFieldDisplayValue("imageAlt");
                       const imageDefinition =
                         resolvedContentFields[imageFieldKey];
+                      const imageStorage = imageFieldStorage({
+                        usesGroupedImage,
+                        definitionType: imageDefinition?.type,
+                      });
                       const hasImageValue =
                         rawImageValue !== undefined ||
                         isDeclaredContentField(imageFieldKey) ||
@@ -3324,19 +3343,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             imageDefinition.allowExternal !== false
                           }
                           allowAsset={
-                            imageDefinition?.type !== "image" ||
-                            imageDefinition.allowAsset !== false
+                            canStoreLibraryAsset(imageStorage) &&
+                            (imageDefinition?.type !== "image" ||
+                              imageDefinition.allowAsset !== false)
+                          }
+                          description={
+                            canStoreLibraryAsset(imageStorage)
+                              ? undefined
+                              : STRING_IMAGE_FIELD_HINT
                           }
                           disabled={disabled}
-                          onChange={(next) =>
-                            commitImage(
-                              usesGroupedImage
-                                ? withThemeImageSource(rawImageValue, next)
-                                : imageDefinition?.type === "image"
-                                  ? next
-                                  : next.url,
-                            )
-                          }
+                          onChange={(next) => {
+                            const value = imageFieldValue(
+                              imageStorage,
+                              rawImageValue,
+                              next,
+                            );
+                            if (value !== undefined) commitImage(value);
+                          }}
                         />
                       );
                     })(),
