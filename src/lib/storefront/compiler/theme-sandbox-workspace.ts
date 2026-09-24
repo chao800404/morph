@@ -88,7 +88,7 @@ export type ThemeWorkspaceFile = Readonly<{
 
 const WORKSPACE_WRITE_CONCURRENCY = 8;
 
-async function runWithConcurrency<T>(
+export async function runWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
   operation: (item: T) => Promise<void>,
@@ -866,6 +866,41 @@ sourcemap: false,
   };
 }
 
+/**
+ * Regular files in a workspace listing that a plan does not account for.
+ *
+ * Symlinks, directories, the toolchain, Vite's cache, build output, platform
+ * files and the preview's own markers are never counted. Shared by the full
+ * write, which deletes what this returns, and by a start checking a workspace
+ * in place, which cannot trust one that has any.
+ */
+export function unplannedWorkspaceFiles(
+  listed: ReadonlyArray<{ absolutePath: string; type: string }>,
+  workspaceFiles: readonly ThemeWorkspacePlanFile[],
+): string[] {
+  const workspaceRoot = "/workspace";
+  const expectedPaths = new Set(workspaceFiles.map((file) => file.path));
+  const fingerprintPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
+  const manifestPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH}`;
+  return listed
+    .filter((entry) => entry.type === "file")
+    .map((entry) => entry.absolutePath.replace(/\\/g, "/"))
+    .filter(
+      (filePath) =>
+        filePath.startsWith(`${workspaceRoot}/`) &&
+        !filePath.includes("/../") &&
+        !filePath.startsWith(`${workspaceRoot}/node_modules/`) &&
+        !filePath.startsWith(`${workspaceRoot}/.vite/`) &&
+        !filePath.startsWith(`${workspaceRoot}/dist/`) &&
+        !isPlatformOwnedThemeBuildPath(
+          filePath.slice(workspaceRoot.length + 1),
+        ) &&
+        filePath !== fingerprintPath &&
+        filePath !== manifestPath &&
+        !expectedPaths.has(filePath),
+    );
+}
+
 export async function materializeThemeSandboxWorkspace(
   session: ThemeWorkspaceWriter,
   workspaceFiles: readonly ThemeWorkspacePlanFile[],
@@ -892,26 +927,7 @@ export async function materializeThemeSandboxWorkspace(
       // afterwards would then promise a reconciliation that never happened.
       throw new Error("Could not list the existing Theme preview workspace.");
     }
-    const expectedPaths = new Set(workspaceFiles.map((file) => file.path));
-    const fingerprintPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`;
-    const manifestPath = `${workspaceRoot}/${THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH}`;
-    const staleFiles = listed.files
-      .filter((entry) => entry.type === "file")
-      .map((entry) => entry.absolutePath.replace(/\\/g, "/"))
-      .filter(
-        (filePath) =>
-          filePath.startsWith(`${workspaceRoot}/`) &&
-          !filePath.includes("/../") &&
-          !filePath.startsWith(`${workspaceRoot}/node_modules/`) &&
-          !filePath.startsWith(`${workspaceRoot}/.vite/`) &&
-          !filePath.startsWith(`${workspaceRoot}/dist/`) &&
-          !isPlatformOwnedThemeBuildPath(
-            filePath.slice(workspaceRoot.length + 1),
-          ) &&
-          filePath !== fingerprintPath &&
-          filePath !== manifestPath &&
-          !expectedPaths.has(filePath),
-      );
+    const staleFiles = unplannedWorkspaceFiles(listed.files, workspaceFiles);
     await runWithConcurrency(
       staleFiles,
       WORKSPACE_WRITE_CONCURRENCY,

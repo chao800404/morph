@@ -164,7 +164,15 @@ followed by a JSON object:
   the draft content snapshot changed, so Vite and every page it serves were
   left running), or `full` (everything, then Vite restarted). A
   `content-only` update needs the manifest to name the same fingerprint as
-  the marker; after a `dirty` marker it is always `full`.
+  the marker.
+- After a `dirty` marker (an incremental sync or a failed start wrote since
+  the last complete write) the manifest is not trusted; the start reads every
+  planned file back instead. `workspace.verification` says how many were
+  read, or why the disk could not be checked (`unplanned-files`,
+  `binary-file`, ...), in which case the update is `full`.
+- `workspace.committed: false` means another writer marked the workspace
+  `dirty` while this start ran, so it left the clean marker uncommitted and
+  the next start reads the disk again.
 - A start that cannot finish never destroys the shared sandbox: it stops only
   the Vite process it launched and marks the workspace `dirty`
   (`fail-closed`), so the next start rebuilds it.

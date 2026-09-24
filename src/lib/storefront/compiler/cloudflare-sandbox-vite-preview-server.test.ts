@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
+import { isDirtyWorkspaceMarker } from "./theme-workspace-path";
 import {
   CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_SERVER_PORT,
@@ -288,9 +289,11 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     // Other tabs share this sandbox; it is not this start's to destroy.
     expect(harness.destroyed).toBe(0);
     // The next start must not trust what this one left.
-    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
-      "dirty",
-    );
+    expect(
+      isDirtyWorkspaceMarker(
+        harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+      ),
+    ).toBe(true);
   });
 
   it("reports an exit before readiness rather than waiting out the timeout", async () => {
@@ -301,9 +304,11 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     if (result.ok) return;
     expect(result.errorMessage).toContain("PREVIEW_SERVER_EXITED");
     expect(harness.destroyed).toBe(0);
-    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
-      "dirty",
-    );
+    expect(
+      isDirtyWorkspaceMarker(
+        harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+      ),
+    ).toBe(true);
   });
 
   it("lets an idle container be reclaimed", async () => {
@@ -663,9 +668,11 @@ describe("asking twice for the same preview", () => {
     expect(harness.commands).toEqual([]);
     // Fails closed without taking the shared sandbox down with it.
     expect(harness.destroyed).toBe(0);
-    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
-      "dirty",
-    );
+    expect(
+      isDirtyWorkspaceMarker(
+        harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+      ),
+    ).toBe(true);
   });
 
   it("leaves a Vite another request just started alone", async () => {
@@ -697,8 +704,10 @@ describe("asking twice for the same preview", () => {
     expect(harness.destroyed).toBe(0);
     // The other request is finishing the same start; it is not undone.
     expect(
-      harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH),
-    ).not.toBe("dirty");
+      isDirtyWorkspaceMarker(
+        harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+      ),
+    ).toBe(false);
   });
 
   it("does not stop a Vite that already stopped on its own", async () => {
@@ -839,15 +848,20 @@ describe("recording what a start decided", () => {
     });
   });
 
-  it("shows when a workspace left dirty by a sync is restarted with nothing changed", async () => {
+  it("reads back a workspace a sync left dirty, and keeps Vite when the disk matches", async () => {
     const harness = createSession("ready");
     await startWith(harness);
     withRunningVite(harness);
-    // What an incremental sync leaves behind after writing a file.
-    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+    // What an incremental sync leaves behind after writing a file the plan
+    // would write the same way.
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0001",
+    );
+    harness.writePaths.length = 0;
 
     const log = observe();
-    await startWith(harness);
+    const result = await startWith(harness);
     const start = lastStart(log.events());
     log.restore();
 
@@ -855,8 +869,125 @@ describe("recording what a start decided", () => {
       reused: false,
       previous: "dirty",
       change: { comparable: true, added: 0, removed: 0, changed: 0 },
+      update: "none",
+      committed: true,
     });
+    expect(start.workspace.verification.read).toBeGreaterThan(0);
+    expect(start.vite.action).toBe("reused");
+    expect(result.ok && result.timings.reusedProcess).toBe(true);
+    // Nothing rewritten: only the manifest, then the marker, committed clean.
+    expect(harness.writePaths).toEqual([
+      THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+    ]);
+    expect(
+      isDirtyWorkspaceMarker(
+        harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH) ?? null,
+      ),
+    ).toBe(false);
+  });
+
+  it("rewrites and restarts when a sync left source the plan does not have", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    // An unsaved edit synced from a tab: on disk, but not in the saved source.
+    harness.written.set(
+      "/workspace/src/components/Hero.tsx",
+      `${harness.written.get("/workspace/src/components/Hero.tsx")}\n// unsaved`,
+    );
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0002",
+    );
+
+    const log = observe();
+    await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.workspace.change.byKind["theme-source"]).toBe(1);
     expect(start.vite.action).toBe("restarted");
+  });
+
+  it("treats a sync that stopped halfway as a difference, not a match", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    // The sync marked the workspace, then failed before a file was complete.
+    harness.written.set("/workspace/src/components/Hero.tsx", "export default");
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0003",
+    );
+
+    const log = observe();
+    await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.update).toBe("full");
+    expect(start.vite.action).toBe("restarted");
+    expect(harness.written.get("/workspace/src/components/Hero.tsx")).toContain(
+      "export default function Hero",
+    );
+  });
+
+  it("rewrites a dirty workspace that holds a file no plan accounts for", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    harness.written.set("/workspace/src/components/Stray.tsx", "export {};");
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0004",
+    );
+
+    const log = observe();
+    await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.verification).toEqual({ failed: "unplanned-files" });
+    expect(start.workspace.update).toBe("full");
+    expect(harness.deletedPaths).toContain(
+      "/workspace/src/components/Stray.tsx",
+    );
+  });
+
+  it("does not commit when another writer marks the workspace while it runs", async () => {
+    const harness = createSession("ready");
+    await startWith(harness);
+    withRunningVite(harness);
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0005",
+    );
+    // A sync starts while this start is reading the disk back.
+    const read = harness.session.readFile!.bind(harness.session);
+    (
+      harness.session as { readFile: PreviewServerSession["readFile"] }
+    ).readFile = async (path, options) => {
+      if (path === "/workspace/src/components/Hero.tsx") {
+        harness.written.set(
+          THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+          "dirty:sync0006",
+        );
+      }
+      return read(path, options);
+    };
+
+    const log = observe();
+    await startWith(harness);
+    const start = lastStart(log.events());
+    log.restore();
+
+    expect(start.workspace.committed).toBe(false);
+    // The later sync's marker stands, so the next start reads the disk again.
+    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+      "dirty:sync0006",
+    );
   });
 
   it("records why it failed closed", async () => {
@@ -916,19 +1047,24 @@ describe("recording what a start decided", () => {
     ).toContain("two");
   });
 
-  it("rewrites everything and restarts when the marker says dirty, even for content", async () => {
+  it("after a dirty marker, writes only content when the disk shows only content changed", async () => {
     const harness = createSession("ready");
     await startWith(harness, { previewContent: contentFor("one") });
     withRunningVite(harness);
-    harness.written.set(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty");
+    harness.written.set(
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+      "dirty:sync0007",
+    );
 
     const log = observe();
     await startWith(harness, { previewContent: contentFor("two") });
     const start = lastStart(log.events());
     log.restore();
 
-    expect(start.workspace.update).toBe("full");
-    expect(start.vite.action).toBe("restarted");
+    // The disk was read back, not trusted from the manifest.
+    expect(start.workspace.verification.read).toBeGreaterThan(0);
+    expect(start.workspace.update).toBe("content-only");
+    expect(start.vite.action).toBe("reused");
   });
 
   it("does not trust a manifest the marker does not name", async () => {

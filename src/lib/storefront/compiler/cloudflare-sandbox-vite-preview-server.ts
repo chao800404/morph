@@ -11,9 +11,12 @@ import {
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 import {
+  isDirtyWorkspaceMarker,
+  newDirtyWorkspaceMarker,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
   THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH,
 } from "./theme-workspace-path";
+import { verifyWorkspaceOnDisk } from "./theme-workspace-verification";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
 import {
   diffWorkspaceFileDigests,
@@ -227,6 +230,10 @@ type StartObservation = {
     change?: WorkspaceChange;
     /** What was written: nothing, only the content snapshot, or everything. */
     update?: "none" | "content-only" | "full";
+    /** For a `dirty` workspace: how many files were read back, or why not. */
+    verification?: { read: number } | { failed: string };
+    /** False when another writer marked the workspace before this one committed. */
+    committed?: boolean;
   };
   vite?: {
     action: "reused" | "restarted" | "started";
@@ -240,7 +247,7 @@ type StartObservation = {
 
 function shortMarker(marker: string | null): string | null {
   if (marker === null) return null;
-  return marker === "dirty" ? marker : marker.slice(0, 12);
+  return isDirtyWorkspaceMarker(marker) ? "dirty" : marker.slice(0, 12);
 }
 
 export type PreviewServerTimings = Readonly<{
@@ -403,7 +410,10 @@ export class CloudflareSandboxVitePreviewServer {
           reason,
         });
         await session!
-          .writeFile(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty")
+          .writeFile(
+            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            newDirtyWorkspaceMarker(),
+          )
           .catch(() => {
             addLog("Could not mark the Live Preview workspace untrusted.");
           });
@@ -525,55 +535,114 @@ export class CloudflareSandboxVitePreviewServer {
           (process.status === "running" || process.status === "starting"),
       );
 
+      const readWorkspaceMarker = async (): Promise<string | null> => {
+        if (!session!.readFile) return null;
+        try {
+          const value = await recordFilesystemCall(
+            () =>
+              session!.readFile!(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, {
+                encoding: "utf-8",
+              }),
+            "read",
+          );
+          const content =
+            typeof value === "string"
+              ? value
+              : typeof value.content === "string"
+                ? value.content
+                : null;
+          return content?.trim() ?? null;
+        } catch {
+          return null;
+        }
+      };
+
       let workspaceMaterializeMs = 0;
       let workspaceUpdate: "none" | "content-only" | "full" = workspaceReused
         ? "none"
         : "full";
       if (!workspaceReused) {
         const nextDigests = workspaceFileDigests(prepared.workspaceFiles);
-        let previousManifest: WorkspaceManifest | null = null;
-        if (existingWorkspaceFingerprint !== null && session.readFile) {
-          try {
-            const value = await recordFilesystemCall(
-              () =>
-                session!.readFile!(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH, {
-                  encoding: "utf-8",
-                }),
-              "read",
-            );
-            previousManifest = parseWorkspaceManifest(
-              typeof value === "string"
-                ? value
-                : typeof value.content === "string"
-                  ? value.content
-                  : null,
-            );
-          } catch {
-            previousManifest = null;
+        const themeSourcePaths = new Set(input.files.map((file) => file.path));
+
+        // What the disk holds, known one of two ways or not at all.
+        let change: WorkspaceChange;
+        let diskIsKnown: boolean;
+        if (isDirtyWorkspaceMarker(existingWorkspaceFingerprint)) {
+          // Something wrote here after the last complete write, so neither
+          // the marker nor the manifest describes the disk. Read it instead.
+          const verification = await verifyWorkspaceOnDisk(
+            {
+              readFile: session.readFile
+                ? (path, options) =>
+                    recordFilesystemCall(
+                      () => session!.readFile!(path, options),
+                      "read",
+                    )
+                : undefined,
+              listFiles: session.listFiles
+                ? (path, options) => session!.listFiles!(path, options)
+                : undefined,
+            },
+            prepared.workspaceFiles,
+          );
+          observation.workspace.verification = verification.ok
+            ? { read: verification.read }
+            : { failed: verification.reason };
+          change = diffWorkspaceFileDigests(
+            verification.ok ? verification.onDisk : null,
+            nextDigests,
+            themeSourcePaths,
+          );
+          diskIsKnown = verification.ok;
+        } else {
+          let previousManifest: WorkspaceManifest | null = null;
+          if (existingWorkspaceFingerprint !== null && session.readFile) {
+            try {
+              const value = await recordFilesystemCall(
+                () =>
+                  session!.readFile!(THEME_PREVIEW_WORKSPACE_MANIFEST_PATH, {
+                    encoding: "utf-8",
+                  }),
+                "read",
+              );
+              previousManifest = parseWorkspaceManifest(
+                typeof value === "string"
+                  ? value
+                  : typeof value.content === "string"
+                    ? value.content
+                    : null,
+              );
+            } catch {
+              previousManifest = null;
+            }
           }
+          change = diffWorkspaceFileDigests(
+            previousManifest?.files ?? null,
+            nextDigests,
+            themeSourcePaths,
+          );
+          // The manifest describes the disk only while the marker names the
+          // same workspace: one start wrote every file, then the manifest,
+          // then the marker. A missing or mismatched one says nothing.
+          diskIsKnown =
+            previousManifest !== null &&
+            existingWorkspaceFingerprint !== null &&
+            previousManifest.fingerprint === existingWorkspaceFingerprint;
         }
-        const change = diffWorkspaceFileDigests(
-          previousManifest?.files ?? null,
-          nextDigests,
-          new Set(input.files.map((file) => file.path)),
-        );
         observation.workspace.change = change;
 
-        // The manifest describes what is on disk only while the marker names
-        // the same workspace: both are written by one start, the manifest
-        // first and the marker last, after every file. A `dirty` marker (an
-        // incremental sync touched the workspace, or a start failed) or a
-        // missing or mismatched one means nothing about the disk is known,
-        // and everything is written.
-        const manifestDescribesDisk =
-          previousManifest !== null &&
-          existingWorkspaceFingerprint !== null &&
-          existingWorkspaceFingerprint !== "dirty" &&
-          previousManifest.fingerprint === existingWorkspaceFingerprint;
-        workspaceUpdate =
-          manifestDescribesDisk && isContentOnlyChange(change)
-            ? "content-only"
-            : "full";
+        // A known disk that already matches needs nothing written; one that
+        // differs only in the content snapshot needs only that; anything else
+        // — or a disk that could not be known — is written whole, and Vite
+        // restarted, as before.
+        workspaceUpdate = !diskIsKnown
+          ? "full"
+          : change.paths.length === 0
+            ? "none"
+            : isContentOnlyChange(change)
+              ? "content-only"
+              : "full";
 
         const workspaceMaterializeStartedAt = Date.now();
         if (workspaceUpdate === "content-only") {
@@ -585,7 +654,7 @@ export class CloudflareSandboxVitePreviewServer {
             if (!changedPaths.has(file.path)) continue;
             await measuredWriter.writeFile(file.path, file.content);
           }
-        } else {
+        } else if (workspaceUpdate === "full") {
           await materializeThemeSandboxWorkspace(
             measuredWriter,
             prepared.workspaceFiles,
@@ -593,33 +662,47 @@ export class CloudflareSandboxVitePreviewServer {
         }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
 
-        await recordFilesystemCall(
-          () =>
-            session!.writeFile(
-              THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
-              serializeWorkspaceManifest(
-                prepared.workspaceFingerprint,
-                nextDigests,
+        // Commit only if no other writer has marked the workspace since this
+        // start read the marker. Each `dirty` carries its own token, so a sync
+        // that began while this start was reading or writing is noticed here,
+        // and the commit is left to the start that reads the disk after it.
+        // (Checking and writing are two calls; a writer can still step in
+        // between them. Closing that needs a single owner for the workspace.)
+        const markerNow = await readWorkspaceMarker();
+        observation.workspace.committed =
+          markerNow === existingWorkspaceFingerprint;
+        if (observation.workspace.committed) {
+          await recordFilesystemCall(
+            () =>
+              session!.writeFile(
+                THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+                serializeWorkspaceManifest(
+                  prepared.workspaceFingerprint,
+                  nextDigests,
+                ),
               ),
-            ),
-          "write",
-        ).catch(() => {
-          addLog("Could not persist the Live Preview workspace manifest.");
-        });
+            "write",
+          ).catch(() => {
+            addLog("Could not persist the Live Preview workspace manifest.");
+          });
 
-        // Commit the marker last. A failed or partial write can therefore
-        // never make a later request trust an incomplete workspace. Failure
-        // to write this cache hint does not make the valid workspace unusable.
-        await recordFilesystemCall(
-          () =>
-            session!.writeFile(
-              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-              prepared.workspaceFingerprint,
-            ),
-          "write",
-        ).catch(() => {
-          addLog("Could not persist the Live Preview workspace fingerprint.");
-        });
+          // Commit the marker last. A failed or partial write can therefore
+          // never make a later request trust an incomplete workspace.
+          await recordFilesystemCall(
+            () =>
+              session!.writeFile(
+                THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+                prepared.workspaceFingerprint,
+              ),
+            "write",
+          ).catch(() => {
+            addLog("Could not persist the Live Preview workspace fingerprint.");
+          });
+        } else {
+          addLog(
+            "Another writer marked the Live Preview workspace; not committing.",
+          );
+        }
       }
       observation.workspace.update = workspaceUpdate;
       const workspaceMs = Date.now() - workspaceStartedAt;
@@ -892,7 +975,10 @@ export class CloudflareSandboxVitePreviewServer {
           ),
         });
         await session
-          .writeFile(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, "dirty")
+          .writeFile(
+            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            newDirtyWorkspaceMarker(),
+          )
           .catch(() => {});
       }
       return {
