@@ -23,6 +23,23 @@ export const THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH =
   ".morph-preview-content.json";
 
 /**
+ * A workspace marker that says "nothing about the disk is known".
+ *
+ * Written before an incremental sync's first write and by a start that fails
+ * closed. Each carries its own token, so a start that read one marker can tell,
+ * just before it commits, that another writer has marked the workspace since —
+ * and leave the commit to whoever reads the disk after that writer is done.
+ */
+export function newDirtyWorkspaceMarker(): string {
+  return `dirty:${crypto.randomUUID().slice(0, 8)}`;
+}
+
+/** Whether a marker says the workspace is untrusted (any writer's `dirty`). */
+export function isDirtyWorkspaceMarker(marker: string | null): boolean {
+  return marker === "dirty" || (marker?.startsWith("dirty:") ?? false);
+}
+
+/**
  * Whether a Theme file may be written into a container workspace.
  *
  * Shared, because two things write Theme files into a container now — a build

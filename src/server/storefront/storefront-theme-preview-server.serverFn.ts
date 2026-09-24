@@ -13,6 +13,7 @@ import {
 } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import {
   isWorkspaceGeneratedThemePath,
+  newDirtyWorkspaceMarker,
   refuseThemeWorkspacePath,
 } from "@/lib/storefront/compiler/theme-workspace-path";
 import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
@@ -490,12 +491,13 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           }
           // The marker describes the entire workspace, so invalidate it before
           // the first incremental write. If this request stops halfway, the
-          // next start performs a complete sync instead of trusting a partial
-          // HMR update as the prior committed plan.
+          // next start reads the disk back instead of trusting a partial HMR
+          // update as the prior committed plan. The marker's own token lets a
+          // start that is running meanwhile see that it was written.
           if (!workspaceFingerprintInvalidated) {
             await sandbox.writeFile(
               THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-              "dirty",
+              newDirtyWorkspaceMarker(),
             );
             workspaceFingerprintInvalidated = true;
           }
