@@ -31,6 +31,7 @@ import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-wor
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
+import { describeReleaseLegacyMedia } from "./legacy-media-warning";
 
 /** Inspector tab the browser last used, so SSR renders the same one. */
 function parseEditorPanelTab(cookieHeader: string | null | undefined) {
@@ -474,7 +475,17 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           { error: "RELEASE_DEPLOYMENT_BUSY" },
         );
       }
-      return held.value;
+      const published = held.value;
+      if (!published.success || !published.data?.releaseId) return published;
+      // Reported, not refused: the release is live either way, and the author
+      // needs to know which images visitors cannot see.
+      const legacyMediaWarning = await describeReleaseLegacyMedia({
+        storefrontId: data.storefrontId,
+        releaseId: published.data.releaseId,
+      });
+      return legacyMediaWarning
+        ? { ...published, data: { ...published.data, legacyMediaWarning } }
+        : published;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to publish theme";
