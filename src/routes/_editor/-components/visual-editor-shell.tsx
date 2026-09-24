@@ -280,6 +280,8 @@ import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
+import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
+import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
 
 /**
  * A template to load the editor against for a route with no document yet.
@@ -5412,22 +5414,56 @@ export function VisualEditorShell({
     schedulePreviewRemeasureRef.current();
   }, []);
 
+  // Library media in a live edit is posted with signed addresses, since the
+  // preview page cannot read the session-gated CMS URL the content stores.
+  const [previewMediaCache] = useState(() =>
+    createPreviewMediaCache({
+      sign: async (assetIds) => {
+        const result = await signThemePreviewMedia({ data: { assetIds } });
+        return result.success ? result.data : null;
+      },
+    }),
+  );
+  const previewPropsRevisionRef = useRef(new Map<string, number>());
   const syncPreviewSectionProps = useCallback(
     (sectionId: string, props?: PreviewSectionProps, enabled?: boolean) => {
-      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-        type: "morph:storefront-preview-update-section-props",
-        sectionId,
-        props,
-        enabled,
+      const post = (
+        resolvedProps: PreviewSectionProps | undefined,
+        nextEnabled: boolean | undefined,
+      ) => {
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-update-section-props",
+          sectionId,
+          props: resolvedProps,
+          enabled: nextEnabled,
+        });
+        // Anything that changes what the canvas renders has to re-measure,
+        // not just a file write. The theme's own `min-h-screen` resolves
+        // against the frame, so content that becomes shorter cannot report
+        // itself shorter — hiding a section or shortening a heading would
+        // otherwise leave the space it used to occupy behind.
+        schedulePreviewRemeasureRef.current();
+      };
+      const revisions = previewPropsRevisionRef.current;
+      const revision = (revisions.get(sectionId) ?? 0) + 1;
+      revisions.set(sectionId, revision);
+
+      const first = props
+        ? previewMediaCache.resolve(props)
+        : { content: props, missing: [] };
+      post(first.content, enabled);
+      if (!props || first.missing.length === 0) return;
+      // Posted again once the new assets are signed, unless a later edit to
+      // the same section has been posted meanwhile.
+      void previewMediaCache.ensure(first.missing).then(() => {
+        if (revisions.get(sectionId) !== revision) return;
+        const signed = previewMediaCache.resolve(props);
+        if (signed.missing.length < first.missing.length) {
+          post(signed.content, undefined);
+        }
       });
-      // Anything that changes what the canvas renders has to re-measure, not
-      // just a file write. The theme's own `min-h-screen` resolves against the
-      // frame, so content that becomes shorter cannot report itself shorter —
-      // hiding a section or shortening a heading would otherwise leave the
-      // space it used to occupy behind.
-      schedulePreviewRemeasureRef.current();
     },
-    [],
+    [previewMediaCache],
   );
 
   /**

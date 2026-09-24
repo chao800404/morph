@@ -22,6 +22,7 @@ import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-prev
 import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
 import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
+import { withSignedPreviewMedia } from "./preview-media-urls";
 import {
   logPreviewServerEvent,
   previewAddressDigest,
@@ -113,10 +114,14 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
-    const previewContent = await createThemePreviewContentSnapshot({
-      templates: editorContext.templates,
-      pages,
-    });
+    // Library media is readable only with a session the preview page lacks,
+    // so the snapshot carries signed addresses for it instead.
+    const previewContent = await withSignedPreviewMedia(
+      await createThemePreviewContentSnapshot({
+        templates: editorContext.templates,
+        pages,
+      }),
+    );
 
     const server = selection.server;
     const started = await server.start({
