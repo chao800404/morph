@@ -34,6 +34,7 @@ import {
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
 import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
+import { stalePreviewSyncPaths } from "@/lib/storefront/preview-sync-guard";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -386,6 +387,8 @@ const applyThemePreviewFilesInputSchema = themePreviewServerInputSchema.extend({
       z.object({
         path: z.string().min(1).max(1024),
         content: z.string().max(2_000_000),
+        /** The saved version this copy was edited from; `null` if never saved. */
+        baseVersion: z.number().int().positive().nullable(),
       }),
     )
     .min(1)
@@ -419,6 +422,27 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       if (refusal) {
         return fail(refusal, { error: "RESERVED_THEME_PATH" });
       }
+    }
+
+    // All or nothing. A sync written in part would leave the preview showing
+    // neither this tab's edit nor the newer save, and the tab would be told
+    // its edit had arrived.
+    const stalePaths = stalePreviewSyncPaths(
+      files,
+      await storefrontThemeFileDal.listSavedFiles(
+        storefrontId,
+        themeId,
+        files.map((file) => file.path),
+      ),
+    );
+    if (stalePaths.length > 0) {
+      return {
+        ...fail(
+          "Another tab has saved newer versions of these files; this tab's copy is out of date.",
+          { error: "PREVIEW_SOURCE_STALE" },
+        ),
+        stalePaths,
+      };
     }
 
     // The same two passes the workspace was laid out with. A file written
