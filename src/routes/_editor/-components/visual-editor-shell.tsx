@@ -943,6 +943,14 @@ export function VisualEditorShell({
         }),
       ]);
       toast.success(result.message);
+      // The release is live either way; this names the images visitors will
+      // see broken, so the author can fix them.
+      if (
+        "legacyMediaWarning" in result.data &&
+        result.data.legacyMediaWarning
+      ) {
+        toast.warning(result.data.legacyMediaWarning, { duration: 15_000 });
+      }
     },
     onError: () => toast.error("Failed to publish theme"),
   });

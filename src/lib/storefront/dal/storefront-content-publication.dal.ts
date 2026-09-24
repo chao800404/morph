@@ -530,6 +530,73 @@ export const storefrontContentPublicationDal = {
   },
 
   /**
+   * A publication's documents, each with the name an author knows it by: a
+   * route path for a route's own document, `/pages/<handle>` for a page, and
+   * the template's name otherwise.
+   */
+  async listPublishedDocumentsWithLabels(
+    publicationId: string,
+  ): Promise<{ label: string; document: unknown }[]> {
+    const db = await getDb();
+    const scope = and(
+      eq(storefrontContentPublicationItems.publicationId, publicationId),
+      isNull(storefrontContentPublicationItems.deletedAt),
+    );
+    const [templates, pages] = await Promise.all([
+      db
+        .select({
+          document: storefrontThemeTemplateRevisions.document,
+          name: storefrontThemeTemplates.name,
+          routePath: storefrontThemeTemplates.routePath,
+        })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontThemeTemplateRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontThemeTemplateRevisions.id,
+          ),
+        )
+        .innerJoin(
+          storefrontThemeTemplates,
+          eq(
+            storefrontThemeTemplateRevisions.templateId,
+            storefrontThemeTemplates.id,
+          ),
+        )
+        .where(scope),
+      db
+        .select({
+          document: storefrontPageRevisions.document,
+          handle: storefrontPages.handle,
+        })
+        .from(storefrontContentPublicationItems)
+        .innerJoin(
+          storefrontPageRevisions,
+          eq(
+            storefrontContentPublicationItems.revisionId,
+            storefrontPageRevisions.id,
+          ),
+        )
+        .innerJoin(
+          storefrontPages,
+          eq(storefrontPageRevisions.pageId, storefrontPages.id),
+        )
+        .where(scope),
+    ]);
+    return [
+      ...templates.map((row) => ({
+        label: row.routePath ?? row.name,
+        document: row.document as unknown,
+      })),
+      ...pages.map((row) => ({
+        label: `/pages/${row.handle}`,
+        document: row.document as unknown,
+      })),
+    ];
+  },
+
+  /**
    * Asset id to the storage key it had when this publication was made.
    *
    * The key is both the authorisation and the bytes: a visitor may read exactly
