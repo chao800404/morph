@@ -126,6 +126,11 @@ jobs:
       - name: Check the ship gate
         run: pnpm check:ship
 
+      # Generators run before every typecheck, build and test; writing an
+      # unchanged file there reloads a running dev server for nothing.
+      - name: Check generated files are only rewritten when they change
+        run: pnpm check:generated-writes
+
   editor-e2e-local-preview:
     name: Editor end-to-end (local preview transport)
     runs-on: ubuntu-latest

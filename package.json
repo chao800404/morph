@@ -51,6 +51,7 @@
     "check:sql-timestamps": "node scripts/check-sql-timestamps.mjs",
     "check:like-tokens": "node --test scripts/like-token-scan.test.mjs && node scripts/check-like-tokens.mjs",
     "check:ship": "node --test scripts/ship.test.mjs",
+    "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",
     "ship": "node scripts/ship.mjs"
   },

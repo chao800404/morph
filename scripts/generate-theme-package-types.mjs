@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import * as ts from "typescript";
+import { writeFileIfChanged } from "./write-if-changed.mjs";
 
 const root = process.cwd();
 const cmsConfigPath = path.join(root, "src/cms.config.ts");
@@ -713,10 +714,10 @@ ${serializedFiles}
 ];
 `;
 
-fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-fs.writeFileSync(outputPath, generatedSource);
-fs.mkdirSync(path.dirname(declarationsOutputPath), { recursive: true });
-fs.writeFileSync(declarationsOutputPath, generatedDeclarationsSource);
+const writtenOutputs = [
+  writeFileIfChanged(outputPath, generatedSource),
+  writeFileIfChanged(declarationsOutputPath, generatedDeclarationsSource),
+];
 
 const sortedRootDependencies = Object.fromEntries(
   Object.entries(configuredRootDependencies).sort(([left], [right]) =>
@@ -749,12 +750,17 @@ export const GENERATED_THEME_DEPENDENCY_VERSIONS = ${JSON.stringify(sortedThemeD
 // prettier-ignore
 export const GENERATED_SANDBOX_DEPENDENCY_VERSIONS = ${JSON.stringify(sortedRootDependencies, null, 2)} as const;
 `;
-fs.writeFileSync(sandboxDependenciesJsonPath, sandboxDependencySource);
-fs.writeFileSync(sandboxDependenciesModulePath, sandboxDependencyModuleSource);
-fs.writeFileSync(
-  path.join(root, "sandbox-toolchain-package.json"),
-  sandboxPackageSource,
+writtenOutputs.push(
+  writeFileIfChanged(sandboxDependenciesJsonPath, sandboxDependencySource),
+  writeFileIfChanged(
+    sandboxDependenciesModulePath,
+    sandboxDependencyModuleSource,
+  ),
+  writeFileIfChanged(
+    path.join(root, "sandbox-toolchain-package.json"),
+    sandboxPackageSource,
+  ),
 );
 console.log(
-  `Generated ${files.size} Monaco declaration files for ${entries.length} approved/installed packages (${Buffer.byteLength(generatedSource)} bytes) and synchronized ${Object.keys(sortedRootDependencies).length} sandbox package roots from cms.config.ts.`,
+  `Generated ${files.size} Monaco declaration files for ${entries.length} approved/installed packages (${Buffer.byteLength(generatedSource)} bytes) and synchronized ${Object.keys(sortedRootDependencies).length} sandbox package roots from cms.config.ts (${writtenOutputs.filter(Boolean).length} of ${writtenOutputs.length} files updated).`,
 );
