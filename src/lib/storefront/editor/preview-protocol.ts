@@ -345,8 +345,29 @@ export type PreviewSelectionMessage = {
   documentRect?: { top: number; height: number } | null;
 };
 
+/** A resource the preview page asked for and did not get. */
+export type PreviewResourceFailure = Readonly<{ path: string; status: number }>;
+
 export type PreviewToEditorMessage =
   | { type: "morph:storefront-preview-ready" }
+  | {
+      /**
+       * Why a preview page may never announce itself.
+       *
+       * Sent by a classic script that runs before either module graph, because
+       * a module that fails to load stops its whole graph — including the
+       * bridge that would otherwise say so — and the editor is left waiting
+       * out its timeout with nothing to show for it. Observation only.
+       */
+      type: "morph:storefront-preview-diagnostic";
+      kind: "script-failed" | "load-summary";
+      /** Resources that answered with an error status, as Resource Timing saw them. */
+      failures: readonly PreviewResourceFailure[];
+      /** Page scripts whose module graph failed to load. */
+      failedScripts: readonly string[];
+      /** Time since the page's first script ran. */
+      elapsedMs: number;
+    }
   | {
       type: "morph:storefront-preview-pong";
       heartbeatId: number;
@@ -933,6 +954,61 @@ export function parseEditorToPreviewMessage(
   }
 }
 
+const MAX_DIAGNOSTIC_ENTRIES = 20;
+const MAX_DIAGNOSTIC_PATH_LENGTH = 300;
+
+function isDiagnosticPath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_DIAGNOSTIC_PATH_LENGTH
+  );
+}
+
+/**
+ * Bounded like everything else from the frame: it runs Theme JavaScript, so
+ * a diagnostic is a claim to log, never something to act on.
+ */
+function parsePreviewDiagnostic(
+  value: Record<string, unknown>,
+): PreviewToEditorMessage | null {
+  if (value.kind !== "script-failed" && value.kind !== "load-summary") {
+    return null;
+  }
+  if (
+    !Array.isArray(value.failures) ||
+    value.failures.length > MAX_DIAGNOSTIC_ENTRIES ||
+    !Array.isArray(value.failedScripts) ||
+    value.failedScripts.length > MAX_DIAGNOSTIC_ENTRIES ||
+    typeof value.elapsedMs !== "number" ||
+    !Number.isFinite(value.elapsedMs) ||
+    value.elapsedMs < 0
+  ) {
+    return null;
+  }
+  const failures: PreviewResourceFailure[] = [];
+  for (const failure of value.failures) {
+    if (
+      !isRecord(failure) ||
+      !isDiagnosticPath(failure.path) ||
+      !Number.isInteger(failure.status) ||
+      (failure.status as number) < 100 ||
+      (failure.status as number) > 599
+    ) {
+      return null;
+    }
+    failures.push({ path: failure.path, status: failure.status as number });
+  }
+  if (!value.failedScripts.every(isDiagnosticPath)) return null;
+  return {
+    type: "morph:storefront-preview-diagnostic",
+    kind: value.kind,
+    failures,
+    failedScripts: value.failedScripts as string[],
+    elapsedMs: Math.round(value.elapsedMs),
+  };
+}
+
 export function parsePreviewToEditorMessage(
   value: unknown,
 ): PreviewToEditorMessage | null {
@@ -960,6 +1036,8 @@ export function parsePreviewToEditorMessage(
             measurementRevision: value.measurementRevision,
           }
         : null;
+    case "morph:storefront-preview-diagnostic":
+      return parsePreviewDiagnostic(value);
     case "morph:storefront-preview-structure": {
       const nodes = parsePreviewEditableNodes(value.nodes);
       if (!nodes) return null;
