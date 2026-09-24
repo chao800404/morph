@@ -1,6 +1,29 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorMediaField } from "./editor-media-field";
+
+const getMediaAsset = vi.hoisted(() => vi.fn());
+vi.mock("@/server/asset/get-media-asset.serverFn", () => ({ getMediaAsset }));
+
+beforeEach(() => {
+  getMediaAsset.mockReset();
+  getMediaAsset.mockResolvedValue({
+    success: true,
+    message: "",
+    data: { status: "missing" },
+  });
+});
+
+function renderField(ui: ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
+}
 
 vi.mock("@/components/asset/asset-library-picker", () => ({
   AssetLibraryPicker: ({
@@ -29,7 +52,7 @@ vi.mock("@/components/asset/asset-library-picker", () => ({
 
 describe("EditorMediaField", () => {
   it("shows an image placeholder when the field is empty", () => {
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -43,7 +66,7 @@ describe("EditorMediaField", () => {
 
   it("stores an external URL as a typed media value", () => {
     const onChange = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -67,7 +90,7 @@ describe("EditorMediaField", () => {
 
   it("stores the Asset identity and delivery URL", () => {
     const onChange = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -104,7 +127,7 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
   // still could not be cleared.
   it("clears an asset-only field with the canonical empty value", () => {
     const onChange = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -129,7 +152,7 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
 
   it("still clears to an external empty value when external is allowed", () => {
     const onChange = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -153,7 +176,7 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
   // The field looked inert and was not: the picker never received `disabled`.
   it("does not emit a change from a disabled asset picker", () => {
     const onChange = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -174,7 +197,7 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
   it("keeps alt text in the same image field card", () => {
     const onAltChange = vi.fn();
     const onAltPreview = vi.fn();
-    render(
+    renderField(
       <EditorMediaField
         label="Hero image"
         mediaType="image"
@@ -192,5 +215,97 @@ describe("EditorMediaField failure states (MEDIA-03)", () => {
 
     expect(onAltPreview).toHaveBeenLastCalledWith("Updated hero");
     expect(onAltChange).toHaveBeenLastCalledWith("Updated hero");
+  });
+});
+
+describe("EditorMediaField asset identity", () => {
+  const value = {
+    source: "asset",
+    mediaType: "image",
+    assetId: "asset-1",
+    url: "/assets/asset-1.png",
+    name: "Old name",
+  };
+
+  it("names the asset by where the library keeps it now", async () => {
+    getMediaAsset.mockResolvedValue({
+      success: true,
+      message: "",
+      data: {
+        status: "found",
+        asset: {
+          id: "asset-1",
+          type: "image",
+          name: "hero.png",
+          folders: ["Marketing", "Home"],
+          mimeType: "image/png",
+          size: 430_080,
+          sizeFormatted: "420 KB",
+          width: 1920,
+          height: 1080,
+        },
+      },
+    });
+    renderField(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value={value}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Marketing / Home / hero.png")).toBeTruthy();
+    expect(screen.getByText("1920×1080 · 420 KB · PNG")).toBeTruthy();
+    expect(screen.queryByText("Old name")).toBeNull();
+    expect(getMediaAsset).toHaveBeenCalledWith({
+      data: { assetId: "asset-1" },
+    });
+  });
+
+  it("says so when the asset was deleted from the library", async () => {
+    renderField(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value={value}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "“Old name” was deleted from the Asset library",
+    );
+  });
+
+  it("recognises a library image stored as a bare delivery URL", async () => {
+    renderField(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value="/assets/43a43262-4ff6-46ee-a52b-02cdbafbabc6.png"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "This asset was deleted from the Asset library",
+    );
+    expect(getMediaAsset).toHaveBeenCalledWith({
+      data: { assetId: "43a43262-4ff6-46ee-a52b-02cdbafbabc6" },
+    });
+  });
+
+  it("does not look anything up for an external image", () => {
+    renderField(
+      <EditorMediaField
+        label="Hero image"
+        mediaType="image"
+        value="https://cdn.example.com/a.png"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(getMediaAsset).not.toHaveBeenCalled();
   });
 });
