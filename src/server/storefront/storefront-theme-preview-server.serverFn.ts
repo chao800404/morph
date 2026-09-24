@@ -34,7 +34,7 @@ import {
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
 import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
-import { stalePreviewSyncPaths } from "@/lib/storefront/preview-sync-guard";
+import { syncPreviewFiles } from "@/lib/storefront/service/preview-file-sync";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -424,172 +424,165 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       }
     }
 
-    // All or nothing. A sync written in part would leave the preview showing
-    // neither this tab's edit nor the newer save, and the tab would be told
-    // its edit had arrived.
-    const stalePaths = stalePreviewSyncPaths(
-      files,
-      await storefrontThemeFileDal.listSavedFiles(
-        storefrontId,
-        themeId,
-        files.map((file) => file.path),
-      ),
-    );
-    if (stalePaths.length > 0) {
-      return {
-        ...fail(
-          "Another tab has saved newer versions of these files; this tab's copy is out of date.",
-          { error: "PREVIEW_SOURCE_STALE" },
-        ),
-        stalePaths,
-      };
-    }
-
-    // The same two passes the workspace was laid out with. A file written
-    // without them would lose its editor identity the moment it was saved,
-    // and the preview would quietly stop being selectable.
-    const hoisted = hoistColocatedContentFieldsForPreview(
-      injectPreviewBindings(files).files,
-    ).files;
-
     const previewId = await deriveThemePreviewSessionId({
       storefrontId,
       themeId,
       userId: context.user.id,
     });
-
-    const changed: string[] = [];
-    const unchanged: string[] = [];
-    const skipped: string[] = [];
-
-    // Left as the transport generated it. Reported separately from "unchanged",
-    // because the two are different facts: one says the workspace already holds
-    // what the editor sent, the other says the editor never owned that file
-    // here. Decided once, for both transports, so a generated path cannot be
-    // skipped on one path and written on the other.
-    const writable: { path: string; content: string }[] = [];
-    for (const file of hoisted) {
-      if (isWorkspaceGeneratedThemePath(file.path)) {
-        skipped.push(file.path);
-        continue;
-      }
-      writable.push({ path: file.path, content: String(file.content) });
-    }
-
     const selection = createServerThemePreviewServer(
       env as unknown as Record<string, unknown>,
     );
 
-    try {
+    // How the files reach the preview; everything before it — the check
+    // against what is saved and the preview passes — is `syncPreviewFiles`.
+    const write = async (
+      writable: readonly { path: string; content: string }[],
+    ): Promise<{ changed: string[]; unchanged: string[] }> => {
       if (selection.enabled && selection.applyFiles) {
         // A sidecar's filesystem is in another process. It applies the same
         // "only write what differs" rule on its side, because there it is what
         // decides whether Vite rebuilds.
-        const applied = await selection.applyFiles({ previewId, files: writable });
-        changed.push(...applied.changed);
-        unchanged.push(...applied.unchanged);
-      } else {
-        const { getSandbox } = await import("@cloudflare/sandbox");
-        const sandbox = getSandbox(
-          (env as unknown as PreviewEnv).Sandbox as never,
+        const applied = await selection.applyFiles({
           previewId,
-        ) as unknown as {
-          writeFile(path: string, content: string): Promise<void>;
-          readFile?(
-            path: string,
-            options?: { encoding?: string },
-          ): Promise<{ content?: unknown } | string>;
-          getExposedPorts?(
-            hostname: string,
-          ): Promise<Array<{ port: number; status: string; url: string }>>;
-          exposePort?(
-            port: number,
-            options: { hostname: string; name?: string },
-          ): Promise<unknown>;
-        };
-        let workspaceFingerprintInvalidated = false;
-        let reexposedAddress: string | null = null;
-        for (const file of writable) {
-          const target = `/workspace/${file.path}`;
-          // Written only when it would differ. Vite rebuilds on every write,
-          // even one that changes nothing, and a rebuild the author did not ask
-          // for costs them the state they were looking at.
-          if (await fileMatches(sandbox, target, file.content)) {
-            unchanged.push(file.path);
-            continue;
-          }
-          // The marker describes the entire workspace, so invalidate it before
-          // the first incremental write. If this request stops halfway, the
-          // next start reads the disk back instead of trusting a partial HMR
-          // update as the prior committed plan. The marker's own token lets a
-          // start that is running meanwhile see that it was written.
-          if (!workspaceFingerprintInvalidated) {
-            await sandbox.writeFile(
-              THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-              newDirtyWorkspaceMarker(),
-            );
-            workspaceFingerprintInvalidated = true;
-          }
-          await sandbox.writeFile(target, file.content);
-          changed.push(file.path);
-        }
-
-        // Re-exposed through the same selection that chose the transport, so
-        // the host a preview is reached on is decided in one place rather than
-        // re-derived here from a binding.
-        if (
-          selection.enabled &&
-          selection.kind === "cloudflare-sandbox" &&
-          typeof sandbox.exposePort === "function"
-        ) {
-          const exposed =
-            typeof sandbox.getExposedPorts === "function"
-              ? await sandbox
-                  .getExposedPorts(selection.previewHostname)
-                  .catch(() => [])
-              : [];
-          const isPortActive = exposed.some(
-            (entry) =>
-              entry.port === THEME_PREVIEW_SERVER_PORT &&
-              entry.status === "active",
-          );
-          if (!isPortActive) {
-            const reexposed = await sandbox.exposePort(
-              THEME_PREVIEW_SERVER_PORT,
-              {
-                hostname: selection.previewHostname,
-                name: "live-preview",
-              },
-            );
-            reexposedAddress =
-              previewAddressDigest(
-                (reexposed as { url?: string } | undefined)?.url,
-              ) ?? "unknown";
-          }
-        }
-
-        // An incremental write leaves the marker `dirty`, so the next start
-        // from any tab rewrites the workspace and restarts Vite; a re-expose
-        // replaces the address every tab is framing. Both reach beyond this
-        // tab, so both are recorded.
-        logPreviewServerEvent("sync", {
-          previewId,
-          changed: changed.length,
-          unchanged: unchanged.length,
-          markedWorkspaceDirty: workspaceFingerprintInvalidated,
-          reexposedAddress,
+          files: writable,
         });
+        return {
+          changed: [...applied.changed],
+          unchanged: [...applied.unchanged],
+        };
       }
+
+      const changed: string[] = [];
+      const unchanged: string[] = [];
+      const { getSandbox } = await import("@cloudflare/sandbox");
+      const sandbox = getSandbox(
+        (env as unknown as PreviewEnv).Sandbox as never,
+        previewId,
+      ) as unknown as {
+        writeFile(path: string, content: string): Promise<void>;
+        readFile?(
+          path: string,
+          options?: { encoding?: string },
+        ): Promise<{ content?: unknown } | string>;
+        getExposedPorts?(
+          hostname: string,
+        ): Promise<Array<{ port: number; status: string; url: string }>>;
+        exposePort?(
+          port: number,
+          options: { hostname: string; name?: string },
+        ): Promise<unknown>;
+      };
+      let workspaceFingerprintInvalidated = false;
+      let reexposedAddress: string | null = null;
+      for (const file of writable) {
+        const target = `/workspace/${file.path}`;
+        // Written only when it would differ. Vite rebuilds on every write,
+        // even one that changes nothing, and a rebuild the author did not ask
+        // for costs them the state they were looking at.
+        if (await fileMatches(sandbox, target, file.content)) {
+          unchanged.push(file.path);
+          continue;
+        }
+        // The marker describes the entire workspace, so invalidate it before
+        // the first incremental write. If this request stops halfway, the
+        // next start reads the disk back instead of trusting a partial HMR
+        // update as the prior committed plan. The marker's own token lets a
+        // start that is running meanwhile see that it was written.
+        if (!workspaceFingerprintInvalidated) {
+          await sandbox.writeFile(
+            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            newDirtyWorkspaceMarker(),
+          );
+          workspaceFingerprintInvalidated = true;
+        }
+        await sandbox.writeFile(target, file.content);
+        changed.push(file.path);
+      }
+
+      // Re-exposed through the same selection that chose the transport, so
+      // the host a preview is reached on is decided in one place rather than
+      // re-derived here from a binding.
+      if (
+        selection.enabled &&
+        selection.kind === "cloudflare-sandbox" &&
+        typeof sandbox.exposePort === "function"
+      ) {
+        const exposed =
+          typeof sandbox.getExposedPorts === "function"
+            ? await sandbox
+                .getExposedPorts(selection.previewHostname)
+                .catch(() => [])
+            : [];
+        const isPortActive = exposed.some(
+          (entry) =>
+            entry.port === THEME_PREVIEW_SERVER_PORT &&
+            entry.status === "active",
+        );
+        if (!isPortActive) {
+          const reexposed = await sandbox.exposePort(
+            THEME_PREVIEW_SERVER_PORT,
+            {
+              hostname: selection.previewHostname,
+              name: "live-preview",
+            },
+          );
+          reexposedAddress =
+            previewAddressDigest(
+              (reexposed as { url?: string } | undefined)?.url,
+            ) ?? "unknown";
+        }
+      }
+
+      // An incremental write leaves the marker `dirty`, so the next start
+      // from any tab rewrites the workspace and restarts Vite; a re-expose
+      // replaces the address every tab is framing. Both reach beyond this
+      // tab, so both are recorded.
+      logPreviewServerEvent("sync", {
+        previewId,
+        changed: changed.length,
+        unchanged: unchanged.length,
+        markedWorkspaceDirty: workspaceFingerprintInvalidated,
+        reexposedAddress,
+      });
+      return { changed, unchanged };
+    };
+
+    let result: Awaited<ReturnType<typeof syncPreviewFiles>>;
+    try {
+      result = await syncPreviewFiles({
+        files,
+        readSaved: (paths) =>
+          storefrontThemeFileDal.listSavedFiles(storefrontId, themeId, paths),
+        // The same two passes the workspace was laid out with. A file written
+        // without them would lose its editor identity the moment it was saved,
+        // and the preview would quietly stop being selectable.
+        prepare: (prepared) =>
+          hoistColocatedContentFieldsForPreview(
+            injectPreviewBindings([...prepared]).files,
+          ).files,
+        isGenerated: isWorkspaceGeneratedThemePath,
+        write,
+      });
     } catch (error) {
       return fail("Could not update the Live Preview server.", {
         error: error instanceof Error ? error.message : "WRITE_FAILED",
       });
     }
 
+    if (!result.ok) {
+      return {
+        ...fail(
+          "Another tab has saved newer versions of these files; this tab's copy is out of date.",
+          { error: "PREVIEW_SOURCE_STALE" },
+        ),
+        stalePaths: result.stalePaths,
+      };
+    }
+
     return ok("Live Preview files written", {
       previewId,
-      changed,
-      unchanged,
-      skipped,
+      changed: result.changed,
+      unchanged: result.unchanged,
+      skipped: result.skipped,
     });
   });
