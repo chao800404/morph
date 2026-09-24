@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { assetIdFromDeliveryUrl } from "@/lib/asset/media-asset-identity";
 import {
   normalizeThemeMediaValue,
   type ThemeMediaKind,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/storefront/theme-media";
 import { Image as ImageIcon, Video } from "lucide-react";
 import { useState } from "react";
+import { EditorMediaAssetIdentity } from "./editor-media-asset-identity";
 import { EditorMediaPickerPopover } from "./editor-media-picker-popover";
 import { inspectorControlSurface } from "./style-inspector/inspector-control-surface";
 
@@ -39,6 +41,10 @@ export function EditorMediaField({
   onChange: (value: ThemeMediaValue) => void;
 }) {
   const normalized = normalizeThemeMediaValue(value, mediaType);
+  const libraryAssetId =
+    normalized.source === "asset"
+      ? normalized.assetId
+      : assetIdFromDeliveryUrl(normalized.url);
   const initialSource =
     normalized.source === "asset" && allowAsset
       ? "asset"
@@ -189,6 +195,15 @@ export function EditorMediaField({
           </Button>
         ) : null}
       </div>
+
+      {libraryAssetId ? (
+        <EditorMediaAssetIdentity
+          assetId={libraryAssetId}
+          storedName={
+            normalized.source === "asset" ? normalized.name : undefined
+          }
+        />
+      ) : null}
 
       {source === "external" && allowExternal ? (
         <div className="space-y-1">
