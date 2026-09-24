@@ -164,6 +164,17 @@ followed by a JSON object:
   sandbox id as `previewId`; line the two up by time.
 - The browser console adds `[preview-lifecycle]` lines for each Live Preview
   phase change, including automatic reconnects and why they happened.
+- `[preview-observe] proxy` lines record every preview response with an error
+  status (and any slower than five seconds) as it left the Worker, with the
+  SDK's error code and, for a 410, the container's state at that moment.
+- The browser console adds `[preview-frame]` lines from the preview page
+  itself: which of its module scripts failed to load and which requests were
+  refused. A refusal there with no matching `proxy` line never reached the
+  Worker — the browser answered it from its cache.
+- `410 STALE_PREVIEW_URL` is the SDK's answer while the runtime behind a still
+  valid address has not exposed the port again, for example just after the
+  container restarted. It is temporary, so the Worker marks every preview
+  error response `Cache-Control: no-store`.
 - Preview addresses are credentials and are never logged; `address.digest`
   only tells two of them apart.
 

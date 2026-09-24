@@ -129,9 +129,41 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
  */
 async function proxyPreviewRequest(request: Request): Promise<Response | null> {
   try {
-    const { proxyToSandbox } = await import("@cloudflare/sandbox");
-    const { env } = await import("cloudflare:workers");
-    return await proxyToSandbox(request, env as never);
+    const { proxyToSandbox, getSandbox } = await import("@cloudflare/sandbox");
+    const { env, waitUntil } = await import("cloudflare:workers");
+    const startedAt = Date.now();
+    const response = await proxyToSandbox(request, env as never);
+    if (response) {
+      const durationMs = Date.now() - startedAt;
+      const { observePreviewProxyResponse, previewResponseObservation } =
+        await import("@/lib/storefront/service/preview-proxy-observation");
+      // Recorded after the response is on its way; the page never waits on it.
+      if (previewResponseObservation(response.status, durationMs)) {
+        waitUntil(
+          observePreviewProxyResponse({
+            request,
+            responseForBody: response.status >= 400 ? response.clone() : null,
+            status: response.status,
+            durationMs,
+            readContainerState: async (sandboxId) => {
+              const sandbox = getSandbox(
+                (env as unknown as { Sandbox: never }).Sandbox,
+                sandboxId,
+                { normalizeId: true },
+              ) as unknown as { getState?: () => Promise<{ status?: string }> };
+              const state = await sandbox.getState?.();
+              return state?.status ?? null;
+            },
+          }).catch(() => {}),
+        );
+      }
+      // A refusal is about this moment; a browser that stores it stops asking
+      // and the preview never loads there again.
+      const { uncacheablePreviewError } =
+        await import("@/lib/storefront/service/preview-proxy-response");
+      return uncacheablePreviewError(response);
+    }
+    return response;
   } catch {
     return null;
   }

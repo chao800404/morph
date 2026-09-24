@@ -55,10 +55,26 @@ const prepare = async (mode: "build" | "preview-server") => {
     result,
     card: written.get("/workspace/src/components/Card.tsx") ?? "",
     viteConfig: written.get("/workspace/vite.config.ts") ?? "",
+    indexHtml: written.get("/workspace/index.html") ?? "",
   };
 };
 
 describe("laying out the workspace a Theme is served from", () => {
+  it("runs the preview's diagnostic script before either module graph", async () => {
+    const { indexHtml } = await prepare("preview-server");
+    const diagnostic = indexHtml.indexOf("morph:storefront-preview-diagnostic");
+    expect(diagnostic).toBeGreaterThan(-1);
+    expect(diagnostic).toBeLessThan(indexHtml.indexOf('src="/__entry.tsx"'));
+    expect(diagnostic).toBeLessThan(
+      indexHtml.indexOf('src="/src/morph/preview-bridge.ts"'),
+    );
+  });
+
+  it("leaves the diagnostic script out of a build", async () => {
+    const { indexHtml } = await prepare("build");
+    expect(indexHtml).not.toContain("morph:storefront-preview-diagnostic");
+  });
+
   it("removes regular files left by an older workspace plan", async () => {
     const deleted: string[] = [];
     const written: string[] = [];

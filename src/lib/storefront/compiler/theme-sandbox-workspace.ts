@@ -1,3 +1,4 @@
+import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
@@ -431,7 +432,11 @@ export function planThemeSandboxWorkspace({
   <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Storefront Theme</title>
+<title>Storefront Theme</title>${
+      mode === "preview-server"
+        ? `\n<script>${themePreviewDiagnosticScriptSource()}</script>`
+        : ""
+    }
   </head>
   <body>
 <div id="root"${mode === "preview-server" ? ' data-storefront-preview-root="true"' : ""}></div>

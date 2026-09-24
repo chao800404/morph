@@ -4379,6 +4379,30 @@ export function VisualEditorShell({
     return () => window.removeEventListener("message", handlePreviewMessage);
   }, [parseLivePreviewMessage, previewKey, requestPreviewSize]);
 
+  // What the frame reports about its own loading, before any bridge exists to
+  // report it — which module scripts failed and which requests were refused.
+  // Logged only: the lifecycle's timeout still decides when to reconnect.
+  useEffect(() => {
+    if (!previewKey) return;
+    const handlePreviewDiagnostic = (event: MessageEvent<unknown>) => {
+      const message = parseLivePreviewMessage(event);
+      if (message?.type !== "morph:storefront-preview-diagnostic") return;
+      const failures = message.failures
+        .map((failure) => `${failure.status} ${failure.path}`)
+        .join(", ");
+      console.warn(
+        `[preview-frame] ${message.kind} after ${message.elapsedMs}ms` +
+          (message.failedScripts.length
+            ? ` | failed scripts: ${message.failedScripts.join(", ")}`
+            : "") +
+          (failures ? ` | failed requests: ${failures}` : ""),
+      );
+    };
+    window.addEventListener("message", handlePreviewDiagnostic);
+    return () =>
+      window.removeEventListener("message", handlePreviewDiagnostic);
+  }, [parseLivePreviewMessage, previewKey]);
+
   useEffect(() => {
     if (!previewKey) return;
 
