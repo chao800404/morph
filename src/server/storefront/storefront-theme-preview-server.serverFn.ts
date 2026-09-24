@@ -25,6 +25,13 @@ import {
   logPreviewServerEvent,
   previewAddressDigest,
 } from "@/lib/storefront/compiler/preview-server-observation";
+import {
+  classifyPreviewAddressProbe,
+  PREVIEW_ADDRESS_PROBE_PATH,
+  previewAddressBelongsTo,
+  type PreviewAddressState,
+} from "@/lib/storefront/service/preview-address-probe";
+import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -251,6 +258,83 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       previewId: previewId as string | null,
       serving,
     });
+  });
+
+/**
+ * Whether the address a loading preview frame uses still answers.
+ *
+ * Asked while a frame is loading — early, and again when the frame reports a
+ * refused request — so an address left stale by a container restart is
+ * noticed in seconds rather than at the load timeout. The answer comes from
+ * one request sent through the same Sandbox proxy the frame's requests use,
+ * so it covers the page itself as well as its modules. It is an answer for
+ * the editor to act on, never an action: nothing here restarts anything.
+ */
+export const probeThemePreviewAddress = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(touchThemePreviewServerInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId, previewOrigin } = input.data;
+
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
+    const answer = (state: PreviewAddressState, status: number | null) =>
+      ok("Live Preview address checked", { state, status });
+    if (!selection.enabled) return answer("unknown", null);
+
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+
+    // The local sidecar has no preview proxy and no refusal to observe; its
+    // own liveness answer is the whole of what can be asked.
+    if (selection.kind !== "cloudflare-sandbox") {
+      const serving = await selection.server.isServing({
+        previewId,
+        previewHostname: selection.previewHostname,
+        expectedOrigin: previewOrigin,
+      });
+      return answer(serving ? "serving" : "stale", null);
+    }
+
+    const address = previewAddressBelongsTo({
+      previewOrigin,
+      previewId,
+      previewHostname: selection.previewHostname,
+      port: THEME_PREVIEW_SERVER_PORT,
+    });
+    if (!address) return answer("unknown", null);
+
+    try {
+      const { proxyToSandbox } = await import("@cloudflare/sandbox");
+      const response = await proxyToSandbox(
+        new Request(new URL(PREVIEW_ADDRESS_PROBE_PATH, address), {
+          headers: { Accept: "text/html" },
+        }),
+        env as never,
+      );
+      if (!response) return answer("unknown", null);
+      const code =
+        response.status >= 400 ? await readPreviewErrorCode(response) : null;
+      if (response.status < 400) await response.body?.cancel();
+      const state = classifyPreviewAddressProbe(response.status, code);
+      logPreviewServerEvent("probe", {
+        previewId,
+        framedAddress: previewAddressDigest(previewOrigin),
+        status: response.status,
+        code,
+        state,
+      });
+      return answer(state, response.status);
+    } catch {
+      return answer("unknown", null);
+    }
   });
 
 /**

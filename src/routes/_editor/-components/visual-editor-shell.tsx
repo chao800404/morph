@@ -163,8 +163,13 @@ import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  startPreviewStaleProbe,
+  type PreviewStaleProbe,
+} from "@/lib/storefront/editor/preview-stale-probe";
+import {
   applyThemePreviewFiles,
   touchThemePreviewServer,
+  probeThemePreviewAddress,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
@@ -529,6 +534,8 @@ const PREVIEW_LIVENESS_FAILURE_MESSAGE =
 const PREVIEW_FRAME_LOAD_TIMEOUT_MS = 45_000;
 const PREVIEW_UNREACHABLE_FAILURE_MESSAGE =
   "Live Preview never finished loading after one automatic reconnect. Retry Preview to reconnect.";
+const PREVIEW_ADDRESS_STALE_MESSAGE =
+  "Live Preview's address stopped answering after one automatic reconnect. Retry Preview to reconnect.";
 const PREVIEW_SOURCE_TIMEOUT_MS = 15_000;
 const PREVIEW_SOURCE_FAILURE_MESSAGE =
   "Live Preview did not confirm the current Theme source after one automatic reconnect. Retry Preview.";
@@ -628,6 +635,8 @@ export function VisualEditorShell({
     reduceLivePreviewLifecycle,
     initialLivePreviewLifecycleState,
   );
+  // Asks the server whether the loading frame's address still answers.
+  const previewStaleProbeRef = useRef<PreviewStaleProbe | null>(null);
   // Each phase change, with why, so a slow or failed load reads as a sequence
   // — waited for the frame, gave up, reconnected — rather than one spinner.
   // Lined up with `[preview-server]` and the server's `[preview-observe]`
@@ -2763,6 +2772,54 @@ export function VisualEditorShell({
     previewLifecycle.phase,
   ]);
 
+  // ...and run it for as long as a frame is on its way to ready: while it
+  // loads, and while it confirms the current source — a frame whose bridge
+  // came up can still be stranded there by a restart. One probe spans both
+  // phases, so reaching the second does not restart its clock. The timeouts
+  // above stay the backstop. Only a server-confirmed "stale" acts, through
+  // the same bounded recovery as every other failure.
+  const previewProbeKey =
+    previewLifecycle.key &&
+    (previewLifecycle.phase === "loading-frame" ||
+      previewLifecycle.phase === "syncing-source")
+      ? previewLifecycle.key
+      : null;
+  useEffect(() => {
+    if (!previewProbeKey) return;
+    const key = previewProbeKey;
+    const probe = startPreviewStaleProbe({
+      probe: async () => {
+        const previewOrigin = previewSourceOriginRef.current;
+        if (!previewOrigin) return "unknown";
+        const result = await probeThemePreviewAddress({
+          data: {
+            storefrontId: context.storefront.id,
+            themeId: context.theme.id,
+            previewOrigin,
+          },
+        });
+        const answer =
+          result?.success === true ? result.data.state : "unknown";
+        console.info(`[preview-probe] ${answer}`);
+        return answer;
+      },
+      onStale: () =>
+        dispatchPreviewLifecycle({
+          type: "automatic-recovery",
+          key,
+          message: PREVIEW_ADDRESS_STALE_MESSAGE,
+          at: Date.now(),
+        }),
+    });
+    previewStaleProbeRef.current = probe;
+    return () => {
+      probe.stop();
+      if (previewStaleProbeRef.current === probe) {
+        previewStaleProbeRef.current = null;
+      }
+    };
+  }, [context.storefront.id, context.theme.id, previewProbeKey]);
+
   useEffect(() => {
     // Only while the author actually has a preview to keep. A failed or
     // starting one has nothing to renew, and renewing for an editor nobody is
@@ -4381,7 +4438,10 @@ export function VisualEditorShell({
 
   // What the frame reports about its own loading, before any bridge exists to
   // report it — which module scripts failed and which requests were refused.
-  // Logged only: the lifecycle's timeout still decides when to reconnect.
+  // Logged, and taken as a reason to ask the server now rather than at the
+  // next scheduled check. Never acted on by itself: the frame runs Theme
+  // JavaScript, so this message can be forged, and a failure it reports can
+  // be the Theme's own.
   useEffect(() => {
     if (!previewKey) return;
     const handlePreviewDiagnostic = (event: MessageEvent<unknown>) => {
@@ -4397,6 +4457,7 @@ export function VisualEditorShell({
             : "") +
           (failures ? ` | failed requests: ${failures}` : ""),
       );
+      previewStaleProbeRef.current?.hint();
     };
     window.addEventListener("message", handlePreviewDiagnostic);
     return () =>
