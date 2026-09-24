@@ -34,7 +34,14 @@ import {
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
 import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
-import { syncPreviewFiles } from "@/lib/storefront/service/preview-file-sync";
+import {
+  syncPreviewFiles,
+  type FencedPreviewFileWrite,
+} from "@/lib/storefront/service/preview-file-sync";
+import {
+  runFencedWriteInSandbox,
+  type FenceSandbox,
+} from "@/lib/storefront/compiler/preview-write-fence-sandbox";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -131,6 +138,9 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       entry,
       previewHostname: selection.previewHostname,
       previewContent,
+      fileVersions: Object.fromEntries(
+        files.map((file) => [file.path, file.version]),
+      ),
       env: env as unknown as Record<string, unknown>,
     });
     if (!started.ok) {
@@ -344,43 +354,6 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
     }
   });
 
-/**
- * Whether the container already holds exactly this content.
- *
- * Read before writing, so a save that changes nothing is not turned into a
- * rebuild. It also lets the editor tell the difference between "the preview
- * has not caught up yet" and "the preview was already showing this", which is
- * the difference between waiting and being finished.
- *
- * Unreadable means unknown, and unknown is treated as different: writing a
- * file that was already correct is wasteful, and skipping one that was not
- * would leave the author looking at the wrong page.
- */
-async function fileMatches(
-  sandbox: {
-    readFile?(
-      path: string,
-      options?: { encoding?: string },
-    ): Promise<{ content?: unknown } | string>;
-  },
-  path: string,
-  content: string,
-): Promise<boolean> {
-  if (!sandbox.readFile) return false;
-  try {
-    const result = await sandbox.readFile(path, { encoding: "utf-8" });
-    const existing =
-      typeof result === "string"
-        ? result
-        : typeof result?.content === "string"
-          ? result.content
-          : null;
-    return existing === content;
-  } catch {
-    return false;
-  }
-}
-
 const applyThemePreviewFilesInputSchema = themePreviewServerInputSchema.extend({
   files: z
     .array(
@@ -436,12 +409,12 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     // How the files reach the preview; everything before it — the check
     // against what is saved and the preview passes — is `syncPreviewFiles`.
     const write = async (
-      writable: readonly { path: string; content: string }[],
-    ): Promise<{ changed: string[]; unchanged: string[] }> => {
+      writable: readonly FencedPreviewFileWrite[],
+    ): Promise<{ changed: string[]; unchanged: string[]; refused: string[] }> => {
       if (selection.enabled && selection.applyFiles) {
         // A sidecar's filesystem is in another process. It applies the same
-        // "only write what differs" rule on its side, because there it is what
-        // decides whether Vite rebuilds.
+        // fence and "only write what differs" rule on its side, because there
+        // it is what decides whether Vite rebuilds.
         const applied = await selection.applyFiles({
           previewId,
           files: writable,
@@ -449,21 +422,15 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         return {
           changed: [...applied.changed],
           unchanged: [...applied.unchanged],
+          refused: [...(applied.refused ?? [])],
         };
       }
 
-      const changed: string[] = [];
-      const unchanged: string[] = [];
       const { getSandbox } = await import("@cloudflare/sandbox");
       const sandbox = getSandbox(
         (env as unknown as PreviewEnv).Sandbox as never,
         previewId,
-      ) as unknown as {
-        writeFile(path: string, content: string): Promise<void>;
-        readFile?(
-          path: string,
-          options?: { encoding?: string },
-        ): Promise<{ content?: unknown } | string>;
+      ) as unknown as FenceSandbox & {
         getExposedPorts?(
           hostname: string,
         ): Promise<Array<{ port: number; status: string; url: string }>>;
@@ -472,32 +439,28 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           options: { hostname: string; name?: string },
         ): Promise<unknown>;
       };
-      let workspaceFingerprintInvalidated = false;
       let reexposedAddress: string | null = null;
-      for (const file of writable) {
-        const target = `/workspace/${file.path}`;
-        // Written only when it would differ. Vite rebuilds on every write,
-        // even one that changes nothing, and a rebuild the author did not ask
-        // for costs them the state they were looking at.
-        if (await fileMatches(sandbox, target, file.content)) {
-          unchanged.push(file.path);
-          continue;
-        }
-        // The marker describes the entire workspace, so invalidate it before
-        // the first incremental write. If this request stops halfway, the
-        // next start reads the disk back instead of trusting a partial HMR
-        // update as the prior committed plan. The marker's own token lets a
-        // start that is running meanwhile see that it was written.
-        if (!workspaceFingerprintInvalidated) {
-          await sandbox.writeFile(
-            THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-            newDirtyWorkspaceMarker(),
-          );
-          workspaceFingerprintInvalidated = true;
-        }
-        await sandbox.writeFile(target, file.content);
-        changed.push(file.path);
-      }
+      // One step in the container: compare each file's version with the
+      // newest written, write only what differs, record the versions. Done as
+      // separate calls from here, another request could land between them.
+      // Only files that differ are written: Vite rebuilds on every write, and
+      // a rebuild the author did not ask for costs them the state they were
+      // looking at. Before the first one, the workspace marker is set dirty,
+      // so a start that runs meanwhile, or after a write that stopped
+      // halfway, reads the disk back instead of trusting it.
+      const { changed, unchanged, refused } = await runFencedWriteInSandbox(
+        sandbox,
+        {
+          op: "write",
+          root: "/workspace",
+          files: writable,
+          marker: {
+            path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            content: newDirtyWorkspaceMarker(),
+          },
+        },
+      );
+      const workspaceFingerprintInvalidated = changed.length > 0;
 
       // Re-exposed through the same selection that chose the transport, so
       // the host a preview is reached on is decided in one place rather than
@@ -543,8 +506,9 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         unchanged: unchanged.length,
         markedWorkspaceDirty: workspaceFingerprintInvalidated,
         reexposedAddress,
+        refused: refused.length,
       });
-      return { changed, unchanged };
+      return { changed, unchanged, refused };
     };
 
     let result: Awaited<ReturnType<typeof syncPreviewFiles>>;

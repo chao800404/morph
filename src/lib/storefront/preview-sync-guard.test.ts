@@ -94,13 +94,14 @@ describe("stalePreviewSyncPaths", () => {
 });
 
 /**
- * The window the check leaves open.
+ * The window the check alone leaves open.
  *
- * The check reads the database, and the write happens afterwards. A request
- * whose check passes before a newer save lands still writes after it. This
- * models that ordering against the guard as the handler uses it: check, then
- * write. It is expected to fail — it documents what per-preview serialisation
- * or fencing would have to close — and will start passing if it ever is.
+ * The check reads the database, and the write happens afterwards, so a
+ * request whose check passes before a newer save lands can still write after
+ * it. This models the guard on its own — check, then an unfenced write — and
+ * is expected to fail: the guard cannot close this by itself. The preview's
+ * write fence does; `service/preview-file-sync.test.ts` runs the same
+ * interleaving through it and passes.
  */
 describe("interleaved preview syncs", () => {
   it.fails("never lets an older request rewind a newer one", async () => {

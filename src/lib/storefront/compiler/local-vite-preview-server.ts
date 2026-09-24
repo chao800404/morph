@@ -11,6 +11,7 @@ import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner
 import {
   THEME_PREVIEW_SERVER_BASE_PATH,
 } from "./theme-preview-dev-server";
+import { planFencedWrite } from "./preview-write-fence";
 import {
   materializeThemeSandboxWorkspace,
   planThemeSandboxWorkspace,
@@ -178,6 +179,13 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private readonly maxLogLines: number;
   private readonly port: number;
   private readonly running = new Map<string, RunningPreview>();
+  /**
+   * Per preview, the newest version written to each file, and the writes
+   * queued behind one another so that comparing against it and writing are
+   * one step. See `preview-write-fence.ts`.
+   */
+  private readonly fenceLedgers = new Map<string, Record<string, number>>();
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(options: LocalVitePreviewServerOptions = {}) {
     this.workspacesRoot = path.resolve(
@@ -247,6 +255,18 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
+    // The workspace is about to be laid out at these versions. Raised, never
+    // lowered: a save that synced meanwhile may already be ahead of them.
+    if (input.fileVersions) {
+      const ledger = this.fenceLedgers.get(input.previewId) ?? {};
+      for (const [file, version] of Object.entries(input.fileVersions)) {
+        const recorded = ledger[file];
+        if (typeof recorded !== "number" || recorded < version) {
+          ledger[file] = version;
+        }
+      }
+      this.fenceLedgers.set(input.previewId, ledger);
+    }
     const logs: string[] = [];
     const addLog = (line: string) => {
       if (logs.length < this.maxLogLines) logs.push(line);
@@ -580,19 +600,42 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    */
   async writeFiles(
     previewId: string,
-    files: readonly { path: string; content: string }[],
-  ): Promise<{ changed: readonly string[]; unchanged: readonly string[] }> {
+    files: readonly { path: string; content: string; fence?: number }[],
+  ): Promise<{
+    changed: readonly string[];
+    unchanged: readonly string[];
+    refused: readonly string[];
+  }> {
+    // Queued per preview, so the fence comparison and the write it allows are
+    // one step: no other write for this preview can land between them.
+    const previous = this.writeQueues.get(previewId) ?? Promise.resolve();
+    const run = previous
+      .catch(() => {})
+      .then(() => this.writeFilesNow(previewId, files));
+    this.writeQueues.set(previewId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.writeQueues.get(previewId) === run) {
+        this.writeQueues.delete(previewId);
+      }
+    }
+  }
+
+  private async writeFilesNow(
+    previewId: string,
+    files: readonly { path: string; content: string; fence?: number }[],
+  ): Promise<{
+    changed: readonly string[];
+    unchanged: readonly string[];
+    refused: readonly string[];
+  }> {
     const running = this.running.get(previewId);
     if (!running) {
       throw new Error(
         `LOCAL_PREVIEW_NOT_RUNNING: There is no preview server for "${previewId}".`,
       );
     }
-    const writer = new LocalThemeWorkspaceWriter({ root: running.root });
-    const changed: string[] = [];
-    const unchanged: string[] = [];
-    let invalidated = false;
-
     for (const file of files) {
       const refusal = refuseThemeWorkspacePath(file.path);
       if (refusal) throw new Error(refusal);
@@ -601,10 +644,32 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           `RESERVED_THEME_GENERATED_PATH: Theme source cannot replace the generated workspace file "${file.path}"`,
         );
       }
-      const target = `/workspace/${file.path.replace(/\\/g, "/")}`;
-      const hostPath = path.join(running.root, file.path);
-      const current = await fs.readFile(hostPath, "utf8").catch(() => null);
-      if (current === file.content) {
+    }
+
+    const current: Record<string, string | null> = {};
+    for (const file of files) {
+      current[file.path] = await fs
+        .readFile(path.join(running.root, file.path), "utf8")
+        .catch(() => null);
+    }
+    // A caller that sends no fence is not ordered against anyone; one that
+    // does is held to the newest version this preview has taken.
+    const fenced = files.filter(
+      (file): file is typeof file & { fence: number } =>
+        typeof file.fence === "number",
+    );
+    const ledger = this.fenceLedgers.get(previewId) ?? {};
+    const plan = planFencedWrite(ledger, fenced, current);
+    if (plan.refused.length > 0) {
+      return { changed: [], unchanged: [], refused: plan.refused };
+    }
+
+    const writer = new LocalThemeWorkspaceWriter({ root: running.root });
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+    let invalidated = false;
+    for (const file of files) {
+      if (current[file.path] === file.content) {
         unchanged.push(file.path);
         continue;
       }
@@ -615,11 +680,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         );
         invalidated = true;
       }
-      await writer.writeFile(target, file.content);
+      await writer.writeFile(
+        `/workspace/${file.path.replace(/\\/g, "/")}`,
+        file.content,
+      );
       changed.push(file.path);
     }
-
-    return { changed, unchanged };
+    this.fenceLedgers.set(previewId, plan.ledger);
+    return { changed, unchanged, refused: [] };
   }
 
   /** Every preview this process is serving, for a caller that has to clean up. */
