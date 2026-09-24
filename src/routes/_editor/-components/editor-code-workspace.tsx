@@ -88,6 +88,7 @@ import {
   LoaderCircle,
   Paintbrush,
   History,
+  Images as ImagesIcon,
   Package,
   PackagePlus,
   Save,
@@ -140,6 +141,7 @@ import {
   type EditorCodeSearchMatch,
   type EditorCodeSearchOptions,
 } from "./editor-code-search";
+import { EditorCodeAssetsPanel } from "./editor-code-assets-panel";
 import { EditorCodeHistoryPanel } from "./editor-code-history-panel";
 import { EditorCodeSearchPanel } from "./editor-code-search-panel";
 import {
@@ -414,9 +416,9 @@ const EditorCodeWorkspaceContent = forwardRef<
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [sideView, setSideView] = useState<"explorer" | "search" | "history">(
-    "explorer",
-  );
+  const [sideView, setSideView] = useState<
+    "explorer" | "search" | "history" | "assets"
+  >("explorer");
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<
     number | null
   >(null);
@@ -3305,6 +3307,19 @@ const EditorCodeWorkspaceContent = forwardRef<
         </button>
         <button
           type="button"
+          className={cn(
+            "relative flex size-9 items-center justify-center text-muted-foreground hover:text-foreground",
+            sideView === "assets" &&
+              "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:bg-primary",
+          )}
+          aria-label="Assets"
+          title="Assets"
+          onClick={() => setSideView("assets")}
+        >
+          <ImagesIcon className="size-5" />
+        </button>
+        <button
+          type="button"
           className="mt-auto flex size-9 items-center justify-center text-muted-foreground hover:text-foreground"
           aria-label="Command Palette"
           title="Command Palette (Ctrl+Shift+P)"
@@ -3327,7 +3342,9 @@ const EditorCodeWorkspaceContent = forwardRef<
                 ? "Explorer"
                 : sideView === "search"
                   ? "Search"
-                  : "History"}
+                  : sideView === "assets"
+                    ? "Assets"
+                    : "History"}
             </span>
             {sideView === "explorer" ? (
               <span className="rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground shrink-0 leading-none">
@@ -3441,6 +3458,8 @@ const EditorCodeWorkspaceContent = forwardRef<
             isRollingBack={rollbackMutation.isPending}
             blockedReason={rollbackBlockedReason}
           />
+        ) : sideView === "assets" ? (
+          <EditorCodeAssetsPanel />
         ) : sideView === "search" ? (
           <EditorCodeSearchPanel
             files={searchFiles}
