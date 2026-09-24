@@ -1037,7 +1037,14 @@ export const rollbackStorefrontThemeRevision = createServerFn({
         },
       );
       const tree = buildFileTree(files);
-      return ok("Theme rolled back to revision", { files, tree });
+      return ok("Theme rolled back to revision", {
+        files,
+        tree,
+        // The rollback is one batch guarded on the expected generation, which
+        // it advances by exactly one. The editor accepts this, or its next
+        // save would be refused as a remote change it has already applied.
+        sourceGeneration: data.expectedSourceGeneration + 1,
+      });
     } catch (error) {
       if (
         error instanceof Error &&

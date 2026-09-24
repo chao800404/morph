@@ -129,6 +129,7 @@ import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-the
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
 import { prepareNewThemeFolder } from "@/lib/storefront/editor/new-theme-folder";
 import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
+import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffers";
 import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
 import {
   EditorCodeCommandCenter,
@@ -1235,6 +1236,48 @@ const EditorCodeWorkspaceContent = forwardRef<
       // for it is stale by definition. Reloading is what makes the editor and
       // the store agree again.
       setSelectedRevisionNumber(null);
+      // The rollback advanced the source generation. Without accepting it
+      // here, the next save carries the old one and is refused as a remote
+      // change — one this editor made itself.
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
+      // A remote reload refreshes only the active file. Every other draft and
+      // open model still holds the workspace from before the rollback, and a
+      // later save, move or preview sync would write that back over it.
+      const monaco = monacoRef.current;
+      const modelFor = (path: string) =>
+        monaco?.editor.getModel(
+          monaco.Uri.parse(getThemeModelUri(workspaceScope, path)),
+        ) ?? null;
+      const { reset, drop } = planRollbackBufferReset({
+        restoredFiles: data.files,
+        heldPaths: [
+          ...Object.keys(draftContentsRef.current),
+          ...[...files, ...data.files]
+            .map((file) => file.path)
+            .filter((path) => modelFor(path) !== null),
+        ],
+      });
+      for (const path of drop) {
+        delete draftContentsRef.current[path];
+        delete draftDirtyRef.current[path];
+        delete draftRevisionRef.current[path];
+      }
+      for (const { path, content } of reset) {
+        draftContentsRef.current[path] = content;
+        draftDirtyRef.current[path] = false;
+        delete draftRevisionRef.current[path];
+        const model = modelFor(path);
+        if (model && model.getValue() !== content) {
+          suppressModelChangeRef.current = true;
+          model.setValue(content);
+          suppressModelChangeRef.current = false;
+        }
+      }
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
