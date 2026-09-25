@@ -39,7 +39,11 @@ import {
   templateTypeForRoutePath,
 } from "@/lib/storefront/theme-template-routes";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
-import { filterSectionContentProps } from "@/lib/storefront/content/section-content-manifest";
+import {
+  filterSectionContentProps,
+  sectionContentFieldKeys,
+} from "@/lib/storefront/content/section-content-manifest";
+import { INVALID_CONTENT_FIELD_ERROR } from "@/lib/storefront/theme-content-capabilities";
 import { extractThemeDocumentComponentRefs } from "@/lib/storefront/theme-content-capability-shadow";
 import {
   collectMediaAssetIds,
@@ -935,7 +939,10 @@ export const storefrontThemeDal = {
     const registry = buildThemeRouteRegistry(
       await listThemeSourceFiles(data.storefrontId, data.themeId),
     );
-    if (!registry.valid || !findBoundTemplateRoute(registry, target.routePath)) {
+    if (
+      !registry.valid ||
+      !findBoundTemplateRoute(registry, target.routePath)
+    ) {
       return {
         ok: false,
         reason: `${target.routePath} is not a route in the saved Theme source.`,
@@ -1016,6 +1023,8 @@ export const storefrontThemeDal = {
     createdBy: string;
     /** The route the editor is showing; see `resolveSectionSourceComponent`. */
     routePath?: string;
+    /** Declared fields whose stored value is removed; the code default renders. */
+    resetProps?: readonly string[];
   }) {
     const context = await this.findEditorContext(
       data.storefrontId,
@@ -1159,6 +1168,32 @@ export const storefrontThemeDal = {
     const cleanExistingProps =
       (targetSection.props as Record<string, unknown>) ?? {};
 
+    // Removing a value is only offered for what could have been written: a
+    // declared field. A key sent both to set and to remove says two things.
+    const resetProps = data.resetProps ?? [];
+    if (resetProps.length > 0) {
+      const fieldKeys = sectionContentFieldKeys(
+        targetSection.type,
+        resolvedComponentRef,
+        themeCapabilities,
+      );
+      for (const key of resetProps) {
+        if (
+          !fieldKeys.has(key) ||
+          Object.prototype.hasOwnProperty.call(restProps, key)
+        ) {
+          throw new Error(
+            `${INVALID_CONTENT_FIELD_ERROR}:${key}:not-resettable`,
+          );
+        }
+      }
+    }
+    const nextProps: Record<string, unknown> = {
+      ...cleanExistingProps,
+      ...cleanIncomingProps,
+    };
+    for (const key of resetProps) delete nextProps[key];
+
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
       sections: template.document.sections.map((section) =>
@@ -1170,10 +1205,7 @@ export const storefrontThemeDal = {
                 typeof propEnabled === "boolean"
                   ? propEnabled
                   : section.enabled !== false,
-              props: {
-                ...cleanExistingProps,
-                ...cleanIncomingProps,
-              },
+              props: nextProps,
             }
           : section,
       ),

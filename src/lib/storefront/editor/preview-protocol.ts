@@ -82,17 +82,23 @@ export function applyPreviewSectionProps<
     sectionId: string;
     props?: PreviewSectionProps;
     enabled?: boolean;
+    resetKeys?: readonly string[];
   },
 ): { document: TDocument; matched: boolean } {
   let matched = false;
   const sections = document.sections.map((section) => {
     if (section.id !== update.sectionId) return section;
     matched = true;
+    const props: Record<string, unknown> = {
+      ...(section.props ?? {}),
+      ...(update.props ?? {}),
+    };
+    for (const key of update.resetKeys ?? []) delete props[key];
     return {
       ...section,
       enabled:
         typeof update.enabled === "boolean" ? update.enabled : section.enabled,
-      props: { ...(section.props ?? {}), ...(update.props ?? {}) },
+      props,
     };
   });
   return matched
@@ -261,6 +267,11 @@ export type EditorToPreviewMessage =
       sectionId: string;
       props?: PreviewSectionProps;
       enabled?: boolean;
+      /**
+       * Keys removed after \`props\` is merged, so the component's own default
+       * renders again. Merging alone can only add or replace a value.
+       */
+      resetKeys?: string[];
     }
   | {
       type: "morph:storefront-preview-update-theme-files";
@@ -871,7 +882,13 @@ export function parseEditorToPreviewMessage(
     case "morph:storefront-preview-update-section-props":
       if (
         !isBoundedString(value.sectionId, 100) ||
-        (value.enabled !== undefined && typeof value.enabled !== "boolean")
+        (value.enabled !== undefined && typeof value.enabled !== "boolean") ||
+        (value.resetKeys !== undefined &&
+          !(
+            Array.isArray(value.resetKeys) &&
+            value.resetKeys.length <= 100 &&
+            value.resetKeys.every((key) => isBoundedString(key, 100))
+          ))
       ) {
         return null;
       }
@@ -886,6 +903,9 @@ export function parseEditorToPreviewMessage(
           sectionId: value.sectionId,
           props: props ?? undefined,
           enabled: value.enabled,
+          ...(value.resetKeys === undefined
+            ? {}
+            : { resetKeys: value.resetKeys as string[] }),
         };
       }
     case "morph:storefront-preview-update-theme-files":

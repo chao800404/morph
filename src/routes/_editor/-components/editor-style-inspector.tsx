@@ -227,6 +227,11 @@ type EditorStyleInspectorProps = {
   onCreatePageCopy?: (
     sectionId: string,
   ) => Promise<{ success: boolean; message?: string }>;
+  /** Removes this page's value for fields, so the code default renders. */
+  onResetContentFields?: (
+    sectionId: string,
+    fieldKeys: string[],
+  ) => Promise<{ success: boolean; message?: string }>;
   selection?: EditorSelectionDescriptor | null;
   /**
    * The preview's editable nodes, in document order. Used only to order the
@@ -690,6 +695,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   routeSourcePath = null,
   onPromoteText,
   onCreatePageCopy,
+  onResetContentFields,
   selection,
   editableNodes,
   activeComputedStyleRevision = 0,
@@ -1217,6 +1223,38 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const declared = parsedMeta?.defaultPropValues[fieldKey];
     if (declared !== undefined) return declared;
     return parsedMeta?.defaultProps[fieldKey] ?? "";
+  };
+  /**
+   * The default the component renders when this page stores nothing, when the
+   * source states one. Only then does removing the stored value mean anything
+   * an author can predict, so only then is it offered.
+   */
+  const [resetEpoch, setResetEpoch] = useState(0);
+  const codeDefaultFor = (fieldKey: string): unknown =>
+    parsedMeta?.defaultPropValues[fieldKey] ??
+    parsedMeta?.defaultProps[fieldKey];
+  const resetHandlerFor = (fieldKey: string): (() => void) | undefined => {
+    if (
+      !onResetContentFields ||
+      disabled ||
+      contentStore !== "document" ||
+      !Object.prototype.hasOwnProperty.call(props, fieldKey) ||
+      codeDefaultFor(fieldKey) === undefined ||
+      nestedFieldPath(fieldKey)?.includes(".")
+    ) {
+      return undefined;
+    }
+    return () => {
+      void onResetContentFields(section.id, [fieldKey]).then((result) => {
+        if (!result.success) return;
+        const { [fieldKey]: _removed, ...rest } = localPropsRef.current;
+        localPropsRef.current = rest;
+        setLocalProps(rest);
+        // The inputs hold their own value; they are remounted to show the
+        // default rather than the value that was just removed.
+        setResetEpoch((epoch) => epoch + 1);
+      });
+    };
   };
   const hasDirectContentField = DIRECT_CONTENT_FIELD_KEYS.some(
     (fieldKey) =>
@@ -2415,7 +2453,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             expanded={sectionsExpanded.content}
             onToggle={() => toggleSection("content")}
           >
-            <div key={contentResourceKey} className="w-full min-w-0 space-y-3">
+            <div
+              key={`${contentResourceKey}:${resetEpoch}`}
+              className="w-full min-w-0 space-y-3"
+            >
               {orderContentBlocks(
                 [
                   ...declaredContentFields
@@ -2900,6 +2941,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             key={fieldKey}
                             label={label}
                             isFocused={activeFieldKey === fieldKey}
+                            onReset={resetHandlerFor(fieldKey)}
                           >
                             {definition.type === "textarea" ? (
                               <Textarea
@@ -2987,6 +3029,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             "Eyebrow / Subtitle",
                           )}
                           isFocused={activeFieldKey === "eyebrow"}
+                          onReset={resetHandlerFor("eyebrow")}
                         >
                           <Input
                             key={contentFieldInputKey("eyebrow")}
@@ -3026,6 +3069,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         <InspectorField
                           label={declaredContentFieldLabel("label", "Label")}
                           isFocused={activeFieldKey === "label"}
+                          onReset={resetHandlerFor("label")}
                         >
                           <Input
                             key={contentFieldInputKey("label")}
@@ -3066,6 +3110,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             "Heading",
                           )}
                           isFocused={activeFieldKey === "heading"}
+                          onReset={resetHandlerFor("heading")}
                         >
                           <Textarea
                             key={contentFieldInputKey("heading")}
@@ -3107,6 +3152,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             "Description",
                           )}
                           isFocused={activeFieldKey === "description"}
+                          onReset={resetHandlerFor("description")}
                         >
                           <Textarea
                             key={contentFieldInputKey("description")}
@@ -3148,6 +3194,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         <InspectorField
                           label={declaredContentFieldLabel("body", "Body text")}
                           isFocused={activeFieldKey === "body"}
+                          onReset={resetHandlerFor("body")}
                         >
                           <Textarea
                             key={contentFieldInputKey("body")}
@@ -3322,6 +3369,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             "Action Button",
                           )}
                           isFocused={activeFieldKey === "actionLabel"}
+                          onReset={resetHandlerFor("actionLabel")}
                         >
                           {actionLabelInput}
                         </InspectorField>
@@ -5053,12 +5101,26 @@ function InspectorLinkField({
 function InspectorField({
   label,
   isFocused = false,
+  onReset,
   children,
 }: {
   label: string;
   isFocused?: boolean;
+  /** Offered when this page stores a value the component has a default for. */
+  onReset?: () => void;
   children: React.ReactNode;
 }) {
+  const labelElement = (
+    <label
+      className={cn(
+        inspectorFieldLabelClassName,
+        "transition-colors",
+        isFocused ? "text-primary font-medium" : "text-muted-foreground",
+      )}
+    >
+      {label}
+    </label>
+  );
   return (
     <div
       data-slot="inspector-content-field"
@@ -5069,15 +5131,21 @@ function InspectorField({
           : "bg-muted/20",
       )}
     >
-      <label
-        className={cn(
-          inspectorFieldLabelClassName,
-          "transition-colors",
-          isFocused ? "text-primary font-medium" : "text-muted-foreground",
-        )}
-      >
-        {label}
-      </label>
+      {onReset ? (
+        <div className="flex items-center justify-between gap-2">
+          {labelElement}
+          <button
+            type="button"
+            onClick={onReset}
+            className="shrink-0 text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            title={`Remove this page's ${label} and show the component's default`}
+          >
+            Use code default
+          </button>
+        </div>
+      ) : (
+        labelElement
+      )}
       <div className="w-full min-w-0">{children}</div>
     </div>
   );

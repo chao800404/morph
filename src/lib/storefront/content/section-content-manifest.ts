@@ -399,6 +399,32 @@ export const SECTION_TYPE_DEFAULT_MANIFESTS: Record<string, string> = {
   showcase: "showcase.default",
 };
 
+/**
+ * The keys a section's component declares as content fields.
+ *
+ * The same branches as `filterSectionContentProps`, so the two agree on what
+ * a field is: a write may only remove what it could have written. Anything
+ * else a document stores beside the content — references, older data — is
+ * not the Content tab's to delete.
+ */
+export function sectionContentFieldKeys(
+  sectionType: string,
+  componentRef?: string | null,
+  themeCapabilities?: ThemeContentCapabilities,
+): ReadonlySet<string> {
+  if (componentRef) {
+    const themeCapability = themeCapabilities?.[componentRef];
+    if (themeCapability) return new Set(Object.keys(themeCapability.fields));
+    const manifest = COMPONENT_CONTENT_MANIFESTS[componentRef];
+    return new Set(manifest ? manifest.allowedContentFields : []);
+  }
+  const defaultManifestKey = SECTION_TYPE_DEFAULT_MANIFESTS[sectionType];
+  const manifest = defaultManifestKey
+    ? COMPONENT_CONTENT_MANIFESTS[defaultManifestKey]
+    : null;
+  return new Set(manifest ? manifest.allowedContentFields : []);
+}
+
 export function filterSectionContentProps(
   sectionType: string,
   rawProps: Record<string, unknown>,

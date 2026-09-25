@@ -615,6 +615,41 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("carries keys to remove, so a reset shows the component default", () => {
+    const message = {
+      type: "morph:storefront-preview-update-section-props",
+      sectionId: "hero",
+      props: {},
+      resetKeys: ["heading"],
+    };
+    expect(parseEditorToPreviewMessage(message)).toEqual(message);
+    expect(
+      parseEditorToPreviewMessage({ ...message, resetKeys: "heading" }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({ ...message, resetKeys: [42] }),
+    ).toBeNull();
+    expect(
+      parseEditorToPreviewMessage({
+        ...message,
+        resetKeys: Array.from({ length: 101 }, (_, index) => `k${index}`),
+      }),
+    ).toBeNull();
+  });
+
+  it("removes reset keys after merging the rest", () => {
+    const document = {
+      sections: [{ id: "hero", props: { heading: "Mine", eyebrow: "New" } }],
+    };
+    expect(
+      applyPreviewSectionProps(document, {
+        sectionId: "hero",
+        props: { eyebrow: "Newer" },
+        resetKeys: ["heading"],
+      }).document.sections[0]?.props,
+    ).toEqual({ eyebrow: "Newer" });
+  });
+
   it("requires a bounded revision on preview size requests and responses", () => {
     expect(
       parseEditorToPreviewMessage({

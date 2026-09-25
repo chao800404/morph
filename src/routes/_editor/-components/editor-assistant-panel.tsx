@@ -47,6 +47,10 @@ type EditorAssistantPanelProps = {
   onCreatePageCopy?: (
     sectionId: string,
   ) => Promise<{ success: boolean; message?: string }>;
+  onResetContentFields?: (
+    sectionId: string,
+    fieldKeys: string[],
+  ) => Promise<{ success: boolean; message?: string }>;
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
@@ -212,6 +216,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   routeSourcePath,
   onPromoteText,
   onCreatePageCopy,
+  onResetContentFields,
   activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
@@ -475,6 +480,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               routeSourcePath={routeSourcePath}
               onPromoteText={onPromoteText}
               onCreatePageCopy={onCreatePageCopy}
+              onResetContentFields={onResetContentFields}
               selection={selection}
               editableNodes={editableNodes}
               activeComputedStyleRevision={activeComputedStyleRevision}

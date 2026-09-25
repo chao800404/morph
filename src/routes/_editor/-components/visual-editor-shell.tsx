@@ -987,6 +987,7 @@ export function VisualEditorShell({
       expectedDraftGeneration: number;
       templateId?: string;
       routePath?: string;
+      resetProps?: string[];
     }) => {
       if (!activeTemplate) throw new Error("No active template");
       return updateStorefrontThemeSectionProps({
@@ -998,6 +999,9 @@ export function VisualEditorShell({
           props: variables.props,
           expectedDraftGeneration: variables.expectedDraftGeneration,
           ...(variables.routePath ? { routePath: variables.routePath } : {}),
+          ...(variables.resetProps?.length
+            ? { resetProps: variables.resetProps }
+            : {}),
         },
       });
     },
@@ -5606,7 +5610,12 @@ export function VisualEditorShell({
   );
   const previewPropsRevisionRef = useRef(new Map<string, number>());
   const syncPreviewSectionProps = useCallback(
-    (sectionId: string, props?: PreviewSectionProps, enabled?: boolean) => {
+    (
+      sectionId: string,
+      props?: PreviewSectionProps,
+      enabled?: boolean,
+      resetKeys?: string[],
+    ) => {
       const post = (
         resolvedProps: PreviewSectionProps | undefined,
         nextEnabled: boolean | undefined,
@@ -5616,6 +5625,7 @@ export function VisualEditorShell({
           sectionId,
           props: resolvedProps,
           enabled: nextEnabled,
+          ...(resetKeys?.length ? { resetKeys } : {}),
         });
         // Anything that changes what the canvas renders has to re-measure,
         // not just a file write. The theme's own `min-h-screen` resolves
@@ -5823,6 +5833,89 @@ export function VisualEditorShell({
     },
     [activeTemplate, layoutTemplate, sectionModel],
   );
+
+  /**
+   * Removes this page's value for declared fields, so the component's own
+   * default renders again.
+   *
+   * Not a debounced edit: a merge can only add or replace a key, so removal
+   * is its own write, queued behind anything still pending for the template.
+   * Undo writes the removed values back as an ordinary content edit.
+   */
+  const resetContentFieldsRef = useRef<
+    | ((
+        sectionId: string,
+        fieldKeys: string[],
+        recordHistory?: boolean,
+      ) => Promise<{ success: boolean; message?: string }>)
+    | null
+  >(null);
+  const handleResetContentFields = useCallback(
+    async (
+      sectionId: string,
+      fieldKeys: string[],
+      recordHistory = true,
+    ): Promise<{ success: boolean; message?: string }> => {
+      reportAuthenticatedUserActivity();
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId || fieldKeys.length === 0) {
+        return { success: false, message: "Nothing to reset here." };
+      }
+      try {
+        await flushTemplatePendingProps(templateId);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Content is still saving.";
+        toast.error(message);
+        return { success: false, message };
+      }
+      const before = sectionPropsSnapshot(sectionId);
+      const removed = Object.fromEntries(
+        fieldKeys
+          .filter((key) => Object.prototype.hasOwnProperty.call(before, key))
+          .map((key) => [key, before[key]]),
+      );
+
+      const result = (await enqueueTemplateMutation(
+        templateId,
+        (expectedDraftGeneration, resolvedTemplateId) =>
+          updatePropsMutation.mutateAsync({
+            templateId: resolvedTemplateId,
+            sectionId,
+            props: {},
+            resetProps: fieldKeys,
+            expectedDraftGeneration,
+            routePath: routePathForTemplate(templateId),
+          }),
+      )) as { success: boolean; message?: string };
+      if (!result.success) {
+        return { success: false, message: result.message };
+      }
+
+      syncPreviewSectionProps(sectionId, {}, undefined, fieldKeys);
+      if (recordHistory && Object.keys(removed).length > 0) {
+        history.record({
+          label: "Use code default",
+          scope: sectionHistoryScope(sectionId),
+          undo: () => contentChangeRef.current?.(sectionId, removed),
+          redo: () =>
+            void resetContentFieldsRef.current?.(sectionId, fieldKeys, false),
+        });
+      }
+      return { success: true };
+    },
+    [
+      enqueueTemplateMutation,
+      flushTemplatePendingProps,
+      history,
+      routePathForTemplate,
+      sectionPropsSnapshot,
+      syncPreviewSectionProps,
+      templateIdForSection,
+      updatePropsMutation,
+    ],
+  );
+  resetContentFieldsRef.current = handleResetContentFields;
 
   const handleSectionPropsChange = useCallback(
     (
@@ -8360,6 +8453,7 @@ export function VisualEditorShell({
           sectionTemplatePaths={sectionTemplatePaths}
           routeSourcePath={activeThemeRoute?.sourcePath ?? null}
           onPromoteText={handlePromoteText}
+          onResetContentFields={handleResetContentFields}
           onCreatePageCopy={activeThemeRoute ? handleDetachSection : undefined}
           // Same nodes the sections tree uses, so the Content tab can fall back
           // to document order when a component declares no `contentFields`.
