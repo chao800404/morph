@@ -26,8 +26,8 @@ import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_bac
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
-import { Route as BackendApiDevThemeBinaryFileRouteImport } from './routes/_backend/api/dev/theme-binary-file'
 import { Route as BackendApiStoreSplatRouteImport } from './routes/_backend/api/store/$'
+import { Route as BackendApiStorefrontThemeBinaryFileRouteImport } from './routes/_backend/api/storefront/theme-binary-file'
 import { Route as BackendDashboardSlugIdRouteImport } from './routes/_backend/dashboard/$slug/$id'
 import { Route as BackendDashboardSlugCreateRouteImport } from './routes/_backend/dashboard/$slug/create'
 import { Route as BackendDashboardSlugViewRouteImport } from './routes/_backend/dashboard/$slug/view'
@@ -134,17 +134,17 @@ const BackendApiAuthSplatRoute = BackendApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => BackendRoute,
 } as any)
-const BackendApiDevThemeBinaryFileRoute =
-  BackendApiDevThemeBinaryFileRouteImport.update({
-    id: '/api/dev/theme-binary-file',
-    path: '/api/dev/theme-binary-file',
-    getParentRoute: () => BackendRoute,
-  } as any)
 const BackendApiStoreSplatRoute = BackendApiStoreSplatRouteImport.update({
   id: '/api/store/$',
   path: '/api/store/$',
   getParentRoute: () => BackendRoute,
 } as any)
+const BackendApiStorefrontThemeBinaryFileRoute =
+  BackendApiStorefrontThemeBinaryFileRouteImport.update({
+    id: '/api/storefront/theme-binary-file',
+    path: '/api/storefront/theme-binary-file',
+    getParentRoute: () => BackendRoute,
+  } as any)
 const BackendDashboardSlugIdRoute = BackendDashboardSlugIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -267,8 +267,8 @@ export interface FileRoutesByFullPath {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/api/dev/theme-binary-file': typeof BackendApiDevThemeBinaryFileRoute
   '/api/store/$': typeof BackendApiStoreSplatRoute
+  '/api/storefront/theme-binary-file': typeof BackendApiStorefrontThemeBinaryFileRoute
   '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -301,8 +301,8 @@ export interface FileRoutesByTo {
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/api/dev/theme-binary-file': typeof BackendApiDevThemeBinaryFileRoute
   '/api/store/$': typeof BackendApiStoreSplatRoute
+  '/api/storefront/theme-binary-file': typeof BackendApiStorefrontThemeBinaryFileRoute
   '/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -341,8 +341,8 @@ export interface FileRoutesById {
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/_backend/api/auth/$': typeof BackendApiAuthSplatRoute
-  '/_backend/api/dev/theme-binary-file': typeof BackendApiDevThemeBinaryFileRoute
   '/_backend/api/store/$': typeof BackendApiStoreSplatRoute
+  '/_backend/api/storefront/theme-binary-file': typeof BackendApiStorefrontThemeBinaryFileRoute
   '/_backend/dashboard/$slug/$id': typeof BackendDashboardSlugIdRouteWithChildren
   '/_backend/dashboard/$slug/create': typeof BackendDashboardSlugCreateRoute
   '/_backend/dashboard/$slug/view': typeof BackendDashboardSlugViewRoute
@@ -379,8 +379,8 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
-    | '/api/dev/theme-binary-file'
     | '/api/store/$'
+    | '/api/storefront/theme-binary-file'
     | '/dashboard/$slug/$id'
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
@@ -413,8 +413,8 @@ export interface FileRouteTypes {
     | '/reset-password/verify'
     | '/api/asset/download'
     | '/api/auth/$'
-    | '/api/dev/theme-binary-file'
     | '/api/store/$'
+    | '/api/storefront/theme-binary-file'
     | '/dashboard/$slug/$id'
     | '/dashboard/$slug/create'
     | '/dashboard/$slug/view'
@@ -452,8 +452,8 @@ export interface FileRouteTypes {
     | '/_backend/_auth/reset-password/verify'
     | '/_backend/api/asset/download'
     | '/_backend/api/auth/$'
-    | '/_backend/api/dev/theme-binary-file'
     | '/_backend/api/store/$'
+    | '/_backend/api/storefront/theme-binary-file'
     | '/_backend/dashboard/$slug/$id'
     | '/_backend/dashboard/$slug/create'
     | '/_backend/dashboard/$slug/view'
@@ -605,18 +605,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackendApiAuthSplatRouteImport
       parentRoute: typeof BackendRoute
     }
-    '/_backend/api/dev/theme-binary-file': {
-      id: '/_backend/api/dev/theme-binary-file'
-      path: '/api/dev/theme-binary-file'
-      fullPath: '/api/dev/theme-binary-file'
-      preLoaderRoute: typeof BackendApiDevThemeBinaryFileRouteImport
-      parentRoute: typeof BackendRoute
-    }
     '/_backend/api/store/$': {
       id: '/_backend/api/store/$'
       path: '/api/store/$'
       fullPath: '/api/store/$'
       preLoaderRoute: typeof BackendApiStoreSplatRouteImport
+      parentRoute: typeof BackendRoute
+    }
+    '/_backend/api/storefront/theme-binary-file': {
+      id: '/_backend/api/storefront/theme-binary-file'
+      path: '/api/storefront/theme-binary-file'
+      fullPath: '/api/storefront/theme-binary-file'
+      preLoaderRoute: typeof BackendApiStorefrontThemeBinaryFileRouteImport
       parentRoute: typeof BackendRoute
     }
     '/_backend/dashboard/$slug/$id': {
@@ -907,8 +907,8 @@ interface BackendRouteChildren {
   BackendAssetsSplatRoute: typeof BackendAssetsSplatRoute
   BackendApiAssetDownloadRoute: typeof BackendApiAssetDownloadRoute
   BackendApiAuthSplatRoute: typeof BackendApiAuthSplatRoute
-  BackendApiDevThemeBinaryFileRoute: typeof BackendApiDevThemeBinaryFileRoute
   BackendApiStoreSplatRoute: typeof BackendApiStoreSplatRoute
+  BackendApiStorefrontThemeBinaryFileRoute: typeof BackendApiStorefrontThemeBinaryFileRoute
 }
 
 const BackendRouteChildren: BackendRouteChildren = {
@@ -917,8 +917,9 @@ const BackendRouteChildren: BackendRouteChildren = {
   BackendAssetsSplatRoute: BackendAssetsSplatRoute,
   BackendApiAssetDownloadRoute: BackendApiAssetDownloadRoute,
   BackendApiAuthSplatRoute: BackendApiAuthSplatRoute,
-  BackendApiDevThemeBinaryFileRoute: BackendApiDevThemeBinaryFileRoute,
   BackendApiStoreSplatRoute: BackendApiStoreSplatRoute,
+  BackendApiStorefrontThemeBinaryFileRoute:
+    BackendApiStorefrontThemeBinaryFileRoute,
 }
 
 const BackendRouteWithChildren =

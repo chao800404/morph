@@ -2,20 +2,20 @@ import { z } from "zod";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import type { ThemeSourceStore } from "@/lib/storefront/storage/theme-storage.types";
 import { hasAnyRole } from "@/server/middleware/auth.middleware";
-import { themeBinaryUploadRefusal } from "@/lib/storefront/service/theme-binary-gates";
 
 /**
- * The upload entry for a binary Theme file, ahead of the editor's own.
+ * The write entry for a binary Theme file: the editor's upload and replace,
+ * and the end-to-end run's.
  *
- * Plain HTTP rather than a server function because its first caller is an
- * end-to-end run, which has no stable way to name a server function, and
- * because the body is the file's bytes as they are.
+ * Plain HTTP rather than a server function, because the body is the file's
+ * bytes as they are — not base64 inside JSON — and because an end-to-end run
+ * has no stable way to name a server function.
  *
- * The local flag decides only whether this answers. Everything else is the
- * ordinary write: an administrator's session, as `commerceAdminMiddleware`
- * requires, and `saveBinaryFile`, which checks the Theme belongs to the
- * storefront, the path, the format against the bytes, the quota, the
- * Theme's routes, and the source generation and file version.
+ * Nothing here decides what may be written. It is the ordinary write: an
+ * administrator's session, as `commerceAdminMiddleware` requires, and
+ * `saveBinaryFile`, which checks the Theme belongs to the storefront, the
+ * path, the format against the bytes, the quota, the Theme's routes, and the
+ * source generation and file version.
  *
  * The request names the file in its query and carries the bytes as
  * `application/octet-stream`. That type is not one a cross-site form can
@@ -25,8 +25,6 @@ import { themeBinaryUploadRefusal } from "@/lib/storefront/service/theme-binary-
 export type ThemeBinaryUploadUser = Readonly<{ id: string; role?: unknown }>;
 
 export type ThemeBinaryUploadDeps = Readonly<{
-  vars: Record<string, unknown>;
-  isProduction: boolean;
   getSessionUser(request: Request): Promise<ThemeBinaryUploadUser | null>;
   saveBinaryFile: ThemeSourceStore["saveBinaryFile"];
 }>;
@@ -101,10 +99,6 @@ export async function handleThemeBinaryUpload(
   request: Request,
   deps: ThemeBinaryUploadDeps,
 ): Promise<Response> {
-  // Closed looks like absent: nothing here says the entry exists.
-  const refusal = themeBinaryUploadRefusal(deps.vars, deps.isProduction);
-  if (refusal) return refuse(404, "THEME_BINARY_UPLOAD_DISABLED", refusal);
-
   let user: ThemeBinaryUploadUser | null;
   try {
     user = await deps.getSessionUser(request);

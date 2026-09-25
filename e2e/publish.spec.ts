@@ -78,13 +78,10 @@ test.describe("publish loop", () => {
 
     // A binary file in public/, uploaded through the ordinary write, so the
     // release this run publishes has to carry its exact bytes to the served
-    // storefront. Only under the runner: it owns a throwaway database and is
-    // what opens the upload entry, so a run by hand never writes an image into
-    // whatever store the shell points at.
-    const stored = HANDOFF_PATH
-      ? await writeRunImage(page, { expectMissing: "1" })
-      : null;
-    const image = stored?.image ?? null;
+    // storefront. Only under the runner, which owns a throwaway database, so
+    // a run by hand never writes an image into whatever store the shell
+    // points at.
+    const image = HANDOFF_PATH ? await uploadRunImage(page) : null;
     if (image) {
       // The editor holds the source generation it loaded with, and building
       // freezes a revision against it. Reloading takes the one the upload
@@ -279,16 +276,26 @@ test.describe("publish loop", () => {
       ).toContainText(image.sha256);
     }
 
-    // Replaced after publishing, the image is an unpublished change: compared
-    // by digest, as source is by text. Before, binary files were skipped and
-    // the editor read "Published" while the storefront served the old bytes.
-    // The release is not touched, so the handoff still names what shipped.
-    if (stored) {
-      const replaced = await writeRunImage(page, {
-        expectedFileId: stored.fileId,
-        expectedVersion: String(stored.version),
-      });
-      expect(replaced.image.sha256).not.toBe(stored.image.sha256);
+    // Replaced after publishing, through the editor's own Replace…: the
+    // image is then an unpublished change, compared by digest as source is
+    // by text. The release is not touched, so the handoff still names what
+    // shipped.
+    if (image) {
+      const next = runImageBytes();
+      const nextSha256 = createHash("sha256").update(next).digest("hex");
+      await page
+        .locator(`[data-file-tree-file="${image.path}"]`)
+        .click({ button: "right" });
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("menuitem", { name: /Replace…/ }).click();
+      await (
+        await chooser
+      ).setFiles({ name: "e2e-run.png", mimeType: "image/png", buffer: next });
+      // The panel reads the workspace back: the new digest is the stored one.
+      await expect(
+        page.locator(`[data-code-binary-file="${image.path}"]`),
+      ).toContainText(nextSha256, { timeout: 30_000 });
+
       await page.reload({ waitUntil: "domcontentloaded" });
       const status = page.locator("[data-editor-save-status]");
       await expect(status).toHaveAttribute("aria-label", "Unpublished", {
@@ -296,7 +303,7 @@ test.describe("publish loop", () => {
       });
       await expect(status).toHaveAttribute(
         "data-unpublished-reason",
-        `Edited ${stored.image.path}`,
+        `Edited ${image.path}`,
       );
     }
 
@@ -392,27 +399,29 @@ type RunImage = {
 
 const RUN_IMAGE_PATH = "public/images/e2e-run.png";
 
-type StoredRunImage = { image: RunImage; fileId: string; version: number };
+/** A PNG signature and then random bytes, unique to each call. */
+function runImageBytes(): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    randomBytes(256 * 1024),
+  ]);
+}
 
 /**
- * Writes a PNG unique to this call at `RUN_IMAGE_PATH` through
- * `/api/dev/theme-binary-file`, as the signed-in editor: new, or in place of
- * the stored one when given its id and version, as any write names its file.
+ * Uploads a PNG unique to this run to `RUN_IMAGE_PATH` through
+ * `/api/storefront/theme-binary-file`, as the signed-in editor.
  *
- * A PNG signature and then random bytes: the format check reads the
- * signature, the build copies the file without decoding it, and bytes no
- * earlier run produced mean an artifact left behind cannot pass for this one.
+ * Random bytes after the signature: the format check reads the signature,
+ * the build copies the file without decoding it, and bytes no earlier run
+ * produced mean an artifact left behind cannot pass for this one.
  *
  * The write names the source generation it expects, like every write. The
  * editor does not show it, so the first attempt says 0 and a conflict, which
  * reports the current one, is answered once with that.
  */
-async function writeRunImage(
+async function uploadRunImage(
   page: import("@playwright/test").Page,
-  precondition:
-    | { expectMissing: "1" }
-    | { expectedFileId: string; expectedVersion: string },
-): Promise<StoredRunImage> {
+): Promise<RunImage> {
   const match = /\/store\/([^/]+)\/themes\/([^/]+)/.exec(page.url());
   if (!match) {
     throw new Error(
@@ -420,19 +429,16 @@ async function writeRunImage(
     );
   }
   const [, storefrontId, themeId] = match;
-  const bytes = Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    randomBytes(256 * 1024),
-  ]);
+  const bytes = runImageBytes();
 
   const send = (expectedSourceGeneration: number) =>
     page.request.post(
-      `/api/dev/theme-binary-file?${new URLSearchParams({
+      `/api/storefront/theme-binary-file?${new URLSearchParams({
         storefrontId,
         themeId,
         path: RUN_IMAGE_PATH,
         expectedSourceGeneration: String(expectedSourceGeneration),
-        ...precondition,
+        expectMissing: "1",
       })}`,
       {
         headers: { "content-type": "application/octet-stream" },
@@ -453,13 +459,7 @@ async function writeRunImage(
   expect(response.status(), await response.text()).toBe(200);
   const saved = (
     (await response.json()) as {
-      data: {
-        id: string;
-        version: number;
-        blobDigest: string;
-        sizeBytes: number;
-        mimeType: string;
-      };
+      data: { blobDigest: string; sizeBytes: number; mimeType: string };
     }
   ).data;
 
@@ -470,14 +470,10 @@ async function writeRunImage(
   expect(saved.mimeType).toBe("image/png");
 
   return {
-    image: {
-      path: RUN_IMAGE_PATH,
-      urlPath: `/${RUN_IMAGE_PATH.slice("public/".length)}`,
-      sha256,
-      sizeBytes: bytes.byteLength,
-      mimeType: "image/png",
-    },
-    fileId: saved.id,
-    version: saved.version,
+    path: RUN_IMAGE_PATH,
+    urlPath: `/${RUN_IMAGE_PATH.slice("public/".length)}`,
+    sha256,
+    sizeBytes: bytes.byteLength,
+    mimeType: "image/png",
   };
 }

@@ -596,17 +596,6 @@ function parseEnvFile(contents) {
  *   deployment. Only the credentialed deployer exercises that edge.
  */
 /**
- * Opens the binary upload entry for this run's database
- * (`theme-binary-gates.ts`), which the publish loop uses to put a PNG in the
- * Theme. The dev server hands exactly this name to its Worker, and only
- * while `MORPH_E2E_STATE_DIR` is set (`vite.config.ts`). The build needs
- * nothing: binary files are part of every build.
- */
-function binaryFileVars() {
-  return { MORPH_ENABLE_THEME_BINARY_UPLOAD: "1" };
-}
-
-/**
  * The uploaded image, as the served storefront answers for it: the status,
  * the type it is sent as, and every byte.
  */
@@ -714,7 +703,7 @@ async function verifyPublishedRelease() {
 
   if (!verified.image) {
     throw new Error(
-      "NO_IMAGE_IN_HANDOFF: the runner opened the upload entry and the spec published without uploading, so nothing here says a binary file reached the storefront.",
+      "NO_IMAGE_IN_HANDOFF: the spec published without uploading its image, so nothing here says a binary file reached the storefront.",
     );
   }
   await verifyServedImage(origin, verified.image);
@@ -838,7 +827,6 @@ async function main() {
     // as far as the plugin is concerned.
     ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
     MORPH_E2E_STATE_DIR: stateDir,
-    ...binaryFileVars(),
   }, (line) => {
     if (!line.includes("storefront.theme.build.timings")) return;
     // The line is JSON inside whatever the dev server wraps around it, so the

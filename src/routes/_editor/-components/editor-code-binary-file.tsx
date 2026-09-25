@@ -1,7 +1,8 @@
 import type { StorefrontThemeBinaryFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { themePublicUrlPath } from "@/lib/storefront/theme-public-files";
 import { formatBytes } from "@/lib/utils";
-import { FileImage, FileType } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { FileImage, FileType, Trash2, Upload } from "lucide-react";
 
 const FONT_EXTENSIONS = /\.woff2?$/i;
 
@@ -17,14 +18,21 @@ export function BinaryFileIcon({ path }: { path: string }) {
 /**
  * What the Code workspace shows for a binary file in place of an editor.
  *
- * Binary files are stored bytes, not source: Monaco has nothing to open and
- * nothing here may write them. The panel says what the file is and where the
- * storefront serves it, from metadata alone — the bytes are never fetched.
+ * Binary files are stored bytes, not source: Monaco has nothing to open. The
+ * panel says what the file is and where the storefront serves it, from
+ * metadata alone — the bytes are never fetched — and offers the two writes a
+ * binary file has here: replacing its bytes, and deleting it.
  */
 export function EditorCodeBinaryFile({
   file,
+  busy = false,
+  onReplace,
+  onDelete,
 }: {
   file: StorefrontThemeBinaryFileDTO;
+  busy?: boolean;
+  onReplace?: () => void;
+  onDelete?: () => void;
 }) {
   const name = file.path.split("/").pop() ?? file.path;
   const urlPath = themePublicUrlPath(file.path);
@@ -66,9 +74,35 @@ export function EditorCodeBinaryFile({
             {file.blobDigest}
           </dd>
         </dl>
+        {onReplace || onDelete ? (
+          <div className="mt-4 flex items-center gap-2">
+            {onReplace ? (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                onClick={onReplace}
+              >
+                <Upload className="size-3" />
+                Replace…
+              </Button>
+            ) : null}
+            {onDelete ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                className="text-destructive"
+                disabled={busy}
+                onClick={onDelete}
+              >
+                <Trash2 className="size-3" />
+                Delete
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <p className="mt-3 text-muted-foreground">
-          A binary file is read-only in the Code workspace. It cannot be
-          renamed, moved, copied or deleted here yet.
+          It cannot be renamed, moved or copied in the Code workspace yet.
         </p>
       </div>
     </div>
