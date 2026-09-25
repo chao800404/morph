@@ -373,7 +373,7 @@ export function prepareRevisionInsert(args: {
 }
 
 export function buildFileTree(
-  files: StorefrontThemeFileDTO[],
+  files: readonly StorefrontThemeWorkspaceEntryDTO[],
 ): StorefrontThemeFileTreeNode[] {
   const root: StorefrontThemeFileTreeNode[] = [];
 
@@ -395,7 +395,14 @@ export function buildFileTree(
         path: currentPath,
         isDirectory: !isFile,
         mimeType: isFile ? file.mimeType : undefined,
-        size: isFile ? file.content.length : undefined,
+        size: isFile
+          ? isBinaryThemeFile(file)
+            ? file.sizeBytes
+            : file.content.length
+          : undefined,
+        ...(isFile && isBinaryThemeFile(file)
+          ? { encoding: "binary" as const }
+          : {}),
         children: isFile ? undefined : [],
       };
       if (!found) currentLevel.push(existing);

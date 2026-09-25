@@ -61,6 +61,8 @@ export type StorefrontThemeFileTreeNode = {
   children?: StorefrontThemeFileTreeNode[];
   size?: number;
   mimeType?: string;
+  /** A binary file under `public/`: listed, never opened as source. */
+  encoding?: "binary";
 };
 
 export type ThemeSourceRevisionManifestFile = {
