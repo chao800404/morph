@@ -169,8 +169,9 @@ export interface ThemeSourceStore {
 
   /**
    * Stores bytes under `public/` after checking them against the public
-   * file contract. Internal until preview, build and publish read binary
-   * files; no server function reaches it yet.
+   * file contract. The one write path for binary files: the development
+   * upload entry (`theme-binary-upload.ts`) reaches it today, and the
+   * editor's upload must reach it the same way.
    */
   saveBinaryFile(
     storefrontId: string,

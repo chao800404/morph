@@ -323,7 +323,6 @@ describe("building a frozen revision with a binary file, locally", () => {
           updatedAt: "now",
         },
         revision,
-        binaryFiles: "include",
       });
       expect(input.binaryFiles).toEqual([
         {
@@ -428,7 +427,6 @@ describe("building the starter Theme with a binary file, locally", () => {
       const input = materializeThemeBuildInput({
         build: queuedBuild(revision.id),
         revision,
-        binaryFiles: "include",
       });
 
       const store = blobStore();
@@ -501,7 +499,6 @@ describe("building the starter Theme with a binary file, locally", () => {
       materializeThemeBuildInput({
         build: queuedBuild(revision.id),
         revision,
-        binaryFiles: "include",
       }),
     ).toThrow("A page of the Theme already answers this URL.");
   });
@@ -512,7 +509,6 @@ describe("building the starter Theme with a binary file, locally", () => {
     const input = materializeThemeBuildInput({
       build: queuedBuild(revision.id),
       revision,
-      binaryFiles: "include",
     });
     expect(input.binaryFiles?.map((file) => file.path)).toEqual([
       "public/lookbook.png",

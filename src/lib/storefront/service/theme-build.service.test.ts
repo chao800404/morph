@@ -1040,11 +1040,11 @@ describe("ThemeBuildService cancellation", () => {
 });
 
 /**
- * Binary files reach a build only where the composition root allows them,
- * and the service asks that once per storefront at both places the
- * materializer runs, so a reuse check and the build itself cannot disagree.
+ * Binary files are part of every build: the reuse check and the build itself
+ * materialize the same revision the same way, and a build that cannot place
+ * them ends failed with no artifact.
  */
-describe("ThemeBuildService binary file policy", () => {
+describe("ThemeBuildService with binary files", () => {
   const DIGEST = "a".repeat(64);
 
   const seed = () => {
@@ -1093,13 +1093,13 @@ describe("ThemeBuildService binary file policy", () => {
       reuseExisting: true,
     });
 
-  it("asks one policy for the reuse check and the build, and hands the runner the files", async () => {
+  it("hands the runner the files, from the reuse check through the build", async () => {
     seed();
-    const asked: string[] = [];
-    const policies: Array<string | undefined> = [];
+    const carried: number[] = [];
     const materializer: typeof materializeThemeBuildInput = (params) => {
-      policies.push(params.binaryFiles);
-      return materializeThemeBuildInput(params);
+      const input = materializeThemeBuildInput(params);
+      carried.push(input.binaryFiles?.length ?? 0);
+      return input;
     };
     let received: ReadonlyArray<{ path: string }> | undefined;
     const target = new ThemeBuildService(
@@ -1110,10 +1110,6 @@ describe("ThemeBuildService binary file policy", () => {
       undefined,
       undefined,
       async () => new Uint8Array(16),
-      (storefrontId) => {
-        asked.push(storefrontId);
-        return "include";
-      },
     );
 
     const build = await request(
@@ -1126,21 +1122,52 @@ describe("ThemeBuildService binary file policy", () => {
     );
 
     expect(build.status).toBe("succeeded");
-    expect(policies).toEqual(["include", "include"]);
-    expect(asked).toEqual(["storefront-1", "storefront-1"]);
+    // Once for the reuse check, once for the build: the same answer.
+    expect(carried).toEqual([1, 1]);
     expect(received?.map((file) => file.path)).toEqual([
       "public/images/hero.png",
     ]);
   });
 
-  it("refuses binary files unless composed otherwise, before any runner starts", async () => {
+  it("fails before any runner starts when a binary file takes one of the revision's routes", async () => {
     seed();
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_revisions SET snapshot = ? WHERE id = 'rev-binary'",
+      )
+      .run(
+        JSON.stringify([
+          {
+            path: "src/routes/index.tsx",
+            content:
+              'import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/")({ component: () => null });',
+            isEntry: true,
+          },
+          {
+            path: "src/routes/lookbook[.]png.tsx",
+            content:
+              'import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/lookbook.png")({ component: () => null });',
+            isEntry: false,
+          },
+          {
+            path: "public/lookbook.png",
+            encoding: "binary",
+            blobDigest: DIGEST,
+            sizeBytes: 16,
+            mimeType: "image/png",
+            isEntry: false,
+          },
+        ]),
+      );
     let ran = false;
     const target = new ThemeBuildService(
       storefrontThemeBuildDal,
       undefined,
       undefined,
       new FakeThemeBuildArtifactStore(),
+      undefined,
+      undefined,
+      async () => new Uint8Array(16),
     );
 
     const build = await request(
@@ -1153,7 +1180,9 @@ describe("ThemeBuildService binary file policy", () => {
     );
 
     expect(build.status).toBe("failed");
-    expect(build.errorMessage).toContain("BINARY_THEME_FILE_NOT_BUILDABLE");
+    expect(build.errorMessage).toContain(
+      "A page of the Theme already answers this URL.",
+    );
     expect(build.artifactPrefix).toBeNull();
     expect(ran).toBe(false);
   });
@@ -1177,7 +1206,6 @@ describe("ThemeBuildService binary file policy", () => {
       async (digest) => {
         throw new Error(`SOURCE_BLOB_NOT_FOUND: ${digest}`);
       },
-      () => "include",
     );
 
     const build = await request(

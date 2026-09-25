@@ -19,7 +19,6 @@ import {
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
-import type { ThemeBinaryBuildPolicy } from "./theme-binary-gates";
 
 export type RequestPreviewBuildOptions = {
   storefrontId: string;
@@ -55,14 +54,6 @@ export class ThemeBuildService {
     private readonly readBinaryFile: (digest: string) => Promise<Uint8Array> = (
       digest,
     ) => themeSourceStore.readBinaryFile(digest),
-    /**
-     * Whether a storefront's builds may place binary files. One answer for
-     * both places the materializer runs — the reuse check and the build
-     * itself — so the two cannot disagree. Refuses unless composed otherwise.
-     */
-    private readonly binaryFilesFor: (
-      storefrontId: string,
-    ) => ThemeBinaryBuildPolicy = () => "refuse",
   ) {}
 
   /**
@@ -116,7 +107,6 @@ export class ThemeBuildService {
             build: dummyBuild,
             revision,
             compilerIdentity: options.compilerIdentity,
-            binaryFiles: this.binaryFilesFor(options.storefrontId),
           });
 
           const existingSuccess = await this.dal.findSucceededBuildByIdentity({
@@ -331,7 +321,6 @@ export class ThemeBuildService {
         build,
         revision,
         compilerIdentity: params.compilerIdentity,
-        binaryFiles: this.binaryFilesFor(params.storefrontId),
       });
     } catch (materializerError) {
       const errMessage =

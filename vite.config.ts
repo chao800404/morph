@@ -74,15 +74,12 @@ function tanstackServerFnValidateFix(): Plugin {
 
 /**
  * Variables an editor end-to-end run hands its Worker, by name and only for
- * that run. The runner owns a throwaway database, so these open test-only
- * paths there (`theme-binary-gates.ts`) and nowhere else; the Worker still
- * refuses both in production. Listed rather than passing the shell through,
- * which would carry everything else in it too.
+ * that run. The runner owns a throwaway database, so the upload entry this
+ * opens (`theme-binary-gates.ts`) answers there and nowhere else; the Worker
+ * still refuses it in production. Listed rather than passing the shell
+ * through, which would carry everything else in it too.
  */
-const E2E_WORKER_VARS = [
-  "MORPH_ENABLE_THEME_BINARY_UPLOAD",
-  "MORPH_BINARY_BUILD_TEST_STOREFRONT_ID",
-] as const;
+const E2E_WORKER_VARS = ["MORPH_ENABLE_THEME_BINARY_UPLOAD"] as const;
 
 function e2eWorkerVars(): Record<string, string> {
   if (!process.env.MORPH_E2E_STATE_DIR) return {};

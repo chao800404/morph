@@ -596,25 +596,14 @@ function parseEnvFile(contents) {
  *   deployment. Only the credentialed deployer exercises that edge.
  */
 /**
- * Opens binary Theme files for this run's database and its one storefront:
- * the upload entry, and building them (`theme-binary-gates.ts`). The dev
- * server hands exactly these names to its Worker, and only while
- * `MORPH_E2E_STATE_DIR` is set (`vite.config.ts`).
- *
- * The storefront is the one the suite edits, read from `E2E_EDITOR_PATH`.
- * Without one the build keeps refusing binary files, and the publish loop
- * fails on that refusal rather than passing without the image.
+ * Opens the binary upload entry for this run's database
+ * (`theme-binary-gates.ts`), which the publish loop uses to put a PNG in the
+ * Theme. The dev server hands exactly this name to its Worker, and only
+ * while `MORPH_E2E_STATE_DIR` is set (`vite.config.ts`). The build needs
+ * nothing: binary files are part of every build.
  */
 function binaryFileVars() {
-  const storefrontId = /\/store\/([^/]+)\/themes\//.exec(
-    process.env.E2E_EDITOR_PATH ?? "",
-  )?.[1];
-  return {
-    MORPH_ENABLE_THEME_BINARY_UPLOAD: "1",
-    ...(storefrontId
-      ? { MORPH_BINARY_BUILD_TEST_STOREFRONT_ID: storefrontId }
-      : {}),
-  };
+  return { MORPH_ENABLE_THEME_BINARY_UPLOAD: "1" };
 }
 
 /**

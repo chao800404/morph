@@ -46,17 +46,10 @@ const binary = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("normalizeRevisionSnapshot with binary files", () => {
-  it("still refuses them by default", () => {
-    expect(() =>
-      normalizeRevisionSnapshot([...source(false), binary()], "rev-1"),
-    ).toThrow("BINARY_THEME_FILE_NOT_BUILDABLE");
-  });
-
   it("carries them by reference, apart from the source", () => {
     const result = normalizeRevisionSnapshot(
       [...source(false), binary()],
       "rev-1",
-      { binaryFiles: "include" },
     );
     expect(result.files.map((file) => file.path)).toEqual([
       "morph.theme.json",
@@ -80,9 +73,7 @@ describe("normalizeRevisionSnapshot with binary files", () => {
       binary({ sizeBytes: -1 }),
     ]) {
       expect(() =>
-        normalizeRevisionSnapshot([...source(false), bad], "rev-1", {
-          binaryFiles: "include",
-        }),
+        normalizeRevisionSnapshot([...source(false), bad], "rev-1"),
       ).toThrow("CORRUPT_REVISION_FILE_ENTRY");
     }
     expect(() =>
@@ -93,7 +84,6 @@ describe("normalizeRevisionSnapshot with binary files", () => {
           binary(),
         ],
         "rev-1",
-        { binaryFiles: "include" },
       ),
     ).toThrow("CORRUPT_REVISION_SNAPSHOT");
   });
@@ -102,16 +92,12 @@ describe("normalizeRevisionSnapshot with binary files", () => {
     const aboutFile = binary({ path: "public/about" });
     // This revision has an /about page, so the file would take its URL.
     expect(() =>
-      normalizeRevisionSnapshot([...source(true), aboutFile], "rev-1", {
-        binaryFiles: "include",
-      }),
+      normalizeRevisionSnapshot([...source(true), aboutFile], "rev-1"),
     ).toThrow("A page of the Theme already answers this URL.");
     // Without that page in the revision, no route collision is reported.
     let message = "";
     try {
-      normalizeRevisionSnapshot([...source(false), aboutFile], "rev-2", {
-        binaryFiles: "include",
-      });
+      normalizeRevisionSnapshot([...source(false), aboutFile], "rev-2");
     } catch (error) {
       message = (error as Error).message;
     }
@@ -124,7 +110,6 @@ describe("normalizeRevisionSnapshot with binary files", () => {
       normalizeRevisionSnapshot(
         [...source(false), binary({ sizeBytes: 5 * 1024 * 1024 + 1 })],
         "rev-1",
-        { binaryFiles: "include" },
       ),
     ).toThrow("limited to 5 MB");
   });

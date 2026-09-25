@@ -28,18 +28,6 @@ export type MaterializeThemeBuildInputParams = {
     compilerId?: string;
     compilerVersion?: string;
   };
-  /** See `NormalizeRevisionSnapshotOptions.binaryFiles`. */
-  binaryFiles?: "refuse" | "include";
-};
-
-export type NormalizeRevisionSnapshotOptions = {
-  /**
-   * `refuse`, the default, fails a revision holding a binary file by name.
-   * `include` carries them by reference, checked against the revision's own
-   * routes. The default is lifted only once every build path has been shown
-   * to place the bytes intact; until then only a caller proving it asks.
-   */
-  binaryFiles?: "refuse" | "include";
 };
 
 const SHA256_DIGEST = /^[0-9a-f]{64}$/;
@@ -50,7 +38,6 @@ const SHA256_DIGEST = /^[0-9a-f]{64}$/;
 export function normalizeRevisionSnapshot(
   snapshot: unknown,
   sourceRevisionId: string,
-  options: NormalizeRevisionSnapshotOptions = {},
 ): {
   files: ThemeCompilerFile[];
   binaryFiles: ThemeBuildBinaryFile[];
@@ -67,14 +54,10 @@ export function normalizeRevisionSnapshot(
   const detectedEntries: string[] = [];
 
   for (const raw of snapshot) {
-    // Said by name rather than as a missing `content`: the revision is
-    // sound, the build cannot yet place bytes that are not source text.
+    // Carried by reference, apart from the source text: the runner reads
+    // each file's bytes by digest as it writes them, and both runners have
+    // been shown to place them intact, locally and in a real Sandbox.
     if (raw?.encoding === "binary") {
-      if ((options.binaryFiles ?? "refuse") === "refuse") {
-        throw new Error(
-          `BINARY_THEME_FILE_NOT_BUILDABLE: Source revision ${sourceRevisionId} holds binary file "${raw.path}", which the build cannot place yet.`,
-        );
-      }
       const binaryPath = safeThemeFilePathSchema.safeParse(
         String(raw.path ?? "")
           .replace(/\\/g, "/")
@@ -301,7 +284,6 @@ export function materializeThemeBuildInput({
   build,
   revision,
   compilerIdentity,
-  binaryFiles: binaryFilesOption,
 }: MaterializeThemeBuildInputParams): StorefrontThemeBuildInput {
   // Validate ownership match between Build and Revision
   if (
@@ -353,7 +335,6 @@ export function materializeThemeBuildInput({
   const { files, binaryFiles, entry } = normalizeRevisionSnapshot(
     revision.snapshot,
     revision.id,
-    { binaryFiles: binaryFilesOption },
   );
 
   // Compute deterministic SHA-256 hash
