@@ -37,8 +37,11 @@ export const LOCAL_PREVIEW_SIDECAR_PATHS = {
   /** The one thing a container let its caller do without a transport. */
   applyFiles: "/applyFiles",
   /**
-   * One binary file's bytes, raw, ahead of the start that names them. Kept
-   * outside the workspace, by digest; the start then lays them out.
+   * A transport preparation step of `start`, not an operation of its own:
+   * one binary file's bytes, raw, sent before the start that names them. The
+   * sidecar keeps only bytes it has verified, outside every workspace, by
+   * digest. Putting them into a Theme workspace is still the start's work,
+   * and only the start commits that workspace.
    */
   stageBinary: "/stageBinary",
 } as const;

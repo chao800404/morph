@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LocalPreviewSidecarClient } from "./local-preview-sidecar-client";
 import { startLocalPreviewSidecar } from "./local-preview-sidecar";
+import { LocalVitePreviewServer } from "../compiler/local-vite-preview-server";
 import { createHash } from "node:crypto";
 import {
   LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER,
@@ -395,7 +396,8 @@ describe("binary files over the local preview sidecar", () => {
     };
     expect(started.ok).toBe(false);
     expect(started.errorMessage).toContain("BINARY_NOT_STAGED");
-    expect(await exists(fingerprintOf("preview-2"))).toBe(false);
+    // A marker is left, but it says the workspace is incomplete.
+    expect(await fs.readFile(fingerprintOf("preview-2"), "utf8")).toBe("dirty");
   });
 
   it("does not commit a workspace from staged bytes changed on disk", async () => {
@@ -443,12 +445,162 @@ describe("binary files over the local preview sidecar", () => {
     };
     expect(restarted.ok).toBe(false);
     expect(restarted.errorMessage).toContain("BINARY_STAGED_CORRUPT");
-    expect(await exists(fingerprintOf("preview-2"))).toBe(false);
+    // A marker is left, but it says the workspace is incomplete.
+    expect(await fs.readFile(fingerprintOf("preview-2"), "utf8")).toBe("dirty");
   });
 
   it("bounds a staged file by the per-file quota of public/", () => {
     expect(LOCAL_PREVIEW_SIDECAR_MAX_BINARY_BYTES).toBe(
       THEME_PUBLIC_LIMITS.maxFileBytes,
     );
+  });
+});
+
+/**
+ * What a start's marker promises, and what a start is ordered against.
+ *
+ * The marker on disk means only that every file of a plan is written: it is
+ * withdrawn before a start changes anything and committed after the last
+ * file. A start and the file syncs of the same preview run in one queue, so
+ * neither can land inside the other.
+ */
+describe("the local preview workspace lifecycle", () => {
+  const sha256 = (bytes: Uint8Array) =>
+    createHash("sha256").update(bytes).digest("hex");
+  const markerOf = (previewId: string) =>
+    fs
+      .readFile(
+        path.join(
+          WORKSPACES_ROOT,
+          previewId,
+          THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
+        ),
+        "utf8",
+      )
+      .catch(() => null);
+  const rawStart = async (body: unknown) => {
+    const response = await fetch(`${sidecar.origin}/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER]: TOKEN,
+      },
+      body: JSON.stringify(body),
+    });
+    return (await response.json()) as { ok: boolean; errorMessage?: string };
+  };
+
+  it("withdraws the marker before a start rewrites anything", async () => {
+    await removeTree(path.join(WORKSPACES_ROOT, "preview-3"));
+    const first = await client.start({
+      ...startInput(),
+      previewId: "preview-3",
+    });
+    expect(first.ok).toBe(true);
+    const committed = await markerOf("preview-3");
+    expect(committed).not.toBeNull();
+    expect(committed).not.toBe("dirty");
+
+    // A start that fails partway, on a file it cannot lay out.
+    const failed = await rawStart({
+      ...startInput(),
+      previewId: "preview-3",
+      files: [
+        ...THEME,
+        {
+          path: "public/missing.png",
+          binary: { digest: "e".repeat(64), sizeBytes: 8 },
+        },
+      ],
+    });
+    expect(failed.ok).toBe(false);
+    // The earlier marker is gone rather than vouching for a half-written plan.
+    expect(await markerOf("preview-3")).toBe("dirty");
+    await client.stop("preview-3");
+  });
+
+  it("refuses a digest that is not one before using it as a file name", async () => {
+    const failed = await rawStart({
+      ...startInput(),
+      previewId: "preview-3",
+      files: [
+        ...THEME,
+        {
+          path: "public/escape.png",
+          binary: { digest: "../../../../package.json", sizeBytes: 8 },
+        },
+      ],
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.errorMessage).toContain("BINARY_DIGEST_INVALID");
+  });
+
+  it("orders a file sync after a start still laying out the workspace", async () => {
+    const server = new LocalVitePreviewServer({
+      workspacesRoot: WORKSPACES_ROOT,
+      toolchainRoot: process.cwd(),
+    });
+    const previewId = "preview-queue";
+    await removeTree(path.join(WORKSPACES_ROOT, previewId));
+    const base = {
+      previewId,
+      entry: "src/pages/index.tsx",
+      previewHostname: "127.0.0.1",
+      env: {},
+    };
+    try {
+      expect((await server.start({ ...base, files: THEME })).ok).toBe(true);
+
+      // A restart whose binary file is slow to arrive.
+      const image = new Uint8Array(64).fill(4);
+      let release!: () => void;
+      const arrived = new Promise<void>((resolve) => (release = resolve));
+      const restart = server.start({
+        ...base,
+        files: [
+          ...THEME,
+          {
+            path: "public/slow.png",
+            binary: { digest: sha256(image), sizeBytes: image.byteLength },
+          },
+        ],
+        loadBinary: async () => {
+          await arrived;
+          return image;
+        },
+      });
+
+      // A sync sent while that restart is waiting.
+      const page = THEME.find((file) => file.path === "src/pages/index.tsx")!;
+      const edited = `// edited while the start ran\n${page.content}`;
+      let synced = false;
+      const sync = server
+        .writeFiles(previewId, [
+          { path: "src/pages/index.tsx", content: edited },
+        ])
+        .then((result) => {
+          synced = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(synced).toBe(false);
+
+      release();
+      expect((await restart).ok).toBe(true);
+      expect((await sync).changed).toEqual(["src/pages/index.tsx"]);
+
+      // The sync landed after the start, so the start did not overwrite it,
+      // and the marker no longer vouches for the start's plan alone.
+      expect(
+        await fs.readFile(
+          path.join(WORKSPACES_ROOT, previewId, "src/pages/index.tsx"),
+          "utf8",
+        ),
+      ).toBe(edited);
+      expect(await markerOf(previewId)).toBe("dirty");
+    } finally {
+      await server.stop(previewId);
+      await removeTree(path.join(WORKSPACES_ROOT, previewId));
+    }
   });
 });
