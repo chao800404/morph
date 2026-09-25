@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MAX_RELEASE_NOTE_LENGTH } from "@/lib/storefront/release-note";
 import { idSchema } from "./commerce";
+import { safeThemeFilePathSchema } from "./storefront-theme-file";
 
 export const storefrontThemeEditorInputSchema = z.object({
   storefrontId: idSchema("storefront"),
@@ -50,6 +51,28 @@ export const updateStorefrontThemeSectionPropsInputSchema =
      * saved source declares; it never names a file to read.
      */
     routePath: z.string().trim().min(1).max(512).optional(),
+  });
+
+/**
+ * Turning fixed text in a component into a field, with this page's value.
+ *
+ * Every name here is checked against what is saved before anything is
+ * written: the path must be a file of the Theme, the target an element in it,
+ * and the confirmed impact exactly what the server finds the change reaches.
+ */
+export const promoteStorefrontThemeTextInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    sectionId: z.string().trim().min(1).max(100),
+    routePath: z.string().trim().min(1).max(512).optional(),
+    componentSourcePath: safeThemeFilePathSchema,
+    targetKey: z.string().trim().min(1).max(200),
+    fieldName: z.string().trim().min(1).max(64),
+    value: z.string().max(10_000),
+    expectedSourceGeneration: z.number().int().min(1),
+    expectedFileVersion: z.number().int().min(1),
+    expectedDraftGeneration: z.number().int().min(1),
+    confirmedImpact: z.array(z.string().max(1000)).max(200).optional(),
   });
 
 /**
