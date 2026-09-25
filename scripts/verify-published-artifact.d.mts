@@ -23,4 +23,11 @@ export declare function verifyPublishedArtifact(options: {
   artifactDir: string;
   workerConfig: string;
   fileCount: number;
+  image: {
+    path: string;
+    urlPath: string;
+    sha256: string;
+    sizeBytes: number;
+    mimeType: string;
+  } | null;
 }>;

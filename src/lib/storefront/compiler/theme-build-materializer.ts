@@ -1,6 +1,7 @@
 import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
+  ThemeBuildBinaryFile,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
@@ -14,6 +15,11 @@ import {
 } from "./theme-start-toolchain";
 import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
 import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contract";
+import {
+  checkThemePublicFiles,
+  describeThemePublicProblem,
+  isThemePublicPath,
+} from "../theme-public-files";
 
 export type MaterializeThemeBuildInputParams = {
   build: StorefrontThemeBuildDTO;
@@ -24,13 +30,19 @@ export type MaterializeThemeBuildInputParams = {
   };
 };
 
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
+
 /**
  * Normalizes snapshot raw entries into a sorted, unique ThemeCompilerFile array with fail-closed security checks.
  */
 export function normalizeRevisionSnapshot(
   snapshot: unknown,
   sourceRevisionId: string,
-): { files: ThemeCompilerFile[]; entry: string } {
+): {
+  files: ThemeCompilerFile[];
+  binaryFiles: ThemeBuildBinaryFile[];
+  entry: string;
+} {
   if (!snapshot || !Array.isArray(snapshot) || snapshot.length === 0) {
     throw new Error(
       `EMPTY_OR_CORRUPT_REVISION_SNAPSHOT: Source revision ${sourceRevisionId} snapshot is empty or invalid. Zero files found.`,
@@ -38,15 +50,43 @@ export function normalizeRevisionSnapshot(
   }
 
   const fileMap = new Map<string, ThemeCompilerFile>();
+  const binaryMap = new Map<string, ThemeBuildBinaryFile>();
   const detectedEntries: string[] = [];
 
   for (const raw of snapshot) {
-    // Said by name rather than as a missing `content`: the revision is
-    // sound, the build cannot yet place bytes that are not source text.
+    // Carried by reference, apart from the source text: the runner reads
+    // each file's bytes by digest as it writes them, and both runners have
+    // been shown to place them intact, locally and in a real Sandbox.
     if (raw?.encoding === "binary") {
-      throw new Error(
-        `BINARY_THEME_FILE_NOT_BUILDABLE: Source revision ${sourceRevisionId} holds binary file "${raw.path}", which the build cannot place yet.`,
+      const binaryPath = safeThemeFilePathSchema.safeParse(
+        String(raw.path ?? "")
+          .replace(/\\/g, "/")
+          .trim(),
       );
+      if (
+        !binaryPath.success ||
+        !isThemePublicPath(binaryPath.data) ||
+        typeof raw.blobDigest !== "string" ||
+        !SHA256_DIGEST.test(raw.blobDigest) ||
+        !Number.isInteger(raw.sizeBytes) ||
+        raw.sizeBytes < 0
+      ) {
+        throw new Error(
+          `CORRUPT_REVISION_FILE_ENTRY: Binary file "${raw.path}" in source revision ${sourceRevisionId} is not a well-formed public/ reference.`,
+        );
+      }
+      if (binaryMap.has(binaryPath.data) || fileMap.has(binaryPath.data)) {
+        throw new Error(
+          `CORRUPT_REVISION_SNAPSHOT: Duplicate file path found in source revision ${sourceRevisionId}: "${binaryPath.data}".`,
+        );
+      }
+      binaryMap.set(binaryPath.data, {
+        path: binaryPath.data,
+        digest: raw.blobDigest,
+        sizeBytes: raw.sizeBytes,
+        mimeType: typeof raw.mimeType === "string" ? raw.mimeType : "",
+      });
+      continue;
     }
     if (
       !raw ||
@@ -73,7 +113,7 @@ export function normalizeRevisionSnapshot(
       );
     }
 
-    if (fileMap.has(path)) {
+    if (fileMap.has(path) || binaryMap.has(path)) {
       throw new Error(
         `CORRUPT_REVISION_SNAPSHOT: Duplicate file path found in source revision ${sourceRevisionId}: "${path}".`,
       );
@@ -197,8 +237,35 @@ export function normalizeRevisionSnapshot(
         ? "src/pages/index.tsx"
         : sortedFiles[0].path);
 
+  // Judged against this revision's own routes, never the workspace's: the
+  // same revision must build the same way whenever it is built, and a route
+  // added since it was taken is not in it.
+  const binaryFiles = Array.from(binaryMap.values()).sort((a, b) =>
+    a.path.localeCompare(b.path),
+  );
+  if (binaryFiles.length > 0) {
+    const routePaths = buildThemeRouteRegistry(sortedFiles).routes.map(
+      (route) => route.path,
+    );
+    const publicCheck = checkThemePublicFiles(
+      binaryFiles.map((file) => ({ path: file.path, size: file.sizeBytes })),
+      routePaths,
+    );
+    if (!publicCheck.ok) {
+      throw new Error(
+        `PUBLIC_FILE_REFUSED: Source revision ${sourceRevisionId}: ${publicCheck.problems
+          .map(
+            (problem) =>
+              `${problem.path}: ${describeThemePublicProblem(problem.reason)}`,
+          )
+          .join(" ")}`,
+      );
+    }
+  }
+
   return {
     files: sortedFiles,
+    binaryFiles,
     entry,
   };
 }
@@ -265,7 +332,7 @@ export function materializeThemeBuildInput({
   }
 
   // Normalize files strictly from revision snapshot
-  const { files, entry } = normalizeRevisionSnapshot(
+  const { files, binaryFiles, entry } = normalizeRevisionSnapshot(
     revision.snapshot,
     revision.id,
   );
@@ -274,6 +341,7 @@ export function materializeThemeBuildInput({
   const inputHash = computeThemeInputHash(
     {
       files,
+      binaryFiles,
       entry,
       ...(build.dependencies
         ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
@@ -296,6 +364,7 @@ export function materializeThemeBuildInput({
     sourceRevisionId: build.sourceRevisionId,
     revisionNumber: revision.revisionNumber,
     files,
+    ...(binaryFiles.length > 0 ? { binaryFiles } : {}),
     entry,
     inputHash,
     compilerId,

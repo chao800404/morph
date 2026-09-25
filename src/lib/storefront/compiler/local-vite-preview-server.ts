@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { LocalThemeWorkspaceWriter } from "./local-theme-workspace-writer";
 import {
@@ -90,6 +91,21 @@ export type LocalVitePreviewServerOptions = Readonly<{
   maxLogLines?: number;
   /** Port to bind. Zero, the default, asks the OS for a free one. */
   port?: number;
+  /**
+   * Most bytes one preview's staging may hold. Larger than the whole
+   * `public/` quota, so one start's files always fit.
+   */
+  maxStagedBytes?: number;
+  /**
+   * A staged file younger than this may be about to be named by a start —
+   * this tab's or another's — and is never evicted to make room. A stage that
+   * finds no room without evicting one is refused instead.
+   */
+  stagedGraceMs?: number;
+  /** A staged file not staged again within this long is removed. */
+  stagedTtlMs?: number;
+  /** A temporary file this old belongs to a stage that did not finish. */
+  staleTempMs?: number;
 }>;
 
 type RunningPreview = Readonly<{
@@ -142,6 +158,24 @@ function withReadyTimeout<T>(
  * hostile path out — it is what stops two different ids from landing in one
  * directory, or one id from climbing out of the workspaces root.
  */
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
+/** Names `workspaceDirectoryName` would leave unchanged. */
+const STAGED_PREVIEW_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}$/;
+
+/** The largest staged file: the per-file quota of `public/`. */
+const LOCAL_PREVIEW_MAX_BINARY_BYTES = 5 * 1024 * 1024;
+
+/** A refused stage: the request was wrong, not the sidecar. */
+export class LocalPreviewStagingError extends Error {
+  constructor(reason: string) {
+    super(`BINARY_STAGE_REFUSED: ${reason}.`);
+  }
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 function workspaceDirectoryName(previewId: string): string {
   const safe = previewId.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^\.+/, "-");
   if (!safe) throw new Error("A preview needs an id to be addressed by.");
@@ -186,6 +220,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    */
   private readonly fenceLedgers = new Map<string, Record<string, number>>();
   private readonly writeQueues = new Map<string, Promise<unknown>>();
+  private readonly maxStagedBytes: number;
+  private readonly stagedTtlMs: number;
+  private readonly staleTempMs: number;
+  private readonly stagedGraceMs: number;
 
   constructor(options: LocalVitePreviewServerOptions = {}) {
     this.workspacesRoot = path.resolve(
@@ -200,6 +238,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
     this.maxLogLines = options.maxLogLines ?? 200;
     this.port = options.port ?? 0;
+    this.maxStagedBytes = options.maxStagedBytes ?? 64 * 1024 * 1024;
+    this.stagedTtlMs = options.stagedTtlMs ?? 60 * 60 * 1000;
+    this.staleTempMs = options.staleTempMs ?? 10 * 60 * 1000;
+    this.stagedGraceMs = options.stagedGraceMs ?? 10 * 60 * 1000;
   }
 
   /** The host path a preview's workspace lives in. */
@@ -255,18 +297,6 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
-    // The workspace is about to be laid out at these versions. Raised, never
-    // lowered: a save that synced meanwhile may already be ahead of them.
-    if (input.fileVersions) {
-      const ledger = this.fenceLedgers.get(input.previewId) ?? {};
-      for (const [file, version] of Object.entries(input.fileVersions)) {
-        const recorded = ledger[file];
-        if (typeof recorded !== "number" || recorded < version) {
-          ledger[file] = version;
-        }
-      }
-      this.fenceLedgers.set(input.previewId, ledger);
-    }
     const logs: string[] = [];
     const addLog = (line: string) => {
       if (logs.length < this.maxLogLines) logs.push(line);
@@ -322,185 +352,243 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       };
     }
 
-    const existing = this.running.get(input.previewId);
-    if (existing && existing.workspaceFingerprint === prepared.workspaceFingerprint) {
-      return {
-        ok: true,
-        url: existing.url,
-        processId: undefined,
-        readyMs: 0,
-        timings: this.timings({
-          requestStartedAt,
-          workspacePlanMs,
-          workspaceReused: true,
-          reusedProcess: true,
-        }),
-        hoistedContentFields: prepared.hoistedContentFields,
-        warnings: prepared.previewWarnings,
-        logs,
-      };
-    }
-    if (existing) {
-      await this.stop(input.previewId);
-    }
-
-    const workspaceStartedAt = Date.now();
-    let mkdirCalls = 0;
-    let writeCalls = 0;
-    let deleteCalls = 0;
-    const writer = new LocalThemeWorkspaceWriter({ root });
-    const measured: ThemeWorkspaceWriter = {
-      async mkdir(dirPath, options) {
-        mkdirCalls += 1;
-        await writer.mkdir(dirPath, options);
-      },
-      async writeFile(filePath, content) {
-        writeCalls += 1;
-        await writer.writeFile(filePath, content);
-      },
-      listFiles: (dirPath, options) => writer.listFiles(dirPath, options),
-      async deleteFile(filePath) {
-        deleteCalls += 1;
-        await writer.deleteFile(filePath);
-      },
-    };
-
-    try {
-      await materializeThemeSandboxWorkspace(measured, prepared.workspaceFiles);
-      // Committed last, so a partial write can never make a later start trust
-      // an incomplete workspace. The in-memory fingerprint above is what
-      // actually decides reuse in this process; this is the same marker the
-      // sandbox writes, for a start that follows a process restart.
-      await writer.writeFile(
-        `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
-        prepared.workspaceFingerprint,
-      );
-    } catch (error) {
-      return {
-        ok: false,
-        stage: "preview-workspace",
-        errorMessage:
-          error instanceof Error
-            ? error.message
-            : "Could not lay out the Theme workspace.",
-        logs,
-      };
-    }
-    const workspaceMaterializeMs = Date.now() - workspaceStartedAt;
-    if (deleteCalls > 0) {
-      addLog(
-        `Removed ${deleteCalls} file(s) an older workspace plan had left behind.`,
-      );
-    }
-    const workspaceMs = Date.now() - workspaceStartedAt;
-
-    const startedAt = Date.now();
-    let server: ViteDevServer | null = null;
-    try {
-      server = await createServer({
-        // The same generated config the container runs, pointed at this root.
-        configFile: path.join(root, "vite.config.ts"),
-        root,
-        // Host and port are this transport's decisions, not the Theme's: the
-        // config states what may be served, never where. Inline options merge
-        // over the file's, so `server.fs` and `hmr` still come from it — but
-        // `watch` is overridden, and the reason is a command anyone can run
-        // rather than a theory:
-        //
-        //   pnpm exec vitest run src/lib/storefront/service/local-preview-sidecar.test.ts
-        //
-        // Remove `usePolling: false` and "serves a Theme the Worker can reach"
-        // goes red: an edit written through `/applyFiles` never reaches the
-        // served module. Put it back and the file is green. The generated config
-        // polls because a container's writes arrive through the Sandbox API
-        // rather than as filesystem events; a local write *is* a filesystem
-        // event, and polling is what loses it.
-        //
-        // Why polling loses it is not established. The shape of the evidence —
-        // red on an idle machine, green inside the full suite where the load is
-        // higher — points at the watcher's first scan, but that is a hypothesis
-        // and not a measurement. Read that test's verdict only when it runs
-        // alone: a green `pnpm test` says nothing about this option.
-        server: {
-          host: LOCAL_PREVIEW_HOST,
-          port: this.port,
-          watch: { usePolling: false },
-        },
-        clearScreen: false,
-        customLogger: this.previewLogger(addLog),
-      });
-      // Asserted on the merged configuration rather than trusted from the
-      // options passed in: the generated config asks for polling, these
-      // options override it, and Vite resolves the two. Reading the result is
-      // the only way to know which one won — and the failure this prevents is
-      // silent, because a polling watcher serves a Theme perfectly well and
-      // only loses the writes that arrive while it is still enumerating.
-      if (server.config.server.watch?.usePolling) {
-        throw new Error(
-          `${LOCAL_PREVIEW_POLLING_WATCHER}: this transport needs native filesystem events, and the resolved Vite config asks for polling. A local write is a filesystem event; polling is what loses it while the watcher's first scan is still running. The generated config polls because a container's writes arrive through the Sandbox API instead — so the override belongs here, in the transport that does not use it.`,
-        );
+    // Everything that reads or replaces this preview's workspace or server
+    // runs in the preview's one queue, with `writeFiles`: a sync cannot land
+    // between a start's reconciliation and its writes, nor on a server that
+    // is being replaced, and a start cannot reuse a server that one queued
+    // ahead of it is about to replace.
+    return this.serialised(
+      input.previewId,
+      async (): Promise<StartPreviewServerResult> => {
+      // Judged here, in the queue, against what has actually been written:
+      // a start read before a newer one — or before a sync of a newer save —
+      // must not lay the older files back over it. Refused whole, as a fenced
+      // sync is; the same version passes. Only a start that passes records
+      // its versions, raised and never lowered.
+      if (input.fileVersions) {
+        const ledger = this.fenceLedgers.get(input.previewId) ?? {};
+        const stale = Object.entries(input.fileVersions)
+          .filter(([file, version]) => {
+            const recorded = ledger[file];
+            return typeof recorded === "number" && recorded > version;
+          })
+          .map(([file]) => file);
+        if (stale.length > 0) {
+          return {
+            ok: false,
+            stage: "preview-start-stale",
+            errorMessage: `PREVIEW_START_STALE: a newer version of ${stale
+              .slice(0, 3)
+              .join(", ")}${stale.length > 3 ? ", …" : ""} is already laid out.`,
+            logs,
+          };
+        }
+        for (const [file, version] of Object.entries(input.fileVersions)) {
+          const recorded = ledger[file];
+          if (typeof recorded !== "number" || recorded < version) {
+            ledger[file] = version;
+          }
+        }
+        this.fenceLedgers.set(input.previewId, ledger);
       }
-
-      await withReadyTimeout(
-        server.listen(),
-        this.readyTimeoutMs,
-        `LOCAL_PREVIEW_TIMEOUT: Vite did not start listening within ${this.readyTimeoutMs}ms.`,
-      );
-      const address = server.httpServer?.address();
-      const boundPort =
-        address && typeof address === "object" ? address.port : null;
-      if (!boundPort) {
-        throw new Error(
-          "LOCAL_PREVIEW_NO_PORT: Vite started without a listening socket.",
-        );
-      }
-
-      const origin = `http://${LOCAL_PREVIEW_HOST}:${boundPort}`;
-      const url = withPreviewServerBase(origin);
-      this.running.set(input.previewId, {
-        root,
-        workspaceFingerprint: prepared.workspaceFingerprint,
-        url,
-        origin,
-        server,
-      });
-
-      return {
-        ok: true,
-        url,
-        processId: undefined,
-        readyMs: Date.now() - startedAt,
-        timings: {
-          ...this.timings({
+      const existing = this.running.get(input.previewId);
+      if (existing && existing.workspaceFingerprint === prepared.workspaceFingerprint) {
+        return {
+          ok: true,
+          url: existing.url,
+          processId: undefined,
+          readyMs: 0,
+          timings: this.timings({
             requestStartedAt,
             workspacePlanMs,
-            workspaceReused: false,
-            reusedProcess: false,
+            workspaceReused: true,
+            reusedProcess: true,
           }),
-          workspaceMs,
-          workspaceMaterializeMs,
-          mkdirCalls,
-          writeCalls,
-          // Reconciliation deletes have no field in this result shape, which is
-          // the sandbox's. They are counted and logged instead of being
-          // reported as reads, which is what they are not.
-          readCalls: 0,
-          viteReadyMs: Date.now() - startedAt,
+          hoistedContentFields: prepared.hoistedContentFields,
+          warnings: prepared.previewWarnings,
+          logs,
+        };
+      }
+      if (existing) {
+        await this.stop(input.previewId);
+      }
+
+      const workspaceStartedAt = Date.now();
+      let mkdirCalls = 0;
+      let writeCalls = 0;
+      let deleteCalls = 0;
+      const writer = new LocalThemeWorkspaceWriter({ root });
+      const measured: ThemeWorkspaceWriter = {
+        async mkdir(dirPath, options) {
+          mkdirCalls += 1;
+          await writer.mkdir(dirPath, options);
         },
-        hoistedContentFields: prepared.hoistedContentFields,
-        warnings: prepared.previewWarnings,
-        logs,
+        async writeFile(filePath, content) {
+          writeCalls += 1;
+          await writer.writeFile(filePath, content);
+        },
+        listFiles: (dirPath, options) => writer.listFiles(dirPath, options),
+        async deleteFile(filePath) {
+          deleteCalls += 1;
+          await writer.deleteFile(filePath);
+        },
       };
-    } catch (error) {
-      if (server) await this.closeServer(server).catch(() => {});
-      return {
-        ok: false,
-        stage: "preview-server-start",
-        errorMessage:
-          error instanceof Error ? error.message : "Failed to start preview",
-        logs,
-      };
-    }
+
+      try {
+        // The marker means one thing: every file of this plan is on disk. It
+        // is withdrawn before the first file changes, so a start that fails
+        // halfway leaves no marker a later start could trust, and it is
+        // committed only after the last file is written. It does not say
+        // that Vite came up; that is the running server's to say.
+        await writer.mkdir("/workspace", { recursive: true });
+        await writer.writeFile(
+          `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
+          "dirty",
+        );
+        await materializeThemeSandboxWorkspace(measured, prepared.workspaceFiles, {
+          // Staged ahead of this start when it came over the sidecar, which
+          // cannot carry a loader; handed in directly when run in-process.
+          loadBinary:
+            input.loadBinary ??
+            ((ref, filePath) =>
+              this.readStagedBinary(input.previewId, ref, filePath)),
+        });
+        // Committed last, so a partial write can never make a later start trust
+        // an incomplete workspace. The in-memory fingerprint above is what
+        // actually decides reuse in this process; this is the same marker the
+        // sandbox writes, for a start that follows a process restart.
+        await writer.writeFile(
+          `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
+          prepared.workspaceFingerprint,
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          stage: "preview-workspace",
+          errorMessage:
+            error instanceof Error
+              ? error.message
+              : "Could not lay out the Theme workspace.",
+          logs,
+        };
+      }
+      const workspaceMaterializeMs = Date.now() - workspaceStartedAt;
+      if (deleteCalls > 0) {
+        addLog(
+          `Removed ${deleteCalls} file(s) an older workspace plan had left behind.`,
+        );
+      }
+      const workspaceMs = Date.now() - workspaceStartedAt;
+
+      const startedAt = Date.now();
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          // The same generated config the container runs, pointed at this root.
+          configFile: path.join(root, "vite.config.ts"),
+          root,
+          // Host and port are this transport's decisions, not the Theme's: the
+          // config states what may be served, never where. Inline options merge
+          // over the file's, so `server.fs` and `hmr` still come from it — but
+          // `watch` is overridden, and the reason is a command anyone can run
+          // rather than a theory:
+          //
+          //   pnpm exec vitest run src/lib/storefront/service/local-preview-sidecar.test.ts
+          //
+          // Remove `usePolling: false` and "serves a Theme the Worker can reach"
+          // goes red: an edit written through `/applyFiles` never reaches the
+          // served module. Put it back and the file is green. The generated config
+          // polls because a container's writes arrive through the Sandbox API
+          // rather than as filesystem events; a local write *is* a filesystem
+          // event, and polling is what loses it.
+          //
+          // Why polling loses it is not established. The shape of the evidence —
+          // red on an idle machine, green inside the full suite where the load is
+          // higher — points at the watcher's first scan, but that is a hypothesis
+          // and not a measurement. Read that test's verdict only when it runs
+          // alone: a green `pnpm test` says nothing about this option.
+          server: {
+            host: LOCAL_PREVIEW_HOST,
+            port: this.port,
+            watch: { usePolling: false },
+          },
+          clearScreen: false,
+          customLogger: this.previewLogger(addLog),
+        });
+        // Asserted on the merged configuration rather than trusted from the
+        // options passed in: the generated config asks for polling, these
+        // options override it, and Vite resolves the two. Reading the result is
+        // the only way to know which one won — and the failure this prevents is
+        // silent, because a polling watcher serves a Theme perfectly well and
+        // only loses the writes that arrive while it is still enumerating.
+        if (server.config.server.watch?.usePolling) {
+          throw new Error(
+            `${LOCAL_PREVIEW_POLLING_WATCHER}: this transport needs native filesystem events, and the resolved Vite config asks for polling. A local write is a filesystem event; polling is what loses it while the watcher's first scan is still running. The generated config polls because a container's writes arrive through the Sandbox API instead — so the override belongs here, in the transport that does not use it.`,
+          );
+        }
+
+        await withReadyTimeout(
+          server.listen(),
+          this.readyTimeoutMs,
+          `LOCAL_PREVIEW_TIMEOUT: Vite did not start listening within ${this.readyTimeoutMs}ms.`,
+        );
+        const address = server.httpServer?.address();
+        const boundPort =
+          address && typeof address === "object" ? address.port : null;
+        if (!boundPort) {
+          throw new Error(
+            "LOCAL_PREVIEW_NO_PORT: Vite started without a listening socket.",
+          );
+        }
+
+        const origin = `http://${LOCAL_PREVIEW_HOST}:${boundPort}`;
+        const url = withPreviewServerBase(origin);
+        this.running.set(input.previewId, {
+          root,
+          workspaceFingerprint: prepared.workspaceFingerprint,
+          url,
+          origin,
+          server,
+        });
+
+        return {
+          ok: true,
+          url,
+          processId: undefined,
+          readyMs: Date.now() - startedAt,
+          timings: {
+            ...this.timings({
+              requestStartedAt,
+              workspacePlanMs,
+              workspaceReused: false,
+              reusedProcess: false,
+            }),
+            workspaceMs,
+            workspaceMaterializeMs,
+            mkdirCalls,
+            writeCalls,
+            // Reconciliation deletes have no field in this result shape, which is
+            // the sandbox's. They are counted and logged instead of being
+            // reported as reads, which is what they are not.
+            readCalls: 0,
+            viteReadyMs: Date.now() - startedAt,
+          },
+          hoistedContentFields: prepared.hoistedContentFields,
+          warnings: prepared.previewWarnings,
+          logs,
+        };
+      } catch (error) {
+        if (server) await this.closeServer(server).catch(() => {});
+        return {
+          ok: false,
+          stage: "preview-server-start",
+          errorMessage:
+            error instanceof Error ? error.message : "Failed to start preview",
+          logs,
+        };
+      }
+      },
+    );
   }
 
   /**
@@ -540,6 +628,188 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * an id from a transport that does have processes is asking a question that
    * is still meaningful, so it is ignored rather than refused.
    */
+  /**
+   * Where a preview's staged binary files wait, by digest.
+   *
+   * Beside the workspaces, never inside one: the workspace is laid out only
+   * by a start, which is what keeps its fingerprint honest, and Vite serves
+   * the workspace. A preview id cannot name this directory, since workspace
+   * names never begin with a dot.
+   */
+  private stagingRootFor(previewId: string): string {
+    return path.join(
+      this.workspacesRoot,
+      ".binary-staging",
+      workspaceDirectoryName(previewId),
+    );
+  }
+
+  /**
+   * Keeps one binary file's bytes for the start that will name them.
+   *
+   * Nothing is written until the bytes are shown to be what the caller says:
+   * a well-formed digest, a size within the per-file quota, and bytes of that
+   * size that hash to that digest. They land under a temporary name and are
+   * renamed into place, so a reader never sees half a file. The workspace is
+   * not touched; a start lays them out, and only a start commits it.
+   */
+  async stageBinary(input: {
+    previewId: string;
+    digest: string;
+    sizeBytes: number;
+    bytes: Uint8Array;
+  }): Promise<{ staged: true }> {
+    // Refused, not made safe: a name that had to be rewritten is not the
+    // preview the caller meant, and staging under another name would hand its
+    // bytes to whichever preview that name belongs to.
+    if (!STAGED_PREVIEW_ID.test(input.previewId)) {
+      throw new LocalPreviewStagingError("the preview id is not a valid name");
+    }
+    if (!SHA256_DIGEST.test(input.digest)) {
+      throw new LocalPreviewStagingError("the digest is not a SHA-256");
+    }
+    if (
+      !Number.isInteger(input.sizeBytes) ||
+      input.sizeBytes < 0 ||
+      input.sizeBytes > LOCAL_PREVIEW_MAX_BINARY_BYTES
+    ) {
+      throw new LocalPreviewStagingError("the size is out of range");
+    }
+    if (input.bytes.byteLength !== input.sizeBytes) {
+      throw new LocalPreviewStagingError(
+        `${input.bytes.byteLength} bytes arrived, ${input.sizeBytes} were declared`,
+      );
+    }
+    if (sha256Hex(input.bytes) !== input.digest) {
+      throw new LocalPreviewStagingError("the bytes do not hash to the digest");
+    }
+    // Expired first: it removes directories it empties, which would include
+    // this preview's own if it were created before.
+    await this.expireStaging();
+    const root = this.stagingRootFor(input.previewId);
+    await fs.mkdir(root, { recursive: true });
+    await this.makeRoomInStaging(root, input.digest, input.sizeBytes);
+    const target = path.join(root, input.digest);
+    const temporary = path.join(root, `.${input.digest}.${randomUUID()}.tmp`);
+    await fs.writeFile(temporary, input.bytes);
+    await fs.rename(temporary, target);
+    return { staged: true };
+  }
+
+  /**
+   * Removes what no start can still want, across every preview's staging:
+   * temporary files of stages that never finished, and files not staged
+   * again within the time limit. Directories left empty go too, so a preview
+   * that is gone leaves nothing behind.
+   */
+  private async expireStaging() {
+    const stagingRoot = path.join(this.workspacesRoot, ".binary-staging");
+    const now = Date.now();
+    for (const directory of await fs
+      .readdir(stagingRoot, { withFileTypes: true })
+      .catch(() => [])) {
+      if (!directory.isDirectory()) continue;
+      const root = path.join(stagingRoot, directory.name);
+      let remaining = 0;
+      for (const entry of await fs
+        .readdir(root, { withFileTypes: true })
+        .catch(() => [])) {
+        if (!entry.isFile()) continue;
+        const file = path.join(root, entry.name);
+        const stat = await fs.stat(file).catch(() => null);
+        if (!stat) continue;
+        const limit = entry.name.endsWith(".tmp")
+          ? this.staleTempMs
+          : this.stagedTtlMs;
+        if (now - stat.mtimeMs > limit) {
+          await fs.rm(file, { force: true });
+        } else {
+          remaining += 1;
+        }
+      }
+      // Only a directory idle for as long as a stale temporary file: one just
+      // created by a stage in another request is empty until its file lands.
+      const idle = await fs.stat(root).catch(() => null);
+      if (
+        remaining === 0 &&
+        idle &&
+        now - idle.mtimeMs > this.staleTempMs
+      ) {
+        await fs.rmdir(root).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * Makes room for one more file in a preview's staging, or refuses.
+   *
+   * Only files older than the grace period are evicted, oldest first: a
+   * younger one may be about to be named by a start. If the file still does
+   * not fit, the stage is refused — a start that cannot be prepared says so,
+   * rather than quietly removing what another is preparing. Bytes already
+   * staged under the same digest are not counted twice.
+   */
+  private async makeRoomInStaging(
+    root: string,
+    digest: string,
+    incomingBytes: number,
+  ) {
+    const now = Date.now();
+    const kept: { file: string; size: number; modified: number }[] = [];
+    for (const entry of await fs
+      .readdir(root, { withFileTypes: true })
+      .catch(() => [])) {
+      if (!entry.isFile() || entry.name === digest) continue;
+      const file = path.join(root, entry.name);
+      const stat = await fs.stat(file).catch(() => null);
+      if (stat) kept.push({ file, size: stat.size, modified: stat.mtimeMs });
+    }
+    kept.sort((left, right) => left.modified - right.modified);
+    let total = kept.reduce((sum, entry) => sum + entry.size, 0);
+    for (const oldest of kept) {
+      if (total + incomingBytes <= this.maxStagedBytes) break;
+      if (now - oldest.modified <= this.stagedGraceMs) break;
+      await fs.rm(oldest.file, { force: true });
+      total -= oldest.size;
+    }
+    if (total + incomingBytes > this.maxStagedBytes) {
+      throw new LocalPreviewStagingError(
+        "the preview's staging is full of files a start may still need",
+      );
+    }
+  }
+
+  /** A staged file's bytes, checked again: the disk is not the transfer. */
+  private async readStagedBinary(
+    previewId: string,
+    ref: { digest: string; sizeBytes: number },
+    filePath: string,
+  ): Promise<Uint8Array> {
+    // The digest names a file, so it is checked before it becomes a path: a
+    // start's JSON is the caller's word, and `../` is not a SHA-256.
+    if (!SHA256_DIGEST.test(ref.digest)) {
+      throw new Error(
+        `BINARY_DIGEST_INVALID: "${filePath}" names no SHA-256 digest.`,
+      );
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(
+        await fs.readFile(path.join(this.stagingRootFor(previewId), ref.digest)),
+      );
+    } catch {
+      throw new Error(
+        `BINARY_NOT_STAGED: "${filePath}" (${ref.digest}) was not staged before the start.`,
+      );
+    }
+    if (bytes.byteLength !== ref.sizeBytes || sha256Hex(bytes) !== ref.digest) {
+      throw new Error(
+        `BINARY_STAGED_CORRUPT: the staged bytes of "${filePath}" are not ${ref.digest}.`,
+      );
+    }
+    return bytes;
+  }
+
   async stop(previewId: string, _processId?: string): Promise<void> {
     const running = this.running.get(previewId);
     this.running.delete(previewId);
@@ -607,11 +877,18 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     refused: readonly string[];
   }> {
     // Queued per preview, so the fence comparison and the write it allows are
-    // one step: no other write for this preview can land between them.
+    // one step: no other write for this preview — nor a start — can land
+    // between them.
+    return this.serialised(previewId, () => this.writeFilesNow(previewId, files));
+  }
+
+  /** Runs `operation` after everything already queued for this preview. */
+  private async serialised<T>(
+    previewId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const previous = this.writeQueues.get(previewId) ?? Promise.resolve();
-    const run = previous
-      .catch(() => {})
-      .then(() => this.writeFilesNow(previewId, files));
+    const run = previous.catch(() => {}).then(operation);
     this.writeQueues.set(previewId, run);
     try {
       return await run;

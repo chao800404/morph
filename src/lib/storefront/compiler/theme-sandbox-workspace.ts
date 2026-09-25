@@ -81,12 +81,54 @@ export type ThemeWorkspaceWriter = {
   deleteFile?(filePath: string): Promise<unknown>;
 };
 
-export type ThemeWorkspaceFile = Readonly<{
-  path: string;
-  content: string | Uint8Array;
+/**
+ * A binary file by reference: its bytes stay in the immutable blob store
+ * until the moment they are written.
+ *
+ * A plan holds only this. Holding the bytes would keep every image of a
+ * Theme in memory for the length of a start — up to the whole `public/`
+ * quota, several times over once encoded for transport — inside a Worker
+ * that has 128 MB in all.
+ */
+export type ThemeWorkspaceBinaryRef = Readonly<{
+  /** SHA-256 of the bytes; their address in the blob store. */
+  digest: string;
+  sizeBytes: number;
 }>;
 
+export type ThemeWorkspaceTextFile = Readonly<{ path: string; content: string }>;
+export type ThemeWorkspaceBinaryFile = Readonly<{
+  path: string;
+  binary: ThemeWorkspaceBinaryRef;
+}>;
+export type ThemeWorkspaceFile = ThemeWorkspaceTextFile | ThemeWorkspaceBinaryFile;
+
+export function isBinaryWorkspaceFile(
+  file: ThemeWorkspaceFile,
+): file is ThemeWorkspaceBinaryFile {
+  return "binary" in file;
+}
+
+/**
+ * Reads one binary file's bytes when it is about to be written.
+ *
+ * The caller vouches for them: it reads them from the blob store, whose read
+ * checks them against the digest. The size is checked again here.
+ */
+export type ThemeWorkspaceBinaryLoader = (
+  ref: ThemeWorkspaceBinaryRef,
+  path: string,
+) => Promise<Uint8Array>;
+
 const WORKSPACE_WRITE_CONCURRENCY = 8;
+
+/**
+ * Binary files loaded at once. Each is held from the moment its load starts
+ * until its write returns, so at most this many files' bytes — each at most
+ * the per-file quota, plus whatever the writer encodes them into — are ever
+ * in memory together.
+ */
+export const WORKSPACE_BINARY_CONCURRENCY = 2;
 
 export async function runWithConcurrency<T>(
   items: readonly T[],
@@ -121,6 +163,8 @@ export type ThemeWorkspaceMode = "build" | "preview-server";
 export type PrepareThemeWorkspaceInput = Readonly<{
   session: ThemeWorkspaceWriter;
   files: readonly ThemeWorkspaceFile[];
+  /** Reads a binary file when it is written; see `materializeThemeSandboxWorkspace`. */
+  loadBinary?: ThemeWorkspaceBinaryLoader;
   entry: string;
   buildId: string;
   dependencies?: Readonly<Record<string, string>>;
@@ -160,10 +204,7 @@ export type PlanThemeWorkspaceInput = Omit<
     toolchainRoot?: string;
   }>;
 
-export type ThemeWorkspacePlanFile = Readonly<{
-  path: string;
-  content: string | Uint8Array;
-}>;
+export type ThemeWorkspacePlanFile = ThemeWorkspaceFile;
 
 export type PrepareThemeWorkspaceResult =
   | Readonly<{
@@ -224,9 +265,11 @@ export function planThemeSandboxWorkspace({
   // keeps them — that is where a hand-written marker is doing its job — but a
   // shopper has no use for them, and they describe the Theme's own source on
   // every page.
+  const textOf = (file: ThemeWorkspaceFile) =>
+    isBinaryWorkspaceFile(file) ? "" : file.content;
   const textFiles = requestedFiles.map((file) => ({
     path: file.path,
-    content: typeof file.content === "string" ? file.content : "",
+    content: textOf(file),
   }));
   const strip = mode === "build" ? stripEditorMarkers(textFiles) : null;
   const strippedByPath = new Map(
@@ -234,7 +277,7 @@ export function planThemeSandboxWorkspace({
   );
   const sourceFiles: readonly ThemeWorkspaceFile[] = requestedFiles.map(
     (file) =>
-      typeof file.content === "string" && strippedByPath.has(file.path)
+      !isBinaryWorkspaceFile(file) && strippedByPath.has(file.path)
         ? { path: file.path, content: strippedByPath.get(file.path)! }
         : file,
   );
@@ -249,13 +292,13 @@ export function planThemeSandboxWorkspace({
       ? injectPreviewBindings(
           sourceFiles.map((file) => ({
             path: file.path,
-            content: typeof file.content === "string" ? file.content : "",
+            content: textOf(file),
           })),
         )
       : null;
   const boundFiles: readonly ThemeWorkspaceFile[] = sourceFiles.map(
     (file, index) =>
-      typeof file.content === "string" && bindings
+      !isBinaryWorkspaceFile(file) && bindings
         ? { path: file.path, content: bindings.files[index]!.content }
         : file,
   );
@@ -265,7 +308,7 @@ export function planThemeSandboxWorkspace({
       ? hoistColocatedContentFieldsForPreview(
           boundFiles.map((file) => ({
             path: file.path,
-            content: typeof file.content === "string" ? file.content : "",
+            content: textOf(file),
           })),
         )
       : null;
@@ -297,10 +340,10 @@ export function planThemeSandboxWorkspace({
   // avoiding a partially-written workspace when validation fails, this lets
   // independent directory and file operations share a bounded number of
   // Sandbox RPCs instead of paying one round trip at a time.
-  const pendingWrites = new Map<string, string | Uint8Array>();
+  const pendingWrites = new Map<string, string | ThemeWorkspaceBinaryRef>();
   const queueWorkspaceFile = (
     filePath: string,
-    content: string | Uint8Array,
+    content: string | ThemeWorkspaceBinaryRef,
   ) => {
     pendingWrites.set(filePath, content);
   };
@@ -314,7 +357,10 @@ export function planThemeSandboxWorkspace({
 
   for (const file of files) {
     const fullPath = `${workspaceRoot}/${file.path.replace(/\\/g, "/")}`;
-    queueWorkspaceFile(fullPath, file.content);
+    queueWorkspaceFile(
+      fullPath,
+      isBinaryWorkspaceFile(file) ? file.binary : file.content,
+    );
 
     if (file.path === "index.html") {
       hasCustomIndexHtml = true;
@@ -327,7 +373,7 @@ export function planThemeSandboxWorkspace({
   const bootstrap = createThemeBuildBootstrap({
     files: files.map((file) => ({
       path: file.path,
-      content: typeof file.content === "string" ? file.content : "",
+      content: textOf(file),
     })),
     entry: entry,
     cssFiles,
@@ -338,7 +384,7 @@ export function planThemeSandboxWorkspace({
   const pathAliasConfig = readThemePathAliases(
     files.map((file) => ({
       path: file.path,
-      content: typeof file.content === "string" ? file.content : "",
+      content: textOf(file),
     })),
   );
   if (pathAliasConfig.diagnostics.length > 0) {
@@ -366,7 +412,7 @@ export function planThemeSandboxWorkspace({
     collectThemeImportProtectionDiagnosticsForBuild(
       files.map((file) => ({
         path: file.path,
-        content: typeof file.content === "string" ? file.content : "",
+        content: textOf(file),
       })),
       {
         entry: entry,
@@ -833,10 +879,13 @@ sourcemap: false,
 `;
   queueWorkspaceFile(`${workspaceRoot}/vite.config.ts`, viteConfigContent);
 
-  const workspaceFiles = Array.from(pendingWrites, ([path, content]) => ({
-    path,
-    content,
-  }));
+  const workspaceFiles = Array.from(
+    pendingWrites,
+    ([path, content]): ThemeWorkspacePlanFile =>
+      typeof content === "string" ? { path, content } : { path, binary: content },
+  );
+  // A binary file counts by its digest: the same bytes have the same one,
+  // and spelling them out here would put every image into the fingerprint.
   const workspaceFingerprint = sha256(
     JSON.stringify({
       format: 1,
@@ -844,10 +893,13 @@ sourcemap: false,
         .sort((left, right) => left.path.localeCompare(right.path))
         .map((file) => ({
           path: file.path,
-          content:
-            typeof file.content === "string"
-              ? { type: "text", value: file.content }
-              : { type: "bytes", value: Array.from(file.content) },
+          content: isBinaryWorkspaceFile(file)
+            ? {
+                type: "blob",
+                digest: file.binary.digest,
+                sizeBytes: file.binary.sizeBytes,
+              }
+            : { type: "text", value: file.content },
         })),
     }),
   );
@@ -901,9 +953,21 @@ export function unplannedWorkspaceFiles(
     );
 }
 
+export type MaterializeThemeWorkspaceOptions = Readonly<{
+  /** Required whenever the plan holds a binary file. */
+  loadBinary?: ThemeWorkspaceBinaryLoader;
+  /**
+   * Told how many binary files are held each time that changes — from the
+   * start of a load to the end of its write. For proving the bound, not for
+   * behaviour.
+   */
+  onBinaryHeld?: (held: number) => void;
+}>;
+
 export async function materializeThemeSandboxWorkspace(
   session: ThemeWorkspaceWriter,
   workspaceFiles: readonly ThemeWorkspacePlanFile[],
+  options: MaterializeThemeWorkspaceOptions = {},
 ): Promise<void> {
   const workspaceRoot = "/workspace";
   await session.mkdir(workspaceRoot, { recursive: true });
@@ -962,10 +1026,46 @@ export async function materializeThemeSandboxWorkspace(
     WORKSPACE_WRITE_CONCURRENCY,
     async (dirPath) => session.mkdir(dirPath, { recursive: true }),
   );
+  const textFiles = workspaceFiles.filter(
+    (file): file is ThemeWorkspaceTextFile => !isBinaryWorkspaceFile(file),
+  );
+  const binaryFiles = workspaceFiles.filter(isBinaryWorkspaceFile);
+  if (binaryFiles.length > 0 && !options.loadBinary) {
+    throw new Error(
+      "BINARY_LOADER_MISSING: The Theme workspace holds binary files but nothing can read their bytes.",
+    );
+  }
   await runWithConcurrency(
-    workspaceFiles,
+    textFiles,
     WORKSPACE_WRITE_CONCURRENCY,
     async (file) => session.writeFile(file.path, file.content),
+  );
+  // Loaded one at a time per slot and released as soon as the write returns,
+  // so the bytes in memory never exceed this many files.
+  let held = 0;
+  await runWithConcurrency(
+    binaryFiles,
+    WORKSPACE_BINARY_CONCURRENCY,
+    async (file) => {
+      held += 1;
+      options.onBinaryHeld?.(held);
+      try {
+        let bytes: Uint8Array | null = await options.loadBinary!(
+          file.binary,
+          file.path,
+        );
+        if (bytes.byteLength !== file.binary.sizeBytes) {
+          throw new Error(
+            `BINARY_SIZE_MISMATCH: "${file.path}" read ${bytes.byteLength} bytes, expected ${file.binary.sizeBytes}.`,
+          );
+        }
+        await session.writeFile(file.path, bytes);
+        bytes = null;
+      } finally {
+        held -= 1;
+        options.onBinaryHeld?.(held);
+      }
+    },
   );
 }
 
@@ -975,6 +1075,8 @@ export async function prepareThemeSandboxWorkspace({
 }: PrepareThemeWorkspaceInput): Promise<PrepareThemeWorkspaceResult> {
   const plan = planThemeSandboxWorkspace(input);
   if (!plan.ok) return plan;
-  await materializeThemeSandboxWorkspace(session, plan.workspaceFiles);
+  await materializeThemeSandboxWorkspace(session, plan.workspaceFiles, {
+    loadBinary: input.loadBinary,
+  });
   return plan;
 }

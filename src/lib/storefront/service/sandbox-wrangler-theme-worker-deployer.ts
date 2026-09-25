@@ -1,4 +1,5 @@
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
+import { writeSandboxWorkspaceFile } from "@/lib/storefront/compiler/sandbox-file-writer";
 import type {
   CloudflareSandboxProvider,
   CloudflareSandboxSession,
@@ -163,7 +164,13 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
             message: `Worker module "${module.modulePath}" is missing from the immutable artifact.`,
           };
         }
-        await sandbox.writeFile(`${SERVER_DIR}/${module.modulePath}`, bytes);
+        // Bytes, so base64: the SDK takes strings, and a Uint8Array handed to
+        // it is serialised as an object of numbered keys, not as the file.
+        await writeSandboxWorkspaceFile(
+          sandbox,
+          `${SERVER_DIR}/${module.modulePath}`,
+          bytes,
+        );
       }
 
       for (const asset of request.plan.assets) {
@@ -178,7 +185,11 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
             message: `Client asset "${asset.servedPath}" is missing from the immutable artifact.`,
           };
         }
-        await sandbox.writeFile(`${CLIENT_DIR}${asset.servedPath}`, bytes);
+        await writeSandboxWorkspaceFile(
+          sandbox,
+          `${CLIENT_DIR}${asset.servedPath}`,
+          bytes,
+        );
       }
 
       // `no_bundle` keeps the built chunks intact, but then the entry only

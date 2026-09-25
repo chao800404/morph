@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -75,6 +75,23 @@ test.describe("publish loop", () => {
     await page.waitForTimeout(4_000);
 
     const releasesBefore = await listReleaseLabels(page);
+
+    // A binary file in public/, uploaded through the ordinary write, so the
+    // release this run publishes has to carry its exact bytes to the served
+    // storefront. Only under the runner: it owns a throwaway database and is
+    // what opens the upload entry, so a run by hand never writes an image into
+    // whatever store the shell points at.
+    const image = HANDOFF_PATH ? await uploadRunImage(page) : null;
+    if (image) {
+      // The editor holds the source generation it loaded with, and building
+      // freezes a revision against it. Reloading takes the one the upload
+      // left, instead of a build refused as out of date.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible(
+        { timeout: 45_000 },
+      );
+      await page.waitForTimeout(4_000);
+    }
 
     // The marker does one job: it puts a value in this run's content that can be
     // looked for in what the published artifact renders.
@@ -246,7 +263,11 @@ test.describe("publish loop", () => {
     await expect(liveRow).toHaveCount(1);
     await expect(liveRow).toContainText("Live");
 
-    await writeHandoff(page, { marker, releaseLabel: releasesAfter[0] });
+    await writeHandoff(page, {
+      marker,
+      releaseLabel: releasesAfter[0],
+      image,
+    });
   });
 });
 
@@ -270,7 +291,11 @@ test.describe("publish loop", () => {
  */
 async function writeHandoff(
   page: import("@playwright/test").Page,
-  details: { marker: string; releaseLabel: string },
+  details: {
+    marker: string;
+    releaseLabel: string;
+    image: RunImage | null;
+  },
 ) {
   if (!HANDOFF_PATH) return;
 
@@ -290,11 +315,12 @@ async function writeHandoff(
     HANDOFF_PATH,
     JSON.stringify(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         marker: details.marker,
         releaseLabel: details.releaseLabel,
         storefrontId,
         themeId,
+        image: details.image,
       },
       null,
       2,
@@ -315,4 +341,90 @@ async function listReleaseLabels(page: import("@playwright/test").Page) {
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   return labels.map((label) => label.trim());
+}
+
+type RunImage = {
+  /** Where it lives in the Theme. */
+  path: string;
+  /** Where the storefront serves it. */
+  urlPath: string;
+  sha256: string;
+  sizeBytes: number;
+  mimeType: string;
+};
+
+const RUN_IMAGE_PATH = "public/images/e2e-run.png";
+
+/**
+ * Uploads a PNG unique to this run through `/api/dev/theme-binary-file`, as
+ * the signed-in editor.
+ *
+ * A PNG signature and then random bytes: the format check reads the
+ * signature, the build copies the file without decoding it, and bytes no
+ * earlier run produced mean an artifact left behind cannot pass for this one.
+ *
+ * The write names the source generation it expects, like every write. The
+ * editor does not show it, so the first attempt says 0 and a conflict, which
+ * reports the current one, is answered once with that.
+ */
+async function uploadRunImage(
+  page: import("@playwright/test").Page,
+): Promise<RunImage> {
+  const match = /\/store\/([^/]+)\/themes\/([^/]+)/.exec(page.url());
+  if (!match) {
+    throw new Error(
+      `Could not read a storefront and theme from the editor URL: ${page.url()}`,
+    );
+  }
+  const [, storefrontId, themeId] = match;
+  const bytes = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    randomBytes(256 * 1024),
+  ]);
+
+  const send = (expectedSourceGeneration: number) =>
+    page.request.post(
+      `/api/dev/theme-binary-file?${new URLSearchParams({
+        storefrontId,
+        themeId,
+        path: RUN_IMAGE_PATH,
+        expectedSourceGeneration: String(expectedSourceGeneration),
+        expectMissing: "1",
+      })}`,
+      {
+        headers: { "content-type": "application/octet-stream" },
+        data: bytes,
+      },
+    );
+
+  let response = await send(0);
+  if (response.status() === 409) {
+    const { message } = (await response.json()) as { message: string };
+    const current = /source generation is (\d+)/.exec(message);
+    expect(
+      current,
+      `a conflict that names no generation: ${message}`,
+    ).not.toBeNull();
+    response = await send(Number(current![1]));
+  }
+  expect(response.status(), await response.text()).toBe(200);
+  const saved = (
+    (await response.json()) as {
+      data: { blobDigest: string; sizeBytes: number; mimeType: string };
+    }
+  ).data;
+
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  // What was stored is what was sent, before anything downstream is judged.
+  expect(saved.blobDigest).toBe(sha256);
+  expect(saved.sizeBytes).toBe(bytes.byteLength);
+  expect(saved.mimeType).toBe("image/png");
+
+  return {
+    path: RUN_IMAGE_PATH,
+    urlPath: `/${RUN_IMAGE_PATH.slice("public/".length)}`,
+    sha256,
+    sizeBytes: bytes.byteLength,
+    mimeType: "image/png",
+  };
 }

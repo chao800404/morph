@@ -28,6 +28,20 @@ export function serializeCompilerInput(
       path: f.path,
       content: f.content,
     })),
+    // By digest, and only when present: a revision that changes an image
+    // must not hash like the one before it, and one with no binary files
+    // must hash exactly as it did before binary files existed.
+    ...(input.binaryFiles && input.binaryFiles.length > 0
+      ? {
+          binaryFiles: [...input.binaryFiles]
+            .sort((a, b) => a.path.localeCompare(b.path))
+            .map((file) => ({
+              path: file.path,
+              digest: file.digest,
+              sizeBytes: file.sizeBytes,
+            })),
+        }
+      : {}),
   };
   return JSON.stringify(payload);
 }

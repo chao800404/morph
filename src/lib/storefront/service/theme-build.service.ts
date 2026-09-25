@@ -14,7 +14,10 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import { themeRevisionStore } from "@/lib/storefront/storage/theme-storage.server";
+import {
+  themeRevisionStore,
+  themeSourceStore,
+} from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
 
 export type RequestPreviewBuildOptions = {
@@ -44,6 +47,13 @@ export class ThemeBuildService {
     private readonly revisionStore: ThemeRevisionStore = themeRevisionStore,
     /** Ends the isolated session a running build occupies. */
     private readonly terminator?: ThemeBuildTerminator,
+    /**
+     * Reads a binary file's bytes by digest, through the blob store's check
+     * against it. Handed to the runner, which reads each file as it writes.
+     */
+    private readonly readBinaryFile: (digest: string) => Promise<Uint8Array> = (
+      digest,
+    ) => themeSourceStore.readBinaryFile(digest),
   ) {}
 
   /**
@@ -380,7 +390,10 @@ export class ThemeBuildService {
     // Stage 4: Run Build via Runner.
     let runnerResult: ThemeBuildRunnerResult;
     try {
-      runnerResult = await runner.run(buildInput);
+      runnerResult = await runner.run({
+        ...buildInput,
+        readBinaryFile: this.readBinaryFile,
+      });
     } catch (runnerException) {
       const exceptionMessage =
         runnerException instanceof Error

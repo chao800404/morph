@@ -2,7 +2,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
-import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import {
+  planThemeSandboxWorkspace,
+  type ThemeWorkspaceFile,
+} from "./theme-sandbox-workspace";
 
 /**
  * The insurance between the two Live Preview transports.
@@ -79,14 +82,16 @@ describe("the two Live Preview transports", () => {
 
     // And every file is byte-identical once the two roots are read as the same
     // place, which is the whole claim: one definition, two locations.
-    const rewritten = (file: { path: string; content: string | Uint8Array }) =>
-      String(file.content)
+    const text = (file: ThemeWorkspaceFile) =>
+      "content" in file ? file.content : JSON.stringify(file.binary);
+    const rewritten = (file: ThemeWorkspaceFile) =>
+      text(file)
         .split("/checkout/.morph-previews/theme-a-user-1")
         .join("/workspace")
         .split("/checkout")
         .join("/opt/morph-toolchain");
     for (const [index, file] of local.workspaceFiles.entries()) {
-      expect(rewritten(file)).toBe(String(sandbox.workspaceFiles[index]!.content));
+      expect(rewritten(file)).toBe(text(sandbox.workspaceFiles[index]!));
     }
   });
 

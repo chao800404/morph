@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const HANDOFF_SCHEMA_VERSION = 1;
+const HANDOFF_SCHEMA_VERSION = 2;
 
 /**
  * Bindings declared on their own rather than read from `wrangler.jsonc`.
@@ -206,6 +206,19 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
       throw new Error(`HANDOFF_INCOMPLETE: ${field} is missing.`);
     }
   }
+  // Null when the spec ran without the runner's upload entry; present, it is
+  // held to the same standard as the rest.
+  const image = handoff.image ?? null;
+  if (image !== null) {
+    for (const field of ["path", "urlPath", "sha256", "mimeType"]) {
+      if (typeof image[field] !== "string" || image[field] === "") {
+        throw new Error(`HANDOFF_INCOMPLETE: image.${field} is missing.`);
+      }
+    }
+    if (!Number.isInteger(image.sizeBytes) || image.sizeBytes <= 0) {
+      throw new Error("HANDOFF_INCOMPLETE: image.sizeBytes is missing.");
+    }
+  }
 
   const { getPlatformProxy } = await import("wrangler");
   const configPath = path.join(outDir, "..", "verifier.wrangler.json");
@@ -364,6 +377,30 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
       }),
     );
 
+    // The uploaded image, where a storefront serves it from: the runtime's
+    // client assets. Only there — a copy in the preview output alone would
+    // leave the published site without it.
+    if (image !== null) {
+      const clientDirectory = (
+        manifest.runtime?.clientAssetsDirectory ?? "runtime/client"
+      ).replace(/^\/+|\/+$/g, "");
+      const expected = `${clientDirectory}${image.urlPath}`;
+      const entry = manifest.files.find((file) => file.path === expected);
+      if (!entry) {
+        throw new Error(
+          `IMAGE_NOT_IN_RUNTIME: the manifest has no ${expected}. Found: ${manifest.files
+            .filter((file) => file.path.endsWith(image.urlPath))
+            .map((file) => file.path)
+            .join(", ") || "nowhere"}.`,
+        );
+      }
+      if (entry.sha256 !== image.sha256 || entry.sizeBytes !== image.sizeBytes) {
+        throw new Error(
+          `IMAGE_CHANGED_IN_BUILD: ${expected} is ${entry.sizeBytes} bytes hashing to ${entry.sha256}; the upload was ${image.sizeBytes} bytes hashing to ${image.sha256}.`,
+        );
+      }
+    }
+
     const workerConfig = await writeWorkerConfig(
       outDir,
       manifest,
@@ -381,6 +418,7 @@ export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }
       artifactDir: outDir,
       workerConfig,
       fileCount: files.length,
+      image,
     };
   } finally {
     await platform.dispose();

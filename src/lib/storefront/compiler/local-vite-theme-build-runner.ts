@@ -250,6 +250,36 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         }
       }
 
+      // Binary files, one at a time: read, checked, written, released, so a
+      // build never holds more than one file's bytes. The containment rule
+      // is the one source is held to.
+      const binaryFiles = input.binaryFiles ?? [];
+      if (binaryFiles.length > 0 && !input.readBinaryFile) {
+        throw new Error(
+          "BINARY_LOADER_MISSING: The build holds binary files but nothing can read their bytes.",
+        );
+      }
+      for (const file of binaryFiles) {
+        const refusal = refuseThemeWorkspacePath(file.path);
+        if (refusal) throw new Error(refusal);
+        const fullPath = path.resolve(tempDir, file.path);
+        const rel = path.relative(tempDir, fullPath);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) {
+          throw new Error(
+            `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes workspace root`,
+          );
+        }
+        let bytes: Uint8Array | null = await input.readBinaryFile!(file.digest);
+        if (bytes.byteLength !== file.sizeBytes) {
+          throw new Error(
+            `BINARY_SIZE_MISMATCH: "${file.path}" read ${bytes.byteLength} bytes, expected ${file.sizeBytes}.`,
+          );
+        }
+        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, bytes);
+        bytes = null;
+      }
+
       const bootstrap = createThemeBuildBootstrap({
         files: input.files,
         entry: input.entry,

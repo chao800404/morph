@@ -18,6 +18,7 @@ import {
   prepareThemeSandboxWorkspace,
   PINNED_SANDBOX_DEPENDENCIES,
 } from "./theme-sandbox-workspace";
+import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -43,7 +44,12 @@ export type CloudflareSandboxReadFileResult = {
  * Matches official @cloudflare/sandbox SandboxClient API.
  */
 export interface CloudflareSandboxSession {
-  writeFile(filePath: string, content: string | Uint8Array): Promise<void>;
+  /** Text only, as the SDK takes it; bytes go through `writeSandboxWorkspaceFile`. */
+  writeFile(
+    filePath: string,
+    content: string,
+    options?: { encoding?: string },
+  ): Promise<unknown>;
   mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void>;
   readFile(
     filePath: string,
@@ -335,6 +341,41 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
     }
 
+    // Binary files: the same containment, and something to read them with.
+    const binaryFiles = input.binaryFiles ?? [];
+    for (const file of binaryFiles) {
+      const refusal = refuseThemeWorkspacePath(file.path);
+      if (refusal) {
+        addLog("error", refusal);
+        return {
+          success: false,
+          errorMessage: refusal,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: refusal }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+    }
+    const readBinaryFile = input.readBinaryFile;
+    if (binaryFiles.length > 0 && !readBinaryFile) {
+      const msg =
+        "BINARY_LOADER_MISSING: The build holds binary files but nothing can read their bytes.";
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage: "binary-files",
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
     let sandbox: CloudflareSandboxSession | null = null;
 
     try {
@@ -374,9 +415,26 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         throw new Error("Failed to initialize Cloudflare Sandbox session");
       }
 
+      const sandboxSession = sandbox;
       const prepared = await prepareThemeSandboxWorkspace({
-        session: sandbox,
-        files: input.files,
+        session: {
+          writeFile: (filePath, content) =>
+            writeSandboxWorkspaceFile(sandboxSession, filePath, content),
+          mkdir: async (dirPath, options) => {
+            await sandboxSession.mkdir(dirPath, options);
+          },
+        },
+        files: [
+          ...input.files,
+          ...binaryFiles.map((file) => ({
+            path: file.path,
+            binary: { digest: file.digest, sizeBytes: file.sizeBytes },
+          })),
+        ],
+        // Each read as it is written, a bounded number at a time.
+        loadBinary: readBinaryFile
+          ? (ref) => readBinaryFile(ref.digest)
+          : undefined,
         entry: input.entry,
         buildId: input.buildId,
         dependencies: input.dependencies,

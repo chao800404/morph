@@ -635,27 +635,36 @@ describe("revisions of a workspace with binary files", () => {
 });
 
 describe("building a revision with binary files", () => {
-  it("fails by name until the build can place bytes", () => {
-    expect(() =>
-      normalizeRevisionSnapshot(
-        [
-          {
-            path: "src/routes/index.tsx",
-            content: "x",
-            mimeType: "text/typescript",
-            isEntry: false,
-          },
-          {
-            path: "public/a.png",
-            encoding: "binary",
-            blobDigest: "a".repeat(64),
-            sizeBytes: 1,
-            mimeType: "image/png",
-            isEntry: false,
-          },
-        ],
-        "revision-1",
-      ),
-    ).toThrow("BINARY_THEME_FILE_NOT_BUILDABLE");
+  it("carries them by reference, apart from the source", () => {
+    const result = normalizeRevisionSnapshot(
+      [
+        {
+          path: "src/routes/index.tsx",
+          content: "x",
+          mimeType: "text/typescript",
+          isEntry: false,
+        },
+        {
+          path: "public/a.png",
+          encoding: "binary",
+          blobDigest: "a".repeat(64),
+          sizeBytes: 1,
+          mimeType: "image/png",
+          isEntry: false,
+        },
+      ],
+      "revision-1",
+    );
+    expect(result.files.map((file) => file.path)).toEqual([
+      "src/routes/index.tsx",
+    ]);
+    expect(result.binaryFiles).toEqual([
+      {
+        path: "public/a.png",
+        digest: "a".repeat(64),
+        sizeBytes: 1,
+        mimeType: "image/png",
+      },
+    ]);
   });
 });

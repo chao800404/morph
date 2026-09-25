@@ -169,8 +169,9 @@ export interface ThemeSourceStore {
 
   /**
    * Stores bytes under `public/` after checking them against the public
-   * file contract. Internal until preview, build and publish read binary
-   * files; no server function reaches it yet.
+   * file contract. The one write path for binary files: the development
+   * upload entry (`theme-binary-upload.ts`) reaches it today, and the
+   * editor's upload must reach it the same way.
    */
   saveBinaryFile(
     storefrontId: string,
@@ -178,6 +179,13 @@ export interface ThemeSourceStore {
     file: SaveThemeBinaryFileInput,
     options: SaveThemeBinaryFileOptions,
   ): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }>;
+
+  /**
+   * A binary file's bytes, by digest. The blob store's read checks them
+   * against it, so what comes back is the file the workspace names or an
+   * error — never other bytes.
+   */
+  readBinaryFile(digest: string): Promise<Uint8Array>;
 
   getSourceGeneration(
     storefrontId: string,

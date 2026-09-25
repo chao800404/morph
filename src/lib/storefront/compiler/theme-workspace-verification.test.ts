@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { workspaceFileDigests } from "./preview-server-observation";
 import {
   isDirtyWorkspaceMarker,
@@ -93,10 +93,34 @@ describe("verifyWorkspaceOnDisk", () => {
     expect(result.ok).toBe(true);
   });
 
+  // Bytes cannot be compared through a text read, so a workspace holding a
+  // binary file is never confirmed from the disk: it is rewritten, and the
+  // disk is not even read.
+  it("never confirms a workspace holding a binary file, and never reads it", async () => {
+    const reader = {
+      readFile: vi.fn(async () => ""),
+      listFiles: vi.fn(async () => ({ success: true, files: [] })),
+    };
+    expect(
+      await verifyWorkspaceOnDisk(reader, [
+        { path: "/workspace/a.ts", content: "a" },
+        {
+          path: "/workspace/public/logo.png",
+          binary: { digest: "a".repeat(64), sizeBytes: 1 },
+        },
+      ]),
+    ).toEqual({ ok: false, reason: "binary-file" });
+    expect(reader.readFile).not.toHaveBeenCalled();
+    expect(reader.listFiles).not.toHaveBeenCalled();
+  });
+
   it("does not guess at bytes, or at a workspace it cannot read", async () => {
     expect(
       await verifyWorkspaceOnDisk(disk({}), [
-        { path: "/workspace/logo.png", content: new Uint8Array([1]) },
+        {
+          path: "/workspace/logo.png",
+          binary: { digest: "a".repeat(64), sizeBytes: 1 },
+        },
       ]),
     ).toEqual({ ok: false, reason: "binary-file" });
     expect(await verifyWorkspaceOnDisk({}, PLAN)).toEqual({

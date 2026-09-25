@@ -3,7 +3,13 @@ import {
   planThemeSandboxWorkspace,
   type ThemeWorkspaceFile,
   type ThemeWorkspaceWriter,
+  isBinaryWorkspaceFile,
+  type ThemeWorkspaceBinaryLoader,
 } from "./theme-sandbox-workspace";
+import {
+  writeSandboxWorkspaceFile,
+  type SandboxFileWriter,
+} from "./sandbox-file-writer";
 import {
   SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_SERVER_BASE_PATH,
@@ -142,7 +148,8 @@ function withPreviewServerBase(exposedUrl: string): string {
 /**
  * The sandbox surface a preview server needs, beyond writing its workspace.
  */
-export type PreviewServerSession = ThemeWorkspaceWriter &
+export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
+  SandboxFileWriter &
   Readonly<{
     readFile?(
       path: string,
@@ -211,6 +218,12 @@ export type StartPreviewServerInput = Readonly<{
    * See `preview-write-fence.ts`.
    */
   fileVersions?: Readonly<Record<string, number>>;
+  /**
+   * Reads a binary file's bytes when it is written. Required whenever
+   * `files` holds one; never serialised, so a transport that crosses a
+   * process boundary carries binary files its own way.
+   */
+  loadBinary?: ThemeWorkspaceBinaryLoader;
 }>;
 
 export type StartPreviewServerResult =
@@ -474,7 +487,7 @@ export class CloudflareSandboxVitePreviewServer {
           recordFilesystemCall(() => session!.mkdir(path, options), "mkdir"),
         writeFile: (path, content) =>
           recordFilesystemCall(
-            () => session!.writeFile(path, content),
+            () => writeSandboxWorkspaceFile(session!, path, content),
             "write",
           ),
         ...(session.listFiles
@@ -669,12 +682,16 @@ export class CloudflareSandboxVitePreviewServer {
           const changedPaths = new Set(change.paths);
           for (const file of prepared.workspaceFiles) {
             if (!changedPaths.has(file.path)) continue;
+            // A content-only change touches the content data files alone,
+            // which are text; any other change takes the full write.
+            if (isBinaryWorkspaceFile(file)) continue;
             await measuredWriter.writeFile(file.path, file.content);
           }
         } else if (workspaceUpdate === "full") {
           await materializeThemeSandboxWorkspace(
             measuredWriter,
             prepared.workspaceFiles,
+            { loadBinary: input.loadBinary },
           );
         }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;

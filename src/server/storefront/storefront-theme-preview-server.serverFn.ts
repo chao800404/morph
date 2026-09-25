@@ -7,6 +7,8 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
+import { themeSourceStore } from "@/lib/storefront/storage/theme-storage.server";
+import { themePreviewWorkspaceInput } from "@/lib/storefront/service/theme-preview-workspace-files";
 import {
   THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -101,16 +103,21 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     if (!editorContext) {
       return fail("Storefront theme not found", { error: "NOT_FOUND" });
     }
-    const [files, pages] = await Promise.all([
-      storefrontThemeFileDal.listFiles(storefrontId, themeId),
+    const [entries, pages] = await Promise.all([
+      themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
       storefrontPageDal.listDraftDocuments(storefrontId),
     ]);
-    if (files.length === 0) {
+    if (entries.length === 0) {
       return fail("This theme has no files to preview.", {
         error: "THEME_EMPTY",
       });
     }
-    const entry = files.find((file) => file.isEntry)?.path;
+    // Every file, binary ones by reference; their bytes are read as each is
+    // written, through the blob store's digest check.
+    const workspace = themePreviewWorkspaceInput(entries, (digest) =>
+      themeSourceStore.readBinaryFile(digest),
+    );
+    const entry = workspace.entry;
     if (!entry) {
       return fail("This theme has no entry file.", {
         error: "THEME_ENTRY_MISSING",
@@ -134,13 +141,12 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     const server = selection.server;
     const started = await server.start({
       previewId,
-      files: files.map((file) => ({ path: file.path, content: file.content })),
+      files: workspace.files,
       entry,
       previewHostname: selection.previewHostname,
       previewContent,
-      fileVersions: Object.fromEntries(
-        files.map((file) => [file.path, file.version]),
-      ),
+      fileVersions: workspace.fileVersions,
+      loadBinary: workspace.loadBinary,
       env: env as unknown as Record<string, unknown>,
     });
     if (!started.ok) {

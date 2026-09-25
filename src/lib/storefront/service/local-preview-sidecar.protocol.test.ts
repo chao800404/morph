@@ -13,14 +13,17 @@ import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-
 
 describe("the local preview sidecar protocol", () => {
   it("has one endpoint per contract member, plus file application", () => {
-    // The contract is `ThemePreviewServer`: start, isServing, stop. The fourth
-    // path is the capability a container let its caller do without a transport,
-    // and it is the only thing here that is not a contract member. A fifth
-    // endpoint would mean the contract is missing something, not that the
-    // sidecar needs more.
+    // The contract is `ThemePreviewServer`: start, isServing, stop. The other
+    // paths are file application — the capability a container let its caller
+    // do without a transport, because the Worker holding the binding writes
+    // into it directly. `applyFiles` applies source; `stageBinary` is the same
+    // capability for bytes, which cannot travel inside JSON without being
+    // held whole and re-encoded. Anything else would mean the contract is
+    // missing something, not that the sidecar needs more.
     expect(Object.keys(LOCAL_PREVIEW_SIDECAR_PATHS).sort()).toEqual([
       "applyFiles",
       "isServing",
+      "stageBinary",
       "start",
       "stop",
     ]);
