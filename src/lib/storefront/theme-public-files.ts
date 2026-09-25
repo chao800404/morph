@@ -83,6 +83,14 @@ const FORMATS: Readonly<Record<string, ThemePublicFormat>> = {
 };
 
 /**
+ * The extensions `public/` accepts, as a file picker's `accept` list. The
+ * same table decides on the server; a picker only saves a round trip.
+ */
+export const THEME_PUBLIC_ACCEPT = Object.keys(FORMATS)
+  .map((extension) => `.${extension}`)
+  .join(",");
+
+/**
  * URL prefixes the platform answers itself: the Theme Worker's own endpoints,
  * the build's hashed client assets, library media, and Cloudflare's.
  */

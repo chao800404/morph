@@ -51,6 +51,13 @@ import {
   BinaryFileIcon,
   EditorCodeBinaryFile,
 } from "./editor-code-binary-file";
+import { writeThemeBinaryFile } from "../-queries/theme-binary-files";
+import {
+  checkThemePublicPath,
+  describeThemePublicProblem,
+  THEME_PUBLIC_ACCEPT,
+  THEME_PUBLIC_LIMITS,
+} from "@/lib/storefront/theme-public-files";
 import {
   applyStarterThemeWorkspace,
   applyThemeManifestMigrationServerFn,
@@ -95,6 +102,7 @@ import {
   History,
   Images as ImagesIcon,
   Package,
+  Upload,
   PackagePlus,
   Save,
   X,
@@ -355,6 +363,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       ),
     [binaryFiles],
   );
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  /** The folder the next chosen files go into. */
+  const uploadFolderRef = useRef("public");
+  /** The binary file the next chosen file replaces. */
+  const replaceTargetRef = useRef<StorefrontThemeBinaryFileDTO | null>(null);
   const refuseBinaryOperation = useCallback(
     (verb: "deleted" | "moved" | "copied", count: number) => {
       toast.error(
@@ -1554,6 +1568,95 @@ const EditorCodeWorkspaceContent = forwardRef<
       ),
   });
 
+  /**
+   * Writes binary files one at a time, each naming the source generation the
+   * one before it left: a new file expects nothing at its path, a
+   * replacement names the file it replaces by id and version. Stops at the
+   * first refusal, whose reason is the server's, and keeps what was written.
+   */
+  const binaryWriteMutation = useMutation({
+    mutationFn: async (
+      writes: ReadonlyArray<{
+        path: string;
+        bytes: File;
+        replacing: StorefrontThemeBinaryFileDTO | null;
+      }>,
+    ): Promise<{ written: string[]; error: string | null }> => {
+      const written: string[] = [];
+      try {
+        for (const write of writes) {
+          // Checked here only to answer sooner; the server decides.
+          const check = checkThemePublicPath(write.path);
+          if (!check.ok) {
+            throw new Error(
+              `${write.path}: ${describeThemePublicProblem(check.reason)}`,
+            );
+          }
+          if (write.bytes.size > THEME_PUBLIC_LIMITS.maxFileBytes) {
+            throw new Error(
+              `${write.path}: ${describeThemePublicProblem("file-too-large")}`,
+            );
+          }
+          if (
+            !write.replacing &&
+            (binaryFileByPath.has(write.path) ||
+              files.some((file) => file.path === write.path))
+          ) {
+            throw new Error(
+              `${write.path} already exists. Replace it from its menu instead.`,
+            );
+          }
+          const result = await writeThemeBinaryFile({
+            storefrontId,
+            themeId,
+            path: write.path,
+            bytes: write.bytes,
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+            precondition: write.replacing
+              ? {
+                  expectedFileId: write.replacing.id,
+                  expectedVersion: write.replacing.version,
+                }
+              : { expectMissing: true },
+          });
+          if (!result.ok) throw new Error(result.message);
+          useThemeWorkspaceStore
+            .getState()
+            .acceptRemoteGeneration(result.sourceGeneration, workspaceScope);
+          written.push(write.path);
+        }
+      } catch (error) {
+        return {
+          written,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      return { written, error: null };
+    },
+    onSuccess: async ({ written, error }) => {
+      // Refreshed whatever happened: a refusal may be a newer workspace,
+      // and anything written before it is real.
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      if (written.length > 0) {
+        const last = written[written.length - 1]!;
+        setOpenTabs((prev) => (prev.includes(last) ? prev : [...prev, last]));
+        setActiveFilePath(last);
+        toast.success(
+          written.length === 1
+            ? `Saved ${last}`
+            : `Saved ${written.length} files`,
+        );
+        onRestartPreview?.();
+      }
+      if (error) toast.error(error);
+    },
+  });
+
   const deleteFolderMutation = useMutation({
     mutationFn: async (folderPath: string) => {
       const folderPrefix = `${folderPath}/`;
@@ -2558,6 +2661,15 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const performDeleteFile = (path: string) => {
     if (deleteMutation.isPending) return;
+    const binary = binaryFileByPath.get(path);
+    if (binary) {
+      deleteMutation.mutate({
+        path,
+        expectedFileId: binary.id,
+        expectedVersion: binary.version,
+      });
+      return;
+    }
     const file = files.find((candidate) => candidate.path === path);
     const workspaceFile = useThemeWorkspaceStore
       .getState()
@@ -2578,6 +2690,62 @@ const EditorCodeWorkspaceContent = forwardRef<
   const handleDeleteFile = (path: string) => {
     if (deleteMutation.isPending) return;
     setPendingConfirmation({ kind: "delete-file", path });
+  };
+
+  const isPublicPath = (path: string) =>
+    path === "public" || path.startsWith("public/");
+
+  const startUpload = (folder: string) => {
+    uploadFolderRef.current = folder;
+    uploadInputRef.current?.click();
+  };
+
+  /** Into the selected folder under `public/`, or `public/` itself. */
+  const startUploadFromToolbar = () => {
+    const selected = selectedPathsRef.current[0] ?? "";
+    const binary = binaryFileByPath.get(selected);
+    if (binary) {
+      startUpload(selected.slice(0, selected.lastIndexOf("/")));
+    } else if (
+      isPublicPath(selected) &&
+      !files.some((file) => file.path === selected)
+    ) {
+      startUpload(selected);
+    } else {
+      startUpload("public");
+    }
+  };
+
+  const startReplace = (path: string) => {
+    const binary = binaryFileByPath.get(path);
+    if (!binary) return;
+    replaceTargetRef.current = binary;
+    replaceInputRef.current?.click();
+  };
+
+  const handleUploadChosen = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const chosen = Array.from(event.currentTarget.files ?? []);
+    // Cleared so choosing the same file again is still a change.
+    event.currentTarget.value = "";
+    if (chosen.length === 0) return;
+    const folder = uploadFolderRef.current.replace(/\/+$/, "");
+    binaryWriteMutation.mutate(
+      chosen.map((file) => ({
+        path: `${folder}/${file.name}`,
+        bytes: file,
+        replacing: null,
+      })),
+    );
+  };
+
+  const handleReplaceChosen = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const chosen = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    const target = replaceTargetRef.current;
+    if (!chosen || !target) return;
+    binaryWriteMutation.mutate([
+      { path: target.path, bytes: chosen, replacing: target },
+    ]);
   };
 
   const handleDeleteFolder = (path: string) => {
@@ -2943,10 +3111,6 @@ const EditorCodeWorkspaceContent = forwardRef<
     } else if (event.key === "Delete") {
       event.preventDefault();
       if (isGenerated) return;
-      if (isBinary) {
-        refuseBinaryOperation("deleted", 1);
-        return;
-      }
       if (isFile && !isGenerated) handleDeleteFile(current);
       else handleDeleteFolder(current);
     } else if (
@@ -3150,6 +3314,15 @@ const EditorCodeWorkspaceContent = forwardRef<
                   <FolderPlus className="size-3.5" />
                   New Folder
                 </ContextMenuItem>
+                {isPublicPath(node.path) ? (
+                  <ContextMenuItem
+                    disabled={binaryWriteMutation.isPending}
+                    onClick={() => startUpload(node.path)}
+                  >
+                    <Upload className="size-3.5" />
+                    Upload Files…
+                  </ContextMenuItem>
+                ) : null}
                 <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
                   <Copy className="size-3.5" />
                   Copy
@@ -3256,10 +3429,23 @@ const EditorCodeWorkspaceContent = forwardRef<
                 Generated by TanStack Router
               </ContextMenuItem>
             ) : isBinary ? (
-              <ContextMenuItem disabled>
-                <BinaryFileIcon path={node.path} />
-                Binary file · read-only here
-              </ContextMenuItem>
+              <>
+                <ContextMenuItem
+                  disabled={binaryWriteMutation.isPending}
+                  onClick={() => startReplace(node.path)}
+                >
+                  <Upload className="size-3.5" />
+                  Replace…
+                </ContextMenuItem>
+                <ContextMenuItem
+                  variant="destructive"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => handleDeleteFile(node.path)}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete
+                </ContextMenuItem>
+              </>
             ) : (
               <>
                 <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
@@ -3450,6 +3636,16 @@ const EditorCodeWorkspaceContent = forwardRef<
                 className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
               >
                 <FolderPlus className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Upload files to public/"
+                aria-label="Upload files to public/"
+                disabled={binaryWriteMutation.isPending}
+                onClick={startUploadFromToolbar}
+                className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+              >
+                <Upload className="size-3.5" />
               </button>
               {copiedPaths.length > 0 ? (
                 <button
@@ -3778,6 +3974,9 @@ const EditorCodeWorkspaceContent = forwardRef<
           ) : binaryFileByPath.has(activeFilePath) ? (
             <EditorCodeBinaryFile
               file={binaryFileByPath.get(activeFilePath)!}
+              busy={binaryWriteMutation.isPending || deleteMutation.isPending}
+              onReplace={() => startReplace(activeFilePath)}
+              onDelete={() => handleDeleteFile(activeFilePath)}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -4061,6 +4260,25 @@ const EditorCodeWorkspaceContent = forwardRef<
         storefrontId={storefrontId}
         themeId={themeId}
         sourceRevisionId={dependencySourceRevisionId}
+      />
+      <input
+        ref={uploadInputRef}
+        type="file"
+        multiple
+        accept={THEME_PUBLIC_ACCEPT}
+        className="hidden"
+        aria-label="Upload files to public/"
+        data-code-upload-input
+        onChange={handleUploadChosen}
+      />
+      <input
+        ref={replaceInputRef}
+        type="file"
+        accept={THEME_PUBLIC_ACCEPT}
+        className="hidden"
+        aria-label="Replace binary file"
+        data-code-replace-input
+        onChange={handleReplaceChosen}
       />
       <AlertDialog
         open={pendingConfirmation !== null}

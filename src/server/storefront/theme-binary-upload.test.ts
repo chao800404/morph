@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
-import { THEME_BINARY_UPLOAD_FLAG } from "@/lib/storefront/service/theme-binary-gates";
 import {
   handleThemeBinaryUpload,
   type ThemeBinaryUploadDeps,
@@ -31,16 +30,19 @@ function upload(
     headers?: Record<string, string>;
   } = {},
 ) {
-  return new Request(`http://localhost/api/dev/theme-binary-file?${query}`, {
-    method: "POST",
-    headers: {
-      ...(contentType ? { "content-type": contentType } : {}),
-      ...headers,
-    },
-    body,
-    // Node's fetch requires this for a streamed body.
-    ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
-  } as RequestInit);
+  return new Request(
+    `http://localhost/api/storefront/theme-binary-file?${query}`,
+    {
+      method: "POST",
+      headers: {
+        ...(contentType ? { "content-type": contentType } : {}),
+        ...headers,
+      },
+      body,
+      // Node's fetch requires this for a streamed body.
+      ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
+    } as RequestInit,
+  );
 }
 
 function deps(overrides: Partial<ThemeBinaryUploadDeps> = {}) {
@@ -65,8 +67,6 @@ function deps(overrides: Partial<ThemeBinaryUploadDeps> = {}) {
   return {
     saveBinaryFile,
     deps: {
-      vars: { [THEME_BINARY_UPLOAD_FLAG]: "1" },
-      isProduction: false,
       getSessionUser: async () => ({ id: "user-1", role: "admin" }),
       saveBinaryFile:
         saveBinaryFile as unknown as ThemeBinaryUploadDeps["saveBinaryFile"],
@@ -79,19 +79,7 @@ async function errorOf(response: Response) {
   return ((await response.json()) as { error: string }).error;
 }
 
-describe("the binary upload entry", () => {
-  it("answers as absent without the flag, and in production with it", async () => {
-    const closed = deps({ vars: {} });
-    const off = await handleThemeBinaryUpload(upload(), closed.deps);
-    expect(off.status).toBe(404);
-    expect(await errorOf(off)).toBe("THEME_BINARY_UPLOAD_DISABLED");
-
-    const production = deps({ isProduction: true });
-    const prod = await handleThemeBinaryUpload(upload(), production.deps);
-    expect(prod.status).toBe(404);
-    expect(production.saveBinaryFile).not.toHaveBeenCalled();
-  });
-
+describe("the binary file write entry", () => {
   it("requires a signed-in administrator", async () => {
     const anonymous = deps({ getSessionUser: async () => null });
     expect(

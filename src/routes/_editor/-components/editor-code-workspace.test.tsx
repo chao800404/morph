@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type RefObject } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   StorefrontThemeBinaryFileDTO,
   StorefrontThemeFileDTO,
@@ -1123,17 +1123,16 @@ describe("EditorCodeWorkspace binary files", () => {
     expect(screen.queryByLabelText("Code editor")).toBeNull();
   });
 
-  it("offers nothing that would write a binary file", async () => {
+  it("offers replace and delete, and nothing that would move it", async () => {
     renderWithBinary();
 
     fireEvent.contextMenu(screen.getByText("hero.png"));
 
     expect(
-      await screen.findByRole("menuitem", {
-        name: /Binary file · read-only here/,
-      }),
+      await screen.findByRole("menuitem", { name: /Replace…/ }),
     ).toBeTruthy();
-    for (const name of ["Rename", "Duplicate", "Delete", "Copy"]) {
+    expect(screen.getByRole("menuitem", { name: /Delete/ })).toBeTruthy();
+    for (const name of ["Rename", "Duplicate", "Copy"]) {
       expect(screen.queryByRole("menuitem", { name })).toBeNull();
     }
   });
@@ -1164,17 +1163,172 @@ describe("EditorCodeWorkspace binary files", () => {
     );
   });
 
-  it("refuses the Delete key on a binary file", async () => {
+  it("asks before deleting a binary file, then deletes it by its own id and version", async () => {
+    vi.mocked(deleteStorefrontThemeFile).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { path: hero.path, sourceGeneration: 8 },
+    } as never);
+    useThemeWorkspaceStore
+      .getState()
+      .acceptRemoteGeneration(7, {
+        storefrontId: "store-1",
+        themeId: "theme-1",
+      });
     renderWithBinary();
-    // Selected by a click, then the key pressed on the tree, which is what
-    // holds focus in the Explorer.
+
     fireEvent.click(screen.getByText("hero.png"));
     fireEvent.keyDown(screen.getByRole("tree"), { key: "Delete" });
-
-    expect(toast.error).toHaveBeenCalledWith(
-      "This includes 1 binary file, which cannot be deleted in the Code workspace yet.",
-    );
     expect(deleteStorefrontThemeFile).not.toHaveBeenCalled();
-    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(deleteStorefrontThemeFile).toHaveBeenCalledTimes(1),
+    );
+    expect(vi.mocked(deleteStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+      data: {
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        path: hero.path,
+        expectedFileId: hero.id,
+        expectedVersion: hero.version,
+        expectedSourceGeneration: 7,
+      },
+    });
+  });
+
+  describe("writing binary files", () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(7, {
+        storefrontId: "store-1",
+        themeId: "theme-1",
+      });
+      fetchMock = vi.fn(async (url: string) => {
+        const path = new URL(url, "http://localhost").searchParams.get("path");
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: { ...hero, path, id: "binary-2", sourceGeneration: 8 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const choose = (selector: string, chosen: File[]) => {
+      const input = document.querySelector<HTMLInputElement>(selector)!;
+      Object.defineProperty(input, "files", {
+        value: chosen,
+        configurable: true,
+      });
+      fireEvent.change(input);
+    };
+
+    const sent = (call: number) => {
+      const [url, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+      return {
+        url: new URL(url, "http://localhost"),
+        init,
+      };
+    };
+
+    it("uploads into a folder under public/ as a new file, naming the source generation", async () => {
+      renderWithBinary();
+      const logo = new File([new Uint8Array([0x89, 0x50])], "logo.png", {
+        type: "image/png",
+      });
+
+      fireEvent.contextMenu(screen.getByText("images"));
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: /Upload Files…/ }),
+      );
+      choose("[data-code-upload-input]", [logo]);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const { url, init } = sent(0);
+      expect(url.pathname).toBe("/api/storefront/theme-binary-file");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        path: "public/images/logo.png",
+        expectedSourceGeneration: "7",
+        expectMissing: "1",
+      });
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe(logo);
+      await waitFor(() =>
+        expect(
+          useThemeWorkspaceStore.getState().getAcceptedSourceGeneration({
+            storefrontId: "store-1",
+            themeId: "theme-1",
+          }),
+        ).toBe(8),
+      );
+    });
+
+    it("replaces a binary file by its id and version", async () => {
+      renderWithBinary();
+      const next = new File([new Uint8Array([1, 2, 3])], "other.png", {
+        type: "image/png",
+      });
+
+      fireEvent.contextMenu(screen.getByText("hero.png"));
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: /Replace…/ }),
+      );
+      choose("[data-code-replace-input]", [next]);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(Object.fromEntries(sent(0).url.searchParams)).toEqual({
+        storefrontId: "store-1",
+        themeId: "theme-1",
+        path: hero.path,
+        expectedSourceGeneration: "7",
+        expectedFileId: hero.id,
+        expectedVersion: String(hero.version),
+      });
+    });
+
+    it("refuses to upload over an existing file before asking the server", async () => {
+      renderWithBinary();
+      const same = new File([new Uint8Array([1])], "hero.png", {
+        type: "image/png",
+      });
+
+      fireEvent.contextMenu(screen.getByText("images"));
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: /Upload Files…/ }),
+      );
+      choose("[data-code-upload-input]", [same]);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(
+          "public/images/hero.png already exists. Replace it from its menu instead.",
+        ),
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("uploads into public/ from the Explorer toolbar", async () => {
+      renderWithBinary();
+      const font = new File([new Uint8Array([0x77])], "brand.woff2", {
+        type: "font/woff2",
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Upload files to public/" }),
+      );
+      choose("[data-code-upload-input]", [font]);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(sent(0).url.searchParams.get("path")).toBe("public/brand.woff2");
+    });
   });
 });
