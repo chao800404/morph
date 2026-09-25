@@ -29,6 +29,14 @@ Morph 希望同時具備：
 - Cloudflare edge storefront runtime
 - eventually commerce-focused app generation
 
+### 1.1 產品形態（2026-09 確認）
+
+每個商店是**一個網站工作區**，不是「從多個主題中挑一個」：
+
+- 不提供主題選擇器或主題市集；程式碼中的 Theme 指的是這個網站的 presentation source workspace。
+- 客戶以平台與自己做好的 sections 組合頁面（Design 模式），或在 Code 模式新增元件、修改樣式。
+- 開發者可以在本地以標準 TanStack Start 專案撰寫，之後匯入同一個工作區（匯入流程列在後續項目最後）。
+
 ---
 
 ## 2. Architecture Direction
@@ -74,6 +82,8 @@ Map Runtime
 
 它是 storefront presentation 的主要 SSOT。
 
+Theme 的 `public/` 靜態檔（logo、背景圖、字型）也屬於這一層：與程式碼同一份 revision、同一次 build、同一個 release，程式碼以固定路徑（`/images/logo.png`）引用，發布後任何訪客都能取得。
+
 ### 2.3 Content / Assembly
 
 ```text
@@ -90,6 +100,17 @@ Locale Content
 由 versioned Page / Template Document 擁有。
 
 Document 是 data，不是 React implementation。
+
+這裡的 Assets 是 **CMS 媒體庫**（商品圖、文章圖等內容），與 Theme `public/` 是兩件事：
+
+| | Theme `public/` | 媒體庫 Assets |
+| --- | --- | --- |
+| 屬於 | presentation source | content |
+| 引用方式 | 程式碼寫死路徑 | content field 選取 |
+| 版本 | 隨 revision／release | 不隨 Theme 版本 |
+| 可見性 | 發布後全部公開 | 預設私有，只提供已發布內容實際引用的媒體 |
+
+兩者可以在同一個 Assets 畫面管理，但不得合併成同一份資料，也不以逐檔「公開／私有」開關取代這條邊界：已發布的 `public/` 檔無法靠事後切換收回。媒體檔要給程式碼用，是明確的「複製到 `public/`」並提示會公開。
 
 ---
 
@@ -282,6 +303,18 @@ Starter bootstrap 與 workspace upgrade 契約：
 - **Theme artifact + Page Document 的 runtime 組合已閉環**：Morph Core 以 `/_morph/content` 提供 active release 的已發布內容，Theme 在 root route `beforeLoad` 以 server-only 分支取回並經 router context 序列化到 client。編輯器解釋器、Build Preview 與 production 三個平面共用同一份 root route source
 - Morph Core 以 `x-morph-content-origin` 明確告知回撥位址，Theme 不需從 hostname 猜測 scheme／port；該 header 為 set 而非 merge，外部無法偽造
 
+### Theme `public/` 靜態檔（2026-09 新增）
+
+已具備（#37～#44，契約見 `.agents/rules/01-core-architecture.md` §4.1.2）：
+
+- 二進位檔以引用存在 workspace 與 revision（digest、大小、MIME），bytes 存在 R2 content-addressed blob；revision、回滾、manifest 遷移都帶著它們。
+- 格式、大小、數量、保留名與路由衝突由 `theme-public-files.ts` 單一來源判定；建置時以凍結 revision 自己的路由再判一次。
+- 預覽（本機 sidecar 與 Cloudflare Sandbox）與兩條建置路徑都寫入完整位元組；建置預設帶入二進位檔。
+- 實測：真實 Sandbox 建置並發布後，正式店面回應與上傳時逐位元組相同，Content-Type 正確；starter Theme 的圖片進入 `runtime/client/`。
+- Code 模式：檔案樹列出二進位檔、唯讀資訊面板；上傳、替換、刪除都帶 OCC；「尚未發布」與回滾預覽以 digest 比對。
+- 唯一寫入入口 `POST /api/storefront/theme-binary-file`（admin、octet-stream、5 MiB，寫入走 `saveBinaryFile`）。
+- Sandbox Live Preview 的 start 與即時同步在容器內同一把鎖下判定版本並寫入，較舊的 start 整批拒絕（#40）。
+
 ### 已完成但需持續回歸
 
 以下能力已完成並有驗證，但仍需隨新 Theme 與瀏覽器回歸：
@@ -329,6 +362,22 @@ Starter bootstrap 與 workspace upgrade 契約：
 - AI Code Agent backend workflow
 - AI patch / diff / repair orchestration
 - production-grade observability / metering / tenant isolation
+
+### Theme `public/` 與 Assets 後續（2026-09-26 排定，依序）
+
+先修正確性，再補編輯操作，最後才是介面整合與新功能；匯入明確排在最後。
+
+| 順序 | 項目 | 類別 |
+| ---: | --- | --- |
+| 1 | 預覽版本帳本記錄刪除：較舊的 start 不得刪掉較新同步新增的檔案 | 正確性 |
+| 2 | 二進位檔的重新命名、搬移、複製，以及含二進位檔的資料夾操作 | 編輯操作 |
+| 3 | Assets 頁面顯示「網站 `public/`」分區（與 Code 模式同一份資料、同一個寫入入口） | 介面整合 |
+| 4 | 從媒體庫複製到 `public/`（明確提示發布後公開） | 功能 |
+| 5 | 部署前檢查尚未套用的 D1 migration | 部署安全（首次部署前完成） |
+| 6 | SVG 支援（需先定清理或 CSP 方案） | 安全設計 |
+| 7 | R2 未引用 blob 清理（保護 manifest、revision、release 與保留期） | 儲存成本（上線後依用量） |
+| 8 | 批次把 `public/` 圖片關聯為產品媒體（使用者確認對應，不依資料夾名稱猜測） | 功能（依賴匯入） |
+| 9 | 本地 TanStack Start 專案匯入（`public/` 原樣匯入） | 功能（最後做） |
 
 ---
 

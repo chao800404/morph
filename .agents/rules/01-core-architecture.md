@@ -139,6 +139,14 @@ Build Artifact
 
 Release / activeReleaseId
         → D1
+
+Theme public/ 二進位檔（圖片、字型）
+        → D1 workspace row（encoding = binary、blob_digest、size_bytes）
+        → R2 immutable, content-addressed source blobs（與 revision 共用 theme-source/{sha256}）
+
+CMS 媒體庫（Assets）
+        → D1 asset metadata
+        → R2 assets/ prefix（私有；對外只提供已發布 release 實際引用的媒體）
 ```
 
 具體責任如下：
@@ -152,6 +160,7 @@ Release / activeReleaseId
 - 任何被 `storefront_content_publication_items.revision_id` reference 的 template/page/navigation revision 都是 retained immutable history；GC 或 hard-delete 必須先通過 retention guard，禁止刪除被 ContentPublication 引用的 revision。
 - Theme workspace source、source blobs、assets 與 build artifacts 不得寫回 Morph GitHub repository，也不得寫入 Morph Core 的 Worker bundle 或部署原始碼。GitHub／Worker 只保存 Morph Core、平台程式與 bootstrap starter source。
 - 目前若仍有 D1 snapshot 或 compatibility path，必須明確視為 migration／compatibility implementation，不能因此新增第二套 source、revision 或 production runtime SSOT。
+- **Theme `public/` 與 CMS 媒體庫是兩個 SSOT，不得混用**：`public/` 是 presentation source 的一部分，隨 revision、build、release 走，發布後任何訪客都能取得；媒體庫是 content，預設私有，由 content field 引用，對外只經過已發布內容的媒體 delivery 提供。媒體檔進入 `public/` 只能是明確的「複製」並提示會公開，不得把整個媒體庫映射成 `public/`，也不得用逐檔「私有」標記去保護 `public/` 或已發布的檔案——發布過的靜態檔無法靠事後切換收回。（§4.1.2）
 
 ### 2.5 Deployment Topology
 
@@ -212,6 +221,17 @@ Theme files 可以包含：
 - 允許的靜態資產或 manifest
 
 所有 path 必須經 `safeThemeFilePathSchema` 或等價的集中驗證，不可直接相信 client path。
+
+### 4.1.2 `public/` 靜態檔（二進位檔）
+
+Theme 的 `public/` 與 Vite／TanStack Start 相同：檔案原樣出現在網站根路徑（`public/images/hero.png` → `/images/hero.png`），建置時原樣複製進 `runtime/client/`。規則的單一來源是 `src/lib/storefront/theme-public-files.ts`，不在他處重列清單。
+
+- **只存引用，不存內容**：workspace row 與 revision snapshot 只記 `path`、`blobDigest`（SHA-256）、`sizeBytes`、`mimeType`；bytes 只在 R2 content-addressed blob。`content: ""` 不得被當成二進位檔。
+- **唯一寫入入口**：新增／替換走 `POST /api/storefront/theme-binary-file` → `saveBinaryFile`；刪除走 `deleteStorefrontThemeFile`。兩者都要 admin session、Theme ownership、`expectedSourceGeneration` 與檔案 id／version 或 `expectMissing`。不得另開平行寫入路徑，AI 也一樣。
+- **驗證以 bytes 為準**：大小取真實位元組、MIME 取自路徑副檔名並核對檔頭簽章，不信 client 宣告。v1 只收圖片與 woff/woff2；SVG 關閉（可夾帶腳本）。單檔 5 MB、合計 50 MB、最多 200 檔。
+- **路由衝突以凍結 revision 自己的路由判定**：上傳時比對 workspace 的路由，建置時再以 revision 自己的 route registry 比對一次——之後新增、與圖片同 URL 的頁面只有建置時看得到。平台保留名（`index.html`、`_headers`、`_redirects` 等）與保留前綴一律拒絕。
+- **比對一律用 digest**：尚未發布、回滾預覽、fingerprint 都以 digest 比較二進位檔；文字與二進位互換同一路徑視為修改。
+- **尚未支援的操作要整批拒絕**：Explorer 的重新命名、搬移、複製只規劃文字檔；會碰到二進位檔的操作（含資料夾）必須整批拒絕並說明，不得只處理一半。
 
 ### 4.1.1 Customer Theme 是獨立 TanStack Start storefront
 

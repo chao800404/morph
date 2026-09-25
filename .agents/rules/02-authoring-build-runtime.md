@@ -471,6 +471,8 @@ Cloudflare Sandbox / Container build 至少要維持：
 
 Theme source 不可在 Morph request Worker 中 `eval`。
 
+**寫進 Sandbox 的位元組一律經過 `writeSandboxWorkspaceFile`（base64）。** Cloudflare Sandbox SDK 的 `writeFile` 會把內容 `JSON.stringify`，`Uint8Array` 因此變成一個以數字為鍵的物件、檔案靜默損毀——Theme Worker deployer 曾經這樣寫壞 artifact。Session 型別刻意宣告為只收字串，讓直接傳 bytes 在型別上就過不了。二進位檔在 workspace plan 裡只帶引用，寫入時才從 blob store 讀取並驗證 digest，同時持有的 bytes 有上限。
+
 ### 7.4 Dependencies
 
 Theme package dependencies 必須經平台 dependency policy。
@@ -520,6 +522,8 @@ Morph 可以同時存在兩種 Preview，但用途必須清楚。
 可以使用 browser compiler、dev runtime 或其他低延遲方式。
 
 它不是 production proof。
+
+**預覽工作區只有一個寫入順序。** 同一個 preview 的即時同步與 start 都在容器內的同一把鎖下判定版本並寫入（`applyFencedRequest`）：start 先把檔案暫存在 `/tmp`（不持鎖），再以 `op: "start"` 在鎖內比對版本帳本——任何檔案帳本已有較新版本就整批拒絕（`preview-start-stale`），工作區不動；通過才刪除計畫外檔案、搬入暫存檔、抬高帳本、最後提交 manifest 與 marker。鎖在容器裡，所以跨 Worker instance 也成立；不得改回「寫完再合併帳本」或只靠單一程序內的佇列。本機 sidecar 用同一條規則（`planFencedStart`）。已知缺口：帳本不記刪除，較新同步新增的檔案仍可能被較舊 start 的清理刪除。
 
 **解釋器遇到不支援的語法必須明確拒絕，不得回傳 `undefined` 當作答案。** 沉默是最危險的
 回答：`typeof` 曾經回傳 `undefined`，於是 `typeof v === "string"` 對字串為假，它守著的分支

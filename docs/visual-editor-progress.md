@@ -6,11 +6,11 @@
 
 | 項目         | 內容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新     | 2026-09-22                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 目前狀態     | **Live Preview 已是真實 React，而且是編輯器唯一的引擎** —— `useState`／`useEffect`／Fast Refresh 與合法 npm 套件都在容器內的 Vite dev server 真實執行。相容性直譯器已在型別層退出編輯器路徑（`LivePreviewSource` 收斂為單成員），原始碼暫留觀察但走不到。預覽生命週期收斂為單一狀態機，並補上 sandbox 續期與存活偵測。**頁面生命週期已完整**：Pages 面板可新增與刪除頁面，兩者都以編輯器持有的 generation 做 OCC，並在寫入前重建整張路由表。Production Runtime、Domain 與遠端 Publish 仍未閉環                                                                                  |
+| 最後更新 | 2026-09-26 |
+| 目前狀態 | **Live Preview 已是真實 React，而且是編輯器唯一的引擎** —— `useState`／`useEffect`／Fast Refresh 與合法 npm 套件都在容器內的 Vite dev server 真實執行。相容性直譯器已在型別層退出編輯器路徑（`LivePreviewSource` 收斂為單成員），原始碼暫留觀察但走不到。預覽生命週期收斂為單一狀態機，並補上 sandbox 續期與存活偵測。**頁面生命週期已完整**：Pages 面板可新增與刪除頁面，兩者都以編輯器持有的 generation 做 OCC，並在寫入前重建整張路由表。Production Runtime、Domain 與遠端 Publish 仍未閉環。**Theme `public/` 靜態檔已閉環（2026-09-25～26，#37～#44）**：圖片與字型可在 Code 模式上傳、替換、刪除，隨 revision／build／release 發布，正式店面回應與上傳時逐位元組相同；尚未發布與回滾預覽以 digest 比對；Sandbox Live Preview 的 start 與即時同步改在容器內同一把鎖下判定並寫入，較舊的 start 整批拒絕 |
 | 整體完成度   | **94%**（第 7 階段由 80% → 95%：最大的架構斷層已關閉；本輪補齊 Code／Design 草稿同步與自動儲存，尚未閉環的是 production runtime、domain 與遠端 publish）                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 目前重點     | 實際執行 `pnpm test:e2e`（spec 已寫，本機 `.env.e2e` 的 `E2E_EMAIL`／`E2E_PASSWORD`／`E2E_EDITOR_PATH` 三個鍵齊全、無技術阻塞，尚未實跑；CI 啟用另需 GitHub Actions secrets 與可重現的 seed store）；其次為商品 catalog provisioning 觸發時機、真實 Cloudflare Theme Worker／Domain／Publish 閉環、以及把 VisualEditorShell／EditorStyleInspector 沿清楚的 seam 繼續拆出。相容性直譯器仍只保留給 legacy/static preview，Live Preview 不回退                                                                                                                                                                                                                                                                                                 |
-| 最近完整驗證 | 2026-09-22 於 Windows 本機副本實跑（`Z:` 是 WSL 共享，工具鏈無法 in-place 執行，故複製到本機磁碟並用原生 toolchain）：`pnpm typecheck`（0 錯誤）、`pnpm test`（**2762 passed、7 failed、1 skipped**，357 檔）、`pnpm build` 含 client bundle check、local preview sidecar 與 deploy artifact guard 全數通過。**那 7 個失敗全部是 Windows 路徑環境問題，不是程式碼問題** —— `/@fs/...` 被解析成 `C:\workspace\@fs\...`、`/tmp/...` 寫死成 POSIX 形狀、safe-delete shim 擋下一個檔案 `afterAll` 的 `fs.rm`；五個失敗檔**無一 import 本次改動的模組**，且該組失敗在本分支之前就已存在。Linux CI 的對應數字尚未取得，不能拿本機的 7 個失敗當成專案回歸。本輪未重跑 `MORPH_THEME_PARITY`。仍未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、**`pnpm test:e2e`（本機可跑，會在 dev store 建立／刪除頁面，未執行）** |
+| 目前重點 | 依 [ROADMAP](../ROADMAP.md)「Theme `public/` 與 Assets 後續」的順序：① 預覽版本帳本記錄刪除（唯一已知會遺失使用者內容的缺口）；② 二進位檔的重新命名／搬移／複製與資料夾操作；③ Assets 頁面顯示「網站 `public/`」；④ 媒體庫複製到 `public/`。匯入放在最後。production 面仍未閉環：真實 Cloudflare Theme Worker、custom domain、remote migration 與遠端 Publish |
+| 最近完整驗證 | 2026-09-26 於 WSL（Linux）原生執行：`pnpm typecheck`（0 錯誤）、`pnpm test`（**408 檔、3229 passed、1 skipped、0 failed**）、`pnpm build` 通過。GitHub CI（#44）三項 check 全過：Architecture guards、Typecheck／test／build、Editor end-to-end（local preview transport）。真實 Cloudflare Sandbox 的 `publish.spec` 以 `MORPH_E2E_TRANSPORT=cloudflare-sandbox` 通過：上傳 PNG → Code 模式看得到並經 UI「Replace…」替換 → 容器建置 → 發布 → 正式店面回應 `image/png` 與上傳 digest 相同 → 替換後狀態回到「Edited …」；2026-09-25 另跑 text-promotion 與樣式／undo 的 editor spec（10 次同步經過容器）通過。**先前 9-22 的 7 個 Windows 路徑失敗在 Linux 原生環境不出現。** 本輪未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、完整的本機 `pnpm test:e2e` 全套、`MORPH_THEME_PARITY` |
 
 `█████████▍ 94%`
 
@@ -717,6 +717,23 @@ starter 主題原始碼，一邊走解釋器、一邊用 esbuild 編譯後交給
   明顯縮小，替換時要改寫的面積跟著變小。
 
 ## 已完成內容
+
+### Theme `public/` 靜態檔（2026-09-25～26）
+
+Theme 可以有自己的 `public/`：logo、背景圖、字型與 Vite／TanStack Start 相同，原樣出現在網站根路徑，
+與程式碼同一份 revision、同一次 build、同一個 release。媒體庫（商品圖等內容）仍是另一個 SSOT，見 ROADMAP §2.3。
+
+- **儲存與契約（#37、#38）**：workspace row 與 revision 只記 digest、大小、MIME；bytes 在 R2 content-addressed blob。
+  格式、大小、保留名、路由衝突由 `theme-public-files.ts` 單一來源判定。
+- **傳輸與建置（#39）**：Sandbox 的 `writeFile` 會把 `Uint8Array` 序列化成物件，所以所有位元組寫入改走 base64 轉接層——
+  順帶修好 Theme Worker deployer 一直以來寫壞二進位 artifact 的問題。兩條建置路徑、本機 sidecar 與 Sandbox 預覽都寫入完整位元組；
+  建置時以凍結 revision 自己的路由再判一次衝突。證據：真實 Sandbox 發布後，店面回應與上傳時 SHA-256 相同；starter Theme 的圖片進入 `runtime/client/`。
+- **預覽寫入順序（#40）**：start 先暫存到 `/tmp`，再在容器內與即時同步共用的鎖下判定版本並套用；較新同步已完成後才到的舊 start、
+  以及寫入途中有較新同步抵達的舊 start，兩種順序都已重現並驗證保留較新內容。真實 e2e 中自然發生一次正確拒絕，5 秒後自動恢復。
+- **編輯器（#41～#44）**：檔案樹列出二進位檔並提供唯讀資訊面板；「尚未發布」與回滾預覽以 digest 比對；
+  Code 模式可上傳（`public/` 資料夾右鍵、工具列）、替換、刪除，全部帶 OCC。唯一寫入入口 `POST /api/storefront/theme-binary-file`。
+- **環境**：WSL 的 DNS 原本寫死 8.8.8.8 且設成不可變，高負載時頻繁逾時，影響 ship 與 Docker 建置；2026-09-25 改用 Windows 解析器後恢復。
+- **尚未做**：見 ROADMAP「Theme `public/` 與 Assets 後續」。完成度百分比未調整——`public/` 不在上方八個階段的範圍內，不拿來抬高數字。
 
 ### 頁面的新增與刪除（2026-09-13）
 
