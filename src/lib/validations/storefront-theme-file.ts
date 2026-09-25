@@ -31,6 +31,20 @@ export const safeThemeFilePathSchema = z
     "File path contains invalid characters (allowed: alphanumeric, _, -, ., $, (), [], /)",
   );
 
+/**
+ * A path source is written to as text.
+ *
+ * `public/` holds files served as they are — images and fonts — which are
+ * uploaded as bytes and checked against `theme-public-files`. Written as text
+ * they would be stored re-encoded, and served broken with nothing refusing
+ * them. The prefix is spelled here rather than imported: that module builds
+ * on `safeThemeFilePathSchema` above.
+ */
+export const themeTextFilePathSchema = safeThemeFilePathSchema.refine(
+  (p) => !p.startsWith("public/"),
+  "Files in public/ are uploaded, not written as text",
+);
+
 function requireWritePrecondition(
   value: {
     expectedFileId?: string;
@@ -85,7 +99,7 @@ export const saveThemeFileInputSchema = z
   .object({
     storefrontId: z.string().min(1),
     themeId: z.string().min(1),
-    path: safeThemeFilePathSchema,
+    path: themeTextFilePathSchema,
     content: z.string(),
     mimeType: z.string().optional(),
     expectedFileId: z.string().uuid().optional(),
@@ -99,7 +113,7 @@ export const saveThemeFileInputSchema = z
 
 const batchFileSchema = z
   .object({
-    path: safeThemeFilePathSchema,
+    path: themeTextFilePathSchema,
     content: z.string(),
     mimeType: z.string().optional(),
     expectedFileId: z.string().uuid().optional(),
