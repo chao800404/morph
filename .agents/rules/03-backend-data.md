@@ -62,6 +62,7 @@ src/cms.config.ts
 - Theme / Storefront operation 必須同時驗證 `storefrontId` 與 `themeId` ownership。
 - Client hidden button 不是 authorization。
 - Preview capability token 只能授予 preview 能力，不可被當作 general admin token。
+- **原始 bytes 的寫入可以用 HTTP route，但不是另一條寫入路徑。** 二進位 Theme 檔的 body 是檔案本身，不是塞進 JSON 的 base64，所以走 `POST /api/storefront/theme-binary-file`。它必須做到與 `commerceAdminMiddleware` 相同的 session／role 檢查、只收 `application/octet-stream`（一般表單無法跨站送出）、讀取時就限制大小，並呼叫與其他寫入相同的 storage method（`saveBinaryFile`）。邏輯放在可注入依賴的 handler（`src/server/storefront/theme-binary-upload.ts`），route 檔只負責接線。
 
 ### 13.1 診斷：`{"status":500,"unhandled":true,"message":"HTTPError"}`
 
