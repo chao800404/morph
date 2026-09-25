@@ -9,6 +9,8 @@ import type { ThemeBuildRunner } from "@/lib/storefront/compiler/theme-build-run
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { themeRevisionStore } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
+import { isProductionEnvironment } from "./storefront-domain-provider";
+import { themeBinaryBuildPolicy } from "./theme-binary-gates";
 import { ThemeBuildService } from "./theme-build.service";
 
 /**
@@ -55,5 +57,14 @@ export function createServerThemeBuildService(options?: {
     (env as any)?.Sandbox
       ? new CloudflareSandboxThemeBuildTerminator((env as any).Sandbox)
       : undefined,
+    undefined,
+    (storefrontId) => {
+      const vars = (env ?? {}) as unknown as Record<string, unknown>;
+      return themeBinaryBuildPolicy(
+        vars,
+        isProductionEnvironment(vars),
+        storefrontId,
+      );
+    },
   );
 }

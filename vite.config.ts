@@ -72,6 +72,28 @@ function tanstackServerFnValidateFix(): Plugin {
   };
 }
 
+/**
+ * Variables an editor end-to-end run hands its Worker, by name and only for
+ * that run. The runner owns a throwaway database, so these open test-only
+ * paths there (`theme-binary-gates.ts`) and nowhere else; the Worker still
+ * refuses both in production. Listed rather than passing the shell through,
+ * which would carry everything else in it too.
+ */
+const E2E_WORKER_VARS = [
+  "MORPH_ENABLE_THEME_BINARY_UPLOAD",
+  "MORPH_BINARY_BUILD_TEST_STOREFRONT_ID",
+] as const;
+
+function e2eWorkerVars(): Record<string, string> {
+  if (!process.env.MORPH_E2E_STATE_DIR) return {};
+  return Object.fromEntries(
+    E2E_WORKER_VARS.flatMap((name) => {
+      const value = process.env[name];
+      return value ? [[name, value]] : [];
+    }),
+  );
+}
+
 const config = defineConfig({
   plugins: [
     tanstackServerFnValidateFix(),
@@ -96,6 +118,12 @@ const config = defineConfig({
       // `pnpm dev` dies on `EADDRINUSE` before it serves anything. An
       // end-to-end run has nothing to attach a debugger to, so it goes without.
       inspectorPort: process.env.MORPH_E2E_STATE_DIR ? false : undefined,
+      config: (worker) => {
+        const vars = e2eWorkerVars();
+        return Object.keys(vars).length > 0
+          ? { vars: { ...worker.vars, ...vars } }
+          : {};
+      },
     }),
     tailwindcss(),
     tanstackStart(),

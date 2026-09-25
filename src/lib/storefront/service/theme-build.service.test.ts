@@ -5,6 +5,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeThemeBuildArtifactStore } from "../compiler/fake-theme-build-artifact-store";
 import { FakeThemeBuildRunner } from "../compiler/fake-theme-build-runner";
+import { materializeThemeBuildInput } from "../compiler/theme-build-materializer";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 
 import { ThemeBuildService } from "./theme-build.service";
@@ -411,7 +412,10 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       expect(timing, "no build timing line was emitted").toBeDefined();
 
       // Which plane ran it, and that a runner ran at all.
-      expect(timing!.runner).toMatchObject({ isolation: "fake-mock", ran: true });
+      expect(timing!.runner).toMatchObject({
+        isolation: "fake-mock",
+        ran: true,
+      });
       expect(typeof timing!.runner.id).toBe("string");
 
       // The build's own cost — the number a duration budget is about. The bound
@@ -906,7 +910,9 @@ describe("ThemeBuildService cancellation", () => {
       );
   };
 
-  const setup = async (terminator?: { terminate: (id: string) => Promise<void> }) => {
+  const setup = async (terminator?: {
+    terminate: (id: string) => Promise<void>;
+  }) => {
     seedStorefront();
     seedTheme();
     seedRevision();
@@ -1030,5 +1036,167 @@ describe("ThemeBuildService cancellation", () => {
         buildId: build.id,
       }),
     ).rejects.toThrow(/not found/);
+  });
+});
+
+/**
+ * Binary files reach a build only where the composition root allows them,
+ * and the service asks that once per storefront at both places the
+ * materializer runs, so a reuse check and the build itself cannot disagree.
+ */
+describe("ThemeBuildService binary file policy", () => {
+  const DIGEST = "a".repeat(64);
+
+  const seed = () => {
+    const now = new Date().toISOString();
+    sqlite
+      .prepare(
+        "INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at) VALUES ('storefront-1', 'channel-1', 'Store', 'draft', ?, ?)",
+      )
+      .run(now, now);
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, created_at, updated_at) VALUES ('theme-1', 'storefront-1', 'Main Theme', 'draft', ?, ?)",
+      )
+      .run(now, now);
+    sqlite
+      .prepare(
+        "INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at) VALUES ('rev-binary', 'storefront-1', 'theme-1', 1, 'Checkpoint', 'manual', ?, ?, ?)",
+      )
+      .run(
+        JSON.stringify([
+          {
+            path: "src/index.tsx",
+            content: "export default () => <h1>Binary</h1>;",
+            isEntry: true,
+          },
+          {
+            path: "public/images/hero.png",
+            encoding: "binary",
+            blobDigest: DIGEST,
+            sizeBytes: 16,
+            mimeType: "image/png",
+            isEntry: false,
+          },
+        ]),
+        now,
+        now,
+      );
+  };
+
+  const request = (target: ThemeBuildService, runner: FakeThemeBuildRunner) =>
+    target.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-binary",
+      runner,
+      reuseExisting: true,
+    });
+
+  it("asks one policy for the reuse check and the build, and hands the runner the files", async () => {
+    seed();
+    const asked: string[] = [];
+    const policies: Array<string | undefined> = [];
+    const materializer: typeof materializeThemeBuildInput = (params) => {
+      policies.push(params.binaryFiles);
+      return materializeThemeBuildInput(params);
+    };
+    let received: ReadonlyArray<{ path: string }> | undefined;
+    const target = new ThemeBuildService(
+      storefrontThemeBuildDal,
+      undefined,
+      materializer,
+      new FakeThemeBuildArtifactStore(),
+      undefined,
+      undefined,
+      async () => new Uint8Array(16),
+      (storefrontId) => {
+        asked.push(storefrontId);
+        return "include";
+      },
+    );
+
+    const build = await request(
+      target,
+      new FakeThemeBuildRunner({
+        onRun: (input) => {
+          received = input.binaryFiles;
+        },
+      }),
+    );
+
+    expect(build.status).toBe("succeeded");
+    expect(policies).toEqual(["include", "include"]);
+    expect(asked).toEqual(["storefront-1", "storefront-1"]);
+    expect(received?.map((file) => file.path)).toEqual([
+      "public/images/hero.png",
+    ]);
+  });
+
+  it("refuses binary files unless composed otherwise, before any runner starts", async () => {
+    seed();
+    let ran = false;
+    const target = new ThemeBuildService(
+      storefrontThemeBuildDal,
+      undefined,
+      undefined,
+      new FakeThemeBuildArtifactStore(),
+    );
+
+    const build = await request(
+      target,
+      new FakeThemeBuildRunner({
+        onRun: () => {
+          ran = true;
+        },
+      }),
+    );
+
+    expect(build.status).toBe("failed");
+    expect(build.errorMessage).toContain("BINARY_THEME_FILE_NOT_BUILDABLE");
+    expect(build.artifactPrefix).toBeNull();
+    expect(ran).toBe(false);
+  });
+
+  it("fails without an artifact when a binary file cannot be read", async () => {
+    seed();
+    const store = new FakeThemeBuildArtifactStore();
+    let persisted = false;
+    const persist = store.persistBuildArtifacts.bind(store);
+    store.persistBuildArtifacts = async (input) => {
+      persisted = true;
+      return persist(input);
+    };
+    const target = new ThemeBuildService(
+      storefrontThemeBuildDal,
+      undefined,
+      undefined,
+      store,
+      undefined,
+      undefined,
+      async (digest) => {
+        throw new Error(`SOURCE_BLOB_NOT_FOUND: ${digest}`);
+      },
+      () => "include",
+    );
+
+    const build = await request(
+      target,
+      new FakeThemeBuildRunner({
+        // What both real runners do before writing a binary file.
+        onRun: async (input) => {
+          for (const file of input.binaryFiles ?? []) {
+            await input.readBinaryFile!(file.digest);
+          }
+        },
+      }),
+    );
+
+    // A failed build with no artifact is what publishing refuses
+    // (`PUBLISH_BUILD_NOT_READY`), so nothing here can become a release.
+    expect(build.status).toBe("failed");
+    expect(build.errorMessage).toContain("SOURCE_BLOB_NOT_FOUND");
+    expect(build.artifactPrefix).toBeNull();
+    expect(persisted).toBe(false);
   });
 });
