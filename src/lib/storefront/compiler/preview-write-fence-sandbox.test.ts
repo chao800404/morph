@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -100,19 +107,6 @@ describe("the container's fenced write", () => {
     expect(read(HERO)).toBe("hero v4 by A");
   });
 
-  it("seeds by raising, never lowering, what is recorded", () => {
-    run({
-      op: "write",
-      root,
-      files: [{ path: HERO, content: "hero v5", fence: 5 }],
-    });
-    run({ op: "seed", versions: { [HERO]: 4, "src/Other.tsx": 2 } });
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({
-      [HERO]: 5,
-      "src/Other.tsx": 2,
-    });
-  });
-
   it("will not write outside its root", () => {
     expect(() =>
       run({
@@ -142,6 +136,158 @@ describe("the container's fenced write", () => {
     // Every write either went through or was refused; none half-happened.
     for (const result of results) {
       expect(result.changed.length + result.refused.length).toBe(1);
+    }
+  });
+});
+
+/**
+ * A start, as the preview server sends it: files staged beside the
+ * workspace, then one request that judges and applies them under the lock.
+ */
+describe("the container's fenced start", () => {
+  const MARKER = () => path.join(root, ".morph-preview-workspace");
+  const MANIFEST = () => path.join(root, ".morph-preview-manifest.json");
+  let stagings = 0;
+
+  function stage(files: Record<string, string>): string {
+    const staging = path.join(dir, `staging-${stagings++}`);
+    for (const [file, content] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(staging, file)), { recursive: true });
+      writeFileSync(path.join(staging, file), content);
+    }
+    return staging;
+  }
+
+  function startRequest(
+    files: Record<string, string>,
+    versions: Record<string, number>,
+    options: { prune?: string[]; expected?: string | null } = {},
+  ): FencedWriteRequest {
+    return {
+      op: "start",
+      root,
+      staging: stage(files),
+      files: Object.keys(files),
+      prune: options.prune ?? [],
+      versions,
+      marker: {
+        path: MARKER(),
+        dirty: "dirty:start",
+        expected: options.expected ?? null,
+      },
+      commit: {
+        marker: "fingerprint-new",
+        manifest: { path: MANIFEST(), content: "manifest-new" },
+      },
+    };
+  }
+
+  it("lays out its files, removes what the plan dropped, records and commits", () => {
+    writeFileSync(path.join(root, "src/Old.tsx"), "old");
+    const request = startRequest(
+      { [HERO]: "hero v2", "src/Other.tsx": "other v1" },
+      { [HERO]: 2, "src/Other.tsx": 1 },
+      { prune: ["src/Old.tsx"] },
+    );
+
+    expect(run(request)).toEqual({
+      refused: [],
+      changed: [HERO, "src/Other.tsx"],
+      unchanged: [],
+      committed: true,
+    });
+    expect(read(HERO)).toBe("hero v2");
+    expect(existsSync(path.join(root, "src/Old.tsx"))).toBe(false);
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({
+      [HERO]: 2,
+      "src/Other.tsx": 1,
+    });
+    expect(read(".morph-preview-workspace")).toBe("fingerprint-new");
+    expect(read(".morph-preview-manifest.json")).toBe("manifest-new");
+    expect(existsSync((request as { staging: string }).staging)).toBe(false);
+  });
+
+  it("is refused whole when a newer sync has already landed, and changes nothing", () => {
+    // The newer save's sync completed first; the start was read before it.
+    run({
+      op: "write",
+      root,
+      files: [{ path: HERO, content: "hero v4 saved", fence: 4 }],
+      marker: { path: MARKER(), content: "dirty:sync" },
+    });
+    writeFileSync(path.join(root, "src/Keep.tsx"), "keep");
+    const request = startRequest(
+      { [HERO]: "hero v3", "src/Other.tsx": "other v1" },
+      { [HERO]: 3, "src/Other.tsx": 1 },
+      { prune: ["src/Keep.tsx"] },
+    );
+
+    expect(run(request)).toEqual({
+      refused: [HERO],
+      changed: [],
+      unchanged: [],
+      committed: false,
+    });
+    expect(read(HERO)).toBe("hero v4 saved");
+    // Refused whole: not one of its files, and nothing pruned.
+    expect(existsSync(path.join(root, "src/Other.tsx"))).toBe(false);
+    expect(read("src/Keep.tsx")).toBe("keep");
+    expect(read(".morph-preview-workspace")).toBe("dirty:sync");
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({ [HERO]: 4 });
+    expect(existsSync((request as { staging: string }).staging)).toBe(false);
+  });
+
+  it("applies but does not vouch for a workspace another writer marked since it read", () => {
+    writeFileSync(MARKER(), "dirty:sync-after-read");
+    const request = startRequest(
+      { [HERO]: "hero v2" },
+      { [HERO]: 2 },
+      { expected: "fingerprint-old" },
+    );
+
+    expect(run(request).committed).toBe(false);
+    expect(read(HERO)).toBe("hero v2");
+    expect(read(".morph-preview-workspace")).toBe("dirty:start");
+    expect(existsSync(MANIFEST())).toBe(false);
+  });
+
+  it("lets an equal version through: the later write wins, as for a sync", () => {
+    run({
+      op: "write",
+      root,
+      files: [{ path: HERO, content: "hero v3 from tab A", fence: 3 }],
+    });
+    expect(
+      run(startRequest({ [HERO]: "hero v3 from tab B" }, { [HERO]: 3 }))
+        .refused,
+    ).toEqual([]);
+    expect(read(HERO)).toBe("hero v3 from tab B");
+  });
+
+  it("will not remove or place a file outside its root", () => {
+    expect(() =>
+      run(startRequest({}, {}, { prune: ["../outside.txt"] })),
+    ).toThrow(/PREVIEW_FENCE_PATH_ESCAPE/);
+  });
+
+  it("ends on the newer save whichever of a start and a sync takes the lock first", async () => {
+    // An older start (v3) and a newer save's sync (v4) racing, as real
+    // processes contending for the one lock. If the sync goes first, the
+    // start is refused; if the start goes first, the sync lands after it.
+    // Either way the newer content stands.
+    for (let round = 0; round < 6; round += 1) {
+      rmSync(ledger, { force: true });
+      writeFileSync(path.join(root, HERO), "hero v2");
+      const [, sync] = await Promise.all([
+        runAsync(startRequest({ [HERO]: "hero v3" }, { [HERO]: 3 })),
+        runAsync({
+          op: "write",
+          root,
+          files: [{ path: HERO, content: "hero v4", fence: 4 }],
+        }),
+      ]);
+      expect(read(HERO), `round ${round}`).toBe("hero v4");
+      expect(sync.refused).toEqual([]);
     }
   });
 });

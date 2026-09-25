@@ -1,6 +1,17 @@
 // @vitest-environment node
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { isDirtyWorkspaceMarker } from "./theme-workspace-path";
+import { planFencedStart, planFencedWrite } from "./preview-write-fence";
+import {
+  applyFencedRequest,
+  PREVIEW_FENCE_LEDGER_PATH,
+  PREVIEW_START_STAGING_PREFIX,
+  runFencedWriteInSandbox,
+  type FenceIo,
+  type FenceSandbox,
+  type FencedWriteRequest,
+} from "./preview-write-fence-sandbox";
 import {
   CloudflareSandboxVitePreviewServer,
   THEME_PREVIEW_SERVER_PORT,
@@ -42,6 +53,38 @@ const createSession = (
   let destroyed = 0;
   let onOutput: ((s: "stdout" | "stderr", d: string) => void) | undefined;
   let onExit: ((code: number | null) => void) | undefined;
+
+  // The container's disk, over the same map: `exec` applies a fenced request
+  // with `applyFencedRequest` itself, the source the container runs.
+  const io: FenceIo = {
+    readText: (file) => written.get(file) ?? null,
+    writeText(file, content) {
+      writePaths.push(file);
+      written.set(file, content);
+    },
+    moveFile(from, to) {
+      const content = written.get(from);
+      if (content === undefined) throw new Error(`ENOENT: ${from}`);
+      written.delete(from);
+      writePaths.push(to);
+      written.set(to, content);
+    },
+    removeFile(file) {
+      if (written.delete(file)) deletedPaths.push(file);
+    },
+    removeTree(dir) {
+      for (const file of [...written.keys()]) {
+        if (file.startsWith(`${dir}/`)) written.delete(file);
+      }
+    },
+    within(root, relative) {
+      const resolved = path.posix.resolve(root, relative);
+      if (!resolved.startsWith(`${root}/`)) {
+        throw new Error(`PREVIEW_FENCE_PATH_ESCAPE: ${relative}`);
+      }
+      return resolved;
+    },
+  };
 
   const session: PreviewServerSession = {
     async mkdir() {},
@@ -114,6 +157,35 @@ const createSession = (
     async destroy() {
       destroyed += 1;
     },
+    async exec(command) {
+      const removal = /^rm -rf (\S+)$/.exec(command);
+      if (removal) {
+        io.removeTree(removal[1]!);
+        return { success: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      const fenced = /^node (\S+) (\S+)$/.exec(command);
+      if (!fenced) throw new Error(`Unexpected command: ${command}`);
+      const request = JSON.parse(
+        written.get(fenced[2]!)!,
+      ) as FencedWriteRequest;
+      written.delete(fenced[1]!);
+      written.delete(fenced[2]!);
+      const result = applyFencedRequest(
+        io,
+        PREVIEW_FENCE_LEDGER_PATH,
+        request,
+        {
+          planFencedWrite,
+          planFencedStart,
+        },
+      );
+      return {
+        success: true,
+        exitCode: 0,
+        stdout: JSON.stringify(result),
+        stderr: "",
+      };
+    },
   };
 
   return {
@@ -131,10 +203,18 @@ const createSession = (
     get destroyed() {
       return destroyed;
     },
-    emit: (line) => onOutput?.("stdout", line),
+    emit: (line: string) => onOutput?.("stdout", line),
     exit: () => onExit?.(1),
   } as Harness;
 };
+
+/**
+ * What landed in the workspace, in order. The container's own files — the
+ * fence script, its request, the ledger, a start's staging — are not the
+ * workspace, and the tests below are about the workspace.
+ */
+const workspaceWrites = (harness: Harness) =>
+  harness.writePaths.filter((file) => file.startsWith("/workspace/"));
 
 const THEME = [
   {
@@ -554,7 +634,7 @@ describe("asking twice for the same preview", () => {
     expect(second.timings.workspaceMaterializeMs).toBe(0);
     expect(second.timings.writeCalls).toBe(0);
     expect(second.timings.readCalls).toBe(1);
-    expect(harness.writePaths).toEqual([]);
+    expect(workspaceWrites(harness)).toEqual([]);
     expect(harness.commands).toHaveLength(1);
   });
 
@@ -600,7 +680,7 @@ describe("asking twice for the same preview", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.timings.workspaceReused).toBe(true);
-    expect(harness.writePaths).toEqual([]);
+    expect(workspaceWrites(harness)).toEqual([]);
     expect(harness.commands).toHaveLength(2);
   });
 
@@ -876,7 +956,7 @@ describe("recording what a start decided", () => {
     expect(start.vite.action).toBe("reused");
     expect(result.ok && result.timings.reusedProcess).toBe(true);
     // Nothing rewritten: only the manifest, then the marker, committed clean.
-    expect(harness.writePaths).toEqual([
+    expect(workspaceWrites(harness)).toEqual([
       THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
       THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
     ]);
@@ -1036,7 +1116,9 @@ describe("recording what a start decided", () => {
     expect(result.timings.reusedProcess).toBe(true);
     expect(harness.killed).toEqual([]);
     expect(harness.commands).toHaveLength(1);
-    expect(harness.writePaths).toEqual([
+    // The marker is withdrawn before the first file changes, then committed.
+    expect(workspaceWrites(harness)).toEqual([
+      THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
       "/workspace/src/morph/preview-content-snapshot.ts",
       "/workspace/.morph-preview-content.json",
       THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
@@ -1148,5 +1230,133 @@ describe("recording what a start decided", () => {
       THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
       THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
     ]);
+  });
+});
+
+/**
+ * A start and a sync of a newer save, in the two orders that used to rewind
+ * the preview. The sync goes through `runFencedWriteInSandbox`, as
+ * `applyThemePreviewFiles` sends it; the start through `start`. Both end in
+ * the same container request code, under the same lock.
+ */
+describe("a start and a newer save's sync", () => {
+  const HERO = "src/components/Hero.tsx";
+  const HERO_PATH = `/workspace/${HERO}`;
+  const heroAt = (content: string) =>
+    THEME.map((file) => (file.path === HERO ? { ...file, content } : file));
+
+  const sync = (harness: Harness, content: string, fence: number) =>
+    runFencedWriteInSandbox(harness.session as unknown as FenceSandbox, {
+      op: "write",
+      root: "/workspace",
+      files: [{ path: HERO, content, fence }],
+      marker: {
+        path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+        content: "dirty:sync",
+      },
+    });
+
+  const stagingLeft = (harness: Harness) =>
+    [...harness.written.keys()].filter((file) =>
+      file.startsWith(PREVIEW_START_STAGING_PREFIX),
+    );
+
+  it("refuses an older start that arrives after the sync finished, and keeps the newer file", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness, { fileVersions: { [HERO]: 1 } })).ok).toBe(
+      true,
+    );
+    expect(
+      (await sync(harness, "export default () => 'v2';\n", 2)).changed,
+    ).toEqual([HERO]);
+
+    // Read before the save: the older content, at the older version.
+    const result = await startWith(harness, {
+      files: heroAt("export default () => 'v1 edited';\n"),
+      fileVersions: { [HERO]: 1 },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("preview-start-stale");
+    expect(harness.written.get(HERO_PATH)).toBe("export default () => 'v2';\n");
+    // Refused whole: the marker the sync left stands, nothing is staged.
+    expect(harness.written.get(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH)).toBe(
+      "dirty:sync",
+    );
+    expect(stagingLeft(harness)).toEqual([]);
+  });
+
+  it("refuses an older start when the sync lands while it is writing, and keeps the newer file", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness, { fileVersions: { [HERO]: 1 } })).ok).toBe(
+      true,
+    );
+
+    // The newer save syncs as soon as the older start begins laying out.
+    const writeFile = harness.session.writeFile.bind(harness.session);
+    let synced = false;
+    (
+      harness.session as { writeFile: PreviewServerSession["writeFile"] }
+    ).writeFile = async (file, content, options) => {
+      if (!synced && file.startsWith(PREVIEW_START_STAGING_PREFIX)) {
+        synced = true;
+        await sync(harness, "export default () => 'v2';\n", 2);
+      }
+      return writeFile(file, content, options);
+    };
+
+    const result = await startWith(harness, {
+      files: heroAt("export default () => 'v1 edited';\n"),
+      fileVersions: { [HERO]: 1 },
+    });
+
+    expect(synced).toBe(true);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("preview-start-stale");
+    expect(harness.written.get(HERO_PATH)).toBe("export default () => 'v2';\n");
+    expect(stagingLeft(harness)).toEqual([]);
+  });
+
+  it("lets a start at the same version through, as before: the later write wins", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { fileVersions: { [HERO]: 1 } });
+    await sync(harness, "export default () => 'tab A draft';\n", 1);
+
+    const result = await startWith(harness, {
+      files: heroAt("export default () => 'tab B draft';\n"),
+      fileVersions: { [HERO]: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(harness.written.get(HERO_PATH)).toBe(
+      "export default () => 'tab B draft';\n",
+    );
+  });
+
+  it("leaves the workspace untouched when staging fails, and clears what it staged", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, { fileVersions: { [HERO]: 1 } });
+    const before = harness.written.get(HERO_PATH);
+    const writeFile = harness.session.writeFile.bind(harness.session);
+    let staged = 0;
+    (
+      harness.session as { writeFile: PreviewServerSession["writeFile"] }
+    ).writeFile = async (file, content, options) => {
+      if (file.startsWith(PREVIEW_START_STAGING_PREFIX) && ++staged === 2) {
+        throw new Error("disk full");
+      }
+      return writeFile(file, content, options);
+    };
+
+    const result = await startWith(harness, {
+      files: heroAt("export default () => 'v2';\n"),
+      fileVersions: { [HERO]: 2 },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(harness.written.get(HERO_PATH)).toBe(before);
+    expect(stagingLeft(harness)).toEqual([]);
   });
 });

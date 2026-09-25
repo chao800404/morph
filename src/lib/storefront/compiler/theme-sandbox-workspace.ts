@@ -135,11 +135,21 @@ export async function runWithConcurrency<T>(
   concurrency: number,
   operation: (item: T) => Promise<void>,
 ): Promise<void> {
+  // After a failure no worker takes another item, and the rejection waits
+  // for the ones already running: once this settles, nothing it started is
+  // still writing — so a caller can clean up after it without a late write
+  // landing behind the cleanup.
   let nextIndex = 0;
+  let failure: { error: unknown } | null = null;
   const worker = async () => {
-    while (nextIndex < items.length) {
+    while (failure === null && nextIndex < items.length) {
       const item = items[nextIndex++];
-      if (item !== undefined) await operation(item);
+      if (item === undefined) continue;
+      try {
+        await operation(item);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   };
   await Promise.all(
@@ -147,6 +157,7 @@ export async function runWithConcurrency<T>(
       worker(),
     ),
   );
+  if (failure !== null) throw (failure as { error: unknown }).error;
 }
 
 /**

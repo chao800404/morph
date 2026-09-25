@@ -1,6 +1,7 @@
 import {
   materializeThemeSandboxWorkspace,
   planThemeSandboxWorkspace,
+  unplannedWorkspaceFiles,
   type ThemeWorkspaceFile,
   type ThemeWorkspaceWriter,
   isBinaryWorkspaceFile,
@@ -24,6 +25,7 @@ import {
 } from "./theme-workspace-path";
 import { verifyWorkspaceOnDisk } from "./theme-workspace-verification";
 import {
+  PREVIEW_START_STAGING_PREFIX,
   runFencedWriteInSandbox,
   type FenceSandbox,
 } from "./preview-write-fence-sandbox";
@@ -183,8 +185,11 @@ export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
       hostname: string,
     ): Promise<ReadonlyArray<{ url: string; port: number; status: string }>>;
     setSleepAfter?(value: string | number): Promise<void>;
-    /** Runs a command to completion; used for the preview's write fences. */
-    exec?(command: string): Promise<{
+    /**
+     * Runs a command to completion. Every write to the workspace — a sync's,
+     * and a start's — is applied through it, under the container's lock.
+     */
+    exec(command: string): Promise<{
       success: boolean;
       exitCode: number;
       stdout: string;
@@ -249,6 +254,22 @@ export type StartPreviewServerResult =
       logs: readonly string[];
     }>;
 
+/**
+ * What a start has put in its staging directory, for the container to apply:
+ * the files at their workspace-relative paths, and the files the plan no
+ * longer has.
+ */
+type StagedStart = {
+  staging: string | null;
+  files: string[];
+  prune: string[];
+};
+
+const WORKSPACE_ROOT = "/workspace";
+
+const workspaceRelative = (absolutePath: string) =>
+  absolutePath.slice(WORKSPACE_ROOT.length + 1);
+
 /** What one start decided, gathered as it goes and logged when it ends. */
 type StartObservation = {
   readonly attemptId: string;
@@ -264,6 +285,8 @@ type StartObservation = {
     verification?: { read: number } | { failed: string };
     /** False when another writer marked the workspace before this one committed. */
     committed?: boolean;
+    /** How many files already held a newer version, refusing the start. */
+    refused?: number;
   };
   vite?: {
     action: "reused" | "restarted" | "started";
@@ -394,6 +417,97 @@ export class CloudflareSandboxVitePreviewServer {
         ...(result?.ok ? { timings: result.timings } : {}),
       });
     }
+  }
+
+  /**
+   * Writes a start's files into a staging directory of their own, and works
+   * out which workspace files the plan no longer has. Nothing in
+   * `/workspace` changes here; that is `op: "start"`, under the lock.
+   *
+   * A full update stages every planned file through the same materializer
+   * as ever, pointed at the staging directory; a content-only one stages the
+   * changed content files alone.
+   */
+  private async stageStart(
+    session: PreviewServerSession,
+    writer: ThemeWorkspaceWriter,
+    workspaceFiles: readonly ThemeWorkspaceFile[],
+    update: "content-only" | "full",
+    changedPaths: ReadonlySet<string>,
+    loadBinary: ThemeWorkspaceBinaryLoader | undefined,
+  ): Promise<StagedStart> {
+    const staging = `${PREVIEW_START_STAGING_PREFIX}${crypto.randomUUID()}`;
+    const toStaging = (path: string) => {
+      if (path === WORKSPACE_ROOT) return staging;
+      if (!path.startsWith(`${WORKSPACE_ROOT}/`)) {
+        throw new Error(`PREVIEW_START_PATH_OUTSIDE_WORKSPACE: ${path}`);
+      }
+      return `${staging}${path.slice(WORKSPACE_ROOT.length)}`;
+    };
+    // Mapped writes only: without a way to list or delete, the materializer
+    // leaves reconciliation to the prune list worked out below.
+    const stagingWriter: ThemeWorkspaceWriter = {
+      mkdir: (path, options) => writer.mkdir(toStaging(path), options),
+      writeFile: (path, content) => writer.writeFile(toStaging(path), content),
+    };
+
+    try {
+      if (update === "full") {
+        let prune: string[] = [];
+        if (session.listFiles) {
+          const listed = await session.listFiles(WORKSPACE_ROOT, {
+            recursive: true,
+            includeHidden: true,
+          });
+          if (!listed.success) {
+            // Deliberately fatal, as it was when the start wrote in place:
+            // a workspace nobody can describe cannot be reconciled.
+            throw new Error(
+              "Could not list the existing Theme preview workspace.",
+            );
+          }
+          prune = unplannedWorkspaceFiles(listed.files, workspaceFiles).map(
+            workspaceRelative,
+          );
+        }
+        await materializeThemeSandboxWorkspace(stagingWriter, workspaceFiles, {
+          loadBinary,
+        });
+        return {
+          staging,
+          files: workspaceFiles.map((file) => workspaceRelative(file.path)),
+          prune,
+        };
+      }
+
+      await writer.mkdir(staging, { recursive: true });
+      const files: string[] = [];
+      for (const file of workspaceFiles) {
+        if (!changedPaths.has(file.path)) continue;
+        // A content-only change touches the content data files alone,
+        // which are text; any other change takes the full write.
+        if (isBinaryWorkspaceFile(file)) continue;
+        const target = toStaging(file.path);
+        await writer.mkdir(target.slice(0, target.lastIndexOf("/")), {
+          recursive: true,
+        });
+        await stagingWriter.writeFile(file.path, file.content);
+        files.push(workspaceRelative(file.path));
+      }
+      return { staging, files, prune: [] };
+    } catch (error) {
+      await this.discardStaging(session, staging);
+      throw error;
+    }
+  }
+
+  /** Best effort: `/tmp` is cleared with the container anyway. */
+  private async discardStaging(
+    session: PreviewServerSession,
+    staging: string | null,
+  ): Promise<void> {
+    if (!staging) return;
+    await session.exec(`rm -rf ${staging}`).catch(() => undefined);
   }
 
   private async startObserved(
@@ -565,32 +679,15 @@ export class CloudflareSandboxVitePreviewServer {
           (process.status === "running" || process.status === "starting"),
       );
 
-      const readWorkspaceMarker = async (): Promise<string | null> => {
-        if (!session!.readFile) return null;
-        try {
-          const value = await recordFilesystemCall(
-            () =>
-              session!.readFile!(THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH, {
-                encoding: "utf-8",
-              }),
-            "read",
-          );
-          const content =
-            typeof value === "string"
-              ? value
-              : typeof value.content === "string"
-                ? value.content
-                : null;
-          return content?.trim() ?? null;
-        } catch {
-          return null;
-        }
-      };
-
       let workspaceMaterializeMs = 0;
       let workspaceUpdate: "none" | "content-only" | "full" = workspaceReused
         ? "none"
         : "full";
+      let stagedStart: StagedStart = { staging: null, files: [], prune: [] };
+      let startCommit: {
+        marker: string;
+        manifest: { path: string; content: string };
+      } | null = null;
       if (!workspaceReused) {
         const nextDigests = workspaceFileDigests(prepared.workspaceFiles);
         const themeSourcePaths = new Set(input.files.map((file) => file.path));
@@ -674,81 +771,81 @@ export class CloudflareSandboxVitePreviewServer {
               ? "content-only"
               : "full";
 
+        // The files are staged, not written: where they land, and whether
+        // they land at all, is decided in the container under the lock every
+        // sync takes, together with the version check (below).
         const workspaceMaterializeStartedAt = Date.now();
-        if (workspaceUpdate === "content-only") {
-          // Only the content snapshot changed. The dev server reads its data
-          // file per request and pages accept the new snapshot module without
-          // applying it, so the running Vite and every page it serves stay.
-          const changedPaths = new Set(change.paths);
-          for (const file of prepared.workspaceFiles) {
-            if (!changedPaths.has(file.path)) continue;
-            // A content-only change touches the content data files alone,
-            // which are text; any other change takes the full write.
-            if (isBinaryWorkspaceFile(file)) continue;
-            await measuredWriter.writeFile(file.path, file.content);
-          }
-        } else if (workspaceUpdate === "full") {
-          await materializeThemeSandboxWorkspace(
+        if (workspaceUpdate !== "none") {
+          stagedStart = await this.stageStart(
+            session,
             measuredWriter,
             prepared.workspaceFiles,
-            { loadBinary: input.loadBinary },
+            workspaceUpdate,
+            new Set(change.paths),
+            input.loadBinary,
           );
         }
         workspaceMaterializeMs = Date.now() - workspaceMaterializeStartedAt;
+        startCommit = {
+          marker: prepared.workspaceFingerprint,
+          manifest: {
+            path: THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
+            content: serializeWorkspaceManifest(
+              prepared.workspaceFingerprint,
+              nextDigests,
+            ),
+          },
+        };
+      }
+      observation.workspace.update = workspaceUpdate;
 
-        // Commit only if no other writer has marked the workspace since this
-        // start read the marker. Each `dirty` carries its own token, so a sync
-        // that began while this start was reading or writing is noticed here,
-        // and the commit is left to the start that reads the disk after it.
-        // (Checking and writing are two calls; a writer can still step in
-        // between them. Closing that needs a single owner for the workspace.)
-        const markerNow = await readWorkspaceMarker();
-        observation.workspace.committed =
-          markerNow === existingWorkspaceFingerprint;
-        if (observation.workspace.committed) {
-          await recordFilesystemCall(
-            () =>
-              session!.writeFile(
-                THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
-                serializeWorkspaceManifest(
-                  prepared.workspaceFingerprint,
-                  nextDigests,
-                ),
-              ),
-            "write",
-          ).catch(() => {
-            addLog("Could not persist the Live Preview workspace manifest.");
-          });
-
-          // Commit the marker last. A failed or partial write can therefore
-          // never make a later request trust an incomplete workspace.
-          await recordFilesystemCall(
-            () =>
-              session!.writeFile(
-                THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
-                prepared.workspaceFingerprint,
-              ),
-            "write",
-          ).catch(() => {
-            addLog("Could not persist the Live Preview workspace fingerprint.");
-          });
-        } else {
+      // One step in the container, under the lock every sync takes: judge
+      // this start's versions against what has been written, and only then
+      // lay out its files, record its versions and — if no other writer has
+      // marked the workspace since it read the marker — commit the manifest
+      // and the marker. A start read before a newer save is refused whole
+      // and leaves the workspace as it was, whichever of the two arrived
+      // first. Equal versions pass: the later write wins, as for a sync.
+      const applied = await runFencedWriteInSandbox(
+        session as unknown as FenceSandbox,
+        {
+          op: "start",
+          root: "/workspace",
+          staging: stagedStart.staging,
+          files: stagedStart.files,
+          prune: stagedStart.prune,
+          versions: input.fileVersions ?? {},
+          marker: {
+            path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+            dirty: newDirtyWorkspaceMarker(),
+            expected: existingWorkspaceFingerprint,
+          },
+          commit: startCommit,
+        },
+      ).catch(async (error: unknown) => {
+        await this.discardStaging(session!, stagedStart.staging);
+        throw error;
+      });
+      if (applied.refused.length > 0) {
+        observation.workspace.refused = applied.refused.length;
+        return {
+          ok: false,
+          stage: "preview-start-stale",
+          errorMessage: `PREVIEW_START_STALE: a newer version of ${applied.refused
+            .slice(0, 3)
+            .join(
+              ", ",
+            )}${applied.refused.length > 3 ? ", …" : ""} is already laid out.`,
+          logs,
+        };
+      }
+      if (!workspaceReused) {
+        observation.workspace.committed = applied.committed === true;
+        if (!observation.workspace.committed) {
           addLog(
             "Another writer marked the Live Preview workspace; not committing.",
           );
         }
-      }
-      observation.workspace.update = workspaceUpdate;
-      // The workspace now holds these versions. Recorded after it does, and
-      // merged into what is there rather than replacing it: a save that
-      // synced while this start was running may already be ahead.
-      if (input.fileVersions && typeof session.exec === "function") {
-        await runFencedWriteInSandbox(session as unknown as FenceSandbox, {
-          op: "seed",
-          versions: input.fileVersions,
-        }).catch(() => {
-          addLog("Could not record the Live Preview write fences.");
-        });
       }
       const workspaceMs = Date.now() - workspaceStartedAt;
 

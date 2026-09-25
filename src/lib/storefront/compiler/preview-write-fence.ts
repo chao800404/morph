@@ -75,6 +75,44 @@ export function planFencedWrite(
   return { refused: [], writes, unchanged, ledger: next };
 }
 
+export type FencedStartPlan = Readonly<{
+  /** Paths the ledger has already seen a newer version of. */
+  stale: string[];
+  ledger: Record<string, number>;
+}>;
+
+/**
+ * The same rule for a start, which lays out every file at once.
+ *
+ * A start is judged against what has been written, the way a sync is: if
+ * any file already holds a newer version, the start was read before it and
+ * must not lay the older files back, so it is refused whole and the ledger
+ * is left as it was. Otherwise its versions are recorded, raised and never
+ * lowered. Equal versions pass, as they do for a sync.
+ *
+ * Self-contained for the same reason as `planFencedWrite`.
+ */
+export function planFencedStart(
+  ledger: FenceLedger,
+  versions: Readonly<Record<string, number>>,
+): FencedStartPlan {
+  const stale: string[] = [];
+  for (const [file, version] of Object.entries(versions)) {
+    const recorded = ledger[file];
+    if (typeof recorded === "number" && recorded > version) stale.push(file);
+  }
+  if (stale.length > 0) return { stale, ledger: { ...ledger } };
+
+  const next: Record<string, number> = { ...ledger };
+  for (const [file, version] of Object.entries(versions)) {
+    const recorded = next[file];
+    if (typeof recorded !== "number" || recorded < version) {
+      next[file] = version;
+    }
+  }
+  return { stale: [], ledger: next };
+}
+
 /**
  * The version a file is written as.
  *

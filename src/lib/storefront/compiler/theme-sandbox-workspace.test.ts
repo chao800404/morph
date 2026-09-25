@@ -4,6 +4,7 @@ import {
   materializeThemeSandboxWorkspace,
   planThemeSandboxWorkspace,
   prepareThemeSandboxWorkspace,
+  runWithConcurrency,
 } from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 
@@ -606,5 +607,32 @@ describe("what a build is given", () => {
     expect(result.ok && result.strippedEditorMarkers).toEqual({
       "src/components/Marked.tsx": 1,
     });
+  });
+});
+
+describe("runWithConcurrency", () => {
+  it("takes no item after a failure, and rejects only once the running ones finish", async () => {
+    const started: number[] = [];
+    const finished: number[] = [];
+    let release!: () => void;
+    const slow = new Promise<void>((resolve) => (release = resolve));
+
+    const run = runWithConcurrency([1, 2, 3, 4, 5], 2, async (item) => {
+      started.push(item);
+      if (item === 1) await slow;
+      if (item === 2) throw new Error("disk full");
+      finished.push(item);
+    });
+    let settled = false;
+    void run.catch(() => undefined).then(() => (settled = true));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Item 1 is still running, so the failure is not reported yet.
+    expect(settled).toBe(false);
+    release();
+
+    await expect(run).rejects.toThrow("disk full");
+    expect(started).toEqual([1, 2]);
+    expect(finished).toEqual([1]);
   });
 });
