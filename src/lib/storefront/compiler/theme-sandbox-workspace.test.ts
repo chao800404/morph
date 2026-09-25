@@ -512,10 +512,11 @@ describe("laying out the workspace a Theme is served from", () => {
 
     expect(plan.ok).toBe(true);
     if (!plan.ok) return;
+    const configFile = plan.workspaceFiles.find(
+      (file) => file.path === "/workspace/vite.config.ts",
+    );
     const config =
-      plan.workspaceFiles.find(
-        (file) => file.path === "/workspace/vite.config.ts",
-      )?.content ?? "";
+      configFile && "content" in configFile ? configFile.content : "";
     // `JSON.stringify` is what a quote in a path has to travel through, so the
     // escaped form is the exact string the config is expected to contain.
     const root = JSON.stringify(hostRoot);

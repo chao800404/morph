@@ -1,4 +1,5 @@
 import {
+  isBinaryWorkspaceFile,
   runWithConcurrency,
   unplannedWorkspaceFiles,
   type ThemeWorkspacePlanFile,
@@ -63,7 +64,7 @@ export async function verifyWorkspaceOnDisk(
   }
   // Bytes cannot be compared through a text read; such a workspace is
   // rewritten rather than guessed at.
-  if (plannedFiles.some((file) => typeof file.content !== "string")) {
+  if (plannedFiles.some(isBinaryWorkspaceFile)) {
     return { ok: false, reason: "binary-file" };
   }
 

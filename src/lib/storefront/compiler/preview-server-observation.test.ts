@@ -15,16 +15,23 @@ const SOURCE = new Set(["src/routes/index.tsx", "src/components/Hero.tsx"]);
 
 describe("workspaceFileDigests", () => {
   it("changes a file's digest exactly when its bytes change", () => {
+    // A binary file is known by the digest of its bytes, never the bytes.
     const before = workspaceFileDigests([
       { path: "/workspace/a.ts", content: "a" },
-      { path: "/workspace/b.ts", content: new Uint8Array([1, 2]) },
+      {
+        path: "/workspace/b.png",
+        binary: { digest: "a".repeat(64), sizeBytes: 2 },
+      },
     ]);
     const after = workspaceFileDigests([
       { path: "/workspace/a.ts", content: "a" },
-      { path: "/workspace/b.ts", content: new Uint8Array([1, 3]) },
+      {
+        path: "/workspace/b.png",
+        binary: { digest: "b".repeat(64), sizeBytes: 2 },
+      },
     ]);
     expect(after["/workspace/a.ts"]).toBe(before["/workspace/a.ts"]);
-    expect(after["/workspace/b.ts"]).not.toBe(before["/workspace/b.ts"]);
+    expect(after["/workspace/b.png"]).not.toBe(before["/workspace/b.png"]);
   });
 });
 

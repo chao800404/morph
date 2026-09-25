@@ -96,7 +96,10 @@ describe("verifyWorkspaceOnDisk", () => {
   it("does not guess at bytes, or at a workspace it cannot read", async () => {
     expect(
       await verifyWorkspaceOnDisk(disk({}), [
-        { path: "/workspace/logo.png", content: new Uint8Array([1]) },
+        {
+          path: "/workspace/logo.png",
+          binary: { digest: "a".repeat(64), sizeBytes: 1 },
+        },
       ]),
     ).toEqual({ ok: false, reason: "binary-file" });
     expect(await verifyWorkspaceOnDisk({}, PLAN)).toEqual({

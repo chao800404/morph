@@ -18,6 +18,7 @@ import {
   prepareThemeSandboxWorkspace,
   PINNED_SANDBOX_DEPENDENCIES,
 } from "./theme-sandbox-workspace";
+import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -43,7 +44,12 @@ export type CloudflareSandboxReadFileResult = {
  * Matches official @cloudflare/sandbox SandboxClient API.
  */
 export interface CloudflareSandboxSession {
-  writeFile(filePath: string, content: string | Uint8Array): Promise<void>;
+  /** Text only, as the SDK takes it; bytes go through `writeSandboxWorkspaceFile`. */
+  writeFile(
+    filePath: string,
+    content: string,
+    options?: { encoding?: string },
+  ): Promise<unknown>;
   mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void>;
   readFile(
     filePath: string,
@@ -374,8 +380,15 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         throw new Error("Failed to initialize Cloudflare Sandbox session");
       }
 
+      const sandboxSession = sandbox;
       const prepared = await prepareThemeSandboxWorkspace({
-        session: sandbox,
+        session: {
+          writeFile: (filePath, content) =>
+            writeSandboxWorkspaceFile(sandboxSession, filePath, content),
+          mkdir: async (dirPath, options) => {
+            await sandboxSession.mkdir(dirPath, options);
+          },
+        },
         files: input.files,
         entry: input.entry,
         buildId: input.buildId,

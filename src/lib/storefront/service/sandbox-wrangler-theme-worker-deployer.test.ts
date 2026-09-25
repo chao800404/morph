@@ -129,9 +129,63 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     );
   });
 
+  // The SDK stores a string, and serialises anything else into its JSON
+  // request as an object of numbered keys. Each artifact therefore has to
+  // arrive as base64 that decodes to exactly what the build produced.
+  it("hands every artifact to the sandbox as base64 of its exact bytes", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 255, 10, 13]);
+    const writes = new Map<string, { content: unknown; encoding?: string }>();
+    const session = {
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(
+        async (
+          path: string,
+          content: unknown,
+          options?: { encoding?: string },
+        ) => {
+          writes.set(path, { content, encoding: options?.encoding });
+        },
+      ),
+      readFile: vi.fn(),
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        success: true,
+        stdout: "Current Version ID: 1a2b3c4d-5e6f",
+        stderr: "",
+      })),
+      destroy: vi.fn(async () => {}),
+    };
+    const bucket = {
+      get: vi.fn(async () => ({
+        arrayBuffer: async () => bytes.slice().buffer,
+      })),
+    };
+
+    await deployer(session, { r2Bucket: bucket }).deploy(request);
+
+    for (const path of [
+      "/workspace/deploy/server/index.js",
+      "/workspace/deploy/server/assets/worker-entry.js",
+      "/workspace/deploy/client/assets/app.js",
+    ]) {
+      const write = writes.get(path);
+      expect(write?.encoding, path).toBe("base64");
+      expect(typeof write?.content, path).toBe("string");
+      expect(
+        Buffer.compare(Buffer.from(write!.content as string, "base64"), bytes),
+        path,
+      ).toBe(0);
+    }
+  });
+
   it("writes module rules so no_bundle chunks resolve at runtime", async () => {
     let config: any = null;
-    const exec = vi.fn(async () => ({ exitCode: 0, success: true, stdout: "", stderr: "" }));
+    const exec = vi.fn(async () => ({
+      exitCode: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    }));
     const session = {
       mkdir: vi.fn(async () => {}),
       writeFile: vi.fn(async (path: string, content: any) => {

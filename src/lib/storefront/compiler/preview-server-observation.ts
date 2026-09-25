@@ -29,15 +29,22 @@ const WORKSPACE_ROOT = "/workspace/";
  * file that changes the fingerprint also changes its own digest.
  */
 export function workspaceFileDigests(
-  files: ReadonlyArray<{ path: string; content: string | Uint8Array }>,
+  files: ReadonlyArray<
+    | { path: string; content: string }
+    | { path: string; binary: { digest: string; sizeBytes: number } }
+  >,
 ): WorkspaceFileDigests {
   const digests: Record<string, string> = {};
   for (const file of files) {
     digests[file.path] = sha256(
       JSON.stringify(
-        typeof file.content === "string"
-          ? { type: "text", value: file.content }
-          : { type: "bytes", value: Array.from(file.content) },
+        "binary" in file
+          ? {
+              type: "blob",
+              digest: file.binary.digest,
+              sizeBytes: file.binary.sizeBytes,
+            }
+          : { type: "text", value: file.content },
       ),
     );
   }
