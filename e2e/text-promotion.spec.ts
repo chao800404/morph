@@ -137,4 +137,26 @@ test("fixed text in a component becomes a field of this page", async ({
   await expect(
     previewFrame(page).getByText(FIXED, { exact: true }),
   ).toHaveCount(0);
+
+  // Removing this page's value brings back the text the code holds.
+  await enableSelection(page);
+  await previewFrame(page).getByText(EDITED).scrollIntoViewIfNeeded();
+  expect(
+    await clickExposedElement(page, previewFrame(page).getByText(EDITED)),
+    "the promoted text was not exposed on the canvas",
+  ).not.toBeNull();
+  await openContentTab(page);
+  const field = page
+    .locator('[data-slot="inspector-content-field"]')
+    .filter({ hasText: "E2e note" });
+  await field.getByRole("button", { name: "Use code default" }).click();
+  await expect(
+    previewFrame(page).getByText(FIXED, { exact: true }),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await openEditor(page);
+  await expect(
+    previewFrame(page).getByText(FIXED, { exact: true }),
+  ).toBeVisible({ timeout: 45_000 });
+  await expect(previewFrame(page).getByText(EDITED)).toHaveCount(0);
 });

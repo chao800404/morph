@@ -516,6 +516,53 @@ export default function Header({ notice = "Free shipping" }) {
   });
 });
 
+describe("resetting a promoted field", () => {
+  const reset = (resetProps: string[], props: Record<string, unknown> = {}) =>
+    storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-home",
+      sectionId: "promo",
+      routePath: "/",
+      props,
+      resetProps,
+      expectedDraftGeneration: 2,
+      createdBy: "user-1",
+    });
+
+  it("removes this page's value, so the code default renders again", async () => {
+    seed();
+    await promote();
+    const promoted = fileRow();
+
+    const result = await reset(["text"]);
+
+    expect(result?.document.sections[0]?.props).toEqual({});
+    expect(await storedProps()).toEqual({});
+    // The default is still the text the page showed before any edit.
+    expect(fileRow()).toEqual(promoted);
+    expect(fileRow().content).toContain('text = "hello world"');
+  });
+
+  it("refuses to remove anything that is not a declared field", async () => {
+    seed();
+    await promote();
+    await expect(reset(["unknownKey"])).rejects.toThrow(
+      "INVALID_THEME_CONTENT_FIELD_VALUE:unknownKey:not-resettable",
+    );
+    expect(await storedProps()).toEqual({ text: "Hello there" });
+  });
+
+  it("refuses a field sent both to set and to remove", async () => {
+    seed();
+    await promote();
+    await expect(reset(["text"], { text: "again" })).rejects.toThrow(
+      "INVALID_THEME_CONTENT_FIELD_VALUE:text:not-resettable",
+    );
+    expect(await storedProps()).toEqual({ text: "Hello there" });
+  });
+});
+
 describe("commitTextPromotion", () => {
   const commit = (
     overrides: {

@@ -954,7 +954,12 @@ if (channel) {
       }
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
-      updatePreviewContent(message.sectionId, message.props, message.enabled);
+      updatePreviewContent(
+        message.sectionId,
+        message.props,
+        message.enabled,
+        message.resetKeys,
+      );
       const section = document.querySelector(
         previewSectionSelector(message.sectionId),
       );

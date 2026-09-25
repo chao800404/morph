@@ -535,7 +535,7 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
         message.type === "morph:storefront-preview-update-section-props" &&
         typeof message.sectionId === "string"
       ) {
-        const { sectionId, props, enabled } = message;
+        const { sectionId, props, enabled, resetKeys } = message;
 
         setPreviewDocument((current) => {
           if (!current) return current;
@@ -543,6 +543,7 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
             sectionId,
             props: props as PreviewSectionProps | undefined,
             enabled: typeof enabled === "boolean" ? enabled : undefined,
+            resetKeys,
           });
           if (!applied.matched) {
             // The editor and the preview disagree about what is on this page.

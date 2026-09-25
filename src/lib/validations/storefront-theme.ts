@@ -51,6 +51,11 @@ export const updateStorefrontThemeSectionPropsInputSchema =
      * saved source declares; it never names a file to read.
      */
     routePath: z.string().trim().min(1).max(512).optional(),
+    /**
+     * Fields whose stored value is removed, so the component's own default
+     * renders again. Only declared fields; the server refuses anything else.
+     */
+    resetProps: z.array(z.string().trim().min(1).max(100)).max(100).optional(),
   });
 
 /**

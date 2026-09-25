@@ -229,7 +229,7 @@ export function previewContentForPath(pathname) {
   return routes[routePath];
 }
 
-export function updatePreviewContent(sectionId, props, enabled) {
+export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
   const content = previewContentForPath(window.__morphPreviewRouter?.state?.location?.pathname || "/");
   if (enabled === false) {
     delete content.slots[sectionId];
@@ -240,6 +240,11 @@ export function updatePreviewContent(sectionId, props, enabled) {
     content.hiddenSlots = content.hiddenSlots.filter((id) => id !== sectionId);
   }
   if (props) content.slots[sectionId] = { ...(content.slots[sectionId] || {}), ...props };
+  if (Array.isArray(resetKeys) && content.slots[sectionId]) {
+    const next = { ...content.slots[sectionId] };
+    for (const key of resetKeys) delete next[key];
+    content.slots[sectionId] = next;
+  }
 }
 
 const nativeFetch = window.fetch.bind(window);
