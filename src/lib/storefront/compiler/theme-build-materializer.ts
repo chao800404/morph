@@ -41,6 +41,13 @@ export function normalizeRevisionSnapshot(
   const detectedEntries: string[] = [];
 
   for (const raw of snapshot) {
+    // Said by name rather than as a missing `content`: the revision is
+    // sound, the build cannot yet place bytes that are not source text.
+    if (raw?.encoding === "binary") {
+      throw new Error(
+        `BINARY_THEME_FILE_NOT_BUILDABLE: Source revision ${sourceRevisionId} holds binary file "${raw.path}", which the build cannot place yet.`,
+      );
+    }
     if (
       !raw ||
       typeof raw.path !== "string" ||

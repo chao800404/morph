@@ -1,6 +1,8 @@
 import type { RouteDocumentRollbackPlan } from "../route-document-moves";
 import type {
+  StorefrontThemeBinaryFileDTO,
   StorefrontThemeFileDTO,
+  StorefrontThemeWorkspaceEntryDTO,
   ThemeSourceRevisionManifest,
   StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
@@ -91,6 +93,20 @@ export type RollbackThemeRevisionOptions = {
  * implementation can later move to a workspace/filesystem backend without
  * changing Monaco, Visual Editor, or AI authoring call sites.
  */
+/** A file served as it is from `public/`, as its bytes. */
+export type SaveThemeBinaryFileInput = Readonly<{
+  path: string;
+  bytes: Uint8Array;
+  expectedFileId?: string;
+  expectedVersion?: number;
+  expectMissing?: boolean;
+}>;
+
+export type SaveThemeBinaryFileOptions = Readonly<{
+  expectedSourceGeneration: number;
+  createdBy?: string;
+}>;
+
 export interface ThemeSourceStore {
   initStarterTheme(
     storefrontId: string,
@@ -103,10 +119,11 @@ export interface ThemeSourceStore {
     themeId: string,
   ): Promise<StorefrontThemeFileDTO[]>;
 
+  /** Every file the workspace holds, source and binary. */
   getWorkspaceSnapshot(
     storefrontId: string,
     themeId: string,
-  ): Promise<StorefrontThemeFileDTO[]>;
+  ): Promise<StorefrontThemeWorkspaceEntryDTO[]>;
 
   getFileByPath(
     storefrontId: string,
@@ -147,8 +164,20 @@ export interface ThemeSourceStore {
    * The caller still performs the OCC-protected D1 transaction afterwards.
    */
   prepareSourceRevisionManifest(
-    files: readonly StorefrontThemeFileDTO[],
+    files: readonly StorefrontThemeWorkspaceEntryDTO[],
   ): Promise<ThemeSourceRevisionManifest>;
+
+  /**
+   * Stores bytes under `public/` after checking them against the public
+   * file contract. Internal until preview, build and publish read binary
+   * files; no server function reaches it yet.
+   */
+  saveBinaryFile(
+    storefrontId: string,
+    themeId: string,
+    file: SaveThemeBinaryFileInput,
+    options: SaveThemeBinaryFileOptions,
+  ): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }>;
 
   getSourceGeneration(
     storefrontId: string,
