@@ -28,6 +28,10 @@ import {
 } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
 import type { EditorSelectionDescriptor } from "@/lib/storefront/editor/selection-taxonomy";
+import type {
+  TextPromotionOutcome,
+  TextPromotionRequest,
+} from "@/lib/storefront/editor/text-promotion-request";
 import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
 
 type EditorAssistantPanelProps = {
@@ -37,6 +41,12 @@ type EditorAssistantPanelProps = {
   sectionTemplatePaths?: ReadonlySet<string>;
   /** The route being edited. */
   routeSourcePath?: string | null;
+  onPromoteText?: (
+    request: TextPromotionRequest,
+  ) => Promise<TextPromotionOutcome>;
+  onCreatePageCopy?: (
+    sectionId: string,
+  ) => Promise<{ success: boolean; message?: string }>;
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
@@ -200,6 +210,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   sharedLayoutPaths,
   sectionTemplatePaths,
   routeSourcePath,
+  onPromoteText,
+  onCreatePageCopy,
   activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
@@ -461,6 +473,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               contentStore={contentStore}
               themeFiles={themeFiles}
               routeSourcePath={routeSourcePath}
+              onPromoteText={onPromoteText}
+              onCreatePageCopy={onCreatePageCopy}
               selection={selection}
               editableNodes={editableNodes}
               activeComputedStyleRevision={activeComputedStyleRevision}

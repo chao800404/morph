@@ -114,12 +114,12 @@ export function isValidTextFieldName(name: string): boolean {
   return FIELD_NAME.test(name) && !RESERVED_NAMES.has(name);
 }
 
-/** `heading2` → `Heading 2`, `ctaLabel` → `Cta label`. */
+/** `heading2` → `Heading 2`, `ctaLabel` → `Cta label`, `e2eNote` → `E2e note`. */
 export function textFieldLabel(name: string): string {
   const words = name
     .replace(/_/g, " ")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/([a-zA-Z])(\d)/g, "$1 $2")
+    .replace(/([a-zA-Z])(\d+)$/, "$1 $2")
     .toLowerCase()
     .trim();
   return words.charAt(0).toUpperCase() + words.slice(1);

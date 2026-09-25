@@ -134,7 +134,12 @@ import {
   renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
   ensureStorefrontThemeRouteTemplate,
+  promoteStorefrontThemeText,
 } from "@/server/storefront/storefront-themes.serverFn";
+import type {
+  TextPromotionOutcome,
+  TextPromotionRequest,
+} from "@/lib/storefront/editor/text-promotion-request";
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
@@ -5642,6 +5647,163 @@ export function VisualEditorShell({
   );
 
   /**
+   * Makes fixed text in a component a field, storing this page's value.
+   *
+   * The server writes the source and the document together; here the editor
+   * catches up with both the way a detach does — the saved file, the new
+   * source generation, the preview, and the document read back.
+   */
+  const handlePromoteText = useCallback(
+    async (request: TextPromotionRequest): Promise<TextPromotionOutcome> => {
+      reportAuthenticatedUserActivity();
+      const failed = (message: string): TextPromotionOutcome => ({
+        status: "failed",
+        message,
+      });
+
+      const templateId = templateIdForSection(request.sectionId);
+      if (!templateId) {
+        return failed("This section has no document to store the text in.");
+      }
+      const store = useThemeWorkspaceStore.getState();
+      const workspaceFile = store.getWorkspaceFiles(
+        workspaceScope.storefrontId,
+        workspaceScope.themeId,
+      )[request.componentSourcePath];
+      const baseFile = effectiveThemeFiles.find(
+        (file) => file.path === request.componentSourcePath,
+      );
+      if (!workspaceFile?.serverExists || !baseFile) {
+        return failed(`${request.componentSourcePath} is not saved yet.`);
+      }
+      // The server rewrites what is saved; an unsaved edit would be lost
+      // under it, or overwrite it on the next save.
+      if (workspaceFile.dirty || workspaceFile.saveState !== "clean") {
+        return failed(
+          `${request.componentSourcePath} has unsaved Code changes. Save or discard them first.`,
+        );
+      }
+
+      try {
+        await flushTemplatePendingProps(templateId);
+      } catch (error) {
+        return failed(
+          error instanceof Error
+            ? error.message
+            : "Content is still saving. Try again.",
+        );
+      }
+
+      const result = await enqueueTemplateMutation(
+        templateId,
+        (expectedDraftGeneration, resolvedTemplateId) =>
+          promoteStorefrontThemeText({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              templateId: resolvedTemplateId,
+              sectionId: request.sectionId,
+              ...(routePathForTemplate(templateId)
+                ? { routePath: routePathForTemplate(templateId) }
+                : {}),
+              componentSourcePath: request.componentSourcePath,
+              targetKey: request.targetKey,
+              fieldName: request.fieldName,
+              value: request.value,
+              expectedSourceGeneration: store.getAcceptedSourceGeneration(
+                workspaceScope,
+              ),
+              expectedFileVersion: workspaceFile.serverVersion,
+              expectedDraftGeneration,
+              ...(request.confirmedImpact
+                ? { confirmedImpact: [...request.confirmedImpact] }
+                : {}),
+            },
+          }),
+      );
+      if (!result.success) {
+        if (result.error === "SHARED_IMPACT_UNCONFIRMED") {
+          return { status: "shared", impact: result.errors?.impact ?? [] };
+        }
+        return failed(result.message);
+      }
+
+      const saved = (
+        result as Extract<
+          Awaited<ReturnType<typeof promoteStorefrontThemeText>>,
+          { success: true }
+        >
+      ).data;
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(saved.sourceGeneration, workspaceScope);
+      updateWorkspaceLocal(saved.file.path, saved.file.content, workspaceScope);
+      markWorkspaceSaved(
+        {
+          ...baseFile,
+          content: saved.file.content,
+          version: saved.file.version,
+          updatedAt: saved.file.updatedAt,
+        },
+        workspaceScope,
+        saved.sourceGeneration,
+      );
+      postPreviewThemeFiles(
+        effectiveThemeFiles.map((file) => ({
+          path: file.path,
+          content:
+            file.path === saved.file.path ? saved.file.content : file.content,
+        })),
+        { renderDocument: true, preserveCanvasPosition: true },
+      );
+      // The value is this page's; the preview hears it the way it hears any
+      // content edit, since the files it was just sent only hold the default.
+      const promotedSection = saved.document.sections.find(
+        (candidate) => candidate.id === request.sectionId,
+      );
+      if (promotedSection) {
+        syncPreviewSectionProps(
+          request.sectionId,
+          promotedSection.props,
+          promotedSection.enabled,
+        );
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: storefrontThemeQueries.detail(
+            context.storefront.id,
+            context.theme.id,
+          ).queryKey,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: storefrontThemeFileQueries.tree(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ).queryKey,
+        }),
+      ]);
+      toast.success(`"${saved.fieldName}" is now an editable field.`);
+      return { status: "promoted", fieldName: saved.fieldName };
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      effectiveThemeFiles,
+      enqueueTemplateMutation,
+      flushTemplatePendingProps,
+      markWorkspaceSaved,
+      postPreviewThemeFiles,
+      queryClient,
+      routePathForTemplate,
+      syncPreviewSectionProps,
+      templateIdForSection,
+      updateWorkspaceLocal,
+      workspaceScope,
+    ],
+  );
+
+
+  /**
    * The stored props of one section, as a plain object to restore later.
    *
    * Read from the active template rather than from the Inspector's local state,
@@ -8197,6 +8359,8 @@ export function VisualEditorShell({
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
           routeSourcePath={activeThemeRoute?.sourcePath ?? null}
+          onPromoteText={handlePromoteText}
+          onCreatePageCopy={activeThemeRoute ? handleDetachSection : undefined}
           // Same nodes the sections tree uses, so the Content tab can fall back
           // to document order when a component declares no `contentFields`.
           editableNodes={
