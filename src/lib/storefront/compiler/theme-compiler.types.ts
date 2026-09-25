@@ -14,6 +14,12 @@ export type ThemeCompilerFile = {
 
 export type ThemeCompilerInput = {
   files: ThemeCompilerFile[];
+  /** Files copied as they are, by digest; see `ThemeBuildBinaryFile`. */
+  binaryFiles?: ReadonlyArray<{
+    path: string;
+    digest: string;
+    sizeBytes: number;
+  }>;
   entry?: string;
   dependencies?: Readonly<Record<string, string>>;
   sourceGeneration?: number;

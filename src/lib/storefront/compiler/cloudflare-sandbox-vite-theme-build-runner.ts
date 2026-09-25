@@ -341,6 +341,41 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
     }
 
+    // Binary files: the same containment, and something to read them with.
+    const binaryFiles = input.binaryFiles ?? [];
+    for (const file of binaryFiles) {
+      const refusal = refuseThemeWorkspacePath(file.path);
+      if (refusal) {
+        addLog("error", refusal);
+        return {
+          success: false,
+          errorMessage: refusal,
+          diagnosticsJson: {
+            stage: "security-containment",
+            errors: [{ severity: "error", message: refusal }],
+          },
+          logs,
+          durationMs: Date.now() - startTime,
+        };
+      }
+    }
+    const readBinaryFile = input.readBinaryFile;
+    if (binaryFiles.length > 0 && !readBinaryFile) {
+      const msg =
+        "BINARY_LOADER_MISSING: The build holds binary files but nothing can read their bytes.";
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage: "binary-files",
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
     let sandbox: CloudflareSandboxSession | null = null;
 
     try {
@@ -389,7 +424,17 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             await sandboxSession.mkdir(dirPath, options);
           },
         },
-        files: input.files,
+        files: [
+          ...input.files,
+          ...binaryFiles.map((file) => ({
+            path: file.path,
+            binary: { digest: file.digest, sizeBytes: file.sizeBytes },
+          })),
+        ],
+        // Each read as it is written, a bounded number at a time.
+        loadBinary: readBinaryFile
+          ? (ref) => readBinaryFile(ref.digest)
+          : undefined,
         entry: input.entry,
         buildId: input.buildId,
         dependencies: input.dependencies,

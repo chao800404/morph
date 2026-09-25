@@ -28,6 +28,18 @@ export type StorefrontThemeBuildPreviewDTO = StorefrontThemeBuildDTO & {
   previewToken?: string | null;
 };
 
+/**
+ * A file the build copies as it is, from `public/`, by reference: the bytes
+ * stay in the immutable blob store until the runner writes them.
+ */
+export type ThemeBuildBinaryFile = {
+  path: string;
+  /** SHA-256 of the bytes; their address in the blob store. */
+  digest: string;
+  sizeBytes: number;
+  mimeType: string;
+};
+
 export type StorefrontThemeBuildInput = {
   buildId: string;
   storefrontId: string;
@@ -35,6 +47,8 @@ export type StorefrontThemeBuildInput = {
   sourceRevisionId: string;
   revisionNumber: number;
   files: ThemeCompilerFile[];
+  /** Absent or empty for a revision with no binary files. */
+  binaryFiles?: ThemeBuildBinaryFile[];
   entry: string;
   inputHash: string;
   compilerId: string;

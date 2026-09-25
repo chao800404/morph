@@ -1,4 +1,7 @@
-import type { StorefrontThemeBuildInput } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type {
+  StorefrontThemeBuildInput,
+  ThemeBuildBinaryFile,
+} from "@/lib/storefront/dto/storefront-theme-build.dto";
 
 export type ThemeBuildDiagnosticSeverity = "info" | "warning" | "error";
 
@@ -98,6 +101,12 @@ export type ThemeBuildRunnerInput = Readonly<{
   compilerVersion: string;
   dependencies?: Readonly<Record<string, string>>;
   files: ReadonlyArray<Readonly<StorefrontThemeBuildInput["files"][number]>>;
+  binaryFiles?: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
+  /**
+   * Reads a binary file's bytes by digest, checked against it, as the runner
+   * writes the file. Required whenever `binaryFiles` is not empty.
+   */
+  readBinaryFile?: (digest: string) => Promise<Uint8Array>;
 }>;
 
 /**
