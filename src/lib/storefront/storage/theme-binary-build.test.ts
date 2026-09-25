@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { materializeThemeBuildInput } from "../compiler/theme-build-materializer";
 import { LocalViteThemeBuildRunner } from "../compiler/local-vite-theme-build-runner";
+import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
 import {
   createD1ThemeRevisionStore,
@@ -354,4 +355,167 @@ describe("building a frozen revision with a binary file, locally", () => {
       expect(sha256(emittedBytes)).toBe(sha256(bytes));
     },
   );
+});
+
+/**
+ * The same gate on the Theme a storefront actually runs: the starter, a
+ * TanStack Start Theme, whose build has a runtime client — the directory a
+ * published storefront serves from — besides its preview. The PNG must reach
+ * that client output intact, and collisions must be judged by the routes the
+ * frozen revision itself declares.
+ */
+describe("building the starter Theme with a binary file, locally", () => {
+  function seedStarter() {
+    const insert = sqlite.prepare(
+      `INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'now', 'now')`,
+    );
+    STARTER_THEME_FILES.forEach((file, index) => {
+      insert.run(
+        `starter-${index}`,
+        STORE,
+        THEME,
+        file.path,
+        file.content,
+        file.mimeType ?? "text/plain",
+        file.isEntry ? 1 : 0,
+      );
+    });
+  }
+
+  function bytesOfEveryValue(size: number) {
+    const bytes = new Uint8Array(size);
+    for (let index = 0; index < size; index += 1) {
+      bytes[index] = (index * 31 + 7) % 256;
+    }
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return bytes;
+  }
+
+  const queuedBuild = (revisionId: string) => ({
+    id: "starter-binary-gate",
+    storefrontId: STORE,
+    themeId: THEME,
+    sourceRevisionId: revisionId,
+    status: "queued" as const,
+    inputHash: null,
+    compilerId: null,
+    compilerVersion: null,
+    artifactPrefix: null,
+    manifestJson: null,
+    diagnosticsJson: null,
+    errorMessage: null,
+    startedAt: null,
+    completedAt: null,
+    createdBy: null,
+    createdAt: "now",
+    updatedAt: "now",
+  });
+
+  it(
+    "puts the stored bytes into the runtime client a storefront serves",
+    { timeout: 300_000 },
+    async () => {
+      seedStarter();
+      const bytes = bytesOfEveryValue(300_000);
+      await upload("public/images/hero.png", bytes);
+      const revision = await revisions().materializeRevisionByNumber(
+        STORE,
+        THEME,
+        1,
+      );
+      const input = materializeThemeBuildInput({
+        build: queuedBuild(revision.id),
+        revision,
+        binaryFiles: "include",
+      });
+
+      const store = blobStore();
+      const result = await new LocalViteThemeBuildRunner({
+        workDirPrefix: ".morph-builds/binary-runtime-gate",
+        maxDurationMs: 280_000,
+      }).run({
+        ...input,
+        readBinaryFile: (digest) => readThemeBinaryFile(store, digest),
+      });
+
+      expect(
+        result.success,
+        result.success ? undefined : result.errorMessage,
+      ).toBe(true);
+      if (!result.success) return;
+      const placed = result.artifacts
+        .filter((artifact) => artifact.path.endsWith("images/hero.png"))
+        .sort((a, b) => a.path.localeCompare(b.path));
+      // The preview gets a copy; the runtime client is what a storefront serves.
+      expect(placed.map((artifact) => artifact.path)).toEqual([
+        "preview/images/hero.png",
+        "runtime/client/images/hero.png",
+      ]);
+      for (const artifact of placed) {
+        expect(artifact.mimeType, artifact.path).toBe("image/png");
+        expect(artifact.content instanceof Uint8Array, artifact.path).toBe(
+          true,
+        );
+        const emitted = artifact.content as Uint8Array;
+        expect(emitted.byteLength, artifact.path).toBe(bytes.byteLength);
+        expect(sha256(emitted), artifact.path).toBe(sha256(bytes));
+      }
+    },
+  );
+
+  const LOOKBOOK_ROUTE = {
+    path: "src/routes/lookbook[.]png.tsx",
+    content:
+      'import { createFileRoute } from "@tanstack/react-router";\n' +
+      'export const Route = createFileRoute("/lookbook.png")({ component: () => null });\n',
+  };
+
+  /**
+   * The starter, frozen with `public/lookbook.png` — an upload its routes
+   * allowed, since the upload checks the workspace's routes too.
+   */
+  async function freezeStarterWithImage() {
+    seedStarter();
+    await upload("public/lookbook.png", bytesOfEveryValue(64));
+    return revisions().materializeRevisionByNumber(STORE, THEME, 1);
+  }
+
+  it("refuses a binary file at a URL the frozen revision routes", async () => {
+    const frozen = await freezeStarterWithImage();
+    // A later revision that also routes `/lookbook.png`: a page added after
+    // the image, which only the publish-time check sees.
+    const template = frozen.snapshot.find(
+      (entry) => entry.path === "src/routes/index.tsx",
+    )!;
+    const revision = {
+      ...frozen,
+      snapshot: [
+        ...frozen.snapshot,
+        { ...template, ...LOOKBOOK_ROUTE, isEntry: false },
+      ],
+    };
+
+    expect(() =>
+      materializeThemeBuildInput({
+        build: queuedBuild(revision.id),
+        revision,
+        binaryFiles: "include",
+      }),
+    ).toThrow("A page of the Theme already answers this URL.");
+  });
+
+  it("builds the same binary file when that revision does not route its URL", async () => {
+    const revision = await freezeStarterWithImage();
+
+    const input = materializeThemeBuildInput({
+      build: queuedBuild(revision.id),
+      revision,
+      binaryFiles: "include",
+    });
+    expect(input.binaryFiles?.map((file) => file.path)).toEqual([
+      "public/lookbook.png",
+    ]);
+  });
 });
