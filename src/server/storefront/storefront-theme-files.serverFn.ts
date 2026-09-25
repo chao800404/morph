@@ -43,7 +43,11 @@ import {
   previewThemeManifestMigrationInputSchema,
 } from "@/lib/validations/storefront-theme-file";
 import { createServerFn } from "@tanstack/react-start";
-import { isBinaryThemeFile } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import {
+  isBinaryThemeFile,
+  type StorefrontThemeBinaryFileDTO,
+  type StorefrontThemeFileDTO,
+} from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 function rejectLegacyManifestDeletion() {
@@ -105,19 +109,32 @@ export const listStorefrontThemeFiles = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const [treeFiles, sourceGeneration, latestPublishedRevision] =
+      const [entries, sourceGeneration, latestPublishedRevision] =
         await Promise.all([
-          themeSourceStore.listFiles(data.storefrontId, data.themeId),
+          themeSourceStore.getWorkspaceSnapshot(
+            data.storefrontId,
+            data.themeId,
+          ),
           themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
           themeRevisionStore.getLatestPublishedRevision(
             data.storefrontId,
             data.themeId,
           ),
         ]);
-      const tree = buildFileTree(treeFiles);
+      // One read of the whole workspace, split by kind, so the two lists
+      // and the tree always describe the same moment. `files` stays source
+      // only — everything that edits, previews or saves reads it as text —
+      // and binary files come as metadata, never bytes.
+      const files: StorefrontThemeFileDTO[] = [];
+      const binaryFiles: StorefrontThemeBinaryFileDTO[] = [];
+      for (const entry of entries) {
+        if (isBinaryThemeFile(entry)) binaryFiles.push(entry);
+        else files.push(entry);
+      }
       return ok("Theme files listed", {
-        files: treeFiles,
-        tree,
+        files,
+        binaryFiles,
+        tree: buildFileTree(entries),
         sourceGeneration: sourceGeneration ?? 1,
         latestPublishedRevision,
       });

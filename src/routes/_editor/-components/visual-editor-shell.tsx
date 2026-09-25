@@ -8022,6 +8022,7 @@ export function VisualEditorShell({
             themeId={context.theme.id}
             files={effectiveThemeFiles}
             tree={themeTree}
+            binaryFiles={themeFilesQuery.data?.binaryFiles}
             initialActiveFilePath={activeCodeFilePath}
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}

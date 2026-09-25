@@ -263,6 +263,19 @@ test.describe("publish loop", () => {
     await expect(liveRow).toHaveCount(1);
     await expect(liveRow).toContainText("Live");
 
+    // The uploaded image is listed in the Code workspace's Explorer and opens
+    // read-only: its details, from metadata, in place of an editor.
+    if (image) {
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: /^Code$/ }).click();
+      const row = page.locator(`[data-file-tree-file="${image.path}"]`);
+      await expect(row).toBeVisible({ timeout: 30_000 });
+      await row.click();
+      await expect(
+        page.locator(`[data-code-binary-file="${image.path}"]`),
+      ).toContainText(image.sha256);
+    }
+
     await writeHandoff(page, {
       marker,
       releaseLabel: releasesAfter[0],

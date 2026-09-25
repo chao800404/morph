@@ -43,9 +43,14 @@ import {
 } from "@/lib/storefront/store/theme-workspace-store";
 import { cn } from "@/lib/utils";
 import type {
+  StorefrontThemeBinaryFileDTO,
   StorefrontThemeFileDTO,
   StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import {
+  BinaryFileIcon,
+  EditorCodeBinaryFile,
+} from "./editor-code-binary-file";
 import {
   applyStarterThemeWorkspace,
   applyThemeManifestMigrationServerFn,
@@ -165,6 +170,11 @@ type EditorCodeWorkspaceProps = {
   themeId: string;
   files: StorefrontThemeFileDTO[];
   tree: StorefrontThemeFileTreeNode[];
+  /**
+   * Binary files under `public/`, as metadata. Listed in the tree and shown
+   * read-only; nothing here opens them as source or writes them.
+   */
+  binaryFiles?: readonly StorefrontThemeBinaryFileDTO[];
   initialActiveFilePath?: string;
   jumpLocation?: { filePath: string; line?: number; column?: number };
   externalConflictFiles?: Record<
@@ -227,6 +237,8 @@ function getLanguage(path: string): string {
   if (path.endsWith(".html")) return "html";
   return "plaintext";
 }
+
+const EMPTY_BINARY_FILES: readonly StorefrontThemeBinaryFileDTO[] = [];
 
 const GENERATED_ROUTE_TREE_NODE: StorefrontThemeFileTreeNode = {
   name: "routeTree.gen.ts",
@@ -307,6 +319,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     themeId,
     files,
     tree,
+    binaryFiles = EMPTY_BINARY_FILES,
     initialActiveFilePath,
     jumpLocation,
     externalConflictFiles,
@@ -323,6 +336,33 @@ const EditorCodeWorkspaceContent = forwardRef<
   ref,
 ) {
   const queryClient = useQueryClient();
+  const binaryFileByPath = useMemo(
+    () => new Map(binaryFiles.map((file) => [file.path, file])),
+    [binaryFiles],
+  );
+  /**
+   * Binary files at or under any of `paths`. Every Explorer operation plans
+   * from the source files alone, so one that reached a binary file would do
+   * half of what it says — move a folder and leave its images behind. Until
+   * binary files can be written here, such an operation is refused whole.
+   */
+  const binaryFilesUnder = useCallback(
+    (paths: readonly string[]) =>
+      binaryFiles.filter((file) =>
+        paths.some(
+          (path) => file.path === path || file.path.startsWith(`${path}/`),
+        ),
+      ),
+    [binaryFiles],
+  );
+  const refuseBinaryOperation = useCallback(
+    (verb: "deleted" | "moved" | "copied", count: number) => {
+      toast.error(
+        `This includes ${count} binary file${count === 1 ? "" : "s"}, which cannot be ${verb} in the Code workspace yet.`,
+      );
+    },
+    [],
+  );
   // Derived from the mount callback this file already imports, so the editor
   // and namespace are typed without taking a direct dependency on
   // `monaco-editor` just to name them.
@@ -877,6 +917,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       openTabs.length > 0 &&
       files.length > 0 &&
       !files.some((f) => f.path === activeFilePath) &&
+      // A binary file is shown read-only; it is not a missing source file.
+      !binaryFileByPath.has(activeFilePath) &&
       !(activeFilePath === GENERATED_ROUTE_TREE_PATH && generatedRouteTreeFile)
     ) {
       const fallback = defaultFile?.path ?? files[0].path;
@@ -888,6 +930,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   }, [
     files,
     activeFilePath,
+    binaryFileByPath,
     defaultFile,
     generatedRouteTreeFile,
     openTabs.length,
@@ -2539,6 +2582,11 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const handleDeleteFolder = (path: string) => {
     if (deleteFolderMutation.isPending || deleteMutation.isPending) return;
+    const binaryInFolder = binaryFilesUnder([path]);
+    if (binaryInFolder.length > 0) {
+      refuseBinaryOperation("deleted", binaryInFolder.length);
+      return;
+    }
     const filesInFolder = files.filter((file) =>
       file.path.startsWith(`${path}/`),
     );
@@ -2563,12 +2611,17 @@ const EditorCodeWorkspaceContent = forwardRef<
         ...new Set(paths.filter((path) => path !== GENERATED_ROUTE_TREE_PATH)),
       ];
       if (next.length === 0) return;
+      const binaryInSelection = binaryFilesUnder(next);
+      if (binaryInSelection.length > 0) {
+        refuseBinaryOperation("copied", binaryInSelection.length);
+        return;
+      }
       setCopiedPaths(next);
       appendOutput(
         `Copied ${next.length} item${next.length === 1 ? "" : "s"} to the Explorer clipboard.`,
       );
     },
-    [appendOutput],
+    [appendOutput, binaryFilesUnder, refuseBinaryOperation],
   );
 
   const handlePasteInto = useCallback(
@@ -2877,17 +2930,23 @@ const EditorCodeWorkspaceContent = forwardRef<
     }
     if (!current) return;
     const isGenerated = current === GENERATED_ROUTE_TREE_PATH;
-    const isFile = isGenerated || files.some((file) => file.path === current);
+    const isBinary = binaryFileByPath.has(current);
+    const isFile =
+      isGenerated || isBinary || files.some((file) => file.path === current);
     if (event.key === "Enter") {
       event.preventDefault();
       if (isFile) handleOpenFile(current);
       else toggleFolder(current);
-    } else if (event.key === "F2" && isFile && !isGenerated) {
+    } else if (event.key === "F2" && isFile && !isGenerated && !isBinary) {
       event.preventDefault();
       startRenamingFile(current);
     } else if (event.key === "Delete") {
       event.preventDefault();
       if (isGenerated) return;
+      if (isBinary) {
+        refuseBinaryOperation("deleted", 1);
+        return;
+      }
       if (isFile && !isGenerated) handleDeleteFile(current);
       else handleDeleteFolder(current);
     } else if (
@@ -2914,6 +2973,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   /** Turns a drop into the moves it stands for, then applies them as one batch. */
   const handleDropOnFolder = (draggedPath: string, folderPath: string) => {
     if (moveMutation.isPending) return;
+    const binaryInDragged = binaryFilesUnder([draggedPath]);
+    if (binaryInDragged.length > 0) {
+      refuseBinaryOperation("moved", binaryInDragged.length);
+      return;
+    }
     const draggedIsFolder = !files.some((file) => file.path === draggedPath);
     const moves = planDropMoves(
       files.map((file) => file.path),
@@ -3004,17 +3068,15 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const FileRow = ({
     path,
-    disabled = false,
     children,
   }: {
     path: string;
-    disabled?: boolean;
     children: React.ReactNode;
   }) => {
     const { ref, isDragging } = useDraggable({
       id: `path:${path}`,
       data: { path },
-      disabled: moveMutation.isPending || disabled,
+      disabled: moveMutation.isPending,
     });
     return (
       <div
@@ -3026,6 +3088,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       </div>
     );
   };
+
+  /**
+   * A row that cannot be dragged: the generated route tree, and binary
+   * files. Not a disabled draggable — that marks the row `aria-disabled`,
+   * and these rows still open when clicked.
+   */
+  const StaticFileRow = ({
+    path,
+    children,
+  }: {
+    path: string;
+    children: React.ReactNode;
+  }) => <div data-file-tree-file={path}>{children}</div>;
 
   const renderTreeNode = (node: StorefrontThemeFileTreeNode, depth = 0) => {
     if (node.isDirectory) {
@@ -3115,6 +3190,7 @@ const EditorCodeWorkspaceContent = forwardRef<
 
     const isActive = activeFilePath === node.path;
     const isGenerated = node.path === GENERATED_ROUTE_TREE_PATH;
+    const isBinary = node.encoding === "binary";
     const isDirty = !isGenerated && dirtyPathSet.has(node.path);
     const isRenaming = renamingPath === node.path;
 
@@ -3130,8 +3206,9 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
     }
 
+    const Row = isGenerated || isBinary ? StaticFileRow : FileRow;
     return (
-      <FileRow key={node.path} path={node.path} disabled={isGenerated}>
+      <Row key={node.path} path={node.path}>
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
@@ -3148,7 +3225,11 @@ const EditorCodeWorkspaceContent = forwardRef<
               style={{ paddingLeft: depth * 12 + 18 }}
             >
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                {getFileIcon(node.name)}
+                {isBinary ? (
+                  <BinaryFileIcon path={node.path} />
+                ) : (
+                  getFileIcon(node.name)
+                )}
                 <span className="truncate">{node.name}</span>
                 {isGenerated ? (
                   <span className="shrink-0 text-[9px] text-muted-foreground/70">
@@ -3173,6 +3254,11 @@ const EditorCodeWorkspaceContent = forwardRef<
               <ContextMenuItem disabled>
                 <FileCode2 className="size-3.5" />
                 Generated by TanStack Router
+              </ContextMenuItem>
+            ) : isBinary ? (
+              <ContextMenuItem disabled>
+                <BinaryFileIcon path={node.path} />
+                Binary file · read-only here
               </ContextMenuItem>
             ) : (
               <>
@@ -3206,7 +3292,7 @@ const EditorCodeWorkspaceContent = forwardRef<
             )}
           </ContextMenuContent>
         </ContextMenu>
-      </FileRow>
+      </Row>
     );
   };
 
@@ -3532,7 +3618,11 @@ const EditorCodeWorkspaceContent = forwardRef<
                       : "border-transparent bg-transparent text-muted-foreground hover:bg-muted/80 hover:text-foreground",
                   )}
                 >
-                  {getFileIcon(name)}
+                  {binaryFileByPath.has(path) ? (
+                    <BinaryFileIcon path={path} />
+                  ) : (
+                    getFileIcon(name)
+                  )}
                   <span className="truncate max-w-32">{name}</span>
                   {isDirty ? (
                     <span className="size-1.5 rounded-full bg-primary" />
@@ -3684,6 +3774,10 @@ const EditorCodeWorkspaceContent = forwardRef<
                 suggestOnTriggerCharacters: true,
                 inlayHints: { enabled: "on" },
               }}
+            />
+          ) : binaryFileByPath.has(activeFilePath) ? (
+            <EditorCodeBinaryFile
+              file={binaryFileByPath.get(activeFilePath)!}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
