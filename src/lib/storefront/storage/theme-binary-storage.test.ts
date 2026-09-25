@@ -10,6 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ThemeSourceRevisionManifest } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { storefrontThemeFileDal } from "../dal/storefront-theme-file.dal";
 import { normalizeRevisionSnapshot } from "../compiler/theme-build-materializer";
+import {
+  resolveThemeRollbackPlan,
+  rollbackFileOf,
+} from "../editor/theme-rollback-plan";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
 import {
   createD1ThemeRevisionStore,
@@ -631,6 +635,40 @@ describe("revisions of a workspace with binary files", () => {
       encoding: "utf8",
       content: "export default 1;",
     });
+  });
+});
+
+describe("previewing a rollback over binary files", () => {
+  // What `previewStorefrontThemeRollback` compares: the stored workspace
+  // against the stored revision, both read from D1 and R2 as they are.
+  it("names an image replaced since the revision as rewritten", async () => {
+    seedSource();
+    const saved = await upload("public/images/hero.png", png(55));
+    await d1ThemeSourceStore.saveBinaryFile(
+      STORE,
+      THEME,
+      {
+        path: "public/images/hero.png",
+        bytes: png(80, 3),
+        expectedFileId: saved.id,
+        expectedVersion: saved.version,
+      },
+      { expectedSourceGeneration: saved.sourceGeneration },
+    );
+
+    const [current, revision] = await Promise.all([
+      d1ThemeSourceStore.getWorkspaceSnapshot(STORE, THEME),
+      revisions().materializeRevisionByNumber(STORE, THEME, 1),
+    ]);
+    const plan = resolveThemeRollbackPlan({
+      current: current.map(rollbackFileOf),
+      target: revision.snapshot.map(rollbackFileOf),
+    });
+
+    expect(plan.rewritten).toEqual(["public/images/hero.png"]);
+    expect(plan.unchanged).toEqual(["src/routes/index.tsx"]);
+    expect(plan.restored).toEqual([]);
+    expect(plan.removed).toEqual([]);
   });
 });
 

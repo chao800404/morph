@@ -1,5 +1,8 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
-import { resolveThemeRollbackPlan } from "@/lib/storefront/editor/theme-rollback-plan";
+import {
+  resolveThemeRollbackPlan,
+  rollbackFileOf,
+} from "@/lib/storefront/editor/theme-rollback-plan";
 import { buildFileTree } from "@/lib/storefront/dal/storefront-theme-file.dal";
 import {
   themeRevisionStore,
@@ -991,7 +994,7 @@ export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
     const data = input.data;
     try {
       const [current, sourceGeneration, target] = await Promise.all([
-        themeSourceStore.listFiles(data.storefrontId, data.themeId),
+        themeSourceStore.getWorkspaceSnapshot(data.storefrontId, data.themeId),
         themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
         themeRevisionStore.materializeRevisionByNumber(
           data.storefrontId,
@@ -1002,10 +1005,12 @@ export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
       if (sourceGeneration === null) {
         throw new Error("Theme not found or does not belong to storefront");
       }
+      // The whole workspace against the whole revision: source by its text,
+      // binary files by digest. Rollback replaces both, so the plan an
+      // author agrees to names the images it restores, replaces or deletes.
       const plan = resolveThemeRollbackPlan({
-        current,
-        // The plan compares source text; binary files carry none.
-        target: target.snapshot.filter((file) => !isBinaryThemeFile(file)),
+        current: current.map(rollbackFileOf),
+        target: target.snapshot.map(rollbackFileOf),
       });
       const routeDocuments = await themeRevisionStore.planRouteDocumentRollback(
         data.storefrontId,
