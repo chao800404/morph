@@ -186,31 +186,130 @@ describe("themePreviewWorkspaceInput", () => {
   });
 });
 
-describe("the local preview sidecar and binary files", () => {
-  it("refuses a start it cannot carry, without sending it", async () => {
-    const fetchImpl = vi.fn();
+describe("the local preview sidecar client and binary files", () => {
+  const TOKEN = "t".repeat(32);
+  function fakeSidecar(stageStatus: (path: string) => number = () => 200) {
+    const requests: string[] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const endpoint = new URL(url).pathname;
+      const headers = init?.headers as Record<string, string>;
+      requests.push(
+        endpoint === "/stageBinary"
+          ? `stage ${headers["x-morph-binary-digest"]}`
+          : endpoint,
+      );
+      if (endpoint === "/stageBinary") {
+        const status = stageStatus(headers["x-morph-binary-digest"]!);
+        return new Response(
+          JSON.stringify(status === 200 ? { staged: true } : { error: "no" }),
+          { status },
+        );
+      }
+      return new Response(
+        JSON.stringify({ ok: true, url: "http://127.0.0.1:1/", logs: [] }),
+        { status: 200 },
+      );
+    });
     const client = new LocalPreviewSidecarClient({
       origin: "http://127.0.0.1:1",
-      token: "t".repeat(32),
+      token: TOKEN,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    const input = themePreviewWorkspaceInput(workspace(png(8)), async () =>
-      png(8),
-    );
+    return { client, requests, fetchImpl };
+  }
 
-    const result = await client.start({
+  function threeImages() {
+    const images = [png(16, 1), png(16, 2), png(16, 3)];
+    const entries: StorefrontThemeWorkspaceEntryDTO[] = [
+      workspace(images[0]!)[0]!,
+      ...images.map((bytes, index) => ({
+        ...common,
+        id: `img-${index}`,
+        path: `public/i${index}.png`,
+        encoding: "binary" as const,
+        blobDigest: sha256(bytes),
+        sizeBytes: bytes.byteLength,
+        mimeType: "image/png",
+        isEntry: false,
+      })),
+    ];
+    const byDigest = new Map(images.map((bytes) => [sha256(bytes), bytes]));
+    return { images, entries, byDigest };
+  }
+
+  it("stages every binary file, one at a time, before it sends the start", async () => {
+    const { images, entries, byDigest } = threeImages();
+    const { client, requests } = fakeSidecar();
+    let held = 0;
+    let maxHeld = 0;
+    const input = themePreviewWorkspaceInput(entries, async (digest) => {
+      held += 1;
+      maxHeld = Math.max(maxHeld, held);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      held -= 1;
+      return byDigest.get(digest)!;
+    });
+
+    const started = await client.start({
       previewId: "p",
       files: input.files,
       entry: "src/routes/index.tsx",
-      previewHostname: "preview.localhost",
+      previewHostname: "127.0.0.1",
       env: {},
       loadBinary: input.loadBinary,
     });
 
-    expect(result).toMatchObject({
+    expect(started.ok).toBe(true);
+    expect(requests).toEqual([
+      ...images.map((bytes) => `stage ${sha256(bytes)}`),
+      "/start",
+    ]);
+    expect(maxHeld).toBe(1);
+  });
+
+  it("sends no start when a file could not be staged", async () => {
+    const { images, entries, byDigest } = threeImages();
+    const refused = sha256(images[1]!);
+    const { client, requests } = fakeSidecar((digest) =>
+      digest === refused ? 400 : 200,
+    );
+    const input = themePreviewWorkspaceInput(entries, async (digest) =>
+      byDigest.get(digest)!,
+    );
+
+    const started = await client.start({
+      previewId: "p",
+      files: input.files,
+      entry: "src/routes/index.tsx",
+      previewHostname: "127.0.0.1",
+      env: {},
+      loadBinary: input.loadBinary,
+    });
+
+    expect(started).toMatchObject({
       ok: false,
-      stage: "preview-sidecar",
-      errorMessage: expect.stringContaining("public/images/hero.png"),
+      stage: "preview-sidecar-binary",
+      errorMessage: expect.stringContaining("public/i1.png"),
+    });
+    expect(requests).not.toContain("/start");
+  });
+
+  it("sends no start when it has nothing to read binary files with", async () => {
+    const { entries } = threeImages();
+    const { client, fetchImpl } = fakeSidecar();
+    const input = themePreviewWorkspaceInput(entries, async () => png(16));
+
+    const started = await client.start({
+      previewId: "p",
+      files: input.files,
+      entry: "src/routes/index.tsx",
+      previewHostname: "127.0.0.1",
+      env: {},
+    });
+
+    expect(started).toMatchObject({
+      ok: false,
+      stage: "preview-sidecar-binary",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

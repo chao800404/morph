@@ -3,11 +3,18 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { LocalVitePreviewServer } from "@/lib/storefront/compiler/local-vite-preview-server";
+import {
+  LocalPreviewStagingError,
+  LocalVitePreviewServer,
+} from "@/lib/storefront/compiler/local-vite-preview-server";
 import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-host";
 import {
+  LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER,
+  LOCAL_PREVIEW_SIDECAR_MAX_BINARY_BYTES,
   LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES,
   LOCAL_PREVIEW_SIDECAR_PATHS,
+  LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER,
+  LOCAL_PREVIEW_SIDECAR_SIZE_HEADER,
   LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER,
   localPreviewTokenMatches,
   readLocalPreviewSidecarToken,
@@ -70,21 +77,22 @@ export type LocalPreviewSidecar = Readonly<{
 
 async function readBody(
   request: IncomingMessage,
-): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
+  limit: number,
+): Promise<{ ok: true; bytes: Buffer } | { ok: false; reason: string }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = chunk as Buffer;
     size += buffer.byteLength;
-    if (size > LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES) {
+    if (size > limit) {
       return {
         ok: false,
-        reason: `LOCAL_PREVIEW_SIDECAR_BODY_TOO_LARGE: over ${LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES} bytes.`,
+        reason: `LOCAL_PREVIEW_SIDECAR_BODY_TOO_LARGE: over ${limit} bytes.`,
       };
     }
     chunks.push(buffer);
   }
-  return { ok: true, text: Buffer.concat(chunks).toString("utf8") };
+  return { ok: true, bytes: Buffer.concat(chunks) };
 }
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -152,14 +160,56 @@ export async function startLocalPreviewSidecar(
       return;
     }
 
-    const body = await readBody(request);
+    // Bytes, not JSON, and one file's worth at most.
+    if (operation === "stageBinary") {
+      const staged = await readBody(
+        request,
+        LOCAL_PREVIEW_SIDECAR_MAX_BINARY_BYTES,
+      );
+      if (!staged.ok) {
+        respond(response, 413, { error: staged.reason });
+        return;
+      }
+      try {
+        respond(
+          response,
+          200,
+          await previews.stageBinary({
+            previewId:
+              headerValue(
+                request.headers[LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER],
+              ) ?? "",
+            digest:
+              headerValue(request.headers[LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER]) ??
+              "",
+            sizeBytes: Number(
+              headerValue(request.headers[LOCAL_PREVIEW_SIDECAR_SIZE_HEADER]),
+            ),
+            bytes: new Uint8Array(
+              staged.bytes.buffer,
+              staged.bytes.byteOffset,
+              staged.bytes.byteLength,
+            ),
+          }),
+        );
+      } catch (error) {
+        if (error instanceof LocalPreviewStagingError) {
+          respond(response, 400, { error: error.message });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    const body = await readBody(request, LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES);
     if (!body.ok) {
       respond(response, 413, { error: body.reason });
       return;
     }
     let input: unknown;
     try {
-      input = JSON.parse(body.text);
+      input = JSON.parse(body.bytes.toString("utf8"));
     } catch {
       respond(response, 400, { error: "LOCAL_PREVIEW_SIDECAR_BAD_JSON" });
       return;

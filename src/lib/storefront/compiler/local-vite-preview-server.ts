@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { LocalThemeWorkspaceWriter } from "./local-theme-workspace-writer";
 import {
@@ -142,6 +143,20 @@ function withReadyTimeout<T>(
  * hostile path out — it is what stops two different ids from landing in one
  * directory, or one id from climbing out of the workspaces root.
  */
+/** The largest staged file: the per-file quota of `public/`. */
+const LOCAL_PREVIEW_MAX_BINARY_BYTES = 5 * 1024 * 1024;
+
+/** A refused stage: the request was wrong, not the sidecar. */
+export class LocalPreviewStagingError extends Error {
+  constructor(reason: string) {
+    super(`BINARY_STAGE_REFUSED: ${reason}.`);
+  }
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 function workspaceDirectoryName(previewId: string): string {
   const safe = previewId.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^\.+/, "-");
   if (!safe) throw new Error("A preview needs an id to be addressed by.");
@@ -366,7 +381,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     };
 
     try {
-      await materializeThemeSandboxWorkspace(measured, prepared.workspaceFiles);
+      await materializeThemeSandboxWorkspace(measured, prepared.workspaceFiles, {
+        // Staged ahead of this start when it came over the sidecar, which
+        // cannot carry a loader; handed in directly when run in-process.
+        loadBinary:
+          input.loadBinary ??
+          ((ref, filePath) =>
+            this.readStagedBinary(input.previewId, ref, filePath)),
+      });
       // Committed last, so a partial write can never make a later start trust
       // an incomplete workspace. The in-memory fingerprint above is what
       // actually decides reuse in this process; this is the same marker the
@@ -540,6 +562,88 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * an id from a transport that does have processes is asking a question that
    * is still meaningful, so it is ignored rather than refused.
    */
+  /**
+   * Where a preview's staged binary files wait, by digest.
+   *
+   * Beside the workspaces, never inside one: the workspace is laid out only
+   * by a start, which is what keeps its fingerprint honest, and Vite serves
+   * the workspace. A preview id cannot name this directory, since workspace
+   * names never begin with a dot.
+   */
+  private stagingRootFor(previewId: string): string {
+    return path.join(
+      this.workspacesRoot,
+      ".binary-staging",
+      workspaceDirectoryName(previewId),
+    );
+  }
+
+  /**
+   * Keeps one binary file's bytes for the start that will name them.
+   *
+   * Nothing is written until the bytes are shown to be what the caller says:
+   * a well-formed digest, a size within the per-file quota, and bytes of that
+   * size that hash to that digest. They land under a temporary name and are
+   * renamed into place, so a reader never sees half a file. The workspace is
+   * not touched; a start lays them out, and only a start commits it.
+   */
+  async stageBinary(input: {
+    previewId: string;
+    digest: string;
+    sizeBytes: number;
+    bytes: Uint8Array;
+  }): Promise<{ staged: true }> {
+    if (!/^[0-9a-f]{64}$/.test(input.digest)) {
+      throw new LocalPreviewStagingError("the digest is not a SHA-256");
+    }
+    if (
+      !Number.isInteger(input.sizeBytes) ||
+      input.sizeBytes < 0 ||
+      input.sizeBytes > LOCAL_PREVIEW_MAX_BINARY_BYTES
+    ) {
+      throw new LocalPreviewStagingError("the size is out of range");
+    }
+    if (input.bytes.byteLength !== input.sizeBytes) {
+      throw new LocalPreviewStagingError(
+        `${input.bytes.byteLength} bytes arrived, ${input.sizeBytes} were declared`,
+      );
+    }
+    if (sha256Hex(input.bytes) !== input.digest) {
+      throw new LocalPreviewStagingError("the bytes do not hash to the digest");
+    }
+    const root = this.stagingRootFor(input.previewId);
+    await fs.mkdir(root, { recursive: true });
+    const target = path.join(root, input.digest);
+    const temporary = path.join(root, `.${input.digest}.${randomUUID()}.tmp`);
+    await fs.writeFile(temporary, input.bytes);
+    await fs.rename(temporary, target);
+    return { staged: true };
+  }
+
+  /** A staged file's bytes, checked again: the disk is not the transfer. */
+  private async readStagedBinary(
+    previewId: string,
+    ref: { digest: string; sizeBytes: number },
+    filePath: string,
+  ): Promise<Uint8Array> {
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(
+        await fs.readFile(path.join(this.stagingRootFor(previewId), ref.digest)),
+      );
+    } catch {
+      throw new Error(
+        `BINARY_NOT_STAGED: "${filePath}" (${ref.digest}) was not staged before the start.`,
+      );
+    }
+    if (bytes.byteLength !== ref.sizeBytes || sha256Hex(bytes) !== ref.digest) {
+      throw new Error(
+        `BINARY_STAGED_CORRUPT: the staged bytes of "${filePath}" are not ${ref.digest}.`,
+      );
+    }
+    return bytes;
+  }
+
   async stop(previewId: string, _processId?: string): Promise<void> {
     const running = this.running.get(previewId);
     this.running.delete(previewId);

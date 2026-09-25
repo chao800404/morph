@@ -4,6 +4,9 @@ import type {
   ThemePreviewServer,
 } from "@/lib/storefront/compiler/theme-preview-server.types";
 import {
+  LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER,
+  LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER,
+  LOCAL_PREVIEW_SIDECAR_SIZE_HEADER,
   LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER,
   localPreviewSidecarPath,
   type LocalPreviewSidecarApplyFilesRequest,
@@ -118,20 +121,36 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
   async start(
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
-    // A start is sent as JSON, where bytes do not survive and a loader does
-    // not exist. Until the sidecar takes binary files its own way, a Theme
-    // holding one is refused here, by name, rather than started without them.
-    const binary = input.files.filter((file) => "binary" in file);
-    if (binary.length > 0) {
+    // A start travels as JSON, where bytes do not survive and a loader does
+    // not exist. Each binary file is staged first — read, sent raw, released
+    // — one at a time, so this side holds one file's bytes at most. Only when
+    // all of them are staged is the start sent, naming them by reference;
+    // the sidecar lays them out from its staging and commits the workspace
+    // only once every file is written.
+    const binaryFiles = input.files.filter(
+      (file): file is Extract<typeof file, { binary: unknown }> =>
+        "binary" in file,
+    );
+    if (binaryFiles.length > 0 && !input.loadBinary) {
       return {
         ok: false,
-        stage: "preview-sidecar",
-        errorMessage: `The local preview cannot serve binary files yet (${binary
-          .slice(0, 3)
-          .map((file) => file.path)
-          .join(", ")}${binary.length > 3 ? ", …" : ""}).`,
+        stage: "preview-sidecar-binary",
+        errorMessage: "BINARY_LOADER_MISSING: nothing can read the Theme's binary files.",
         logs: [],
       };
+    }
+    for (const file of binaryFiles) {
+      const staged = await this.stageBinary(input.previewId, file, () =>
+        input.loadBinary!(file.binary, file.path),
+      );
+      if (!staged.ok) {
+        return {
+          ok: false,
+          stage: "preview-sidecar-binary",
+          errorMessage: staged.reason,
+          logs: [],
+        };
+      }
     }
     const { loadBinary: _loadBinary, ...serialisable } = input;
     const call = await this.call("start", serialisable);
@@ -142,6 +161,68 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
       errorMessage: call.reason,
       logs: [],
     };
+  }
+
+  /** Sends one binary file's bytes to the sidecar's staging. */
+  private async stageBinary(
+    previewId: string,
+    file: Readonly<{ path: string; binary: { digest: string; sizeBytes: number } }>,
+    read: () => Promise<Uint8Array>,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await read();
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `Could not read "${file.path}": ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(
+        `${this.origin}${localPreviewSidecarPath("stageBinary")}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/octet-stream",
+            [LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER]: this.token,
+            [LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER]: previewId,
+            [LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER]: file.binary.digest,
+            [LOCAL_PREVIEW_SIDECAR_SIZE_HEADER]: String(file.binary.sizeBytes),
+          },
+          // Read from the blob store into an ordinary ArrayBuffer. Asserted
+          // rather than copied: a copy would hold the file twice.
+          body: bytes as Uint8Array<ArrayBuffer>,
+          signal: controller.signal,
+        },
+      );
+      bytes = null;
+      if (!response.ok) {
+        const detail = (await response
+          .json()
+          .catch(() => null)) as { error?: string } | null;
+        return {
+          ok: false,
+          reason: `The local preview refused "${file.path}" (${response.status}${
+            detail?.error ? `: ${detail.error}` : ""
+          }).`,
+        };
+      }
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `Could not send "${file.path}" to the local preview: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async isServing(input: {

@@ -17,9 +17,11 @@ import type {
  * stating rather than hiding: the sandbox path writes edited files by reaching
  * into the container from the server function that already holds the binding,
  * so file application never had to be part of the transport. A sidecar's
- * filesystem is in another process, so here it does. If this protocol ever
- * needs a fifth endpoint for anything else, the contract is what is missing —
- * not this file.
+ * filesystem is in another process, so here it does. Binary files are the
+ * same capability in a second form: their bytes cannot travel inside a JSON
+ * start, so they are staged ahead of it (`stageBinary`). If this protocol ever
+ * needs an endpoint for anything else, the contract is what is missing — not
+ * this file.
  *
  * This module is deliberately pure: both the Worker and the Node sidecar import
  * it, so it may not reach for anything either runtime lacks.
@@ -34,7 +36,26 @@ export const LOCAL_PREVIEW_SIDECAR_PATHS = {
   stop: "/stop",
   /** The one thing a container let its caller do without a transport. */
   applyFiles: "/applyFiles",
+  /**
+   * One binary file's bytes, raw, ahead of the start that names them. Kept
+   * outside the workspace, by digest; the start then lays them out.
+   */
+  stageBinary: "/stageBinary",
 } as const;
+
+/** Which preview a staged file is for. */
+export const LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER = "x-morph-preview-id";
+/** The SHA-256 the staged bytes must hash to. */
+export const LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER = "x-morph-binary-digest";
+/** The byte length the staged bytes must have. */
+export const LOCAL_PREVIEW_SIDECAR_SIZE_HEADER = "x-morph-binary-size";
+
+/**
+ * The largest file `stageBinary` takes: the per-file quota of `public/`. One
+ * file per request, so neither side ever holds more than one file's bytes for
+ * a transfer, whatever the directory holds in all.
+ */
+export const LOCAL_PREVIEW_SIDECAR_MAX_BINARY_BYTES = 5 * 1024 * 1024;
 
 export const LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER = "x-morph-local-preview-token";
 
@@ -89,6 +110,11 @@ export type LocalPreviewSidecarOperations = Readonly<{
   applyFiles: Readonly<{
     request: LocalPreviewSidecarApplyFilesRequest;
     response: LocalPreviewSidecarApplyFilesResult;
+  }>;
+  /** Raw bytes in the body; which file they are is in the headers above. */
+  stageBinary: Readonly<{
+    request: Uint8Array;
+    response: { staged: true };
   }>;
 }>;
 
