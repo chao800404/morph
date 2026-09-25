@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { fenceFor, planFencedWrite } from "./preview-write-fence";
+import {
+  fenceFor,
+  planFencedStart,
+  planFencedWrite,
+} from "./preview-write-fence";
 
 const HERO = "src/Hero.tsx";
 const HELLO = "src/hello.tsx";
@@ -81,5 +85,22 @@ describe("fenceFor", () => {
       ),
     ).toBe(5);
     expect(fenceFor({ content: "new", baseVersion: null }, undefined)).toBe(0);
+  });
+});
+
+describe("planFencedStart", () => {
+  it("refuses whole, and records nothing, when any file already holds a newer version", () => {
+    const ledger = { [HERO]: 4, [HELLO]: 1 };
+    expect(planFencedStart(ledger, { [HERO]: 3, [HELLO]: 2 })).toEqual({
+      stale: [HERO],
+      ledger: { [HERO]: 4, [HELLO]: 1 },
+    });
+  });
+
+  it("records its versions, raised and never lowered, when none is older", () => {
+    expect(planFencedStart({ [HERO]: 3 }, { [HERO]: 3, [HELLO]: 2 })).toEqual({
+      stale: [],
+      ledger: { [HERO]: 3, [HELLO]: 2 },
+    });
   });
 });
