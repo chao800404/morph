@@ -93,10 +93,15 @@ export type LocalVitePreviewServerOptions = Readonly<{
   port?: number;
   /**
    * Most bytes one preview's staging may hold. Larger than the whole
-   * `public/` quota, so the files a start is about to name — staged just now,
-   * and so the newest — are never the ones evicted to make room.
+   * `public/` quota, so one start's files always fit.
    */
   maxStagedBytes?: number;
+  /**
+   * A staged file younger than this may be about to be named by a start —
+   * this tab's or another's — and is never evicted to make room. A stage that
+   * finds no room without evicting one is refused instead.
+   */
+  stagedGraceMs?: number;
   /** A staged file not staged again within this long is removed. */
   stagedTtlMs?: number;
   /** A temporary file this old belongs to a stage that did not finish. */
@@ -218,6 +223,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private readonly maxStagedBytes: number;
   private readonly stagedTtlMs: number;
   private readonly staleTempMs: number;
+  private readonly stagedGraceMs: number;
 
   constructor(options: LocalVitePreviewServerOptions = {}) {
     this.workspacesRoot = path.resolve(
@@ -235,6 +241,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     this.maxStagedBytes = options.maxStagedBytes ?? 64 * 1024 * 1024;
     this.stagedTtlMs = options.stagedTtlMs ?? 60 * 60 * 1000;
     this.staleTempMs = options.staleTempMs ?? 10 * 60 * 1000;
+    this.stagedGraceMs = options.stagedGraceMs ?? 10 * 60 * 1000;
   }
 
   /** The host path a preview's workspace lives in. */
@@ -290,18 +297,6 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
-    // The workspace is about to be laid out at these versions. Raised, never
-    // lowered: a save that synced meanwhile may already be ahead of them.
-    if (input.fileVersions) {
-      const ledger = this.fenceLedgers.get(input.previewId) ?? {};
-      for (const [file, version] of Object.entries(input.fileVersions)) {
-        const recorded = ledger[file];
-        if (typeof recorded !== "number" || recorded < version) {
-          ledger[file] = version;
-        }
-      }
-      this.fenceLedgers.set(input.previewId, ledger);
-    }
     const logs: string[] = [];
     const addLog = (line: string) => {
       if (logs.length < this.maxLogLines) logs.push(line);
@@ -365,6 +360,37 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     return this.serialised(
       input.previewId,
       async (): Promise<StartPreviewServerResult> => {
+      // Judged here, in the queue, against what has actually been written:
+      // a start read before a newer one — or before a sync of a newer save —
+      // must not lay the older files back over it. Refused whole, as a fenced
+      // sync is; the same version passes. Only a start that passes records
+      // its versions, raised and never lowered.
+      if (input.fileVersions) {
+        const ledger = this.fenceLedgers.get(input.previewId) ?? {};
+        const stale = Object.entries(input.fileVersions)
+          .filter(([file, version]) => {
+            const recorded = ledger[file];
+            return typeof recorded === "number" && recorded > version;
+          })
+          .map(([file]) => file);
+        if (stale.length > 0) {
+          return {
+            ok: false,
+            stage: "preview-start-stale",
+            errorMessage: `PREVIEW_START_STALE: a newer version of ${stale
+              .slice(0, 3)
+              .join(", ")}${stale.length > 3 ? ", …" : ""} is already laid out.`,
+            logs,
+          };
+        }
+        for (const [file, version] of Object.entries(input.fileVersions)) {
+          const recorded = ledger[file];
+          if (typeof recorded !== "number" || recorded < version) {
+            ledger[file] = version;
+          }
+        }
+        this.fenceLedgers.set(input.previewId, ledger);
+      }
       const existing = this.running.get(input.previewId);
       if (existing && existing.workspaceFingerprint === prepared.workspaceFingerprint) {
         return {
@@ -657,9 +683,12 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     if (sha256Hex(input.bytes) !== input.digest) {
       throw new LocalPreviewStagingError("the bytes do not hash to the digest");
     }
+    // Expired first: it removes directories it empties, which would include
+    // this preview's own if it were created before.
+    await this.expireStaging();
     const root = this.stagingRootFor(input.previewId);
     await fs.mkdir(root, { recursive: true });
-    await this.pruneStaging(root, input.sizeBytes);
+    await this.makeRoomInStaging(root, input.digest, input.sizeBytes);
     const target = path.join(root, input.digest);
     const temporary = path.join(root, `.${input.digest}.${randomUUID()}.tmp`);
     await fs.writeFile(temporary, input.bytes);
@@ -668,39 +697,85 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   }
 
   /**
-   * Keeps a preview's staging bounded before another file joins it.
-   *
-   * Temporary files of stages that never finished go first, then files not
-   * staged again within the time limit, then — oldest first — whatever it
-   * takes for the incoming file to fit under the byte limit.
+   * Removes what no start can still want, across every preview's staging:
+   * temporary files of stages that never finished, and files not staged
+   * again within the time limit. Directories left empty go too, so a preview
+   * that is gone leaves nothing behind.
    */
-  private async pruneStaging(root: string, incomingBytes: number) {
+  private async expireStaging() {
+    const stagingRoot = path.join(this.workspacesRoot, ".binary-staging");
+    const now = Date.now();
+    for (const directory of await fs
+      .readdir(stagingRoot, { withFileTypes: true })
+      .catch(() => [])) {
+      if (!directory.isDirectory()) continue;
+      const root = path.join(stagingRoot, directory.name);
+      let remaining = 0;
+      for (const entry of await fs
+        .readdir(root, { withFileTypes: true })
+        .catch(() => [])) {
+        if (!entry.isFile()) continue;
+        const file = path.join(root, entry.name);
+        const stat = await fs.stat(file).catch(() => null);
+        if (!stat) continue;
+        const limit = entry.name.endsWith(".tmp")
+          ? this.staleTempMs
+          : this.stagedTtlMs;
+        if (now - stat.mtimeMs > limit) {
+          await fs.rm(file, { force: true });
+        } else {
+          remaining += 1;
+        }
+      }
+      // Only a directory idle for as long as a stale temporary file: one just
+      // created by a stage in another request is empty until its file lands.
+      const idle = await fs.stat(root).catch(() => null);
+      if (
+        remaining === 0 &&
+        idle &&
+        now - idle.mtimeMs > this.staleTempMs
+      ) {
+        await fs.rmdir(root).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * Makes room for one more file in a preview's staging, or refuses.
+   *
+   * Only files older than the grace period are evicted, oldest first: a
+   * younger one may be about to be named by a start. If the file still does
+   * not fit, the stage is refused — a start that cannot be prepared says so,
+   * rather than quietly removing what another is preparing. Bytes already
+   * staged under the same digest are not counted twice.
+   */
+  private async makeRoomInStaging(
+    root: string,
+    digest: string,
+    incomingBytes: number,
+  ) {
     const now = Date.now();
     const kept: { file: string; size: number; modified: number }[] = [];
     for (const entry of await fs
       .readdir(root, { withFileTypes: true })
       .catch(() => [])) {
-      if (!entry.isFile()) continue;
+      if (!entry.isFile() || entry.name === digest) continue;
       const file = path.join(root, entry.name);
       const stat = await fs.stat(file).catch(() => null);
-      if (!stat) continue;
-      const age = now - stat.mtimeMs;
-      if (entry.name.endsWith(".tmp")) {
-        if (age > this.staleTempMs) await fs.rm(file, { force: true });
-        continue;
-      }
-      if (age > this.stagedTtlMs) {
-        await fs.rm(file, { force: true });
-        continue;
-      }
-      kept.push({ file, size: stat.size, modified: stat.mtimeMs });
+      if (stat) kept.push({ file, size: stat.size, modified: stat.mtimeMs });
     }
     kept.sort((left, right) => left.modified - right.modified);
     let total = kept.reduce((sum, entry) => sum + entry.size, 0);
-    while (total + incomingBytes > this.maxStagedBytes && kept.length > 0) {
-      const oldest = kept.shift()!;
+    for (const oldest of kept) {
+      if (total + incomingBytes <= this.maxStagedBytes) break;
+      if (now - oldest.modified <= this.stagedGraceMs) break;
       await fs.rm(oldest.file, { force: true });
       total -= oldest.size;
+    }
+    if (total + incomingBytes > this.maxStagedBytes) {
+      throw new LocalPreviewStagingError(
+        "the preview's staging is full of files a start may still need",
+      );
     }
   }
 

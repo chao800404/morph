@@ -535,6 +535,47 @@ describe("the local preview workspace lifecycle", () => {
     expect(failed.errorMessage).toContain("BINARY_DIGEST_INVALID");
   });
 
+  it("refuses a start older than what the preview already laid out", async () => {
+    const server = new LocalVitePreviewServer({
+      workspacesRoot: WORKSPACES_ROOT,
+      toolchainRoot: process.cwd(),
+    });
+    const previewId = "preview-stale";
+    await removeTree(path.join(WORKSPACES_ROOT, previewId));
+    const page = THEME.find((file) => file.path === "src/pages/index.tsx")!;
+    const at = (version: number) => ({
+      previewId,
+      entry: "src/pages/index.tsx",
+      previewHostname: "127.0.0.1",
+      env: {},
+      files: [{ ...page, content: `// v${version}\n${page.content}` }],
+      fileVersions: { "src/pages/index.tsx": version },
+    });
+    const onDisk = () =>
+      fs.readFile(
+        path.join(WORKSPACES_ROOT, previewId, "src/pages/index.tsx"),
+        "utf8",
+      );
+    try {
+      expect((await server.start(at(5))).ok).toBe(true);
+
+      // Read before the newer start, arriving after it: refused whole.
+      const older = await server.start(at(4));
+      expect(older).toMatchObject({
+        ok: false,
+        stage: "preview-start-stale",
+        errorMessage: expect.stringContaining("src/pages/index.tsx"),
+      });
+      expect((await onDisk()).startsWith("// v5")).toBe(true);
+
+      // The same version is not older, and passes.
+      expect((await server.start(at(5))).ok).toBe(true);
+    } finally {
+      await server.stop(previewId);
+      await removeTree(path.join(WORKSPACES_ROOT, previewId));
+    }
+  });
+
   it("orders a file sync after a start still laying out the workspace", async () => {
     const server = new LocalVitePreviewServer({
       workspacesRoot: WORKSPACES_ROOT,

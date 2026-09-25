@@ -76,8 +76,8 @@ describe("staging binary files for a local preview", () => {
     ).rejects.toThrow();
   });
 
-  it("evicts the oldest files to stay under its byte limit", async () => {
-    const target = server({ maxStagedBytes: 100 });
+  it("evicts the oldest files past their grace to stay under its byte limit", async () => {
+    const target = server({ maxStagedBytes: 100, stagedGraceMs: 1_000 });
     const first = bytesOf(40, 1);
     const second = bytesOf(40, 2);
     const third = bytesOf(40, 3);
@@ -108,6 +108,51 @@ describe("staging binary files for a local preview", () => {
     // The stale ones are gone; a temporary file still being written is not.
     expect(await staged("p")).toEqual(
       [sha256(fresh), path.basename(recentTemp)].sort(),
+    );
+  });
+
+  it("refuses a stage rather than evict files a start may still need", async () => {
+    const target = server({ maxStagedBytes: 100 });
+    const first = bytesOf(40, 1);
+    const second = bytesOf(40, 2);
+    await stage(target, "p", first);
+    await stage(target, "p", second);
+
+    // Both are within their grace: another tab may be about to start on them.
+    await expect(stage(target, "p", bytesOf(40, 3))).rejects.toThrow(
+      "staging is full",
+    );
+    expect(await staged("p")).toEqual([sha256(first), sha256(second)].sort());
+  });
+
+  it("does not count a file twice when it is staged again", async () => {
+    const target = server({ maxStagedBytes: 100 });
+    const first = bytesOf(40, 1);
+    await stage(target, "p", first);
+    await stage(target, "p", bytesOf(40, 2));
+    await expect(stage(target, "p", first)).resolves.toEqual({ staged: true });
+  });
+
+  it("expires other previews' staging, and removes what it empties", async () => {
+    const target = server({ stagedTtlMs: 60_000 });
+    const forgotten = bytesOf(16, 1);
+    await stage(target, "gone", forgotten);
+    await age(path.join(stagingDir("gone"), sha256(forgotten)), 120_000);
+    // An empty directory another request has just made is left alone.
+    await fs.mkdir(stagingDir("fresh"), { recursive: true });
+
+    await stage(target, "p", bytesOf(16, 2));
+    // The expired file is gone; its directory goes once it has been idle.
+    await expect(
+      fs.access(path.join(stagingDir("gone"), sha256(forgotten))),
+    ).rejects.toThrow();
+    await expect(fs.access(stagingDir("fresh"))).resolves.toBeUndefined();
+
+    await age(stagingDir("gone"), 20 * 60 * 1000);
+    await stage(target, "p", bytesOf(16, 3));
+    await expect(fs.access(stagingDir("gone"))).rejects.toThrow();
+    expect(await staged("p")).toEqual(
+      [sha256(bytesOf(16, 2)), sha256(bytesOf(16, 3))].sort(),
     );
   });
 
