@@ -50,12 +50,15 @@ export const LOCAL_PREVIEW_SIDECAR_MAX_BODY_BYTES = 64 * 1024 * 1024;
 
 export type LocalPreviewSidecarApplyFilesRequest = Readonly<{
   previewId: string;
-  files: readonly { path: string; content: string }[];
+  /** Each with the version it is, or was edited from; see `preview-write-fence`. */
+  files: readonly { path: string; content: string; fence: number }[];
 }>;
 
 export type LocalPreviewSidecarApplyFilesResult = Readonly<{
   changed: readonly string[];
   unchanged: readonly string[];
+  /** Files the preview had already taken a newer version of; none written. */
+  refused?: readonly string[];
 }>;
 
 /**

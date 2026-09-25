@@ -10,10 +10,12 @@
  * file that would replace what is saved with something edited from an older
  * version is not written.
  *
- * This compares against the database when the request is checked. It does not
- * order two writes that pass the check at the same time: a request checked
- * before a newer save lands can still write after it. Closing that needs the
- * preview's writes to be serialised or fenced, which this does not do.
+ * This compares against the database when the request is checked, and so
+ * cannot order two writes that pass the check at the same time: a request
+ * checked before a newer save lands could still write after it. That is what
+ * the preview's write fence closes (`compiler/preview-write-fence.ts`); this
+ * check stays as the cheap early refusal that also covers a file deleted or
+ * created elsewhere.
  */
 
 export type PreviewSyncFile = Readonly<{

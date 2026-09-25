@@ -17,6 +17,10 @@ import {
   THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH,
 } from "./theme-workspace-path";
 import { verifyWorkspaceOnDisk } from "./theme-workspace-verification";
+import {
+  runFencedWriteInSandbox,
+  type FenceSandbox,
+} from "./preview-write-fence-sandbox";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
 import {
   diffWorkspaceFileDigests,
@@ -172,6 +176,13 @@ export type PreviewServerSession = ThemeWorkspaceWriter &
       hostname: string,
     ): Promise<ReadonlyArray<{ url: string; port: number; status: string }>>;
     setSleepAfter?(value: string | number): Promise<void>;
+    /** Runs a command to completion; used for the preview's write fences. */
+    exec?(command: string): Promise<{
+      success: boolean;
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }>;
     destroy(): Promise<void>;
   }>;
 
@@ -194,6 +205,12 @@ export type StartPreviewServerInput = Readonly<{
   env: Record<string, unknown> | undefined;
   /** Authenticated draft content reduced to render-only values. */
   previewContent?: ThemePreviewContentSnapshot;
+  /**
+   * The saved version of each file being laid out, recorded as the preview's
+   * write fences so a sync made from an older version cannot land afterwards.
+   * See `preview-write-fence.ts`.
+   */
+  fileVersions?: Readonly<Record<string, number>>;
 }>;
 
 export type StartPreviewServerResult =
@@ -705,6 +722,17 @@ export class CloudflareSandboxVitePreviewServer {
         }
       }
       observation.workspace.update = workspaceUpdate;
+      // The workspace now holds these versions. Recorded after it does, and
+      // merged into what is there rather than replacing it: a save that
+      // synced while this start was running may already be ahead.
+      if (input.fileVersions && typeof session.exec === "function") {
+        await runFencedWriteInSandbox(session as unknown as FenceSandbox, {
+          op: "seed",
+          versions: input.fileVersions,
+        }).catch(() => {
+          addLog("Could not record the Live Preview write fences.");
+        });
+      }
       const workspaceMs = Date.now() - workspaceStartedAt;
 
       // Authorize the URL before the server exists, so a process that becomes

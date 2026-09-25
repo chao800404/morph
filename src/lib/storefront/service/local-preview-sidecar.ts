@@ -191,7 +191,7 @@ export async function startLocalPreviewSidecar(
       case "applyFiles": {
         const applyInput = input as {
           previewId: string;
-          files: readonly { path: string; content: string }[];
+          files: readonly { path: string; content: string; fence: number }[];
         };
         respond(
           response,

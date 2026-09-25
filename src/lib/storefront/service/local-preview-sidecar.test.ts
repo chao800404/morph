@@ -27,7 +27,10 @@ import { LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER } from "./local-preview-sidecar.prot
  */
 
 const TOKEN = "t".repeat(48);
-const WORKSPACES_ROOT = path.join(process.cwd(), ".morph-previews-sidecar-test");
+const WORKSPACES_ROOT = path.join(
+  process.cwd(),
+  ".morph-previews-sidecar-test",
+);
 
 let port = 0;
 let sidecar: Awaited<ReturnType<typeof startLocalPreviewSidecar>>;
@@ -65,7 +68,8 @@ beforeAll(async () => {
         const server = net.createServer();
         server.listen(0, "127.0.0.1", () => {
           const address = server.address();
-          const found = typeof address === "object" && address ? address.port : 0;
+          const found =
+            typeof address === "object" && address ? address.port : 0;
           server.close(() => resolve(found));
         });
       }),
@@ -78,7 +82,10 @@ beforeAll(async () => {
     toolchainRoot: process.cwd(),
     env: { NODE_ENV: "test" },
   });
-  client = new LocalPreviewSidecarClient({ origin: sidecar.origin, token: TOKEN });
+  client = new LocalPreviewSidecarClient({
+    origin: sidecar.origin,
+    token: TOKEN,
+  });
 });
 
 afterEach(async () => {
@@ -130,6 +137,7 @@ describe("the local preview sidecar boundary", () => {
         {
           path: "src/pages/index.tsx",
           content: THEME[0]!.content.replace("Sidecar", "Edited"),
+          fence: 1,
         },
       ],
     });
@@ -148,6 +156,27 @@ describe("the local preview sidecar boundary", () => {
         { timeout: 10_000, interval: 200 },
       )
       .toContain("Edited preview");
+
+    // A write made from an older version than one the preview has already
+    // taken is refused where it lands, and the file is left as it was.
+    const stale = await client.applyFiles({
+      previewId: "preview-1",
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: THEME[0]!.content.replace("Sidecar", "Rewound"),
+          fence: 0,
+        },
+      ],
+    });
+    expect(stale).toEqual({
+      changed: [],
+      unchanged: [],
+      refused: ["src/pages/index.tsx"],
+    });
+    expect(
+      await (await fetch(new URL("src/pages/index.tsx", started.url))).text(),
+    ).toContain("Edited preview");
 
     await client.stop("preview-1");
     await expect(

@@ -4,7 +4,10 @@ import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-
 import type { ThemePreviewServer } from "@/lib/storefront/compiler/theme-preview-server.types";
 import { isProductionEnvironment } from "./storefront-domain-provider";
 import { LocalPreviewSidecarClient } from "./local-preview-sidecar-client";
-import type { LocalPreviewSidecarApplyFilesResult } from "./local-preview-sidecar.protocol";
+import type {
+  LocalPreviewSidecarApplyFilesRequest,
+  LocalPreviewSidecarApplyFilesResult,
+} from "./local-preview-sidecar.protocol";
 import {
   resolveThemePreviewServerHost,
   validateExposedPreviewUrl,
@@ -59,10 +62,9 @@ export type ThemePreviewServerSelection =
        * directly, so file application never had to travel through the transport
        * contract. A sidecar's filesystem is in another process, so here it does.
        */
-      applyFiles?: (input: {
-        previewId: string;
-        files: readonly { path: string; content: string }[];
-      }) => Promise<LocalPreviewSidecarApplyFilesResult>;
+      applyFiles?: (
+        input: LocalPreviewSidecarApplyFilesRequest,
+      ) => Promise<LocalPreviewSidecarApplyFilesResult>;
     }>
   | Readonly<{ enabled: false; reason: string; message: string }>;
 
