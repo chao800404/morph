@@ -54,10 +54,9 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildPreviewDTO,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import {
-  isBinaryThemeFile,
-  type StorefrontThemeFileDTO,
-  type StorefrontThemeFileTreeNode,
+import type {
+  StorefrontThemeFileDTO,
+  StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { dragAutoScrollStep } from "@/lib/storefront/editor/drag-autoscroll";
@@ -159,6 +158,7 @@ import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-p
 import {
   describeThemeSourceChanges,
   describeUnpublishedChanges,
+  publishedFileStates,
 } from "@/lib/storefront/editor/unpublished-changes";
 import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
 import {
@@ -309,10 +309,9 @@ import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-me
  * is loaded against, and one route's document standing in for another page is
  * how a publish from that page would ship the wrong route's draft.
  */
-function borrowableTemplate<T extends { routePath?: string | null; type: string }>(
-  templates: readonly T[],
-  activeTemplate: T | undefined,
-): T | undefined {
+function borrowableTemplate<
+  T extends { routePath?: string | null; type: string },
+>(templates: readonly T[], activeTemplate: T | undefined): T | undefined {
   const shared = templates.filter(
     (template) => !template.routePath && template.type !== "layout",
   );
@@ -759,12 +758,13 @@ export function VisualEditorShell({
    * template, and writing this page's sections into it is exactly what the
    * server refuses.
    */
-  const pageTemplateId = templateAppliesToRoute(activeTemplate, search.routePath)
+  const pageTemplateId = templateAppliesToRoute(
+    activeTemplate,
+    search.routePath,
+  )
     ? (activeTemplate?.id ?? null)
     : search.routePath && routeOwnsDocument(search.routePath)
-      ? routeTemplatePlaceholderId(
-          contentTargetRoutePath(search.routePath),
-        )
+      ? routeTemplatePlaceholderId(contentTargetRoutePath(search.routePath))
       : null;
   const queryClient = useQueryClient();
   const [pendingRoutePath, setPendingRoutePath] = useState<string | null>(null);
@@ -968,9 +968,9 @@ export function VisualEditorShell({
   const pendingPropsTimersRef = useRef<
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
-  const pendingPropsMapRef = useRef<
-    Map<string, PendingContentEntry>
-  >(new Map());
+  const pendingPropsMapRef = useRef<Map<string, PendingContentEntry>>(
+    new Map(),
+  );
   /** Section props as they stood when the current debounce window opened. */
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
     new Map(),
@@ -2605,7 +2605,8 @@ export function VisualEditorShell({
     if (lastStaleNoticeRef.current === key) return;
     lastStaleNoticeRef.current = key;
     const names = stalePaths.slice(0, 3).join(", ");
-    const more = stalePaths.length > 3 ? ` and ${stalePaths.length - 3} more` : "";
+    const more =
+      stalePaths.length > 3 ? ` and ${stalePaths.length - 3} more` : "";
     toast.warning(
       `Another tab saved newer versions of ${names}${more}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
       { duration: 20_000 },
@@ -2954,8 +2955,7 @@ export function VisualEditorShell({
             previewOrigin,
           },
         });
-        const answer =
-          result?.success === true ? result.data.state : "unknown";
+        const answer = result?.success === true ? result.data.state : "unknown";
         console.info(`[preview-probe] ${answer}`);
         return answer;
       },
@@ -3068,23 +3068,27 @@ export function VisualEditorShell({
 
   const latestPublishedRevision = themeFilesQuery.data?.latestPublishedRevision;
 
-  const publishedSnapshotMap = useMemo(() => {
-    // An empty snapshot is not a published theme with no files — a theme with
-    // no files cannot be published at all. It means the contents were not
-    // resolved, and comparing against it makes every file look newly added.
-    if (!latestPublishedRevision?.snapshot?.length) return null;
-    const map = new Map<string, string>();
-    for (const item of latestPublishedRevision.snapshot) {
-      // Compared as source text; a binary file has none to compare.
-      if (isBinaryThemeFile(item)) continue;
-      map.set(item.path, item.content);
-    }
-    return map;
-  }, [latestPublishedRevision]);
+  const publishedSnapshotMap = useMemo(
+    () => publishedFileStates(latestPublishedRevision?.snapshot),
+    [latestPublishedRevision],
+  );
+  const themeBinaryFiles = themeFilesQuery.data?.binaryFiles;
 
+  // Source by its text, including unsaved drafts; binary files by digest, so
+  // an image uploaded, replaced or removed since publishing counts too.
   const themeSourceDiff = useMemo(
-    () => describeThemeSourceChanges(effectiveThemeFiles, publishedSnapshotMap),
-    [effectiveThemeFiles, publishedSnapshotMap],
+    () =>
+      describeThemeSourceChanges(
+        [
+          ...effectiveThemeFiles,
+          ...(themeBinaryFiles ?? []).map((file) => ({
+            path: file.path,
+            digest: file.blobDigest,
+          })),
+        ],
+        publishedSnapshotMap,
+      ),
+    [effectiveThemeFiles, themeBinaryFiles, publishedSnapshotMap],
   );
 
   const hasTemplateChanges = Boolean(
@@ -4649,8 +4653,7 @@ export function VisualEditorShell({
       previewStaleProbeRef.current?.hint();
     };
     window.addEventListener("message", handlePreviewDiagnostic);
-    return () =>
-      window.removeEventListener("message", handlePreviewDiagnostic);
+    return () => window.removeEventListener("message", handlePreviewDiagnostic);
   }, [parseLivePreviewMessage, previewKey]);
 
   useEffect(() => {
@@ -5527,9 +5530,16 @@ export function VisualEditorShell({
           }
           useThemeWorkspaceStore
             .getState()
-            .acceptRemoteGeneration(saved.data.sourceGeneration, workspaceScope);
+            .acceptRemoteGeneration(
+              saved.data.sourceGeneration,
+              workspaceScope,
+            );
           for (const savedFile of saved.data.files ?? []) {
-            updateWorkspaceLocal(savedFile.path, savedFile.content, workspaceScope);
+            updateWorkspaceLocal(
+              savedFile.path,
+              savedFile.content,
+              workspaceScope,
+            );
             markWorkspaceSaved(
               savedFile,
               workspaceScope,
@@ -5723,9 +5733,8 @@ export function VisualEditorShell({
               targetKey: request.targetKey,
               fieldName: request.fieldName,
               value: request.value,
-              expectedSourceGeneration: store.getAcceptedSourceGeneration(
-                workspaceScope,
-              ),
+              expectedSourceGeneration:
+                store.getAcceptedSourceGeneration(workspaceScope),
               expectedFileVersion: workspaceFile.serverVersion,
               expectedDraftGeneration,
               ...(request.confirmedImpact
@@ -5814,7 +5823,6 @@ export function VisualEditorShell({
       workspaceScope,
     ],
   );
-
 
   /**
    * The stored props of one section, as a plain object to restore later.
@@ -6295,16 +6303,16 @@ export function VisualEditorShell({
       const result = await enqueueTemplateMutation(
         boundTemplateId,
         (generation, templateId) =>
-        renameStorefrontThemeSection({
-          data: {
-            storefrontId: context.storefront.id,
-            themeId: context.theme.id,
-            templateId,
-            sectionId,
-            name,
-            expectedDraftGeneration: generation,
-          },
-        }),
+          renameStorefrontThemeSection({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId,
+              sectionId,
+              name,
+              expectedDraftGeneration: generation,
+            },
+          }),
       );
       if (result && !result.success) {
         toast.error(result.message);
