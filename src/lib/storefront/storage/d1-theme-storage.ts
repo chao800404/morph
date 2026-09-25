@@ -156,6 +156,35 @@ async function shouldRecordRevision(args: {
  * file-version OCC semantics remain unchanged while callers stop depending on
  * the concrete D1 representation.
  */
+/**
+ * The revision and source index a write of `files` would record, decided as a
+ * save through this store decides them.
+ *
+ * For writes that change source together with something else in one batch,
+ * and so cannot go through `saveFilesBatch`, yet must leave the same history
+ * and index behind as any other save.
+ */
+export async function recordsForWorkspaceSave(args: {
+  storefrontId: string;
+  themeId: string;
+  expectedSourceGeneration: number;
+  files: readonly { path: string; content: string; mimeType?: string }[];
+}) {
+  const createRevision = await shouldRecordRevision({
+    storefrontId: args.storefrontId,
+    themeId: args.themeId,
+    reason: "save",
+  });
+  const sourceManifest = createRevision
+    ? await manifestForWorkspaceMutation({ ...args, deletions: [] })
+    : undefined;
+  const sourceIndex = await sourceIndexForWorkspaceMutation({
+    ...args,
+    deletions: [],
+  });
+  return { createRevision, sourceManifest, sourceIndex };
+}
+
 export const d1ThemeSourceStore: ThemeSourceStore = {
   initStarterTheme: (...args) =>
     storefrontThemeFileDal.initStarterTheme(...args),

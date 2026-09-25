@@ -58,7 +58,7 @@ function detectThemeMimeType(path: string, mimeType?: string | null) {
   return "text/plain";
 }
 
-function prepareThemeOwnershipGuard(
+export function prepareThemeOwnershipGuard(
   storefrontId: string,
   themeId: string,
   expectedSourceGeneration?: number,
@@ -85,6 +85,73 @@ function prepareThemeOwnershipGuard(
     ) THEN 1 ELSE json('') END AS ok
   `,
   ).bind(themeId, storefrontId);
+}
+
+/**
+ * Rewrites one saved file, guarded on the version the writer read.
+ *
+ * Two statements because a batch only rolls back on an error: the guard
+ * raises one when the file is not at `expectedVersion`, while the `UPDATE`
+ * matching no row would pass as zero changes and leave the rest of the batch
+ * committed. Shared by the file save and by writes that change a file
+ * together with something else, so both hold the same precondition.
+ */
+export function prepareThemeFileUpdate(args: {
+  storefrontId: string;
+  themeId: string;
+  path: string;
+  fileId: string;
+  expectedVersion: number;
+  content: string;
+  mimeType?: string | null;
+  now: string;
+}) {
+  return {
+    guard: env.DATABASE.prepare(
+      `
+      SELECT CASE WHEN EXISTS (
+        SELECT 1 FROM storefront_theme_files
+        WHERE storefront_id = ?1
+          AND theme_id = ?2
+          AND path = ?3
+          AND id = ?4
+          AND version = ?5
+          AND deleted_at IS NULL
+      ) THEN 1 ELSE json('') END AS ok
+    `,
+    ).bind(
+      args.storefrontId,
+      args.themeId,
+      args.path,
+      args.fileId,
+      args.expectedVersion,
+    ),
+    mutation: env.DATABASE.prepare(
+      `
+      UPDATE storefront_theme_files
+      SET content = ?1,
+          mime_type = ?2,
+          version = version + 1,
+          updated_at = ?3
+      WHERE storefront_id = ?4
+        AND theme_id = ?5
+        AND path = ?6
+        AND id = ?7
+        AND version = ?8
+        AND deleted_at IS NULL
+      RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
+    `,
+    ).bind(
+      args.content,
+      detectThemeMimeType(args.path, args.mimeType),
+      args.now,
+      args.storefrontId,
+      args.themeId,
+      args.path,
+      args.fileId,
+      args.expectedVersion,
+    ),
+  };
 }
 
 /**
@@ -170,7 +237,7 @@ function routeOwnedPathsOf(paths: readonly string[]): Set<string> {
   return routePaths;
 }
 
-function prepareIncrementThemeSourceGeneration(
+export function prepareIncrementThemeSourceGeneration(
   storefrontId: string,
   themeId: string,
   now: string,
@@ -205,7 +272,7 @@ function prepareIncrementThemeSourceGeneration(
   ).bind(now, themeId, storefrontId);
 }
 
-function prepareRevisionInsert(args: {
+export function prepareRevisionInsert(args: {
   storefrontId: string;
   themeId: string;
   revisionId: string;
@@ -811,54 +878,18 @@ export const storefrontThemeFileDal = {
       }
 
       if (expectsExisting) {
-        preconditionStatements.push(
-          env.DATABASE.prepare(
-            `
-            SELECT CASE WHEN EXISTS (
-              SELECT 1 FROM storefront_theme_files
-              WHERE storefront_id = ?1
-                AND theme_id = ?2
-                AND path = ?3
-                AND id = ?4
-                AND version = ?5
-                AND deleted_at IS NULL
-            ) THEN 1 ELSE json('') END AS ok
-          `,
-          ).bind(
-            storefrontId,
-            themeId,
-            item.path,
-            item.fileId,
-            item.expectedVersion!,
-          ),
-        );
-        mutationStatements.push(
-          env.DATABASE.prepare(
-            `
-            UPDATE storefront_theme_files
-            SET content = ?1,
-                mime_type = ?2,
-                version = version + 1,
-                updated_at = ?3
-            WHERE storefront_id = ?4
-              AND theme_id = ?5
-              AND path = ?6
-              AND id = ?7
-              AND version = ?8
-              AND deleted_at IS NULL
-            RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
-          `,
-          ).bind(
-            item.content,
-            detectThemeMimeType(item.path, item.mimeType),
-            now,
-            storefrontId,
-            themeId,
-            item.path,
-            item.fileId,
-            item.expectedVersion!,
-          ),
-        );
+        const update = prepareThemeFileUpdate({
+          storefrontId,
+          themeId,
+          path: item.path,
+          fileId: item.fileId,
+          expectedVersion: item.expectedVersion!,
+          content: item.content,
+          mimeType: item.mimeType,
+          now,
+        });
+        preconditionStatements.push(update.guard);
+        mutationStatements.push(update.mutation);
       } else {
         preconditionStatements.push(
           env.DATABASE.prepare(

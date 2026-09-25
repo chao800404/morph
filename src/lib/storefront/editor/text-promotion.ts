@@ -92,9 +92,10 @@ export type TextPromotionInput = Readonly<{
 
 const LOOP_METHODS = new Set(["map", "flatMap"]);
 
-type AnyNode = Record<string, any>;
+/** A Babel node; the analysis walks the raw AST. */
+export type AnyNode = Record<string, any>;
 
-function parseSource(content: string): AnyNode | null {
+export function parseSource(content: string): AnyNode | null {
   try {
     return parse(content, {
       sourceType: "module",
@@ -243,7 +244,7 @@ function isFunction(node: AnyNode | undefined): boolean {
 }
 
 /** The default export's component function, if the file has one. */
-function defaultComponent(program: AnyNode): AnyNode | null {
+export function defaultComponent(program: AnyNode): AnyNode | null {
   const localFunctions = new Map<string, AnyNode>();
   for (const statement of program.body ?? []) {
     if (statement?.type === "FunctionDeclaration" && statement.id?.name) {
@@ -271,26 +272,20 @@ function defaultComponent(program: AnyNode): AnyNode | null {
   return null;
 }
 
-/** Member names of the props type, when this file defines it. */
-function propsTypeMembers(
+/**
+ * The node listing the props type's members, when this file defines it.
+ *
+ * `none` when the props are not annotated at all; `null` when they are typed
+ * by something out of this file's hands. The node is a `TSTypeLiteral` or an
+ * interface's `TSInterfaceBody`; either keeps its members in `body`/`members`.
+ */
+export function propsTypeBody(
   program: AnyNode,
   parameter: AnyNode,
-): { ok: true; names: string[] } | { ok: false } {
+): AnyNode | "none" | null {
   const annotation = parameter.typeAnnotation?.typeAnnotation;
-  if (!annotation) return { ok: true, names: [] };
-  const membersOf = (literal: AnyNode) =>
-    (literal.members ?? literal.body?.body ?? [])
-      .map((member: AnyNode) =>
-        member?.key?.type === "Identifier"
-          ? member.key.name
-          : member?.key?.type === "StringLiteral"
-            ? member.key.value
-            : null,
-      )
-      .filter((name: string | null): name is string => name !== null);
-  if (annotation.type === "TSTypeLiteral") {
-    return { ok: true, names: membersOf(annotation) };
-  }
+  if (!annotation) return "none";
+  if (annotation.type === "TSTypeLiteral") return annotation;
   if (
     annotation.type === "TSTypeReference" &&
     annotation.typeName?.type === "Identifier" &&
@@ -307,19 +302,45 @@ function propsTypeMembers(
         declaration.id?.name === name &&
         declaration.typeAnnotation?.type === "TSTypeLiteral"
       ) {
-        return { ok: true, names: membersOf(declaration.typeAnnotation) };
+        return declaration.typeAnnotation;
       }
       if (
         declaration?.type === "TSInterfaceDeclaration" &&
         declaration.id?.name === name &&
         !(declaration.extends?.length > 0)
       ) {
-        return { ok: true, names: membersOf(declaration) };
+        return declaration.body;
       }
     }
   }
   // Imported, generic, intersected, or otherwise out of this file's hands.
-  return { ok: false };
+  return null;
+}
+
+export function typeBodyMembers(body: AnyNode): AnyNode[] {
+  return body.members ?? body.body ?? [];
+}
+
+/** Member names of the props type, when this file defines it. */
+function propsTypeMembers(
+  program: AnyNode,
+  parameter: AnyNode,
+): { ok: true; names: string[] } | { ok: false } {
+  const body = propsTypeBody(program, parameter);
+  if (body === null) return { ok: false };
+  if (body === "none") return { ok: true, names: [] };
+  return {
+    ok: true,
+    names: typeBodyMembers(body)
+      .map((member: AnyNode) =>
+        member?.key?.type === "Identifier"
+          ? member.key.name
+          : member?.key?.type === "StringLiteral"
+            ? member.key.value
+            : null,
+      )
+      .filter((name: string | null): name is string => name !== null),
+  };
 }
 
 function destructuredNames(pattern: AnyNode): string[] {
@@ -456,6 +477,25 @@ function freeName(base: string, taken: ReadonlySet<string>): string {
   }
 }
 
+/** The element a target key names, with the chain of ancestors above it. */
+export function findTargetElement(
+  ast: AnyNode,
+  targetKey: string,
+): { element: AnyNode; ancestors: AnyNode[] } | null {
+  let found: { element: AnyNode; ancestors: AnyNode[] } | null = null;
+  walk(ast.program, [], (node, ancestors) => {
+    if (node.type !== "JSXElement") return;
+    if (
+      staticAttribute(node, "data-morph-node") === targetKey ||
+      locationKey(node) === targetKey
+    ) {
+      found = { element: node, ancestors: [...ancestors] };
+      return true;
+    }
+  });
+  return found;
+}
+
 export function analyzeTextPromotion(
   input: TextPromotionInput,
 ): TextPromotionAnalysis {
@@ -465,21 +505,9 @@ export function analyzeTextPromotion(
   const ast = file ? parseSource(file.content) : null;
   if (!file || !ast) return { status: "code-only", reason: "parse-error" };
 
-  let target: AnyNode | null = null;
-  let targetAncestors: AnyNode[] = [];
-  walk(ast.program, [], (node, ancestors) => {
-    if (node.type !== "JSXElement") return;
-    if (
-      staticAttribute(node, "data-morph-node") === input.targetKey ||
-      locationKey(node) === input.targetKey
-    ) {
-      target = node;
-      targetAncestors = [...ancestors];
-      return true;
-    }
-  });
-  if (!target) return { status: "code-only", reason: "not-found" };
-  const element = target as AnyNode;
+  const found = findTargetElement(ast, input.targetKey);
+  if (!found) return { status: "code-only", reason: "not-found" };
+  const { element, ancestors: targetAncestors } = found;
 
   const text = plainText(element);
   if (text === null) return { status: "code-only", reason: "not-plain-text" };

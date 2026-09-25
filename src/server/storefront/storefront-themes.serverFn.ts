@@ -17,7 +17,9 @@ import {
   renameStorefrontThemeSectionInputSchema,
   updateStorefrontThemeSectionPropsInputSchema,
   ensureStorefrontThemeRouteTemplateInputSchema,
+  promoteStorefrontThemeTextInputSchema,
 } from "@/lib/validations/storefront-theme";
+import { promoteTextToField } from "@/lib/storefront/service/text-promotion-write";
 import { createServerFn } from "@tanstack/react-start";
 import { env as cloudflareEnv } from "cloudflare:workers";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
@@ -278,6 +280,47 @@ export const updateStorefrontThemeSectionProps = createServerFn({
         error,
         "UPDATE_FAILED",
         "Failed to update section props",
+      );
+    }
+  });
+
+/**
+ * Makes fixed text in a component editable, storing this page's value for it.
+ *
+ * A refusal comes back with its reason — a conflict, text that cannot be a
+ * field, or a shared component whose reach the author has not confirmed, with
+ * the list to confirm — so the editor can say which, rather than "failed".
+ */
+export const promoteStorefrontThemeText = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(promoteStorefrontThemeTextInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    try {
+      const result = await promoteTextToField({
+        ...input.data,
+        createdBy: context.user.id,
+      });
+      if (result.ok) return ok("Text is now an editable field", result);
+      return fail(result.message, {
+        error: result.error,
+        errors:
+          result.error === "SHARED_IMPACT_UNCONFIRMED"
+            ? { impact: [...result.impact] }
+            : result.error === "NOT_PROMOTABLE"
+              ? { reason: [result.reason] }
+              : result.error === "CONFLICT"
+                ? { conflict: [result.conflict] }
+                : undefined,
+      });
+    } catch (error) {
+      return failure(
+        "Promote storefront theme text error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to make this text editable",
       );
     }
   });

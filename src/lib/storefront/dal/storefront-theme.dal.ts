@@ -123,7 +123,13 @@ function deriveTemplateDocumentFromRoutes(args: {
 
 type SectionSourceComponent =
   /** The source confirms which component renders the section. */
-  | Readonly<{ kind: "confirmed"; componentRef: string }>
+  | Readonly<{
+      kind: "confirmed";
+      componentRef: string;
+      componentSourcePath: string;
+      /** The route or layout file whose `content(slot)` renders it. */
+      callSitePath: string;
+    }>
   /**
    * The source has no say: a Theme from before route-owned structure. Only
    * here may the ref the Document stored stand in for the source.
@@ -152,7 +158,7 @@ type SectionSourceComponent =
  * sit behind several routes and the default pick is only a guess. It selects
  * among routes the saved source declares; it never names a file to read.
  */
-function resolveSectionSourceComponent(args: {
+export function resolveSectionSourceComponent(args: {
   templateType: string;
   /** Set for a document one route owns. */
   templateRoutePath?: string | null;
@@ -188,7 +194,12 @@ function resolveSectionSourceComponent(args: {
         reason: `Section "${args.sectionId}" renders ${section.missingComponentSourcePath}, which is not in the Theme.`,
       };
     }
-    return { kind: "confirmed", componentRef: section.componentRef };
+    return {
+      kind: "confirmed",
+      componentRef: section.componentRef,
+      componentSourcePath: section.componentSourcePath,
+      callSitePath: section.routeSourcePath,
+    };
   };
 
   if (args.templateType === "layout") {
@@ -307,20 +318,7 @@ function prepareTemplateDraftCASGuard(args: {
   );
 }
 
-/**
- * Writes one template document, with the draft-revision rules every such write
- * shares.
- *
- * An active uncommitted draft is updated in place; anything else branches a new
- * revision. Both are guarded by the same compare-and-set over the draft
- * generation, the draft revision and the source generation, so a write that
- * raced another loses rather than overwriting it.
- *
- * Extracted because a second caller arrived — renaming a section — and the
- * alternative was a hundred and fifty lines of optimistic concurrency living in
- * two places, where only one of them would receive the next correction.
- */
-async function writeTemplateDocument(args: {
+type TemplateDocumentWriteArgs = {
   storefrontId: string;
   themeId: string;
   templateId: string;
@@ -330,9 +328,23 @@ async function writeTemplateDocument(args: {
   publishedRevisionId: string | null;
   expectedDraftGeneration: number;
   createdBy: string;
-}) {
+};
+
+/**
+ * The statements that write one template document, and what they produce.
+ *
+ * An active uncommitted draft is updated in place; anything else branches a new
+ * revision. Both are guarded by the same compare-and-set over the draft
+ * generation, the draft revision and the source generation, so a write that
+ * raced another loses rather than overwriting it. The guard is returned apart
+ * from the writes so a caller combining this with other writes in one batch
+ * can check every precondition before changing anything.
+ */
+export async function prepareTemplateDocumentWrite(
+  args: TemplateDocumentWriteArgs,
+  now = new Date().toISOString(),
+) {
   const db = await getDb();
-  const now = new Date().toISOString();
   const nextGeneration = args.expectedDraftGeneration + 1;
 
   // If an uncommitted draft revision is currently active, update it in place
@@ -355,8 +367,8 @@ async function writeTemplateDocument(args: {
       .limit(1);
 
     if (activeDraft) {
-      const statements = [
-        prepareTemplateDraftCASGuard({
+      return {
+        guard: prepareTemplateDraftCASGuard({
           storefrontId: args.storefrontId,
           themeId: args.themeId,
           templateId: args.templateId,
@@ -364,42 +376,32 @@ async function writeTemplateDocument(args: {
           expectedDraftRevisionId: activeDraft.id,
           expectedSourceGeneration: args.sourceGeneration,
         }),
-        env.DATABASE.prepare(
-          `
+        mutations: [
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_template_revisions
             SET document = ?1
             WHERE id = ?2 AND template_id = ?3
           `,
-        ).bind(JSON.stringify(args.document), activeDraft.id, args.templateId),
-        env.DATABASE.prepare(
-          `
+          ).bind(
+            JSON.stringify(args.document),
+            activeDraft.id,
+            args.templateId,
+          ),
+          env.DATABASE.prepare(
+            `
             UPDATE storefront_theme_templates
             SET draft_generation = ?1, updated_at = ?2
             WHERE id = ?3 AND theme_id = ?4 AND deleted_at IS NULL
           `,
-        ).bind(nextGeneration, now, args.templateId, args.themeId),
-      ];
-
-      try {
-        await env.DATABASE.batch(statements);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (
-          message.includes("malformed JSON") ||
-          message.includes("constraint")
-        ) {
-          throw new Error(
-            "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
-          );
-        }
-        throw error;
-      }
-
-      return {
-        document: args.document,
-        version: activeDraft.version,
-        draftRevisionId: activeDraft.id,
-        draftGeneration: nextGeneration,
+          ).bind(nextGeneration, now, args.templateId, args.themeId),
+        ],
+        result: {
+          document: args.document,
+          version: activeDraft.version,
+          draftRevisionId: activeDraft.id,
+          draftGeneration: nextGeneration,
+        },
       };
     }
   }
@@ -412,8 +414,8 @@ async function writeTemplateDocument(args: {
   const revisionId = crypto.randomUUID();
   const version = Number(versionRow?.value ?? 0) + 1;
 
-  const statements = [
-    prepareTemplateDraftCASGuard({
+  return {
+    guard: prepareTemplateDraftCASGuard({
       storefrontId: args.storefrontId,
       themeId: args.themeId,
       templateId: args.templateId,
@@ -421,31 +423,50 @@ async function writeTemplateDocument(args: {
       expectedDraftRevisionId: args.draftRevisionId,
       expectedSourceGeneration: args.sourceGeneration,
     }),
-    env.DATABASE.prepare(
-      `
+    mutations: [
+      env.DATABASE.prepare(
+        `
         INSERT INTO storefront_theme_template_revisions (
           id, template_id, version, document, created_by, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
       `,
-    ).bind(
-      revisionId,
-      args.templateId,
-      version,
-      JSON.stringify(args.document),
-      args.createdBy,
-      now,
-    ),
-    env.DATABASE.prepare(
-      `
+      ).bind(
+        revisionId,
+        args.templateId,
+        version,
+        JSON.stringify(args.document),
+        args.createdBy,
+        now,
+      ),
+      env.DATABASE.prepare(
+        `
         UPDATE storefront_theme_templates
         SET draft_revision_id = ?1, draft_generation = ?2, updated_at = ?3
         WHERE id = ?4 AND theme_id = ?5 AND deleted_at IS NULL
       `,
-    ).bind(revisionId, nextGeneration, now, args.templateId, args.themeId),
-  ];
+      ).bind(revisionId, nextGeneration, now, args.templateId, args.themeId),
+    ],
+    result: {
+      document: args.document,
+      version,
+      draftRevisionId: revisionId,
+      draftGeneration: nextGeneration,
+    },
+  };
+}
 
+/**
+ * Writes one template document, with the draft-revision rules every such write
+ * shares — see `prepareTemplateDocumentWrite`.
+ *
+ * Extracted because a second caller arrived — renaming a section — and the
+ * alternative was a hundred and fifty lines of optimistic concurrency living in
+ * two places, where only one of them would receive the next correction.
+ */
+async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
+  const write = await prepareTemplateDocumentWrite(args);
   try {
-    await env.DATABASE.batch(statements);
+    await env.DATABASE.batch([write.guard, ...write.mutations]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("malformed JSON") || message.includes("constraint")) {
@@ -455,13 +476,7 @@ async function writeTemplateDocument(args: {
     }
     throw error;
   }
-
-  return {
-    document: args.document,
-    version,
-    draftRevisionId: revisionId,
-    draftGeneration: nextGeneration,
-  };
+  return write.result;
 }
 
 export const storefrontThemeDal = {
