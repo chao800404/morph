@@ -81,7 +81,10 @@ test.describe("publish loop", () => {
     // storefront. Only under the runner: it owns a throwaway database and is
     // what opens the upload entry, so a run by hand never writes an image into
     // whatever store the shell points at.
-    const image = HANDOFF_PATH ? await uploadRunImage(page) : null;
+    const stored = HANDOFF_PATH
+      ? await writeRunImage(page, { expectMissing: "1" })
+      : null;
+    const image = stored?.image ?? null;
     if (image) {
       // The editor holds the source generation it loaded with, and building
       // freezes a revision against it. Reloading takes the one the upload
@@ -276,6 +279,27 @@ test.describe("publish loop", () => {
       ).toContainText(image.sha256);
     }
 
+    // Replaced after publishing, the image is an unpublished change: compared
+    // by digest, as source is by text. Before, binary files were skipped and
+    // the editor read "Published" while the storefront served the old bytes.
+    // The release is not touched, so the handoff still names what shipped.
+    if (stored) {
+      const replaced = await writeRunImage(page, {
+        expectedFileId: stored.fileId,
+        expectedVersion: String(stored.version),
+      });
+      expect(replaced.image.sha256).not.toBe(stored.image.sha256);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      const status = page.locator("[data-editor-save-status]");
+      await expect(status).toHaveAttribute("aria-label", "Unpublished", {
+        timeout: 45_000,
+      });
+      await expect(status).toHaveAttribute(
+        "data-unpublished-reason",
+        `Edited ${stored.image.path}`,
+      );
+    }
+
     await writeHandoff(page, {
       marker,
       releaseLabel: releasesAfter[0],
@@ -368,9 +392,12 @@ type RunImage = {
 
 const RUN_IMAGE_PATH = "public/images/e2e-run.png";
 
+type StoredRunImage = { image: RunImage; fileId: string; version: number };
+
 /**
- * Uploads a PNG unique to this run through `/api/dev/theme-binary-file`, as
- * the signed-in editor.
+ * Writes a PNG unique to this call at `RUN_IMAGE_PATH` through
+ * `/api/dev/theme-binary-file`, as the signed-in editor: new, or in place of
+ * the stored one when given its id and version, as any write names its file.
  *
  * A PNG signature and then random bytes: the format check reads the
  * signature, the build copies the file without decoding it, and bytes no
@@ -380,9 +407,12 @@ const RUN_IMAGE_PATH = "public/images/e2e-run.png";
  * editor does not show it, so the first attempt says 0 and a conflict, which
  * reports the current one, is answered once with that.
  */
-async function uploadRunImage(
+async function writeRunImage(
   page: import("@playwright/test").Page,
-): Promise<RunImage> {
+  precondition:
+    | { expectMissing: "1" }
+    | { expectedFileId: string; expectedVersion: string },
+): Promise<StoredRunImage> {
   const match = /\/store\/([^/]+)\/themes\/([^/]+)/.exec(page.url());
   if (!match) {
     throw new Error(
@@ -402,7 +432,7 @@ async function uploadRunImage(
         themeId,
         path: RUN_IMAGE_PATH,
         expectedSourceGeneration: String(expectedSourceGeneration),
-        expectMissing: "1",
+        ...precondition,
       })}`,
       {
         headers: { "content-type": "application/octet-stream" },
@@ -423,7 +453,13 @@ async function uploadRunImage(
   expect(response.status(), await response.text()).toBe(200);
   const saved = (
     (await response.json()) as {
-      data: { blobDigest: string; sizeBytes: number; mimeType: string };
+      data: {
+        id: string;
+        version: number;
+        blobDigest: string;
+        sizeBytes: number;
+        mimeType: string;
+      };
     }
   ).data;
 
@@ -434,10 +470,14 @@ async function uploadRunImage(
   expect(saved.mimeType).toBe("image/png");
 
   return {
-    path: RUN_IMAGE_PATH,
-    urlPath: `/${RUN_IMAGE_PATH.slice("public/".length)}`,
-    sha256,
-    sizeBytes: bytes.byteLength,
-    mimeType: "image/png",
+    image: {
+      path: RUN_IMAGE_PATH,
+      urlPath: `/${RUN_IMAGE_PATH.slice("public/".length)}`,
+      sha256,
+      sizeBytes: bytes.byteLength,
+      mimeType: "image/png",
+    },
+    fileId: saved.id,
+    version: saved.version,
   };
 }

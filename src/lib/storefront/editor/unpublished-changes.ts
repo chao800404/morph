@@ -7,7 +7,55 @@ export type ThemeSourceDiff =
       path?: string;
     };
 
-type ComparableFile = { path: string; content: string };
+import type { ThemeRevisionFile } from "@/lib/storefront/dto/storefront-theme-file.dto";
+
+/**
+ * A working file as it compares: source by its text, a binary file by the
+ * digest of its bytes — which is what a revision records for one.
+ */
+export type ComparableFile =
+  | Readonly<{ path: string; content: string }>
+  | Readonly<{ path: string; digest: string }>;
+
+/** What the last published revision held at a path. */
+export type PublishedFileState =
+  | Readonly<{ kind: "text"; content: string }>
+  | Readonly<{ kind: "binary"; digest: string }>;
+
+/**
+ * The published revision's files, by path, as they compare.
+ *
+ * An empty snapshot is not a published theme with no files — a theme with no
+ * files cannot be published at all. It means the contents were not resolved,
+ * and comparing against it would make every file look newly added, so it
+ * reads as no snapshot.
+ */
+export function publishedFileStates(
+  snapshot: readonly ThemeRevisionFile[] | null | undefined,
+): Map<string, PublishedFileState> | null {
+  if (!snapshot?.length) return null;
+  const states = new Map<string, PublishedFileState>();
+  for (const item of snapshot) {
+    states.set(
+      item.path,
+      item.encoding === "binary"
+        ? { kind: "binary", digest: item.blobDigest }
+        : { kind: "text", content: item.content },
+    );
+  }
+  return states;
+}
+
+function sameAsPublished(
+  file: ComparableFile,
+  published: PublishedFileState,
+): boolean {
+  // A path that changed kind — source replaced by an image, or the reverse —
+  // is a change, whatever the values.
+  return "digest" in file
+    ? published.kind === "binary" && published.digest === file.digest
+    : published.kind === "text" && published.content === file.content;
+}
 
 /**
  * Whether the working theme source differs from what was last published.
@@ -26,7 +74,7 @@ type ComparableFile = { path: string; content: string };
  */
 export function describeThemeSourceChanges(
   files: readonly ComparableFile[],
-  publishedSnapshot: ReadonlyMap<string, string> | null,
+  publishedSnapshot: ReadonlyMap<string, PublishedFileState> | null,
 ): ThemeSourceDiff {
   if (!publishedSnapshot) {
     return files.length > 0
@@ -39,7 +87,7 @@ export function describeThemeSourceChanges(
     if (published === undefined) {
       return { changed: true, reason: "added", path: file.path };
     }
-    if (published !== file.content) {
+    if (!sameAsPublished(file, published)) {
       return { changed: true, reason: "modified", path: file.path };
     }
   }

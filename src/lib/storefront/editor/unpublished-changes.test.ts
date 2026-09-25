@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   describeThemeSourceChanges,
   describeUnpublishedChanges,
+  publishedFileStates,
+  type PublishedFileState,
 } from "./unpublished-changes";
 
 const file = (path: string, content: string) => ({ path, content });
-const snapshot = (entries: [string, string][]) => new Map(entries);
+const snapshot = (entries: [string, string][]) =>
+  new Map<string, PublishedFileState>(
+    entries.map(([path, content]) => [path, { kind: "text", content }]),
+  );
 
 describe("describeThemeSourceChanges", () => {
   const published = snapshot([
@@ -128,7 +133,7 @@ describe("an unresolved snapshot", () => {
     // file compares as "added" and Publish stays lit on a store where nothing
     // changed. The caller passes null for this, and null means "never
     // published" — which is at least honest about what is known.
-    const empty = new Map<string, string>();
+    const empty = new Map<string, PublishedFileState>();
 
     expect(
       describeThemeSourceChanges(
@@ -136,5 +141,93 @@ describe("an unresolved snapshot", () => {
         empty,
       ),
     ).toEqual({ changed: true, reason: "added", path: "src/app.tsx" });
+  });
+});
+
+/**
+ * Binary files compare by digest: the bytes a revision records by reference.
+ * Without them, an image uploaded, replaced or removed after publishing left
+ * Publish unlit — the editor said "Nothing to publish" while the storefront
+ * still served the old bytes.
+ */
+describe("describeThemeSourceChanges with binary files", () => {
+  const A = "a".repeat(64);
+  const B = "b".repeat(64);
+  const image = (digest: string) => ({ path: "public/hero.png", digest });
+  const published = publishedFileStates([
+    {
+      path: "src/app.tsx",
+      content: "a",
+      mimeType: "text/typescript",
+      isEntry: true,
+    },
+    {
+      path: "public/hero.png",
+      encoding: "binary",
+      blobDigest: A,
+      sizeBytes: 10,
+      mimeType: "image/png",
+      isEntry: false,
+    },
+  ]);
+
+  it("reports no change when the bytes are the ones published", () => {
+    expect(
+      describeThemeSourceChanges(
+        [file("src/app.tsx", "a"), image(A)],
+        published,
+      ),
+    ).toEqual({ changed: false });
+  });
+
+  it("reports a replaced image as edited", () => {
+    expect(
+      describeThemeSourceChanges(
+        [file("src/app.tsx", "a"), image(B)],
+        published,
+      ),
+    ).toEqual({ changed: true, reason: "modified", path: "public/hero.png" });
+  });
+
+  it("reports an image uploaded since publishing as added", () => {
+    expect(
+      describeThemeSourceChanges(
+        [
+          file("src/app.tsx", "a"),
+          image(A),
+          { path: "public/logo.png", digest: B },
+        ],
+        published,
+      ),
+    ).toEqual({ changed: true, reason: "added", path: "public/logo.png" });
+  });
+
+  it("reports an image removed since publishing as removed", () => {
+    expect(
+      describeThemeSourceChanges([file("src/app.tsx", "a")], published),
+    ).toEqual({ changed: true, reason: "removed", path: "public/hero.png" });
+  });
+
+  it("reports a path that changed kind as edited, whatever its value", () => {
+    // The digest spelled as text is still not the published image.
+    expect(
+      describeThemeSourceChanges(
+        [file("src/app.tsx", "a"), file("public/hero.png", A)],
+        published,
+      ),
+    ).toEqual({ changed: true, reason: "modified", path: "public/hero.png" });
+    expect(
+      describeThemeSourceChanges(
+        [{ path: "src/app.tsx", digest: A }, image(A)],
+        published,
+      ),
+    ).toEqual({ changed: true, reason: "modified", path: "src/app.tsx" });
+  });
+});
+
+describe("publishedFileStates", () => {
+  it("reads an unresolved, empty snapshot as none at all", () => {
+    expect(publishedFileStates([])).toBeNull();
+    expect(publishedFileStates(undefined)).toBeNull();
   });
 });
