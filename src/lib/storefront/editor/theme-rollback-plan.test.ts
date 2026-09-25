@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isThemeRollbackNoop,
   resolveThemeRollbackPlan,
+  rollbackFileOf,
 } from "./theme-rollback-plan";
 
 const file = (path: string, content = "x") => ({ path, content });
@@ -62,5 +63,67 @@ describe("what a rollback would change", () => {
         resolveThemeRollbackPlan({ current: same, target: [] }),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * Rollback replaces binary files too, so the plan names them: by digest,
+ * as a revision records them. Filtered out, an image the rollback would
+ * delete or replace was never shown before anyone agreed to it.
+ */
+describe("what a rollback would change in public/", () => {
+  const A = "a".repeat(64);
+  const B = "b".repeat(64);
+  const image = (path: string, digest: string) => ({ path, digest });
+
+  it("names images restored, replaced, removed and left alone", () => {
+    const plan = resolveThemeRollbackPlan({
+      current: [
+        file("src/a.tsx"),
+        image("public/kept.png", A),
+        image("public/replaced.png", B),
+        image("public/added-since.png", A),
+      ],
+      target: [
+        file("src/a.tsx"),
+        image("public/kept.png", A),
+        image("public/replaced.png", A),
+        image("public/deleted-since.png", B),
+      ],
+    });
+
+    expect(plan).toEqual({
+      restored: ["public/deleted-since.png"],
+      rewritten: ["public/replaced.png"],
+      removed: ["public/added-since.png"],
+      unchanged: ["public/kept.png", "src/a.tsx"],
+    });
+  });
+
+  it("rewrites a path that changed kind, whatever its value", () => {
+    const plan = resolveThemeRollbackPlan({
+      current: [file("public/logo.png", A)],
+      target: [image("public/logo.png", A)],
+    });
+
+    expect(plan.rewritten).toEqual(["public/logo.png"]);
+    expect(isThemeRollbackNoop(plan)).toBe(false);
+  });
+});
+
+describe("rollbackFileOf", () => {
+  it("reads a binary entry by its digest and source by its text", () => {
+    const digest = "c".repeat(64);
+    expect(
+      rollbackFileOf({
+        path: "public/hero.png",
+        encoding: "binary",
+        blobDigest: digest,
+      }),
+    ).toEqual({ path: "public/hero.png", digest });
+    expect(rollbackFileOf({ path: "src/a.tsx", content: "x" })).toEqual({
+      path: "src/a.tsx",
+      content: "x",
+    });
   });
 });

@@ -8,7 +8,34 @@
  * all — and a file deleted here is work done since it, which is the part worth
  * seeing before agreeing to it.
  */
-export type ThemeRollbackFile = Readonly<{ path: string; content: string }>;
+export type ThemeRollbackFile =
+  | Readonly<{ path: string; content: string }>
+  /** A binary file, by the digest of its bytes, as a revision records it. */
+  | Readonly<{ path: string; digest: string }>;
+
+/**
+ * A workspace entry or a revision file, as the plan compares it. Both mark a
+ * binary file the same way and name its bytes by `blobDigest`.
+ */
+export function rollbackFileOf(
+  entry:
+    | Readonly<{ path: string; encoding: "binary"; blobDigest: string }>
+    | Readonly<{ path: string; encoding?: "utf8"; content: string }>,
+): ThemeRollbackFile {
+  return entry.encoding === "binary"
+    ? { path: entry.path, digest: entry.blobDigest }
+    : { path: entry.path, content: entry.content };
+}
+
+/**
+ * Whether rollback would leave the file as it is: source by its text, a
+ * binary file by its digest. A path that changed kind is rewritten.
+ */
+function sameFile(left: ThemeRollbackFile, right: ThemeRollbackFile): boolean {
+  if ("digest" in left)
+    return "digest" in right && left.digest === right.digest;
+  return "content" in right && left.content === right.content;
+}
 
 export type ThemeRollbackPlan = Readonly<{
   /** In the revision, absent now: rollback brings these back. */
@@ -47,21 +74,22 @@ export function resolveThemeRollbackPlan(args: {
   target: readonly ThemeRollbackFile[];
 }): ThemeRollbackPlan {
   const currentByPath = new Map(
-    args.current.map((file) => [file.path, file.content] as const),
+    args.current.map((file) => [file.path, file] as const),
   );
   const targetByPath = new Map(
-    args.target.map((file) => [file.path, file.content] as const),
+    args.target.map((file) => [file.path, file] as const),
   );
 
   const restored: string[] = [];
   const rewritten: string[] = [];
   const unchanged: string[] = [];
-  for (const [path, content] of targetByPath) {
-    if (!currentByPath.has(path)) {
+  for (const [path, file] of targetByPath) {
+    const current = currentByPath.get(path);
+    if (!current) {
       restored.push(path);
       continue;
     }
-    (currentByPath.get(path) === content ? unchanged : rewritten).push(path);
+    (sameFile(current, file) ? unchanged : rewritten).push(path);
   }
 
   const removed: string[] = [];
