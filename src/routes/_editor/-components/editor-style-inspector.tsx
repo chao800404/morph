@@ -66,6 +66,9 @@ import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-the
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import { analyzeTextPromotion } from "@/lib/storefront/editor/text-promotion";
+import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
+import { EditorCodeTextNotice } from "./editor-code-text-notice";
 import {
   normalizeThemeImageValue,
   withThemeImageSource,
@@ -211,6 +214,8 @@ type EditorStyleInspectorProps = {
    */
   contentStore?: "document" | "source";
   themeFiles?: StorefrontThemeFileDTO[];
+  /** The route being edited, to find the page that renders the section. */
+  routeSourcePath?: string | null;
   selection?: EditorSelectionDescriptor | null;
   /**
    * The preview's editable nodes, in document order. Used only to order the
@@ -671,6 +676,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   section,
   contentStore = "document",
   themeFiles,
+  routeSourcePath = null,
   selection,
   editableNodes,
   activeComputedStyleRevision = 0,
@@ -1222,6 +1228,50 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     hasDirectContentField ||
     hasSelectedContentField ||
     hasSelectedSpecializedContentField;
+  /**
+   * Fixed text the selected element renders, and whether it could become a
+   * field. Asked only where the answer is shown: an element with nothing
+   * editable, in a section the page stores.
+   */
+  const textPromotionTargetKey =
+    activeNodeId ?? sourceLocationKey(activeSourceLocation);
+  const textPromotion = useMemo(() => {
+    if (
+      view !== "content" ||
+      hasEditableContent ||
+      !isSelectedNode ||
+      contentStore !== "document" ||
+      !themeFiles ||
+      !componentPath ||
+      !sectionComponentPath ||
+      !textPromotionTargetKey
+    ) {
+      return null;
+    }
+    const analysis = analyzeTextPromotion({
+      files: themeFiles,
+      componentSourcePath: componentPath,
+      sectionSourcePath: sectionComponentPath,
+      targetKey: textPromotionTargetKey,
+      slotId: section.id,
+      routeSourcePath,
+    });
+    // Nothing to say about an element with no text of its own.
+    return analysis.status === "code-only" && analysis.text === undefined
+      ? null
+      : analysis;
+  }, [
+    view,
+    hasEditableContent,
+    isSelectedNode,
+    contentStore,
+    themeFiles,
+    componentPath,
+    sectionComponentPath,
+    textPromotionTargetKey,
+    section.id,
+    routeSourcePath,
+  ]);
   const targetElementMeta =
     resolveElementMeta(parsedMeta, targetElement) ??
     (activeSelectionIsSection === false
@@ -2309,7 +2359,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
-      {view === "content" && !hasEditableContent ? (
+      {view === "content" && !hasEditableContent && textPromotion ? (
+        <EditorCodeTextNotice analysis={textPromotion} />
+      ) : null}
+
+      {view === "content" && !hasEditableContent && !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">
             This element has no editable content.
