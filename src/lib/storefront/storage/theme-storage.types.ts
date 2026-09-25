@@ -179,6 +179,13 @@ export interface ThemeSourceStore {
     options: SaveThemeBinaryFileOptions,
   ): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }>;
 
+  /**
+   * A binary file's bytes, by digest. The blob store's read checks them
+   * against it, so what comes back is the file the workspace names or an
+   * error — never other bytes.
+   */
+  readBinaryFile(digest: string): Promise<Uint8Array>;
+
   getSourceGeneration(
     storefrontId: string,
     themeId: string,

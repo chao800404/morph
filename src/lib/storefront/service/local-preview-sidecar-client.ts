@@ -118,7 +118,23 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
   async start(
     input: StartPreviewServerInput,
   ): Promise<StartPreviewServerResult> {
-    const call = await this.call("start", input);
+    // A start is sent as JSON, where bytes do not survive and a loader does
+    // not exist. Until the sidecar takes binary files its own way, a Theme
+    // holding one is refused here, by name, rather than started without them.
+    const binary = input.files.filter((file) => "binary" in file);
+    if (binary.length > 0) {
+      return {
+        ok: false,
+        stage: "preview-sidecar",
+        errorMessage: `The local preview cannot serve binary files yet (${binary
+          .slice(0, 3)
+          .map((file) => file.path)
+          .join(", ")}${binary.length > 3 ? ", …" : ""}).`,
+        logs: [],
+      };
+    }
+    const { loadBinary: _loadBinary, ...serialisable } = input;
+    const call = await this.call("start", serialisable);
     if (call.ok) return call.result;
     return {
       ok: false,

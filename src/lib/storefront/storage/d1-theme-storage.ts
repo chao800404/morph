@@ -342,6 +342,20 @@ export async function saveThemeBinaryFile(
   );
 }
 
+/** See `ThemeSourceStore.readBinaryFile`; the blob store is a parameter for tests. */
+export async function readThemeBinaryFile(
+  blobStore: ThemeSourceBlobStore,
+  digest: string,
+): Promise<Uint8Array> {
+  const bytes = await blobStore.getImmutable(digest);
+  if (!bytes) {
+    throw new Error(
+      `SOURCE_BLOB_NOT_FOUND: Binary Theme file blob "${digest}" is missing.`,
+    );
+  }
+  return bytes;
+}
+
 export const d1ThemeSourceStore: ThemeSourceStore = {
   initStarterTheme: (...args) =>
     storefrontThemeFileDal.initStarterTheme(...args),
@@ -474,6 +488,14 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
       file,
       options,
     });
+  },
+  async readBinaryFile(digest) {
+    if (!runtimeThemeSourceBlobStore) {
+      throw new Error(
+        "R2_BUCKET_UNAVAILABLE: Binary Theme files require immutable R2 source blob storage.",
+      );
+    }
+    return readThemeBinaryFile(runtimeThemeSourceBlobStore, digest);
   },
   prepareSourceRevisionManifest: async (files) => {
     if (!runtimeThemeSourceBlobStore) {
