@@ -278,6 +278,7 @@ describe("field names", () => {
     expect(textFieldLabel("heading2")).toBe("Heading 2");
     expect(textFieldLabel("ctaLabel")).toBe("Cta label");
     expect(textFieldLabel("sub_title")).toBe("Sub title");
+    expect(textFieldLabel("e2eNote")).toBe("E2e note");
   });
 
   it("accepts identifiers only", () => {

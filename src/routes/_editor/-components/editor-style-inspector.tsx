@@ -69,6 +69,10 @@ import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source
 import { analyzeTextPromotion } from "@/lib/storefront/editor/text-promotion";
 import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 import { EditorCodeTextNotice } from "./editor-code-text-notice";
+import type {
+  TextPromotionOutcome,
+  TextPromotionRequest,
+} from "@/lib/storefront/editor/text-promotion-request";
 import {
   normalizeThemeImageValue,
   withThemeImageSource,
@@ -216,6 +220,13 @@ type EditorStyleInspectorProps = {
   themeFiles?: StorefrontThemeFileDTO[];
   /** The route being edited, to find the page that renders the section. */
   routeSourcePath?: string | null;
+  /** Makes fixed text a field; absent, the Content tab only describes it. */
+  onPromoteText?: (
+    request: TextPromotionRequest,
+  ) => Promise<TextPromotionOutcome>;
+  onCreatePageCopy?: (
+    sectionId: string,
+  ) => Promise<{ success: boolean; message?: string }>;
   selection?: EditorSelectionDescriptor | null;
   /**
    * The preview's editable nodes, in document order. Used only to order the
@@ -677,6 +688,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   contentStore = "document",
   themeFiles,
   routeSourcePath = null,
+  onPromoteText,
+  onCreatePageCopy,
   selection,
   editableNodes,
   activeComputedStyleRevision = 0,
@@ -1230,15 +1243,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     hasSelectedSpecializedContentField;
   /**
    * Fixed text the selected element renders, and whether it could become a
-   * field. Asked only where the answer is shown: an element with nothing
-   * editable, in a section the page stores.
+   * field. Asked only where the answer is shown: an element bound to no field
+   * of its own, in a section the page stores.
+   *
+   * Decided by the element, not by `hasEditableContent`: that answers for the
+   * whole section, so fixed text in a section that declares any field at all
+   * counted as editable, and the author was shown an empty field list.
    */
+  const selectedElementHasField =
+    Boolean(activeFieldKey) ||
+    descendantFields.length > 0 ||
+    hasSelectedContentField ||
+    hasSelectedSpecializedContentField;
   const textPromotionTargetKey =
     activeNodeId ?? sourceLocationKey(activeSourceLocation);
   const textPromotion = useMemo(() => {
     if (
       view !== "content" ||
-      hasEditableContent ||
+      selectedElementHasField ||
       !isSelectedNode ||
       contentStore !== "document" ||
       !themeFiles ||
@@ -1262,7 +1284,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : analysis;
   }, [
     view,
-    hasEditableContent,
+    selectedElementHasField,
     isSelectedNode,
     contentStore,
     themeFiles,
@@ -2359,8 +2381,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
-      {view === "content" && !hasEditableContent && textPromotion ? (
-        <EditorCodeTextNotice analysis={textPromotion} />
+      {view === "content" && textPromotion ? (
+        <EditorCodeTextNotice
+          key={`${componentPath}:${textPromotionTargetKey}`}
+          analysis={textPromotion}
+          sectionId={section.id}
+          componentSourcePath={componentPath ?? undefined}
+          targetKey={textPromotionTargetKey ?? undefined}
+          onPromote={disabled ? undefined : onPromoteText}
+          onCreatePageCopy={onCreatePageCopy}
+        />
       ) : null}
 
       {view === "content" && !hasEditableContent && !textPromotion ? (
