@@ -97,7 +97,10 @@ beforeEach(() => {
       version integer DEFAULT 1,
       created_at text NOT NULL,
       updated_at text NOT NULL,
-      deleted_at text
+      deleted_at text,
+      encoding text DEFAULT 'utf8' NOT NULL,
+      blob_digest text,
+      size_bytes integer
     );
     CREATE TABLE storefront_theme_revisions (
       id text PRIMARY KEY NOT NULL,

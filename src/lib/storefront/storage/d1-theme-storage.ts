@@ -5,11 +5,23 @@ import {
   buildFileTree,
   storefrontThemeFileDal,
 } from "@/lib/storefront/dal/storefront-theme-file.dal";
-import type {
-  StorefrontThemeFileDTO,
-  StorefrontThemeRevisionDTO,
-  ThemeSourceRevisionManifest,
+import {
+  isBinaryThemeFile,
+  type StorefrontThemeBinaryFileDTO,
+  type StorefrontThemeFileDTO,
+  type StorefrontThemeRevisionDTO,
+  type StorefrontThemeWorkspaceEntryDTO,
+  type ThemeSourceRevisionManifest,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import { calculateThemeSourceSha256 } from "./cloudflare-r2-theme-source-blob-store";
+import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  checkThemePublicFiles,
+  checkThemePublicPath,
+  describeThemePublicProblem,
+  isThemePublicPath,
+  themePublicBytesMatch,
+} from "@/lib/storefront/theme-public-files";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
 import {
@@ -20,6 +32,8 @@ import {
 import { persistThemeSourceRevisionBlobs } from "./theme-source-revision-manifest";
 import { deriveThemeSourceIndex } from "../theme-source-index";
 import type {
+  SaveThemeBinaryFileInput,
+  SaveThemeBinaryFileOptions,
   ThemeSourceBlobStore,
   ThemeRevisionStore,
   ThemeSourceStore,
@@ -34,18 +48,23 @@ const runtimeThemeSourceBlobStore = runtimeR2Bucket
 function nextWorkspaceFilesForRevision(
   storefrontId: string,
   themeId: string,
-  currentFiles: readonly StorefrontThemeFileDTO[],
+  currentFiles: readonly StorefrontThemeWorkspaceEntryDTO[],
   files: readonly {
     path: string;
     content: string;
     mimeType?: string;
   }[],
   deletions: readonly { path: string }[],
-): StorefrontThemeFileDTO[] {
-  const byPath = new Map(currentFiles.map((file) => [file.path, file]));
+): StorefrontThemeWorkspaceEntryDTO[] {
+  const byPath = new Map<string, StorefrontThemeWorkspaceEntryDTO>(
+    currentFiles.map((file) => [file.path, file]),
+  );
   for (const deletion of deletions) byPath.delete(deletion.path);
   for (const file of files) {
-    const previous = byPath.get(file.path);
+    const found = byPath.get(file.path);
+    // A source write cannot land on a binary file's path; the guard refuses
+    // it. Only a source file is carried over as the one being replaced.
+    const previous = found && !isBinaryThemeFile(found) ? found : undefined;
     byPath.set(file.path, {
       ...(previous ?? {
         id: `pending:${file.path}`,
@@ -76,7 +95,9 @@ async function manifestForWorkspaceMutation(args: {
       "R2_BUCKET_UNAVAILABLE: New Theme source revisions require immutable R2 source blob storage.",
     );
   }
-  const currentFiles = await storefrontThemeFileDal.listFiles(
+  // The whole workspace: a revision written from source files alone would
+  // leave every binary file out of it.
+  const currentFiles = await storefrontThemeFileDal.listWorkspaceEntries(
     args.storefrontId,
     args.themeId,
   );
@@ -185,11 +206,148 @@ export async function recordsForWorkspaceSave(args: {
   return { createRevision, sourceManifest, sourceIndex };
 }
 
+/**
+ * Stores a file served as it is from `public/`: bytes into the immutable
+ * blob store, then the workspace row that names them.
+ *
+ * Everything the contract says is checked here, on the server, against the
+ * workspace as it stands: the path, that the bytes are the format the name
+ * says, and the whole directory's limits with this file in it. The served
+ * type is the contract's, from the verified format, never a caller's.
+ *
+ * The bytes are written first. If the row's guards then refuse the write,
+ * they stay behind unreferenced — harmless, since they are immutable and
+ * content-addressed, and never collected on the strength of the workspace
+ * alone (see `theme-public-dir-plan`).
+ */
+export async function saveThemeBinaryFile(
+  blobStore: ThemeSourceBlobStore,
+  args: {
+    storefrontId: string;
+    themeId: string;
+    file: SaveThemeBinaryFileInput;
+    options: SaveThemeBinaryFileOptions;
+  },
+): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }> {
+  const { storefrontId, themeId, file, options } = args;
+  const entries = await storefrontThemeFileDal.listWorkspaceEntries(
+    storefrontId,
+    themeId,
+  );
+  const sourceFiles = entries.filter(
+    (entry): entry is StorefrontThemeFileDTO => !isBinaryThemeFile(entry),
+  );
+  const routePaths = buildThemeRouteRegistry(sourceFiles).routes.map(
+    (route) => route.path,
+  );
+
+  const pathCheck = checkThemePublicPath(file.path, routePaths);
+  if (!pathCheck.ok) {
+    throw new Error(
+      `THEME_PUBLIC_FILE_REFUSED: ${file.path}: ${describeThemePublicProblem(pathCheck.reason)}`,
+    );
+  }
+  if (!themePublicBytesMatch(file.path, file.bytes)) {
+    throw new Error(
+      `THEME_PUBLIC_FILE_REFUSED: ${file.path}: The file's content is not the format its name says.`,
+    );
+  }
+  const setCheck = checkThemePublicFiles(
+    [
+      ...entries
+        .filter(
+          (entry) =>
+            isBinaryThemeFile(entry) &&
+            isThemePublicPath(entry.path) &&
+            entry.path !== file.path,
+        )
+        .map((entry) => ({
+          path: entry.path,
+          size: isBinaryThemeFile(entry) ? entry.sizeBytes : 0,
+        })),
+      { path: file.path, size: file.bytes.byteLength },
+    ],
+    routePaths,
+  );
+  if (!setCheck.ok) {
+    throw new Error(
+      `THEME_PUBLIC_FILE_REFUSED: ${setCheck.problems
+        .map(
+          (problem) =>
+            `${problem.path}: ${describeThemePublicProblem(problem.reason)}`,
+        )
+        .join(" ")}`,
+    );
+  }
+
+  const blobDigest = calculateThemeSourceSha256(file.bytes);
+  const sizeBytes = file.bytes.byteLength;
+  await blobStore.putImmutable({
+    digest: blobDigest,
+    content: file.bytes,
+    mimeType: pathCheck.mimeType,
+  });
+
+  const now = new Date().toISOString();
+  const stored: StorefrontThemeBinaryFileDTO = {
+    id: `pending:${file.path}`,
+    storefrontId,
+    themeId,
+    path: file.path,
+    encoding: "binary",
+    blobDigest,
+    sizeBytes,
+    mimeType: pathCheck.mimeType,
+    isEntry: false,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const createRevision = await shouldRecordRevision({
+    storefrontId,
+    themeId,
+    reason: "save",
+  });
+  const sourceManifest = createRevision
+    ? await persistThemeSourceRevisionBlobs(
+        [...entries.filter((entry) => entry.path !== file.path), stored],
+        blobStore,
+      )
+    : undefined;
+
+  return storefrontThemeFileDal.saveBinaryFile(
+    storefrontId,
+    themeId,
+    {
+      path: file.path,
+      blobDigest,
+      sizeBytes,
+      mimeType: pathCheck.mimeType,
+      expectedFileId: file.expectedFileId,
+      expectedVersion: file.expectedVersion,
+      expectMissing: file.expectMissing,
+    },
+    {
+      expectedSourceGeneration: options.expectedSourceGeneration,
+      createRevision,
+      revisionMessage: `Upload ${file.path}`,
+      createdBy: options.createdBy,
+      sourceManifest,
+      sourceIndex: deriveThemeSourceIndex({
+        files: sourceFiles,
+        scope: "workspace",
+        sourceGeneration: options.expectedSourceGeneration + 1,
+      }),
+    },
+  );
+}
+
 export const d1ThemeSourceStore: ThemeSourceStore = {
   initStarterTheme: (...args) =>
     storefrontThemeFileDal.initStarterTheme(...args),
   listFiles: (...args) => storefrontThemeFileDal.listFiles(...args),
-  getWorkspaceSnapshot: (...args) => storefrontThemeFileDal.listFiles(...args),
+  getWorkspaceSnapshot: (...args) =>
+    storefrontThemeFileDal.listWorkspaceEntries(...args),
   getFileByPath: (...args) => storefrontThemeFileDal.getFileByPath(...args),
   async saveFile(storefrontId, themeId, path, content, mimeType, options) {
     const createRevision = await shouldRecordRevision({
@@ -304,6 +462,19 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
       },
     );
   },
+  async saveBinaryFile(storefrontId, themeId, file, options) {
+    if (!runtimeThemeSourceBlobStore) {
+      throw new Error(
+        "R2_BUCKET_UNAVAILABLE: Binary Theme files require immutable R2 source blob storage.",
+      );
+    }
+    return saveThemeBinaryFile(runtimeThemeSourceBlobStore, {
+      storefrontId,
+      themeId,
+      file,
+      options,
+    });
+  },
   prepareSourceRevisionManifest: async (files) => {
     if (!runtimeThemeSourceBlobStore) {
       throw new Error(
@@ -379,6 +550,25 @@ async function materializeR2SourceRevision(
         `SOURCE_BLOB_SIZE_MISMATCH: Immutable source blob "${file.digest}" for "${file.path}" has size ${bytes.byteLength}, expected ${file.sizeBytes}.`,
       );
     }
+    if (file.encoding === "binary") {
+      // Carried by reference, as the workspace holds it. The bytes are
+      // checked against the digest here, so a revision can only name bytes
+      // that are actually the file it recorded.
+      if (calculateThemeSourceSha256(bytes) !== file.digest) {
+        throw new Error(
+          `SOURCE_BLOB_DIGEST_MISMATCH: Immutable source blob "${file.digest}" for "${file.path}" does not hash to its digest.`,
+        );
+      }
+      snapshot.push({
+        path: file.path,
+        encoding: "binary",
+        blobDigest: file.digest,
+        sizeBytes: file.sizeBytes,
+        mimeType: file.mimeType,
+        isEntry: file.isEntry,
+      });
+      continue;
+    }
     let content: string;
     try {
       content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -435,7 +625,7 @@ export function createD1ThemeRevisionStore(
         blobStore,
       );
       const sourceIndex = deriveThemeSourceIndex({
-        files,
+        files: files.filter((file) => !isBinaryThemeFile(file)),
         scope: "revision",
         sourceManifest,
       });
@@ -525,7 +715,7 @@ export function createD1ThemeRevisionStore(
           sourceManifest: target.sourceManifest ?? undefined,
           sourceSnapshot: target.snapshot,
           sourceIndex: deriveThemeSourceIndex({
-            files: target.snapshot,
+            files: target.snapshot.filter((file) => !isBinaryThemeFile(file)),
             scope: "workspace",
             sourceGeneration: rollbackOptions.expectedSourceGeneration + 1,
             sourceManifest: target.sourceManifest,

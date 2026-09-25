@@ -43,6 +43,7 @@ import {
   previewThemeManifestMigrationInputSchema,
 } from "@/lib/validations/storefront-theme-file";
 import { createServerFn } from "@tanstack/react-start";
+import { isBinaryThemeFile } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 function rejectLegacyManifestDeletion() {
@@ -288,10 +289,21 @@ export const applyThemeManifestMigrationServerFn = createServerFn({
       // Blobs are immutable and content-addressed. They are written before
       // the D1 batch so the newly-created source revision can always restore
       // the exact pre-migration workspace, including morph.theme.json.
+      // The plan reads source files only. The revision it writes is the way
+      // back to this workspace, so binary files go into it as well; one
+      // saved after the plan was read moves the source generation, which
+      // the migration's own guard then refuses.
+      const binaryFiles = (
+        await themeSourceStore.getWorkspaceSnapshot(
+          data.storefrontId,
+          data.themeId,
+        )
+      ).filter(isBinaryThemeFile);
       const sourceManifest =
-        await themeSourceStore.prepareSourceRevisionManifest(
-          readyPlan.sourceFilesBefore,
-        );
+        await themeSourceStore.prepareSourceRevisionManifest([
+          ...readyPlan.sourceFilesBefore,
+          ...binaryFiles,
+        ]);
       const sourceIndexBefore = sourceIndexForLegacyManifestRevision({
         files: readyPlan.sourceFilesBefore,
         sourceManifest,
@@ -975,7 +987,8 @@ export const previewStorefrontThemeRollback = createServerFn({ method: "POST" })
       }
       const plan = resolveThemeRollbackPlan({
         current,
-        target: target.snapshot,
+        // The plan compares source text; binary files carry none.
+        target: target.snapshot.filter((file) => !isBinaryThemeFile(file)),
       });
       const routeDocuments = await themeRevisionStore.planRouteDocumentRollback(
         data.storefrontId,

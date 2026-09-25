@@ -28,6 +28,8 @@ vi.mock("@/lib/storefront/dal/storefront-theme-file.dal", () => ({
   buildFileTree: vi.fn(() => []),
   storefrontThemeFileDal: {
     listFiles: mocks.listFiles,
+    // These workspaces hold source only, so the whole workspace is its source.
+    listWorkspaceEntries: (...args: unknown[]) => mocks.listFiles(...args),
     getLatestRevisionAt: mocks.getLatestRevisionAt,
     deleteFile: mocks.deleteFile,
     saveFile: mocks.saveFile,

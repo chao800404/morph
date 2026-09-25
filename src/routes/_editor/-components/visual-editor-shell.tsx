@@ -54,9 +54,10 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildPreviewDTO,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import type {
-  StorefrontThemeFileDTO,
-  StorefrontThemeFileTreeNode,
+import {
+  isBinaryThemeFile,
+  type StorefrontThemeFileDTO,
+  type StorefrontThemeFileTreeNode,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { dragAutoScrollStep } from "@/lib/storefront/editor/drag-autoscroll";
@@ -3074,6 +3075,8 @@ export function VisualEditorShell({
     if (!latestPublishedRevision?.snapshot?.length) return null;
     const map = new Map<string, string>();
     for (const item of latestPublishedRevision.snapshot) {
+      // Compared as source text; a binary file has none to compare.
+      if (isBinaryThemeFile(item)) continue;
       map.set(item.path, item.content);
     }
     return map;

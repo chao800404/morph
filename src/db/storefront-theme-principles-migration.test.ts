@@ -38,7 +38,10 @@ describe("starter Principles source migration", () => {
         version integer NOT NULL,
         created_at text NOT NULL,
         updated_at text NOT NULL,
-        deleted_at text
+        deleted_at text,
+        encoding text DEFAULT 'utf8' NOT NULL,
+        blob_digest text,
+        size_bytes integer
       );
       CREATE UNIQUE INDEX storefront_theme_files_theme_path_unique
         ON storefront_theme_files (theme_id, path)

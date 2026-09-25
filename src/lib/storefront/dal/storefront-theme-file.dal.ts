@@ -5,11 +5,14 @@ import {
   storefrontThemeRevisions,
   storefrontThemes,
 } from "@/db/storefront.schema";
-import type {
-  StorefrontThemeFileDTO,
-  StorefrontThemeFileTreeNode,
-  ThemeSourceRevisionManifest,
-  StorefrontThemeRevisionDTO,
+import {
+  isBinaryThemeFile,
+  type StorefrontThemeBinaryFileDTO,
+  type StorefrontThemeWorkspaceEntryDTO,
+  type StorefrontThemeFileDTO,
+  type StorefrontThemeFileTreeNode,
+  type ThemeSourceRevisionManifest,
+  type StorefrontThemeRevisionDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { starterThemeWorkspaceFiles } from "@/lib/storefront/starter-theme-files";
 import { deriveThemeSourceIndex } from "../theme-source-index";
@@ -116,6 +119,7 @@ export function prepareThemeFileUpdate(args: {
           AND path = ?3
           AND id = ?4
           AND version = ?5
+          AND encoding = 'utf8'
           AND deleted_at IS NULL
       ) THEN 1 ELSE json('') END AS ok
     `,
@@ -138,6 +142,7 @@ export function prepareThemeFileUpdate(args: {
         AND path = ?6
         AND id = ?7
         AND version = ?8
+        AND encoding = 'utf8'
         AND deleted_at IS NULL
       RETURNING id, storefront_id, theme_id, path, content, mime_type, is_entry, version, created_at, updated_at
     `,
@@ -290,6 +295,17 @@ export function prepareRevisionInsert(args: {
   const sourceIndexJson = args.sourceIndex
     ? JSON.stringify(args.sourceIndex)
     : null;
+  // Only a manifest can name a binary file's bytes. A revision written
+  // without one while the workspace holds any would silently leave them out,
+  // so the value is made malformed JSON instead, which fails the whole batch.
+  const withoutBinaryFiles = (snapshot: string) =>
+    args.sourceManifest
+      ? snapshot
+      : `CASE WHEN EXISTS (
+          SELECT 1 FROM storefront_theme_files
+          WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
+            AND encoding = 'binary'
+        ) THEN json('') ELSE ${snapshot} END`;
   const statement =
     args.sourceManifest || args.sourceIndex
       ? `
@@ -305,7 +321,7 @@ export function prepareRevisionInsert(args: {
         WHERE theme_id = ?3 AND deleted_at IS NULL
       ), 1),
       ?4, ?5,
-      json('[]'),
+      ${withoutBinaryFiles("json('[]')")},
       ?6, ?7, ?8, ?9, ?10, ?10
   `
       : `
@@ -321,7 +337,7 @@ export function prepareRevisionInsert(args: {
         WHERE theme_id = ?3 AND deleted_at IS NULL
       ), 1),
       ?4, ?5,
-      COALESCE((
+      ${withoutBinaryFiles(`COALESCE((
         SELECT json_group_array(
           json_object(
             'path', path,
@@ -334,9 +350,10 @@ export function prepareRevisionInsert(args: {
           SELECT path, content, mime_type, is_entry
           FROM storefront_theme_files
           WHERE storefront_id = ?2 AND theme_id = ?3 AND deleted_at IS NULL
+            AND encoding = 'utf8'
           ORDER BY path
         )
-      ), json('[]')),
+      ), json('[]'))`)},
       ?6, ?7, ?8, ?8
   `;
 
@@ -555,6 +572,8 @@ export const storefrontThemeFileDal = {
             eq(storefrontThemeFiles.storefrontId, storefrontId),
             eq(storefrontThemeFiles.themeId, themeId),
             isNull(storefrontThemeFiles.deletedAt),
+            // Source readers; binary files are listed by `listWorkspaceEntries`.
+            eq(storefrontThemeFiles.encoding, "utf8"),
             inArray(
               storefrontThemeFiles.path,
               unique.slice(index, index + batchSize),
@@ -590,6 +609,8 @@ export const storefrontThemeFileDal = {
           eq(storefrontThemeFiles.storefrontId, storefrontId),
           eq(storefrontThemeFiles.themeId, themeId),
           isNull(storefrontThemeFiles.deletedAt),
+          // Source readers; binary files are listed by `listWorkspaceEntries`.
+          eq(storefrontThemeFiles.encoding, "utf8"),
         ),
       )
       .orderBy(asc(storefrontThemeFiles.path));
@@ -606,6 +627,230 @@ export const storefrontThemeFileDal = {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
+  },
+
+  /**
+   * Every file the workspace holds, source and binary alike.
+   *
+   * For what must see the whole workspace — a revision, a rollback, a build.
+   * A binary entry carries its blob reference and never `content`: the empty
+   * string the row keeps there is not the file.
+   */
+  async listWorkspaceEntries(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<StorefrontThemeWorkspaceEntryDTO[]> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return [];
+
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(storefrontThemeFiles)
+      .where(
+        and(
+          eq(storefrontThemeFiles.storefrontId, storefrontId),
+          eq(storefrontThemeFiles.themeId, themeId),
+          isNull(storefrontThemeFiles.deletedAt),
+        ),
+      )
+      .orderBy(asc(storefrontThemeFiles.path));
+
+    return rows.map((row): StorefrontThemeWorkspaceEntryDTO => {
+      const common = {
+        id: row.id,
+        storefrontId: row.storefrontId,
+        themeId: row.themeId,
+        path: row.path,
+        mimeType: row.mimeType ?? "text/plain",
+        isEntry: Boolean(row.isEntry),
+        version: row.version ?? 1,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
+      if (row.encoding === "binary") {
+        if (!row.blobDigest || row.sizeBytes === null) {
+          throw new Error(
+            `CORRUPT_BINARY_THEME_FILE: "${row.path}" is binary but has no blob reference.`,
+          );
+        }
+        return {
+          ...common,
+          encoding: "binary",
+          blobDigest: row.blobDigest,
+          sizeBytes: row.sizeBytes,
+        };
+      }
+      return { ...common, content: row.content };
+    });
+  },
+
+  /**
+   * Adds or replaces one binary file, whose bytes are already in the blob
+   * store under `blobDigest`.
+   *
+   * Held by the same guards as a source write — the Theme's source
+   * generation, and the file's id and version or its absence — and written
+   * with the same revision and generation steps, in one batch. A new file
+   * requires that nothing, source or binary, holds the path; a replacement
+   * requires that the row is binary, so neither kind can overwrite the other.
+   */
+  async saveBinaryFile(
+    storefrontId: string,
+    themeId: string,
+    file: {
+      path: string;
+      blobDigest: string;
+      sizeBytes: number;
+      mimeType: string;
+      expectedFileId?: string;
+      expectedVersion?: number;
+      expectMissing?: boolean;
+    },
+    options: {
+      expectedSourceGeneration: number;
+      createRevision?: boolean;
+      revisionMessage?: string;
+      createdBy?: string;
+      sourceManifest?: ThemeSourceRevisionManifest;
+      sourceIndex?: ThemeSourceIndex;
+    },
+  ): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }> {
+    const expectsExisting =
+      Boolean(file.expectedFileId) && file.expectedVersion !== undefined;
+    if (Boolean(file.expectMissing) === expectsExisting) {
+      throw new Error(
+        `INVALID_WRITE_PRECONDITION: "${file.path}" requires either expectedFileId+expectedVersion or expectMissing=true.`,
+      );
+    }
+    const now = new Date().toISOString();
+    const fileId = file.expectedFileId ?? crypto.randomUUID();
+    const statements = [
+      prepareThemeOwnershipGuard(
+        storefrontId,
+        themeId,
+        options.expectedSourceGeneration,
+      ),
+      expectsExisting
+        ? env.DATABASE.prepare(
+            `SELECT CASE WHEN EXISTS (
+               SELECT 1 FROM storefront_theme_files
+               WHERE storefront_id = ?1 AND theme_id = ?2 AND path = ?3
+                 AND id = ?4 AND version = ?5 AND encoding = 'binary'
+                 AND deleted_at IS NULL
+             ) THEN 1 ELSE json('') END AS ok`,
+          ).bind(
+            storefrontId,
+            themeId,
+            file.path,
+            fileId,
+            file.expectedVersion!,
+          )
+        : env.DATABASE.prepare(
+            `SELECT CASE WHEN NOT EXISTS (
+               SELECT 1 FROM storefront_theme_files
+               WHERE storefront_id = ?1 AND theme_id = ?2 AND path = ?3
+                 AND deleted_at IS NULL
+             ) THEN 1 ELSE json('') END AS ok`,
+          ).bind(storefrontId, themeId, file.path),
+      expectsExisting
+        ? env.DATABASE.prepare(
+            `UPDATE storefront_theme_files
+             SET blob_digest = ?1, size_bytes = ?2, mime_type = ?3,
+                 version = version + 1, updated_at = ?4
+             WHERE storefront_id = ?5 AND theme_id = ?6 AND path = ?7
+               AND id = ?8 AND version = ?9 AND encoding = 'binary'
+               AND deleted_at IS NULL`,
+          ).bind(
+            file.blobDigest,
+            file.sizeBytes,
+            file.mimeType,
+            now,
+            storefrontId,
+            themeId,
+            file.path,
+            fileId,
+            file.expectedVersion!,
+          )
+        : env.DATABASE.prepare(
+            `INSERT INTO storefront_theme_files (
+               id, storefront_id, theme_id, path, content, mime_type,
+               is_entry, version, created_at, updated_at,
+               encoding, blob_digest, size_bytes
+             )
+             VALUES (?1, ?2, ?3, ?4, '', ?5, 0, 1, ?6, ?6, 'binary', ?7, ?8)`,
+          ).bind(
+            fileId,
+            storefrontId,
+            themeId,
+            file.path,
+            file.mimeType,
+            now,
+            file.blobDigest,
+            file.sizeBytes,
+          ),
+    ];
+    if (options.createRevision) {
+      statements.push(
+        prepareRevisionInsert({
+          storefrontId,
+          themeId,
+          revisionId: crypto.randomUUID(),
+          message: options.revisionMessage ?? `Upload ${file.path}`,
+          source: "manual",
+          createdBy: options.createdBy,
+          now,
+          sourceGeneration: options.expectedSourceGeneration + 1,
+          sourceManifest: options.sourceManifest,
+          sourceIndex: options.sourceIndex,
+        }),
+      );
+    }
+    statements.push(
+      prepareIncrementThemeSourceGeneration(
+        storefrontId,
+        themeId,
+        now,
+        options.sourceIndex,
+      ),
+    );
+
+    try {
+      await env.DATABASE.batch(statements);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("malformed JSON") ||
+        message.includes("constraint")
+      ) {
+        const current = await this.getSourceGeneration(storefrontId, themeId);
+        if (current !== null && current !== options.expectedSourceGeneration) {
+          throw new Error(
+            `CONFLICT_SOURCE_GENERATION_MISMATCH: Server source generation is ${current}, but expected ${options.expectedSourceGeneration}.`,
+          );
+        }
+        throw new Error(
+          `CONFLICT_VERSION_MISMATCH: "${file.path}" changed, or its path is taken. ${message}`,
+        );
+      }
+      throw error;
+    }
+
+    return {
+      id: fileId,
+      storefrontId,
+      themeId,
+      path: file.path,
+      encoding: "binary",
+      blobDigest: file.blobDigest,
+      sizeBytes: file.sizeBytes,
+      mimeType: file.mimeType,
+      isEntry: false,
+      version: expectsExisting ? file.expectedVersion! + 1 : 1,
+      createdAt: now,
+      updatedAt: now,
+      sourceGeneration: options.expectedSourceGeneration + 1,
+    };
   },
 
   async getFileByPath(
@@ -626,6 +871,8 @@ export const storefrontThemeFileDal = {
           eq(storefrontThemeFiles.themeId, themeId),
           eq(storefrontThemeFiles.path, path),
           isNull(storefrontThemeFiles.deletedAt),
+          // Source readers; binary files are listed by `listWorkspaceEntries`.
+          eq(storefrontThemeFiles.encoding, "utf8"),
         ),
       )
       .limit(1);
@@ -1621,24 +1868,31 @@ export const storefrontThemeFileDal = {
     });
 
     for (const file of snapshot) {
+      // A binary file comes back as the reference it was: its bytes never
+      // left the immutable blob store, and the revision named them by digest.
+      const binary = isBinaryThemeFile(file) ? file : null;
       statements.push(
         env.DATABASE.prepare(
           `
           INSERT INTO storefront_theme_files (
             id, storefront_id, theme_id, path, content, mime_type,
-            is_entry, version, created_at, updated_at
+            is_entry, version, created_at, updated_at,
+            encoding, blob_digest, size_bytes
           )
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8, ?9, ?10, ?11)
         `,
         ).bind(
           crypto.randomUUID(),
           storefrontId,
           themeId,
           file.path,
-          file.content,
+          isBinaryThemeFile(file) ? "" : file.content,
           file.mimeType,
           file.isEntry ? 1 : 0,
           now,
+          binary ? "binary" : "utf8",
+          binary ? binary.blobDigest : null,
+          binary ? binary.sizeBytes : null,
         ),
       );
     }

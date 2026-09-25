@@ -281,6 +281,7 @@ async function listThemeSourceFiles(storefrontId: string, themeId: string) {
         eq(storefrontThemeFiles.storefrontId, storefrontId),
         eq(storefrontThemeFiles.themeId, themeId),
         isNull(storefrontThemeFiles.deletedAt),
+        eq(storefrontThemeFiles.encoding, "utf8"),
       ),
     )
     .orderBy(asc(storefrontThemeFiles.path));

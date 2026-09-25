@@ -457,8 +457,24 @@ export const storefrontThemeFiles = sqliteTable(
       .notNull()
       .references(() => storefrontThemes.id, { onDelete: "cascade" }),
     path: text("path").notNull(), // e.g. "src/components/Hero.tsx", "src/styles/global.css"
+    /**
+     * Source text. For a binary file this is always the empty string, kept
+     * only because the column is NOT NULL: its bytes live in the immutable
+     * blob store under `blobDigest`, and nothing may read them from here.
+     */
     content: text("content").notNull(),
     mimeType: text("mime_type").default("text/plain"),
+    /**
+     * `utf8` source, or `binary` bytes held in the blob store. A trigger in
+     * the migration refuses a row whose columns disagree with it.
+     */
+    encoding: text("encoding", { enum: ["utf8", "binary"] })
+      .notNull()
+      .default("utf8"),
+    /** SHA-256 of a binary file's bytes; null for source text. */
+    blobDigest: text("blob_digest"),
+    /** Byte length of a binary file; null for source text. */
+    sizeBytes: integer("size_bytes"),
     isEntry: integer("is_entry", { mode: "boolean" }).default(false),
     version: integer("version").notNull().default(1),
     ...timestamps,
