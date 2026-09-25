@@ -35,6 +35,8 @@ type EditorAssistantPanelProps = {
   sharedLayoutPaths?: ReadonlySet<string>;
   /** Section library source, including what its entries re-export. */
   sectionTemplatePaths?: ReadonlySet<string>;
+  /** The route being edited. */
+  routeSourcePath?: string | null;
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   style?: React.CSSProperties;
@@ -197,6 +199,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   editableNodes,
   sharedLayoutPaths,
   sectionTemplatePaths,
+  routeSourcePath,
   activeComputedStyleRevision,
   activeViewport,
   onUpdateThemeFileStyle,
@@ -457,6 +460,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               section={selectedSection}
               contentStore={contentStore}
               themeFiles={themeFiles}
+              routeSourcePath={routeSourcePath}
               selection={selection}
               editableNodes={editableNodes}
               activeComputedStyleRevision={activeComputedStyleRevision}

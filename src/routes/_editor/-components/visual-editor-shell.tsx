@@ -8196,6 +8196,7 @@ export function VisualEditorShell({
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}
+          routeSourcePath={activeThemeRoute?.sourcePath ?? null}
           // Same nodes the sections tree uses, so the Content tab can fall back
           // to document order when a component declares no `contentFields`.
           editableNodes={
