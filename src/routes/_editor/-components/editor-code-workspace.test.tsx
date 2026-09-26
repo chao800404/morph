@@ -1083,7 +1083,14 @@ describe("EditorCodeWorkspace binary files", () => {
     { name: "Hero.tsx", path: file.path, isDirectory: false },
   ];
 
-  function renderWithBinary() {
+  // Hero.tsx names the image's URL, so a move or a deletion of it has a
+  // known reference to show.
+  const naming = {
+    ...file,
+    content: `export default () => <img src="/images/hero.png" alt="" />;\n`,
+  };
+
+  function renderWithBinary(sourceFiles: StorefrontThemeFileDTO[] = [file]) {
     const client = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -1095,7 +1102,7 @@ describe("EditorCodeWorkspace binary files", () => {
         <EditorCodeWorkspace
           storefrontId="store-1"
           themeId="theme-1"
-          files={[file]}
+          files={sourceFiles}
           binaryFiles={[hero]}
           tree={tree}
         />
@@ -1123,44 +1130,230 @@ describe("EditorCodeWorkspace binary files", () => {
     expect(screen.queryByLabelText("Code editor")).toBeNull();
   });
 
-  it("offers replace and delete, and nothing that would move it", async () => {
+  it("keeps a row's open menu through a re-render of the workspace", async () => {
+    // A row component declared inside the workspace was a new component on
+    // every render, so React remounted the row and its open menu closed —
+    // in a real browser, whenever a preview restart re-rendered the editor.
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const element = (sourceFiles: StorefrontThemeFileDTO[]) => (
+      <QueryClientProvider client={client}>
+        <EditorCodeWorkspace
+          storefrontId="store-1"
+          themeId="theme-1"
+          files={sourceFiles}
+          binaryFiles={[hero]}
+          tree={tree}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(element([file]));
+
+    fireEvent.contextMenu(screen.getByText("hero.png"));
+    expect(
+      await screen.findByRole("menuitem", { name: /Replace…/ }),
+    ).toBeTruthy();
+
+    view.rerender(element([{ ...file }]));
+
+    expect(screen.getByRole("menuitem", { name: /Replace…/ })).toBeTruthy();
+  });
+
+  it("offers copy, rename, replace and delete — not duplicate", async () => {
     renderWithBinary();
 
     fireEvent.contextMenu(screen.getByText("hero.png"));
 
-    expect(
-      await screen.findByRole("menuitem", { name: /Replace…/ }),
-    ).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: /Delete/ })).toBeTruthy();
-    for (const name of ["Rename", "Duplicate", "Copy"]) {
-      expect(screen.queryByRole("menuitem", { name })).toBeNull();
+    for (const name of [/^Copy$/, /^Rename$/, /Replace…/, /^Delete$/]) {
+      expect(await screen.findByRole("menuitem", { name })).toBeTruthy();
     }
+    expect(screen.queryByRole("menuitem", { name: "Duplicate" })).toBeNull();
   });
 
-  it("refuses to delete a folder that holds a binary file, before asking", async () => {
-    renderWithBinary();
+  it("deletes a folder with its binary files in one batch, having shown what names them", async () => {
+    vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { sourceGeneration: 8, files: [] },
+    } as never);
+    renderWithBinary([naming]);
 
     fireEvent.contextMenu(screen.getByText("public"));
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Delete Folder" }),
     );
 
-    expect(toast.error).toHaveBeenCalledWith(
-      "This includes 1 binary file, which cannot be deleted in the Code workspace yet.",
-    );
-    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    // Before anything is written: the URL that stops working, and where.
+    const review = await screen.findByText("/images/hero.png (removed)");
+    expect(review).toBeTruthy();
+    expect(
+      document.querySelector('[data-public-url-reference="known"]')
+        ?.textContent,
+    ).toContain("src/components/Hero.tsx:1");
     expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+    );
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+      .calls[0]![0] as { data: { deletions: unknown[] } };
+    expect(payload.data.deletions).toEqual([
+      {
+        path: hero.path,
+        expectedFileId: hero.id,
+        expectedVersion: hero.version,
+      },
+    ]);
   });
 
-  it("refuses to copy a folder that holds a binary file", async () => {
+  it("pastes a copied folder's binary files as references to their source", async () => {
+    vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: { sourceGeneration: 8, files: [] },
+    } as never);
     renderWithBinary();
 
     fireEvent.contextMenu(screen.getByText("images"));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy" }));
+    fireEvent.contextMenu(screen.getByText("public"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Paste" }));
 
-    expect(toast.error).toHaveBeenCalledWith(
-      "This includes 1 binary file, which cannot be copied in the Code workspace yet.",
+    await waitFor(() =>
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
     );
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+      .calls[0]![0] as {
+      data: { binaryCopies: Array<Record<string, unknown>> };
+    };
+    expect(payload.data.binaryCopies).toEqual([
+      expect.objectContaining({
+        from: hero.path,
+        expectedFileId: hero.id,
+        expectedVersion: hero.version,
+      }),
+    ]);
+    const to = payload.data.binaryCopies[0]!.to as string;
+    expect(to.startsWith("public/")).toBe(true);
+    expect(to.endsWith("/hero.png")).toBe(true);
+    // No digest travels from the client: the server reads the source's.
+    expect(payload.data.binaryCopies[0]).not.toHaveProperty("blobDigest");
+  });
+
+  describe("moving a binary file", () => {
+    const rename = async (to: string) => {
+      fireEvent.contextMenu(screen.getByText("hero.png"));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+      const input = screen.getByRole("textbox", {
+        name: `Rename ${hero.path}`,
+      });
+      fireEvent.change(input, { target: { value: to } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    };
+
+    beforeEach(() => {
+      vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: { sourceGeneration: 8, files: [] },
+      } as never);
+    });
+
+    it("is held for review, with what it breaks, before anything is written", async () => {
+      renderWithBinary([naming]);
+      await rename("banner.png");
+
+      const dialog = await waitFor(() => {
+        const found = document.querySelector("[data-binary-move-review]");
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      expect(dialog.textContent).toContain(
+        "/images/hero.png → /images/banner.png",
+      );
+      expect(dialog.textContent).toContain("src/components/Hero.tsx:1");
+      expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+
+      // Known references: moving needs saying so first.
+      const move = screen.getByRole("button", { name: "Move" });
+      expect((move as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(
+        screen.getByRole("checkbox", {
+          name: "I understand these references will break",
+        }),
+      );
+      expect((move as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(move);
+
+      await waitFor(() =>
+        expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+      );
+      const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+        .calls[0]![0] as {
+        data: { binaryCopies: unknown[]; deletions: unknown[] };
+      };
+      expect(payload.data.binaryCopies).toEqual([
+        {
+          from: hero.path,
+          to: "public/images/banner.png",
+          expectedFileId: hero.id,
+          expectedVersion: hero.version,
+        },
+      ]);
+      expect(payload.data.deletions).toEqual([
+        {
+          path: hero.path,
+          expectedFileId: hero.id,
+          expectedVersion: hero.version,
+        },
+      ]);
+    });
+
+    it("copies instead, keeping the old URL, as the safer choice", async () => {
+      renderWithBinary([naming]);
+      await rename("banner.png");
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Copy, keep old URLs" }),
+      );
+
+      await waitFor(() =>
+        expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+      );
+      const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+        .calls[0]![0] as {
+        data: { binaryCopies: unknown[]; deletions: unknown[] };
+      };
+      expect(payload.data.binaryCopies).toHaveLength(1);
+      expect(payload.data.deletions).toEqual([]);
+    });
+
+    it("never claims there are no references, even when none were found", async () => {
+      renderWithBinary();
+      await rename("banner.png");
+
+      const dialog = await waitFor(() => {
+        const found = document.querySelector("[data-binary-move-review]");
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      expect(dialog.textContent).toContain(
+        "No URL written out in full was found in Theme source.",
+      );
+      expect(dialog.textContent).toContain(
+        "URLs built at runtime and page content are not checked",
+      );
+      // Nothing known to break: no acknowledgement to ask for.
+      expect(
+        (screen.getByRole("button", { name: "Move" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+    });
   });
 
   it("asks before deleting a binary file, then deletes it by its own id and version", async () => {
@@ -1169,12 +1362,10 @@ describe("EditorCodeWorkspace binary files", () => {
       message: "ok",
       data: { path: hero.path, sourceGeneration: 8 },
     } as never);
-    useThemeWorkspaceStore
-      .getState()
-      .acceptRemoteGeneration(7, {
-        storefrontId: "store-1",
-        themeId: "theme-1",
-      });
+    useThemeWorkspaceStore.getState().acceptRemoteGeneration(7, {
+      storefrontId: "store-1",
+      themeId: "theme-1",
+    });
     renderWithBinary();
 
     fireEvent.click(screen.getByText("hero.png"));

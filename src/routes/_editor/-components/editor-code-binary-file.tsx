@@ -102,7 +102,8 @@ export function EditorCodeBinaryFile({
           </div>
         ) : null}
         <p className="mt-3 text-muted-foreground">
-          It cannot be renamed, moved or copied in the Code workspace yet.
+          Rename, move or copy it from its Explorer menu. A move shows the URLs
+          it changes, and what names them, before anything is written.
         </p>
       </div>
     </div>

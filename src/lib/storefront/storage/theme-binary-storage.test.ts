@@ -672,6 +672,145 @@ describe("previewing a rollback over binary files", () => {
   });
 });
 
+describe("moving and copying binary files in a batch", () => {
+  const rows = (path: string) =>
+    sqlite
+      .prepare(
+        "SELECT id, blob_digest, size_bytes, mime_type, deleted_at FROM storefront_theme_files WHERE path = ?",
+      )
+      .all(path) as Array<{
+      id: string;
+      blob_digest: string;
+      size_bytes: number;
+      mime_type: string;
+      deleted_at: string | null;
+    }>;
+
+  it("moves one in a single transaction: new row, same bytes, old one gone, one revision", async () => {
+    seedSource();
+    const bytes = png(55);
+    const saved = await upload("public/images/hero.png", bytes);
+    const before = generation();
+
+    await d1ThemeSourceStore.saveFilesBatch(STORE, THEME, [], {
+      expectedSourceGeneration: before,
+      binaryCopies: [
+        {
+          from: "public/images/hero.png",
+          to: "public/img/hero.png",
+          expectedFileId: saved.id,
+          expectedVersion: saved.version,
+        },
+      ],
+      deletions: [
+        {
+          path: "public/images/hero.png",
+          expectedFileId: saved.id,
+          expectedVersion: saved.version,
+        },
+      ],
+    });
+
+    expect(fileRow("public/images/hero.png")).toBeUndefined();
+    expect(fileRow("public/img/hero.png")).toMatchObject({
+      encoding: "binary",
+      blob_digest: sha256(bytes),
+      size_bytes: 55,
+      mime_type: "image/png",
+      version: 1,
+    });
+    expect(generation()).toBe(before + 1);
+    // The revision it leaves names the moved file, by the same digest.
+    expect(
+      latestManifest()?.files.map((file) => [file.path, file.digest]),
+    ).toContainEqual(["public/img/hero.png", sha256(bytes)]);
+    // Nothing was uploaded again: the one blob is the one there was.
+    expect(
+      [...r2.objects.keys()].filter((key) => key.endsWith(sha256(bytes))),
+    ).toHaveLength(1);
+  });
+
+  it("copies one and keeps the source", async () => {
+    seedSource();
+    const saved = await upload("public/images/hero.png", png(55));
+
+    await d1ThemeSourceStore.saveFilesBatch(STORE, THEME, [], {
+      expectedSourceGeneration: generation(),
+      binaryCopies: [
+        {
+          from: "public/images/hero.png",
+          to: "public/images/hero-copy.png",
+          expectedFileId: saved.id,
+          expectedVersion: saved.version,
+        },
+      ],
+    });
+
+    expect(fileRow("public/images/hero.png")).toBeDefined();
+    expect(fileRow("public/images/hero-copy.png")?.blob_digest).toBe(
+      fileRow("public/images/hero.png")?.blob_digest,
+    );
+  });
+
+  it("writes nothing when the source changed after it was planned", async () => {
+    seedSource();
+    const saved = await upload("public/images/hero.png", png(55));
+    const planned = {
+      from: "public/images/hero.png",
+      to: "public/img/hero.png",
+      sourceFileId: saved.id,
+      sourceVersion: saved.version,
+      blobDigest: saved.blobDigest,
+      sizeBytes: saved.sizeBytes,
+      mimeType: saved.mimeType,
+    };
+    // Replaced between the store's check and the batch.
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_files SET version = version + 1 WHERE path = 'public/images/hero.png'",
+      )
+      .run();
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(STORE, THEME, [], {
+        expectedSourceGeneration: generation(),
+        binaryCopies: [planned],
+        deletions: [
+          {
+            path: "public/images/hero.png",
+            expectedFileId: saved.id,
+            expectedVersion: saved.version + 1,
+          },
+        ],
+      }),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+    expect(rows("public/img/hero.png")).toEqual([]);
+    expect(fileRow("public/images/hero.png")).toBeDefined();
+  });
+
+  it("refuses a new name in another format, and changes nothing", async () => {
+    seedSource();
+    const saved = await upload("public/images/hero.png", png(55));
+    const before = generation();
+
+    await expect(
+      d1ThemeSourceStore.saveFilesBatch(STORE, THEME, [], {
+        expectedSourceGeneration: before,
+        binaryCopies: [
+          {
+            from: "public/images/hero.png",
+            to: "public/images/hero.jpg",
+            expectedFileId: saved.id,
+            expectedVersion: saved.version,
+          },
+        ],
+      }),
+    ).rejects.toThrow("THEME_PUBLIC_FILE_REFUSED");
+    expect(generation()).toBe(before);
+    expect(rows("public/images/hero.jpg")).toEqual([]);
+  });
+});
+
 describe("building a revision with binary files", () => {
   it("carries them by reference, apart from the source", () => {
     const result = normalizeRevisionSnapshot(

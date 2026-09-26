@@ -72,9 +72,7 @@ export const Route = createFileRoute("/about")({});`,
       files: [
         {
           path: "src/routes/company/about.tsx",
-          content: expect.stringContaining(
-            'createFileRoute("/company/about")',
-          ),
+          content: expect.stringContaining('createFileRoute("/company/about")'),
         },
       ],
     });
@@ -106,9 +104,7 @@ export const Route = createFileRoute("/blog/post")({});`,
       files: [
         {
           path: "src/routes/archive/blog/index.tsx",
-          content: expect.stringContaining(
-            'createFileRoute("/archive/blog/")',
-          ),
+          content: expect.stringContaining('createFileRoute("/archive/blog/")'),
         },
         {
           path: "src/routes/archive/blog/post.tsx",
@@ -137,5 +133,52 @@ export const Route = createFileRoute("/blog/post")({});`,
       ok: false,
       reason: "The root route cannot be copied.",
     });
+  });
+});
+
+describe("planThemeFileCopies with binary files", () => {
+  const binaryPaths = ["public/images/hero.png", "public/images/logo.png"];
+
+  it("copies a binary file by reference, under a free name", () => {
+    const plan = planThemeFileCopies({
+      files: [],
+      binaryPaths,
+      selectedPaths: ["public/images/hero.png"],
+      destinationFolder: "public/images",
+    });
+
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.files).toEqual([]);
+    expect(plan.binaryCopies).toHaveLength(1);
+    expect(plan.binaryCopies[0]!.from).toBe("public/images/hero.png");
+    // Not over the source, nor over anything else there.
+    expect(binaryPaths).not.toContain(plan.binaryCopies[0]!.to);
+    expect(plan.binaryCopies[0]!.to.startsWith("public/images/")).toBe(true);
+  });
+
+  it("carries a folder's binary files with its source files", () => {
+    const plan = planThemeFileCopies({
+      files: [
+        {
+          path: "public/images/readme.txt",
+          content: "notes",
+          mimeType: "text/plain",
+        },
+      ],
+      binaryPaths,
+      selectedPaths: ["public/images"],
+      destinationFolder: "public/assets",
+    });
+
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.files.map((file) => file.path)).toEqual([
+      "public/assets/images/readme.txt",
+    ]);
+    expect(plan.binaryCopies).toEqual([
+      { from: "public/images/hero.png", to: "public/assets/images/hero.png" },
+      { from: "public/images/logo.png", to: "public/assets/images/logo.png" },
+    ]);
   });
 });

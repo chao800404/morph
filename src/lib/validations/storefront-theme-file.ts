@@ -154,13 +154,32 @@ export const saveThemeFilesBatchInputSchema = z
       )
       .max(50)
       .optional(),
+    /**
+     * Binary files placed at new paths, named by their source row. A move is
+     * one of these plus the source in `deletions`. The server reads the
+     * digest from the source; a client never sends one.
+     */
+    binaryCopies: z
+      .array(
+        z.object({
+          from: safeThemeFilePathSchema,
+          to: safeThemeFilePathSchema,
+          expectedFileId: z.string().uuid(),
+          expectedVersion: z.number().int().min(1),
+        }),
+      )
+      .max(200)
+      .optional(),
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
   })
   .refine(
-    (input) => input.files.length > 0 || (input.deletions?.length ?? 0) > 0,
-    { message: "Batch must contain at least one file or deletion" },
+    (input) =>
+      input.files.length > 0 ||
+      (input.deletions?.length ?? 0) > 0 ||
+      (input.binaryCopies?.length ?? 0) > 0,
+    { message: "Batch must contain at least one file, copy or deletion" },
   );
 
 export const createThemePageInputSchema = z.object({
