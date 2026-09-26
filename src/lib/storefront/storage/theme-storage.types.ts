@@ -1,3 +1,4 @@
+import type { ThemeBinaryCopyRequest } from "./theme-binary-copies";
 import type { RouteDocumentRollbackPlan } from "../route-document-moves";
 import type {
   StorefrontThemeBinaryFileDTO,
@@ -62,6 +63,11 @@ export type SaveThemeSourceFilesBatchOptions = {
     fromSourcePath: string;
     toSourcePath: string;
   }>;
+  /**
+   * Binary files placed at new paths in the same transaction; see
+   * `planThemeBinaryCopies`. A move adds the source to `deletions`.
+   */
+  binaryCopies?: ReadonlyArray<ThemeBinaryCopyRequest>;
   createRevision?: boolean;
   revisionMessage?: string;
   createdBy?: string;

@@ -647,6 +647,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
           expectedSourceGeneration: data.expectedSourceGeneration,
           deletions: data.deletions,
           routePathMoves: data.routePathMoves,
+          binaryCopies: data.binaryCopies,
           createRevision: data.createRevision,
           revisionMessage: data.revisionMessage,
           createdBy: context.user?.id,
@@ -678,6 +679,16 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         return fail(
           "Version conflict detected in batch: one or more files were modified concurrently.",
           { error: "FILE_VERSION_CONFLICT" },
+        );
+      }
+
+      if (
+        error instanceof Error &&
+        error.message.startsWith("THEME_PUBLIC_FILE_REFUSED")
+      ) {
+        return fail(
+          error.message.replace(/^THEME_PUBLIC_FILE_REFUSED:\s*/, ""),
+          { error: "THEME_PUBLIC_FILE_REFUSED" },
         );
       }
 

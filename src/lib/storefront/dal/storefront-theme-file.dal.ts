@@ -1,3 +1,4 @@
+import type { ResolvedThemeBinaryCopy } from "../storage/theme-binary-copies";
 import { env } from "cloudflare:workers";
 import { getDb } from "@/db";
 import {
@@ -972,6 +973,8 @@ export const storefrontThemeFileDal = {
         fromSourcePath: string;
         toSourcePath: string;
       }>;
+      /** Checked by the store (`planThemeBinaryCopies`); held here to it. */
+      binaryCopies?: ReadonlyArray<ResolvedThemeBinaryCopy>;
       createRevision?: boolean;
       revisionMessage?: string;
       createdBy?: string;
@@ -1021,7 +1024,12 @@ export const storefrontThemeFileDal = {
         "THEME_NOT_FOUND: Theme is not owned by this storefront.",
       );
     }
-    if (files.length === 0 && deletions.length === 0) {
+    const binaryCopies = options.binaryCopies ?? [];
+    if (
+      files.length === 0 &&
+      deletions.length === 0 &&
+      binaryCopies.length === 0
+    ) {
       const empty: StorefrontThemeFileDTO[] & { sourceGeneration?: number } =
         [];
       return empty;
@@ -1223,6 +1231,57 @@ export const storefrontThemeFileDal = {
           deletion.path,
           deletion.expectedFileId,
           deletion.expectedVersion,
+        ),
+      );
+    }
+
+    // Each copy: the source still the row the store read — same id and
+    // version, still binary — and nothing at the destination; then the new
+    // row, carrying the source's digest, size and type.
+    for (const copy of binaryCopies) {
+      preconditionStatements.push(
+        env.DATABASE.prepare(
+          `
+          SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM storefront_theme_files
+            WHERE storefront_id = ?1 AND theme_id = ?2 AND path = ?3
+              AND id = ?4 AND version = ?5 AND encoding = 'binary'
+              AND blob_digest = ?6 AND deleted_at IS NULL
+          ) AND NOT EXISTS (
+            SELECT 1 FROM storefront_theme_files
+            WHERE storefront_id = ?1 AND theme_id = ?2 AND path = ?7
+              AND deleted_at IS NULL
+          ) THEN 1 ELSE json('') END AS ok
+        `,
+        ).bind(
+          storefrontId,
+          themeId,
+          copy.from,
+          copy.sourceFileId,
+          copy.sourceVersion,
+          copy.blobDigest,
+          copy.to,
+        ),
+      );
+      mutationStatements.push(
+        env.DATABASE.prepare(
+          `
+          INSERT INTO storefront_theme_files (
+            id, storefront_id, theme_id, path, content, mime_type,
+            is_entry, version, created_at, updated_at,
+            encoding, blob_digest, size_bytes
+          )
+          VALUES (?1, ?2, ?3, ?4, '', ?5, 0, 1, ?6, ?6, 'binary', ?7, ?8)
+        `,
+        ).bind(
+          crypto.randomUUID(),
+          storefrontId,
+          themeId,
+          copy.to,
+          copy.mimeType,
+          now,
+          copy.blobDigest,
+          copy.sizeBytes,
         ),
       );
     }

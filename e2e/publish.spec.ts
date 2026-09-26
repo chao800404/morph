@@ -307,6 +307,44 @@ test.describe("publish loop", () => {
       );
     }
 
+    // Renamed through the Explorer: the move is held for review before
+    // anything is written — the URL it changes, and what was not checked —
+    // and then lands as one batch that places the file by reference.
+    if (image) {
+      const moved = "public/images/e2e-moved.png";
+      // The page was just reloaded; a click before it hydrates is received
+      // by nothing. Clicked until Code mode is actually showing its tree.
+      await expect(async () => {
+        await page.getByRole("button", { name: /^Code$/ }).click();
+        await expect(
+          page.locator(`[data-file-tree-file="${image.path}"]`),
+        ).toBeVisible({ timeout: 5_000 });
+      }).toPass({ timeout: 60_000 });
+      await page
+        .locator(`[data-file-tree-file="${image.path}"]`)
+        .click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Rename" }).click();
+      const input = page.getByRole("textbox", { name: `Rename ${image.path}` });
+      await input.fill("e2e-moved.png");
+      await input.press("Enter");
+
+      const review = page.locator("[data-binary-move-review]");
+      await expect(review).toContainText(
+        "/images/e2e-run.png → /images/e2e-moved.png",
+      );
+      await expect(review).toContainText(
+        "URLs built at runtime and page content are not checked",
+      );
+      await review.getByRole("button", { name: "Move" }).click();
+
+      await expect(
+        page.locator(`[data-file-tree-file="${moved}"]`),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.locator(`[data-file-tree-file="${image.path}"]`),
+      ).toHaveCount(0);
+    }
+
     await writeHandoff(page, {
       marker,
       releaseLabel: releasesAfter[0],

@@ -1,3 +1,7 @@
+import {
+  planThemeBinaryCopies,
+  type ResolvedThemeBinaryCopy,
+} from "./theme-binary-copies";
 import { env } from "cloudflare:workers";
 import type { R2BucketLike } from "@/lib/storefront/compiler/cloudflare-r2-theme-build-artifact-store";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
@@ -55,11 +59,28 @@ function nextWorkspaceFilesForRevision(
     mimeType?: string;
   }[],
   deletions: readonly { path: string }[],
+  binaryCopies: readonly ResolvedThemeBinaryCopy[] = [],
 ): StorefrontThemeWorkspaceEntryDTO[] {
   const byPath = new Map<string, StorefrontThemeWorkspaceEntryDTO>(
     currentFiles.map((file) => [file.path, file]),
   );
   for (const deletion of deletions) byPath.delete(deletion.path);
+  for (const copy of binaryCopies) {
+    byPath.set(copy.to, {
+      id: `pending:${copy.to}`,
+      storefrontId,
+      themeId,
+      path: copy.to,
+      encoding: "binary",
+      blobDigest: copy.blobDigest,
+      sizeBytes: copy.sizeBytes,
+      mimeType: copy.mimeType,
+      isEntry: false,
+      version: 1,
+      createdAt: "",
+      updatedAt: "",
+    });
+  }
   for (const file of files) {
     const found = byPath.get(file.path);
     // A source write cannot land on a binary file's path; the guard refuses
@@ -89,6 +110,7 @@ async function manifestForWorkspaceMutation(args: {
   themeId: string;
   files: readonly { path: string; content: string; mimeType?: string }[];
   deletions: readonly { path: string }[];
+  binaryCopies?: readonly ResolvedThemeBinaryCopy[];
 }): Promise<ThemeSourceRevisionManifest> {
   if (!runtimeThemeSourceBlobStore) {
     throw new Error(
@@ -107,6 +129,7 @@ async function manifestForWorkspaceMutation(args: {
     currentFiles,
     args.files,
     args.deletions,
+    args.binaryCopies,
   );
   if (nextFiles.length === 0) {
     throw new Error(
@@ -394,19 +417,39 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
     );
   },
   async saveFilesBatch(storefrontId, themeId, files, options) {
+    // Copies are checked against the workspace as it is and the set the
+    // whole batch leaves; the DAL then holds the sources to the ids and
+    // versions read here, in the same transaction as every other change.
+    let binaryCopies: ResolvedThemeBinaryCopy[] = [];
+    if ((options.binaryCopies?.length ?? 0) > 0) {
+      const planned = planThemeBinaryCopies({
+        entries: await storefrontThemeFileDal.listWorkspaceEntries(
+          storefrontId,
+          themeId,
+        ),
+        copies: options.binaryCopies ?? [],
+        writes: files,
+        deletions: options.deletions ?? [],
+      });
+      if (!planned.ok) throw new Error(planned.message);
+      binaryCopies = planned.copies;
+    }
     const changesSomething =
-      files.length > 0 || (options.deletions?.length ?? 0) > 0;
+      files.length > 0 ||
+      (options.deletions?.length ?? 0) > 0 ||
+      binaryCopies.length > 0;
     const createRevision =
       changesSomething &&
       (await shouldRecordRevision({
         storefrontId,
         themeId,
         // A batch that removes anything is a deletion, whatever else it does.
-        reason: (options.deletions?.length ?? 0) > 0
-          ? "delete"
-          : options.createRevision
-            ? "explicit"
-            : "save",
+        reason:
+          (options.deletions?.length ?? 0) > 0
+            ? "delete"
+            : options.createRevision
+              ? "explicit"
+              : "save",
       }));
     const sourceManifest = createRevision
       ? await manifestForWorkspaceMutation({
@@ -414,6 +457,7 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
           themeId,
           files,
           deletions: options.deletions ?? [],
+          binaryCopies,
         })
       : undefined;
     const sourceIndex = await sourceIndexForWorkspaceMutation({
@@ -425,6 +469,7 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
     });
     return storefrontThemeFileDal.saveFilesBatch(storefrontId, themeId, files, {
       ...options,
+      binaryCopies,
       createRevision,
       sourceManifest,
       sourceIndex,
@@ -700,11 +745,7 @@ export function createD1ThemeRevisionStore(
         ? await materializeR2SourceRevision(target, blobStore!)
         : target;
     },
-    async planRouteDocumentRollback(
-      storefrontId,
-      themeId,
-      revision,
-    ) {
+    async planRouteDocumentRollback(storefrontId, themeId, revision) {
       if (
         !(await storefrontThemeFileDal.verifyOwnership(storefrontId, themeId))
       ) {

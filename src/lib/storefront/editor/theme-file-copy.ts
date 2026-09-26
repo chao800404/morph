@@ -1,6 +1,4 @@
-import {
-  rewriteThemeRouteFactoryPath,
-} from "@/lib/storefront/ast/theme-file-move";
+import { rewriteThemeRouteFactoryPath } from "@/lib/storefront/ast/theme-file-move";
 import { parseThemeRouteSourcePath } from "@/lib/storefront/compiler/theme-route-registry";
 
 type ThemeCopySource = Readonly<{
@@ -13,6 +11,8 @@ export type ThemeFileCopyPlan =
   | Readonly<{
       ok: true;
       files: readonly ThemeCopySource[];
+      /** Binary files placed at new paths: copied by reference, not read. */
+      binaryCopies: readonly Readonly<{ from: string; to: string }>[];
       createdFolders: readonly string[];
     }>
   | Readonly<{ ok: false; reason: string }>;
@@ -114,25 +114,40 @@ function rewriteCopiedRoute(
  */
 export function planThemeFileCopies(args: {
   files: readonly ThemeCopySource[];
+  /** Binary files, by path: copied to new paths without being read. */
+  binaryPaths?: readonly string[];
   selectedPaths: readonly string[];
   destinationFolder: string;
   pendingFolders?: readonly string[];
 }): ThemeFileCopyPlan {
   const sourceByPath = new Map(args.files.map((file) => [file.path, file]));
+  const binaryPaths = new Set(args.binaryPaths ?? []);
   const occupied = new Set([
     ...args.files.map((file) => file.path),
+    ...binaryPaths,
     ...(args.pendingFolders ?? []),
   ]);
+  const binaryCopies: { from: string; to: string }[] = [];
   const selected = removeNestedSelections(args.selectedPaths);
   if (selected.length === 0) return { ok: false, reason: "Nothing is copied." };
 
   const writes: ThemeCopySource[] = [];
   const createdFolders = new Set<string>();
   for (const sourcePath of selected) {
+    if (binaryPaths.has(sourcePath)) {
+      const target = joinPath(
+        args.destinationFolder,
+        availableName(basename(sourcePath), args.destinationFolder, occupied),
+      );
+      binaryCopies.push({ from: sourcePath, to: target });
+      occupied.add(target);
+      continue;
+    }
     const sourceFile = sourceByPath.get(sourcePath);
     const sourceIsFolder =
       !sourceFile &&
       (args.files.some((file) => file.path.startsWith(`${sourcePath}/`)) ||
+        [...binaryPaths].some((path) => path.startsWith(`${sourcePath}/`)) ||
         (args.pendingFolders ?? []).some(
           (folder) =>
             folder === sourcePath || folder.startsWith(`${sourcePath}/`),
@@ -164,7 +179,11 @@ export function planThemeFileCopies(args: {
         sourceFile.content,
       );
       if ("error" in rewritten) return { ok: false, reason: rewritten.error };
-      const target = { ...sourceFile, path: targetRoot, content: rewritten.content };
+      const target = {
+        ...sourceFile,
+        path: targetRoot,
+        content: rewritten.content,
+      };
       writes.push(target);
       occupied.add(target.path);
       continue;
@@ -177,15 +196,17 @@ export function planThemeFileCopies(args: {
     )) {
       const relative = file.path.slice(sourcePath.length + 1);
       const targetPath = `${targetRoot}/${relative}`;
-      const rewritten = rewriteCopiedRoute(
-        file.path,
-        targetPath,
-        file.content,
-      );
+      const rewritten = rewriteCopiedRoute(file.path, targetPath, file.content);
       if ("error" in rewritten) return { ok: false, reason: rewritten.error };
       const target = { ...file, path: targetPath, content: rewritten.content };
       writes.push(target);
       occupied.add(target.path);
+    }
+    for (const binaryPath of binaryPaths) {
+      if (!binaryPath.startsWith(`${sourcePath}/`)) continue;
+      const targetPath = `${targetRoot}/${binaryPath.slice(sourcePath.length + 1)}`;
+      binaryCopies.push({ from: binaryPath, to: targetPath });
+      occupied.add(targetPath);
     }
     for (const folder of args.pendingFolders ?? []) {
       if (folder === sourcePath || folder.startsWith(`${sourcePath}/`)) {
@@ -195,5 +216,10 @@ export function planThemeFileCopies(args: {
     }
   }
 
-  return { ok: true, files: writes, createdFolders: [...createdFolders] };
+  return {
+    ok: true,
+    files: writes,
+    binaryCopies,
+    createdFolders: [...createdFolders],
+  };
 }

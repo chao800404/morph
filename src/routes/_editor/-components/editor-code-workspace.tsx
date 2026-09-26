@@ -53,10 +53,17 @@ import {
 } from "./editor-code-binary-file";
 import { writeThemeBinaryFile } from "../-queries/theme-binary-files";
 import {
+  scanPublicUrlReferences,
+  type PublicUrlScan,
+} from "@/lib/storefront/editor/public-url-references";
+import { PublicUrlReview } from "./editor-code-public-url-review";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
   checkThemePublicPath,
   describeThemePublicProblem,
   THEME_PUBLIC_ACCEPT,
   THEME_PUBLIC_LIMITS,
+  themePublicUrlPath,
 } from "@/lib/storefront/theme-public-files";
 import {
   applyStarterThemeWorkspace,
@@ -218,6 +225,11 @@ export type EditorCodeWorkspaceHandle = {
   flushPendingChanges: () => Promise<boolean>;
 };
 
+type PublicUrlReviewState = {
+  changes: ReadonlyArray<{ from: string; to: string | null }>;
+  scan: PublicUrlScan;
+};
+
 type StarterThemeBootstrapPlan = {
   sourceGeneration: number;
   files: Array<{ path: string; operation: "create" | "update" }>;
@@ -318,6 +330,106 @@ function withGeneratedRouteTree(
   ]);
 }
 
+/**
+ * A folder row: draggable like a file, and a drop target for both.
+ *
+ * Pointer-based rather than native drag and drop, matching the sections tree:
+ * native drag events carry their own image and cannot be driven from a test,
+ * and this list already lives beside one that works this way.
+ *
+ * Declared here, not inside the workspace: a component declared in a render
+ * body is a new component on every render, so React remounts everything
+ * under it — and a context menu open on a row closed itself whenever the
+ * workspace re-rendered, as it does while a preview restarts.
+ */
+function FolderRow({
+  node,
+  disabled,
+  children,
+}: {
+  node: StorefrontThemeFileTreeNode;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
+  const { ref: dragRef, isDragging } = useDraggable({
+    id: `path:${node.path}`,
+    data: { path: node.path },
+    disabled,
+  });
+  const { ref: dropRef, isDropTarget } = useDroppable({
+    id: `folder:${node.path}`,
+    data: { folder: node.path },
+    accept: () => true,
+  });
+
+  return (
+    <div
+      ref={(element) => {
+        dragRef(element);
+        dropRef(element);
+      }}
+      // The header alone is the drop zone. Wrapping the whole subtree would
+      // make dropping on any descendant mean "into this folder" and would
+      // highlight everything under it, which says nothing about where the
+      // file is going.
+      //
+      // The attribute names the row for anything that needs to address it
+      // precisely — a drop target is a position, and a label is not one.
+      data-file-tree-folder={node.path}
+      data-drop-target={isDropTarget ? "true" : undefined}
+      className={cn(
+        "rounded-sm",
+        isDragging && "opacity-50",
+        isDropTarget && "bg-primary/10 ring-1 ring-primary/40",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** A file row, draggable onto a folder; declared here for the same reason. */
+function FileRow({
+  path,
+  disabled,
+  children,
+}: {
+  path: string;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
+  const { ref, isDragging } = useDraggable({
+    id: `path:${path}`,
+    data: { path },
+    disabled,
+  });
+  return (
+    <div
+      ref={ref}
+      data-file-tree-file={path}
+      className={cn(isDragging && "opacity-50")}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A row that cannot be dragged: the generated route tree. Not a disabled
+ * draggable — that marks the row `aria-disabled`, and it still opens when
+ * clicked.
+ */
+function StaticFileRow({
+  path,
+  children,
+}: {
+  path: string;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return <div data-file-tree-file={path}>{children}</div>;
+}
+
 const EditorCodeWorkspaceContent = forwardRef<
   EditorCodeWorkspaceHandle,
   EditorCodeWorkspaceProps
@@ -348,12 +460,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     () => new Map(binaryFiles.map((file) => [file.path, file])),
     [binaryFiles],
   );
-  /**
-   * Binary files at or under any of `paths`. Every Explorer operation plans
-   * from the source files alone, so one that reached a binary file would do
-   * half of what it says — move a folder and leave its images behind. Until
-   * binary files can be written here, such an operation is refused whole.
-   */
+  /** Binary files at or under any of `paths`. */
   const binaryFilesUnder = useCallback(
     (paths: readonly string[]) =>
       binaryFiles.filter((file) =>
@@ -369,14 +476,6 @@ const EditorCodeWorkspaceContent = forwardRef<
   const uploadFolderRef = useRef("public");
   /** The binary file the next chosen file replaces. */
   const replaceTargetRef = useRef<StorefrontThemeBinaryFileDTO | null>(null);
-  const refuseBinaryOperation = useCallback(
-    (verb: "deleted" | "moved" | "copied", count: number) => {
-      toast.error(
-        `This includes ${count} binary file${count === 1 ? "" : "s"}, which cannot be ${verb} in the Code workspace yet.`,
-      );
-    },
-    [],
-  );
   // Derived from the mount callback this file already imports, so the editor
   // and namespace are typed without taking a direct dependency on
   // `monaco-editor` just to name them.
@@ -515,10 +614,29 @@ const EditorCodeWorkspaceContent = forwardRef<
   );
   const [pendingConfirmation, setPendingConfirmation] = useState<
     | { kind: "close-file"; path: string }
-    | { kind: "delete-file"; path: string }
-    | { kind: "delete-folder"; path: string; fileCount: number }
+    | { kind: "delete-file"; path: string; review?: PublicUrlReviewState }
+    | {
+        kind: "delete-folder";
+        path: string;
+        fileCount: number;
+        review?: PublicUrlReviewState;
+      }
     | null
   >(null);
+  /**
+   * A move that changes `public/` URLs, held for the author to review before
+   * anything is written: what changes, what names it, and the safer choice
+   * of copying and keeping the old URLs working.
+   */
+  const [binaryMoveReview, setBinaryMoveReview] = useState<{
+    moves: ReadonlyArray<{ from: string; to: string }>;
+    binaryMoves: ReadonlyArray<{ from: string; to: string }>;
+    /** Whether source files move too; copying instead is offered only if not. */
+    movesSource: boolean;
+    review: PublicUrlReviewState;
+    acknowledged: boolean;
+    onDone?: () => void;
+  } | null>(null);
   const [starterBootstrapPlan, setStarterBootstrapPlan] =
     useState<StarterThemeBootstrapPlan | null>(null);
   const [starterBootstrapDialogOpen, setStarterBootstrapDialogOpen] =
@@ -543,6 +661,14 @@ const EditorCodeWorkspaceContent = forwardRef<
   const saveInFlightRef = useRef(false);
   const pendingSavePromiseRef = useRef<Promise<unknown> | null>(null);
   const renameJustStartedRef = useRef(false);
+  /**
+   * An inline create input opened from a folder's menu. The menu hands focus
+   * back to its trigger as it closes, which would blur — and so cancel — the
+   * input it just opened; see the folder menu's `onCloseAutoFocus`.
+   */
+  const createJustStartedRef = useRef(false);
+  /** The inline create input open now, to hand focus to once the menu has closed. */
+  const createInputRef = useRef<HTMLInputElement>(null);
   const selectedPathsRef = useRef(selectedPaths);
   selectedPathsRef.current = selectedPaths;
   themeRouteFilesRef.current = files.map((file) => ({
@@ -1657,6 +1783,60 @@ const EditorCodeWorkspaceContent = forwardRef<
     },
   });
 
+  /**
+   * Places binary files at new paths and keeps the sources: what a move
+   * review offers instead of moving, so the old URLs keep working until
+   * their references are updated and the old files deleted.
+   */
+  const binaryCopyMutation = useMutation({
+    mutationFn: async (copies: ReadonlyArray<{ from: string; to: string }>) => {
+      const result = await saveStorefrontThemeFilesBatch({
+        data: {
+          storefrontId,
+          themeId,
+          files: [],
+          deletions: [],
+          binaryCopies: copies.map((copy) => {
+            const binary = binaryFileByPath.get(copy.from);
+            if (!binary) {
+              throw new Error(`${copy.from} is no longer in the workspace.`);
+            }
+            return {
+              ...copy,
+              expectedFileId: binary.id,
+              expectedVersion: binary.version,
+            };
+          }),
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+          createRevision: true,
+          revisionMessage:
+            copies.length === 1
+              ? `Copy ${copies[0]!.from} to ${copies[0]!.to}`
+              : `Copy ${copies.length} files`,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async (data, copies) => {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      toast.success(
+        `Copied ${copies.length} file${copies.length === 1 ? "" : "s"}; the old URLs still work.`,
+      );
+      onRestartPreview?.();
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Failed to copy"),
+  });
+
   const deleteFolderMutation = useMutation({
     mutationFn: async (folderPath: string) => {
       const folderPrefix = `${folderPath}/`;
@@ -1666,7 +1846,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       const workspaceFiles = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
-      const deletions = filesToDelete.map((file) => {
+      const sourceDeletions = filesToDelete.map((file) => {
         const workspaceFile = workspaceFiles[file.path];
         if (!workspaceFile?.serverExists || !workspaceFile.serverFileId) {
           throw new Error(`File "${file.path}" is not available for deletion.`);
@@ -1678,6 +1858,16 @@ const EditorCodeWorkspaceContent = forwardRef<
         };
       });
 
+      // The folder's binary files go in the same batch: a folder deleted
+      // around its images would stay, holding only them.
+      const deletions = [
+        ...sourceDeletions,
+        ...binaryFilesUnder([folderPath]).map((binary) => ({
+          path: binary.path,
+          expectedFileId: binary.id,
+          expectedVersion: binary.version,
+        })),
+      ];
       if (deletions.length === 0) {
         return {
           folderPath,
@@ -1702,7 +1892,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (!result.success) throw new Error(result.message);
       return {
         folderPath,
-        deletedPaths: filesToDelete.map((file) => file.path),
+        deletedPaths: deletions.map((deletion) => deletion.path),
         sourceGeneration: result.data.sourceGeneration,
       };
     },
@@ -1773,14 +1963,31 @@ const EditorCodeWorkspaceContent = forwardRef<
             file.content,
         ]),
       );
-      const plan = planThemeFileMove(
-        [...planInputs].map(([path, content]) => ({ path, content })),
-        moves,
+      // Binary files move by reference — a copy at the new path and the
+      // source's deletion — in the same batch as the source files moving.
+      const binaryMoves = moves.filter((move) =>
+        binaryFileByPath.has(move.from),
       );
+      const sourceMoves = moves.filter(
+        (move) => !binaryFileByPath.has(move.from),
+      );
+      const plan: ReturnType<typeof planThemeFileMove> =
+        sourceMoves.length > 0
+          ? planThemeFileMove(
+              [...planInputs].map(([path, content]) => ({ path, content })),
+              sourceMoves,
+            )
+          : {
+              ok: true,
+              writes: [],
+              deletions: [],
+              rewrites: [],
+              routePathMoves: [],
+            };
       if (!plan.ok) throw new Error(plan.reason);
 
       const byPath = new Map(files.map((file) => [file.path, file]));
-      const deletions = plan.deletions.map((path) => {
+      const sourceDeletions = plan.deletions.map((path) => {
         const file = byPath.get(path);
         if (!file) throw new Error(`${path} is no longer in the workspace.`);
         return {
@@ -1789,6 +1996,21 @@ const EditorCodeWorkspaceContent = forwardRef<
           expectedVersion: file.version,
         };
       });
+
+      const binaryReferences = binaryMoves.map((move) => {
+        const binary = binaryFileByPath.get(move.from);
+        if (!binary)
+          throw new Error(`${move.from} is no longer in the workspace.`);
+        return { move, binary };
+      });
+      const deletions = [
+        ...sourceDeletions,
+        ...binaryReferences.map(({ move, binary }) => ({
+          path: move.from,
+          expectedFileId: binary.id,
+          expectedVersion: binary.version,
+        })),
+      ];
 
       // One batch: the writes at the new paths and the removals at the old ones
       // land together or not at all. Two calls would leave the Theme with
@@ -1827,6 +2049,16 @@ const EditorCodeWorkspaceContent = forwardRef<
           }),
           deletions,
           routePathMoves: plan.routePathMoves,
+          ...(binaryReferences.length > 0
+            ? {
+                binaryCopies: binaryReferences.map(({ move, binary }) => ({
+                  from: move.from,
+                  to: move.to,
+                  expectedFileId: binary.id,
+                  expectedVersion: binary.version,
+                })),
+              }
+            : {}),
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -1958,12 +2190,15 @@ const EditorCodeWorkspaceContent = forwardRef<
           content: getCurrentEditorContent(file.path),
           mimeType: file.mimeType,
         })),
+        binaryPaths: binaryFiles.map((file) => file.path),
         selectedPaths: paths,
         destinationFolder,
         pendingFolders,
       });
       if (!plan.ok) throw new Error(plan.reason);
-      if (plan.files.length === 0) return { plan, result: null };
+      if (plan.files.length === 0 && plan.binaryCopies.length === 0) {
+        return { plan, result: null };
+      }
       const result = await saveStorefrontThemeFilesBatch({
         data: {
           storefrontId,
@@ -1975,6 +2210,23 @@ const EditorCodeWorkspaceContent = forwardRef<
             expectMissing: true,
           })),
           deletions: [],
+          ...(plan.binaryCopies.length > 0
+            ? {
+                binaryCopies: plan.binaryCopies.map((copy) => {
+                  const binary = binaryFileByPath.get(copy.from);
+                  if (!binary) {
+                    throw new Error(
+                      `${copy.from} is no longer in the workspace.`,
+                    );
+                  }
+                  return {
+                    ...copy,
+                    expectedFileId: binary.id,
+                    expectedVersion: binary.version,
+                  };
+                }),
+              }
+            : {}),
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -2002,7 +2254,10 @@ const EditorCodeWorkspaceContent = forwardRef<
         queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
           .queryKey,
       });
-      const createdCount = plan.files.length + plan.createdFolders.length;
+      const createdCount =
+        plan.files.length +
+        plan.binaryCopies.length +
+        plan.createdFolders.length;
       appendOutput(
         `Copied ${createdCount} workspace item${createdCount === 1 ? "" : "s"}.`,
       );
@@ -2072,6 +2327,8 @@ const EditorCodeWorkspaceContent = forwardRef<
     setRenamingPath(null);
     setRenameName("");
     renameJustStartedRef.current = false;
+    // A folder's menu opens it; the toolbar, at the root, does not.
+    createJustStartedRef.current = Boolean(folderPath);
     setCreatingInFolder(folderPath);
     setNewFilePath(folderPath ? `${folderPath}/` : "");
     if (folderPath) {
@@ -2085,6 +2342,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     setRenamingPath(null);
     setRenameName("");
     renameJustStartedRef.current = false;
+    createJustStartedRef.current = Boolean(parentPath);
     setCreatingFolderIn(parentPath);
     setNewFolderName("");
     if (parentPath) {
@@ -2148,13 +2406,65 @@ const EditorCodeWorkspaceContent = forwardRef<
     pendingFolders,
   ]);
 
+  /** Theme source as the editor holds it, including unsaved drafts. */
+  const currentSourceTexts = () =>
+    files.map((file) => ({
+      path: file.path,
+      content: getCurrentEditorContent(file.path) ?? file.content,
+    }));
+
+  /** What removing or moving these binary files does to their URLs. */
+  const reviewPublicUrls = (
+    changes: ReadonlyArray<{ from: string; to: string | null }>,
+  ): PublicUrlReviewState => ({
+    changes,
+    scan: scanPublicUrlReferences(
+      currentSourceTexts(),
+      changes.map((change) => change.from),
+    ),
+  });
+
+  /**
+   * Every move goes through here. One that carries a binary file changes a
+   * URL the storefront serves, so it is held for review first — what
+   * changes, what names it — with copying as the safer choice. A move of
+   * source files alone goes straight through, as it always has.
+   */
+  const requestMove = (
+    moves: ReadonlyArray<{ from: string; to: string }>,
+    onDone?: () => void,
+  ) => {
+    const binaryMoves = moves.filter((move) => binaryFileByPath.has(move.from));
+    if (binaryMoves.length === 0) {
+      moveMutation.mutate(moves, { onSuccess: () => onDone?.() });
+      return;
+    }
+    const outside = binaryMoves.find((move) => !move.to.startsWith("public/"));
+    if (outside) {
+      toast.error(`${outside.from} can only move within public/.`);
+      return;
+    }
+    setBinaryMoveReview({
+      moves,
+      binaryMoves,
+      movesSource: binaryMoves.length !== moves.length,
+      review: reviewPublicUrls(
+        binaryMoves.map((move) => ({
+          from: themePublicUrlPath(move.from) ?? move.from,
+          to: themePublicUrlPath(move.to) ?? move.to,
+        })),
+      ),
+      acknowledged: false,
+      onDone,
+    });
+  };
+
   const submitRename = useCallback(() => {
     if (moveMutation.isPending || renamingPath === null) return;
-    const prepared = prepareThemeFileRename(
-      renameName,
-      renamingPath,
-      files.map((file) => file.path),
-    );
+    const prepared = prepareThemeFileRename(renameName, renamingPath, [
+      ...files.map((file) => file.path),
+      ...binaryFiles.map((file) => file.path),
+    ]);
     if (!prepared.ok) {
       toast.error(prepared.message);
       return;
@@ -2166,13 +2476,11 @@ const EditorCodeWorkspaceContent = forwardRef<
       return;
     }
 
-    moveMutation.mutate([{ from: renamingPath, to: prepared.path }], {
-      onSuccess: () => {
-        setRenamingPath(null);
-        setRenameName("");
-      },
+    requestMove([{ from: renamingPath, to: prepared.path }], () => {
+      setRenamingPath(null);
+      setRenameName("");
     });
-  }, [files, moveMutation, renameName, renamingPath]);
+  }, [binaryFiles, files, moveMutation, renameName, renamingPath, requestMove]);
 
   const handleDuplicateFile = useCallback(
     (path: string) => {
@@ -2689,7 +2997,12 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const handleDeleteFile = (path: string) => {
     if (deleteMutation.isPending) return;
-    setPendingConfirmation({ kind: "delete-file", path });
+    const url = binaryFileByPath.has(path) ? themePublicUrlPath(path) : null;
+    setPendingConfirmation({
+      kind: "delete-file",
+      path,
+      ...(url ? { review: reviewPublicUrls([{ from: url, to: null }]) } : {}),
+    });
   };
 
   const isPublicPath = (path: string) =>
@@ -2751,17 +3064,17 @@ const EditorCodeWorkspaceContent = forwardRef<
   const handleDeleteFolder = (path: string) => {
     if (deleteFolderMutation.isPending || deleteMutation.isPending) return;
     const binaryInFolder = binaryFilesUnder([path]);
-    if (binaryInFolder.length > 0) {
-      refuseBinaryOperation("deleted", binaryInFolder.length);
-      return;
-    }
     const filesInFolder = files.filter((file) =>
       file.path.startsWith(`${path}/`),
     );
     const hasPendingFolder = pendingFolders.some(
       (folder) => folder === path || folder.startsWith(`${path}/`),
     );
-    if (filesInFolder.length === 0 && !hasPendingFolder) {
+    if (
+      filesInFolder.length === 0 &&
+      binaryInFolder.length === 0 &&
+      !hasPendingFolder
+    ) {
       toast.error("This folder is not available for deletion.");
       return;
     }
@@ -2769,7 +3082,17 @@ const EditorCodeWorkspaceContent = forwardRef<
     setPendingConfirmation({
       kind: "delete-folder",
       path,
-      fileCount: filesInFolder.length,
+      fileCount: filesInFolder.length + binaryInFolder.length,
+      ...(binaryInFolder.length > 0
+        ? {
+            review: reviewPublicUrls(
+              binaryInFolder.map((binary) => ({
+                from: themePublicUrlPath(binary.path) ?? binary.path,
+                to: null,
+              })),
+            ),
+          }
+        : {}),
     });
   };
 
@@ -2779,17 +3102,12 @@ const EditorCodeWorkspaceContent = forwardRef<
         ...new Set(paths.filter((path) => path !== GENERATED_ROUTE_TREE_PATH)),
       ];
       if (next.length === 0) return;
-      const binaryInSelection = binaryFilesUnder(next);
-      if (binaryInSelection.length > 0) {
-        refuseBinaryOperation("copied", binaryInSelection.length);
-        return;
-      }
       setCopiedPaths(next);
       appendOutput(
         `Copied ${next.length} item${next.length === 1 ? "" : "s"} to the Explorer clipboard.`,
       );
     },
-    [appendOutput, binaryFilesUnder, refuseBinaryOperation],
+    [appendOutput],
   );
 
   const handlePasteInto = useCallback(
@@ -2943,6 +3261,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       >
         <FilePlus2 className="size-3.5 shrink-0 text-primary" />
         <input
+          ref={createInputRef}
           autoFocus
           value={visibleName}
           placeholder="Filename.tsx"
@@ -2969,6 +3288,9 @@ const EditorCodeWorkspaceContent = forwardRef<
             }
           }}
           onBlur={() => {
+            // The first blur belongs to the menu that opened this input,
+            // taking focus back as it closes; as for rename.
+            if (createJustStartedRef.current) return;
             if (!createMutation.isPending) setCreatingInFolder(null);
           }}
           className="h-6 w-full min-w-0 rounded-sm border bg-background px-1.5 font-mono text-[11px] outline-none focus:border-primary"
@@ -2984,6 +3306,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     >
       <FolderPlus className="size-3.5 shrink-0 text-primary" />
       <input
+        ref={createInputRef}
         autoFocus
         value={newFolderName}
         placeholder="Folder name"
@@ -3004,6 +3327,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           }
         }}
         onBlur={() => {
+          if (createJustStartedRef.current) return;
           if (!createMutation.isPending) {
             setCreatingFolderIn(null);
             setNewFolderName("");
@@ -3105,7 +3429,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       event.preventDefault();
       if (isFile) handleOpenFile(current);
       else toggleFolder(current);
-    } else if (event.key === "F2" && isFile && !isGenerated && !isBinary) {
+    } else if (event.key === "F2" && isFile && !isGenerated) {
       event.preventDefault();
       startRenamingFile(current);
     } else if (event.key === "Delete") {
@@ -3137,14 +3461,14 @@ const EditorCodeWorkspaceContent = forwardRef<
   /** Turns a drop into the moves it stands for, then applies them as one batch. */
   const handleDropOnFolder = (draggedPath: string, folderPath: string) => {
     if (moveMutation.isPending) return;
-    const binaryInDragged = binaryFilesUnder([draggedPath]);
-    if (binaryInDragged.length > 0) {
-      refuseBinaryOperation("moved", binaryInDragged.length);
-      return;
-    }
-    const draggedIsFolder = !files.some((file) => file.path === draggedPath);
+    const draggedIsFolder =
+      !files.some((file) => file.path === draggedPath) &&
+      !binaryFileByPath.has(draggedPath);
     const moves = planDropMoves(
-      files.map((file) => file.path),
+      [
+        ...files.map((file) => file.path),
+        ...binaryFiles.map((file) => file.path),
+      ],
       draggedPath,
       folderPath,
     );
@@ -3168,110 +3492,21 @@ const EditorCodeWorkspaceContent = forwardRef<
       return;
     }
 
-    moveMutation.mutate(moves, {
-      onSuccess: () => {
-        if (pendingDestination) {
-          setPendingFolders((current) =>
-            movePendingFolderPaths(current, draggedPath, folderPath),
-          );
-        }
-      },
+    requestMove(moves, () => {
+      if (pendingDestination) {
+        setPendingFolders((current) =>
+          movePendingFolderPaths(current, draggedPath, folderPath),
+        );
+      }
     });
   };
-
-  /**
-   * A folder row: draggable like a file, and a drop target for both.
-   *
-   * Pointer-based rather than native drag and drop, matching the sections tree:
-   * native drag events carry their own image and cannot be driven from a test,
-   * and this list already lives beside one that works this way.
-   */
-  const FolderRow = ({
-    node,
-    children,
-  }: {
-    node: StorefrontThemeFileTreeNode;
-    children: React.ReactNode;
-  }) => {
-    const { ref: dragRef, isDragging } = useDraggable({
-      id: `path:${node.path}`,
-      data: { path: node.path },
-      disabled: moveMutation.isPending,
-    });
-    const { ref: dropRef, isDropTarget } = useDroppable({
-      id: `folder:${node.path}`,
-      data: { folder: node.path },
-      accept: () => true,
-    });
-
-    return (
-      <div
-        ref={(element) => {
-          dragRef(element);
-          dropRef(element);
-        }}
-        // The header alone is the drop zone. Wrapping the whole subtree would
-        // make dropping on any descendant mean "into this folder" and would
-        // highlight everything under it, which says nothing about where the
-        // file is going.
-        //
-        // The attribute names the row for anything that needs to address it
-        // precisely — a drop target is a position, and a label is not one.
-        data-file-tree-folder={node.path}
-        data-drop-target={isDropTarget ? "true" : undefined}
-        className={cn(
-          "rounded-sm",
-          isDragging && "opacity-50",
-          isDropTarget && "bg-primary/10 ring-1 ring-primary/40",
-        )}
-      >
-        {children}
-      </div>
-    );
-  };
-
-  const FileRow = ({
-    path,
-    children,
-  }: {
-    path: string;
-    children: React.ReactNode;
-  }) => {
-    const { ref, isDragging } = useDraggable({
-      id: `path:${path}`,
-      data: { path },
-      disabled: moveMutation.isPending,
-    });
-    return (
-      <div
-        ref={ref}
-        data-file-tree-file={path}
-        className={cn(isDragging && "opacity-50")}
-      >
-        {children}
-      </div>
-    );
-  };
-
-  /**
-   * A row that cannot be dragged: the generated route tree, and binary
-   * files. Not a disabled draggable — that marks the row `aria-disabled`,
-   * and these rows still open when clicked.
-   */
-  const StaticFileRow = ({
-    path,
-    children,
-  }: {
-    path: string;
-    children: React.ReactNode;
-  }) => <div data-file-tree-file={path}>{children}</div>;
 
   const renderTreeNode = (node: StorefrontThemeFileTreeNode, depth = 0) => {
     if (node.isDirectory) {
       const isCollapsed = Boolean(collapsedFolders[node.path]);
       return (
         <div key={node.path} className="select-none">
-          <FolderRow node={node}>
+          <FolderRow node={node} disabled={moveMutation.isPending}>
             <ContextMenu>
               <ContextMenuTrigger asChild>
                 <div
@@ -3299,7 +3534,17 @@ const EditorCodeWorkspaceContent = forwardRef<
                   <span className="font-medium truncate">{node.name}</span>
                 </div>
               </ContextMenuTrigger>
-              <ContextMenuContent>
+              <ContextMenuContent
+                onCloseAutoFocus={(event) => {
+                  if (createJustStartedRef.current) {
+                    // Focus goes to the input this menu opened, not back to
+                    // the folder row.
+                    event.preventDefault();
+                    createJustStartedRef.current = false;
+                    createInputRef.current?.focus();
+                  }
+                }}
+              >
                 <ContextMenuItem
                   disabled={createMutation.isPending}
                   onClick={() => startCreatingIn(node.path)}
@@ -3379,9 +3624,9 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
     }
 
-    const Row = isGenerated || isBinary ? StaticFileRow : FileRow;
+    const Row = isGenerated ? StaticFileRow : FileRow;
     return (
-      <Row key={node.path} path={node.path}>
+      <Row key={node.path} path={node.path} disabled={moveMutation.isPending}>
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
@@ -3430,6 +3675,17 @@ const EditorCodeWorkspaceContent = forwardRef<
               </ContextMenuItem>
             ) : isBinary ? (
               <>
+                <ContextMenuItem onClick={() => handleCopyPaths([node.path])}>
+                  <Copy className="size-3.5" />
+                  Copy
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={moveMutation.isPending}
+                  onClick={() => startRenamingFile(node.path)}
+                >
+                  <FileText className="size-3.5" />
+                  Rename
+                </ContextMenuItem>
                 <ContextMenuItem
                   disabled={binaryWriteMutation.isPending}
                   onClick={() => startReplace(node.path)}
@@ -4305,6 +4561,14 @@ const EditorCodeWorkspaceContent = forwardRef<
                     : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {pendingConfirmation &&
+          pendingConfirmation.kind !== "close-file" &&
+          pendingConfirmation.review ? (
+            <PublicUrlReview
+              changes={pendingConfirmation.review.changes}
+              scan={pendingConfirmation.review.scan}
+            />
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -4324,6 +4588,80 @@ const EditorCodeWorkspaceContent = forwardRef<
               {pendingConfirmation?.kind === "close-file"
                 ? "Discard"
                 : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={binaryMoveReview !== null}
+        onOpenChange={(open) => {
+          if (!open) setBinaryMoveReview(null);
+        }}
+      >
+        <AlertDialogContent data-binary-move-review>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Move files in public/?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The storefront serves these files at their paths, so moving them
+              changes their URLs. Copying keeps the old URLs working until the
+              references are updated and the old files deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {binaryMoveReview ? (
+            <PublicUrlReview
+              changes={binaryMoveReview.review.changes}
+              scan={binaryMoveReview.review.scan}
+            />
+          ) : null}
+          {binaryMoveReview && binaryMoveReview.review.scan.known.length > 0 ? (
+            <label className="flex items-center gap-2 text-xs">
+              <Checkbox
+                checked={binaryMoveReview.acknowledged}
+                onCheckedChange={(checked) =>
+                  setBinaryMoveReview((current) =>
+                    current
+                      ? { ...current, acknowledged: checked === true }
+                      : current,
+                  )
+                }
+                aria-label="I understand these references will break"
+              />
+              I understand these references will break.
+            </label>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            {binaryMoveReview && !binaryMoveReview.movesSource ? (
+              <Button
+                variant="outline"
+                disabled={binaryCopyMutation.isPending}
+                onClick={() => {
+                  const review = binaryMoveReview;
+                  setBinaryMoveReview(null);
+                  binaryCopyMutation.mutate(review.binaryMoves, {
+                    onSuccess: () => review.onDone?.(),
+                  });
+                }}
+              >
+                Copy, keep old URLs
+              </Button>
+            ) : null}
+            <AlertDialogAction
+              disabled={
+                !binaryMoveReview ||
+                (binaryMoveReview.review.scan.known.length > 0 &&
+                  !binaryMoveReview.acknowledged)
+              }
+              onClick={() => {
+                const review = binaryMoveReview;
+                setBinaryMoveReview(null);
+                if (!review) return;
+                moveMutation.mutate(review.moves, {
+                  onSuccess: () => review.onDone?.(),
+                });
+              }}
+            >
+              Move
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
