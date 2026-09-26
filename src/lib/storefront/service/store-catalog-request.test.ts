@@ -95,4 +95,37 @@ describe("shared storefront catalog reads", () => {
     ).toBeNull();
     expect(mocks.listProducts).not.toHaveBeenCalled();
   });
+
+  it("shows an SVG inline only when it passed the current rules, and isolates it either way", async () => {
+    const assetId = "6550fe95-9fb0-4008-b837-962da1b449d7";
+    mocks.findPublishedAsset.mockResolvedValue({
+      id: assetId,
+      url: `/assets/${assetId}.svg`,
+    });
+    const svgObject = (customMetadata: Record<string, string>) => ({
+      body: "<svg/>",
+      httpEtag: '"e"',
+      customMetadata,
+      writeHttpMetadata: (headers: Headers) =>
+        headers.set("content-type", "image/svg+xml"),
+    });
+
+    const serve = async (customMetadata: Record<string, string>) => {
+      mocks.get.mockResolvedValue(svgObject(customMetadata));
+      return (await handleStoreCatalogGet(
+        request(`assets/${assetId}`),
+        context,
+      ))!;
+    };
+
+    const current = await serve({ svgValidatorVersion: "1" });
+    expect(current.headers.get("content-disposition")).toBe("inline");
+    expect(current.headers.get("content-security-policy")).toContain("sandbox");
+
+    // Checked by the string rules before the parser: a download until re-checked.
+    const legacy = await serve({ svgValidated: "true" });
+    expect(legacy.headers.get("content-disposition")).toBe("attachment");
+    expect(legacy.headers.get("content-security-policy")).toContain("sandbox");
+    expect(legacy.headers.get("x-content-type-options")).toBe("nosniff");
+  });
 });

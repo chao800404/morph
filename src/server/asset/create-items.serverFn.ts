@@ -1,3 +1,4 @@
+import { svgValidationMetadata } from "@/lib/asset/svg-delivery";
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { CreateAssetFolderDTO } from "@/lib/asset/dto/asset-folder.dto";
 import { AssetInsertDTO } from "@/lib/asset/dto/asset.dto";
@@ -347,13 +348,15 @@ async function internalCreateAsset(
           throw new Error(`File ${file.name} is not a valid image.`);
         }
 
-        let svgValidated = false;
+        // An SVG records the rules it passed, so a later version of them is
+        // not mistaken for this one (see svg-delivery.ts).
+        let svgMetadata: Record<string, string> = {};
         if (ext === ".svg") {
           const svgResult = await validateSvgContent(file);
           if (!svgResult.success) {
             throw new Error(`File ${file.name}: ${svgResult.message}.`);
           }
-          svgValidated = true;
+          svgMetadata = svgValidationMetadata(svgResult.validatorVersion);
         }
 
         const fileExtension =
@@ -379,7 +382,7 @@ async function internalCreateAsset(
                 originalName: file.name,
                 uploadedBy: user.id,
                 uploadedAt: new Date().toISOString(),
-                ...(svgValidated ? { svgValidated: "true" } : {}),
+                ...svgMetadata,
               },
             }),
             pipePromise,
@@ -393,7 +396,7 @@ async function internalCreateAsset(
               originalName: file.name,
               uploadedBy: user.id,
               uploadedAt: new Date().toISOString(),
-              ...(svgValidated ? { svgValidated: "true" } : {}),
+              ...svgMetadata,
             },
           });
         }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { describeSvgRefusal, validateSvg } from "@/lib/security/svg-validation";
 
 // Simple schemas without config dependency
 // These will be validated at runtime with actual config values
@@ -50,20 +51,16 @@ export const uploadedFileSchema = z
   });
 
 const SVG_MAX_SIZE = 2 * 1024 * 1024;
-const SVG_FORBIDDEN_MARKUP =
-  /<\s*(?:script|foreignObject|iframe|object|embed|audio|video|link|meta)\b/i;
-const SVG_EVENT_HANDLER = /\son[a-z][a-z0-9_-]*\s*=/i;
-const SVG_UNSAFE_REFERENCE =
-  /(?:href|xlink:href|src)\s*=\s*["']\s*(?:javascript:|data:text\/html|https?:|\/\/|file:)/i;
 
 export type SvgValidationResult =
-  | { success: true }
+  | { success: true; validatorVersion: number }
   | { success: false; message: string };
 
 /**
- * SVG is active XML, not a passive raster image. This lightweight allow-policy
- * rejects DTD/entities and active or externally referenced content. Serving it
- * is additionally sandboxed by the asset response route.
+ * The media library's check for an uploaded SVG: its own size limit, then
+ * `validateSvg`, the one set of SVG rules Theme public/ uses as well. The
+ * file is stored as it is or refused with the reason; nothing is rewritten.
+ * The version it passed is recorded with the object (`svg-delivery.ts`).
  */
 export async function validateSvgContent(
   file: File,
@@ -72,36 +69,22 @@ export async function validateSvgContent(
     return { success: false, message: "SVG files must be 2MB or smaller" };
   }
 
-  let source: string;
+  let bytes: Uint8Array;
   try {
-    source = await file.text();
+    bytes = new Uint8Array(await file.arrayBuffer());
   } catch {
     return { success: false, message: "Unable to read SVG content" };
   }
 
-  if (
-    source.includes("\0") ||
-    !/^\s*(?:<\?xml[^>]*>\s*)?<svg\b/i.test(source)
-  ) {
-    return { success: false, message: "File is not a valid SVG document" };
-  }
-  if (/<!DOCTYPE|<!ENTITY|<\?xml-stylesheet/i.test(source)) {
+  const result = validateSvg(bytes);
+  if (!result.ok) {
+    // The caller ends the sentence.
     return {
       success: false,
-      message: "SVG DTD and external entities are not allowed",
+      message: describeSvgRefusal(result).replace(/\.$/, ""),
     };
   }
-  if (SVG_FORBIDDEN_MARKUP.test(source) || SVG_EVENT_HANDLER.test(source)) {
-    return { success: false, message: "SVG contains active content" };
-  }
-  if (SVG_UNSAFE_REFERENCE.test(source)) {
-    return {
-      success: false,
-      message: "SVG contains an unsafe external reference",
-    };
-  }
-
-  return { success: true };
+  return { success: true, validatorVersion: result.validatorVersion };
 }
 
 // Asset upload validation schema (basic validation only)
