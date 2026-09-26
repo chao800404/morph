@@ -1,3 +1,4 @@
+import { svgIsolationHeadersFile } from "../theme-svg-isolation";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import { writeSandboxWorkspaceFile } from "@/lib/storefront/compiler/sandbox-file-writer";
 import type {
@@ -192,6 +193,13 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         );
       }
 
+      // Static assets can be answered before the Worker runs, so headers the
+      // Worker sets never reach them; the platform's `_headers` does.
+      await sandbox.writeFile(
+        `${CLIENT_DIR}/_headers`,
+        svgIsolationHeadersFile(),
+      );
+
       // `no_bundle` keeps the built chunks intact, but then the entry only
       // imports them by path — without module `rules` workerd cannot resolve
       // them and the deployment fails with "No such module".
@@ -209,7 +217,8 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         JSON.stringify(wranglerConfig, null, 2),
       );
 
-      const maxDurationMs = this.options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+      const maxDurationMs =
+        this.options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
       const execResult = await sandbox.exec(
         `${WRANGLER_BIN} deploy -c ${SERVER_DIR}/wrangler.json`,
         {
@@ -234,7 +243,9 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         const detail = stderr || stdout || "wrangler deploy exited non-zero";
         return {
           success: false,
-          reason: /timed? ?out/i.test(detail) ? "DEPLOY_TIMEOUT" : "UPLOAD_REJECTED",
+          reason: /timed? ?out/i.test(detail)
+            ? "DEPLOY_TIMEOUT"
+            : "UPLOAD_REJECTED",
           message: `Theme Worker deployment failed: ${detail.slice(0, 500)}`,
           diagnostics: [detail.slice(0, 2000)],
         };
@@ -256,7 +267,9 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
       );
       return {
         success: false,
-        reason: /timed? ?out/i.test(message) ? "DEPLOY_TIMEOUT" : "DEPLOY_ERROR",
+        reason: /timed? ?out/i.test(message)
+          ? "DEPLOY_TIMEOUT"
+          : "DEPLOY_ERROR",
         message: `Theme Worker deployment error: ${message.slice(0, 500)}`,
       };
     } finally {

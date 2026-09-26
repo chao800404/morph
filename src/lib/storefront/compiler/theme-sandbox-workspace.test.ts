@@ -351,6 +351,7 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain('? { path: "hmr" }');
     expect(viteConfig).toContain("? { usePolling: true, interval: 100 }");
     expect(viteConfig).toContain('name: "morph-preview-http-hmr"');
+    expect(viteConfig).toContain('name: "morph-preview-svg-isolation"');
     expect(viteConfig).toContain('"/__morph-theme-preview__/_morph/hmr"');
     expect(viteConfig).toContain("__morphApplyViteHmrPayload");
   });
@@ -439,9 +440,9 @@ describe("laying out the workspace a Theme is served from", () => {
       'heading":"Stored draft',
     );
     // Never in the code or the Vite config, so changing it changes neither.
-    expect(written.get("/workspace/src/morph/preview-content.ts")).not.toContain(
-      "Stored draft",
-    );
+    expect(
+      written.get("/workspace/src/morph/preview-content.ts"),
+    ).not.toContain("Stored draft");
     expect(written.get("/workspace/vite.config.ts")).not.toContain(
       "Stored draft",
     );
@@ -524,7 +525,9 @@ describe("laying out the workspace a Theme is served from", () => {
 
     expect(config).toContain(`root: ${root}`);
     expect(config).toContain(`path.relative(${root}, resolved)`);
-    expect(config).toContain(`resolved = path.resolve(${root}, source.slice(1))`);
+    expect(config).toContain(
+      `resolved = path.resolve(${root}, source.slice(1))`,
+    );
     expect(config).toContain(
       `const importerDir = importer ? path.dirname(importer) : ${root};`,
     );
@@ -538,7 +541,9 @@ describe("laying out the workspace a Theme is served from", () => {
     );
     // The route modules Vite must not treat as a Refresh boundary are named
     // where they really are, or the exclusion matches nothing.
-    expect(config).toContain(`${JSON.stringify(`${hostRoot}/src/routes/index.tsx`)}`);
+    expect(config).toContain(
+      `${JSON.stringify(`${hostRoot}/src/routes/index.tsx`)}`,
+    );
     // Aliases point into the real root too.
     expect(config).toMatch(/themeAliasDefinitions = \[/);
     expect(config).not.toContain('root: "/workspace"');

@@ -607,4 +607,33 @@ describe("published content endpoint", () => {
     );
     expect(res.status).toBe(503);
   });
+
+  it("isolates an SVG a Theme route answers with, and leaves pages alone", async () => {
+    const answers: Record<string, Response> = {
+      "/icon": new Response("<svg/>", {
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+      "/page": new Response("<p>", {
+        headers: { "Content-Type": "text/html" },
+      }),
+    };
+    const runtime = {
+      kind: "local-direct" as const,
+      handle: vi.fn(async ({ request }: { request: Request }) => ({
+        success: true as const,
+        response: answers[new URL(request.url).pathname]!,
+      })),
+    };
+    const service = new StorefrontProductionService({
+      runtime: runtime as any,
+      r2Bucket: r2(),
+      resolverDeps: resolverDeps(),
+    });
+
+    const icon = await service.handleRequest(req("/icon"));
+    expect(icon.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(icon.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    const page = await service.handleRequest(req("/page"));
+    expect(page.headers.get("Content-Security-Policy")).toBeNull();
+  });
 });

@@ -285,4 +285,31 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(result.reason).toBe("ARTIFACT_UNREADABLE");
     expect(exec).not.toHaveBeenCalled();
   });
+
+  it("writes the platform's _headers, isolating SVG, beside the client assets", async () => {
+    const written = new Map<string, string>();
+    const session = {
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async (path: string, content: any) => {
+        written.set(path, String(content));
+      }),
+      readFile: vi.fn(),
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        success: true,
+        stdout: "",
+        stderr: "",
+      })),
+      destroy: vi.fn(async () => {}),
+    };
+
+    await deployer(session).deploy(request);
+
+    const [path, content] =
+      [...written].find(([key]) => key.endsWith("/client/_headers")) ?? [];
+    expect(path).toBeDefined();
+    expect(content).toContain("/*.svg");
+    expect(content).toContain("sandbox");
+    expect(content).toContain("X-Content-Type-Options: nosniff");
+  });
 });

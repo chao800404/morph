@@ -19,6 +19,7 @@ import {
   type ContentRuntimePorts,
 } from "./storefront-content-runtime";
 import type { ThemeRuntime } from "./theme-runtime.types";
+import { isolateSvgResponse } from "../theme-svg-isolation";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
 
@@ -134,7 +135,9 @@ export class StorefrontProductionService {
     if (!runtimeResult.success) {
       return errorResponse(runtimeResult.status, runtimeResult.message);
     }
-    return runtimeResult.response;
+    // A Theme route may answer with an SVG of its own; it is isolated like
+    // any other the storefront sends.
+    return isolateSvgResponse(runtimeResult.response);
   }
 
   /**

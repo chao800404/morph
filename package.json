@@ -51,6 +51,7 @@
     "check:sql-timestamps": "node scripts/check-sql-timestamps.mjs",
     "check:like-tokens": "node --test scripts/like-token-scan.test.mjs && node scripts/check-like-tokens.mjs",
     "check:ship": "node --test scripts/ship.test.mjs",
+    "verify:svg-isolation": "tsx scripts/verify-svg-isolation.ts",
     "check:migrations": "node --test scripts/pending-migrations.test.mjs && node scripts/check-pending-migrations.mjs --files-only",
     "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",

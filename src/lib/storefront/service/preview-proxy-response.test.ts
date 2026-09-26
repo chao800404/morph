@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { uncacheablePreviewError } from "./preview-proxy-response";
+import {
+  finishPreviewResponse,
+  uncacheablePreviewError,
+} from "./preview-proxy-response";
 
 describe("uncacheablePreviewError", () => {
   it("forbids storing a refusal, keeping everything else about it", async () => {
@@ -40,5 +43,19 @@ describe("uncacheablePreviewError", () => {
       headers: { "Cache-Control": "no-cache", ETag: 'W/"1"' },
     });
     expect(uncacheablePreviewError(ok)).toBe(ok);
+  });
+});
+
+describe("finishPreviewResponse", () => {
+  it("isolates an SVG the container sent, and passes a page through", () => {
+    const svg = finishPreviewResponse(
+      new Response("<svg/>", { headers: { "Content-Type": "image/svg+xml" } }),
+    );
+    expect(svg.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(svg.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    const page = finishPreviewResponse(
+      new Response("<p>", { headers: { "Content-Type": "text/html" } }),
+    );
+    expect(page.headers.get("Content-Security-Policy")).toBeNull();
   });
 });

@@ -1,3 +1,7 @@
+import {
+  isSvgContentType,
+  SVG_ISOLATION_HEADERS,
+} from "../theme-svg-isolation";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import type {
   CanonicalThemeBuildManifest,
@@ -216,7 +220,10 @@ export async function serveThemeArtifact(
   }
 
   const rawEntry =
-    policy.entryOverride || manifest.artifactEntry || manifest.entry || "index.html";
+    policy.entryOverride ||
+    manifest.artifactEntry ||
+    manifest.entry ||
+    "index.html";
   let defaultEntry: string;
   try {
     defaultEntry = sanitizeArtifactPath(rawEntry);
@@ -338,6 +345,12 @@ export async function serveThemeArtifact(
   }
   if (etag) headers.set("ETag", etag);
   headers.set("Cache-Control", cacheControl);
+
+  if (isSvgContentType(contentType)) {
+    for (const [name, value] of Object.entries(SVG_ISOLATION_HEADERS)) {
+      headers.set(name, value);
+    }
+  }
 
   if (isHtml) {
     if (policy.htmlFrameOptions) {

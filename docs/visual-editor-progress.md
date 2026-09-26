@@ -739,6 +739,7 @@ Theme 可以有自己的 `public/`：logo、背景圖、字型與 Vite／TanStac
 - **Assets 的「Site public/」（3b）**：Assets 側欄新增子項目，列出與 Code 模式同一份 `public/`（資料夾瀏覽、縮圖、上傳、替換、刪除前審查、改名／搬移時確認改寫引用），並說明發布後公開、不能設為私有。縮圖走新的 admin 讀取入口，只在路徑目前仍是所要求的 digest 時送出 bytes。證據：真實 Sandbox e2e 在搬移後開啟此頁，讀回的預覽 bytes 與上傳時 SHA-256 相同，錯誤 digest 回 404。
 - **從媒體庫複製到 `public/`（第 4 項）**：Code 模式 Assets 面板與 Assets 的 Site public/ 都能把媒體庫圖片複製成 Theme 自己的檔案，複製前說明發布後公開、與媒體庫脫鉤。伺服器讀媒體庫 bytes 後走同一個二進位寫入。證據：真實 Sandbox e2e 經 Assets 上傳一張 PNG，再經「Add from Assets」複製，預覽讀回的 bytes 與上傳時 SHA-256 相同。
 - **部署前的 migration 檢查（第 5 項）**：`pnpm run deploy` 先唯讀比對遠端 `d1_migrations` 與 `drizzle/*.sql`，有未套用、資料庫比程式碼新、或 migration 同號時停止，且不代為套用；CI 的 `pnpm check:migrations` 擋同號。證據：本地 D1（`--local --persist-to`）六種情況（全套用、少一支、多一支、空資料庫、只查檔案、未指定資料庫）結果皆符合；未對遠端執行任何指令。順帶修正 DEPLOY.md 把部署寫成 `pnpm deploy`（pnpm 內建指令）的錯誤。
+- **SVG 隔離標頭（6a）**：平台送出的每個 SVG 都帶 `sandbox` CSP 與 `nosniff`，涵蓋 Live Preview（產生的 Vite 設定中介層與 Sandbox 代理）、`serveThemeArtifact`、正式店面 Theme Worker 回應、Theme Worker 靜態資產（部署器寫入平台 `_headers`，建置產物自己的 `_headers`／`_redirects` 不部署）。`public/` 仍拒絕 SVG。證據：`scripts/verify-svg-isolation.ts` 在 Chromium、Firefox、WebKit 直接開啟會回報的 SVG，四條路徑皆不執行腳本、`<img>` 照常顯示，無標頭的對照組皆執行；真實 Vite 預覽（產生的設定）送出的 SVG 帶隔離標頭。尚未驗證：真實 Sandbox 容器＋代理的瀏覽器路徑（Code 模式無法新建 SVG，也不為測試開繞過驗證的入口，留待 6c 以 `public/` 正常上傳驗證）與部署後的 Worker。
 - **環境**：WSL 的 DNS 原本寫死 8.8.8.8 且設成不可變，高負載時頻繁逾時，影響 ship 與 Docker 建置；2026-09-25 改用 Windows 解析器後恢復。
 - **尚未做**：見 ROADMAP「Theme `public/` 與 Assets 後續」。完成度百分比未調整——`public/` 不在上方八個階段的範圍內，不拿來抬高數字。
 

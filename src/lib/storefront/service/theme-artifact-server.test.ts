@@ -85,11 +85,17 @@ describe("entry-relative sub-resource resolution", () => {
   });
 
   it("keeps path traversal refused even through the entry-relative retry", async () => {
-    for (const attempt of ["../secret", "%2e%2e%2fsecret", "assets/../../etc"]) {
+    for (const attempt of [
+      "../secret",
+      "%2e%2e%2fsecret",
+      "assets/../../etc",
+    ]) {
       const { result } = await serve(attempt);
       expect(result.success, `path ${attempt}`).toBe(false);
       if (result.success) return;
-      expect(["INVALID_PATH", "NOT_IN_MANIFEST"]).toContain(result.failure.kind);
+      expect(["INVALID_PATH", "NOT_IN_MANIFEST"]).toContain(
+        result.failure.kind,
+      );
     }
   });
 });
@@ -136,6 +142,38 @@ describe("sanitizeArtifactPath", () => {
       "%2fetc",
     ]) {
       expect(() => sanitizeArtifactPath(value), value).toThrow();
+    }
+  });
+
+  it("isolates an SVG under both policies, whatever else it serves", async () => {
+    const svgManifest = {
+      artifactEntry: "preview/index.html",
+      files: [
+        file("preview/index.html", "text/html"),
+        file("runtime/client/logo.svg", "image/svg+xml"),
+      ],
+    } as unknown as CanonicalThemeBuildManifest;
+    for (const policy of [
+      PREVIEW_ARTIFACT_POLICY,
+      PRODUCTION_ARTIFACT_POLICY,
+    ]) {
+      const result = await serveThemeArtifact({
+        request: new Request("https://example.test/"),
+        artifactPrefix: "builds/b1",
+        manifest: svgManifest,
+        artifactPath: "runtime/client/logo.svg",
+        r2Bucket: r2(),
+        policy,
+      });
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.response.headers.get("Content-Type")).toBe("image/svg+xml");
+      expect(result.response.headers.get("Content-Security-Policy")).toBe(
+        "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      );
+      expect(result.response.headers.get("X-Content-Type-Options")).toBe(
+        "nosniff",
+      );
     }
   });
 });

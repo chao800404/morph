@@ -289,6 +289,33 @@ describe("the local Live Preview transport", () => {
     }
   }, 180_000);
 
+  it("sends an SVG isolated, from the generated config's own middleware", async () => {
+    // The real Vite server, started from the generated config: an SVG the
+    // Theme's source holds leaves with the platform's isolation headers,
+    // and a module the page needs does not, or the preview would stop.
+    const server = newServer({ workspacesRoot });
+    const started = await start(server);
+    expectStarted(started);
+    await server.writeFiles("theme-a-user-1", [
+      {
+        path: "src/assets/logo.svg",
+        content:
+          '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+      },
+    ]);
+
+    const svg = await fetch(under(started.url, "src/assets/logo.svg"));
+    expect(svg.headers.get("content-type")).toMatch(/^image\/svg\+xml/);
+    expect(svg.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+    );
+    expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
+
+    const module = await fetch(under(started.url, "src/pages/index.tsx"));
+    expect(module.status).toBe(200);
+    expect(module.headers.get("content-security-policy")).toBeNull();
+  }, 180_000);
+
   it("tells an already-loaded page about an edit, over the channel the preview uses", async () => {
     // The requirement a Live Preview actually has to meet is not "a later fetch
     // returns new bytes" — that is Vite reading the disk. It is "the page that is

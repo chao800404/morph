@@ -97,7 +97,9 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
       getPublishedPageDocument: (args) =>
         storefrontContentPublicationDal.getPublishedPageDocument(args) as never,
       getPublishedRouteDocument: (args) =>
-        storefrontContentPublicationDal.getPublishedRouteDocument(args) as never,
+        storefrontContentPublicationDal.getPublishedRouteDocument(
+          args,
+        ) as never,
     },
     // Library media referenced by the live release, served to anonymous
     // visitors. The CMS `/assets` route needs a session, which a storefront
@@ -157,11 +159,9 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
           }).catch(() => {}),
         );
       }
-      // A refusal is about this moment; a browser that stores it stops asking
-      // and the preview never loads there again.
-      const { uncacheablePreviewError } =
+      const { finishPreviewResponse } =
         await import("@/lib/storefront/service/preview-proxy-response");
-      return uncacheablePreviewError(response);
+      return finishPreviewResponse(response);
     }
     return response;
   } catch {
