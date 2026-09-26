@@ -4,6 +4,7 @@ import {
   checkPublicFileWrite,
   planBinaryMoveBatch,
   publicFileDestination,
+  suggestPublicAssetPath,
 } from "./public-file-operations";
 
 const HERO = { id: "00000000-0000-4000-8000-000000000001", version: 3 };
@@ -129,5 +130,36 @@ describe("publicFileDestination", () => {
     expect(publicFileDestination("").ok).toBe(false);
     expect(publicFileDestination("../src/hero.png").ok).toBe(false);
     expect(publicFileDestination("banners/hero.svg").ok).toBe(false);
+  });
+});
+
+describe("suggestPublicAssetPath", () => {
+  const asset = (name: string, url = "/assets/abc.png") => ({ name, url });
+
+  it("names the file after the asset, URL-safe, with the stored file's extension", () => {
+    const suggest = (name: string, url?: string) =>
+      suggestPublicAssetPath({
+        folder: "public/images",
+        asset: asset(name, url),
+        existingPaths: new Set(),
+      });
+    expect(suggest("Hero Banner.PNG")).toBe("public/images/hero-banner.png");
+    expect(suggest("Café Logo (2)")).toBe("public/images/cafe-logo-2.png");
+    expect(suggest("商品圖", "/assets/abc.webp")).toBe(
+      "public/images/asset.webp",
+    );
+  });
+
+  it("does not take a path already in use", () => {
+    expect(
+      suggestPublicAssetPath({
+        folder: "public/images/",
+        asset: asset("logo"),
+        existingPaths: new Set([
+          "public/images/logo.png",
+          "public/images/logo-2.png",
+        ]),
+      }),
+    ).toBe("public/images/logo-3.png");
   });
 });

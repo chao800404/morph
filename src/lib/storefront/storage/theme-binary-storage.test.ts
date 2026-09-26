@@ -16,6 +16,7 @@ import {
   withPublicUrlRewrites,
 } from "../editor/public-url-move-batch";
 import { planConfirmedPublicUrlRewrite } from "../service/public-url-rewrite-batch";
+import { copyLibraryAssetToPublic } from "../service/library-asset-to-public";
 import { storefrontThemeFileDal } from "../dal/storefront-theme-file.dal";
 import { normalizeRevisionSnapshot } from "../compiler/theme-build-materializer";
 import {
@@ -716,6 +717,87 @@ describe("previewing a rollback over binary files", () => {
     expect(plan.unchanged).toEqual(["src/routes/index.tsx"]);
     expect(plan.restored).toEqual([]);
     expect(plan.removed).toEqual([]);
+  });
+});
+
+describe("copying a library asset into public/", () => {
+  const ASSET_ID = "22222222-2222-4222-8222-222222222222";
+
+  /** A library asset whose bytes sit where the library keeps them. */
+  function libraryAsset(bytes: Uint8Array, extension = "png") {
+    const url = `/assets/${ASSET_ID}.${extension}`;
+    r2.objects.set(url.slice(1), new Uint8Array(bytes));
+    return {
+      findAsset: async (id: string) =>
+        id === ASSET_ID ? { id, url, size: bytes.byteLength } : null,
+      readAssetBytes: async (key: string) => {
+        const object = await r2.bucket.get(key);
+        return object ? new Uint8Array(await object.arrayBuffer()) : null;
+      },
+      saveBinaryFile: d1ThemeSourceStore.saveBinaryFile,
+    };
+  }
+
+  it("stores the library's bytes as the Theme's own, by their digest", async () => {
+    seedSource();
+    const bytes = png(120, 3);
+    const before = generation();
+
+    const result = await copyLibraryAssetToPublic(libraryAsset(bytes), {
+      storefrontId: STORE,
+      themeId: THEME,
+      assetId: ASSET_ID,
+      path: "public/images/logo.png",
+      expectedSourceGeneration: before,
+    });
+
+    expect(result).toMatchObject({ ok: true, sourceGeneration: before + 1 });
+    expect(fileRow("public/images/logo.png")).toMatchObject({
+      encoding: "binary",
+      blob_digest: sha256(bytes),
+      size_bytes: 120,
+      mime_type: "image/png",
+    });
+    // A copy: the Theme's blob, apart from the library's object.
+    expect(r2.objects.has(`theme-source/${sha256(bytes)}`)).toBe(true);
+    expect(r2.objects.has(`assets/${ASSET_ID}.png`)).toBe(true);
+  });
+
+  it("refuses a format public/ does not serve, and writes nothing", async () => {
+    seedSource();
+    const before = generation();
+    const svg = new TextEncoder().encode("<svg onload=alert(1)>");
+
+    await expect(
+      copyLibraryAssetToPublic(libraryAsset(svg, "svg"), {
+        storefrontId: STORE,
+        themeId: THEME,
+        assetId: ASSET_ID,
+        path: "public/images/logo.png",
+        expectedSourceGeneration: before,
+      }),
+    ).rejects.toThrow("THEME_PUBLIC_FILE_REFUSED");
+    expect(generation()).toBe(before);
+    expect(fileRow("public/images/logo.png")).toBeUndefined();
+  });
+
+  it("does not write over a file already at the path", async () => {
+    seedSource();
+    const existing = png(50, 1);
+    await upload("public/images/logo.png", existing);
+
+    await expect(
+      copyLibraryAssetToPublic(libraryAsset(png(60, 2)), {
+        storefrontId: STORE,
+        themeId: THEME,
+        assetId: ASSET_ID,
+        path: "public/images/logo.png",
+        expectedSourceGeneration: generation(),
+      }),
+    ).rejects.toThrow("CONFLICT");
+    expect(fileRow("public/images/logo.png")?.blob_digest).toBe(
+      sha256(existing),
+    );
   });
 });
 

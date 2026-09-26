@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SelectedAsset } from "@/components/asset/asset-tile";
 import { EditorCodeAssetsPanel } from "./editor-code-assets-panel";
 
 const mocks = vi.hoisted(() => ({
@@ -55,13 +56,13 @@ beforeEach(() => {
   });
 });
 
-function renderPanel() {
+function renderPanel(onCopyToPublic?: (asset: SelectedAsset) => void) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <EditorCodeAssetsPanel />
+      <EditorCodeAssetsPanel onCopyToPublic={onCopyToPublic} />
     </QueryClientProvider>,
   );
 }
@@ -103,7 +104,7 @@ describe("EditorCodeAssetsPanel", () => {
     );
   });
 
-  it("offers no way to write an asset into Theme code", async () => {
+  it("offers no way to write a library URL into Theme code", async () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: /^T21-1-1/ }));
@@ -115,5 +116,32 @@ describe("EditorCodeAssetsPanel", () => {
     expect(
       screen.getByText(/choose it in a content field's Assets picker/i),
     ).toBeTruthy();
+  });
+
+  it("offers a copy into public/ instead, when the workspace can make one", async () => {
+    const onCopyToPublic = vi.fn();
+    renderPanel(onCopyToPublic);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^T21-1-1/ }));
+    await screen.findByText("T21 / T21-1-1");
+
+    // Still no library URL to paste into code: only a copy the site owns.
+    expect(
+      screen.queryByRole("button", { name: /insert|use in code/i }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy to public/…" }));
+    expect(onCopyToPublic).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ASSET_ID, name: "T21-1-1" }),
+    );
+  });
+
+  it("does not offer to copy a video, which public/ does not serve", async () => {
+    renderPanel(vi.fn());
+
+    fireEvent.click(screen.getByRole("button", { name: "Videos" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^T21-1-1/ }));
+    expect(
+      screen.queryByRole("button", { name: "Copy to public/…" }),
+    ).toBeNull();
   });
 });

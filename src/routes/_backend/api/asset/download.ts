@@ -1,6 +1,7 @@
 import { createAuth } from "@/auth";
 import { assetFolderDal } from "@/lib/asset/dal/asset-folder.dal";
 import { assetDal } from "@/lib/asset/dal/asset.dal";
+import { assetStorageKey } from "@/lib/asset/storage-key";
 import { hasAnyRole } from "@/server/middleware/auth.middleware";
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
@@ -60,10 +61,7 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
             return new Response("Asset not found", { status: 404 });
           }
 
-          const rawKey = asset.url.replace(/^\/+/, "");
-          const key = rawKey.startsWith("assets/")
-            ? rawKey
-            : `assets/${rawKey}`;
+          const key = assetStorageKey(asset.url);
           const object = await env.R2_BUCKET.get(key);
           if (!object) {
             return new Response("File not found in storage", { status: 404 });
@@ -192,9 +190,7 @@ export const Route = createFileRoute("/_backend/api/asset/download")({
         // The browser fetches every file in the manifest to build the ZIP, so
         // an unbounded folder would leave it downloading for minutes with no
         // way to tell whether it stalled. Refuse up front instead.
-        const limits = bulkOperationLimits(
-          getConfig().server.cloudflare?.plan,
-        );
+        const limits = bulkOperationLimits(getConfig().server.cloudflare?.plan);
         if (targetAssetsMap.size > limits.maxAssets) {
           return new Response(
             JSON.stringify({

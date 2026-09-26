@@ -13,7 +13,33 @@ import {
   deleteStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
+import { copyAssetToThemePublic } from "@/server/storefront/theme-public-asset-copy.serverFn";
 import { SitePublicFilesPanel } from "./index";
+
+const LIBRARY_ASSET = "44444444-4444-4444-8444-444444444444";
+
+vi.mock("@/server/storefront/theme-public-asset-copy.serverFn", () => ({
+  copyAssetToThemePublic: vi.fn(),
+}));
+
+vi.mock("@/server/asset/list-items.serverFn", () => ({
+  listItemsServerFn: vi.fn(async () => ({
+    success: true,
+    data: {
+      currentFolder: null,
+      folders: [],
+      assets: [
+        {
+          id: LIBRARY_ASSET,
+          name: "Summer Hero",
+          url: `/assets/${LIBRARY_ASSET}.webp`,
+          thumbnailUrl: null,
+        },
+      ],
+      pagination: { page: 1, limit: 12, totalAssets: 1, totalPages: 1 },
+    },
+  })),
+}));
 
 vi.mock(
   "@/server/storefront/storefront-theme-files.serverFn",
@@ -323,6 +349,49 @@ describe("SitePublicFilesPanel", () => {
           path: hero.path,
           expectedFileId: hero.id,
           expectedVersion: hero.version,
+          expectedSourceGeneration: 9,
+        },
+      }),
+    );
+  });
+
+  it("copies a library image into the open folder, saying it becomes public", async () => {
+    vi.mocked(copyAssetToThemePublic).mockResolvedValue({
+      success: true,
+      data: {
+        file: binary("public/images/summer-hero.webp"),
+        sourceGeneration: 10,
+      },
+    } as never);
+    renderPanel();
+    fireEvent.click(
+      document.querySelector('[data-site-public-folder="public/images"]')!,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Add from Assets/ }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^Summer Hero/ }),
+    );
+
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Path in public/",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("images/summer-hero.webp");
+    expect(
+      document.querySelector("[data-copy-asset-notice]")?.textContent,
+    ).toContain("cannot be made private");
+    expect(copyAssetToThemePublic).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy to public/" }));
+    await waitFor(() =>
+      expect(copyAssetToThemePublic).toHaveBeenCalledWith({
+        data: {
+          storefrontId: STORE,
+          themeId: THEME,
+          assetId: LIBRARY_ASSET,
+          path: "public/images/summer-hero.webp",
           expectedSourceGeneration: 9,
         },
       }),
