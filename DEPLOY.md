@@ -139,8 +139,15 @@ actually served.
 - An authorized user can open the dashboard
 - Asset listing and asset delivery through `/assets/*` work
 - Any feature changed by the release behaves correctly
-- An SVG the storefront serves carries the isolation headers, on the
-  storefront's own URL and on the Theme Worker's if it has one of its own:
+- The Theme Worker has no address of its own. Morph Core reaches it through
+  the service binding only; the deployer writes `workers_dev: false` and
+  `preview_urls: false`. In the Cloudflare dashboard, the Theme Worker's
+  *Domains & Routes* shows no workers.dev route and no preview URLs, and
+  `https://morph-theme-<storefront>.<subdomain>.workers.dev` does not answer
+  with the storefront — while the storefront's own domain still does, which is
+  the service binding working.
+- An SVG the storefront serves carries the isolation headers on the
+  storefront's own URL:
   `curl -sI https://<storefront>/<some>.svg` shows
   `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox`
   and `x-content-type-options: nosniff`. `pnpm verify:svg-isolation`

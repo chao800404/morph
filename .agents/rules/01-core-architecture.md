@@ -170,6 +170,7 @@ service binding 呼叫。
 
 - Workers for Platforms／dispatch namespace 是多租戶（Phase 8）的傳輸層，不得在單租戶
   路徑上引入。`ThemeRuntime` 介面已保留該實作，未來只換傳輸層，不改解析與授權邏輯。
+- **Theme Worker 沒有自己的公開入口。** 只經 Morph Core 的 service binding 到達，因為 host 解析、release、內容與 SVG 隔離都在 Morph Core；`*.workers.dev` 或版本預覽網址會繞過這一切。部署器產生的設定必須明寫 `workers_dev: false` 與 `preview_urls: false`（Wrangler 的 `workers_dev` 預設為 true，關掉它也不等於關掉預覽網址），也不得加 `routes`。`MORPH_LOCAL_THEME_ORIGIN`（`local-direct`）只供本地開發，不得指向已部署的 Theme Worker 當作正式傳輸。
 - service binding 指向固定 script 名稱，所以**部署本身就是切換**。`active_release_id`
   仍是「哪個 release 應該在線上」的唯一 SSOT，而部署是讓現實對齊 SSOT 的動作。
 - 因此啟用必須**先以 CAS 佔位、再部署**：佔位失敗者不得碰部署腳本。部署失敗必須還原

@@ -369,6 +369,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 
 | 順序 | 項目 | 類別 |
 | ---: | --- | --- |
+| 0 | ✅ Theme Worker 沒有公開入口：部署設定明寫 `workers_dev: false`、`preview_urls: false`，只經 Morph Core 的 service binding 到達（高優先，6a 期間發現） | 安全 |
 | 1 | ✅ 預覽版本帳本記錄刪除：較舊的 start 不得刪掉較新同步新增的檔案（以 `sourceGeneration` 水位完成） | 正確性 |
 | 2 | ✅ 二進位檔的重新命名、搬移、複製，以及含二進位檔的資料夾操作（`binaryCopies`，改網址前先審查引用） | 編輯操作 |
 | 3 | ✅ Assets 頁面顯示「網站 `public/`」分區（與 Code 模式同一份資料、同一個寫入入口）。3a：搬移／複製時經確認由伺服器以 AST 改寫 Theme 原始碼中的網址引用；3b：Assets 側欄子項目「Site public/」、admin 草稿預覽讀取入口（核對 digest）、與 Code 共用的寫入檢查與搬移對話框 | 介面整合 |

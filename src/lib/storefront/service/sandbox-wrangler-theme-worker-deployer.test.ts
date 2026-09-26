@@ -204,6 +204,11 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(config.name).toBe("morph-theme-sf-1");
     expect(config.main).toBe("index.js");
     expect(config.assets).toEqual({ directory: "../client" });
+    // Reached through the service binding only: no public address of its own.
+    expect(config.workers_dev).toBe(false);
+    expect(config.preview_urls).toBe(false);
+    expect(config.routes).toBeUndefined();
+    expect(config.route).toBeUndefined();
   });
 
   it("passes credentials only through the exec environment, never into the workspace", async () => {

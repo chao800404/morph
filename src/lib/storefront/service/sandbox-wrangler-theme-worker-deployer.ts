@@ -211,6 +211,14 @@ export class SandboxWranglerThemeWorkerDeployer implements ThemeWorkerDeployer {
         assets: { directory: "../client" },
         no_bundle: true,
         rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],
+        // No public address of its own. Morph Core reaches the Theme Worker
+        // through a service binding only, after resolving the storefront's
+        // host, release and content; a `*.workers.dev` URL or a version's
+        // preview URL would serve the same Worker around all of that.
+        // Written out because Wrangler defaults `workers_dev` to true, and
+        // turning it off does not by itself turn preview URLs off.
+        workers_dev: false,
+        preview_urls: false,
       };
       await sandbox.writeFile(
         `${SERVER_DIR}/wrangler.json`,
