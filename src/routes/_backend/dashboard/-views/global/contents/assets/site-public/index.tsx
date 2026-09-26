@@ -1,3 +1,6 @@
+import { AssetLibraryPicker } from "@/components/asset/asset-library-picker";
+import type { SelectedAsset } from "@/components/asset/asset-tile";
+import { CopyAssetToPublicForm } from "@/components/theme-public/copy-asset-to-public-form";
 import {
   PublicUrlMoveDialog,
   type PublicUrlMoveReviewState,
@@ -35,6 +38,7 @@ import {
   checkPublicFileWrite,
   planBinaryMoveBatch,
   publicFileDestination,
+  suggestPublicAssetPath,
 } from "@/lib/storefront/editor/public-file-operations";
 import type { PublicUrlRewriteRequest } from "@/lib/storefront/editor/public-url-move-batch";
 import { reviewPublicUrlMove } from "@/lib/storefront/editor/public-url-move-review";
@@ -59,6 +63,7 @@ import {
   deleteStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
+import { copyAssetToThemePublic } from "@/server/storefront/theme-public-asset-copy.serverFn";
 import { storefrontQueries } from "@queries/storefront.queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -66,6 +71,7 @@ import {
   FileType,
   Folder,
   FolderPlus,
+  ImagePlus,
   MoreHorizontal,
   Upload,
 } from "lucide-react";
@@ -172,6 +178,10 @@ export function SitePublicFilesPanel({
     null,
   );
   const [busy, setBusy] = useState(false);
+  /** Copying from the library: picking an asset, then confirming its path. */
+  const [adding, setAdding] = useState<{ asset: SelectedAsset | null } | null>(
+    null,
+  );
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
   const replacingRef = useRef<StorefrontThemeBinaryFileDTO | null>(null);
@@ -399,6 +409,28 @@ export function SitePublicFilesPanel({
     });
   };
 
+  const existingPaths = () =>
+    new Set([...binaryByPath.keys(), ...sourceFiles.map((file) => file.path)]);
+
+  const copyFromAssets = (asset: SelectedAsset, path: string) => {
+    setAdding(null);
+    if (!data) return;
+    void run(async () => {
+      const result = await copyAssetToThemePublic({
+        data: {
+          storefrontId,
+          themeId,
+          assetId: asset.id,
+          path,
+          expectedSourceGeneration: data.sourceGeneration,
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      setFolder(path.slice(0, path.lastIndexOf("/")));
+      toast.success(`Copied ${asset.name} to ${path}`);
+    });
+  };
+
   const addFolder = () => {
     const name = (newFolderName ?? "").trim().replace(/^\/+|\/+$/g, "");
     setNewFolderName(null);
@@ -430,6 +462,15 @@ export function SitePublicFilesPanel({
           >
             <FolderPlus className="size-4" />
             New folder
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAdding({ asset: null })}
+            disabled={busy || !data}
+          >
+            <ImagePlus className="size-4" />
+            Add from Assets
           </Button>
           <Button
             size="sm"
@@ -736,6 +777,44 @@ export function SitePublicFilesPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={adding !== null}
+        onOpenChange={(open) => {
+          if (!open) setAdding(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl" data-add-from-assets>
+          <DialogHeader>
+            <DialogTitle>Add from Assets</DialogTitle>
+            <DialogDescription>
+              {adding?.asset
+                ? "Choose where the copy goes in public/."
+                : "Choose an image from the media library to copy into public/."}
+            </DialogDescription>
+          </DialogHeader>
+          {adding?.asset ? (
+            <CopyAssetToPublicForm
+              asset={adding.asset}
+              suggestedPath={suggestPublicAssetPath({
+                folder,
+                asset: adding.asset,
+                existingPaths: existingPaths(),
+              })}
+              existingPaths={existingPaths()}
+              pending={busy}
+              onCancel={() => setAdding({ asset: null })}
+              onConfirm={(path) => copyFromAssets(adding.asset!, path)}
+            />
+          ) : adding ? (
+            <AssetLibraryPicker
+              assetType="image"
+              selectedIds={[]}
+              onToggle={(asset) => setAdding({ asset })}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <PublicUrlMoveDialog
         review={moveReview}

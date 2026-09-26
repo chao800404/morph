@@ -1,20 +1,27 @@
 import type { SelectedAsset } from "@/components/asset/asset-tile";
 import { AssetLibraryPicker } from "@/components/asset/asset-library-picker";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Info } from "lucide-react";
+import { Copy, Info } from "lucide-react";
 import { useState } from "react";
 import { EditorMediaAssetIdentity } from "./editor-media-asset-identity";
 
 /**
  * The Asset library, browsable from Code mode.
  *
- * Read-only on purpose. A library image is chosen through a content field,
- * which stores the asset's id and is what publishing, the preview and the
- * library's deletion guard all read. A reference written into Theme source
- * would be invisible to all three, so this panel lets an author find and
- * inspect assets without offering a way to hard-code one.
+ * It never hands out a library URL to write into Theme source. A library
+ * image is chosen through a content field, which stores the asset's id and is
+ * what publishing, the preview and the library's deletion guard all read; a
+ * URL in source would be invisible to all three. What code can use instead is
+ * a copy in the Theme's own `public/` (`onCopyToPublic`), which the Theme then
+ * owns and publishes like any file of its own.
  */
-export function EditorCodeAssetsPanel() {
+export function EditorCodeAssetsPanel({
+  onCopyToPublic,
+}: {
+  /** Offered for an image when given; the caller confirms and copies. */
+  onCopyToPublic?: (asset: SelectedAsset) => void;
+} = {}) {
   const [assetType, setAssetType] = useState<"image" | "video">("image");
   const [viewed, setViewed] = useState<SelectedAsset | null>(null);
 
@@ -83,15 +90,28 @@ export function EditorCodeAssetsPanel() {
             assetId={viewed.id}
             storedName={viewed.name}
           />
+          {onCopyToPublic && assetType === "image" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => onCopyToPublic(viewed)}
+              data-copy-asset-to-public-open
+            >
+              <Copy className="size-3.5" />
+              Copy to public/…
+            </Button>
+          ) : null}
         </section>
       ) : null}
 
       <p className="flex gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
         <Info className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
         <span>
-          To use an asset, choose it in a content field&apos;s Assets picker.
-          Referencing library assets directly from Theme code is not supported
-          yet.
+          To let editors change an image, choose it in a content field&apos;s
+          Assets picker. To use one in code by URL, copy it into public/: the
+          copy belongs to the site and is public once published.
         </span>
       </p>
     </div>

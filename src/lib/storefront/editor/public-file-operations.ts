@@ -121,3 +121,31 @@ export function publicFileDestination(
   }
   return { ok: true, path };
 }
+
+/**
+ * Where a library asset copied into `folder` would land, as a path an author
+ * can accept or change: the asset's name as a URL-safe file name with the
+ * extension of the stored file, made unique among `existingPaths`.
+ */
+export function suggestPublicAssetPath(input: {
+  folder: string;
+  asset: Readonly<{ name: string; url: string }>;
+  existingPaths: ReadonlySet<string>;
+}): string {
+  const extension = /\.([a-z0-9]+)$/i.exec(input.asset.url)?.[1]?.toLowerCase();
+  const stem =
+    input.asset.name
+      .replace(/\.[a-z0-9]+$/i, "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^[-.]+|[-.]+$/g, "") || "asset";
+  const folder = input.folder.replace(/\/+$/, "");
+  const at = (suffix: string) =>
+    `${folder}/${stem}${suffix}${extension ? `.${extension}` : ""}`;
+  let path = at("");
+  for (let n = 2; input.existingPaths.has(path); n += 1) path = at(`-${n}`);
+  return path;
+}

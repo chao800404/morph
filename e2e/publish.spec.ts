@@ -435,6 +435,75 @@ test.describe("publish loop", () => {
         body: await assets.screenshot(),
         contentType: "image/png",
       });
+
+      // A library image copied into public/. Uploaded to Assets as any
+      // image is, then copied through "Add from Assets": the server reads
+      // the library's bytes and writes them as the Theme's own file, which
+      // the preview then serves byte for byte.
+      const libraryName = `e2e-library-${randomUUID().slice(0, 8)}`;
+      const libraryPng = Buffer.from(ONE_PIXEL_PNG_BASE64, "base64");
+      const librarySha256 = createHash("sha256")
+        .update(libraryPng)
+        .digest("hex");
+      await assets.goto("/dashboard/assets/create?variant=upload", {
+        waitUntil: "domcontentloaded",
+      });
+      // The form opens over the Assets list, which has its own Create
+      // menu and drop zone: everything below is looked for inside it.
+      const createForm = assets.getByLabel("Create Asset");
+      await createForm.locator('input[type="file"]').setInputFiles({
+        name: `${libraryName}.png`,
+        mimeType: "image/png",
+        buffer: libraryPng,
+      });
+      // By keyboard: the dev server's TanStack Devtools button sits over the
+      // form's bottom-right corner, where Create is, and takes the click.
+      await createForm
+        .getByRole("button", { name: "Create", exact: true })
+        .focus();
+      await assets.keyboard.press("Enter");
+      // The form closes back to the Assets list once the upload is saved.
+      await expect(assets).toHaveURL(/\/dashboard\/assets\/?(\?.*)?$/, {
+        timeout: 45_000,
+      });
+
+      const copied = `public/images/${libraryName}.png`;
+      await assets.goto("/dashboard/site-public", {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(async () => {
+        await assets
+          .locator('[data-site-public-folder="public/images"]')
+          .click({ timeout: 5_000 });
+        await assets
+          .getByRole("button", { name: /Add from Assets/ })
+          .click({ timeout: 5_000 });
+        await assets
+          .getByRole("button", { name: new RegExp(`^${libraryName}`) })
+          .click({ timeout: 5_000 });
+      }).toPass({ timeout: 60_000 });
+      await expect(
+        assets.getByRole("textbox", { name: "Path in public/" }),
+      ).toHaveValue(`images/${libraryName}.png`);
+      await expect(assets.locator("[data-copy-asset-notice]")).toContainText(
+        "cannot be made private",
+      );
+      await assets.getByRole("button", { name: "Copy to public/" }).click();
+
+      const copiedThumbnail = assets.locator(
+        `[data-site-public-thumbnail="${copied}"]`,
+      );
+      await expect(copiedThumbnail).toBeVisible({ timeout: 30_000 });
+      const copiedPreview = await assets.request.get(
+        (await copiedThumbnail.getAttribute("src"))!,
+      );
+      expect(copiedPreview.status()).toBe(200);
+      expect(copiedPreview.headers()["content-type"]).toBe("image/png");
+      expect(
+        createHash("sha256")
+          .update(await copiedPreview.body())
+          .digest("hex"),
+      ).toBe(librarySha256);
       await assets.close();
     }
 
@@ -445,6 +514,10 @@ test.describe("publish loop", () => {
     });
   });
 });
+
+/** A 1×1 PNG a browser decodes, which library uploads check the format of. */
+const ONE_PIXEL_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 /**
  * What the runner needs to check the half of publishing a browser cannot see.

@@ -737,6 +737,7 @@ Theme 可以有自己的 `public/`：logo、背景圖、字型與 Vite／TanStac
   有未更新引用時預設改為「複製並更新」保留舊網址，搬移需明確確認。證據：真實 Sandbox e2e 先在 `global.css` 加入 `url()` 引用，
   經 UI 改名並確認後重新載入，讀回的樣式表已是新網址。
 - **Assets 的「Site public/」（3b）**：Assets 側欄新增子項目，列出與 Code 模式同一份 `public/`（資料夾瀏覽、縮圖、上傳、替換、刪除前審查、改名／搬移時確認改寫引用），並說明發布後公開、不能設為私有。縮圖走新的 admin 讀取入口，只在路徑目前仍是所要求的 digest 時送出 bytes。證據：真實 Sandbox e2e 在搬移後開啟此頁，讀回的預覽 bytes 與上傳時 SHA-256 相同，錯誤 digest 回 404。
+- **從媒體庫複製到 `public/`（第 4 項）**：Code 模式 Assets 面板與 Assets 的 Site public/ 都能把媒體庫圖片複製成 Theme 自己的檔案，複製前說明發布後公開、與媒體庫脫鉤。伺服器讀媒體庫 bytes 後走同一個二進位寫入。證據：真實 Sandbox e2e 經 Assets 上傳一張 PNG，再經「Add from Assets」複製，預覽讀回的 bytes 與上傳時 SHA-256 相同。
 - **環境**：WSL 的 DNS 原本寫死 8.8.8.8 且設成不可變，高負載時頻繁逾時，影響 ship 與 Docker 建置；2026-09-25 改用 Windows 解析器後恢復。
 - **尚未做**：見 ROADMAP「Theme `public/` 與 Assets 後續」。完成度百分比未調整——`public/` 不在上方八個階段的範圍內，不拿來抬高數字。
 

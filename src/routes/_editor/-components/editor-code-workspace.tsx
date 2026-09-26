@@ -67,7 +67,10 @@ import {
   THEME_PUBLIC_ACCEPT,
   themePublicUrlPath,
 } from "@/lib/storefront/theme-public-files";
-import { checkPublicFileWrite } from "@/lib/storefront/editor/public-file-operations";
+import {
+  checkPublicFileWrite,
+  suggestPublicAssetPath,
+} from "@/lib/storefront/editor/public-file-operations";
 import {
   applyStarterThemeWorkspace,
   applyThemeManifestMigrationServerFn,
@@ -165,6 +168,9 @@ import {
   type EditorCodeSearchOptions,
 } from "./editor-code-search";
 import { EditorCodeAssetsPanel } from "./editor-code-assets-panel";
+import type { SelectedAsset } from "@/components/asset/asset-tile";
+import { CopyAssetToPublicForm } from "@/components/theme-public/copy-asset-to-public-form";
+import { copyAssetToThemePublic } from "@/server/storefront/theme-public-asset-copy.serverFn";
 import { EditorCodeHistoryPanel } from "./editor-code-history-panel";
 import { EditorCodeSearchPanel } from "./editor-code-search-panel";
 import {
@@ -1779,6 +1785,54 @@ const EditorCodeWorkspaceContent = forwardRef<
    * review offers instead of moving, so the old URLs keep working until
    * their references are updated and the old files deleted.
    */
+  /** A library asset being copied into public/, while its path is chosen. */
+  const [copyingAsset, setCopyingAsset] = useState<SelectedAsset | null>(null);
+
+  /**
+   * Copies a library asset into public/ as the Theme's own file. The server
+   * reads the bytes from the library; the editor names the asset and path.
+   */
+  const copyAssetMutation = useMutation({
+    mutationFn: async ({
+      asset,
+      path,
+    }: {
+      asset: SelectedAsset;
+      path: string;
+    }) => {
+      const result = await copyAssetToThemePublic({
+        data: {
+          storefrontId,
+          themeId,
+          assetId: asset.id,
+          path,
+          expectedSourceGeneration: useThemeWorkspaceStore
+            .getState()
+            .getAcceptedSourceGeneration(workspaceScope),
+        },
+      });
+      if (!result.success) throw new Error(result.message);
+      return result.data;
+    },
+    onSuccess: async (data, { asset, path }) => {
+      useThemeWorkspaceStore
+        .getState()
+        .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
+      await queryClient.invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
+          .queryKey,
+      });
+      toast.success(
+        `Copied ${asset.name} to ${path}; use it as ${themePublicUrlPath(path)}`,
+      );
+      onRestartPreview?.();
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to copy the asset",
+      ),
+  });
+
   const binaryCopyMutation = useMutation({
     mutationFn: async ({
       copies,
@@ -4089,7 +4143,7 @@ const EditorCodeWorkspaceContent = forwardRef<
             blockedReason={rollbackBlockedReason}
           />
         ) : sideView === "assets" ? (
-          <EditorCodeAssetsPanel />
+          <EditorCodeAssetsPanel onCopyToPublic={setCopyingAsset} />
         ) : sideView === "search" ? (
           <EditorCodeSearchPanel
             files={searchFiles}
@@ -4693,6 +4747,47 @@ const EditorCodeWorkspaceContent = forwardRef<
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <Dialog
+        open={copyingAsset !== null}
+        onOpenChange={(open) => {
+          if (!open) setCopyingAsset(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Copy to public/</DialogTitle>
+            <DialogDescription>
+              Code can then use the image by its URL.
+            </DialogDescription>
+          </DialogHeader>
+          {copyingAsset ? (
+            <CopyAssetToPublicForm
+              asset={copyingAsset}
+              suggestedPath={suggestPublicAssetPath({
+                folder: "public/images",
+                asset: copyingAsset,
+                existingPaths: new Set([
+                  ...binaryFileByPath.keys(),
+                  ...files.map((file) => file.path),
+                ]),
+              })}
+              existingPaths={
+                new Set([
+                  ...binaryFileByPath.keys(),
+                  ...files.map((file) => file.path),
+                ])
+              }
+              pending={copyAssetMutation.isPending}
+              onCancel={() => setCopyingAsset(null)}
+              onConfirm={(path) => {
+                const asset = copyingAsset;
+                setCopyingAsset(null);
+                copyAssetMutation.mutate({ asset, path });
+              }}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
       <PublicUrlMoveDialog
         review={binaryMoveReview}
         pending={moveMutation.isPending || binaryCopyMutation.isPending}

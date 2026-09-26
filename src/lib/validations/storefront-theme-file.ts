@@ -242,6 +242,15 @@ export const deleteThemeFileInputSchema = z.object({
   expectedSourceGeneration: z.number().int().min(1),
 });
 
+/** A library asset copied into public/ as a new file; the server reads its bytes. */
+export const copyAssetToThemePublicInputSchema = z.object({
+  storefrontId: z.string().min(1),
+  themeId: z.string().min(1),
+  assetId: z.string().uuid(),
+  path: safeThemeFilePathSchema,
+  expectedSourceGeneration: z.number().int().min(1),
+});
+
 export const initStarterThemeFilesInputSchema = z.object({
   storefrontId: z.string().min(1),
   themeId: z.string().min(1),
