@@ -228,6 +228,8 @@ Theme 的 `public/` 與 Vite／TanStack Start 相同：檔案原樣出現在網�
 
 - **只存引用，不存內容**：workspace row 與 revision snapshot 只記 `path`、`blobDigest`（SHA-256）、`sizeBytes`、`mimeType`；bytes 只在 R2 content-addressed blob。`content: ""` 不得被當成二進位檔。
 - **唯一寫入入口**：新增／替換走 `POST /api/storefront/theme-binary-file` → `saveBinaryFile`；刪除走 `deleteStorefrontThemeFile`。兩者都要 admin session、Theme ownership、`expectedSourceGeneration` 與檔案 id／version 或 `expectMissing`。不得另開平行寫入路徑，AI 也一樣。
+- **Assets 的「Site public/」是同一份檔案的第二個介面**，不是另一個儲存：清單、上傳／替換、刪除、搬移／複製都呼叫與 Code 模式相同的入口與 batch，搬移同樣先經 `PublicUrlMoveDialog` 審查並可確認改寫引用。兩邊共用的只有純規則（`public-file-operations.ts`：寫入前檢查、純二進位搬移 batch、目的地解析）與對話框元件；Code 工作區自己的草稿與 Monaco 狀態不搬出。頁面必須說明發布後公開、不能設為私有，並把私有與商品媒體導回 Assets 媒體庫。
+- **草稿預覽讀取**：`GET /api/storefront/theme-binary-file?storefrontId&themeId&path&digest` 只給 admin，先以 `getBinaryFileByPath` 確認 Theme 所有權與該路徑目前就是這個 digest，才讀 blob（blob store 讀取時核對 digest）；路徑已換成別的 bytes 時回 404，不回舊 bytes。回應 `private, no-store`、`nosniff`、`sandbox` CSP，MIME 取自檔案紀錄。
 - **驗證以 bytes 為準**：大小取真實位元組、MIME 取自路徑副檔名並核對檔頭簽章，不信 client 宣告。v1 只收圖片與 woff/woff2；SVG 關閉（可夾帶腳本）。單檔 5 MB、合計 50 MB、最多 200 檔。
 - **路由衝突以凍結 revision 自己的路由判定**：上傳時比對 workspace 的路由，建置時再以 revision 自己的 route registry 比對一次——之後新增、與圖片同 URL 的頁面只有建置時看得到。平台保留名（`index.html`、`_headers`、`_redirects` 等）與保留前綴一律拒絕。
 - **比對一律用 digest**：尚未發布、回滾預覽、fingerprint 都以 digest 比較二進位檔；文字與二進位互換同一路徑視為修改。

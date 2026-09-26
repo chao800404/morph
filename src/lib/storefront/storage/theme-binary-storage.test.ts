@@ -421,6 +421,45 @@ describe("storing a binary file", () => {
     expect(binary && "content" in binary).toBe(false);
   });
 
+  it("reads one binary file's reference by path, for its own storefront only", async () => {
+    seedSource();
+    const bytes = png(90);
+    await upload("public/images/hero.png", bytes);
+
+    expect(
+      await d1ThemeSourceStore.getBinaryFileByPath(
+        STORE,
+        THEME,
+        "public/images/hero.png",
+      ),
+    ).toMatchObject({
+      encoding: "binary",
+      blobDigest: sha256(bytes),
+      sizeBytes: 90,
+      mimeType: "image/png",
+    });
+    // A source file is not a binary one, and another storefront's view of
+    // this Theme finds nothing.
+    expect(
+      await d1ThemeSourceStore.getBinaryFileByPath(
+        STORE,
+        THEME,
+        "src/routes/index.tsx",
+      ),
+    ).toBeNull();
+    sqlite.exec(`
+      INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at)
+      VALUES ('storefront-b', 'channel-a', 'Store B', 'draft', 'now', 'now');
+    `);
+    expect(
+      await d1ThemeSourceStore.getBinaryFileByPath(
+        "storefront-b",
+        THEME,
+        "public/images/hero.png",
+      ),
+    ).toBeNull();
+  });
+
   it("records the bytes' digest in the revision, not the empty body's", async () => {
     seedSource();
     const bytes = png(128);

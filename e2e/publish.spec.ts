@@ -281,9 +281,12 @@ test.describe("publish loop", () => {
     // image is then an unpublished change, compared by digest as source is
     // by text. The release is not touched, so the handoff still names what
     // shipped.
+    /** The bytes the draft holds, which the replacement below changes. */
+    let draftSha256 = image?.sha256;
     if (image) {
       const next = runImageBytes();
       const nextSha256 = createHash("sha256").update(next).digest("hex");
+      draftSha256 = nextSha256;
       await page
         .locator(`[data-file-tree-file="${image.path}"]`)
         .click({ button: "right" });
@@ -329,9 +332,15 @@ test.describe("publish loop", () => {
       await saveEditedSource(
         page,
         stylesheet,
+        // Written as the formatter writes it, so formatting on save changes
+        // nothing and no draft is left behind: a draft naming the URL would
+        // rightly stop the rewrite this checks.
         (source) =>
-          `${source}\n.e2e-run-image { background-image: url(${image.urlPath}); }\n`,
+          `${source.replace(/\n*$/, "\n")}\n.e2e-run-image {\n  background-image: url(${image.urlPath});\n}\n`,
       );
+      await expect(
+        page.locator("[data-editor-save-status]"),
+      ).not.toHaveAttribute("aria-label", "Saving…", { timeout: 30_000 });
 
       await page
         .locator(`[data-file-tree-file="${image.path}"]`)
@@ -384,6 +393,49 @@ test.describe("publish loop", () => {
         .poll(savedStylesheet, { timeout: 30_000 })
         .toContain("url(/images/e2e-moved.png)");
       expect(await savedStylesheet()).not.toContain(image.urlPath);
+
+      // Assets shows the same public/ folder. Its preview reads the moved
+      // file's bytes through the admin read entry, at the digest the list
+      // names, and a digest the path does not hold finds nothing.
+      const assets = await page.context().newPage();
+      await assets.goto("/dashboard/site-public", {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(assets.locator("[data-site-public-notice]")).toBeVisible({
+        timeout: 45_000,
+      });
+      await expect(async () => {
+        await assets
+          .locator('[data-site-public-folder="public/images"]')
+          .click({ timeout: 5_000 });
+        await expect(
+          assets.locator(`[data-site-public-file="${moved}"]`),
+        ).toBeVisible({ timeout: 5_000 });
+      }).toPass({ timeout: 60_000 });
+      const thumbnail = assets.locator(
+        `[data-site-public-thumbnail="${moved}"]`,
+      );
+      const src = await thumbnail.getAttribute("src");
+      expect(src).toContain(`digest=${draftSha256}`);
+      const preview = await assets.request.get(src!);
+      expect(preview.status()).toBe(200);
+      expect(preview.headers()["content-type"]).toBe("image/png");
+      expect(preview.headers()["cache-control"]).toContain("no-store");
+      expect(
+        createHash("sha256")
+          .update(await preview.body())
+          .digest("hex"),
+      ).toBe(draftSha256);
+      // The digest it was first uploaded at, which the path no longer holds.
+      const stale = await assets.request.get(
+        src!.replace(draftSha256!, image.sha256),
+      );
+      expect(stale.status()).toBe(404);
+      await test.info().attach("site-public", {
+        body: await assets.screenshot(),
+        contentType: "image/png",
+      });
+      await assets.close();
     }
 
     await writeHandoff(page, {

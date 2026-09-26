@@ -1,7 +1,29 @@
 import type { StorefrontThemeBinaryFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 
-/** Where the editor writes a binary Theme file; see `handleThemeBinaryUpload`. */
+/**
+ * Where the editor writes a binary Theme file (`handleThemeBinaryUpload`),
+ * and reads one back (`handleThemeBinaryRead`).
+ */
 export const THEME_BINARY_FILE_ENDPOINT = "/api/storefront/theme-binary-file";
+
+/**
+ * The URL of one version of a binary file's bytes, for the admin's own
+ * previews. It names the digest, so once the file is replaced it stops
+ * answering rather than showing other bytes.
+ */
+export function themeBinaryFileUrl(input: {
+  storefrontId: string;
+  themeId: string;
+  path: string;
+  blobDigest: string;
+}): string {
+  return `${THEME_BINARY_FILE_ENDPOINT}?${new URLSearchParams({
+    storefrontId: input.storefrontId,
+    themeId: input.themeId,
+    path: input.path,
+    digest: input.blobDigest,
+  })}`;
+}
 
 export type ThemeBinaryWritePrecondition =
   | Readonly<{ expectMissing: true }>

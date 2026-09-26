@@ -56,23 +56,18 @@ import {
   scanPublicUrlReferences,
   type PublicUrlScan,
 } from "@/lib/storefront/editor/public-url-references";
+import { PublicUrlReview } from "@/components/theme-public/public-url-review";
 import {
-  PublicUrlReview,
-  PublicUrlRewriteReview,
-} from "./editor-code-public-url-review";
+  PublicUrlMoveDialog,
+  type PublicUrlMoveReviewState,
+} from "@/components/theme-public/public-url-move-dialog";
 import type { PublicUrlRewriteRequest } from "@/lib/storefront/editor/public-url-move-batch";
+import { reviewPublicUrlMove } from "@/lib/storefront/editor/public-url-move-review";
 import {
-  reviewPublicUrlMove,
-  type PublicUrlMoveReview,
-} from "@/lib/storefront/editor/public-url-move-review";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  checkThemePublicPath,
-  describeThemePublicProblem,
   THEME_PUBLIC_ACCEPT,
-  THEME_PUBLIC_LIMITS,
   themePublicUrlPath,
 } from "@/lib/storefront/theme-public-files";
+import { checkPublicFileWrite } from "@/lib/storefront/editor/public-file-operations";
 import {
   applyStarterThemeWorkspace,
   applyThemeManifestMigrationServerFn,
@@ -636,18 +631,13 @@ const EditorCodeWorkspaceContent = forwardRef<
    * anything is written: what changes, what names it, and the safer choice
    * of copying and keeping the old URLs working.
    */
-  const [binaryMoveReview, setBinaryMoveReview] = useState<{
-    moves: ReadonlyArray<{ from: string; to: string }>;
-    binaryMoves: ReadonlyArray<{ from: string; to: string }>;
-    /** Whether source files move too; copying instead is offered only if not. */
-    movesSource: boolean;
-    /** The references the move can update, planned from the saved source. */
-    rewrite: PublicUrlMoveReview["rewrite"];
-    /** What names the URLs in the editor's text, when nothing is updated. */
-    review: PublicUrlReviewState;
-    acknowledged: boolean;
-    onDone?: () => void;
-  } | null>(null);
+  const [binaryMoveReview, setBinaryMoveReview] = useState<
+    | (PublicUrlMoveReviewState & {
+        moves: ReadonlyArray<{ from: string; to: string }>;
+        onDone?: () => void;
+      })
+    | null
+  >(null);
   const [starterBootstrapPlan, setStarterBootstrapPlan] =
     useState<StarterThemeBootstrapPlan | null>(null);
   const [starterBootstrapDialogOpen, setStarterBootstrapDialogOpen] =
@@ -1723,26 +1713,16 @@ const EditorCodeWorkspaceContent = forwardRef<
       try {
         for (const write of writes) {
           // Checked here only to answer sooner; the server decides.
-          const check = checkThemePublicPath(write.path);
-          if (!check.ok) {
-            throw new Error(
-              `${write.path}: ${describeThemePublicProblem(check.reason)}`,
-            );
-          }
-          if (write.bytes.size > THEME_PUBLIC_LIMITS.maxFileBytes) {
-            throw new Error(
-              `${write.path}: ${describeThemePublicProblem("file-too-large")}`,
-            );
-          }
-          if (
-            !write.replacing &&
-            (binaryFileByPath.has(write.path) ||
-              files.some((file) => file.path === write.path))
-          ) {
-            throw new Error(
-              `${write.path} already exists. Replace it from its menu instead.`,
-            );
-          }
+          const problem = checkPublicFileWrite({
+            path: write.path,
+            size: write.bytes.size,
+            replacing: write.replacing !== null,
+            existingPaths: new Set([
+              ...binaryFileByPath.keys(),
+              ...files.map((file) => file.path),
+            ]),
+          });
+          if (problem) throw new Error(problem);
           const result = await writeThemeBinaryFile({
             storefrontId,
             themeId,
@@ -2488,38 +2468,6 @@ const EditorCodeWorkspaceContent = forwardRef<
     newFolderName,
     pendingFolders,
   ]);
-
-  /** The references a reviewed move can update, when it can. */
-  const moveRewrite =
-    binaryMoveReview?.rewrite.kind === "ready"
-      ? binaryMoveReview.rewrite
-      : null;
-  const moveUpdates = moveRewrite?.plan.rewrites.length ?? 0;
-  const moveUnresolved = moveRewrite?.plan.unresolved.length ?? 0;
-  /**
-   * Moving removes the old URLs. When something may still name them — a
-   * reference the move cannot update, or, with no update at all, any
-   * reference found — the author must say they accept it.
-   */
-  const moveNeedsAcknowledgement =
-    binaryMoveReview !== null &&
-    (moveRewrite
-      ? moveUnresolved > 0
-      : binaryMoveReview.review.scan.known.length > 0);
-  /** Keeping the old files is the safer default while anything is unresolved. */
-  const copyIsDefault = moveRewrite !== null && moveUnresolved > 0;
-  const rewriteRequest = (
-    review: NonNullable<typeof binaryMoveReview>,
-  ): PublicUrlRewriteRequest | undefined =>
-    review.rewrite.kind === "ready" && review.rewrite.plan.rewrites.length > 0
-      ? {
-          moves: review.binaryMoves.map((move) => ({ ...move })),
-          expected: review.rewrite.summary,
-          acknowledgeUnresolved: review.acknowledged,
-        }
-      : undefined;
-  const referenceCount = (count: number) =>
-    `${count} reference${count === 1 ? "" : "s"}`;
 
   /** Theme source as the editor holds it, including unsaved drafts. */
   const currentSourceTexts = () =>
@@ -4745,136 +4693,39 @@ const EditorCodeWorkspaceContent = forwardRef<
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <AlertDialog
-        open={binaryMoveReview !== null}
-        onOpenChange={(open) => {
-          if (!open) setBinaryMoveReview(null);
+      <PublicUrlMoveDialog
+        review={binaryMoveReview}
+        pending={moveMutation.isPending || binaryCopyMutation.isPending}
+        onClose={() => setBinaryMoveReview(null)}
+        onAcknowledgedChange={(acknowledged) =>
+          setBinaryMoveReview((current) =>
+            current ? { ...current, acknowledged } : current,
+          )
+        }
+        onChoose={({ kind, publicUrlRewrite }) => {
+          const review = binaryMoveReview;
+          setBinaryMoveReview(null);
+          if (!review) return;
+          const onSuccess = () => review.onDone?.();
+          if (kind === "copy") {
+            binaryCopyMutation.mutate(
+              {
+                copies: review.binaryMoves,
+                ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
+              },
+              { onSuccess },
+            );
+          } else {
+            moveMutation.mutate(
+              {
+                moves: review.moves,
+                ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
+              },
+              { onSuccess },
+            );
+          }
         }}
-      >
-        <AlertDialogContent data-binary-move-review>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Move files in public/?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The storefront serves these files at their paths, so moving them
-              changes their URLs.{" "}
-              {moveRewrite
-                ? "References written out in Theme source are updated in the same save. Copying keeps the old URLs working for anything that is not."
-                : "Copying keeps the old URLs working until the references are updated and the old files deleted."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {binaryMoveReview && moveRewrite ? (
-            <PublicUrlRewriteReview
-              changes={binaryMoveReview.review.changes.map((change) => ({
-                from: change.from,
-                to: change.to ?? change.from,
-              }))}
-              plan={moveRewrite.plan}
-            />
-          ) : null}
-          {binaryMoveReview && !moveRewrite ? (
-            <>
-              {binaryMoveReview.rewrite.kind === "blocked" ? (
-                <p
-                  className="text-xs text-amber-700 dark:text-amber-400"
-                  data-public-url-rewrite-blocked
-                >
-                  Unsaved changes in{" "}
-                  {binaryMoveReview.rewrite.unsavedPaths.join(", ")} name these
-                  URLs. Save or discard them to have references updated with the
-                  move.
-                </p>
-              ) : binaryMoveReview.rewrite.kind === "unavailable" ? (
-                <p className="text-xs text-muted-foreground">
-                  References cannot be updated with this move:{" "}
-                  {binaryMoveReview.rewrite.reason}
-                </p>
-              ) : null}
-              <PublicUrlReview
-                changes={binaryMoveReview.review.changes}
-                scan={binaryMoveReview.review.scan}
-              />
-            </>
-          ) : null}
-          {binaryMoveReview && moveNeedsAcknowledgement ? (
-            <label className="flex items-center gap-2 text-xs">
-              <Checkbox
-                checked={binaryMoveReview.acknowledged}
-                onCheckedChange={(checked) =>
-                  setBinaryMoveReview((current) =>
-                    current
-                      ? { ...current, acknowledged: checked === true }
-                      : current,
-                  )
-                }
-                aria-label="I understand these references will break"
-              />
-              {moveRewrite
-                ? `I understand the ${referenceCount(moveUnresolved)} not updated may break if I move.`
-                : "I understand these references will break."}
-            </label>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            {binaryMoveReview && !binaryMoveReview.movesSource ? (
-              <Button
-                variant={copyIsDefault ? "default" : "outline"}
-                disabled={binaryCopyMutation.isPending}
-                data-binary-move-copy
-                onClick={() => {
-                  const review = binaryMoveReview;
-                  setBinaryMoveReview(null);
-                  const publicUrlRewrite = rewriteRequest(review);
-                  binaryCopyMutation.mutate(
-                    {
-                      copies: review.binaryMoves,
-                      ...(publicUrlRewrite
-                        ? {
-                            // The old files stay, so their URLs keep working.
-                            publicUrlRewrite: {
-                              ...publicUrlRewrite,
-                              acknowledgeUnresolved: false,
-                            },
-                          }
-                        : {}),
-                    },
-                    { onSuccess: () => review.onDone?.() },
-                  );
-                }}
-              >
-                {moveUpdates > 0
-                  ? `Copy and update ${referenceCount(moveUpdates)}`
-                  : "Copy, keep old URLs"}
-              </Button>
-            ) : null}
-            <Button
-              variant={copyIsDefault ? "outline" : "default"}
-              disabled={
-                !binaryMoveReview ||
-                moveMutation.isPending ||
-                (moveNeedsAcknowledgement && !binaryMoveReview.acknowledged)
-              }
-              data-binary-move-confirm
-              onClick={() => {
-                const review = binaryMoveReview;
-                setBinaryMoveReview(null);
-                if (!review) return;
-                const publicUrlRewrite = rewriteRequest(review);
-                moveMutation.mutate(
-                  {
-                    moves: review.moves,
-                    ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
-                  },
-                  { onSuccess: () => review.onDone?.() },
-                );
-              }}
-            >
-              {moveUpdates > 0
-                ? `Move and update ${referenceCount(moveUpdates)}`
-                : "Move"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      />
     </div>
   );
 });
