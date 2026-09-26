@@ -462,7 +462,10 @@ test.describe("publish loop", () => {
         .getByRole("button", { name: "Create", exact: true })
         .focus();
       await assets.keyboard.press("Enter");
-      await expect(assets).not.toHaveURL(/\/create/, { timeout: 45_000 });
+      // The form closes back to the Assets list once the upload is saved.
+      await expect(assets).toHaveURL(/\/dashboard\/assets\/?(\?.*)?$/, {
+        timeout: 45_000,
+      });
 
       const copied = `public/images/${libraryName}.png`;
       await assets.goto("/dashboard/site-public", {
