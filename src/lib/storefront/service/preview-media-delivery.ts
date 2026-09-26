@@ -1,3 +1,5 @@
+import { applyLibrarySvgHeaders } from "@/lib/asset/svg-delivery";
+import { isSvgContentType } from "@/lib/storefront/theme-svg-isolation";
 import {
   isLibraryStorageKey,
   PREVIEW_MEDIA_PATH_PREFIX,
@@ -140,8 +142,8 @@ export async function servePreviewMedia(
     "content-security-policy",
     "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
   );
-  if (contentType === "image/svg+xml") {
-    headers.set("content-disposition", "attachment");
+  if (isSvgContentType(contentType)) {
+    applyLibrarySvgHeaders(headers, null, { inlineAllowed: false });
   }
 
   if (request.headers.get("if-none-match") === object.httpEtag) {

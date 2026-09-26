@@ -1,3 +1,4 @@
+import { applyLibrarySvgHeaders } from "@/lib/asset/svg-delivery";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import {
   lookupPublishedMedia,
@@ -19,7 +20,7 @@ import {
   type ContentRuntimePorts,
 } from "./storefront-content-runtime";
 import type { ThemeRuntime } from "./theme-runtime.types";
-import { isolateSvgResponse } from "../theme-svg-isolation";
+import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
 
@@ -232,9 +233,10 @@ export class StorefrontProductionService {
     );
     headers.set("X-Content-Type-Options", "nosniff");
     // Never inline: a stored SVG is script-capable, and this route has no
-    // session to lose but the storefront's own origin to protect.
-    if (headers.get("Content-Type") === "image/svg+xml") {
-      headers.set("Content-Disposition", "attachment");
+    // session to lose but the storefront's own origin to protect. Isolated
+    // too, whatever its stored verdict.
+    if (isSvgContentType(headers.get("Content-Type"))) {
+      applyLibrarySvgHeaders(headers, null, { inlineAllowed: false });
     }
 
     if (request.headers.get("if-none-match") === headers.get("ETag")) {

@@ -636,4 +636,33 @@ describe("published content endpoint", () => {
     const page = await service.handleRequest(req("/page"));
     expect(page.headers.get("Content-Security-Policy")).toBeNull();
   });
+
+  it("sends published SVG media as an isolated download, whatever its stored verdict", async () => {
+    const key = "assets/11111111-1111-4111-8111-111111111111.svg";
+    const service = new StorefrontProductionService({
+      runtime: new UnavailableThemeRuntime(),
+      r2Bucket: {
+        get: vi.fn(async () => ({
+          body: "<svg/>",
+          httpMetadata: { contentType: "image/svg+xml" },
+          // Even a file that passed the current rules is never inline here.
+          customMetadata: { svgValidatorVersion: "1" },
+        })),
+      } as any,
+      resolverDeps: resolverDeps(),
+      mediaPorts: {
+        listPublishedAssetKeys: async () =>
+          new Map([["11111111-1111-4111-8111-111111111111", new Set([key])]]),
+      },
+    });
+
+    const res = await service.handleRequest(
+      req("/_storefront-media/11111111-1111-4111-8111-111111111111"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Disposition")).toBe("attachment");
+    expect(res.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
 });

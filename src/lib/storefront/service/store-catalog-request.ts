@@ -1,3 +1,5 @@
+import { applyLibrarySvgHeaders } from "@/lib/asset/svg-delivery";
+import { isSvgContentType } from "@/lib/storefront/theme-svg-isolation";
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { storeCatalogDal } from "../dal/store-catalog.dal";
@@ -65,16 +67,10 @@ export async function handleStoreCatalogGet(
       );
     const headers = new Headers();
     object.writeHttpMetadata(headers);
-    if (headers.get("content-type") === "image/svg+xml") {
-      const isValidatedSvg = object.customMetadata?.svgValidated === "true";
-      headers.set(
-        "content-disposition",
-        isValidatedSvg ? "inline" : "attachment",
-      );
-      headers.set(
-        "content-security-policy",
-        "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
-      );
+    if (isSvgContentType(headers.get("content-type"))) {
+      applyLibrarySvgHeaders(headers, object.customMetadata, {
+        inlineAllowed: true,
+      });
     }
     headers.set("etag", object.httpEtag);
     headers.set("cache-control", "public, max-age=3600");
