@@ -76,6 +76,8 @@ export type LocalPreviewSidecarApplyFilesRequest = Readonly<{
   previewId: string;
   /** Each with the version it is, or was edited from; see `preview-write-fence`. */
   files: readonly { path: string; content: string; fence: number }[];
+  /** The source generation the sync was checked at, read with the saved files. */
+  generation?: number | null;
 }>;
 
 export type LocalPreviewSidecarApplyFilesResult = Readonly<{

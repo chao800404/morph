@@ -95,7 +95,11 @@ async function readBody(
   return { ok: true, bytes: Buffer.concat(chunks) };
 }
 
-function respond(response: ServerResponse, status: number, body: unknown): void {
+function respond(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+): void {
   const payload = JSON.stringify(body ?? {});
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -180,8 +184,9 @@ export async function startLocalPreviewSidecar(
                 request.headers[LOCAL_PREVIEW_SIDECAR_PREVIEW_ID_HEADER],
               ) ?? "",
             digest:
-              headerValue(request.headers[LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER]) ??
-              "",
+              headerValue(
+                request.headers[LOCAL_PREVIEW_SIDECAR_DIGEST_HEADER],
+              ) ?? "",
             sizeBytes: Number(
               headerValue(request.headers[LOCAL_PREVIEW_SIDECAR_SIZE_HEADER]),
             ),
@@ -242,11 +247,19 @@ export async function startLocalPreviewSidecar(
         const applyInput = input as {
           previewId: string;
           files: readonly { path: string; content: string; fence: number }[];
+          generation?: unknown;
         };
         respond(
           response,
           200,
-          await previews.writeFiles(applyInput.previewId, applyInput.files),
+          await previews.writeFiles(
+            applyInput.previewId,
+            applyInput.files,
+            typeof applyInput.generation === "number" &&
+              Number.isInteger(applyInput.generation)
+              ? applyInput.generation
+              : null,
+          ),
         );
         return;
       }
@@ -265,7 +278,9 @@ export async function startLocalPreviewSidecar(
     void handle(operation, request, response).catch((error: unknown) => {
       respond(response, 500, {
         error:
-          error instanceof Error ? error.message : "LOCAL_PREVIEW_SIDECAR_FAILED",
+          error instanceof Error
+            ? error.message
+            : "LOCAL_PREVIEW_SIDECAR_FAILED",
       });
     });
   });

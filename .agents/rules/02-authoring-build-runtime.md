@@ -523,7 +523,9 @@ Morph 可以同時存在兩種 Preview，但用途必須清楚。
 
 它不是 production proof。
 
-**預覽工作區只有一個寫入順序。** 同一個 preview 的即時同步與 start 都在容器內的同一把鎖下判定版本並寫入（`applyFencedRequest`）：start 先把檔案暫存在 `/tmp`（不持鎖），再以 `op: "start"` 在鎖內比對版本帳本——任何檔案帳本已有較新版本就整批拒絕（`preview-start-stale`），工作區不動；通過才刪除計畫外檔案、搬入暫存檔、抬高帳本、最後提交 manifest 與 marker。鎖在容器裡，所以跨 Worker instance 也成立；不得改回「寫完再合併帳本」或只靠單一程序內的佇列。本機 sidecar 用同一條規則（`planFencedStart`）。已知缺口：帳本不記刪除，較新同步新增的檔案仍可能被較舊 start 的清理刪除。
+**預覽工作區只有一個寫入順序。** 同一個 preview 的即時同步與 start 都在容器內的同一把鎖下判定版本並寫入（`applyFencedRequest`）：start 先把檔案暫存在 `/tmp`（不持鎖），再以 `op: "start"` 在鎖內比對版本帳本——任何檔案帳本已有較新版本就整批拒絕（`preview-start-stale`），工作區不動；通過才刪除計畫外檔案、搬入暫存檔、抬高帳本、最後提交 manifest 與 marker。鎖在容器裡，所以跨 Worker instance 也成立；不得改回「寫完再合併帳本」或只靠單一程序內的佇列。本機 sidecar 用同一條規則（`planFencedStart`）。
+
+**帳本同時記 Theme 的 `sourceGeneration` 水位。** 逐檔版本只看得到 start 帶來的路徑；較新的存檔新增的檔案不在舊 start 的計畫裡，沒有任何版本指得到它，舊 start 會把它當成計畫外檔案刪掉。所以 start 帶著讀取當下的 generation，比水位舊就整批拒絕；同步帶著驗證它的已存檔案的 generation。兩者都必須與資料是同一個一致快照（`readAtSourceGeneration`：前後各讀一次、不同就重取），**不得在驗證之後再讀 generation 貼上去**——舊內容冒領新水位會讓真正最新的 start 被拒、讓較舊的通過。水位只在鎖內、操作成功後才推高；被拒或中途失敗不推高。逐檔版本仍保留，負責同一路徑的先後；同版本的兩份未存檔草稿互相覆蓋是另一個刻意留下的決策。
 
 **解釋器遇到不支援的語法必須明確拒絕，不得回傳 `undefined` 當作答案。** 沉默是最危險的
 回答：`typeof` 曾經回傳 `undefined`，於是 `typeof v === "string"` 對字串為假，它守著的分支

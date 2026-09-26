@@ -37,13 +37,25 @@ export type PreviewFileSyncResult =
 
 export async function syncPreviewFiles(args: {
   files: readonly PreviewSyncFile[];
-  readSaved(paths: string[]): Promise<ReadonlyMap<string, SavedThemeFile>>;
+  /**
+   * The saved files, with the source generation they were read at — one
+   * snapshot (`readAtSourceGeneration`). That generation is what the write
+   * is stamped with, so it must describe these files and nothing later.
+   */
+  readSaved(paths: string[]): Promise<{
+    files: ReadonlyMap<string, SavedThemeFile>;
+    generation: number | null;
+  }>;
   /** The passes the workspace was laid out with (bindings, hoisting). */
   prepare(
     files: readonly PreviewFileWrite[],
   ): readonly { path: string; content: unknown }[];
   isGenerated(path: string): boolean;
-  write(files: readonly FencedPreviewFileWrite[]): Promise<{
+  write(
+    files: readonly FencedPreviewFileWrite[],
+    /** The generation `readSaved` returned with the files checked here. */
+    generation: number | null,
+  ): Promise<{
     changed: string[];
     unchanged: string[];
     /** Refused by the fence; nothing was written when this is non-empty. */
@@ -53,7 +65,9 @@ export async function syncPreviewFiles(args: {
   // All or nothing. A sync written in part would leave the preview showing
   // neither this tab's edit nor the newer save, and the tab would be told its
   // edit had arrived.
-  const saved = await args.readSaved(args.files.map((file) => file.path));
+  const { files: saved, generation } = await args.readSaved(
+    args.files.map((file) => file.path),
+  );
   const stalePaths = stalePreviewSyncPaths(args.files, saved);
   if (stalePaths.length > 0) return { ok: false, stalePaths };
 
@@ -86,7 +100,11 @@ export async function syncPreviewFiles(args: {
   // The check above is against the database when it was read; the fence is
   // against every write the preview has taken since, including any that
   // landed after that read. Either refusal means the same to the tab.
-  const { changed, unchanged, refused = [] } = await args.write(writable);
+  const {
+    changed,
+    unchanged,
+    refused = [],
+  } = await args.write(writable, generation);
   if (refused.length > 0) return { ok: false, stalePaths: refused };
   return { ok: true, changed, unchanged, skipped };
 }

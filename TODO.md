@@ -11,11 +11,6 @@
   - 實作時需同步處理 Cloudflare Custom Domain、`PUBLIC_URL`、`MORPH_CMS_HOSTNAME`、Better Auth trusted origins 與主機路由分流。
   - CMS 網址變更前需保留舊網址，確認新網址可用後才切換，避免管理後台被鎖定。
 
-- [ ] 預覽版本帳本如何記錄刪除（ROADMAP「Theme `public/` 與 Assets 後續」第 1 項）
-  - 帳本只記 start 帶了版本的檔案。較新同步新增、較舊 start 計畫裡沒有的檔案，仍可能被舊 start 的清理刪除。
-  - 需決定刪除如何記入帳本（例如 tombstone 版本），且不得讓「刪除後重建同名檔」被誤判為過期，也不得讓已刪除的頁面永遠擋住新的 start。
-  - Sandbox（`applyFencedRequest`）與本機 sidecar（`planFencedStart`）必須用同一條規則。
-
 - [ ] SVG 進入 Theme `public/` 的方式（第 6 項）
   - v1 關閉，因為 SVG 可以夾帶腳本。
   - 需決定：上傳時清理（sanitize）並拒絕 script／外部參照、以 `Content-Security-Policy` 與 `Content-Disposition` 限制執行，或只允許以 `<img>` 引用。

@@ -75,42 +75,84 @@ export function planFencedWrite(
   return { refused: [], writes, unchanged, ledger: next };
 }
 
+/**
+ * Everything a preview's writes are ordered by: the newest version written
+ * to each path, and the Theme's source generation — the highest any write
+ * was read at.
+ */
+export type FenceLedgerState = Readonly<{
+  files: FenceLedger;
+  generation: number;
+}>;
+
 export type FencedStartPlan = Readonly<{
   /** Paths the ledger has already seen a newer version of. */
   stale: string[];
-  ledger: Record<string, number>;
+  /**
+   * The start was read at a generation older than one already laid out.
+   * Per-path versions cannot see this: a file a newer save created is not in
+   * the older start's plan at all, so nothing names it — and the start would
+   * go on to delete it as a file the plan dropped.
+   */
+  staleGeneration: boolean;
+  ledger: { files: Record<string, number>; generation: number };
 }>;
 
 /**
  * The same rule for a start, which lays out every file at once.
  *
  * A start is judged against what has been written, the way a sync is: if
- * any file already holds a newer version, the start was read before it and
- * must not lay the older files back, so it is refused whole and the ledger
- * is left as it was. Otherwise its versions are recorded, raised and never
- * lowered. Equal versions pass, as they do for a sync.
+ * any file already holds a newer version, or the workspace was already laid
+ * out from a newer generation, the start was read before it and must not
+ * lay the older files back, so it is refused whole and the ledger is left
+ * as it was. Otherwise its versions and generation are recorded, raised and
+ * never lowered. Equal versions and an equal generation pass, as they do
+ * for a sync. A start that names no generation is not ordered by one.
  *
  * Self-contained for the same reason as `planFencedWrite`.
  */
 export function planFencedStart(
-  ledger: FenceLedger,
-  versions: Readonly<Record<string, number>>,
+  ledger: FenceLedgerState,
+  start: Readonly<{
+    versions: Readonly<Record<string, number>>;
+    generation: number | null;
+  }>,
 ): FencedStartPlan {
   const stale: string[] = [];
-  for (const [file, version] of Object.entries(versions)) {
-    const recorded = ledger[file];
+  for (const [file, version] of Object.entries(start.versions)) {
+    const recorded = ledger.files[file];
     if (typeof recorded === "number" && recorded > version) stale.push(file);
   }
-  if (stale.length > 0) return { stale, ledger: { ...ledger } };
+  const staleGeneration =
+    typeof start.generation === "number" &&
+    start.generation < ledger.generation;
+  if (stale.length > 0 || staleGeneration) {
+    return {
+      stale,
+      staleGeneration,
+      ledger: { files: { ...ledger.files }, generation: ledger.generation },
+    };
+  }
 
-  const next: Record<string, number> = { ...ledger };
-  for (const [file, version] of Object.entries(versions)) {
-    const recorded = next[file];
+  const files: Record<string, number> = { ...ledger.files };
+  for (const [file, version] of Object.entries(start.versions)) {
+    const recorded = files[file];
     if (typeof recorded !== "number" || recorded < version) {
-      next[file] = version;
+      files[file] = version;
     }
   }
-  return { stale: [], ledger: next };
+  return {
+    stale: [],
+    staleGeneration: false,
+    ledger: {
+      files,
+      generation:
+        typeof start.generation === "number" &&
+        start.generation > ledger.generation
+          ? start.generation
+          : ledger.generation,
+    },
+  };
 }
 
 /**

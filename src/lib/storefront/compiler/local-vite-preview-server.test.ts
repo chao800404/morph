@@ -129,7 +129,8 @@ function expectStarted(
   Awaited<ReturnType<LocalVitePreviewServer["start"]>>,
   { ok: true }
 > {
-  if (!result.ok) expect.fail(`the preview failed to start: ${result.errorMessage}`);
+  if (!result.ok)
+    expect.fail(`the preview failed to start: ${result.errorMessage}`);
 }
 
 /** The base the editor would frame, and one path under it. */
@@ -219,7 +220,12 @@ describe("the local Live Preview transport", () => {
     expect(again.ok && again.readyMs).toBe(0);
 
     const changed = await start(server, {
-      files: [{ path: "src/pages/index.tsx", content: PAGE.replace("Hello", "Goodbye") }],
+      files: [
+        {
+          path: "src/pages/index.tsx",
+          content: PAGE.replace("Hello", "Goodbye"),
+        },
+      ],
     });
     expectStarted(changed);
     expect(changed.timings.reusedProcess).toBe(false);
@@ -317,7 +323,10 @@ describe("the local Live Preview transport", () => {
 
     const hmrUrl = new URL("/_morph/hmr?after=0&cursor=1", started.url);
     await server.writeFiles("theme-a-user-1", [
-      { path: "src/pages/index.tsx", content: PAGE.replace("Hello", "Updated") },
+      {
+        path: "src/pages/index.tsx",
+        content: PAGE.replace("Hello", "Updated"),
+      },
     ]);
 
     await expect
@@ -446,5 +455,78 @@ describe("which hosts a local preview may claim", () => {
     ]) {
       expect(isLoopbackPreviewHostname(hostname)).toBe(false);
     }
+  });
+});
+
+/**
+ * The sidecar orders its starts by the same source generation as the
+ * container: a start read before a save that a sync has laid out is refused,
+ * and only a start that has laid its files out raises the ledger.
+ */
+describe("the local preview's generation watermark", () => {
+  const PREVIEW = "theme-a-user-1";
+  const NEW = "src/components/New.tsx";
+  const onDisk = (server: LocalVitePreviewServer, file: string) =>
+    fs.readFile(path.join(server.workspaceRootFor(PREVIEW), file), "utf8");
+
+  it("refuses an older start that would remove a file a newer save created", async () => {
+    const server = newServer({ workspacesRoot });
+    expectStarted(
+      await start(server, {
+        fileVersions: { "src/pages/index.tsx": 1 },
+        sourceGeneration: 4,
+      }),
+    );
+    // A newer save (generation 5) created a file; its sync laid it out.
+    await server.writeFiles(
+      PREVIEW,
+      [{ path: NEW, content: "export default () => null;\n", fence: 1 }],
+      5,
+    );
+
+    // Read before that save, with a changed page so it would lay out again.
+    const older = await start(server, {
+      files: [{ path: "src/pages/index.tsx", content: `// older\n${PAGE}` }],
+      fileVersions: { "src/pages/index.tsx": 1 },
+      sourceGeneration: 4,
+    });
+
+    expect(older).toMatchObject({
+      ok: false,
+      stage: "preview-start-stale",
+      errorMessage: expect.stringContaining("source generation 5"),
+    });
+    await expect(onDisk(server, NEW)).resolves.toBe(
+      "export default () => null;\n",
+    );
+  });
+
+  it("raises nothing for a start that fails to lay its files out", async () => {
+    const server = newServer({ workspacesRoot });
+    expectStarted(await start(server, { sourceGeneration: 4 }));
+
+    // A directory where the page must be written: the next lay-out fails.
+    const blocked = path.join(
+      server.workspaceRootFor(PREVIEW),
+      "src/pages/other.tsx",
+    );
+    await fs.mkdir(blocked, { recursive: true });
+    const failed = await start(server, {
+      files: [
+        { path: "src/pages/index.tsx", content: PAGE },
+        { path: "src/pages/other.tsx", content: PAGE },
+      ],
+      sourceGeneration: 9,
+    });
+    expect(failed).toMatchObject({ ok: false, stage: "preview-workspace" });
+    await removeTree(blocked);
+
+    // Had the failed start raised the ledger to 9, this would be refused.
+    expectStarted(
+      await start(server, {
+        files: [{ path: "src/pages/index.tsx", content: `// again\n${PAGE}` }],
+        sourceGeneration: 5,
+      }),
+    );
   });
 });
