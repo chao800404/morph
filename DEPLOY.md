@@ -73,16 +73,29 @@ pnpm db:migrate:prod
 ```
 
 This command changes the remote D1 database. Skip it only when `drizzle/` holds
-nothing the remote has not already applied; `wrangler d1 migrations list DATABASE --remote`
-answers that.
+nothing the remote has not already applied. The deploy below checks exactly that
+and stops if it is not so; to ask beforehand, run
+`node scripts/check-pending-migrations.mjs --remote`, which only reads.
 
 ## 4. Deploy
 
 ```bash
-pnpm deploy
+pnpm run deploy
 ```
 
-The command builds the application and runs `wrangler deploy`. That single step
+`pnpm run deploy`, not `pnpm deploy`: the latter is pnpm's own command for
+copying a workspace package, and never runs this script.
+
+The command first checks the remote database against `drizzle/`, reading
+`d1_migrations` and changing nothing, and stops when:
+
+- a migration file has not been applied — apply it (step 3), then deploy;
+- the database has applied a migration this checkout does not have — the code
+  is older than the schema, from a stale branch or someone else's deploy;
+- two migration files share a number, so their order is an accident of their
+  names.
+
+It then builds the application and runs `wrangler deploy`. That single step
 does more than upload a Worker, and each part can fail on its own:
 
 - **The container image.** `wrangler deploy` builds `Dockerfile.sandbox` and

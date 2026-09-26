@@ -373,7 +373,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 2 | ✅ 二進位檔的重新命名、搬移、複製，以及含二進位檔的資料夾操作（`binaryCopies`，改網址前先審查引用） | 編輯操作 |
 | 3 | ✅ Assets 頁面顯示「網站 `public/`」分區（與 Code 模式同一份資料、同一個寫入入口）。3a：搬移／複製時經確認由伺服器以 AST 改寫 Theme 原始碼中的網址引用；3b：Assets 側欄子項目「Site public/」、admin 草稿預覽讀取入口（核對 digest）、與 Code 共用的寫入檢查與搬移對話框 | 介面整合 |
 | 4 | ✅ 從媒體庫複製到 `public/`（明確提示發布後公開；伺服器讀媒體庫 bytes 後走同一個 `saveBinaryFile`，入口在 Code 模式 Assets 面板與 Assets 的 Site public/） | 功能 |
-| 5 | 部署前檢查尚未套用的 D1 migration | 部署安全（首次部署前完成） |
+| 5 | ✅ 部署前檢查尚未套用的 D1 migration（`pnpm run deploy` 先唯讀比對遠端 `d1_migrations` 與 `drizzle/`：未套用、checkout 較舊、同號都停止；CI 檢查同號） | 部署安全（首次部署前完成） |
 | 6 | SVG 支援（需先定清理或 CSP 方案） | 安全設計 |
 | 7 | R2 未引用 blob 清理（保護 manifest、revision、release 與保留期） | 儲存成本（上線後依用量） |
 | 8 | 批次把 `public/` 圖片關聯為產品媒體（使用者確認對應，不依資料夾名稱猜測） | 功能（依賴匯入） |
