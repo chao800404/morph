@@ -44,6 +44,7 @@ const OptionMetadataPendingView = createRouteSurfacePendingView(3);
 const AssetCreatePendingView = createRouteSurfacePendingView(3);
 const AssetPreviewPendingView = AssetsPageSkeleton;
 const AssetEditPendingView = createRouteSurfacePendingView(5);
+const SitePublicPendingView = createCollectionIndexPendingView(4);
 
 const prefetchAssetItem = async ({
   queryClient,
@@ -846,6 +847,27 @@ export const Contents: CollectionGroup = {
         pendingView: AssetEditPendingView,
         prefetch: prefetchAssetItem,
       },
+      items: [
+        {
+          // The site's own public/ folder: the same files Code mode lists,
+          // public once published. Beside the media library, not inside it,
+          // since those files are private until something uses them.
+          title: "Site public/",
+          slug: "site-public",
+          label: "Site public/",
+          index: {
+            view: lazyView(
+              () => import("@views/global/contents/assets/site-public"),
+            ),
+            pendingView: SitePublicPendingView,
+            prefetch: async ({ queryClient }: CollectionLoadContext) => {
+              const { storefrontQueries } =
+                await import("@queries/storefront.queries");
+              void queryClient.prefetchQuery(storefrontQueries.detail());
+            },
+          },
+        },
+      ],
       index: {
         view: lazyView(() => import("@views/global/contents/assets")),
         // The explorer shows a skeleton while its query runs, so the chunk wait

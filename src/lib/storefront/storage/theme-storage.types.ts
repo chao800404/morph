@@ -137,6 +137,13 @@ export interface ThemeSourceStore {
     path: string,
   ): Promise<StorefrontThemeFileDTO | null>;
 
+  /** A binary file's reference by path; null for a source file or none. */
+  getBinaryFileByPath(
+    storefrontId: string,
+    themeId: string,
+    path: string,
+  ): Promise<StorefrontThemeBinaryFileDTO | null>;
+
   saveFile(
     storefrontId: string,
     themeId: string,

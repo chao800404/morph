@@ -901,6 +901,56 @@ export const storefrontThemeFileDal = {
     };
   },
 
+  /**
+   * One binary file's reference, by path, for a reader that serves its bytes.
+   * Null unless the Theme is the storefront's and the path holds a binary
+   * file — a source file at that path is not one.
+   */
+  async getBinaryFileByPath(
+    storefrontId: string,
+    themeId: string,
+    path: string,
+  ): Promise<StorefrontThemeBinaryFileDTO | null> {
+    const isOwner = await this.verifyOwnership(storefrontId, themeId);
+    if (!isOwner) return null;
+
+    const db = await getDb();
+    const [row] = await db
+      .select()
+      .from(storefrontThemeFiles)
+      .where(
+        and(
+          eq(storefrontThemeFiles.storefrontId, storefrontId),
+          eq(storefrontThemeFiles.themeId, themeId),
+          eq(storefrontThemeFiles.path, path),
+          isNull(storefrontThemeFiles.deletedAt),
+          eq(storefrontThemeFiles.encoding, "binary"),
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+    if (!row.blobDigest || row.sizeBytes === null) {
+      throw new Error(
+        `CORRUPT_BINARY_THEME_FILE: "${row.path}" is binary but has no blob reference.`,
+      );
+    }
+    return {
+      id: row.id,
+      storefrontId: row.storefrontId,
+      themeId: row.themeId,
+      path: row.path,
+      encoding: "binary",
+      blobDigest: row.blobDigest,
+      sizeBytes: row.sizeBytes,
+      mimeType: row.mimeType ?? "application/octet-stream",
+      isEntry: Boolean(row.isEntry),
+      version: row.version ?? 1,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  },
+
   async saveFile(
     storefrontId: string,
     themeId: string,

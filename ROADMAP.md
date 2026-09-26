@@ -371,7 +371,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | ---: | --- | --- |
 | 1 | ✅ 預覽版本帳本記錄刪除：較舊的 start 不得刪掉較新同步新增的檔案（以 `sourceGeneration` 水位完成） | 正確性 |
 | 2 | ✅ 二進位檔的重新命名、搬移、複製，以及含二進位檔的資料夾操作（`binaryCopies`，改網址前先審查引用） | 編輯操作 |
-| 3 | Assets 頁面顯示「網站 `public/`」分區（與 Code 模式同一份資料、同一個寫入入口）。3a ✅ 搬移／複製時經確認由伺服器以 AST 改寫 Theme 原始碼中的網址引用；3b 待做：Assets 側欄子項目、縮圖讀取入口、與 Code 共用操作 | 介面整合 |
+| 3 | ✅ Assets 頁面顯示「網站 `public/`」分區（與 Code 模式同一份資料、同一個寫入入口）。3a：搬移／複製時經確認由伺服器以 AST 改寫 Theme 原始碼中的網址引用；3b：Assets 側欄子項目「Site public/」、admin 草稿預覽讀取入口（核對 digest）、與 Code 共用的寫入檢查與搬移對話框 | 介面整合 |
 | 4 | 從媒體庫複製到 `public/`（明確提示發布後公開） | 功能 |
 | 5 | 部署前檢查尚未套用的 D1 migration | 部署安全（首次部署前完成） |
 | 6 | SVG 支援（需先定清理或 CSP 方案） | 安全設計 |

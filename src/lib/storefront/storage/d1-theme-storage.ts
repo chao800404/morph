@@ -386,6 +386,8 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
   getWorkspaceSnapshot: (...args) =>
     storefrontThemeFileDal.listWorkspaceEntries(...args),
   getFileByPath: (...args) => storefrontThemeFileDal.getFileByPath(...args),
+  getBinaryFileByPath: (...args) =>
+    storefrontThemeFileDal.getBinaryFileByPath(...args),
   async saveFile(storefrontId, themeId, path, content, mimeType, options) {
     const createRevision = await shouldRecordRevision({
       storefrontId,
