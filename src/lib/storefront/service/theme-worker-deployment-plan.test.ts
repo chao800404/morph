@@ -16,7 +16,11 @@ const REAL_ARTIFACT_FILES: Array<[string, string, number]> = [
   ["runtime/server/wrangler.json", "application/json", 1327],
   ["runtime/server/.vite/manifest.json", "application/json", 2703],
   ["runtime/server/assets/start-BClswEUm.js", "application/javascript", 43],
-  ["runtime/server/assets/worker-entry-DmJ4QUXB.js", "application/javascript", 543958],
+  [
+    "runtime/server/assets/worker-entry-DmJ4QUXB.js",
+    "application/javascript",
+    543958,
+  ],
   ["runtime/server/assets/router-BNemKvUY.js", "application/javascript", 32684],
   ["runtime/server/assets/router-BJuFmkSM.css", "text/css", 15208],
   ["preview/index.html", "text/html", 403],
@@ -210,5 +214,32 @@ describe("planThemeWorkerDeployment", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.reason).toBe("MISSING_CLIENT_ASSETS");
+  });
+
+  it("never deploys a build's own _headers or _redirects", () => {
+    const base = manifest();
+    const result = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: {
+        ...base,
+        files: [
+          ...base.files,
+          ...["runtime/client/_headers", "runtime/client/_redirects"].map(
+            (path) => ({
+              path,
+              contentType: "text/plain",
+              sizeBytes: 10,
+              sha256: "0".repeat(64),
+            }),
+          ),
+        ],
+      },
+      workerConfig: REAL_WORKER_CONFIG,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const served = result.plan.assets.map((asset) => asset.servedPath);
+    expect(served).not.toContain("/_headers");
+    expect(served).not.toContain("/_redirects");
   });
 });

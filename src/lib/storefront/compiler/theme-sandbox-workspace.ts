@@ -1,3 +1,4 @@
+import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
@@ -96,12 +97,16 @@ export type ThemeWorkspaceBinaryRef = Readonly<{
   sizeBytes: number;
 }>;
 
-export type ThemeWorkspaceTextFile = Readonly<{ path: string; content: string }>;
+export type ThemeWorkspaceTextFile = Readonly<{
+  path: string;
+  content: string;
+}>;
 export type ThemeWorkspaceBinaryFile = Readonly<{
   path: string;
   binary: ThemeWorkspaceBinaryRef;
 }>;
-export type ThemeWorkspaceFile = ThemeWorkspaceTextFile | ThemeWorkspaceBinaryFile;
+export type ThemeWorkspaceFile =
+  ThemeWorkspaceTextFile | ThemeWorkspaceBinaryFile;
 
 export function isBinaryWorkspaceFile(
   file: ThemeWorkspaceFile,
@@ -596,7 +601,8 @@ const previewRouteSourcePatterns = ${JSON.stringify(
     routeRegistry?.routes
       .filter((route) => !route.isVirtual)
       .map(
-        (route) => `${hostWorkspaceRoot}/${route.sourcePath.replace(/\\/g, "/")}`,
+        (route) =>
+          `${hostWorkspaceRoot}/${route.sourcePath.replace(/\\/g, "/")}`,
       ) ?? [],
   )}.map((file) => new RegExp("^" + escapeAliasRegex(file) + "$"));
 const previewReactExcludePatterns = [
@@ -628,6 +634,11 @@ const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
 const previewContentPlugin = ${
     mode === "preview-server" ? themePreviewContentPluginSource() : "null"
+  };
+// Every SVG the dev server sends — public/ or a Theme's own source — carries
+// the platform's isolation headers; see theme-svg-isolation.ts.
+const previewSvgIsolationPlugin = ${
+    mode === "preview-server" ? svgIsolationVitePluginSource() : "null"
   };
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
@@ -838,6 +849,7 @@ export default defineConfig({
     // module and the Node builtin its storage context imports cannot
     // resolve. Stubbed here as well as in the in-process runner, from one
     // shared definition.
+    ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ${themePreviewServerStubPluginSource()},
     ...(previewContentPlugin ? [previewContentPlugin] : []),
     ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
@@ -893,7 +905,9 @@ sourcemap: false,
   const workspaceFiles = Array.from(
     pendingWrites,
     ([path, content]): ThemeWorkspacePlanFile =>
-      typeof content === "string" ? { path, content } : { path, binary: content },
+      typeof content === "string"
+        ? { path, content }
+        : { path, binary: content },
   );
   // A binary file counts by its digest: the same bytes have the same one,
   // and spelling them out here would put every image into the fingerprint.

@@ -67,12 +67,19 @@ export type ThemeWorkerDeploymentPlanResult =
       message: string;
     };
 
-/** Files the assets upload must never expose, mirroring `.assetsignore`. */
+/**
+ * Files the assets upload must never take from a build, mirroring
+ * `.assetsignore`. `_headers` and `_redirects` change how the host answers
+ * every path; only the platform writes them (the deployer's own `_headers`
+ * isolates SVG), so a build's copies are never deployed.
+ */
 const ASSET_EXCLUSIONS = new Set([
   "wrangler.json",
   "wrangler.jsonc",
   ".dev.vars",
   ".assetsignore",
+  "_headers",
+  "_redirects",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -161,7 +168,7 @@ export function planThemeWorkerDeployment(args: {
     const declared = Array.isArray(value)
       ? value.length > 0
       : isRecord(value) &&
-        Array.isArray((value as Record<string, unknown>).bindings)
+          Array.isArray((value as Record<string, unknown>).bindings)
         ? ((value as Record<string, unknown>).bindings as unknown[]).length > 0
         : false;
     if (declared) {
@@ -173,14 +180,19 @@ export function planThemeWorkerDeployment(args: {
   }
 
   const compatibilityDate = args.workerConfig.compatibility_date;
-  if (typeof compatibilityDate !== "string" || compatibilityDate.trim() === "") {
+  if (
+    typeof compatibilityDate !== "string" ||
+    compatibilityDate.trim() === ""
+  ) {
     return fail(
       "INVALID_WORKER_CONFIG",
       "Generated Worker config declares no compatibility_date.",
     );
   }
 
-  const compatibilityFlags = Array.isArray(args.workerConfig.compatibility_flags)
+  const compatibilityFlags = Array.isArray(
+    args.workerConfig.compatibility_flags,
+  )
     ? args.workerConfig.compatibility_flags.filter(
         (flag): flag is string => typeof flag === "string",
       )

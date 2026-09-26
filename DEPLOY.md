@@ -139,6 +139,13 @@ actually served.
 - An authorized user can open the dashboard
 - Asset listing and asset delivery through `/assets/*` work
 - Any feature changed by the release behaves correctly
+- An SVG the storefront serves carries the isolation headers, on the
+  storefront's own URL and on the Theme Worker's if it has one of its own:
+  `curl -sI https://<storefront>/<some>.svg` shows
+  `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox`
+  and `x-content-type-options: nosniff`. `pnpm verify:svg-isolation`
+  proves the same headers stop script in Chromium, Firefox and WebKit, but
+  against local servers and `wrangler dev`, not a deployed Worker.
 
 **The container path.** Open the editor once and read the browser console. The
 editor prints a line when a preview starts:
