@@ -442,6 +442,16 @@ migration 在套用之後被編輯或刪除過，現在的檔案就不等於當�
 migration。真要對某個特定舊安裝收斂時，最便宜的形式是**唯讀偵測**（數一下 text 時間戳欄位裡
 不符合 ISO 形狀的列數），一次、手動、有證據才修，讓修復範圍永遠是證據驅動的。
 
+### 26.5 部署前的 migration 檢查
+
+`pnpm run deploy` 先跑 `scripts/check-pending-migrations.mjs --remote`：只讀遠端 `d1_migrations`，與 `drizzle/*.sql` 比對，以下任一情況就停止部署，**不會替你套用**（套用仍是 `pnpm db:migrate:prod` 這個明確步驟）：
+
+- 有檔案尚未套用：先套用再部署，否則新程式碼第一個用到新 schema 的查詢就在正式環境失敗。
+- 資料庫套用過這份 checkout 沒有的 migration：程式碼比 schema 舊（過期分支或別人的部署），不得部署。
+- 兩支 migration 同號：wrangler 依檔名排序套用，順序變成檔名的巧合；合併前就要改號（CI 的 `pnpm check:migrations` 會擋）。
+
+依據是 wrangler 自己的 `d1_migrations`，不是 drizzle journal（見 26.4）。讀不到結果（驗證失敗、找不到資料庫、輸出不是預期格式）一律算失敗，只有「沒有 `d1_migrations` 表」才等於「一支都沒套用」。部署指令是 `pnpm run deploy`，`pnpm deploy` 是 pnpm 內建指令，不會跑這支腳本。
+
 ### 26.0 內容形狀的 migration 要寫成腳本
 
 改動元件宣告的欄位形狀（例如把平坦的 `actionHref` 收斂成一個 `link` 欄位）時，既有

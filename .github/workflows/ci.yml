@@ -126,6 +126,12 @@ jobs:
       - name: Check the ship gate
         run: pnpm check:ship
 
+      # `pnpm run deploy` refuses while the remote D1 database and `drizzle/`
+      # disagree. That reads a database, so CI runs the rule's tests and the
+      # half needing none: migration files numbered without repeats.
+      - name: Check migrations
+        run: pnpm check:migrations
+
       # Generators run before every typecheck, build and test; writing an
       # unchanged file there reloads a running dev server for nothing.
       - name: Check generated files are only rewritten when they change
