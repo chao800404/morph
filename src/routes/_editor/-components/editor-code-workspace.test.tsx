@@ -1114,7 +1114,10 @@ describe("EditorCodeWorkspace binary files", () => {
     vi.mocked(saveStorefrontThemeFilesBatch).mockReset();
     vi.mocked(deleteStorefrontThemeFile).mockReset();
     window.localStorage.clear();
-    useThemeWorkspaceStore.setState({ files: {} });
+    // Every workspace, not just the active one's files: the review reads
+    // saved content from the store, and one left by an earlier test would
+    // read as an unsaved draft here.
+    useThemeWorkspaceStore.setState({ files: {}, workspaces: {} });
     vi.spyOn(toast, "error").mockImplementation(() => "toast");
   });
 
@@ -1264,39 +1267,47 @@ describe("EditorCodeWorkspace binary files", () => {
       } as never);
     });
 
-    it("is held for review, with what it breaks, before anything is written", async () => {
-      renderWithBinary([naming]);
-      await rename("banner.png");
-
-      const dialog = await waitFor(() => {
+    const reviewDialog = () =>
+      waitFor(() => {
         const found = document.querySelector("[data-binary-move-review]");
         expect(found).not.toBeNull();
         return found!;
       });
+    const batchPayload = () =>
+      vi.mocked(saveStorefrontThemeFilesBatch).mock.calls[0]![0] as {
+        data: {
+          files: unknown[];
+          binaryCopies: unknown[];
+          deletions: unknown[];
+          publicUrlRewrite?: unknown;
+        };
+      };
+
+    it("is held for review, with the references it updates, before anything is written", async () => {
+      renderWithBinary([naming]);
+      await rename("banner.png");
+
+      const dialog = await reviewDialog();
       expect(dialog.textContent).toContain(
         "/images/hero.png → /images/banner.png",
       );
-      expect(dialog.textContent).toContain("src/components/Hero.tsx:1");
+      expect(
+        dialog.querySelector(
+          '[data-public-url-rewrite="src/components/Hero.tsx:1"]',
+        ),
+      ).not.toBeNull();
       expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
 
-      // Known references: moving needs saying so first.
-      const move = screen.getByRole("button", { name: "Move" });
-      expect((move as HTMLButtonElement).disabled).toBe(true);
+      // Every reference found is updated, so there is nothing to accept.
+      expect(screen.queryByRole("checkbox")).toBeNull();
       fireEvent.click(
-        screen.getByRole("checkbox", {
-          name: "I understand these references will break",
-        }),
+        screen.getByRole("button", { name: "Move and update 1 reference" }),
       );
-      expect((move as HTMLButtonElement).disabled).toBe(false);
-      fireEvent.click(move);
 
       await waitFor(() =>
         expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
       );
-      const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
-        .calls[0]![0] as {
-        data: { binaryCopies: unknown[]; deletions: unknown[] };
-      };
+      const payload = batchPayload();
       expect(payload.data.binaryCopies).toEqual([
         {
           from: hero.path,
@@ -1312,10 +1323,106 @@ describe("EditorCodeWorkspace binary files", () => {
           expectedVersion: hero.version,
         },
       ]);
+      // The server rewrites the file itself; the editor sends what it
+      // reviewed, not the rewritten content.
+      expect(payload.data.files).toEqual([]);
+      expect(payload.data.publicUrlRewrite).toEqual({
+        moves: [{ from: hero.path, to: "public/images/banner.png" }],
+        expected: {
+          paths: [naming.path],
+          rewriteCount: 1,
+          unresolvedCount: 0,
+        },
+        acknowledgeUnresolved: false,
+      });
     });
 
-    it("copies instead, keeping the old URL, as the safer choice", async () => {
+    it("copies and updates the references, keeping the old URL", async () => {
       renderWithBinary([naming]);
+      await rename("banner.png");
+
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Copy and update 1 reference",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+      );
+      const payload = batchPayload();
+      expect(payload.data.binaryCopies).toHaveLength(1);
+      expect(payload.data.deletions).toEqual([]);
+      expect(payload.data.publicUrlRewrite).toMatchObject({
+        expected: { rewriteCount: 1 },
+      });
+    });
+
+    it("keeps the old file by default while a reference cannot be updated", async () => {
+      renderWithBinary([
+        {
+          ...naming,
+          content: [
+            'export const hero = "/images/hero.png";',
+            "export const pick = (name: string) => `/images/${name}.png`;",
+          ].join("\n"),
+        },
+      ]);
+      await rename("banner.png");
+
+      const dialog = await reviewDialog();
+      expect(
+        dialog.querySelector('[data-public-url-unresolved="built-at-runtime"]')
+          ?.textContent,
+      ).toContain(`${naming.path}:2`);
+
+      // Moving would remove a URL something may still build: it waits for
+      // the author to accept that.
+      const move = screen.getByRole("button", {
+        name: "Move and update 1 reference",
+      }) as HTMLButtonElement;
+      expect(move.disabled).toBe(true);
+      fireEvent.click(
+        screen.getByRole("checkbox", {
+          name: "I understand these references will break",
+        }),
+      );
+      expect(move.disabled).toBe(false);
+      fireEvent.click(move);
+
+      await waitFor(() =>
+        expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
+      );
+      expect(batchPayload().data.publicUrlRewrite).toMatchObject({
+        expected: { rewriteCount: 1, unresolvedCount: 1 },
+        acknowledgeUnresolved: true,
+      });
+    });
+
+    it("does not update references while an unsaved draft names the URL", async () => {
+      renderWithBinary([naming]);
+      fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), {
+        target: {
+          value: 'export default () => <img src="/images/hero.png" />;\n',
+        },
+      });
+      await rename("banner.png");
+
+      const dialog = await reviewDialog();
+      expect(
+        dialog.querySelector("[data-public-url-rewrite-blocked]")?.textContent,
+      ).toContain(naming.path);
+      expect(screen.queryByRole("button", { name: /update/ })).toBeNull();
+      // What it names is still shown, and moving still needs saying so.
+      expect(dialog.textContent).toContain(`${naming.path}:1`);
+      expect(
+        (screen.getByRole("button", { name: "Move" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+    });
+
+    it("copies instead, keeping the old URL, when nothing names it", async () => {
+      renderWithBinary();
       await rename("banner.png");
 
       fireEvent.click(
@@ -1325,28 +1432,22 @@ describe("EditorCodeWorkspace binary files", () => {
       await waitFor(() =>
         expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1),
       );
-      const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
-        .calls[0]![0] as {
-        data: { binaryCopies: unknown[]; deletions: unknown[] };
-      };
+      const payload = batchPayload();
       expect(payload.data.binaryCopies).toHaveLength(1);
       expect(payload.data.deletions).toEqual([]);
+      expect(payload.data.publicUrlRewrite).toBeUndefined();
     });
 
     it("never claims there are no references, even when none were found", async () => {
       renderWithBinary();
       await rename("banner.png");
 
-      const dialog = await waitFor(() => {
-        const found = document.querySelector("[data-binary-move-review]");
-        expect(found).not.toBeNull();
-        return found!;
-      });
+      const dialog = await reviewDialog();
       expect(dialog.textContent).toContain(
         "No URL written out in full was found in Theme source.",
       );
       expect(dialog.textContent).toContain(
-        "URLs built at runtime and page content are not checked",
+        "Page content and other sites that link to these URLs are not checked, so there may be more.",
       );
       // Nothing known to break: no acknowledgement to ask for.
       expect(
