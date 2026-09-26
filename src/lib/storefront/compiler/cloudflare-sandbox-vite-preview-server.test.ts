@@ -1360,3 +1360,141 @@ describe("a start and a newer save's sync", () => {
     expect(stagingLeft(harness)).toEqual([]);
   });
 });
+
+/**
+ * A newer save that created a file, against a start read before it. The
+ * file is not in the older start's plan, so no version names it; the
+ * generation the start was read at does, in both orders.
+ */
+describe("a start read before a save that created a file", () => {
+  const NEW = "src/components/New.tsx";
+  const NEW_PATH = `/workspace/${NEW}`;
+  const HERO = "src/components/Hero.tsx";
+
+  const syncNew = (harness: Harness, generation: number) =>
+    runFencedWriteInSandbox(harness.session as unknown as FenceSandbox, {
+      op: "write",
+      root: "/workspace",
+      files: [{ path: NEW, content: "export default () => null;\n", fence: 1 }],
+      generation,
+      marker: {
+        path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
+        content: "dirty:sync",
+      },
+    });
+
+  const ledger = (harness: Harness) =>
+    JSON.parse(harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!) as {
+      files: Record<string, number>;
+      generation: number;
+    };
+
+  // A plan that changes a file, so the start stages, writes and prunes.
+  const olderPlan = () =>
+    THEME.map((file) =>
+      file.path === HERO
+        ? { ...file, content: `${file.content}// older\n` }
+        : file,
+    );
+
+  it("is refused when the sync already laid the file out, and the file stays", async () => {
+    const harness = createSession("ready");
+    const first = await startWith(harness, {
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+    expect(first.ok).toBe(true);
+    await syncNew(harness, 5);
+
+    const result = await startWith(harness, {
+      files: olderPlan(),
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.stage).toBe("preview-start-stale");
+    expect(result.errorMessage).toContain("source generation 5");
+    expect(harness.written.get(NEW_PATH)).toBe("export default () => null;\n");
+    expect(ledger(harness).generation).toBe(5);
+  });
+
+  it("is refused when the sync lands while it stages, and the file stays", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, {
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+    const writeFile = harness.session.writeFile.bind(harness.session);
+    let synced = false;
+    (
+      harness.session as { writeFile: PreviewServerSession["writeFile"] }
+    ).writeFile = async (file, content, options) => {
+      if (!synced && file.startsWith(PREVIEW_START_STAGING_PREFIX)) {
+        synced = true;
+        await syncNew(harness, 5);
+      }
+      return writeFile(file, content, options);
+    };
+
+    const result = await startWith(harness, {
+      files: olderPlan(),
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+
+    expect(synced).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(harness.written.get(NEW_PATH)).toBe("export default () => null;\n");
+    expect(
+      [...harness.written.keys()].filter((file) =>
+        file.startsWith(PREVIEW_START_STAGING_PREFIX),
+      ),
+    ).toEqual([]);
+  });
+
+  it("goes through when read after the save, and records its generation", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, {
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+    await syncNew(harness, 5);
+
+    const result = await startWith(harness, {
+      files: [...THEME, { path: NEW, content: "export default () => null;\n" }],
+      fileVersions: { [HERO]: 1, [NEW]: 1 },
+      sourceGeneration: 5,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(ledger(harness).generation).toBe(5);
+  });
+
+  it("raises nothing when its staging fails", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, {
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+    const writeFile = harness.session.writeFile.bind(harness.session);
+    (
+      harness.session as { writeFile: PreviewServerSession["writeFile"] }
+    ).writeFile = async (file, content, options) => {
+      if (file.startsWith(PREVIEW_START_STAGING_PREFIX)) {
+        throw new Error("disk full");
+      }
+      return writeFile(file, content, options);
+    };
+
+    const result = await startWith(harness, {
+      files: olderPlan(),
+      fileVersions: { [HERO]: 2 },
+      sourceGeneration: 9,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(ledger(harness)).toEqual({ files: { [HERO]: 1 }, generation: 4 });
+  });
+});

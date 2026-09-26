@@ -9,6 +9,7 @@ import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import { themeSourceStore } from "@/lib/storefront/storage/theme-storage.server";
 import { themePreviewWorkspaceInput } from "@/lib/storefront/service/theme-preview-workspace-files";
+import { readAtSourceGeneration } from "@/lib/storefront/service/source-generation-snapshot";
 import {
   THEME_PREVIEW_SERVER_PORT,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
@@ -103,10 +104,34 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     if (!editorContext) {
       return fail("Storefront theme not found", { error: "NOT_FOUND" });
     }
-    const [entries, pages] = await Promise.all([
-      themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
-      storefrontPageDal.listDraftDocuments(storefrontId),
-    ]);
+    // The files together with the generation they are: the preview refuses
+    // a start read before a save it has already laid out, which only works
+    // if the generation named here is the one these files were read at.
+    let entries: Awaited<
+      ReturnType<typeof themeSourceStore.getWorkspaceSnapshot>
+    >;
+    let sourceGeneration: number;
+    let pages: Awaited<ReturnType<typeof storefrontPageDal.listDraftDocuments>>;
+    try {
+      const [snapshot, draftPages] = await Promise.all([
+        readAtSourceGeneration(
+          () => themeSourceStore.getSourceGeneration(storefrontId, themeId),
+          () => themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
+        ),
+        storefrontPageDal.listDraftDocuments(storefrontId),
+      ]);
+      entries = snapshot.value;
+      sourceGeneration = snapshot.generation;
+      pages = draftPages;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("SOURCE_GENERATION_UNSTABLE")) {
+        return fail("The theme is being saved; try the preview again.", {
+          error: "SOURCE_GENERATION_UNSTABLE",
+        });
+      }
+      throw error;
+    }
     if (entries.length === 0) {
       return fail("This theme has no files to preview.", {
         error: "THEME_EMPTY",
@@ -146,6 +171,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       previewHostname: selection.previewHostname,
       previewContent,
       fileVersions: workspace.fileVersions,
+      sourceGeneration,
       loadBinary: workspace.loadBinary,
       env: env as unknown as Record<string, unknown>,
     });
@@ -414,9 +440,18 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
 
     // How the files reach the preview; everything before it — the check
     // against what is saved and the preview passes — is `syncPreviewFiles`.
+    // `generation` is the one the saved files this sync was checked against
+    // were read at, handed over by `syncPreviewFiles` — never read again
+    // here, where a save landing in between would stamp these files with a
+    // generation they do not belong to.
     const write = async (
       writable: readonly FencedPreviewFileWrite[],
-    ): Promise<{ changed: string[]; unchanged: string[]; refused: string[] }> => {
+      generation: number | null,
+    ): Promise<{
+      changed: string[];
+      unchanged: string[];
+      refused: string[];
+    }> => {
       if (selection.enabled && selection.applyFiles) {
         // A sidecar's filesystem is in another process. It applies the same
         // fence and "only write what differs" rule on its side, because there
@@ -424,6 +459,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         const applied = await selection.applyFiles({
           previewId,
           files: writable,
+          generation,
         });
         return {
           changed: [...applied.changed],
@@ -460,6 +496,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           op: "write",
           root: "/workspace",
           files: writable,
+          generation,
           marker: {
             path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
             content: newDirtyWorkspaceMarker(),
@@ -521,8 +558,18 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     try {
       result = await syncPreviewFiles({
         files,
-        readSaved: (paths) =>
-          storefrontThemeFileDal.listSavedFiles(storefrontId, themeId, paths),
+        readSaved: async (paths) => {
+          const { value, generation } = await readAtSourceGeneration(
+            () => themeSourceStore.getSourceGeneration(storefrontId, themeId),
+            () =>
+              storefrontThemeFileDal.listSavedFiles(
+                storefrontId,
+                themeId,
+                paths,
+              ),
+          );
+          return { files: value, generation };
+        },
         // The same two passes the workspace was laid out with. A file written
         // without them would lose its editor identity the moment it was saved,
         // and the preview would quietly stop being selectable.

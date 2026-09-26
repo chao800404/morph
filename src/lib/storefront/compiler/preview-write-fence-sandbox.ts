@@ -41,6 +41,12 @@ export type FencedWriteRequest =
       /** Directory the paths are relative to. */
       root: string;
       files: readonly FencedFile[];
+      /**
+       * The Theme source generation the sync was checked against — read
+       * together with the saved files it was checked against, never later.
+       * Raises the ledger's generation once the write goes through.
+       */
+      generation?: number | null;
       /** Written before the first changed file, as the unfenced path did. */
       marker?: Readonly<{ path: string; content: string }>;
     }>
@@ -62,6 +68,8 @@ export type FencedWriteRequest =
       prune: readonly string[];
       /** The version each Theme file was laid out from. */
       versions: Readonly<Record<string, number>>;
+      /** The source generation the files were read at, together. */
+      generation?: number | null;
       marker: Readonly<{
         path: string;
         /** Set before anything changes, so a start stopped halfway is not trusted. */
@@ -83,6 +91,11 @@ export type FencedWriteResult = Readonly<{
   unchanged: string[];
   /** For a start: whether the manifest and marker were committed. */
   committed?: boolean;
+  /**
+   * For a start: refused because the workspace was already laid out from a
+   * newer source generation than the one it was read at.
+   */
+  staleGeneration?: Readonly<{ generation: number; laidOut: number }>;
 }>;
 
 /** The container's disk, as `applyFencedRequest` uses it. */
@@ -114,13 +127,29 @@ export function applyFencedRequest(
   request: FencedWriteRequest,
   planners: FencePlanners,
 ): FencedWriteResult {
-  let ledger: Record<string, number> = {};
+  // `{ files, generation }`; a ledger from before generations were kept is
+  // a flat path-to-version map, read as having seen none.
+  let ledger: { files: Record<string, number>; generation: number } = {
+    files: {},
+    generation: 0,
+  };
   const stored = io.readText(ledgerPath);
   if (stored !== null) {
     try {
-      ledger = JSON.parse(stored);
+      const parsed = JSON.parse(stored);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.files &&
+        typeof parsed.files === "object" &&
+        typeof parsed.generation === "number"
+      ) {
+        ledger = { files: parsed.files, generation: parsed.generation };
+      } else if (parsed && typeof parsed === "object") {
+        ledger = { files: parsed, generation: 0 };
+      }
     } catch {
-      ledger = {};
+      // Unreadable: as if nothing had been written.
     }
   }
 
@@ -129,7 +158,7 @@ export function applyFencedRequest(
     for (const file of request.files) {
       current[file.path] = io.readText(io.within(request.root, file.path));
     }
-    const plan = planners.planFencedWrite(ledger, request.files, current);
+    const plan = planners.planFencedWrite(ledger.files, request.files, current);
     if (plan.refused.length === 0) {
       if (plan.writes.length > 0 && request.marker) {
         io.writeText(request.marker.path, request.marker.content);
@@ -137,7 +166,17 @@ export function applyFencedRequest(
       for (const file of plan.writes) {
         io.writeText(io.within(request.root, file.path), file.content);
       }
-      io.writeText(ledgerPath, JSON.stringify(plan.ledger));
+      // Last, and only for a write that went through: a refused or failed
+      // one raises nothing.
+      const generation =
+        typeof request.generation === "number" &&
+        request.generation > ledger.generation
+          ? request.generation
+          : ledger.generation;
+      io.writeText(
+        ledgerPath,
+        JSON.stringify({ files: plan.ledger, generation }),
+      );
     }
     return {
       refused: plan.refused,
@@ -147,13 +186,25 @@ export function applyFencedRequest(
   }
 
   try {
-    const plan = planners.planFencedStart(ledger, request.versions);
-    if (plan.stale.length > 0) {
+    const plan = planners.planFencedStart(ledger, {
+      versions: request.versions,
+      generation:
+        typeof request.generation === "number" ? request.generation : null,
+    });
+    if (plan.stale.length > 0 || plan.staleGeneration) {
       return {
         refused: plan.stale,
         changed: [],
         unchanged: [],
         committed: false,
+        ...(plan.staleGeneration
+          ? {
+              staleGeneration: {
+                generation: request.generation as number,
+                laidOut: ledger.generation,
+              },
+            }
+          : {}),
       };
     }
     // Read before anything here changes it: a marker another writer set
@@ -301,6 +352,9 @@ export async function runFencedWriteInSandbox(
     unchanged: [...parsed.unchanged],
     ...(typeof parsed.committed === "boolean"
       ? { committed: parsed.committed }
+      : {}),
+    ...(parsed.staleGeneration
+      ? { staleGeneration: { ...parsed.staleGeneration } }
       : {}),
   };
 }

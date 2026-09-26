@@ -89,18 +89,67 @@ describe("fenceFor", () => {
 });
 
 describe("planFencedStart", () => {
+  const ledgerOf = (files: Record<string, number>, generation = 0) => ({
+    files,
+    generation,
+  });
+
   it("refuses whole, and records nothing, when any file already holds a newer version", () => {
-    const ledger = { [HERO]: 4, [HELLO]: 1 };
-    expect(planFencedStart(ledger, { [HERO]: 3, [HELLO]: 2 })).toEqual({
+    expect(
+      planFencedStart(ledgerOf({ [HERO]: 4, [HELLO]: 1 }, 7), {
+        versions: { [HERO]: 3, [HELLO]: 2 },
+        generation: 7,
+      }),
+    ).toEqual({
       stale: [HERO],
-      ledger: { [HERO]: 4, [HELLO]: 1 },
+      staleGeneration: false,
+      ledger: ledgerOf({ [HERO]: 4, [HELLO]: 1 }, 7),
     });
   });
 
-  it("records its versions, raised and never lowered, when none is older", () => {
-    expect(planFencedStart({ [HERO]: 3 }, { [HERO]: 3, [HELLO]: 2 })).toEqual({
+  it("records its versions and generation, raised and never lowered, when none is older", () => {
+    expect(
+      planFencedStart(ledgerOf({ [HERO]: 3 }, 5), {
+        versions: { [HERO]: 3, [HELLO]: 2 },
+        generation: 6,
+      }),
+    ).toEqual({
       stale: [],
-      ledger: { [HERO]: 3, [HELLO]: 2 },
+      staleGeneration: false,
+      ledger: ledgerOf({ [HERO]: 3, [HELLO]: 2 }, 6),
     });
+  });
+
+  it("refuses a start read at an older generation, though it names no newer file", () => {
+    // A newer save created a file this start never heard of: nothing in its
+    // versions is older, and only the generation says it was read before.
+    expect(
+      planFencedStart(ledgerOf({ [HERO]: 3, "src/New.tsx": 1 }, 8), {
+        versions: { [HERO]: 3 },
+        generation: 7,
+      }),
+    ).toEqual({
+      stale: [],
+      staleGeneration: true,
+      ledger: ledgerOf({ [HERO]: 3, "src/New.tsx": 1 }, 8),
+    });
+  });
+
+  it("lets an equal generation through, as an equal version is", () => {
+    expect(
+      planFencedStart(ledgerOf({ [HERO]: 3 }, 8), {
+        versions: { [HERO]: 3 },
+        generation: 8,
+      }).staleGeneration,
+    ).toBe(false);
+  });
+
+  it("orders nothing by generation for a start that names none", () => {
+    const plan = planFencedStart(ledgerOf({ [HERO]: 3 }, 8), {
+      versions: { [HERO]: 3 },
+      generation: null,
+    });
+    expect(plan.staleGeneration).toBe(false);
+    expect(plan.ledger.generation).toBe(8);
   });
 });

@@ -17,6 +17,10 @@ function world(initial: { version: number; content: string }) {
   const database = new Map<string, SavedThemeFile>([[HERO, initial]]);
   const disk = new Map<string, string>([[HERO, initial.content]]);
   let ledger: Record<string, number> = { [HERO]: initial.version };
+  // The theme's source generation, which every save advances, and what each
+  // write was stamped with.
+  let generation = 10;
+  const stamped: Array<number | null> = [];
 
   const sync = (
     content: string,
@@ -25,17 +29,20 @@ function world(initial: { version: number; content: string }) {
   ) =>
     syncPreviewFiles({
       files: [{ path: HERO, content, baseVersion }],
-      readSaved: async (paths) =>
-        new Map(
+      readSaved: async (paths) => ({
+        files: new Map(
           paths.flatMap((path) => {
             const saved = database.get(path);
             return saved ? [[path, saved] as const] : [];
           }),
         ),
+        generation,
+      }),
       prepare: (files) => files,
       isGenerated: () => false,
-      write: async (files) => {
+      write: async (files, checkedAt) => {
         await holdBeforeWrite;
+        stamped.push(checkedAt);
         // The comparison and the write are one synchronous step here, as they
         // are under the container's lock.
         const plan = planFencedWrite(
@@ -60,9 +67,10 @@ function world(initial: { version: number; content: string }) {
   const save = (content: string) => {
     const current = database.get(HERO)!;
     database.set(HERO, { version: current.version + 1, content });
+    generation += 1;
   };
 
-  return { database, disk, sync, save };
+  return { database, disk, sync, save, stamped };
 }
 
 function gate() {
@@ -139,5 +147,21 @@ describe("syncPreviewFiles interleaved", () => {
     hold.open();
     expect(await b).toMatchObject({ ok: true, changed: [HERO] });
     expect(w.disk.get(HERO)).toBe("hero v4 edited by B");
+  });
+
+  it("stamps the write with the generation its files were checked at, not a later one", async () => {
+    const w = world({ version: 3, content: "hero v3" });
+    const hold = gate();
+
+    // Checked at generation 10; a save lands (generation 11) before it writes.
+    const pending = w.sync("hero v3 + edit", 3, hold.opened);
+    await Promise.resolve();
+    w.save("hero v4");
+    hold.open();
+    await pending;
+
+    // Its files are what generation 10 held: stamping them 11 would let them
+    // outrank a start that has read generation 11 and is in fact current.
+    expect(w.stamped).toEqual([10]);
   });
 });

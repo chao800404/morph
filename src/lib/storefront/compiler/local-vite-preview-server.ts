@@ -216,7 +216,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * queued behind one another so that comparing against it and writing are
    * one step. See `preview-write-fence.ts`.
    */
-  private readonly fenceLedgers = new Map<string, Record<string, number>>();
+  private readonly fenceLedgers = new Map<
+    string,
+    { files: Record<string, number>; generation: number }
+  >();
   private readonly writeQueues = new Map<string, Promise<unknown>>();
   private readonly maxStagedBytes: number;
   private readonly stagedTtlMs: number;
@@ -365,32 +368,46 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         // Judged here, in the queue, against what has actually been written:
         // a start read before a newer one — or before a sync of a newer save —
         // must not lay the older files back over it. Refused whole, as a fenced
-        // sync is; the same version passes. Only a start that passes records
-        // its versions, raised and never lowered.
-        if (input.fileVersions) {
-          const { stale, ledger } = planFencedStart(
-            this.fenceLedgers.get(input.previewId) ?? {},
-            input.fileVersions,
-          );
-          if (stale.length > 0) {
-            return {
-              ok: false,
-              stage: "preview-start-stale",
-              errorMessage: `PREVIEW_START_STALE: a newer version of ${stale
-                .slice(0, 3)
-                .join(
-                  ", ",
-                )}${stale.length > 3 ? ", …" : ""} is already laid out.`,
-              logs,
-            };
-          }
-          this.fenceLedgers.set(input.previewId, ledger);
+        // sync is; the same version passes. The ledger is raised only once
+        // the start has laid its files out — a start refused or failed here
+        // raises nothing.
+        const ledgerBefore = this.fenceLedgers.get(input.previewId) ?? {
+          files: {},
+          generation: 0,
+        };
+        const plan = planFencedStart(ledgerBefore, {
+          versions: input.fileVersions ?? {},
+          generation: input.sourceGeneration ?? null,
+        });
+        if (plan.staleGeneration) {
+          return {
+            ok: false,
+            stage: "preview-start-stale",
+            errorMessage: `PREVIEW_START_STALE: the workspace was already laid out from source generation ${ledgerBefore.generation}; this start was read at ${input.sourceGeneration}.`,
+            logs,
+          };
         }
+        if (plan.stale.length > 0) {
+          return {
+            ok: false,
+            stage: "preview-start-stale",
+            errorMessage: `PREVIEW_START_STALE: a newer version of ${plan.stale
+              .slice(0, 3)
+              .join(
+                ", ",
+              )}${plan.stale.length > 3 ? ", …" : ""} is already laid out.`,
+            logs,
+          };
+        }
+        const recordLaidOut = () =>
+          this.fenceLedgers.set(input.previewId, plan.ledger);
         const existing = this.running.get(input.previewId);
         if (
           existing &&
           existing.workspaceFingerprint === prepared.workspaceFingerprint
         ) {
+          // The files it names are the ones already there.
+          recordLaidOut();
           return {
             ok: true,
             url: existing.url,
@@ -463,6 +480,9 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
             prepared.workspaceFingerprint,
           );
+          // Laid out whole: what the ledger records is now on disk, whether
+          // or not the server that follows comes up.
+          recordLaidOut();
         } catch (error) {
           return {
             ok: false,
@@ -873,6 +893,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   async writeFiles(
     previewId: string,
     files: readonly { path: string; content: string; fence?: number }[],
+    /** The source generation the sync was checked at; see the sandbox's. */
+    generation?: number | null,
   ): Promise<{
     changed: readonly string[];
     unchanged: readonly string[];
@@ -882,7 +904,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     // one step: no other write for this preview — nor a start — can land
     // between them.
     return this.serialised(previewId, () =>
-      this.writeFilesNow(previewId, files),
+      this.writeFilesNow(previewId, files, generation ?? null),
     );
   }
 
@@ -906,6 +928,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private async writeFilesNow(
     previewId: string,
     files: readonly { path: string; content: string; fence?: number }[],
+    generation: number | null,
   ): Promise<{
     changed: readonly string[];
     unchanged: readonly string[];
@@ -939,8 +962,11 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       (file): file is typeof file & { fence: number } =>
         typeof file.fence === "number",
     );
-    const ledger = this.fenceLedgers.get(previewId) ?? {};
-    const plan = planFencedWrite(ledger, fenced, current);
+    const ledger = this.fenceLedgers.get(previewId) ?? {
+      files: {},
+      generation: 0,
+    };
+    const plan = planFencedWrite(ledger.files, fenced, current);
     if (plan.refused.length > 0) {
       return { changed: [], unchanged: [], refused: plan.refused };
     }
@@ -961,13 +987,23 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         );
         invalidated = true;
       }
-      await writer.writeFile(
-        `/workspace/${file.path.replace(/\\/g, "/")}`,
-        file.content,
-      );
+      const target = `/workspace/${file.path.replace(/\\/g, "/")}`;
+      // A new file may be the first in its folder. The container's script
+      // makes the folder; without this, the same sync failed here with
+      // ENOENT, and only on this transport.
+      await writer.mkdir(target.slice(0, target.lastIndexOf("/")), {
+        recursive: true,
+      });
+      await writer.writeFile(target, file.content);
       changed.push(file.path);
     }
-    this.fenceLedgers.set(previewId, plan.ledger);
+    this.fenceLedgers.set(previewId, {
+      files: plan.ledger,
+      generation:
+        generation !== null && generation > ledger.generation
+          ? generation
+          : ledger.generation,
+    });
     return { changed, unchanged, refused: [] };
   }
 

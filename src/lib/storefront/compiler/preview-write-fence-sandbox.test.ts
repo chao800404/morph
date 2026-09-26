@@ -74,6 +74,11 @@ function runAsync(request: FencedWriteRequest): Promise<FencedWriteResult> {
 }
 
 const HERO = "src/Hero.tsx";
+const readLedger = () =>
+  JSON.parse(readFileSync(ledger, "utf8")) as {
+    files: Record<string, number>;
+    generation: number;
+  };
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 
 describe("the container's fenced write", () => {
@@ -88,7 +93,7 @@ describe("the container's fenced write", () => {
     ).toEqual({ refused: [], changed: [HERO], unchanged: [] });
     expect(read(HERO)).toBe("hero v3");
     expect(read(".marker")).toBe("dirty:x");
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({ [HERO]: 3 });
+    expect(readLedger().files).toEqual({ [HERO]: 3 });
   });
 
   it("refuses a write older than one already made, and leaves the file", () => {
@@ -132,7 +137,7 @@ describe("the container's fenced write", () => {
       ),
     );
     expect(read(HERO)).toBe("hero v10");
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({ [HERO]: 10 });
+    expect(readLedger().files).toEqual({ [HERO]: 10 });
     // Every write either went through or was refused; none half-happened.
     for (const result of results) {
       expect(result.changed.length + result.refused.length).toBe(1);
@@ -198,7 +203,7 @@ describe("the container's fenced start", () => {
     });
     expect(read(HERO)).toBe("hero v2");
     expect(existsSync(path.join(root, "src/Old.tsx"))).toBe(false);
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({
+    expect(readLedger().files).toEqual({
       [HERO]: 2,
       "src/Other.tsx": 1,
     });
@@ -233,7 +238,7 @@ describe("the container's fenced start", () => {
     expect(existsSync(path.join(root, "src/Other.tsx"))).toBe(false);
     expect(read("src/Keep.tsx")).toBe("keep");
     expect(read(".morph-preview-workspace")).toBe("dirty:sync");
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual({ [HERO]: 4 });
+    expect(readLedger().files).toEqual({ [HERO]: 4 });
     expect(existsSync((request as { staging: string }).staging)).toBe(false);
   });
 
@@ -289,5 +294,128 @@ describe("the container's fenced start", () => {
       expect(read(HERO), `round ${round}`).toBe("hero v4");
       expect(sync.refused).toEqual([]);
     }
+  });
+});
+
+/**
+ * The source generation a preview's writes are ordered by, beside each
+ * path's version: a start read before a save that a sync has laid out is
+ * refused — including when that save created a file the start never knew,
+ * which no per-path version can name.
+ */
+describe("the container's generation watermark", () => {
+  const NEW = "src/New.tsx";
+  const MARKER = () => path.join(root, ".morph-preview-workspace");
+  let stagings = 0;
+
+  function start(
+    files: Record<string, string>,
+    versions: Record<string, number>,
+    generation: number | null,
+    prune: string[] = [],
+  ): FencedWriteRequest {
+    const staging = path.join(dir, `wm-staging-${stagings++}`);
+    for (const [file, content] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(staging, file)), { recursive: true });
+      writeFileSync(path.join(staging, file), content);
+    }
+    return {
+      op: "start",
+      root,
+      staging,
+      files: Object.keys(files),
+      prune,
+      versions,
+      generation,
+      marker: { path: MARKER(), dirty: "dirty:start", expected: null },
+      commit: null,
+    };
+  }
+
+  const sync = (
+    file: string,
+    content: string,
+    fence: number,
+    generation: number,
+  ) =>
+    run({
+      op: "write",
+      root,
+      files: [{ path: file, content, fence }],
+      generation,
+    });
+
+  it("refuses an older start that would delete a file a newer save created", () => {
+    run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 4));
+    // A newer save (generation 5) created a file; its sync laid it out.
+    sync(NEW, "new v1", 1, 5);
+
+    // Read before that save: it has neither the file nor anything older.
+    const older = start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 4, [NEW]);
+    const result = run(older);
+
+    expect(result.refused).toEqual([]);
+    expect(result.staleGeneration).toEqual({ generation: 4, laidOut: 5 });
+    expect(read(NEW)).toBe("new v1");
+    expect(readLedger()).toEqual({
+      files: { [HERO]: 1, [NEW]: 1 },
+      generation: 5,
+    });
+    expect(existsSync((older as { staging: string }).staging)).toBe(false);
+  });
+
+  it("lets a start after the file's deletion remove it", () => {
+    run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 4));
+    sync(NEW, "new v1", 1, 5);
+
+    // The file was deleted (generation 6); a start read after it prunes it.
+    expect(
+      run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 6, [NEW])).refused,
+    ).toEqual([]);
+    expect(existsSync(path.join(root, NEW))).toBe(false);
+    expect(readLedger().generation).toBe(6);
+  });
+
+  it("keeps a file deleted and made again under the same name, against an older start", () => {
+    run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 6));
+    // Created again (generation 7) as version 1 — the same version a
+    // deleted file once had, which is why versions alone cannot order it.
+    sync(NEW, "new again", 1, 7);
+
+    const result = run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 6, [NEW]));
+    expect(result.staleGeneration).toEqual({ generation: 6, laidOut: 7 });
+    expect(read(NEW)).toBe("new again");
+  });
+
+  it("raises nothing for a sync refused by its fence", () => {
+    sync(HERO, "hero v4", 4, 5);
+    expect(sync(HERO, "hero v3", 3, 9).refused).toEqual([HERO]);
+    expect(readLedger().generation).toBe(5);
+  });
+
+  it("raises nothing for a start that fails halfway", () => {
+    sync(HERO, "hero v1", 1, 5);
+    const broken = start({ [HERO]: "hero v2" }, { [HERO]: 2 }, 8);
+    // A staged file gone before the move: the start fails partway through.
+    rmSync(path.join((broken as { staging: string }).staging, HERO));
+
+    expect(() => run(broken)).toThrow();
+    expect(readLedger()).toEqual({ files: { [HERO]: 1 }, generation: 5 });
+  });
+
+  it("reads a ledger written before generations were kept", () => {
+    // What a warm container may still hold: a flat path-to-version map.
+    writeFileSync(ledger, JSON.stringify({ [HERO]: 4 }));
+
+    // Its versions still hold...
+    expect(run(start({ [HERO]: "hero v3" }, { [HERO]: 3 }, 9)).refused).toEqual(
+      [HERO],
+    );
+    // ...and it has seen no generation, so a current start goes through and
+    // leaves it in the new shape.
+    expect(run(start({ [HERO]: "hero v4" }, { [HERO]: 4 }, 9)).refused).toEqual(
+      [],
+    );
+    expect(readLedger()).toEqual({ files: { [HERO]: 4 }, generation: 9 });
   });
 });

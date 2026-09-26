@@ -224,6 +224,13 @@ export type StartPreviewServerInput = Readonly<{
    */
   fileVersions?: Readonly<Record<string, number>>;
   /**
+   * The Theme source generation `files` were read at — the same snapshot,
+   * checked by reading it before and after (`readAtSourceGeneration`). A
+   * start read before a save that a sync has already laid out is refused,
+   * including when that save created a file this start's plan never had.
+   */
+  sourceGeneration?: number;
+  /**
    * Reads a binary file's bytes when it is written. Required whenever
    * `files` holds one; never serialised, so a transport that crosses a
    * process boundary carries binary files its own way.
@@ -815,6 +822,7 @@ export class CloudflareSandboxVitePreviewServer {
           files: stagedStart.files,
           prune: stagedStart.prune,
           versions: input.fileVersions ?? {},
+          generation: input.sourceGeneration ?? null,
           marker: {
             path: THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
             dirty: newDirtyWorkspaceMarker(),
@@ -826,6 +834,15 @@ export class CloudflareSandboxVitePreviewServer {
         await this.discardStaging(session!, stagedStart.staging);
         throw error;
       });
+      if (applied.staleGeneration) {
+        observation.workspace.refused = applied.refused.length;
+        return {
+          ok: false,
+          stage: "preview-start-stale",
+          errorMessage: `PREVIEW_START_STALE: the workspace was already laid out from source generation ${applied.staleGeneration.laidOut}; this start was read at ${applied.staleGeneration.generation}.`,
+          logs,
+        };
+      }
       if (applied.refused.length > 0) {
         observation.workspace.refused = applied.refused.length;
         return {
