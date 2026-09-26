@@ -6,6 +6,7 @@ import {
   openContentTab,
   openEditor,
   previewFrame,
+  saveEditedSource,
 } from "./helpers";
 
 /**
@@ -18,52 +19,6 @@ test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to a seeded editor store.");
 
 const FIXED = "Fixed e2e text";
 const EDITED = "Promoted e2e text";
-
-async function saveEditedSource(
-  page: Page,
-  path: string,
-  edit: (source: string) => string,
-) {
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          (target) =>
-            Boolean(
-              (window as any).monaco?.editor
-                .getModels()
-                .some((model: any) => model.uri.path.endsWith(target)),
-            ),
-          path,
-        ),
-      { timeout: 30_000 },
-    )
-    .toBe(true);
-  const source = await page.evaluate(
-    (target) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .getValue() as string,
-    path,
-  );
-  await page.evaluate(
-    ({ target, next }) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .setValue(next),
-    { target: path, next: edit(source) },
-  );
-  const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      (response.request().postData() ?? "").includes(path),
-    { timeout: 30_000 },
-  );
-  await page.keyboard.press("Control+s");
-  expect((await saved).ok()).toBe(true);
-}
 
 async function selectFixedText(page: Page) {
   await expect(previewFrame(page).getByText(FIXED)).toBeVisible({

@@ -170,6 +170,31 @@ export const saveThemeFilesBatchInputSchema = z
       )
       .max(200)
       .optional(),
+    /**
+     * Copies whose URL references in Theme source follow them. The server
+     * plans the rewrite itself from the saved files and writes it only if it
+     * matches `expected`, what the author reviewed; the rewritten content is
+     * never taken from the client.
+     */
+    publicUrlRewrite: z
+      .object({
+        moves: z
+          .array(
+            z.object({
+              from: safeThemeFilePathSchema,
+              to: safeThemeFilePathSchema,
+            }),
+          )
+          .min(1)
+          .max(200),
+        expected: z.object({
+          paths: z.array(safeThemeFilePathSchema).max(1000),
+          rewriteCount: z.number().int().min(0),
+          unresolvedCount: z.number().int().min(0),
+        }),
+        acknowledgeUnresolved: z.boolean().optional().default(false),
+      })
+      .optional(),
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),

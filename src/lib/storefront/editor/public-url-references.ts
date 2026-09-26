@@ -33,28 +33,35 @@ const URL_PATH_CHARACTER = /[A-Za-z0-9._~%\-/]/;
 const URL_PREFIX_CHARACTER = /[A-Za-z0-9._~%\-]/;
 const EXCERPT_LENGTH = 120;
 
-function excerptOf(line: string): string {
+export function excerptOf(line: string): string {
   const trimmed = line.trim();
   return trimmed.length > EXCERPT_LENGTH
     ? `${trimmed.slice(0, EXCERPT_LENGTH - 1)}…`
     : trimmed;
 }
 
-function occursAlone(line: string, url: string): boolean {
-  let from = 0;
-  for (;;) {
-    const at = line.indexOf(url, from);
-    if (at < 0) return false;
-    const before = at > 0 ? line[at - 1]! : "";
-    const after = line[at + url.length] ?? "";
+/**
+ * Where `url` is written out in `text` as itself: not the start of a longer
+ * path, and not after a host or a word.
+ */
+export function publicUrlOccurrences(text: string, url: string): number[] {
+  const found: number[] = [];
+  if (!url) return found;
+  for (let at = text.indexOf(url); at >= 0; at = text.indexOf(url, at + 1)) {
+    const before = at > 0 ? text[at - 1]! : "";
+    const after = text[at + url.length] ?? "";
     if (
       !(before && URL_PREFIX_CHARACTER.test(before)) &&
       !(after && URL_PATH_CHARACTER.test(after))
     ) {
-      return true;
+      found.push(at);
     }
-    from = at + 1;
   }
+  return found;
+}
+
+function occursAlone(line: string, url: string): boolean {
+  return publicUrlOccurrences(line, url).length > 0;
 }
 
 function folderOf(url: string): string | null {

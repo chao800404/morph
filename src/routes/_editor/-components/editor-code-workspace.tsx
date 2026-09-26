@@ -56,7 +56,15 @@ import {
   scanPublicUrlReferences,
   type PublicUrlScan,
 } from "@/lib/storefront/editor/public-url-references";
-import { PublicUrlReview } from "./editor-code-public-url-review";
+import {
+  PublicUrlReview,
+  PublicUrlRewriteReview,
+} from "./editor-code-public-url-review";
+import type { PublicUrlRewriteRequest } from "@/lib/storefront/editor/public-url-move-batch";
+import {
+  reviewPublicUrlMove,
+  type PublicUrlMoveReview,
+} from "@/lib/storefront/editor/public-url-move-review";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   checkThemePublicPath,
@@ -633,6 +641,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     binaryMoves: ReadonlyArray<{ from: string; to: string }>;
     /** Whether source files move too; copying instead is offered only if not. */
     movesSource: boolean;
+    /** The references the move can update, planned from the saved source. */
+    rewrite: PublicUrlMoveReview["rewrite"];
+    /** What names the URLs in the editor's text, when nothing is updated. */
     review: PublicUrlReviewState;
     acknowledged: boolean;
     onDone?: () => void;
@@ -1789,7 +1800,13 @@ const EditorCodeWorkspaceContent = forwardRef<
    * their references are updated and the old files deleted.
    */
   const binaryCopyMutation = useMutation({
-    mutationFn: async (copies: ReadonlyArray<{ from: string; to: string }>) => {
+    mutationFn: async ({
+      copies,
+      publicUrlRewrite,
+    }: {
+      copies: ReadonlyArray<{ from: string; to: string }>;
+      publicUrlRewrite?: PublicUrlRewriteRequest;
+    }) => {
       const result = await saveStorefrontThemeFilesBatch({
         data: {
           storefrontId,
@@ -1807,6 +1824,7 @@ const EditorCodeWorkspaceContent = forwardRef<
               expectedVersion: binary.version,
             };
           }),
+          ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -1820,16 +1838,38 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
-    onSuccess: async (data, copies) => {
+    onSuccess: async (data, { copies, publicUrlRewrite }) => {
       useThemeWorkspaceStore
         .getState()
         .acceptRemoteGeneration(data.sourceGeneration, workspaceScope);
+      // Files whose URL references the server rewrote. None held a draft
+      // naming the URLs — the review stops the rewrite if one did — so the
+      // saved content replaces what the editor shows.
+      for (const saved of data.files ?? []) {
+        if (draftDirtyRef.current[saved.path]) continue;
+        suppressModelChangeRef.current = true;
+        for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
+          const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
+          if (
+            modelPath === saved.path ||
+            modelPath.endsWith("/" + saved.path)
+          ) {
+            model.setValue?.(saved.content);
+          }
+        }
+        suppressModelChangeRef.current = false;
+        draftContentsRef.current[saved.path] = saved.content;
+        draftDirtyRef.current[saved.path] = false;
+        delete draftRevisionRef.current[saved.path];
+        markWorkspaceSaved(saved, workspaceScope);
+      }
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
           .queryKey,
       });
+      const rewritten = publicUrlRewrite?.expected.rewriteCount ?? 0;
       toast.success(
-        `Copied ${copies.length} file${copies.length === 1 ? "" : "s"}; the old URLs still work.`,
+        `Copied ${copies.length} file${copies.length === 1 ? "" : "s"}; ${rewritten > 0 ? `updated ${rewritten} URL reference${rewritten === 1 ? "" : "s"}, and ` : ""}the old URLs still work.`,
       );
       onRestartPreview?.();
     },
@@ -1947,118 +1987,147 @@ const EditorCodeWorkspaceContent = forwardRef<
       ),
   });
 
+  /**
+   * The batch a move writes: source files moved with their importers
+   * rewritten, and binary files moved by reference. Built again at submit,
+   * and when a move that changes `public/` URLs is reviewed, so the review
+   * describes the very batch the author confirms.
+   */
+  const buildMoveBatch = (
+    moves: ReadonlyArray<{ from: string; to: string }>,
+  ) => {
+    const workspaceFiles = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    // A move must rewrite the newest editor buffer, not an older server
+    // snapshot, or it can save an import graph that no longer matches what
+    // the author sees in Monaco.
+    const planInputs = new Map(
+      files.map((file) => [
+        file.path,
+        draftContentsRef.current[file.path] ??
+          workspaceFiles[file.path]?.localContent ??
+          file.content,
+      ]),
+    );
+    // Binary files move by reference — a copy at the new path and the
+    // source's deletion — in the same batch as the source files moving.
+    const binaryMoves = moves.filter((move) => binaryFileByPath.has(move.from));
+    const sourceMoves = moves.filter(
+      (move) => !binaryFileByPath.has(move.from),
+    );
+    const plan: ReturnType<typeof planThemeFileMove> =
+      sourceMoves.length > 0
+        ? planThemeFileMove(
+            [...planInputs].map(([path, content]) => ({ path, content })),
+            sourceMoves,
+          )
+        : {
+            ok: true,
+            writes: [],
+            deletions: [],
+            rewrites: [],
+            routePathMoves: [],
+          };
+    if (!plan.ok) throw new Error(plan.reason);
+
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const sourceDeletions = plan.deletions.map((path) => {
+      const file = byPath.get(path);
+      if (!file) throw new Error(`${path} is no longer in the workspace.`);
+      return {
+        path,
+        expectedFileId: file.id,
+        expectedVersion: file.version,
+      };
+    });
+
+    const binaryReferences = binaryMoves.map((move) => {
+      const binary = binaryFileByPath.get(move.from);
+      if (!binary)
+        throw new Error(`${move.from} is no longer in the workspace.`);
+      return { move, binary };
+    });
+    const deletions = [
+      ...sourceDeletions,
+      ...binaryReferences.map(({ move, binary }) => ({
+        path: move.from,
+        expectedFileId: binary.id,
+        expectedVersion: binary.version,
+      })),
+    ];
+
+    // Each write states what it expects to find. An importer being
+    // rewritten must still be the version this plan was made from, and
+    // the destination must still be free — otherwise a move made while
+    // someone else was editing would quietly discard their work.
+    const batchFiles = plan.writes.map((file) => {
+      const existing = byPath.get(file.path);
+      return existing
+        ? {
+            path: file.path,
+            content: file.content,
+            mimeType: existing.mimeType,
+            expectedFileId: existing.id,
+            expectedVersion: existing.version,
+          }
+        : {
+            path: file.path,
+            content: file.content,
+            mimeType:
+              byPath.get(
+                plan.deletions.find(
+                  (from) =>
+                    from.slice(from.lastIndexOf("/") + 1) ===
+                    file.path.slice(file.path.lastIndexOf("/") + 1),
+                ) ?? "",
+              )?.mimeType ?? "text/typescript",
+            expectMissing: true,
+          };
+    });
+    const binaryCopies = binaryReferences.map(({ move, binary }) => ({
+      from: move.from,
+      to: move.to,
+      expectedFileId: binary.id,
+      expectedVersion: binary.version,
+    }));
+    return {
+      plan,
+      planInputs,
+      files: batchFiles,
+      deletions,
+      routePathMoves: plan.routePathMoves,
+      binaryCopies,
+      binaryMoves,
+    };
+  };
+
   const moveMutation = useMutation({
-    mutationFn: async (moves: ReadonlyArray<{ from: string; to: string }>) => {
-      const workspaceFiles = useThemeWorkspaceStore
-        .getState()
-        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
-      // A move must rewrite the newest editor buffer, not an older server
-      // snapshot, or it can save an import graph that no longer matches what
-      // the author sees in Monaco.
-      const planInputs = new Map(
-        files.map((file) => [
-          file.path,
-          draftContentsRef.current[file.path] ??
-            workspaceFiles[file.path]?.localContent ??
-            file.content,
-        ]),
-      );
-      // Binary files move by reference — a copy at the new path and the
-      // source's deletion — in the same batch as the source files moving.
-      const binaryMoves = moves.filter((move) =>
-        binaryFileByPath.has(move.from),
-      );
-      const sourceMoves = moves.filter(
-        (move) => !binaryFileByPath.has(move.from),
-      );
-      const plan: ReturnType<typeof planThemeFileMove> =
-        sourceMoves.length > 0
-          ? planThemeFileMove(
-              [...planInputs].map(([path, content]) => ({ path, content })),
-              sourceMoves,
-            )
-          : {
-              ok: true,
-              writes: [],
-              deletions: [],
-              rewrites: [],
-              routePathMoves: [],
-            };
-      if (!plan.ok) throw new Error(plan.reason);
-
-      const byPath = new Map(files.map((file) => [file.path, file]));
-      const sourceDeletions = plan.deletions.map((path) => {
-        const file = byPath.get(path);
-        if (!file) throw new Error(`${path} is no longer in the workspace.`);
-        return {
-          path,
-          expectedFileId: file.id,
-          expectedVersion: file.version,
-        };
-      });
-
-      const binaryReferences = binaryMoves.map((move) => {
-        const binary = binaryFileByPath.get(move.from);
-        if (!binary)
-          throw new Error(`${move.from} is no longer in the workspace.`);
-        return { move, binary };
-      });
-      const deletions = [
-        ...sourceDeletions,
-        ...binaryReferences.map(({ move, binary }) => ({
-          path: move.from,
-          expectedFileId: binary.id,
-          expectedVersion: binary.version,
-        })),
-      ];
-
+    mutationFn: async ({
+      moves,
+      publicUrlRewrite,
+    }: {
+      moves: ReadonlyArray<{ from: string; to: string }>;
+      publicUrlRewrite?: PublicUrlRewriteRequest;
+    }) => {
+      const batch = buildMoveBatch(moves);
+      const { plan, planInputs } = batch;
       // One batch: the writes at the new paths and the removals at the old ones
       // land together or not at all. Two calls would leave the Theme with
-      // duplicates, or with nothing, for as long as the gap lasted.
+      // duplicates, or with nothing, for as long as the gap lasted. URL
+      // references the author chose to update are planned again by the
+      // server and written in the same batch.
       const result = await saveStorefrontThemeFilesBatch({
         data: {
           storefrontId,
           themeId,
-          // Each write states what it expects to find. An importer being
-          // rewritten must still be the version this plan was made from, and
-          // the destination must still be free — otherwise a move made while
-          // someone else was editing would quietly discard their work.
-          files: plan.writes.map((file) => {
-            const existing = byPath.get(file.path);
-            return existing
-              ? {
-                  path: file.path,
-                  content: file.content,
-                  mimeType: existing.mimeType,
-                  expectedFileId: existing.id,
-                  expectedVersion: existing.version,
-                }
-              : {
-                  path: file.path,
-                  content: file.content,
-                  mimeType:
-                    byPath.get(
-                      plan.deletions.find(
-                        (from) =>
-                          from.slice(from.lastIndexOf("/") + 1) ===
-                          file.path.slice(file.path.lastIndexOf("/") + 1),
-                      ) ?? "",
-                    )?.mimeType ?? "text/typescript",
-                  expectMissing: true,
-                };
-          }),
-          deletions,
-          routePathMoves: plan.routePathMoves,
-          ...(binaryReferences.length > 0
-            ? {
-                binaryCopies: binaryReferences.map(({ move, binary }) => ({
-                  from: move.from,
-                  to: move.to,
-                  expectedFileId: binary.id,
-                  expectedVersion: binary.version,
-                })),
-              }
+          files: batch.files,
+          deletions: batch.deletions,
+          routePathMoves: batch.routePathMoves,
+          ...(batch.binaryCopies.length > 0
+            ? { binaryCopies: batch.binaryCopies }
             : {}),
+          ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
           expectedSourceGeneration: useThemeWorkspaceStore
             .getState()
             .getAcceptedSourceGeneration(workspaceScope),
@@ -2070,19 +2139,27 @@ const EditorCodeWorkspaceContent = forwardRef<
         },
       });
       if (!result.success) throw new Error(result.message);
-      return { ...result.data, plan, moves, planInputs };
+      return {
+        ...result.data,
+        plan,
+        moves,
+        planInputs,
+        urlRewriteCount: publicUrlRewrite?.expected.rewriteCount ?? 0,
+      };
     },
     onSuccess: async ({
       sourceGeneration,
       plan,
       moves,
       planInputs,
+      urlRewriteCount,
       files: savedFiles = [],
     }: {
       sourceGeneration: number;
       plan: Extract<ReturnType<typeof planThemeFileMove>, { ok: true }>;
       moves: ReadonlyArray<{ from: string; to: string }>;
       planInputs: ReadonlyMap<string, string>;
+      urlRewriteCount: number;
       files: StorefrontThemeFileDTO[];
     }) => {
       // Notify the shell at the transaction boundary, before local store or
@@ -2163,10 +2240,16 @@ const EditorCodeWorkspaceContent = forwardRef<
         queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId)
           .queryKey,
       });
-      toast.success(
+      const updated = [
         plan.rewrites.length > 0
-          ? `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}; updated ${plan.rewrites.length} import${plan.rewrites.length === 1 ? "" : "s"}`
-          : `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}`,
+          ? `${plan.rewrites.length} import${plan.rewrites.length === 1 ? "" : "s"}`
+          : null,
+        urlRewriteCount > 0
+          ? `${urlRewriteCount} URL reference${urlRewriteCount === 1 ? "" : "s"}`
+          : null,
+      ].filter(Boolean);
+      toast.success(
+        `Moved ${moves.length === 1 ? moves[0].to : `${moves.length} files`}${updated.length > 0 ? `; updated ${updated.join(" and ")}` : ""}`,
       );
       onRestartPreview?.();
     },
@@ -2406,6 +2489,38 @@ const EditorCodeWorkspaceContent = forwardRef<
     pendingFolders,
   ]);
 
+  /** The references a reviewed move can update, when it can. */
+  const moveRewrite =
+    binaryMoveReview?.rewrite.kind === "ready"
+      ? binaryMoveReview.rewrite
+      : null;
+  const moveUpdates = moveRewrite?.plan.rewrites.length ?? 0;
+  const moveUnresolved = moveRewrite?.plan.unresolved.length ?? 0;
+  /**
+   * Moving removes the old URLs. When something may still name them — a
+   * reference the move cannot update, or, with no update at all, any
+   * reference found — the author must say they accept it.
+   */
+  const moveNeedsAcknowledgement =
+    binaryMoveReview !== null &&
+    (moveRewrite
+      ? moveUnresolved > 0
+      : binaryMoveReview.review.scan.known.length > 0);
+  /** Keeping the old files is the safer default while anything is unresolved. */
+  const copyIsDefault = moveRewrite !== null && moveUnresolved > 0;
+  const rewriteRequest = (
+    review: NonNullable<typeof binaryMoveReview>,
+  ): PublicUrlRewriteRequest | undefined =>
+    review.rewrite.kind === "ready" && review.rewrite.plan.rewrites.length > 0
+      ? {
+          moves: review.binaryMoves.map((move) => ({ ...move })),
+          expected: review.rewrite.summary,
+          acknowledgeUnresolved: review.acknowledged,
+        }
+      : undefined;
+  const referenceCount = (count: number) =>
+    `${count} reference${count === 1 ? "" : "s"}`;
+
   /** Theme source as the editor holds it, including unsaved drafts. */
   const currentSourceTexts = () =>
     files.map((file) => ({
@@ -2436,7 +2551,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   ) => {
     const binaryMoves = moves.filter((move) => binaryFileByPath.has(move.from));
     if (binaryMoves.length === 0) {
-      moveMutation.mutate(moves, { onSuccess: () => onDone?.() });
+      moveMutation.mutate({ moves }, { onSuccess: () => onDone?.() });
       return;
     }
     const outside = binaryMoves.find((move) => !move.to.startsWith("public/"));
@@ -2444,16 +2559,54 @@ const EditorCodeWorkspaceContent = forwardRef<
       toast.error(`${outside.from} can only move within public/.`);
       return;
     }
+    let batch: ReturnType<typeof buildMoveBatch>;
+    try {
+      batch = buildMoveBatch(moves);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Cannot move");
+      return;
+    }
+    // The saved source, as the server will read it, and the drafts that
+    // differ from it.
+    const workspaceFiles = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    const saved = files.map((file) => {
+      const state = workspaceFiles[file.path];
+      return state?.serverExists && state.serverFileId
+        ? {
+            id: state.serverFileId,
+            path: file.path,
+            content: state.serverContent,
+            version: state.serverVersion ?? file.version,
+            mimeType: file.mimeType,
+          }
+        : {
+            id: file.id,
+            path: file.path,
+            content: file.content,
+            version: file.version,
+            mimeType: file.mimeType,
+          };
+    });
+    const drafts = new Map<string, string>();
+    for (const file of saved) {
+      const current = getCurrentEditorContent(file.path);
+      if (current !== file.content) drafts.set(file.path, current);
+    }
+    const planned = reviewPublicUrlMove({
+      saved,
+      drafts,
+      files: batch.files,
+      deletions: batch.deletions,
+      binaryMoves: batch.binaryMoves,
+    });
     setBinaryMoveReview({
       moves,
       binaryMoves,
       movesSource: binaryMoves.length !== moves.length,
-      review: reviewPublicUrls(
-        binaryMoves.map((move) => ({
-          from: themePublicUrlPath(move.from) ?? move.from,
-          to: themePublicUrlPath(move.to) ?? move.to,
-        })),
-      ),
+      rewrite: planned.rewrite,
+      review: reviewPublicUrls(planned.changes),
       acknowledged: false,
       onDone,
     });
@@ -4603,17 +4756,46 @@ const EditorCodeWorkspaceContent = forwardRef<
             <AlertDialogTitle>Move files in public/?</AlertDialogTitle>
             <AlertDialogDescription>
               The storefront serves these files at their paths, so moving them
-              changes their URLs. Copying keeps the old URLs working until the
-              references are updated and the old files deleted.
+              changes their URLs.{" "}
+              {moveRewrite
+                ? "References written out in Theme source are updated in the same save. Copying keeps the old URLs working for anything that is not."
+                : "Copying keeps the old URLs working until the references are updated and the old files deleted."}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {binaryMoveReview ? (
-            <PublicUrlReview
-              changes={binaryMoveReview.review.changes}
-              scan={binaryMoveReview.review.scan}
+          {binaryMoveReview && moveRewrite ? (
+            <PublicUrlRewriteReview
+              changes={binaryMoveReview.review.changes.map((change) => ({
+                from: change.from,
+                to: change.to ?? change.from,
+              }))}
+              plan={moveRewrite.plan}
             />
           ) : null}
-          {binaryMoveReview && binaryMoveReview.review.scan.known.length > 0 ? (
+          {binaryMoveReview && !moveRewrite ? (
+            <>
+              {binaryMoveReview.rewrite.kind === "blocked" ? (
+                <p
+                  className="text-xs text-amber-700 dark:text-amber-400"
+                  data-public-url-rewrite-blocked
+                >
+                  Unsaved changes in{" "}
+                  {binaryMoveReview.rewrite.unsavedPaths.join(", ")} name these
+                  URLs. Save or discard them to have references updated with the
+                  move.
+                </p>
+              ) : binaryMoveReview.rewrite.kind === "unavailable" ? (
+                <p className="text-xs text-muted-foreground">
+                  References cannot be updated with this move:{" "}
+                  {binaryMoveReview.rewrite.reason}
+                </p>
+              ) : null}
+              <PublicUrlReview
+                changes={binaryMoveReview.review.changes}
+                scan={binaryMoveReview.review.scan}
+              />
+            </>
+          ) : null}
+          {binaryMoveReview && moveNeedsAcknowledgement ? (
             <label className="flex items-center gap-2 text-xs">
               <Checkbox
                 checked={binaryMoveReview.acknowledged}
@@ -4626,43 +4808,70 @@ const EditorCodeWorkspaceContent = forwardRef<
                 }
                 aria-label="I understand these references will break"
               />
-              I understand these references will break.
+              {moveRewrite
+                ? `I understand the ${referenceCount(moveUnresolved)} not updated may break if I move.`
+                : "I understand these references will break."}
             </label>
           ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             {binaryMoveReview && !binaryMoveReview.movesSource ? (
               <Button
-                variant="outline"
+                variant={copyIsDefault ? "default" : "outline"}
                 disabled={binaryCopyMutation.isPending}
+                data-binary-move-copy
                 onClick={() => {
                   const review = binaryMoveReview;
                   setBinaryMoveReview(null);
-                  binaryCopyMutation.mutate(review.binaryMoves, {
-                    onSuccess: () => review.onDone?.(),
-                  });
+                  const publicUrlRewrite = rewriteRequest(review);
+                  binaryCopyMutation.mutate(
+                    {
+                      copies: review.binaryMoves,
+                      ...(publicUrlRewrite
+                        ? {
+                            // The old files stay, so their URLs keep working.
+                            publicUrlRewrite: {
+                              ...publicUrlRewrite,
+                              acknowledgeUnresolved: false,
+                            },
+                          }
+                        : {}),
+                    },
+                    { onSuccess: () => review.onDone?.() },
+                  );
                 }}
               >
-                Copy, keep old URLs
+                {moveUpdates > 0
+                  ? `Copy and update ${referenceCount(moveUpdates)}`
+                  : "Copy, keep old URLs"}
               </Button>
             ) : null}
-            <AlertDialogAction
+            <Button
+              variant={copyIsDefault ? "outline" : "default"}
               disabled={
                 !binaryMoveReview ||
-                (binaryMoveReview.review.scan.known.length > 0 &&
-                  !binaryMoveReview.acknowledged)
+                moveMutation.isPending ||
+                (moveNeedsAcknowledgement && !binaryMoveReview.acknowledged)
               }
+              data-binary-move-confirm
               onClick={() => {
                 const review = binaryMoveReview;
                 setBinaryMoveReview(null);
                 if (!review) return;
-                moveMutation.mutate(review.moves, {
-                  onSuccess: () => review.onDone?.(),
-                });
+                const publicUrlRewrite = rewriteRequest(review);
+                moveMutation.mutate(
+                  {
+                    moves: review.moves,
+                    ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
+                  },
+                  { onSuccess: () => review.onDone?.() },
+                );
               }}
             >
-              Move
-            </AlertDialogAction>
+              {moveUpdates > 0
+                ? `Move and update ${referenceCount(moveUpdates)}`
+                : "Move"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

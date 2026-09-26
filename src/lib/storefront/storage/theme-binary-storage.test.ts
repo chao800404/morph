@@ -7,7 +7,15 @@ import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ThemeSourceRevisionManifest } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import {
+  isBinaryThemeFile,
+  type ThemeSourceRevisionManifest,
+} from "@/lib/storefront/dto/storefront-theme-file.dto";
+import {
+  summarizePublicUrlRewrite,
+  withPublicUrlRewrites,
+} from "../editor/public-url-move-batch";
+import { planConfirmedPublicUrlRewrite } from "../service/public-url-rewrite-batch";
 import { storefrontThemeFileDal } from "../dal/storefront-theme-file.dal";
 import { normalizeRevisionSnapshot } from "../compiler/theme-build-materializer";
 import {
@@ -809,6 +817,187 @@ describe("moving and copying binary files in a batch", () => {
     expect(generation()).toBe(before);
     expect(rows("public/images/hero.jpg")).toEqual([]);
   });
+});
+
+describe("moving a binary file with its URL references rewritten", () => {
+  const HERO_SOURCE = 'export default () => <img src="/images/hero.png" />;';
+  const MOVE = { from: "public/images/hero.png", to: "public/img/hero.png" };
+
+  function seedHero() {
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+         VALUES ('file-hero', ?, ?, 'src/Hero.tsx', ?, 'text/typescript', 3, 'now', 'now')`,
+      )
+      .run(STORE, THEME, HERO_SOURCE);
+  }
+
+  /** What the batch server function does with `publicUrlRewrite`. */
+  async function confirmFromSnapshot(
+    expected: ReturnType<typeof summarizePublicUrlRewrite>,
+    binary: { id: string; version: number },
+    expectedSourceGeneration = generation(),
+  ) {
+    const copy = {
+      ...MOVE,
+      expectedFileId: binary.id,
+      expectedVersion: binary.version,
+    };
+    const deletions = [
+      {
+        path: MOVE.from,
+        expectedFileId: binary.id,
+        expectedVersion: binary.version,
+      },
+    ];
+    const confirmed = await planConfirmedPublicUrlRewrite(d1ThemeSourceStore, {
+      storefrontId: STORE,
+      themeId: THEME,
+      expectedSourceGeneration,
+      files: [],
+      deletions,
+      binaryCopies: [copy],
+      publicUrlRewrite: {
+        moves: [MOVE],
+        expected,
+        acknowledgeUnresolved: false,
+      },
+    });
+    return { confirmed, copy, deletions };
+  }
+
+  async function review() {
+    const entries = await d1ThemeSourceStore.getWorkspaceSnapshot(STORE, THEME);
+    const planned = withPublicUrlRewrites({
+      saved: entries
+        .filter((entry) => !isBinaryThemeFile(entry))
+        .map((entry) => ({
+          id: entry.id,
+          path: entry.path,
+          content: entry.content,
+          version: entry.version,
+        })),
+      files: [],
+      deletions: [{ path: MOVE.from }],
+      binaryCopies: [MOVE],
+      rewrites: [MOVE],
+    });
+    if (!planned.ok) throw new Error(planned.reason);
+    return summarizePublicUrlRewrite(planned.plan);
+  }
+
+  it("moves the file and rewrites the reference in one transaction", async () => {
+    seedSource();
+    seedHero();
+    const saved = await upload("public/images/hero.png", png(40));
+    const expected = await review();
+    expect(expected).toEqual({
+      paths: ["src/Hero.tsx"],
+      rewriteCount: 1,
+      unresolvedCount: 0,
+    });
+    const before = generation();
+
+    const { confirmed, copy, deletions } = await confirmFromSnapshot(
+      expected,
+      saved,
+    );
+    if (!confirmed.ok) throw new Error(confirmed.reason);
+    const files = confirmed.files;
+    await d1ThemeSourceStore.saveFilesBatch(STORE, THEME, files, {
+      expectedSourceGeneration: before,
+      binaryCopies: [copy],
+      deletions,
+      createRevision: true,
+    });
+
+    expect(fileRow("public/images/hero.png")).toBeUndefined();
+    expect(fileRow("public/img/hero.png")?.blob_digest).toBe(saved.blobDigest);
+    expect(fileRow("src/Hero.tsx")).toMatchObject({
+      content: HERO_SOURCE.replace("/images/hero.png", "/img/hero.png"),
+      version: 4,
+    });
+    expect(generation()).toBe(before + 1);
+    const manifest = latestManifest()?.files.map((file) => file.path);
+    expect(manifest).toContain("public/img/hero.png");
+    expect(manifest).not.toContain("public/images/hero.png");
+  });
+
+  it("writes nothing when the referencing file is saved before the batch lands", async () => {
+    seedSource();
+    seedHero();
+    const saved = await upload("public/images/hero.png", png(40));
+    const expected = await review();
+    const before = generation();
+    const { confirmed, copy, deletions } = await confirmFromSnapshot(
+      expected,
+      saved,
+    );
+    if (!confirmed.ok) throw new Error(confirmed.reason);
+    const files = confirmed.files;
+
+    // Someone else saves the file between the server's plan and its write.
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_files SET version = version + 1, content = 'export default 2;' WHERE path = 'src/Hero.tsx'",
+      )
+      .run();
+
+    await expect(
+      d1ThemeSourceStore.saveFilesBatch(STORE, THEME, files, {
+        expectedSourceGeneration: before,
+        binaryCopies: [copy],
+        deletions,
+      }),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+    expect(fileRow("public/images/hero.png")).toBeDefined();
+    expect(rows("public/img/hero.png")).toEqual([]);
+    expect(fileRow("src/Hero.tsx")?.content).toBe("export default 2;");
+  });
+
+  it("refuses to plan against a Theme saved since the review, and writes nothing", async () => {
+    seedSource();
+    seedHero();
+    const saved = await upload("public/images/hero.png", png(40));
+    const expected = await review();
+    const reviewedAt = generation();
+
+    // A save through the store, which advances the generation.
+    await d1ThemeSourceStore.saveFile(
+      STORE,
+      THEME,
+      "src/Other.tsx",
+      'export const logo = "/images/hero.png";',
+      "text/typescript",
+      { expectedSourceGeneration: reviewedAt, expectMissing: true },
+    );
+
+    const { confirmed } = await confirmFromSnapshot(
+      expected,
+      saved,
+      reviewedAt,
+    );
+    expect(confirmed).toMatchObject({
+      ok: false,
+      error: "SOURCE_GENERATION_CONFLICT",
+    });
+
+    // Reviewed again at the new generation, the new reference is seen and
+    // the old summary no longer matches.
+    const { confirmed: again } = await confirmFromSnapshot(expected, saved);
+    expect(again).toMatchObject({
+      ok: false,
+      error: "PUBLIC_URL_REWRITE_STALE",
+    });
+    expect(fileRow("public/images/hero.png")).toBeDefined();
+    expect(fileRow("src/Hero.tsx")?.content).toBe(HERO_SOURCE);
+  });
+
+  const rows = (path: string) =>
+    sqlite
+      .prepare("SELECT id FROM storefront_theme_files WHERE path = ?")
+      .all(path);
 });
 
 describe("building a revision with binary files", () => {

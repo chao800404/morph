@@ -329,3 +329,53 @@ export async function settleSelection(page: Page) {
   // One frame past the tree so the inspector has rendered against it too.
   await page.waitForTimeout(250);
 }
+
+/**
+ * Replaces an open Theme file's content in Monaco and saves it, waiting for
+ * the save to be answered.
+ */
+export async function saveEditedSource(
+  page: Page,
+  path: string,
+  edit: (source: string) => string,
+) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (target) =>
+            Boolean(
+              (window as any).monaco?.editor
+                .getModels()
+                .some((model: any) => model.uri.path.endsWith(target)),
+            ),
+          path,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  const source = await page.evaluate(
+    (target) =>
+      (window as any).monaco.editor
+        .getModels()
+        .find((model: any) => model.uri.path.endsWith(target))
+        .getValue() as string,
+    path,
+  );
+  await page.evaluate(
+    ({ target, next }) =>
+      (window as any).monaco.editor
+        .getModels()
+        .find((model: any) => model.uri.path.endsWith(target))
+        .setValue(next),
+    { target: path, next: edit(source) },
+  );
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      (response.request().postData() ?? "").includes(path),
+    { timeout: 30_000 },
+  );
+  await page.keyboard.press("Control+s");
+  expect((await saved).ok()).toBe(true);
+}

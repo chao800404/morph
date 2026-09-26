@@ -51,6 +51,7 @@ import {
   type StorefrontThemeBinaryFileDTO,
   type StorefrontThemeFileDTO,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import { planConfirmedPublicUrlRewrite } from "@/lib/storefront/service/public-url-rewrite-batch";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 
 function rejectLegacyManifestDeletion() {
@@ -639,10 +640,30 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
       return rejectLegacyManifestDeletion();
     }
     try {
+      let files = data.files;
+      if (data.publicUrlRewrite) {
+        // Planned from the source as saved, not taken from the editor.
+        const confirmed = await planConfirmedPublicUrlRewrite(
+          themeSourceStore,
+          {
+            storefrontId: data.storefrontId,
+            themeId: data.themeId,
+            expectedSourceGeneration: data.expectedSourceGeneration,
+            files: data.files,
+            deletions: data.deletions ?? [],
+            binaryCopies: data.binaryCopies ?? [],
+            publicUrlRewrite: data.publicUrlRewrite,
+          },
+        );
+        if (!confirmed.ok) {
+          return fail(confirmed.reason, { error: confirmed.error });
+        }
+        files = confirmed.files;
+      }
       const saved = await themeSourceStore.saveFilesBatch(
         data.storefrontId,
         data.themeId,
-        data.files,
+        files,
         {
           expectedSourceGeneration: data.expectedSourceGeneration,
           deletions: data.deletions,

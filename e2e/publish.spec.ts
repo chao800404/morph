@@ -9,6 +9,7 @@ import {
   enableSelection,
   openContentTab,
   previewFrame,
+  saveEditedSource,
   settleSelection,
 } from "./helpers";
 
@@ -307,9 +308,11 @@ test.describe("publish loop", () => {
       );
     }
 
-    // Renamed through the Explorer: the move is held for review before
-    // anything is written — the URL it changes, and what was not checked —
-    // and then lands as one batch that places the file by reference.
+    // Renamed through the Explorer, with a stylesheet naming the image: the
+    // move is held for review before anything is written — the URL it
+    // changes, the reference it updates, what was not checked — and then
+    // lands as one batch that places the file by reference and rewrites the
+    // reference, planned again by the server from the saved stylesheet.
     if (image) {
       const moved = "public/images/e2e-moved.png";
       // The page was just reloaded; a click before it hydrates is received
@@ -320,6 +323,16 @@ test.describe("publish loop", () => {
           page.locator(`[data-file-tree-file="${image.path}"]`),
         ).toBeVisible({ timeout: 5_000 });
       }).toPass({ timeout: 60_000 });
+
+      const stylesheet = "src/styles/global.css";
+      await page.locator(`[data-file-tree-file="${stylesheet}"]`).click();
+      await saveEditedSource(
+        page,
+        stylesheet,
+        (source) =>
+          `${source}\n.e2e-run-image { background-image: url(${image.urlPath}); }\n`,
+      );
+
       await page
         .locator(`[data-file-tree-file="${image.path}"]`)
         .click({ button: "right" });
@@ -332,10 +345,15 @@ test.describe("publish loop", () => {
       await expect(review).toContainText(
         "/images/e2e-run.png → /images/e2e-moved.png",
       );
+      await expect(
+        review.locator(`[data-public-url-rewrite^="${stylesheet}:"]`),
+      ).toHaveCount(1);
       await expect(review).toContainText(
-        "URLs built at runtime and page content are not checked",
+        "Page content and other sites that link to these URLs are not checked",
       );
-      await review.getByRole("button", { name: "Move" }).click();
+      await review
+        .getByRole("button", { name: "Move and update 1 reference" })
+        .click();
 
       await expect(
         page.locator(`[data-file-tree-file="${moved}"]`),
@@ -343,6 +361,29 @@ test.describe("publish loop", () => {
       await expect(
         page.locator(`[data-file-tree-file="${image.path}"]`),
       ).toHaveCount(0);
+
+      // What the server saved, read back after a reload rather than from
+      // the editor's own copy.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(async () => {
+        await page.getByRole("button", { name: /^Code$/ }).click();
+        await page
+          .locator(`[data-file-tree-file="${stylesheet}"]`)
+          .click({ timeout: 5_000 });
+      }).toPass({ timeout: 60_000 });
+      const savedStylesheet = () =>
+        page.evaluate(
+          (target) =>
+            ((window as any).monaco?.editor
+              .getModels()
+              .find((model: any) => model.uri.path.endsWith(target))
+              ?.getValue() as string | undefined) ?? "",
+          stylesheet,
+        );
+      await expect
+        .poll(savedStylesheet, { timeout: 30_000 })
+        .toContain("url(/images/e2e-moved.png)");
+      expect(await savedStylesheet()).not.toContain(image.urlPath);
     }
 
     await writeHandoff(page, {
