@@ -137,6 +137,13 @@ jobs:
       - name: Check generated files are only rewritten when they change
         run: pnpm check:generated-writes
 
+      # The runner the e2e job depends on, against a fake dev server that writes
+      # more than a pipe holds while the suite runs. A runner that stops reading
+      # it freezes the dev server, and the suite then fails on whatever it was
+      # waiting for. Needs no container, database or browser.
+      - name: Check the e2e runner keeps reading the dev server
+        run: pnpm check:e2e-runner
+
   editor-e2e-local-preview:
     name: Editor end-to-end (local preview transport)
     runs-on: ubuntu-latest

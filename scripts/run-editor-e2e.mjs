@@ -231,6 +231,51 @@ function run(command, args, env = {}) {
   }
 }
 
+/**
+ * `run`, for a command that runs while `start` has children piping output here.
+ *
+ * `spawnSync` holds this process's event loop until the command exits, so the
+ * `data` handlers `start` attaches cannot run in the meantime. Nothing drains the
+ * dev server's stdout and the socket fills. Node would queue further writes in
+ * memory, but this dev server's stdout is blocking: it spawns the container
+ * build with inherited stdio, libuv clears O_NONBLOCK on a child's fds 0-2, and
+ * that flag lives on the open file description both processes share. So the
+ * dev server stops inside a `console.log`, and with it Vite, the Worker and the
+ * preview proxy. Measured on a real run: the dev server's
+ * main thread blocked in `sock_alloc_send_pskb` with 131 KB queued, 174
+ * connections waiting to be accepted on its port, and every request from the
+ * suite hanging — including Vite's own `/@vite/client`.
+ *
+ * Same contract as `run` otherwise: inherited stdio, the same env shape, and the
+ * same error for a non-zero exit. Spawned detached and listed in `started`, so a
+ * signal that tears the run down stops this group too instead of leaving a suite
+ * running against a stopped dev server — which `spawnSync` never had to handle,
+ * because the signal handler could not run until the suite had ended.
+ */
+async function runWhileServing(name, command, args, env = {}) {
+  const child = spawn(command, args, {
+    stdio: "inherit",
+    env: { ...process.env, ...env },
+    detached: true,
+  });
+  const result = new Promise((resolve) => {
+    child.once("exit", (code) => resolve(code));
+    // A command that could not be started at all has no `exit`. `spawnSync`
+    // reports it as a null status, and so does this.
+    child.once("error", () => resolve(null));
+  });
+  const entry = { name, child, exited: result };
+  started.unshift(entry);
+  const status = await result;
+  // Gone once it has exited, so a finished run does not "stop" it again and
+  // print a line about a process that ended minutes ago.
+  const index = started.indexOf(entry);
+  if (index >= 0) started.splice(index, 1);
+  if (status !== 0) {
+    throw new Error(`${command} ${args.join(" ")} exited with ${status}`);
+  }
+}
+
 function start(name, command, args, env, onLine) {
   const child = spawn(command, args, {
     // Piped only when someone is reading. A dev server's output is what a
@@ -853,7 +898,9 @@ async function main() {
     ? []
     : ["--reporter=line,json"];
   log(`running playwright${extra.length ? ` (${extra.join(" ")})` : ""}`);
-  run("npx", ["playwright", "test", "--project=editor", ...reporting, ...extra], {
+  const suite = ["playwright", "test", "--project=editor"];
+  suite.push(...reporting, ...extra);
+  await runWhileServing("playwright", "npx", suite, {
     // Asserted as a precondition, so a run that silently fell back to the
     // container transport fails instead of passing for the wrong reason.
     E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,

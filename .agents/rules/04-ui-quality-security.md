@@ -319,6 +319,14 @@ file` 失敗。這個狀態被當成環境問題略過，實際上蓋住了 4 �
   測試守著；改成在 `createServer` 之後讀合併後的設定、發現 polling 就以
   `LOCAL_PREVIEW_POLLING_WATCHER` 拒絕啟動之後，拿掉 override 會在任何機器、任何負載下
   1 秒內確定性變紅。
+- **runner 有子程序的輸出接在 pipe 上時，不可再用 `spawnSync` 等待別的程序。**
+  `spawnSync` 佔住事件迴圈，讀取 pipe 的回呼不會執行；dev server 的 stdout 又因為它以
+  inherit 啟動容器 build 而變成 blocking（O_NONBLOCK 在共用的 open file description
+  上），pipe 一滿整個 dev server 就停在 `console.log` 裡，Vite、Worker、preview proxy
+  全部不再回應。實例：套件執行期間 dev server 主執行緒卡在 `sock_alloc_send_pskb`，
+  stdout 佇列 131 KB、3100 埠 174 個連線等待 accept，連 `/@vite/client` 都不回。
+  Playwright 因此改用 `runWhileServing` 非同步等待；`pnpm check:e2e-runner` 以假 dev
+  server 輸出超過 pipe 容量來守這件事，不需要容器。
 
 自動化：`pnpm check:e2e-assertions` 掃描前兩項，在 CI 的 validate job 執行。它刻意只認
 「條件包住 `expect`」與 `.not.toHaveURL(`，因為誤報會讓 guard 被關掉。
