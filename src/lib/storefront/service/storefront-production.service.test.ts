@@ -9,6 +9,7 @@
  * a reason that exists nowhere but the test environment. Workers have one
  * realm and no DOM, and nothing here touches a document.
  */
+import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
 import { StorefrontProductionService } from "./storefront-production.service";
 import {
@@ -646,7 +647,9 @@ describe("published content endpoint", () => {
           body: "<svg/>",
           httpMetadata: { contentType: "image/svg+xml" },
           // Even a file that passed the current rules is never inline here.
-          customMetadata: { svgValidatorVersion: "1" },
+          customMetadata: {
+            svgValidatorVersion: String(SVG_VALIDATOR_VERSION),
+          },
         })),
       } as any,
       resolverDeps: resolverDeps(),

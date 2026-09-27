@@ -13,9 +13,8 @@ import { SaxesParser, type SaxesTagNS } from "saxes";
  *
  * The rules, over a strict XML parse (a file that is not well-formed XML is
  * refused, not guessed at):
- * - one `<svg>` root in the SVG namespace; no DOCTYPE but the W3C SVG one,
- *   and never an internal subset, so no entities; no processing instruction
- *   but the XML declaration;
+ * - one `<svg>` root in the SVG namespace; no DOCTYPE at all; no processing
+ *   instruction but the XML declaration;
  * - elements from an allowlist of drawing elements. Script, foreign content,
  *   links, fonts, cursors and anything unknown are refused. Elements in the
  *   namespaces drawing tools write their bookkeeping in (Inkscape, Illustrator,
@@ -35,8 +34,11 @@ import { SaxesParser, type SaxesTagNS } from "saxes";
  * carries (`theme-svg-isolation.ts`); neither replaces the other.
  */
 
-/** Bumped whenever the rules change, so a stored verdict names the rules it passed. */
-export const SVG_VALIDATOR_VERSION = 1;
+/**
+ * Bumped whenever the rules change, so a stored verdict names the rules it
+ * passed. 2: every DOCTYPE is refused (1 accepted the W3C SVG one).
+ */
+export const SVG_VALIDATOR_VERSION = 2;
 
 export type SvgRefusal =
   | "not-utf8"
@@ -165,12 +167,6 @@ const RASTER_EMBEDDERS = new Set(["image", "feImage"]);
 const EMBEDDABLE_RASTER =
   /^data:image\/(?:png|jpe?g|gif|webp)(?:;[a-z0-9=.+-]+)*,/i;
 const FRAGMENT = /^#[^\s#]*$/;
-/**
- * The DOCTYPE the SVG 1.0 and 1.1 specifications give, by its public and
- * system identifiers, and nothing else: no internal subset.
- */
-const STANDARD_SVG_DOCTYPE =
-  /^\s*svg\s+PUBLIC\s+"-\/\/W3C\/\/DTD SVG (?:1\.0|1\.1(?: Tiny| Basic)?)\/\/EN"\s+"http:\/\/www\.w3\.org\/(?:TR\/2001\/REC-SVG-20010904\/DTD\/svg10\.dtd|Graphics\/SVG\/1\.1\/DTD\/svg11(?:-tiny|-basic)?\.dtd)"\s*$/;
 
 class Refused extends Error {
   constructor(
@@ -309,12 +305,11 @@ export function validateSvg(bytes: Uint8Array): SvgValidation {
   let rootIsSvg = false;
 
   parser.on("doctype", (doctype) => {
-    // Graphviz and older Illustrator exports name the W3C SVG DTD. That
-    // alone defines nothing — browsers never fetch it — so it is accepted;
-    // an internal subset, where entities are declared, never is.
-    if (!STANDARD_SVG_DOCTYPE.test(doctype)) {
-      throw new Refused("doctype", `<!DOCTYPE${doctype.slice(0, 80)}>`);
-    }
+    // Every DOCTYPE, including the W3C SVG one some exporters write: a DTD,
+    // internal or external, can declare entities, and nothing here proves
+    // that no parser or browser reading the file would load one. SVG needs
+    // none, so the line is removed from the file instead.
+    throw new Refused("doctype", `<!DOCTYPE${doctype.slice(0, 80)}>`);
   });
   parser.on("processinginstruction", (pi) => {
     throw new Refused("processing-instruction", `<?${pi.target} …?>`);
@@ -382,7 +377,7 @@ export function describeSvgRefusal(
     "not-utf8": "The file is not UTF-8 text",
     "not-xml": "The file is not well-formed XML",
     "not-svg": "The file is not an SVG document",
-    doctype: "SVG with a DOCTYPE is not accepted",
+    doctype: "SVG with a DOCTYPE is not accepted; remove the <!DOCTYPE …> line",
     "processing-instruction": "Processing instructions are not accepted",
     "forbidden-element": "This element is not allowed in an SVG here",
     "foreign-namespace": "Content from another XML namespace is not allowed",

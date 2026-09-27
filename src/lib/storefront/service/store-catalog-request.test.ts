@@ -1,3 +1,4 @@
+import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoreContextDTO } from "../dto/store-context.dto";
 const mocks = vi.hoisted(() => ({
@@ -118,7 +119,9 @@ describe("shared storefront catalog reads", () => {
       ))!;
     };
 
-    const current = await serve({ svgValidatorVersion: "1" });
+    const current = await serve({
+      svgValidatorVersion: String(SVG_VALIDATOR_VERSION),
+    });
     expect(current.headers.get("content-disposition")).toBe("inline");
     expect(current.headers.get("content-security-policy")).toContain("sandbox");
 
