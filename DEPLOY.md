@@ -153,6 +153,22 @@ actually served.
   and `x-content-type-options: nosniff`. `pnpm verify:svg-isolation`
   proves the same headers stop script in Chromium, Firefox and WebKit, but
   against local servers and `wrangler dev`, not a deployed Worker.
+- **SVG in `public/` (the deploy gate).** The first deployment with the SVG
+  gate open (`themePublicSvgGate()` returns `"open"`) is not done until:
+  1. A benign SVG is uploaded to a Theme's `public/` through the editor or
+     Site public/, referenced by a component, and published.
+  2. `curl -sI https://<storefront>/<path>.svg` shows the isolation headers
+     above. Headers do not depend on the file's content, so a benign file
+     proves them.
+  3. Opened directly in a browser, it renders as an image document; the
+     browser's devtools show the `sandbox` CSP applied.
+
+  Only admins can upload, and every upload is validated, but until step 2
+  passes treat SVG as provisional. **If the headers are missing**, withdraw
+  SVG: revert the commit that opened the gate (back to `"closed"`) and deploy
+  it, **and** republish a release without the SVG or roll back to one — a
+  deployed release keeps serving its files whatever the code says. With the
+  gate closed, publish refuses any revision that still holds an SVG.
 
 **The container path.** Open the editor once and read the browser console. The
 editor prints a line when a preview starts:

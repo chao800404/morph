@@ -32,7 +32,7 @@ describe("checkPublicFileWrite", () => {
         existingPaths: existing,
       });
     expect(check("src/new.png")).toContain("public/");
-    expect(check("public/images/logo.svg")).not.toBeNull();
+    expect(check("public/images/clip.mp4")).not.toBeNull();
     expect(
       check("public/images/big.png", THEME_PUBLIC_LIMITS.maxFileBytes + 1),
     ).not.toBeNull();
@@ -129,7 +129,7 @@ describe("publicFileDestination", () => {
     expect(publicFileDestination("banners/").ok).toBe(false);
     expect(publicFileDestination("").ok).toBe(false);
     expect(publicFileDestination("../src/hero.png").ok).toBe(false);
-    expect(publicFileDestination("banners/hero.svg").ok).toBe(false);
+    expect(publicFileDestination("banners/hero.mp4").ok).toBe(false);
   });
 });
 
