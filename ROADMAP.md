@@ -376,6 +376,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 4 | ✅ 從媒體庫複製到 `public/`（明確提示發布後公開；伺服器讀媒體庫 bytes 後走同一個 `saveBinaryFile`，入口在 Code 模式 Assets 面板與 Assets 的 Site public/） | 功能 |
 | 5 | ✅ 部署前檢查尚未套用的 D1 migration（`pnpm run deploy` 先唯讀比對遠端 `d1_migrations` 與 `drizzle/`：未套用、checkout 較舊、同號都停止；CI 檢查同號） | 部署安全（首次部署前完成） |
 | 6 | SVG 支援：驗證不合格即拒絕（不清理改寫）＋每個 SVG 回應由平台加隔離標頭。6a ✅ 四條送出路徑的隔離標頭（真實瀏覽器驗證）；6b 共用 SVG 驗證器：6b-1 ✅ `validateSvg`（解析＋允許清單，拒絕不改寫，帶版本；v2 起一律拒絕 DOCTYPE）；6b-2 ✅ 媒體庫改用它、以驗證器版本取代 `svgValidated`（舊標記不再 inline），所有媒體庫 SVG 回應加隔離標頭；舊 SVG 重新驗證工具 ✅（先只讀掃描，確認後逐檔重驗並以 ETag 條件寫入）；6c ✅ 閘門關閉下接線（上傳、媒體庫複製與日後匯入都經 `checkThemePublicBytes`／`validateSvg`；發布前以凍結 revision 重查；`public/` 不收文字檔）；6d 解除閘門：需一般上傳後的真實 Sandbox 預覽、瀏覽器直開不執行腳本、部署後正式店面回應三項證據（最後一項需部署） | 安全設計 |
+| 6′ | ✅ Live Preview 以根路徑送出 `public/`（作者寫的 `/images/hero.png` 原本在畫布上 404；只在檔案存在時對應到預覽 base，保留前綴與 Vite 內部路徑不動；`/api/store/`、`/_storefront-media/` 加入保留前綴）。先於開放 SVG，否則上傳成功卻看不到圖 | 正確性 |
 | 7 | R2 未引用 blob 清理（保護 manifest、revision、release 與保留期） | 儲存成本（上線後依用量） |
 | 8 | 批次把 `public/` 圖片關聯為產品媒體（使用者確認對應，不依資料夾名稱猜測） | 功能（依賴匯入） |
 | 9 | 本地 TanStack Start 專案匯入（`public/` 原樣匯入） | 功能（最後做） |

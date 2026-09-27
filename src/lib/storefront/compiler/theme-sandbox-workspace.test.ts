@@ -352,8 +352,20 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain("? { usePolling: true, interval: 100 }");
     expect(viteConfig).toContain('name: "morph-preview-http-hmr"');
     expect(viteConfig).toContain('name: "morph-preview-svg-isolation"');
+    expect(viteConfig).toContain('name: "morph-preview-root-public"');
+    expect(viteConfig).toContain(
+      "...(previewRootPublicPlugin ? [previewRootPublicPlugin] : [])",
+    );
     expect(viteConfig).toContain('"/__morph-theme-preview__/_morph/hmr"');
     expect(viteConfig).toContain("__morphApplyViteHmrPayload");
+  });
+
+  it("maps root-path public/ URLs in the Live Preview only, never in a build", async () => {
+    // A build serves public/ at the root already; what it produces is what
+    // the storefront serves, so the preview's mapping has no place in it.
+    const { viteConfig } = await prepare("build");
+    expect(viteConfig).toContain("const previewRootPublicPlugin = null;");
+    expect(viteConfig).not.toContain('name: "morph-preview-root-public"');
   });
 
   it("leaves authored route modules for the generated preview entry to accept", async () => {

@@ -107,11 +107,20 @@ export const THEME_PUBLIC_ACCEPT = [
 
 /**
  * URL prefixes the platform answers itself: the Theme Worker's own endpoints,
- * the build's hashed client assets, library media, and Cloudflare's.
+ * the build's hashed client assets, library media, Cloudflare's, the store
+ * catalog, and published library media. A file under one of them could never
+ * be reached: the storefront answers `/api/store/` and `/_storefront-media/`
+ * before it looks for a client asset, and a Live Preview sends every
+ * `/api/store/` request to Morph rather than to the Theme.
+ *
+ * Lower case, compared against a lower-cased path. The Live Preview's
+ * root-path mapping (`theme-preview-root-public.ts`) skips them too.
  */
-const RESERVED_URL_PREFIXES = [
+export const THEME_PUBLIC_RESERVED_URL_PREFIXES: readonly string[] = [
   "/_morph/",
   "/_serverfn/",
+  "/_storefront-media/",
+  "/api/store/",
   "/assets/",
   "/cdn-cgi/",
 ];
@@ -192,7 +201,7 @@ export function checkThemePublicPath(
     return { ok: false, reason: "platform-file" };
   }
   if (
-    RESERVED_URL_PREFIXES.some(
+    THEME_PUBLIC_RESERVED_URL_PREFIXES.some(
       (prefix) => lowered.startsWith(prefix) || `${lowered}/` === prefix,
     )
   ) {
@@ -303,7 +312,7 @@ export function describeThemePublicProblem(
     case "platform-file":
       return "This name is reserved by the host (index.html, _headers, _redirects, …).";
     case "reserved-prefix":
-      return "This URL belongs to the platform (/_morph, /assets, /_serverFn, /cdn-cgi).";
+      return "This URL belongs to the platform (/_morph, /assets, /_serverFn, /cdn-cgi, /api/store, /_storefront-media).";
     case "route-collision":
       return "A page of the Theme already answers this URL.";
     case "svg-not-allowed":
