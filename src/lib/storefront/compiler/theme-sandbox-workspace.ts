@@ -1,4 +1,5 @@
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
+import { themePreviewRootPublicPluginSource } from "./theme-preview-root-public";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
@@ -640,6 +641,14 @@ const previewContentPlugin = ${
 const previewSvgIsolationPlugin = ${
     mode === "preview-server" ? svgIsolationVitePluginSource() : "null"
   };
+// A Theme's root-path public/ URL (\`/images/hero.png\`) served from under the
+// preview's base, as the storefront serves it at the root; see
+// theme-preview-root-public.ts. Preview only: builds keep Vite's own serving.
+const previewRootPublicPlugin = ${
+    mode === "preview-server"
+      ? themePreviewRootPublicPluginSource(hostRootLiteral)
+      : "null"
+  };
 const isStartRuntimeBuild =
   hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
 
@@ -850,6 +859,7 @@ export default defineConfig({
     // resolve. Stubbed here as well as in the in-process runner, from one
     // shared definition.
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
+    ...(previewRootPublicPlugin ? [previewRootPublicPlugin] : []),
     ${themePreviewServerStubPluginSource()},
     ...(previewContentPlugin ? [previewContentPlugin] : []),
     ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),

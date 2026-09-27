@@ -46,6 +46,11 @@ describe("checkThemePublicPath", () => {
 
   it("refuses SVG, and anything that is not an image or a font", () => {
     expect(reason("public/logo.svg")).toBe("svg-not-allowed");
+    // Answered by the platform before any client asset, so never servable.
+    expect(reason("public/api/store/products/a.png")).toBe("reserved-prefix");
+    expect(reason("public/API/store/a.png")).toBe("reserved-prefix");
+    expect(reason("public/_storefront-media/a.png")).toBe("reserved-prefix");
+    expect(reason("public/api/a.png")).toBeNull();
     expect(reason("public/logo.SVGZ")).toBe("svg-not-allowed");
     // The picker follows the same gate.
     expect(THEME_PUBLIC_ACCEPT.split(",")).not.toContain(".svg");
