@@ -70,15 +70,15 @@ test("fixed text in a component becomes a field of this page", async ({
     const end = source.lastIndexOf("</section>");
     return `${source.slice(0, end)}<p>${FIXED}</p>\n${source.slice(end)}`;
   });
-  // The save's toast sits over the toolbar, and a toast the pointer rests on
-  // pauses its own timer. Clicking Design moves the pointer onto it, so the
-  // click waited on a toast that could then never leave — until the test's
-  // four minutes ran out. Let it go first, with the pointer elsewhere.
+  // By keyboard, not by pointer. The save's toast sits over the toolbar, and
+  // a toast the pointer rests on pauses its own timer. Waiting for "no toast"
+  // first was not enough: it can pass before the toast appears, and the click
+  // then moved the pointer onto it and waited until the test's four minutes
+  // ran out (CI, twice). Focus and Enter need no hit test, so the toast
+  // neither blocks the button nor gets hovered.
   await page.mouse.move(0, 0);
-  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
-    timeout: 15_000,
-  });
-  await page.getByRole("button", { name: /^Design$/ }).click();
+  await page.getByRole("button", { name: /^Design$/ }).focus();
+  await page.keyboard.press("Enter");
 
   const notice = await selectFixedText(page);
   await notice.locator("textarea").fill(EDITED);
