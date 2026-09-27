@@ -73,4 +73,20 @@ test("an SVG upload is parsed, recorded, and served isolated", async ({
   expect(served.headers()["content-security-policy"]).toContain("sandbox");
   expect(served.headers()["x-content-type-options"]).toBe("nosniff");
   expect(await served.text()).toBe(DRAWING);
+
+  // The re-check in the Assets header, against the same library: the drawing
+  // just uploaded recorded the current rules, so it needs no restoring.
+  await page.goto("/dashboard/assets", { waitUntil: "domcontentloaded" });
+  await expect(async () => {
+    await page
+      .getByRole("button", { name: "Check SVG files" })
+      .click({ timeout: 5_000 });
+    await page
+      .getByRole("button", { name: "Start check" })
+      .click({ timeout: 5_000 });
+  }).toPass({ timeout: 60_000 });
+  const summary = page.locator("[data-svg-scan-summary]");
+  await expect(summary).toBeVisible({ timeout: 45_000 });
+  await expect(summary).toContainText(/[1-9]\d*Already current/);
+  await expect(page.locator("[data-svg-revalidation-error]")).toHaveCount(0);
 });
