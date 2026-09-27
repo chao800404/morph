@@ -743,6 +743,7 @@ Theme 可以有自己的 `public/`：logo、背景圖、字型與 Vite／TanStac
 - **Theme Worker 沒有公開入口**：部署器產生的 Wrangler 設定原本未寫 `workers_dev`（預設 true），部署後 Theme Worker 會有繞過 Morph Core 的 `*.workers.dev` 網址。調查確認 Morph Core 只經 service binding 呼叫、不依賴它，現明寫 `workers_dev: false`、`preview_urls: false`。證據：部署器測試斷言兩者為 false 且無 `routes`；以 toolchain 固定的 wrangler 4.118 `deploy --dry-run`（未帶憑證、不上傳）驗證設定被接受，並以錯拼欄位的對照確認 Wrangler 會對未知欄位警告。尚未部署，所以尚未在 Cloudflare 上看過結果；DEPLOY.md 已列驗證步驟。
 - **SVG 驗證器（6b-1）**：`validateSvg` 以嚴格 XML 解析、元素允許清單與 CSS 解析判定，不合格即拒絕並說明原因，不清理改寫；結果帶驗證器版本。尚未接上任何上傳路徑（媒體庫在 6b-2、`public/` 在 6c）。證據：43 個測試（常見工具輸出的正常檔案與逐一攻擊手法），20 個突變各使至少一個測試失敗；以 `node_modules` 中 528 個不重複的真實 SVG 為語料，全部通過（最初唯一被拒的是 Graphviz 帶 W3C 標準 DOCTYPE 的檔案，因此只放行無內部子集的 W3C SVG DOCTYPE）。
 - **媒體庫 SVG 改用共用驗證器（6b-2，安全修正）**：`validateSvgContent` 的正規表示式檢查換成 `validateSvg`，上傳記錄驗證器版本；只有符合目前版本的檔案可 inline，舊 `svgValidated` 標記改以 attachment 送出直到重新驗證；CMS、商店目錄、預覽與正式店面四條媒體庫路徑的 SVG 一律帶隔離標頭（正式店面原本只設 attachment）。證據：單元測試與 6 個突變；`e2e/media-svg.spec.ts`（CI 執行）在 workerd 中上傳，含腳本者以解析器原因拒絕，正常檔 inline、帶隔離標頭、內容不變。既有 SVG 資產尚無重新驗證的工具，現以 attachment 送出。
+- **更正：SVG 驗證器一律拒絕 DOCTYPE（驗證器 v2）**：6b-1 曾放行無內部子集的 W3C SVG DOCTYPE，理由寫成「沒有內部子集就沒有 entity」，這在 XML 語意上不成立——外部 DTD 同樣能宣告 entity，而伺服器與瀏覽器都不載入它並未被證明；528 個樣本只多救回 1 個，不足以放寬安全規則。現一律拒絕，訊息請作者刪除該行；版本升為 2，因此以 v1 記錄的媒體庫 SVG 改以 attachment 送出，待重新驗證工具確認。語料為 527／528 通過，唯一被拒的是帶 W3C DOCTYPE 的 Graphviz 檔。
 - **環境**：WSL 的 DNS 原本寫死 8.8.8.8 且設成不可變，高負載時頻繁逾時，影響 ship 與 Docker 建置；2026-09-25 改用 Windows 解析器後恢復。
 - **尚未做**：見 ROADMAP「Theme `public/` 與 Assets 後續」。完成度百分比未調整——`public/` 不在上方八個階段的範圍內，不拿來抬高數字。
 
