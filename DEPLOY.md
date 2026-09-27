@@ -147,8 +147,9 @@ actually served.
   with the storefront — while the storefront's own domain still does, which is
   the service binding working.
 - An SVG the storefront serves carries the isolation headers on the
-  storefront's own URL:
-  `curl -sI https://<storefront>/<some>.svg` shows
+  storefront's own URL, in the response to a GET — not a HEAD, which a server
+  may answer differently:
+  `curl -s -D - -o /dev/null https://<storefront>/<some>.svg` shows
   `content-security-policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox`
   and `x-content-type-options: nosniff`. `pnpm verify:svg-isolation`
   proves the same headers stop script in Chromium, Firefox and WebKit, but
@@ -156,16 +157,32 @@ actually served.
 - **SVG in `public/` (the deploy gate).** The first deployment with the SVG
   gate open (`themePublicSvgGate()` returns `"open"`) is not done until:
   1. A benign SVG is uploaded to a Theme's `public/` through the editor or
-     Site public/, referenced by a component, and published.
-  2. `curl -sI https://<storefront>/<path>.svg` shows the isolation headers
-     above. Headers do not depend on the file's content, so a benign file
-     proves them.
-  3. Opened directly in a browser, it renders as an image document; the
-     browser's devtools show the `sandbox` CSP applied.
+     Site public/, referenced by a component with `<img src="/<path>.svg">`,
+     and published.
+  2. Run the gate, which only sends GET requests:
+
+     ```bash
+     pnpm verify:deployed-svg --svg https://<storefront>/<path>.svg --page https://<storefront>/<page-with-the-img>
+     ```
+
+     In Chromium, Firefox and WebKit it checks that:
+     - the GET response is 200 `image/svg+xml` with `nosniff` and the sandbox
+       CSP, as Node fetches it and as each browser receives it;
+     - the page's `<img>` is drawn;
+     - the SVG opened directly is sandboxed (opaque origin);
+     - script cannot run under production's own headers: the browser is given
+       production's GET response with its body replaced by a script-carrying
+       SVG, and must run nothing, while the same body without those headers
+       must run (the control).
+
+     Nothing malicious is uploaded or published. The replacement happens in
+     the browser only. `pnpm verify:deployed-svg --self-test` shows the gate
+     fails on a missing CSP, a wrong type, headers sent on HEAD but not GET,
+     and an `<img>` that is not drawn.
 
   Only admins can upload, and every upload is validated, but until step 2
-  passes treat SVG as provisional. **If the headers are missing**, withdraw
-  SVG: revert the commit that opened the gate (back to `"closed"`) and deploy
+  passes treat SVG as provisional. **If any check fails**, withdraw SVG:
+  revert the commit that opened the gate (back to `"closed"`) and deploy
   it, **and** republish a release without the SVG or roll back to one — a
   deployed release keeps serving its files whatever the code says. With the
   gate closed, publish refuses any revision that still holds an SVG.
