@@ -92,12 +92,14 @@ async function openHeroInCode(page: Page) {
 }
 
 async function backToDesign(page: Page) {
-  // A save's toast sits over the toolbar; let it go with the pointer elsewhere.
+  // By keyboard, not by pointer. A save's toast lands over the toolbar, and
+  // waiting for "no toast" can pass before it appears; a click then moves the
+  // pointer onto it, a hovered toast pauses its own timer, and the click is
+  // retried until the test times out (CI, #62). Focus and Enter need no hit
+  // test, so the toast neither blocks the button nor gets hovered.
   await page.mouse.move(0, 0);
-  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, {
-    timeout: 15_000,
-  });
-  await page.getByRole("button", { name: /^Design$/ }).click();
+  await page.getByRole("button", { name: /^Design$/ }).focus();
+  await page.keyboard.press("Enter");
 }
 
 test("a clean SVG from the ordinary upload is painted where a component references it", async ({
