@@ -17,6 +17,7 @@ import {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { starterThemeWorkspaceFiles } from "@/lib/storefront/starter-theme-files";
 import { deriveThemeSourceIndex } from "../theme-source-index";
+import { isThemePublicPath } from "../theme-public-files";
 import { paginationOf, type Pagination } from "@/lib/db/server-result";
 import { firstOrNull } from "@/lib/db/single-row";
 import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -1035,6 +1036,16 @@ export const storefrontThemeFileDal = {
     if (!options || typeof options.expectedSourceGeneration !== "number") {
       throw new Error(
         "expectedSourceGeneration is required to mutate storefront theme files.",
+      );
+    }
+    // Every text write lands here, including the ones no request schema
+    // stands in front of. A text file in public/ would be served as it is
+    // without any of the byte checks — an SVG without `validateSvg` — so the
+    // refusal is held at the write itself, not only at the edge.
+    const publicText = files.find((file) => isThemePublicPath(file.path));
+    if (publicText) {
+      throw new Error(
+        `THEME_PUBLIC_FILE_REFUSED: ${publicText.path}: Files in public/ are uploaded, not written as text.`,
       );
     }
     const deletions = options.deletions ?? [];

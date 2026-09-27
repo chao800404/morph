@@ -107,6 +107,15 @@ export function normalizeRevisionSnapshot(
     }
     const path = parseResult.data;
 
+    // A revision is only ever given public/ files as bytes; a text one would
+    // be served without the byte checks every write makes (for an SVG,
+    // `validateSvg`), so it is refused here too, whatever wrote it.
+    if (isThemePublicPath(path)) {
+      throw new Error(
+        `PUBLIC_FILE_REFUSED: Source revision ${sourceRevisionId}: ${path}: Files in public/ are uploaded, not written as text.`,
+      );
+    }
+
     if (isPlatformOwnedThemeBuildPath(path)) {
       throw new Error(
         `PLATFORM_OWNED_THEME_BUILD_PATH: Theme source cannot author platform-owned build file "${path}" in source revision ${sourceRevisionId}.`,

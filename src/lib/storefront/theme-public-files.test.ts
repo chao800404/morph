@@ -4,6 +4,7 @@ import {
   checkThemePublicFiles,
   checkThemePublicPath,
   describeThemePublicProblem,
+  THEME_PUBLIC_ACCEPT,
   themePublicBytesMatch,
   themePublicUrlPath,
   THEME_PUBLIC_LIMITS,
@@ -46,6 +47,8 @@ describe("checkThemePublicPath", () => {
   it("refuses SVG, and anything that is not an image or a font", () => {
     expect(reason("public/logo.svg")).toBe("svg-not-allowed");
     expect(reason("public/logo.SVGZ")).toBe("svg-not-allowed");
+    // The picker follows the same gate.
+    expect(THEME_PUBLIC_ACCEPT.split(",")).not.toContain(".svg");
     expect(reason("public/robots.txt")).toBe("unsupported-format");
     expect(reason("public/page.html")).toBe("unsupported-format");
     expect(reason("public/noextension")).toBe("unsupported-format");
@@ -196,6 +199,7 @@ describe("checkThemePublicFiles", () => {
       "svg-not-allowed",
       "unsupported-format",
       "file-too-large",
+      "svg-too-large",
       "case-collision",
       "too-many-files",
       "total-too-large",

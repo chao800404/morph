@@ -76,6 +76,10 @@ describe("normalizeRevisionSnapshot with binary files", () => {
         normalizeRevisionSnapshot([...source(false), bad], "rev-1"),
       ).toThrow("CORRUPT_REVISION_FILE_ENTRY");
     }
+    // Text and bytes at one path. Bytes only live under public/, and text
+    // there is refused before the duplicate is reached, so this is now
+    // refused as text in public/ rather than as CORRUPT_REVISION_SNAPSHOT;
+    // either way the revision does not build.
     expect(() =>
       normalizeRevisionSnapshot(
         [
@@ -85,7 +89,7 @@ describe("normalizeRevisionSnapshot with binary files", () => {
         ],
         "rev-1",
       ),
-    ).toThrow("CORRUPT_REVISION_SNAPSHOT");
+    ).toThrow("Files in public/ are uploaded, not written as text");
   });
 
   it("judges collisions against the revision's own routes", () => {
