@@ -1,0 +1,62 @@
+[
+  {
+    "browser": "chromium",
+    "/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "/__morph-theme-preview__/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "control": "onload"
+  },
+  {
+    "browser": "firefox",
+    "/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "/__morph-theme-preview__/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "control": "onload"
+  },
+  {
+    "browser": "webkit",
+    "/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "/__morph-theme-preview__/icons/evil.svg": {
+      "status": 200,
+      "sameBytes": true,
+      "contentType": "image/svg+xml",
+      "csp": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+      "nosniff": "nosniff",
+      "ran": null
+    },
+    "control": "onload"
+  }
+]

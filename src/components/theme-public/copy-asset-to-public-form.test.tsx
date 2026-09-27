@@ -52,7 +52,7 @@ describe("CopyAssetToPublicForm", () => {
     ).toContain("already exists");
 
     fireEvent.change(screen.getByRole("textbox", { name: "Path in public/" }), {
-      target: { value: "images/hero.svg" },
+      target: { value: "images/hero.mp4" },
     });
     expect(copy.disabled).toBe(true);
     fireEvent.submit(copy.closest("form")!);

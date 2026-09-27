@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   checkThemePublicFiles,
   checkThemePublicPath,
@@ -14,6 +14,16 @@ import {
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
 } from "@/lib/validations/storefront-theme-file";
+
+/**
+ * The contract with the SVG gate closed. Production has it open
+ * (`theme-public-svg-gate.test.ts` says so); this file keeps the closed
+ * behaviour tested, since closing it again is how SVG would be withdrawn.
+ * `theme-public-files.svg-gate-open.test.ts` covers the open gate.
+ */
+vi.mock("./theme-public-svg-gate", () => ({
+  themePublicSvgGate: () => "closed",
+}));
 
 const ROUTES = ["/", "/about", "/products", "/products/$slug", "/$lang"];
 const reason = (path: string) => {
