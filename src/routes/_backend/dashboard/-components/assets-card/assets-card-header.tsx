@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { SvgRevalidationDialog } from "./svg-revalidation-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -33,6 +35,7 @@ export const AssetsCardHeader = ({
   const { openEdit } = useAssetRouteActions();
   const setInfoData = useInfoStore((state) => state.setInfoData);
   const setInfoOpen = useInfoStore((state) => state.setOpen);
+  const [svgCheckOpen, setSvgCheckOpen] = useState(false);
 
   // Creating is a route, so the current folder rides along in the URL and the
   // create page is linkable.
@@ -94,6 +97,18 @@ export const AssetsCardHeader = ({
             <MoreHorizontal />
           </Button>
         </ItemActionsMenu>
+      ) : null}
+      <Button
+        type="button"
+        variant="cardHeader"
+        size="xs"
+        onClick={() => setSvgCheckOpen(true)}
+      >
+        Check SVG files
+      </Button>
+      {/* Mounted only while open: it holds a scan's state and nothing else. */}
+      {svgCheckOpen ? (
+        <SvgRevalidationDialog open onOpenChange={setSvgCheckOpen} />
       ) : null}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

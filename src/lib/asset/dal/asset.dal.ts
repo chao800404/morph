@@ -12,6 +12,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  gt,
   gte,
   or,
   SQL,
@@ -26,6 +27,30 @@ const mapFirst = (rows: AssetRow[]): AssetDTO | null =>
   mapFirstOrNull(rows, toAssetDTO);
 
 export const assetDal = {
+  /**
+   * Library SVG assets in id order, after `afterId`, for a pass that walks
+   * them all in pages; deleted ones are not listed.
+   */
+  async listSvgPage(
+    afterId: string | null,
+    limit: number,
+  ): Promise<AssetDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(assets)
+      .where(
+        and(
+          eq(assets.mimeType, "image/svg+xml"),
+          isNull(assets.deletedAt),
+          afterId ? gt(assets.id, afterId) : undefined,
+        ),
+      )
+      .orderBy(asc(assets.id))
+      .limit(limit);
+    return rows.map(toAssetDTO);
+  },
+
   async findById(id: string): Promise<AssetDTO | null> {
     const db = await getDb();
     const rows = await db
