@@ -24,8 +24,8 @@ import {
   checkThemePublicPath,
   describeThemePublicProblem,
   isThemePublicPath,
-  themePublicBytesMatch,
 } from "@/lib/storefront/theme-public-files";
+import { checkThemePublicBytes } from "@/lib/storefront/theme-public-bytes";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
 import {
@@ -234,8 +234,11 @@ export async function recordsForWorkspaceSave(args: {
  * blob store, then the workspace row that names them.
  *
  * Everything the contract says is checked here, on the server, against the
- * workspace as it stands: the path, that the bytes are the format the name
- * says, and the whole directory's limits with this file in it. The served
+ * workspace as it stands: the path, the bytes (`checkThemePublicBytes`: the
+ * format the name says, or for an SVG, `validateSvg`), and the whole
+ * directory's limits with this file in it. Every entry that brings new bytes
+ * into `public/` — upload, a copy from the media library, an import — comes
+ * through here, so none of them can skip a check another makes. The served
  * type is the contract's, from the verified format, never a caller's.
  *
  * The bytes are written first. If the row's guards then refuse the write,
@@ -270,9 +273,10 @@ export async function saveThemeBinaryFile(
       `THEME_PUBLIC_FILE_REFUSED: ${file.path}: ${describeThemePublicProblem(pathCheck.reason)}`,
     );
   }
-  if (!themePublicBytesMatch(file.path, file.bytes)) {
+  const bytesCheck = checkThemePublicBytes(file.path, file.bytes);
+  if (!bytesCheck.ok) {
     throw new Error(
-      `THEME_PUBLIC_FILE_REFUSED: ${file.path}: The file's content is not the format its name says.`,
+      `THEME_PUBLIC_FILE_REFUSED: ${file.path}: ${bytesCheck.message}`,
     );
   }
   const setCheck = checkThemePublicFiles(

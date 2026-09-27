@@ -227,6 +227,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/** The source revision check `publishTemplate` requires, accepting. */
+const acceptRevision = async () => {};
+
 describe("storefront theme DAL", () => {
   it("persists a Page handle snapshot and preserves it after a draft rename", async () => {
     sqlite.exec(`
@@ -1032,6 +1035,7 @@ export default function SiteHeader() { return <header />; }`;
 
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1093,8 +1097,12 @@ export default function SiteHeader() { return <header />; }`;
       WHERE id = 'template-a';
     `);
 
+    const verified: string[] = [];
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: async (revisionId) => {
+          verified.push(revisionId);
+        },
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1106,6 +1114,8 @@ export default function SiteHeader() { return <header />; }`;
       sourceRevisionId: "22222222-2222-4222-8222-222222222222",
       unchanged: false,
     });
+    // The caller named no revision; the check saw the one resolved here.
+    expect(verified).toEqual(["22222222-2222-4222-8222-222222222222"]);
 
     const publicationCount = sqlite
       .prepare("SELECT COUNT(*) AS count FROM storefront_content_publications")
@@ -1134,6 +1144,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1153,6 +1164,7 @@ export default function SiteHeader() { return <header />; }`;
     );
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1161,6 +1173,78 @@ export default function SiteHeader() { return <header />; }`;
         expectedReleaseGeneration: 3,
       }),
     ).rejects.toThrow("PUBLISH_BUILD_NOT_READY");
+  });
+
+  it("refuses before activating anything when the source revision check throws", async () => {
+    const draftDocument = JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: {} }],
+    });
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES
+        ('template-a', 'theme-a', 'index', 'Home', '{"version":1,"sections":[]}',
+         '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-a', 1,
+         '${draftDocument.replaceAll("'", "''")}', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, message, source, snapshot, created_at, updated_at)
+      VALUES
+        ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1,
+         'Frozen checkpoint', 'publish', '[]', 'now', 'now');
+    `);
+    const count = (table: string) =>
+      (
+        sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          count: number;
+        }
+      ).count;
+    const before = {
+      releases: count("storefront_releases"),
+      publications: count("storefront_content_publications"),
+    };
+
+    const verified: string[] = [];
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        verifySourceRevision: async (revisionId) => {
+          verified.push(revisionId);
+          throw new Error(
+            "PUBLISH_PUBLIC_FILE_REFUSED: public/logo.svg: Event handler attributes are not allowed",
+          );
+        },
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-a",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: "11111111-1111-4111-8111-111111111111",
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+      }),
+    ).rejects.toThrow("PUBLISH_PUBLIC_FILE_REFUSED");
+
+    expect(verified).toEqual(["22222222-2222-4222-8222-222222222222"]);
+    expect(
+      sqlite
+        .prepare("SELECT active_release_id FROM storefronts WHERE id = ?")
+        .get("storefront-a"),
+    ).toEqual({ active_release_id: null });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT published_revision_id, draft_generation FROM storefront_theme_templates WHERE id = ?",
+        )
+        .get("template-a"),
+    ).toEqual({ published_revision_id: null, draft_generation: 1 });
+    expect({
+      releases: count("storefront_releases"),
+      publications: count("storefront_content_publications"),
+    }).toEqual(before);
   });
 
   it("reports what the Theme Worker already runs, read before this publish activates anything", async () => {
@@ -1201,6 +1285,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -1249,6 +1334,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -1286,6 +1372,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -1350,6 +1437,7 @@ export default function SiteHeader() { return <header />; }`;
     // Non-existent sourceRevisionId should fail the CAS guard
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1364,6 +1452,7 @@ export default function SiteHeader() { return <header />; }`;
     // Mismatched expectedReleaseGeneration should fail the CAS guard with RELEASE_GENERATION_CONFLICT
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1401,6 +1490,7 @@ export default function SiteHeader() { return <header />; }`;
 
     await expect(
       storefrontThemeDal.publishTemplate({
+        verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-a",
@@ -1952,6 +2042,7 @@ describe("publish build resolution", () => {
 
   const publish = () =>
     storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -2028,6 +2119,7 @@ describe("publish build resolution", () => {
     `);
 
     const result = await storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -2572,6 +2664,7 @@ describe("publishing seals a complete snapshot", () => {
     `);
 
     await storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-pub-rid",

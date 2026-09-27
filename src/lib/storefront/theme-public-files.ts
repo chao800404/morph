@@ -1,5 +1,7 @@
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 
+import { themePublicSvgGate } from "./theme-public-svg-gate";
+
 /**
  * The contract for files a Theme serves as they are, from `public/`.
  *
@@ -12,19 +14,29 @@ import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file
  * from the Media Library, project import, publish) checks it against this
  * one module, so the rules cannot drift between them.
  *
- * v1 holds images and fonts only. SVG is refused: served from the store's own
- * origin it can run script on navigation, and a Content-Security-Policy alone
- * does not make that safe. The limits are product quotas, not platform ones,
- * counted on raw bytes.
+ * v1 holds images and fonts. SVG is refused while `themePublicSvgGate` is
+ * closed: served from the store's own origin it can run script on navigation.
+ * Behind the gate it is wired all the way: its bytes are checked by
+ * `validateSvg` wherever they enter (`theme-public-bytes.ts`, kept apart so the
+ * parser stays out of the browser bundle this module is part of) and again at
+ * publish. The limits are product quotas, not platform ones, counted on raw
+ * bytes.
  */
 
 export const THEME_PUBLIC_DIRECTORY = "public/";
 
 export const THEME_PUBLIC_LIMITS = {
   maxFileBytes: 5 * 1024 * 1024,
+  /**
+   * An SVG is parsed before it is stored, so it has a limit of its own: the
+   * media library's, since both are held to the same rules.
+   */
+  maxSvgBytes: 2 * 1024 * 1024,
   maxTotalBytes: 50 * 1024 * 1024,
   maxFiles: 200,
 } as const;
+
+const SVG_MIME_TYPE = "image/svg+xml";
 
 type ThemePublicFormat = Readonly<{
   mimeType: string;
@@ -86,7 +98,10 @@ const FORMATS: Readonly<Record<string, ThemePublicFormat>> = {
  * The extensions `public/` accepts, as a file picker's `accept` list. The
  * same table decides on the server; a picker only saves a round trip.
  */
-export const THEME_PUBLIC_ACCEPT = Object.keys(FORMATS)
+export const THEME_PUBLIC_ACCEPT = [
+  ...Object.keys(FORMATS),
+  ...(themePublicSvgGate() === "open" ? ["svg"] : []),
+]
   .map((extension) => `.${extension}`)
   .join(",");
 
@@ -123,6 +138,11 @@ export type ThemePublicPathRefusal =
   | "route-collision"
   | "svg-not-allowed"
   | "unsupported-format";
+
+/** Whether the path names an SVG, which the contract checks by parsing. */
+export function isThemePublicSvgPath(path: string): boolean {
+  return extensionOf(path) === "svg";
+}
 
 export type ThemePublicPathCheck =
   | Readonly<{ ok: true; urlPath: string; mimeType: string }>
@@ -189,7 +209,13 @@ export function checkThemePublicPath(
   }
   const extension = extensionOf(path);
   if (extension === "svg" || extension === "svgz") {
-    return { ok: false, reason: "svg-not-allowed" };
+    if (themePublicSvgGate() === "closed") {
+      return { ok: false, reason: "svg-not-allowed" };
+    }
+    // Compressed SVG cannot be parsed before it is stored, so it stays out.
+    if (extension === "svgz")
+      return { ok: false, reason: "unsupported-format" };
+    return { ok: true, urlPath, mimeType: SVG_MIME_TYPE };
   }
   const format = FORMATS[extension];
   if (!format) return { ok: false, reason: "unsupported-format" };
@@ -197,8 +223,10 @@ export function checkThemePublicPath(
 }
 
 /**
- * Whether the bytes are the format the path says, which is what the served
- * MIME type is then taken from — never from what a client claimed.
+ * Whether the bytes are the raster or font format the path says, which is
+ * what the served MIME type is then taken from — never from what a client
+ * claimed. False for SVG, which has no signature to match: its bytes are
+ * judged by `checkThemePublicBytes`, which every write goes through.
  */
 export function themePublicBytesMatch(path: string, bytes: Uint8Array) {
   const format = FORMATS[extensionOf(path)];
@@ -210,6 +238,7 @@ export type ThemePublicSetProblem = Readonly<{
   reason:
     | ThemePublicPathRefusal
     | "file-too-large"
+    | "svg-too-large"
     | "case-collision"
     | "too-many-files"
     | "total-too-large";
@@ -235,6 +264,11 @@ export function checkThemePublicFiles(
     if (!check.ok) problems.push({ path: file.path, reason: check.reason });
     if (file.size > THEME_PUBLIC_LIMITS.maxFileBytes) {
       problems.push({ path: file.path, reason: "file-too-large" });
+    } else if (
+      isThemePublicSvgPath(file.path) &&
+      file.size > THEME_PUBLIC_LIMITS.maxSvgBytes
+    ) {
+      problems.push({ path: file.path, reason: "svg-too-large" });
     }
     const folded = file.path.toLowerCase();
     const earlier = seen.get(folded);
@@ -275,9 +309,13 @@ export function describeThemePublicProblem(
     case "svg-not-allowed":
       return "SVG files are not supported yet; use PNG or WebP.";
     case "unsupported-format":
-      return "Only PNG, JPEG, WebP, GIF, AVIF, ICO, WOFF and WOFF2 are supported.";
+      return themePublicSvgGate() === "open"
+        ? "Only PNG, JPEG, WebP, GIF, AVIF, ICO, SVG, WOFF and WOFF2 are supported."
+        : "Only PNG, JPEG, WebP, GIF, AVIF, ICO, WOFF and WOFF2 are supported.";
     case "file-too-large":
       return `Files are limited to ${THEME_PUBLIC_LIMITS.maxFileBytes / 1024 / 1024} MB.`;
+    case "svg-too-large":
+      return `SVG files are limited to ${THEME_PUBLIC_LIMITS.maxSvgBytes / 1024 / 1024} MB.`;
     case "case-collision":
       return "Another file has the same path apart from letter case.";
     case "too-many-files":

@@ -1237,6 +1237,18 @@ export const storefrontThemeDal = {
     createdBy?: string;
     /** What changed, for recognising this release in the history later. */
     note?: string;
+    /**
+     * Checks the source revision this publish has resolved, before anything
+     * is activated; throwing refuses the publish with nothing written.
+     *
+     * Required, so no publish path can leave it out, and called with the
+     * revision chosen here rather than one the caller worked out itself:
+     * which revision goes live is decided below, from the request, the newest
+     * matching build or the active release, and a caller that repeated that
+     * logic would eventually check a different revision from the one
+     * published. See `assertPublishPublicFiles`.
+     */
+    verifySourceRevision: (sourceRevisionId: string) => Promise<void>;
   }) {
     const releaseMetadata = withReleaseNote(null, data.note);
     const db = await getDb();
@@ -1402,6 +1414,9 @@ export const storefrontThemeDal = {
         `PUBLISH_BUILD_MISMATCH: Theme build "${themeBuildId}" is not bound to source revision "${sourceRevisionId}" or has no immutable artifact.`,
       );
     }
+
+    // The revision and its build are settled, and nothing has been written.
+    await data.verifySourceRevision(sourceRevisionId);
 
     const [revision] = await db
       .select({ document: storefrontThemeTemplateRevisions.document })

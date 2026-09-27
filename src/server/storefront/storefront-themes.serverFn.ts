@@ -29,6 +29,11 @@ import {
   deployWithRecovery,
 } from "@/lib/storefront/service/storefront-release-reconciler";
 import { withDeploymentLease } from "@/lib/storefront/service/deployment-lease";
+import { assertPublishPublicFiles } from "@/lib/storefront/service/publish-public-files-check";
+import {
+  themeRevisionStore,
+  themeSourceStore,
+} from "@/lib/storefront/storage/theme-storage.server";
 import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-worker-deployment-state";
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
@@ -384,6 +389,19 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           const result = await storefrontThemeDal.publishTemplate({
             ...data,
             createdBy: context.user.id,
+            verifySourceRevision: (sourceRevisionId) =>
+              assertPublishPublicFiles(
+                {
+                  getRevision: (revisionId) =>
+                    themeRevisionStore.getRevision(
+                      data.storefrontId,
+                      data.themeId,
+                      revisionId,
+                    ),
+                  readBlob: (digest) => themeSourceStore.readBinaryFile(digest),
+                },
+                sourceRevisionId,
+              ),
           });
           if (!result) {
             return fail("Theme template or draft revision not found", {
@@ -531,6 +549,14 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
         return fail("Template draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
         });
+      }
+      if (message.includes("PUBLISH_PUBLIC_FILE_REFUSED")) {
+        // Says which files and why: the author has to change them, and a
+        // rebuild alone would not help.
+        return fail(
+          `These public/ files cannot be published: ${message.slice(message.indexOf("PUBLISH_PUBLIC_FILE_REFUSED:") + "PUBLISH_PUBLIC_FILE_REFUSED:".length).trim()}`,
+          { error: "PUBLISH_PUBLIC_FILE_REFUSED" },
+        );
       }
       if (
         message.includes("PUBLISH_BUILD_NOT_FOUND") ||

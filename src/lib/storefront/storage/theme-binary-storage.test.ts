@@ -17,6 +17,10 @@ import {
 } from "../editor/public-url-move-batch";
 import { planConfirmedPublicUrlRewrite } from "../service/public-url-rewrite-batch";
 import { copyLibraryAssetToPublic } from "../service/library-asset-to-public";
+import {
+  assertPublishPublicFiles,
+  findPublishPublicFileProblems,
+} from "../service/publish-public-files-check";
 import { storefrontThemeFileDal } from "../dal/storefront-theme-file.dal";
 import { normalizeRevisionSnapshot } from "../compiler/theme-build-materializer";
 import {
@@ -119,6 +123,12 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
+// The SVG gate, which nothing at runtime can open: these tests replace its
+// module to exercise the wiring behind it through the real write path.
+const svgGate = vi.hoisted(() => ({ value: "closed" as "closed" | "open" }));
+vi.mock("../theme-public-svg-gate", () => ({
+  themePublicSvgGate: () => svgGate.value,
+}));
 
 let sqlite: Database.Database;
 
@@ -235,6 +245,7 @@ beforeEach(() => {
 afterEach(() => {
   sqlite.close();
   vi.clearAllMocks();
+  svgGate.value = "closed";
 });
 
 // The real migration, applied over the table as it was before it.
@@ -520,6 +531,10 @@ describe("storing a binary file", () => {
     );
 
     // A source write aimed at a binary file, with its real id and version.
+    // Refused before the rows are compared: no text is written in public/ at
+    // all, which is what keeps a text SVG away from `validateSvg`. It used to
+    // reach the row guard and fail as a version conflict; the file is kept
+    // either way, and that is what this asserts.
     const saved = await upload("public/images/hero.png", png(), 1);
     await expect(
       storefrontThemeFileDal.saveFilesBatch(
@@ -535,7 +550,7 @@ describe("storing a binary file", () => {
         ],
         { expectedSourceGeneration: saved.sourceGeneration },
       ),
-    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+    ).rejects.toThrow("Files in public/ are uploaded, not written as text");
     expect(fileRow("public/images/hero.png")).toMatchObject({
       encoding: "binary",
       content: "",
@@ -1153,5 +1168,318 @@ describe("building a revision with binary files", () => {
         mimeType: "image/png",
       },
     ]);
+  });
+});
+
+describe("SVG in public/, behind the gate", () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const CLEAN = encode(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#c00"/></svg>',
+  );
+  const HANDLER = encode(
+    '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect width="1" height="1"/></svg>',
+  );
+  const DOCTYPE = encode(
+    '<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg xmlns="http://www.w3.org/2000/svg"/>',
+  );
+  const ASSET_ID = "33333333-3333-4333-8333-333333333333";
+  const librarySvg = (bytes: Uint8Array) => {
+    const url = `/assets/${ASSET_ID}.svg`;
+    r2.objects.set(url.slice(1), new Uint8Array(bytes));
+    return {
+      findAsset: async (id: string) =>
+        id === ASSET_ID ? { id, url, size: bytes.byteLength } : null,
+      readAssetBytes: async (key: string) => {
+        const object = await r2.bucket.get(key);
+        return object ? new Uint8Array(await object.arrayBuffer()) : null;
+      },
+      saveBinaryFile: d1ThemeSourceStore.saveBinaryFile,
+    };
+  };
+  const copy = (bytes: Uint8Array) =>
+    copyLibraryAssetToPublic(librarySvg(bytes), {
+      storefrontId: STORE,
+      themeId: THEME,
+      assetId: ASSET_ID,
+      path: "public/images/logo.svg",
+      expectedSourceGeneration: generation(),
+    });
+  const themeBlobs = () =>
+    [...r2.objects.keys()].filter((key) => key.startsWith("theme-source/"));
+
+  it("refuses every SVG while the gate is closed, however clean", async () => {
+    seedSource();
+    await expect(upload("public/logo.svg", CLEAN)).rejects.toThrow(
+      "SVG files are not supported yet",
+    );
+    await expect(copy(CLEAN)).rejects.toThrow(
+      "SVG files are not supported yet",
+    );
+    expect(themeBlobs()).toEqual([]);
+    expect(generation()).toBe(1);
+  });
+
+  it("stores a clean SVG byte for byte once the gate is open", async () => {
+    svgGate.value = "open";
+    seedSource();
+    const saved = await upload("public/logo.svg", CLEAN);
+    expect(saved).toMatchObject({
+      mimeType: "image/svg+xml",
+      blobDigest: sha256(CLEAN),
+      sizeBytes: CLEAN.byteLength,
+    });
+    expect(r2.objects.get(`theme-source/${sha256(CLEAN)}`)).toEqual(CLEAN);
+  });
+
+  it("refuses what validateSvg refuses, with its reason, and writes nothing", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await expect(upload("public/a.svg", HANDLER)).rejects.toThrow(
+      "Event handler attributes are not allowed",
+    );
+    await expect(upload("public/b.svg", DOCTYPE)).rejects.toThrow("DOCTYPE");
+    const oversized = new Uint8Array(2 * 1024 * 1024 + 1).fill(0x20);
+    oversized.set(CLEAN);
+    await expect(upload("public/c.svg", oversized)).rejects.toThrow(
+      "SVG files are limited to 2 MB",
+    );
+    // Compressed SVG cannot be parsed before it is stored.
+    await expect(upload("public/d.svgz", CLEAN)).rejects.toThrow(
+      "THEME_PUBLIC_FILE_REFUSED",
+    );
+    expect(themeBlobs()).toEqual([]);
+    expect(generation()).toBe(1);
+  });
+
+  it("checks a library SVG's own bytes on copy, whatever the library recorded", async () => {
+    svgGate.value = "open";
+    seedSource();
+    // The library's metadata is not consulted: only the bytes read here are.
+    await expect(copy(HANDLER)).rejects.toThrow(
+      "Event handler attributes are not allowed",
+    );
+    expect(fileRow("public/images/logo.svg")).toBeUndefined();
+    await expect(copy(CLEAN)).resolves.toMatchObject({ ok: true });
+    expect(fileRow("public/images/logo.svg")).toMatchObject({
+      mime_type: "image/svg+xml",
+      blob_digest: sha256(CLEAN),
+    });
+  });
+});
+
+describe("the check before a publish activates a revision", () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const CLEAN = encode(
+    '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>',
+  );
+  const HANDLER = encode(
+    '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4" onclick="x()"/></svg>',
+  );
+  let reads = 0;
+  const deps = {
+    getRevision: (id: string) => revisions().getRevision(STORE, THEME, id),
+    readBlob: (digest: string) => {
+      reads += 1;
+      return d1ThemeSourceStore.readBinaryFile(digest);
+    },
+  };
+  const latestRevisionId = () =>
+    (
+      sqlite
+        .prepare(
+          "SELECT id FROM storefront_theme_revisions ORDER BY revision_number DESC LIMIT 1",
+        )
+        .get() as { id: string }
+    ).id;
+  /** Rewrites one manifest entry, as a revision stored under other rules. */
+  const editManifest = (
+    revisionId: string,
+    edit: (manifest: ThemeSourceRevisionManifest) => void,
+  ) => {
+    const row = sqlite
+      .prepare(
+        "SELECT source_manifest FROM storefront_theme_revisions WHERE id = ?",
+      )
+      .get(revisionId) as { source_manifest: string };
+    const manifest = JSON.parse(
+      row.source_manifest,
+    ) as ThemeSourceRevisionManifest;
+    edit(manifest);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_revisions SET source_manifest = ? WHERE id = ?",
+      )
+      .run(JSON.stringify(manifest), revisionId);
+  };
+
+  beforeEach(() => {
+    reads = 0;
+  });
+
+  it("passes raster files without reading their bytes", async () => {
+    seedSource();
+    await upload("public/images/hero.png", png());
+    expect(
+      await findPublishPublicFileProblems(deps, latestRevisionId()),
+    ).toEqual([]);
+    expect(reads).toBe(0);
+  });
+
+  it("reads and re-checks an SVG, under the gate and rules as they are now", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await upload("public/logo.svg", CLEAN);
+    const revisionId = latestRevisionId();
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([]);
+    expect(reads).toBe(1);
+
+    // Stored while SVG was served; the gate closed again since.
+    svgGate.value = "closed";
+    await expect(assertPublishPublicFiles(deps, revisionId)).rejects.toThrow(
+      "PUBLISH_PUBLIC_FILE_REFUSED: public/logo.svg: SVG files are not supported yet",
+    );
+  });
+
+  it("refuses an SVG that rules stricter than its writer's refuse", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await upload("public/logo.svg", CLEAN);
+    const revisionId = latestRevisionId();
+    // Bytes that passed whatever checked them then, and fail today's rules.
+    await blobStore().putImmutable({
+      digest: sha256(HANDLER),
+      content: HANDLER,
+      mimeType: "image/svg+xml",
+    });
+    editManifest(revisionId, (manifest) => {
+      const entry = manifest.files.find(
+        (file) => file.path === "public/logo.svg",
+      )!;
+      entry.digest = sha256(HANDLER);
+      entry.sizeBytes = HANDLER.byteLength;
+    });
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      expect.stringContaining(
+        "public/logo.svg: Event handler attributes are not allowed",
+      ),
+    ]);
+  });
+
+  it("refuses by name a blob the store cannot produce intact", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await upload("public/logo.svg", CLEAN);
+    const revisionId = latestRevisionId();
+    // Other bytes under the same key: this store verifies, and refuses them.
+    r2.objects.set(`theme-source/${sha256(CLEAN)}`, HANDLER);
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      expect.stringMatching(
+        /^public\/logo\.svg: The stored bytes could not be read \(THEME_SOURCE_BLOB_INTEGRITY_FAILURE/,
+      ),
+    ]);
+    // And none at all.
+    r2.objects.delete(`theme-source/${sha256(CLEAN)}`);
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      expect.stringContaining(
+        "public/logo.svg: The stored bytes could not be read",
+      ),
+    ]);
+  });
+
+  it("checks the digest itself when the store does not", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await upload("public/logo.svg", CLEAN);
+    const trusting = { ...deps, readBlob: async () => HANDLER };
+    expect(
+      await findPublishPublicFileProblems(trusting, latestRevisionId()),
+    ).toEqual([
+      "public/logo.svg: The stored bytes do not match the revision's digest.",
+    ]);
+  });
+
+  it("refuses an oversized SVG without reading it", async () => {
+    svgGate.value = "open";
+    seedSource();
+    await upload("public/logo.svg", CLEAN);
+    const revisionId = latestRevisionId();
+    editManifest(revisionId, (manifest) => {
+      manifest.files.find(
+        (file) => file.path === "public/logo.svg",
+      )!.sizeBytes = 2 * 1024 * 1024 + 1;
+    });
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      "public/logo.svg: SVG files are limited to 2 MB.",
+    ]);
+    expect(reads).toBe(0);
+  });
+
+  it("refuses a text file in public/, however it got into the revision", async () => {
+    seedSource();
+    await upload("public/images/hero.png", png());
+    const revisionId = latestRevisionId();
+    editManifest(revisionId, (manifest) => {
+      manifest.files.push({
+        path: "public/evil.svg",
+        digest: sha256("<svg/>"),
+        sizeBytes: 6,
+        mimeType: "image/svg+xml",
+        isEntry: false,
+      });
+    });
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      "public/evil.svg: Files in public/ are uploaded, not written as text.",
+    ]);
+  });
+
+  it("refuses a revision it cannot find", async () => {
+    await expect(
+      assertPublishPublicFiles(deps, "00000000-0000-4000-8000-000000000000"),
+    ).rejects.toThrow("PUBLISH_PUBLIC_FILE_REFUSED");
+  });
+});
+
+describe("text in public/", () => {
+  it("is refused at the write every text save goes through", async () => {
+    seedSource();
+    // Below every request schema: the DAL itself refuses.
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch(
+        STORE,
+        THEME,
+        [
+          {
+            path: "public/evil.svg",
+            content: '<svg xmlns="http://www.w3.org/2000/svg" onload="x()"/>',
+            expectMissing: true,
+          },
+        ],
+        { expectedSourceGeneration: 1 },
+      ),
+    ).rejects.toThrow("Files in public/ are uploaded, not written as text");
+    expect(fileRow("public/evil.svg")).toBeUndefined();
+    expect(generation()).toBe(1);
+  });
+
+  it("is refused by the build, whatever wrote it into the revision", () => {
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [
+          {
+            path: "src/routes/index.tsx",
+            content: "x",
+            mimeType: "text/typescript",
+            isEntry: false,
+          },
+          {
+            path: "public/evil.svg",
+            content: "<svg/>",
+            mimeType: "image/svg+xml",
+            isEntry: false,
+          },
+        ],
+        "revision-1",
+      ),
+    ).toThrow("PUBLIC_FILE_REFUSED");
   });
 });
