@@ -5,6 +5,7 @@ import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
+  THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES,
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
 } from "./theme-preview-dev-server";
@@ -67,6 +68,24 @@ describe("preview dev infrastructure allowance", () => {
     expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).toContain(
       "@tanstack/start-server-core",
     );
+  });
+
+  it("pre-bundles router-core's browser entries and nothing on the stubbed path", () => {
+    expect(THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES).toEqual([
+      "@tanstack/router-core",
+      "@tanstack/router-core/ssr/client",
+      "@tanstack/router-core/isServer",
+    ]);
+    // The server entry reaches Node built-ins; the preview never loads it.
+    expect(THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES).not.toContain(
+      "@tanstack/router-core/ssr/server",
+    );
+    // Nothing both included and excluded, and no Start package included:
+    // pre-bundling one would take it off the path its stub answers on.
+    for (const name of THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES) {
+      expect(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES).not.toContain(name);
+      expect(name).not.toMatch(/^@tanstack\/(react-)?start/);
+    }
   });
 
   it("keeps Theme assets and HMR out of the outer Morph Vite namespace", () => {

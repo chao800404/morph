@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { startRequestTimeline } from "./request-timeline";
 
 /**
  * The editor path under test.
@@ -95,6 +96,8 @@ function describeStages(stages: ReadonlyArray<[string, number]>): string {
 export async function openEditor(page: Page) {
   const server = capturePreviewServerReport(page);
   const done: [string, number][] = [];
+  // Null unless MORPH_E2E_TIMELINE=1; see request-timeline.ts.
+  const timeline = startRequestTimeline(page);
 
   /**
    * One handoff, named, timed, and reported when it is the one that stalled.
@@ -122,6 +125,7 @@ export async function openEditor(page: Page) {
       );
     }
     done.push([name, Date.now() - startedAt]);
+    timeline?.mark(name);
   };
 
   // "domcontentloaded", not the default "load": the editor holds a preview
@@ -195,6 +199,7 @@ export async function openEditor(page: Page) {
     `[openEditor] ${describeStages(done)}` +
       (server.line ? `\n${server.line}` : ""),
   );
+  timeline?.report();
 }
 
 /** Turns on the pointer tool, the first thing a person does to select. */

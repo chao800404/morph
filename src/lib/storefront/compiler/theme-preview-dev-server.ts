@@ -125,3 +125,28 @@ export const THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES: readonly string[] = [
   "@tanstack/start-storage-context",
   "@tanstack/start-server-core",
 ];
+
+/**
+ * Dependencies the Live Preview pre-bundles although nothing a Theme imports
+ * names them, because excluded packages reach them.
+ *
+ * `@tanstack/start-client-core` and `@tanstack/react-start-client` import
+ * `@tanstack/router-core`. With those excluded, Vite never discovered it, and
+ * the browser fetched its 34 internal modules one by one through the preview
+ * proxy — the last requests to finish, 45-54 s into opening the editor, in
+ * three measured runs (see the progress log). Pre-bundled, they are one
+ * module. `@tanstack/react-router`, which Vite does discover, also carried a
+ * copy of it inside its own bundle; with an entry of its own, both are meant
+ * to share one.
+ *
+ * Only the entries the preview's browser code uses. `ssr/server` is left out:
+ * it is the one that reaches Node built-ins, and nothing in the preview loads
+ * it. None of these is on the stubbed path above — router-core imports no
+ * Start server API — so pre-bundling them cannot bypass a stub. One package
+ * at a time, measured before and after; add others only on the same evidence.
+ */
+export const THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES: readonly string[] = [
+  "@tanstack/router-core",
+  "@tanstack/router-core/ssr/client",
+  "@tanstack/router-core/isServer",
+];
