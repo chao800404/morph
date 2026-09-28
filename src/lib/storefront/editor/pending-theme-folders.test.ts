@@ -4,6 +4,7 @@ import type { StorefrontThemeFileTreeNode } from "@/lib/storefront/dto/storefron
 import {
   existingFolderPaths,
   folderMoveDestination,
+  isPinnedThemeFolder,
   movePendingFolderPaths,
   pendingFolderStorageKey,
   readPendingFolders,
@@ -123,5 +124,15 @@ describe("remembering pending folders between visits", () => {
     // that cannot remember a folder still has to open.
     window.localStorage.setItem(key, '{"not":"an array"}');
     expect(readPendingFolders(key)).toEqual([]);
+  });
+});
+
+describe("isPinnedThemeFolder", () => {
+  it("pins public/ itself, not what is inside it or merely named like it", () => {
+    expect(isPinnedThemeFolder("public")).toBe(true);
+    expect(isPinnedThemeFolder("public/")).toBe(true);
+    expect(isPinnedThemeFolder("public/images")).toBe(false);
+    expect(isPinnedThemeFolder("src/public")).toBe(false);
+    expect(isPinnedThemeFolder("publicity")).toBe(false);
   });
 });

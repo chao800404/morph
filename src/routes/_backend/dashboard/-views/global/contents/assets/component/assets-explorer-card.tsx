@@ -75,7 +75,11 @@ export const AssetsExplorerCard = ({
   }, [clearAllSelectedItems, selectedCount]);
 
   const { folders = [], assets = [], currentFolder } = data;
-  const hasFolders = folders.length > 0;
+  // The site's public/ folder is pinned first at the root, so the root is
+  // never without a folder. Not while searching or filtering: it is not a
+  // library folder, so it is not a result either.
+  const showSitePublic = !currentFolder && !query && !hasActiveFilter;
+  const hasFolders = folders.length > 0 || showSitePublic;
   const hasAssets = assets.length > 0;
   const breadCrumb = currentFolder?.idPath?.split("/").filter(Boolean);
 
@@ -193,23 +197,12 @@ export const AssetsExplorerCard = ({
         <div className="flex h-full items-center justify-center">
           <p className="text-muted-foreground">{errorMessage}</p>
         </div>
-      ) : folders.length <= 0 &&
-        assets.length <= 0 &&
-        !currentFolder &&
-        !query &&
-        !hasActiveFilter ? (
-        <AssetEmptyCard showButton />
       ) : (
         <div className="w-full flex-1 flex flex-col min-h-0 overflow-hidden relative select-none">
-          {folders.length <= 0 && assets.length <= 0 && (
-            <div className="h-full w-full flex items-center gap-4 justify-center flex-col">
-              <AssetEmptyCard className="h-fit" showButton={false} />
-              <p className="text-center">No assets found</p>
-            </div>
-          )}
-          {folders.length > 0 && (
+          {hasFolders && (
             <FoldersContent
               folders={folders}
+              showSitePublic={showSitePublic}
               isCollapsed={foldersCollapsed}
               isAssetsCollapsed={assetsCollapsed}
               canCollapse={hasAssets}
@@ -222,6 +215,15 @@ export const AssetsExplorerCard = ({
               onSetFoldersCollapsed={handleSetFoldersCollapsed}
               onSetAssetsCollapsed={handleSetAssetsCollapsed}
             />
+          )}
+          {folders.length <= 0 && assets.length <= 0 && (
+            // An empty library root keeps its upload prompt, below public/.
+            <div className="h-full w-full flex items-center gap-4 justify-center flex-col">
+              <AssetEmptyCard className="h-fit" showButton={showSitePublic} />
+              {showSitePublic ? null : (
+                <p className="text-center">No assets found</p>
+              )}
+            </div>
           )}
           <AssetsContent
             assets={assets}
