@@ -381,6 +381,23 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 8 | 批次把 `public/` 圖片關聯為產品媒體（使用者確認對應，不依資料夾名稱猜測） | 功能（依賴匯入） |
 | 9 | 本地 TanStack Start 專案匯入（`public/` 原樣匯入） | 功能（最後做） |
 
+### TanStack Start 原生相容（2026-09-29 排定，依序）
+
+目標：同一份 Theme 原始碼在本地、Live Preview、發布後具有一致的 TanStack Start 行為，差別只在資料與權限。Design 是額外工具，不限制 Code；Design 無法安全編輯的部分標示 Code only。承諾範圍是 Cloudflare Workers 可執行的 TanStack Start 能力，不是所有 Node.js 套件或本機系統功能。一項能力只有在預覽與正式建置都通過測試後才列為支援，不以 import 檢查放行。
+
+相容性測試同一組 Theme 檔案（`src/lib/storefront/compat/native-compat-theme.ts`）跑三處：`native-compat.test.ts`（建置出的 Worker，CI）、`e2e/native-compat-preview.spec.ts`（Live Preview，CI）、`e2e/native-compat-published.spec.ts`（發布後經 Morph Core 的店面網域，Sandbox）。尚未解決的差異寫成 `KNOWN GAP` 斷言，缺口一修好就會失敗，必須改成一般斷言。
+
+| 順序 | 項目 | 類別 |
+| ---: | --- | --- |
+| 1 | ✅ 相容性測試進 repo，已知缺口以 `KNOWN GAP` 斷言 | 驗證 |
+| 2 | 商家網域不得拿到平台靜態檔：從請求分流保證（`/assets/` 也在內），Theme 有檔與沒檔兩種情況都測；本機 dev 的順序也要一致 | 正確性 |
+| 3 | 預覽與正式建置拆開：預覽專用替身不再拖垮正式建置（`getCookie` 等使整個建置失敗）；暫時替身在呼叫時明確回報不支援 | 正確性 |
+| 4 | 完整 TanStack Start 預覽：沿用 Sandbox、版本同步與權限機制執行真正的 Start server（workerd），先原型驗證 SSR、server functions、cookies、middleware、server routes、HMR、啟動時間，再接回編輯器；預覽的 server 程式不得取得正式商店寫入權限或 secret | 架構 |
+| 5 | `public/` 開放經格式檢查的文字檔（`.txt`、`.xml`、`.json`、`.webmanifest`；SVG 仍驗證）；新店不需先改 Design 即可發布初始 Document（仍走 revision、OCC、publication） | 功能 |
+| 6 | Design 依能力顯示：只有 server handler 的 route 標為端點；同時有頁面與 handler 的 route 仍可編輯 | 介面 |
+
+匯入前另需決定：套件白名單與本地專案任意依賴的關係、店家自己的環境變數與 secrets。
+
 ---
 
 # Phase 0 — Architecture Alignment

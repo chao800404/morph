@@ -75,6 +75,7 @@ const MAX_TEST_WORKERS = Math.max(1, Math.min(4, MAX_PARALLELISM - 1));
  */
 const THEME_BUILD_TESTS = [
   "src/lib/storefront/compiler/local-vite-theme-build-runner.test.ts",
+  "src/lib/storefront/compiler/native-compat.test.ts",
 ];
 
 /** What every project shares; stated once so the two cannot drift apart. */
