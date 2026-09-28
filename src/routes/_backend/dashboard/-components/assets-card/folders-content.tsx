@@ -67,7 +67,7 @@ interface FoldersContentProps {
   folders?: AssetFolder[];
   /**
    * Shows the site's `public/` folder first. It is not a library folder: it
-   * opens the Site public/ page, and it has no menu, selection or drag,
+   * opens the Public page, and it has no menu, selection or drag,
    * because it is part of every site and is never moved or deleted.
    */
   showSitePublic?: boolean;
@@ -326,7 +326,7 @@ function SitePublicFolderCard() {
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
-          public/
+          public
         </span>
         <span className="truncate text-[11px] text-zinc-600 dark:text-zinc-300">
           Published with your site

@@ -450,7 +450,7 @@ export function SitePublicFilesPanel({
 
   return (
     <CardWrapper
-      label="Site public/"
+      label="Public"
       description="The files your site's code serves at their own URL, the same public/ folder Code mode shows."
       headerButton={
         <div className="flex items-center gap-2">
@@ -844,7 +844,7 @@ export default function SitePublicFiles() {
   }
   if (!storefront?.activeThemeId) {
     return (
-      <CardWrapper label="Site public/">
+      <CardWrapper label="Public">
         <p className="p-4 text-sm text-muted-foreground" data-site-public-empty>
           Set up the online store first; its site files appear here.
         </p>

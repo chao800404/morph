@@ -55,12 +55,13 @@ const sitePublic = () =>
   document.querySelector<HTMLAnchorElement>('[data-type="site-public-folder"]');
 
 describe("AssetsExplorerCard: the site's public/ folder", () => {
-  it("is pinned at the root of an empty library, opening Site public/, beside the upload prompt", () => {
+  it("is pinned at the root of an empty library, opening Public, beside the upload prompt", () => {
     render(<AssetsExplorerCard label="Assets" data={emptyRoot} />);
 
     const folder = sitePublic();
     expect(folder?.getAttribute("href")).toBe("/dashboard/site-public");
-    expect(folder?.textContent).toContain("public/");
+    expect(folder?.textContent).toContain("public");
+    expect(folder?.textContent).not.toContain("public/");
     expect(
       screen.getByRole("button", { name: "Create First Asset" }),
     ).toBeTruthy();
