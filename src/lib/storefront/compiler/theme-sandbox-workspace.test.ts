@@ -353,6 +353,10 @@ describe("laying out the workspace a Theme is served from", () => {
     expect(viteConfig).toContain('name: "morph-preview-http-hmr"');
     expect(viteConfig).toContain('name: "morph-preview-svg-isolation"');
     expect(viteConfig).toContain('name: "morph-preview-root-public"');
+    // router-core's browser entries are pre-bundled; see
+    // THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES.
+    expect(viteConfig).toContain('"@tanstack/router-core/ssr/client"');
+    expect(viteConfig).toContain('"@tanstack/router-core/isServer"');
     expect(viteConfig).toContain(
       "...(previewRootPublicPlugin ? [previewRootPublicPlugin] : [])",
     );

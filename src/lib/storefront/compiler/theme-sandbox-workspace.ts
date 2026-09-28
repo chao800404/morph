@@ -8,6 +8,7 @@ import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
+  THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES,
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
   themePreviewFsAllowRoots,
@@ -875,7 +876,13 @@ export default defineConfig({
   // Keep these off esbuild's pre-bundling path so the preview's server-API
   // stubs, which are Rollup plugins, are what answers for them.
   optimizeDeps: {
-    include: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+    include: ${JSON.stringify([
+      "react",
+      "react-dom",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      ...THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES,
+    ])},
     exclude: ${JSON.stringify(THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES)},
   },
   // Which files a dev server may read off disk. Unset, Vite guesses a root;
