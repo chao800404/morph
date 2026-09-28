@@ -1185,7 +1185,8 @@ describe("EditorCodeWorkspace binary files", () => {
     } as never);
     renderWithBinary([naming]);
 
-    fireEvent.contextMenu(screen.getByText("public"));
+    // A folder inside public/: public/ itself is pinned and never deleted.
+    fireEvent.contextMenu(screen.getByText("images"));
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Delete Folder" }),
     );
@@ -1212,6 +1213,48 @@ describe("EditorCodeWorkspace binary files", () => {
         expectedVersion: hero.version,
       },
     ]);
+  });
+
+  it("keeps public/ in the tree before its first file, and never offers to delete it", async () => {
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <EditorCodeWorkspace
+          storefrontId="store-1"
+          themeId="theme-1"
+          files={[naming]}
+          binaryFiles={[]}
+          tree={[]}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = document.querySelector('[data-file-tree-folder="public"]');
+    expect(row).toBeTruthy();
+
+    fireEvent.contextMenu(screen.getByText("public"));
+    expect(
+      await screen.findByRole("menuitem", { name: /Upload Files/ }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Delete Folder" })).toBeNull();
+  });
+
+  it("refuses the Delete key on public/ itself", async () => {
+    renderWithBinary();
+
+    fireEvent.click(screen.getByText("public"));
+    fireEvent.keyDown(screen.getByText("public"), { key: "Delete" });
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "public/ is part of every site and cannot be deleted.",
+    );
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
   });
 
   it("pastes a copied folder's binary files as references to their source", async () => {

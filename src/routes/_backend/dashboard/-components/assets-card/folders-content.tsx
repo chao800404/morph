@@ -53,11 +53,11 @@ import { useAssetsStore } from "@/routes/_backend/dashboard/-views/global/conten
 import { useAssetRouteActions } from "@/routes/_backend/dashboard/-views/global/contents/assets/hooks/use-asset-route-actions";
 import { deleteItems } from "@/server/asset/delete-items.serverFn";
 import { moveItems } from "@/server/asset/move-items.serverFn";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
 import { FluentFolderIcon } from "@/components/ui/icons/fluent-folder-icon";
-import { MoreHorizontal } from "lucide-react";
+import { Globe, MoreHorizontal } from "lucide-react";
 import { ItemActionsMenu } from "./item-actions-menu";
 import { useDraggable, useDroppable } from "@dnd-kit/react";
 import { useMemo } from "react";
@@ -65,6 +65,12 @@ import TypeHeadClient from "./type-head";
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 interface FoldersContentProps {
   folders?: AssetFolder[];
+  /**
+   * Shows the site's `public/` folder first. It is not a library folder: it
+   * opens the Site public/ page, and it has no menu, selection or drag,
+   * because it is part of every site and is never moved or deleted.
+   */
+  showSitePublic?: boolean;
   isCollapsed?: boolean;
   isAssetsCollapsed?: boolean;
   canCollapse?: boolean;
@@ -285,8 +291,54 @@ const FolderCard = memo(function FolderCard({
   );
 });
 
+/**
+ * The site's `public/` folder, pinned first at the Assets root.
+ *
+ * Its files are the same ones Code mode lists under public/, public once the
+ * site is published, while library files stay private until content uses
+ * them. So this is a way in to that folder, not a library folder: dropping a
+ * library file here would not make it public, and copying one in is the
+ * explicit "Add from Assets" action on the page it opens.
+ */
+function SitePublicFolderCard() {
+  return (
+    <Link
+      to="/dashboard/$slug"
+      params={{ slug: "site-public" }}
+      data-type="site-public-folder"
+      title="Files published with your site. Anyone can open them by URL."
+      className={cn(
+        "group relative flex cursor-pointer select-none flex-row items-center gap-3 rounded-lg border px-3 py-2.5 transition-[border-color,background-color] duration-150",
+        "bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-800/70 dark:to-zinc-900/80",
+        "border-zinc-200 dark:border-white/8",
+        "shadow-[0_2px_6px_-1px_rgba(0,0,0,0.05),inset_0_1px_0px_rgba(255,255,255,0.8)]",
+        "dark:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3),inset_0_1px_0px_rgba(255,255,255,0.08)]",
+        "hover:border-zinc-300 dark:hover:border-white/18",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
+    >
+      <div className="relative h-8 w-8 shrink-0">
+        <FluentFolderIcon className="h-8 w-8 drop-shadow-sm" />
+        <Globe
+          aria-hidden
+          className="absolute -right-1 -bottom-1 size-3.5 rounded-full bg-background p-px text-sky-600 dark:text-sky-400"
+        />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
+          public/
+        </span>
+        <span className="truncate text-[11px] text-zinc-600 dark:text-zinc-300">
+          Published with your site
+        </span>
+      </div>
+    </Link>
+  );
+}
+
 export const FoldersContent = memo(function FoldersContent({
   folders,
+  showSitePublic = false,
   isCollapsed: controlledIsCollapsed,
   isAssetsCollapsed = false,
   canCollapse = true,
@@ -617,7 +669,7 @@ export const FoldersContent = memo(function FoldersContent({
       ref={sectionRef}
       className="relative shrink-0 border-b group/folders-section"
     >
-      {folders && folders.length > 0 && (
+      {(showSitePublic || (folders && folders.length > 0)) && (
         <>
           <FoldersTypeHead
             collapsible={canCollapse}
@@ -660,6 +712,7 @@ export const FoldersContent = memo(function FoldersContent({
                       : "repeat(auto-fill, minmax(160px, 1fr))",
                   }}
                 >
+                  {showSitePublic ? <SitePublicFolderCard /> : null}
                   {folders?.map((item) => (
                     <FolderCard
                       key={item.id}

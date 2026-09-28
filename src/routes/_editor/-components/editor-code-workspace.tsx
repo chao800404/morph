@@ -4,7 +4,9 @@ import {
 } from "@/lib/storefront/ast/theme-file-move";
 import {
   folderMoveDestination,
+  isPinnedThemeFolder,
   movePendingFolderPaths,
+  PINNED_THEME_FOLDERS,
   pendingFolderStorageKey,
   readPendingFolders,
   removePendingFolderPaths,
@@ -3218,6 +3220,10 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const handleDeleteFolder = (path: string) => {
     if (deleteFolderMutation.isPending || deleteMutation.isPending) return;
+    if (isPinnedThemeFolder(path)) {
+      toast.error(`${path}/ is part of every site and cannot be deleted.`);
+      return;
+    }
     const binaryInFolder = binaryFilesUnder([path]);
     const filesInFolder = files.filter((file) =>
       file.path.startsWith(`${path}/`),
@@ -3537,12 +3543,13 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   // Explicitly created folders are merged in for display. Keeping this local
   // record after a file lands there means deleting that file does not remove
-  // the folder the author created.
+  // the folder the author created. Pinned folders such as `public/` are
+  // merged the same way, so they show before their first file.
   const visibleTree = useMemo(
     () =>
       withPendingFolders(
         withGeneratedRouteTree(tree, generatedRouteTreeFile !== null),
-        pendingFolders,
+        [...PINNED_THEME_FOLDERS, ...pendingFolders],
       ),
     [generatedRouteTreeFile, pendingFolders, tree],
   );
@@ -3661,7 +3668,10 @@ const EditorCodeWorkspaceContent = forwardRef<
       const isCollapsed = Boolean(collapsedFolders[node.path]);
       return (
         <div key={node.path} className="select-none">
-          <FolderRow node={node} disabled={moveMutation.isPending}>
+          <FolderRow
+            node={node}
+            disabled={moveMutation.isPending || isPinnedThemeFolder(node.path)}
+          >
             <ContextMenu>
               <ContextMenuTrigger asChild>
                 <div
@@ -3734,16 +3744,18 @@ const EditorCodeWorkspaceContent = forwardRef<
                   <Files className="size-3.5" />
                   Paste
                 </ContextMenuItem>
-                <ContextMenuItem
-                  variant="destructive"
-                  disabled={
-                    deleteFolderMutation.isPending || deleteMutation.isPending
-                  }
-                  onClick={() => handleDeleteFolder(node.path)}
-                >
-                  <Trash2 className="size-3.5" />
-                  Delete Folder
-                </ContextMenuItem>
+                {isPinnedThemeFolder(node.path) ? null : (
+                  <ContextMenuItem
+                    variant="destructive"
+                    disabled={
+                      deleteFolderMutation.isPending || deleteMutation.isPending
+                    }
+                    onClick={() => handleDeleteFolder(node.path)}
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete Folder
+                  </ContextMenuItem>
+                )}
               </ContextMenuContent>
             </ContextMenu>
           </FolderRow>

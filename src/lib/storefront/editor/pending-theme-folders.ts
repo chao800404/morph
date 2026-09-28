@@ -1,4 +1,5 @@
 import type { StorefrontThemeFileTreeNode } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import { THEME_PUBLIC_DIRECTORY } from "@/lib/storefront/theme-public-files";
 
 /**
  * Folders explicitly created in the editor.
@@ -10,6 +11,20 @@ import type { StorefrontThemeFileTreeNode } from "@/lib/storefront/dto/storefron
  * after a file arrives, so deleting that file does not unexpectedly remove the
  * folder the author created.
  */
+
+/**
+ * Folders every Theme has, shown even while empty and never removed as a
+ * whole. `public/` is where the site's static files live, so an author looks
+ * for it before the first upload, not after. The files inside are ordinary
+ * files; only the folder itself stays put.
+ */
+export const PINNED_THEME_FOLDERS: readonly string[] = [
+  THEME_PUBLIC_DIRECTORY.replace(/\/+$/, ""),
+];
+
+export function isPinnedThemeFolder(path: string): boolean {
+  return PINNED_THEME_FOLDERS.includes(path.replace(/\/+$/, ""));
+}
 
 /** Directory paths that already exist because a file lives under them. */
 export function existingFolderPaths(
