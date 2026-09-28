@@ -40,11 +40,11 @@ beforeEach(() => {
   sqlite = new Database(":memory:");
   sqlite.exec(`
     CREATE TABLE reservation_items (id text, inventory_item_id text, location_id text, cart_id text, line_item_id text,
-      quantity integer, allow_backorder integer, description text, external_id text, created_by text, expires_at text,
+      quantity real, allow_backorder integer, description text, external_id text, created_by text, expires_at text,
       metadata text, created_at text, updated_at text, deleted_at text);
-    CREATE TABLE inventory_levels (inventory_item_id text, location_id text, reserved_quantity integer, updated_at text, deleted_at text,
-      id text, stocked_quantity integer DEFAULT 20, incoming_quantity integer DEFAULT 0, metadata text, created_at text);
-    CREATE TABLE product_variant_inventory_items (variant_id text, inventory_item_id text, required_quantity integer, created_at text, updated_at text);
+    CREATE TABLE inventory_levels (inventory_item_id text, location_id text, reserved_quantity real, updated_at text, deleted_at text,
+      id text, stocked_quantity real DEFAULT 20, incoming_quantity real DEFAULT 0, metadata text, created_at text);
+    CREATE TABLE product_variant_inventory_items (variant_id text, inventory_item_id text, required_quantity real, created_at text, updated_at text);
     CREATE TABLE sales_channel_stock_locations (sales_channel_id text, stock_location_id text);
     INSERT INTO product_variant_inventory_items VALUES ('v','i',1,NULL,NULL);
     INSERT INTO sales_channel_stock_locations VALUES ('channel','l');
@@ -77,6 +77,27 @@ describe("actual reservation DAL atomic sync", () => {
     expect(quantity()).toBe(11);
     await cartReservationDal.syncLine({ ...input, quantity: 1 });
     expect(quantity()).toBe(6);
+  });
+  it("keeps fractional kit quantities when converting whole product units to stock", async () => {
+    sqlite.exec(`
+      DELETE FROM reservation_items;
+      UPDATE inventory_levels SET stocked_quantity = 0.6, reserved_quantity = 0;
+      UPDATE product_variant_inventory_items SET required_quantity = 0.1;
+    `);
+    expect(await cartReservationDal.availableForVariant("v", "channel")).toBe(6);
+    sqlite.exec(
+      "UPDATE product_variant_inventory_items SET required_quantity = 0.125",
+    );
+    expect(await cartReservationDal.availableForVariant("v", "channel")).toBe(4);
+    expect(
+      await cartReservationDal.syncLine({ ...input, quantity: 3 }),
+    ).toEqual({ managed: true, success: true });
+    expect(
+      sqlite
+        .prepare("SELECT quantity FROM reservation_items WHERE deleted_at IS NULL")
+        .get(),
+    ).toEqual({ quantity: 0.375 });
+    expect(quantity()).toBe(0.375);
   });
   it.each([
     "UPDATE ON inventory_levels",

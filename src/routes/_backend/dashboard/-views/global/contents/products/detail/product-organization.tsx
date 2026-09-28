@@ -17,6 +17,10 @@ import {
   normalizeSalesChannelListParams,
   salesChannelQueries,
 } from "@queries/sales-channel.queries";
+import {
+  normalizeShippingProfileListParams,
+  shippingProfileQueries,
+} from "@queries/shipping-profile.queries";
 import { updateProductOrganizationAction } from "../product-actions";
 import { productOrganizationFields } from "../config/product-form-fields";
 
@@ -46,6 +50,11 @@ const ProductOrganization = () => {
       limit: 100,
     }),
   );
+  const { data: profileResult, isPending: profilesPending } = useQuery(
+    shippingProfileQueries.list(
+      normalizeShippingProfileListParams({ limit: 100, sortBy: "name" }),
+    ),
+  );
 
   const submit = async (
     _state: RouteFormState,
@@ -59,13 +68,18 @@ const ProductOrganization = () => {
       return response;
     }
 
-    await queryClient.invalidateQueries({ queryKey: productQueries.all() });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: productQueries.all() }),
+      queryClient.invalidateQueries({
+        queryKey: shippingProfileQueries.all(),
+      }),
+    ]);
     toast.success(response.message, { position: "top-center" });
     close();
     return response;
   };
 
-  if (isPending || collectionsPending || channelsPending) {
+  if (isPending || collectionsPending || channelsPending || profilesPending) {
     return <RouteSurfacePending />;
   }
 
@@ -77,12 +91,22 @@ const ProductOrganization = () => {
       </RouteSurfaceMessage>
     );
   }
+  if (!profileResult?.success) {
+    return (
+      <RouteSurfaceMessage>
+        {profileResult?.message ?? "Failed to fetch shipping profiles"}
+      </RouteSurfaceMessage>
+    );
+  }
 
   const collections = collectionResult?.success
     ? (collectionResult.data?.collections ?? [])
     : [];
   const salesChannels = channelResult?.success
     ? (channelResult.data?.salesChannels ?? [])
+    : [];
+  const shippingProfiles = profileResult?.success
+    ? (profileResult.data?.profiles ?? [])
     : [];
 
   const fields = productOrganizationFields({
@@ -99,6 +123,8 @@ const ProductOrganization = () => {
     })),
     salesChannelIds: product.salesChannelIds,
     salesChannels,
+    shippingProfileId: product.shippingProfileId,
+    shippingProfiles,
   });
 
   return (

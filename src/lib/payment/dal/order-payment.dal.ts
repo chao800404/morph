@@ -1,6 +1,8 @@
 import { getDb } from "@/db";
+import { batchGuard } from "@/lib/db/batch-guard";
 import { orderPaymentCollections } from "@/db/link.schema";
-import { orderTransactions } from "@/db/order.schema";
+import { orderTransactions, orders } from "@/db/order.schema";
+import { firstOrNull } from "@/lib/db/single-row";
 import {
   captures,
   paymentCollections,
@@ -20,27 +22,42 @@ type PaymentOperationResult =
 
 const paymentForOrder = async (orderId: string) => {
   const db = await getDb();
-  const [row] = await db
-    .select({ collection: paymentCollections, payment: payments })
-    .from(orderPaymentCollections)
-    .innerJoin(
-      paymentCollections,
-      and(
-        eq(paymentCollections.id, orderPaymentCollections.paymentCollectionId),
-        isNull(paymentCollections.deletedAt),
-      ),
-    )
-    .leftJoin(
-      payments,
-      and(
-        eq(payments.paymentCollectionId, paymentCollections.id),
-        isNull(payments.deletedAt),
-        isNull(payments.canceledAt),
-      ),
-    )
-    .where(eq(orderPaymentCollections.orderId, orderId))
-    .limit(1);
-  return row ?? null;
+  return firstOrNull(
+    await db
+      .select({
+        collection: paymentCollections,
+        payment: payments,
+        orderVersion: orders.version,
+      })
+      .from(orderPaymentCollections)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.id, orderPaymentCollections.orderId),
+          isNull(orders.deletedAt),
+        ),
+      )
+      .innerJoin(
+        paymentCollections,
+        and(
+          eq(
+            paymentCollections.id,
+            orderPaymentCollections.paymentCollectionId,
+          ),
+          isNull(paymentCollections.deletedAt),
+        ),
+      )
+      .leftJoin(
+        payments,
+        and(
+          eq(payments.paymentCollectionId, paymentCollections.id),
+          isNull(payments.deletedAt),
+          isNull(payments.canceledAt),
+        ),
+      )
+      .where(eq(orderPaymentCollections.orderId, orderId))
+      .limit(1),
+  );
 };
 
 /**
@@ -52,8 +69,9 @@ const paymentForOrder = async (orderId: string) => {
  * their own sum: the ledger gains two rows while the aggregate advances once,
  * so the recorded total is lower than the money that moved.
  *
- * `json('')` is malformed, so evaluating it raises and D1 rolls the whole batch
- * back — the ledger rows never land without the matching aggregate.
+ * The condition goes through `batchGuard`, which makes D1 roll the whole batch
+ * back when it does not hold — the ledger rows never land without the
+ * matching aggregate.
  */
 /**
  * Fails the batch unless the payment is still in the state the caller read.
@@ -65,8 +83,9 @@ const paymentForOrder = async (orderId: string) => {
  * payment, both succeeded at the provider, and the row ended up cancelled *and*
  * captured — after which a refund cannot find a valid payment to refund.
  *
- * `json('')` is malformed, so evaluating it raises and D1 rolls the whole batch
- * back — the ledger rows never land without the matching aggregate.
+ * The condition goes through `batchGuard`, which makes D1 roll the whole batch
+ * back when it does not hold — the ledger rows never land without the
+ * matching aggregate.
  */
 function preparePaymentStateGuard(args: {
   collectionId: string;
@@ -81,13 +100,13 @@ function preparePaymentStateGuard(args: {
       : sql``;
 
   return sql`
-    SELECT CASE WHEN EXISTS (
+    EXISTS (
       SELECT 1
       FROM payment_collections pc
       JOIN payments p ON p.id = ${args.paymentId}
       WHERE pc.id = ${args.collectionId}
         AND p.canceled_at IS NULL${amountCondition}
-    ) THEN 1 ELSE json('') END AS ok
+    )
   `;
 }
 
@@ -117,7 +136,8 @@ export const orderPaymentDal = {
     const now = new Date().toISOString();
     const captureId = crypto.randomUUID();
     await db.batch([
-      db.run(
+      batchGuard(
+        db,
         preparePaymentStateGuard({
           collectionId: row.collection.id,
           paymentId: row.payment.id,
@@ -155,7 +175,7 @@ export const orderPaymentDal = {
       db.insert(orderTransactions).values({
         id: crypto.randomUUID(),
         orderId,
-        version: 1,
+        version: row.orderVersion,
         amount,
         currencyCode: row.payment.currencyCode,
         reference: "capture",
@@ -196,7 +216,8 @@ export const orderPaymentDal = {
     const now = new Date().toISOString();
     const refundId = crypto.randomUUID();
     await db.batch([
-      db.run(
+      batchGuard(
+        db,
         preparePaymentStateGuard({
           collectionId: row.collection.id,
           paymentId: row.payment.id,
@@ -222,7 +243,7 @@ export const orderPaymentDal = {
       db.insert(orderTransactions).values({
         id: crypto.randomUUID(),
         orderId,
-        version: 1,
+        version: row.orderVersion,
         amount: -amount,
         currencyCode: row.payment.currencyCode,
         reference: "refund",
@@ -254,7 +275,8 @@ export const orderPaymentDal = {
     await db.batch([
       // Re-asserts what the check above read: a capture that landed while the
       // provider was cancelling must not be overwritten by a cancellation.
-      db.run(
+      batchGuard(
+        db,
         preparePaymentStateGuard({
           collectionId: row.collection.id,
           paymentId: row.payment.id,

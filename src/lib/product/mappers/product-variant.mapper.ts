@@ -3,6 +3,7 @@ import {
   productVariantPrices,
   productVariants,
 } from "@/db/product.schema";
+import type { ProductVariantInventoryItemDTO } from "../dto/product-variant.dto";
 import type {
   ProductVariantDTO,
   ProductVariantPriceDTO,
@@ -19,6 +20,9 @@ export type ProductVariantAssetRow = {
   name: string;
   url: string;
 };
+export type ProductVariantInventoryKitRow = ProductVariantInventoryItemDTO & {
+  variantId: string;
+};
 
 export const toProductVariantPriceDTO = (
   row: ProductVariantPriceRow,
@@ -34,6 +38,7 @@ export const toProductVariantDTO = (
   priceRows: ProductVariantPriceRow[] = [],
   optionValueRows: ProductVariantOptionValueRow[] = [],
   assetRows: ProductVariantAssetRow[] = [],
+  inventoryKitRows: ProductVariantInventoryKitRow[] = [],
 ): ProductVariantDTO => ({
   id: row.id,
   productId: row.productId,
@@ -53,6 +58,9 @@ export const toProductVariantDTO = (
     .filter((asset) => asset.variantId === row.id)
     .sort((a, b) => a.rank - b.rank)
     .map((asset) => ({ id: asset.assetId, name: asset.name, url: asset.url })),
+  inventoryKit: inventoryKitRows
+    .filter((item) => item.variantId === row.id)
+    .map(({ variantId: _variantId, ...item }) => item),
   optionValueIds: optionValueRows
     .filter((link) => link.variantId === row.id)
     .map((link) => link.optionValueId),

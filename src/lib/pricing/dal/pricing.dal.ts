@@ -1,9 +1,11 @@
 import { getDb } from "@/db";
+import { customerGroupCustomers, customerGroups } from "@/db/customer.schema";
 import { productVariantPriceSets } from "@/db/link.schema";
 import {
   priceListRules,
   priceLists,
   priceRules,
+  priceSets,
   prices,
 } from "@/db/pricing.schema";
 import { productVariantPrices } from "@/db/product.schema";
@@ -146,12 +148,41 @@ export const pricingDal = {
       db
         .select({ priceSetId: productVariantPriceSets.priceSetId })
         .from(productVariantPriceSets)
+        .innerJoin(
+          priceSets,
+          and(
+            eq(priceSets.id, productVariantPriceSets.priceSetId),
+            isNull(priceSets.deletedAt),
+          ),
+        )
         .where(eq(productVariantPriceSets.variantId, variantId)),
     ]);
+    const customerGroupIds = context.customerId
+      ? await db
+          .select({ id: customerGroupCustomers.customerGroupId })
+          .from(customerGroupCustomers)
+          .innerJoin(
+            customerGroups,
+            and(
+              eq(customerGroups.id, customerGroupCustomers.customerGroupId),
+              isNull(customerGroups.deletedAt),
+            ),
+          )
+          .where(
+            and(
+              eq(customerGroupCustomers.customerId, context.customerId),
+              isNull(customerGroupCustomers.deletedAt),
+            ),
+          )
+          .then((rows) => rows.map((row) => row.id))
+      : [];
     return resolvePriceSets({
       priceSetIds: links.map((link) => link.priceSetId),
       baseAmount: base?.amount ?? null,
-      context,
+      context: {
+        ...context,
+        customerGroupId: customerGroupIds,
+      },
     });
   },
 };

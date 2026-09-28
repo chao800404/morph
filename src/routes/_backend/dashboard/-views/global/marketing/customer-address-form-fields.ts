@@ -1,0 +1,100 @@
+import type { CustomerAddressDTO } from "@/lib/customer/dto/customer.dto";
+import type { FormField } from "@/lib/validations/form";
+
+export const customerAddressFormFields = (
+  values?: CustomerAddressDTO,
+): FormField[] => [
+  {
+    type: "input",
+    name: "addressName",
+    label: "Address name",
+    value: values?.addressName ?? "",
+    placeholder: "Home, Office...",
+    colSpan: 2,
+  },
+  {
+    type: "switch",
+    name: "isDefaultShipping",
+    label: "Default shipping address",
+    value: values?.isDefaultShipping ?? false,
+  },
+  {
+    type: "switch",
+    name: "isDefaultBilling",
+    label: "Default billing address",
+    value: values?.isDefaultBilling ?? false,
+  },
+  {
+    type: "input",
+    name: "firstName",
+    label: "First name",
+    value: values?.firstName ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "lastName",
+    label: "Last name",
+    value: values?.lastName ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "company",
+    label: "Company",
+    value: values?.company ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "address1",
+    label: "Address",
+    value: values?.address1 ?? "",
+    optional: true,
+    colSpan: 2,
+  },
+  {
+    type: "input",
+    name: "address2",
+    label: "Apartment, suite, etc.",
+    value: values?.address2 ?? "",
+    optional: true,
+    colSpan: 2,
+  },
+  {
+    type: "input",
+    name: "city",
+    label: "City",
+    value: values?.city ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "province",
+    label: "State / Province",
+    value: values?.province ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "postalCode",
+    label: "Postal code",
+    value: values?.postalCode ?? "",
+    optional: true,
+  },
+  {
+    type: "input",
+    name: "countryCode",
+    label: "Country code",
+    value: values?.countryCode?.toUpperCase() ?? "",
+    placeholder: "TW",
+    optional: true,
+  },
+  {
+    type: "phone",
+    name: "phone",
+    label: "Phone",
+    value: values?.phone ?? "",
+    optional: true,
+  },
+];

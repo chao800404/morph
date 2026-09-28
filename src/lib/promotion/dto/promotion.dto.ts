@@ -18,6 +18,7 @@ export interface PromotionListDTO {
   limit: number | null;
   used: number;
   methodType: ApplicationMethodType | null;
+  applicationMethodId?: string | null;
   targetType: ApplicationMethodTargetType | null;
   value: number | null;
   currencyCode: string | null;
@@ -41,11 +42,23 @@ export interface PromotionDetailDTO extends PromotionListDTO {
     identifier: string;
     startsAt: string | null;
     endsAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+    budget: {
+      id: string;
+      type: "spend" | "usage" | "use_by_attribute" | "spend_by_attribute";
+      currencyCode: string | null;
+      limit: number | null;
+      used: number;
+      attribute: string | null;
+    } | null;
   } | null;
   createdAt: string;
 }
 
 export interface PromotionRuleDTO {
+  id?: string;
+  description?: string | null;
   attribute: string;
   operator: "gte" | "lte" | "gt" | "lt" | "eq" | "ne" | "in";
   values: string[];

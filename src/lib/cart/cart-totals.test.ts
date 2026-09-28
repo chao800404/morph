@@ -84,6 +84,7 @@ describe("cart totals", () => {
       subtotal: 2_100,
       discountTotal: 200,
       taxTotal: 185,
+      totalBeforeCredits: 2_085,
       total: 0,
     });
   });

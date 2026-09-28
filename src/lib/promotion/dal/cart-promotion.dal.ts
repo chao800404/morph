@@ -6,142 +6,26 @@ import {
   cartShippingMethodAdjustments,
   cartShippingMethods,
 } from "@/db/cart.schema";
+import { shippingOptions } from "@/db/fulfillment.schema";
 import { cartPromotions } from "@/db/link.schema";
 import { chunkForInsert } from "@/lib/product/dal/d1-batch";
 import {
-  promotionApplicationMethodBuyRules,
   promotionApplicationMethods,
-  promotionApplicationMethodTargetRules,
   promotionCampaignBudgets,
   promotionCampaignBudgetUsages,
   promotionCampaigns,
-  promotionPromotionRules,
-  promotionRules,
-  promotionRuleValues,
   promotions,
 } from "@/db/promotion.schema";
 import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 
-import type { PromotionRuleInput } from "../promotion-engine";
-import { evaluatePromotion } from "../promotion-engine";
+import {
+  evaluatePromotion,
+  SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE,
+} from "../promotion-engine";
+import { loadPromotionRules } from "./promotion-rules.dal";
 
 type ApplyPromotionResult =
-  | { success: true }
-  | { success: false; reason: "NOT_FOUND" | "INACTIVE" };
-
-const loadRules = async (promotionIds: string[], methodIds: string[]) => {
-  const db = await getDb();
-  const [promotionLinks, targetLinks, buyLinks] = await Promise.all([
-    promotionIds.length
-      ? db
-          .select()
-          .from(promotionPromotionRules)
-          .where(inArray(promotionPromotionRules.promotionId, promotionIds))
-      : [],
-    methodIds.length
-      ? db
-          .select()
-          .from(promotionApplicationMethodTargetRules)
-          .where(
-            inArray(
-              promotionApplicationMethodTargetRules.applicationMethodId,
-              methodIds,
-            ),
-          )
-      : [],
-    methodIds.length
-      ? db
-          .select()
-          .from(promotionApplicationMethodBuyRules)
-          .where(
-            inArray(
-              promotionApplicationMethodBuyRules.applicationMethodId,
-              methodIds,
-            ),
-          )
-      : [],
-  ]);
-  const ruleIds = [
-    ...new Set([
-      ...promotionLinks.map((link) => link.promotionRuleId),
-      ...targetLinks.map((link) => link.promotionRuleId),
-      ...buyLinks.map((link) => link.promotionRuleId),
-    ]),
-  ];
-  const [ruleRows, valueRows] = await Promise.all([
-    ruleIds.length
-      ? db
-          .select()
-          .from(promotionRules)
-          .where(
-            and(
-              inArray(promotionRules.id, ruleIds),
-              isNull(promotionRules.deletedAt),
-            ),
-          )
-      : [],
-    ruleIds.length
-      ? db
-          .select()
-          .from(promotionRuleValues)
-          .where(
-            and(
-              inArray(promotionRuleValues.promotionRuleId, ruleIds),
-              isNull(promotionRuleValues.deletedAt),
-            ),
-          )
-      : [],
-  ]);
-  const byId = new Map<string, PromotionRuleInput>(
-    ruleRows.map((rule) => [
-      rule.id,
-      {
-        attribute: rule.attribute,
-        operator: rule.operator,
-        values: valueRows
-          .filter((value) => value.promotionRuleId === rule.id)
-          .map((value) => value.value),
-      },
-    ]),
-  );
-  const collect = (ids: string[]) =>
-    ids.flatMap((id) => {
-      const rule = byId.get(id);
-      return rule ? [rule] : [];
-    });
-  return {
-    promotion: new Map(
-      promotionIds.map((id) => [
-        id,
-        collect(
-          promotionLinks
-            .filter((link) => link.promotionId === id)
-            .map((link) => link.promotionRuleId),
-        ),
-      ]),
-    ),
-    target: new Map(
-      methodIds.map((id) => [
-        id,
-        collect(
-          targetLinks
-            .filter((link) => link.applicationMethodId === id)
-            .map((link) => link.promotionRuleId),
-        ),
-      ]),
-    ),
-    buy: new Map(
-      methodIds.map((id) => [
-        id,
-        collect(
-          buyLinks
-            .filter((link) => link.applicationMethodId === id)
-            .map((link) => link.promotionRuleId),
-        ),
-      ]),
-    ),
-  };
-};
+  { success: true } | { success: false; reason: "NOT_FOUND" | "INACTIVE" };
 
 export const cartPromotionDal = {
   async applyCode(cartId: string, code: string): Promise<ApplyPromotionResult> {
@@ -223,6 +107,29 @@ export const cartPromotionDal = {
         .from(cartPromotions)
         .where(eq(cartPromotions.cartId, cartId)),
     ]);
+    const shippingOptionIds = shipping.flatMap((method) =>
+      method.shippingOptionId ? [method.shippingOptionId] : [],
+    );
+    const shippingOptionTypes = shippingOptionIds.length
+      ? await db
+          .select({
+            id: shippingOptions.id,
+            typeId: shippingOptions.shippingOptionTypeId,
+          })
+          .from(shippingOptions)
+          .where(
+            and(
+              inArray(
+                shippingOptions.id,
+                shippingOptionIds,
+              ),
+              isNull(shippingOptions.deletedAt),
+            ),
+          )
+      : [];
+    const shippingTypeByOptionId = new Map(
+      shippingOptionTypes.map((option) => [option.id, option.typeId]),
+    );
     const promotionRows = await db
       .select({
         promotion: promotions,
@@ -321,7 +228,7 @@ export const cartPromotionDal = {
         })
         .onConflictDoNothing();
     }
-    const loaded = await loadRules(
+    const loaded = await loadPromotionRules(
       eligible.map((row) => row.promotion.id),
       eligible.map((row) => row.method.id),
     );
@@ -346,6 +253,10 @@ export const cartPromotionDal = {
       isDiscountable: true,
       attributes: {
         shipping_option_id: method.shippingOptionId,
+        [SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE]:
+          (method.shippingOptionId
+            ? shippingTypeByOptionId.get(method.shippingOptionId)
+            : null) ?? null,
         name: method.name,
       },
     }));

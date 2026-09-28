@@ -67,6 +67,8 @@ export const productOrganizationFields = ({
   categories,
   salesChannelIds,
   salesChannels,
+  shippingProfileId,
+  shippingProfiles,
   discountable,
 }: {
   collectionId: string | null;
@@ -79,6 +81,8 @@ export const productOrganizationFields = ({
   categories: Array<{ id: string; name: string; mpath: string | null }>;
   salesChannelIds: string[];
   salesChannels: Array<{ id: string; name: string }>;
+  shippingProfileId?: string | null;
+  shippingProfiles?: Array<{ id: string; name: string }>;
   discountable?: boolean;
 }): FormField[] => [
   ...(discountable === undefined
@@ -168,4 +172,22 @@ export const productOrganizationFields = ({
     emptyMessage: "No sales channel found.",
     colSpan: 1,
   },
+  ...(shippingProfiles
+    ? [
+        {
+          type: "select" as const,
+          name: "shippingProfileId",
+          label: "Shipping profile",
+          description:
+            "Products with the same profile can use the same shipping options.",
+          value: shippingProfileId ?? "",
+          options: shippingProfiles.map((profile) => ({
+            value: profile.id,
+            label: profile.name,
+          })),
+          required: true,
+          colSpan: 2,
+        },
+      ]
+    : []),
 ];

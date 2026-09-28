@@ -1,11 +1,12 @@
 import { createServerOnlyFn } from "@tanstack/react-start";
-import { defineConfig } from "./lib/config/create-config";
+import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
 import {
   Account,
   Contents,
+  CustomerManagement,
   General,
   Marketing,
   OnlineStore,
@@ -27,7 +28,7 @@ import {
 export const cmsConfig = defineConfig({
   appName: "Morph",
   collections: {
-    global: [Marketing, Contents, OnlineStore],
+    global: [CustomerManagement, Marketing, Contents, OnlineStore],
     settings: [General, Account],
   },
   upload: {
@@ -114,7 +115,7 @@ export const cmsConfig = defineConfig({
   },
 
   // Server-only. Never reaches the browser.
-  server: createServerOnlyFn(() => ({
+  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
     database: {
       connectionString: process.env.DATABASE_URL,
     },

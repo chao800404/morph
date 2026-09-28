@@ -722,16 +722,41 @@ export default function Header({
           </ThemeLink>
         ))}
       </nav>
-      <ThemeLink
-        link={cartLink}
-        className="text-xs text-neutral-600 hover:text-neutral-950"
-      >
-        {cartLabel}
-      </ThemeLink>
+      <div className="flex items-center gap-5 text-xs text-neutral-600">
+        <ThemeLink link={cartLink} className="hover:text-neutral-950">
+          {cartLabel}
+        </ThemeLink>
+        <ThemeLink link={{ href: "/account" }} className="hover:text-neutral-950">
+          Account
+        </ThemeLink>
+      </div>
     </header>
   );
 }
 `;
+
+const HEADER_ACCOUNT_ACTIONS_CURRENT = `      <div className="flex items-center gap-5 text-xs text-neutral-600">
+        <ThemeLink link={cartLink} className="hover:text-neutral-950">
+          {cartLabel}
+        </ThemeLink>
+        <ThemeLink link={{ href: "/account" }} className="hover:text-neutral-950">
+          Account
+        </ThemeLink>
+      </div>`;
+
+const HEADER_CART_ACTION_LEGACY = `      <ThemeLink
+        link={cartLink}
+        className="text-xs text-neutral-600 hover:text-neutral-950"
+      >
+        {cartLabel}
+      </ThemeLink>`;
+
+/** The exact previous Header, before the Starter account route was linked. */
+export const LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE =
+  STARTER_THEME_HEADER_SOURCE.replace(
+    HEADER_ACCOUNT_ACTIONS_CURRENT,
+    HEADER_CART_ACTION_LEGACY,
+  );
 
 /**
  * Header shipped between the first starter and the content-fields rewrite.
@@ -1110,7 +1135,7 @@ export const STARTER_THEME_LEGACY_ANCHORS: ReadonlyArray<{
 ];
 
 function legacyHeaderSource(navBlock: string) {
-  return STARTER_THEME_HEADER_SOURCE.replace(
+  return LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE.replace(
     HEADER_NAV_DEFAULTS_CURRENT,
     HEADER_NAV_DEFAULTS_IDLESS,
   ).replace(HEADER_NAV_BLOCK_CURRENT, navBlock);
@@ -2102,6 +2127,1005 @@ function HomeRoute() {
 }
 `;
 
+export const STARTER_THEME_ORDER_TRANSFER_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+
+export const Route = createFileRoute("/order-transfer")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    order_id:
+      typeof search.order_id === "string" &&
+      /^[A-Za-z0-9_-]{1,128}$/.test(search.order_id)
+        ? search.order_id
+        : undefined,
+  }),
+  head: () => ({
+    meta: [{ name: "referrer", content: "no-referrer" }],
+  }),
+  component: OrderTransferRoute,
+});
+
+function OrderTransferRoute() {
+  const search = Route.useSearch();
+  const [orderId, setOrderId] = useState(search.order_id ?? "");
+  const [token, setToken] = useState("");
+  const [pendingAction, setPendingAction] = useState<"accept" | "decline" | null>(null);
+  const [outcome, setOutcome] = useState<"accepted" | "declined" | null>(null);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setOrderId(search.order_id ?? "");
+    const suppliedToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+    setToken(suppliedToken ?? "");
+    if (window.location.hash) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
+  }, [search.order_id]);
+
+  async function confirmTransfer(action: "accept" | "decline") {
+    const reference = orderId.trim();
+    const code = token.trim();
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(reference)) {
+      setMessage("請輸入有效的訂單參考編號。");
+      return;
+    }
+    if (!/^[0-9a-f]{64}$/i.test(code)) {
+      setMessage("請輸入信件中的 64 位確認碼。");
+      return;
+    }
+
+    setPendingAction(action);
+    setMessage("");
+    try {
+      const response = await fetch(
+        "/api/store/orders/" + encodeURIComponent(reference) + "/transfer/" + action,
+        {
+          method: "POST",
+          headers: { accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify({ token: code }),
+          credentials: "omit",
+          redirect: "error",
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error =
+          payload && typeof payload === "object" && "error" in payload
+            ? payload.error
+            : null;
+        throw new Error(
+          error === "ORDER_TRANSFER_UNAVAILABLE"
+            ? "確認碼無效、已過期，或這筆訂單已處理。"
+            : "目前無法確認訂單轉移，請稍後再試。",
+        );
+      }
+      setOutcome(action === "accept" ? "accepted" : "declined");
+      setToken("");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "目前無法確認訂單轉移，請稍後再試。",
+      );
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-stone-50 px-5 py-16 text-stone-950 sm:px-8 sm:py-24">
+      <section className="mx-auto max-w-xl border-t border-stone-300 pt-7">
+        <p className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500">
+          Customer account
+        </p>
+        <h1 className="mt-5 font-serif text-4xl tracking-[-0.04em] sm:text-5xl">
+          訂單轉移確認
+        </h1>
+        <p className="mt-5 max-w-lg text-sm leading-7 text-stone-600">
+          請確認是否將這筆訪客訂單移至已驗證的會員帳戶。確認碼只會使用一次，且 30 分鐘後失效。
+        </p>
+
+        {outcome ? (
+          <p className="mt-8 rounded-md border border-stone-300 bg-white p-5 text-sm leading-7" role="status">
+            {outcome === "accepted"
+              ? "訂單已轉移至會員帳戶。"
+              : "已拒絕這筆訂單轉移；訂單仍維持原狀。"}
+          </p>
+        ) : (
+          <div className="mt-8 space-y-6">
+            <div>
+              <label htmlFor="order-reference" className="block text-sm font-medium">
+                訂單參考編號
+              </label>
+              <input
+                id="order-reference"
+                autoComplete="off"
+                maxLength={128}
+                value={orderId}
+                onChange={(event) => setOrderId(event.currentTarget.value)}
+                className="mt-2 w-full rounded-md border border-stone-300 bg-white px-3 py-3 text-sm outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-900/15"
+              />
+            </div>
+            <div>
+              <label htmlFor="transfer-code" className="block text-sm font-medium">
+                電子郵件確認碼
+              </label>
+              <input
+                id="transfer-code"
+                autoComplete="one-time-code"
+                inputMode="text"
+                maxLength={64}
+                value={token}
+                onChange={(event) => setToken(event.currentTarget.value)}
+                className="mt-2 w-full rounded-md border border-stone-300 bg-white px-3 py-3 font-mono text-sm tracking-[0.12em] outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-900/15"
+              />
+              <p className="mt-2 text-xs leading-5 text-stone-500">
+                若確認碼未自動帶入，請複製信件中的 64 位英數碼。
+              </p>
+            </div>
+            {message ? (
+              <p className="text-sm leading-6 text-red-700" role="alert">
+                {message}
+              </p>
+            ) : null}
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                disabled={pendingAction !== null}
+                onClick={() => void confirmTransfer("accept")}
+                className="inline-flex min-h-11 flex-1 items-center justify-center rounded-md bg-stone-900 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                {pendingAction === "accept" ? "確認中…" : "確認並轉移訂單"}
+              </button>
+              <button
+                type="button"
+                disabled={pendingAction !== null}
+                onClick={() => void confirmTransfer("decline")}
+                className="inline-flex min-h-11 flex-1 items-center justify-center rounded-md border border-stone-300 bg-white px-5 py-3 text-sm font-medium text-stone-800 transition-colors hover:border-stone-500 disabled:cursor-wait disabled:opacity-60"
+              >
+                {pendingAction === "decline" ? "處理中…" : "拒絕轉移"}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+`;
+
+export const STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import type { FormEvent } from "react";
+import { useEffect, useState } from "react";
+
+export const Route = createFileRoute("/account")({
+  component: CustomerAccountRoute,
+});
+
+type AccountUser = { id: string; name: string; email: string; emailVerified: boolean };
+type Address = {
+  id: string;
+  addressName: string | null;
+  isDefaultShipping: boolean;
+  isDefaultBilling: boolean;
+  company: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  countryCode: string | null;
+  province: string | null;
+  postalCode: string | null;
+  phone: string | null;
+};
+type Profile = {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  companyName: string | null;
+  phone: string | null;
+  addresses: Address[];
+};
+type Order = {
+  id: string;
+  displayId: number;
+  status: string;
+  currencyCode: string;
+  total: number;
+  createdAt: string;
+};
+type OrderDetail = {
+  order: Order;
+  items: Array<{ id: string; title: string; quantity: number; fulfilledQuantity: number; unitPrice: number }>;
+};
+type AccountOrderEdit = {
+  id: string;
+  order_id: string;
+  status: string | null;
+  requested_at: string | null;
+  actions: Array<{
+    id: string;
+    action: string;
+    ordering: number;
+    details: {
+      email?: string;
+      no_notification?: boolean;
+      title?: string;
+      previous_quantity?: number;
+      quantity?: number;
+      previous_order_total?: number;
+      proposed_order_total?: number;
+      removed?: boolean;
+    };
+    applied: boolean;
+  }>;
+};
+type ReturnableItem = { id: string; title: string; sku: string | null; returnableQuantity: number };
+type AccountReturn = {
+  id: string;
+  displayId: number;
+  status: "open" | "requested" | "received" | "partially_received" | "canceled";
+  claimId: string | null;
+  exchangeId: string | null;
+  requestedAt: string | null;
+  items: Array<{ id: string; title: string; quantity: number; receivedQuantity: number }>;
+};
+type AccountClaim = {
+  id: string;
+  displayId: number;
+  type: "refund" | "replace";
+  returnId: string | null;
+  createdAt: string;
+  canceledAt: string | null;
+  items: Array<{
+    id: string;
+    title: string;
+    sku: string | null;
+    quantity: number;
+    reason: "missing_item" | "wrong_item" | "production_failure" | "other" | null;
+    isAdditionalItem: boolean;
+  }>;
+};
+type AccountExchange = {
+  id: string;
+  displayId: number;
+  returnId: string | null;
+  createdAt: string;
+  canceledAt: string | null;
+  returnStatus: AccountReturn["status"] | null;
+  inboundItems: Array<{
+    id: string;
+    title: string;
+    sku: string | null;
+    quantity: number;
+    receivedQuantity: number;
+  }>;
+  items: Array<{
+    id: string;
+    title: string;
+    sku: string | null;
+    quantity: number;
+  }>;
+};
+type StoreCreditAccount = {
+  id: string;
+  currency_code: string;
+  balance: number;
+  total_credits: number;
+  total_debits: number;
+  created_at: string;
+};
+type StoreCreditTransaction = {
+  id: string;
+  type: "credit" | "debit";
+  amount: number;
+  reference: string | null;
+  note: string | null;
+  created_at: string;
+};
+type AddressDraft = {
+  addressName: string;
+  firstName: string;
+  lastName: string;
+  company: string;
+  address1: string;
+  address2: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  countryCode: string;
+  phone: string;
+  isDefaultShipping: boolean;
+  isDefaultBilling: boolean;
+};
+
+const emptyAddress: AddressDraft = {
+  addressName: "", firstName: "", lastName: "", company: "", address1: "",
+  address2: "", city: "", province: "", postalCode: "", countryCode: "tw",
+  phone: "", isDefaultShipping: false, isDefaultBilling: false,
+};
+
+async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    redirect: "error",
+    headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string"
+      ? payload.message
+      : "目前無法完成此操作，請稍後再試。";
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
+function money(amount: number, currency: string) {
+  try {
+    const formatter = new Intl.NumberFormat("zh-TW", { style: "currency", currency });
+    const fractionDigits = formatter.resolvedOptions().maximumFractionDigits;
+    return formatter.format(amount / 10 ** fractionDigits);
+  } catch {
+    return currency + " " + amount;
+  }
+}
+
+function majorMoney(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("zh-TW", { style: "currency", currency }).format(amount);
+  } catch {
+    return currency + " " + amount;
+  }
+}
+
+function returnStatusLabel(status: AccountReturn["status"]) {
+  return {
+    open: "已建立",
+    requested: "等待商店確認",
+    received: "已收件",
+    partially_received: "部分收件",
+    canceled: "已取消",
+  }[status];
+}
+
+function CustomerAccountRoute() {
+  const [user, setUser] = useState<AccountUser | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [count, setCount] = useState(0);
+  const [addresses, setAddresses] = useState<Address[]>([]);
+  const [storeCreditAccounts, setStoreCreditAccounts] = useState<StoreCreditAccount[]>([]);
+  const [selectedCreditAccountId, setSelectedCreditAccountId] = useState<string | null>(null);
+  const [creditTransactions, setCreditTransactions] = useState<StoreCreditTransaction[]>([]);
+  const [creditTransactionCount, setCreditTransactionCount] = useState(0);
+  const [creditCode, setCreditCode] = useState("");
+  const [storeCreditLoadError, setStoreCreditLoadError] = useState("");
+  const [view, setView] = useState<"profile" | "orders" | "addresses" | "store-credit">("profile");
+  const [authMode, setAuthMode] = useState<"signin" | "signup" | "verify" | "reset">("signin");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [selectedAddress, setSelectedAddress] = useState<string | null>(null);
+  const [addressDraft, setAddressDraft] = useState<AddressDraft>(emptyAddress);
+  const [selectedOrder, setSelectedOrder] = useState<OrderDetail | null>(null);
+  const [orderEdit, setOrderEdit] = useState<AccountOrderEdit | null>(null);
+  const [orderReturns, setOrderReturns] = useState<AccountReturn[]>([]);
+  const [orderClaims, setOrderClaims] = useState<AccountClaim[]>([]);
+  const [orderExchanges, setOrderExchanges] = useState<AccountExchange[]>([]);
+  const [returnableItems, setReturnableItems] = useState<ReturnableItem[]>([]);
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({});
+
+  async function loadAccount() {
+    const session = await api<{ user?: AccountUser | null } | null>("/api/auth/get-session");
+    const nextUser = session?.user;
+    if (!nextUser?.emailVerified) {
+      setUser(null);
+      setProfile(null);
+      setOrders([]);
+      setAddresses([]);
+      setOrderReturns([]);
+      setOrderClaims([]);
+      setOrderExchanges([]);
+      setOrderEdit(null);
+      setStoreCreditAccounts([]);
+      setSelectedCreditAccountId(null);
+      setCreditTransactions([]);
+      setCreditTransactionCount(0);
+      setStoreCreditLoadError("");
+      return;
+    }
+    setUser(nextUser);
+    setStoreCreditLoadError("");
+    const [profileResult, orderPage, addressPage, creditPage] = await Promise.all([
+      api<{ customer: Profile }>("/api/store/customers/me"),
+      api<{ orders: Order[]; count: number }>("/api/store/customers/me/orders?limit=20&offset=0"),
+      api<{ addresses: Address[] }>("/api/store/customers/me/addresses?limit=100&offset=0"),
+      api<{ store_credit_accounts: StoreCreditAccount[] }>("/api/store/customers/me/store-credit-accounts").catch(() => null),
+    ]);
+    setProfile(profileResult.customer);
+    setOrders(orderPage.orders);
+    setCount(orderPage.count);
+    setAddresses(addressPage.addresses);
+    setStoreCreditAccounts(creditPage?.store_credit_accounts ?? []);
+    setStoreCreditLoadError(
+      creditPage ? "" : "儲值金目前無法載入，請稍後重試。",
+    );
+  }
+
+  async function loadMoreOrders() {
+    const nextOffset = orders.length;
+    setBusy(true);
+    try {
+      const page = await api<{ orders: Order[]; count: number }>(
+        "/api/store/customers/me/orders?limit=20&offset=" + nextOffset,
+      );
+      setOrders((current) => [...current, ...page.orders]);
+      setCount(page.count);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法載入更多訂單。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function claimStoreCredit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api<{
+        store_credit_account: StoreCreditAccount;
+      }>("/api/store/store-credit-accounts/claim", "POST", {
+        code: creditCode.trim(),
+      });
+      setStoreCreditAccounts((current) => [
+        ...current.filter(
+          (account) => account.id !== result.store_credit_account.id,
+        ),
+        result.store_credit_account,
+      ]);
+      setStoreCreditLoadError("");
+      setCreditCode("");
+      setSelectedCreditAccountId(null);
+      setCreditTransactions([]);
+      setCreditTransactionCount(0);
+      setMessage("儲值金已加入帳戶。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法兌領儲值金，請確認兌領碼後再試。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openStoreCreditAccount(accountId: string) {
+    setSelectedCreditAccountId(accountId);
+    setCreditTransactions([]);
+    setCreditTransactionCount(0);
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await api<{
+        transactions: StoreCreditTransaction[];
+        count: number;
+      }>(
+        "/api/store/customers/me/store-credit-accounts/" +
+          encodeURIComponent(accountId) +
+          "/transactions?limit=20&offset=0",
+      );
+      setCreditTransactions(result.transactions);
+      setCreditTransactionCount(result.count);
+    } catch (error) {
+      setCreditTransactions([]);
+      setMessage(error instanceof Error ? error.message : "無法載入儲值金交易紀錄。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadMoreCreditTransactions() {
+    if (!selectedCreditAccountId || creditTransactions.length >= creditTransactionCount) return;
+    setBusy(true);
+    try {
+      const result = await api<{
+        transactions: StoreCreditTransaction[];
+        count: number;
+      }>(
+        "/api/store/customers/me/store-credit-accounts/" +
+          encodeURIComponent(selectedCreditAccountId) +
+          "/transactions?limit=20&offset=" +
+          creditTransactions.length,
+      );
+      setCreditTransactions((current) => [...current, ...result.transactions]);
+      setCreditTransactionCount(result.count);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法載入更多儲值金交易紀錄。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAccount().catch(() => setUser(null));
+  }, []);
+
+  async function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    try {
+      if (authMode === "signup") {
+        await api("/api/auth/sign-up/email", "POST", { name: name.trim(), email: email.trim(), password });
+        await api("/api/auth/email-otp/send-verification-otp", "POST", { email: email.trim(), type: "email-verification" });
+        setAuthMode("verify");
+        setMessage("帳戶已建立，請輸入寄到電子郵件的驗證碼。");
+      } else if (authMode === "reset") {
+        await api("/api/auth/email-otp/reset-password", "POST", {
+          email: email.trim(),
+          otp: otp.trim(),
+          password,
+        });
+        setPassword("");
+        setOtp("");
+        setAuthMode("signin");
+        setMessage("密碼已更新，請使用新密碼登入。");
+      } else if (authMode === "verify") {
+        await api("/api/auth/email-otp/verify-email", "POST", { email: email.trim(), otp: otp.trim() });
+        await api("/api/auth/sign-in/email", "POST", { email: email.trim(), password });
+        await loadAccount();
+        setMessage("電子郵件已驗證，歡迎回來。");
+      } else {
+        await api("/api/auth/sign-in/email", "POST", { email: email.trim(), password });
+        await loadAccount();
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "登入失敗，請檢查資料後再試。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendVerificationCode() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await api("/api/auth/email-otp/send-verification-otp", "POST", { email: email.trim(), type: "email-verification" });
+      setAuthMode("verify");
+      setMessage("驗證碼已寄出，請查看電子郵件。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "目前無法寄送驗證碼。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendPasswordResetCode() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await api("/api/auth/email-otp/send-verification-otp", "POST", {
+        email: email.trim(),
+        type: "forget-password",
+      });
+      setAuthMode("reset");
+      setMessage("密碼重設驗證碼已寄出，請查看電子郵件。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "目前無法寄送密碼重設驗證碼。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    setBusy(true);
+    try {
+      await api("/api/auth/sign-out", "POST", {});
+      setUser(null);
+      setProfile(null);
+      setOrders([]);
+      setAddresses([]);
+      setOrderReturns([]);
+      setOrderClaims([]);
+      setOrderExchanges([]);
+      setOrderEdit(null);
+      setStoreCreditAccounts([]);
+      setSelectedCreditAccountId(null);
+      setCreditTransactions([]);
+      setCreditTransactionCount(0);
+      setCreditCode("");
+      setStoreCreditLoadError("");
+      setSelectedOrder(null);
+      setMessage("你已安全登出。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "目前無法登出。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!profile) return;
+    setBusy(true);
+    try {
+      const result = await api<{ customer: Profile }>("/api/store/customers/me", "PATCH", {
+        firstName: profile.firstName ?? "", lastName: profile.lastName ?? "",
+        companyName: profile.companyName ?? "", phone: profile.phone ?? "",
+      });
+      setProfile(result.customer);
+      setMessage("個人資料已更新。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法儲存個人資料。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openOrder(orderId: string) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const orderPath = "/api/store/customers/me/orders/" + encodeURIComponent(orderId);
+      const [result, returnPage, claimsResult, exchangesResult, editResult] = await Promise.all([
+        api<OrderDetail>(orderPath),
+        api<{ returns: AccountReturn[] }>(orderPath + "/returns?limit=20&offset=0"),
+        api<{ claims: AccountClaim[] }>(orderPath + "/claims"),
+        api<{ exchanges: AccountExchange[] }>(orderPath + "/exchanges"),
+        api<{ order_edit: AccountOrderEdit | null }>(orderPath + "/edits"),
+      ]);
+      setSelectedOrder(result);
+      setOrderEdit(editResult.order_edit);
+      setOrderReturns(returnPage.returns);
+      setOrderClaims(claimsResult.claims);
+      setOrderExchanges(exchangesResult.exchanges);
+      setReturnableItems([]);
+      setReturnQuantities({});
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法載入訂單。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function respondToOrderEdit(action: "confirm" | "decline") {
+    if (!selectedOrder || !orderEdit) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const orderPath = "/api/store/customers/me/orders/" + encodeURIComponent(selectedOrder.order.id);
+      await api<{ order_edit: AccountOrderEdit }>(
+        orderPath + "/edits/" + encodeURIComponent(orderEdit.id) + "/" + action,
+        "POST",
+        {},
+      );
+      setOrderEdit(null);
+      if (action === "confirm") {
+        try {
+          const refreshedOrder = await api<OrderDetail>(orderPath);
+          setSelectedOrder(refreshedOrder);
+        } catch {
+          setMessage("你已接受訂單變更，但訂單資料暫時無法重新載入。");
+          return;
+        }
+        setMessage("你已接受商店提出的訂單變更。");
+      } else {
+        setMessage("你已拒絕商店提出的訂單變更。");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "目前無法回覆訂單變更，請稍後再試。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startReturn() {
+    if (!selectedOrder) return;
+    setBusy(true);
+    try {
+      const result = await api<{ items: ReturnableItem[] }>(
+        "/api/store/customers/me/orders/" + encodeURIComponent(selectedOrder.order.id) + "/returnable-items",
+      );
+      setReturnableItems(result.items);
+      setReturnQuantities(Object.fromEntries(result.items.map((item) => [item.id, 0])));
+      if (!result.items.length) setMessage("這筆訂單目前沒有可申請退貨的品項。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法載入可退貨品項。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitReturn() {
+    if (!selectedOrder) return;
+    const items = returnableItems
+      .filter((item) => (returnQuantities[item.id] ?? 0) > 0)
+      .map((item) => ({ itemId: item.id, quantity: returnQuantities[item.id] }));
+    if (!items.length) {
+      setMessage("請先選擇要退貨的品項數量。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const returnPath =
+        "/api/store/customers/me/orders/" + encodeURIComponent(selectedOrder.order.id) + "/returns";
+      await api(
+        returnPath,
+        "POST",
+        { items },
+      );
+      const returnPage = await api<{ returns: AccountReturn[] }>(returnPath + "?limit=20&offset=0");
+      setOrderReturns(returnPage.returns);
+      setReturnableItems([]);
+      setMessage("退貨申請已送出，商店會再與你聯絡。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法送出退貨申請。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelReturn(returnRequest: AccountReturn) {
+    if (!selectedOrder || !window.confirm("確定撤回這筆尚未完成的退貨申請嗎？已收件的數量會保留。")) return;
+    setBusy(true);
+    try {
+      const returnPath =
+        "/api/store/customers/me/orders/" + encodeURIComponent(selectedOrder.order.id) + "/returns";
+      await api(
+        returnPath + "/" + encodeURIComponent(returnRequest.id),
+        "DELETE",
+      );
+      const returnPage = await api<{ returns: AccountReturn[] }>(returnPath + "?limit=20&offset=0");
+      setOrderReturns(returnPage.returns);
+      setMessage("退貨申請已撤回。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法撤回退貨申請。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAddress(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const path = "/api/store/customers/me/addresses" + (selectedAddress ? "/" + encodeURIComponent(selectedAddress) : "");
+      await api(path, selectedAddress ? "PATCH" : "POST", addressDraft);
+      const result = await api<{ addresses: Address[] }>("/api/store/customers/me/addresses?limit=100&offset=0");
+      setAddresses(result.addresses);
+      setSelectedAddress(null);
+      setAddressDraft(emptyAddress);
+      setMessage("地址已儲存。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法儲存地址。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function editAddress(address: Address) {
+    setSelectedAddress(address.id);
+    setAddressDraft({
+      addressName: address.addressName ?? "", firstName: address.firstName ?? "",
+      lastName: address.lastName ?? "", company: address.company ?? "",
+      address1: address.address1 ?? "", address2: address.address2 ?? "",
+      city: address.city ?? "", province: address.province ?? "",
+      postalCode: address.postalCode ?? "", countryCode: address.countryCode ?? "tw",
+      phone: address.phone ?? "", isDefaultShipping: address.isDefaultShipping,
+      isDefaultBilling: address.isDefaultBilling,
+    });
+  }
+
+  async function deleteAddress(id: string) {
+    setBusy(true);
+    try {
+      await api("/api/store/customers/me/addresses/" + encodeURIComponent(id), "DELETE");
+      setAddresses((current) => current.filter((address) => address.id !== id));
+      setMessage("地址已刪除。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "無法刪除地址。 ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const textInput = (key: Exclude<keyof AddressDraft, "isDefaultShipping" | "isDefaultBilling">, label: string, required = false) => (
+    <label className="block text-sm">
+      <span className="mb-2 block font-medium">{label}</span>
+      <input
+        required={required}
+        maxLength={key === "address1" || key === "address2" ? 300 : key === "countryCode" ? 2 : key === "phone" ? 50 : 150}
+        value={addressDraft[key]}
+        onChange={(event) => {
+          const value = event.currentTarget.value;
+          setAddressDraft((current) => ({ ...current, [key]: value }));
+        }}
+        className="w-full rounded-md border border-stone-300 bg-white px-3 py-3 outline-none focus:border-stone-900"
+      />
+    </label>
+  );
+
+  return (
+    <main className="min-h-screen bg-stone-50 px-5 py-14 text-stone-950 sm:px-8 sm:py-20">
+      <section className="mx-auto max-w-5xl">
+        <div className="flex flex-col justify-between gap-5 border-b border-stone-300 pb-7 sm:flex-row sm:items-end">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-stone-500">Customer account</p>
+            <h1 className="mt-4 font-serif text-4xl tracking-[-0.04em] sm:text-5xl">會員帳戶</h1>
+            <p className="mt-3 text-sm leading-6 text-stone-600">管理個人資料、收件地址與訂單。</p>
+          </div>
+          {user ? <button type="button" onClick={() => void signOut()} disabled={busy} className="self-start border-b border-stone-400 pb-1 text-sm hover:border-stone-900 sm:self-auto">登出</button> : null}
+        </div>
+
+        {message ? <p className="mt-6 rounded-md border border-stone-300 bg-white px-4 py-3 text-sm leading-6" role="status">{message}</p> : null}
+
+        {!user ? (
+          <div className="mx-auto mt-10 max-w-xl border border-stone-200 bg-white p-6 sm:p-9">
+            <div className="flex gap-6 border-b border-stone-200">
+              {(["signin", "signup"] as const).map((mode) => (
+                <button key={mode} type="button" onClick={() => { setAuthMode(mode); setMessage(""); }} className={"pb-3 text-sm " + (authMode === mode ? "border-b-2 border-stone-900 font-medium" : "text-stone-500")}>
+                  {mode === "signin" ? "登入" : "建立帳戶"}
+                </button>
+              ))}
+              {authMode === "verify" ? <span className="border-b-2 border-stone-900 pb-3 text-sm font-medium">電子郵件驗證</span> : null}
+              {authMode === "reset" ? <span className="border-b-2 border-stone-900 pb-3 text-sm font-medium">重設密碼</span> : null}
+            </div>
+            <form onSubmit={(event) => void submitAuth(event)} className="mt-7 space-y-5">
+              {authMode === "signup" ? <label className="block text-sm font-medium">姓名<input required maxLength={100} autoComplete="name" value={name} onChange={(event) => setName(event.currentTarget.value)} className="mt-2 w-full rounded-md border border-stone-300 px-3 py-3 font-normal outline-none focus:border-stone-900" /></label> : null}
+              <label className="block text-sm font-medium">電子郵件<input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} className="mt-2 w-full rounded-md border border-stone-300 px-3 py-3 font-normal outline-none focus:border-stone-900" /></label>
+              {authMode === "verify" || authMode === "reset" ? <label className="block text-sm font-medium">{authMode === "reset" ? "密碼重設驗證碼" : "電子郵件驗證碼"}<input required inputMode="numeric" autoComplete="one-time-code" maxLength={8} value={otp} onChange={(event) => setOtp(event.currentTarget.value)} className="mt-2 w-full rounded-md border border-stone-300 px-3 py-3 font-mono font-normal tracking-[0.2em] outline-none focus:border-stone-900" /></label> : null}
+              {authMode !== "verify" ? <label className="block text-sm font-medium">{authMode === "reset" ? "新密碼" : "密碼"}<input required type="password" minLength={8} autoComplete={authMode === "signin" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.currentTarget.value)} className="mt-2 w-full rounded-md border border-stone-300 px-3 py-3 font-normal outline-none focus:border-stone-900" /></label> : null}
+              <button type="submit" disabled={busy} className="w-full rounded-md bg-stone-900 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-stone-800 disabled:opacity-60">{busy ? "處理中…" : authMode === "signup" ? "建立帳戶並寄送驗證碼" : authMode === "verify" ? "驗證並登入" : authMode === "reset" ? "更新密碼" : "登入會員帳戶"}</button>
+            </form>
+            {authMode === "signin" ? <button type="button" disabled={busy || !email.trim()} onClick={() => void sendPasswordResetCode()} className="mt-4 text-sm text-stone-600 underline underline-offset-4 disabled:opacity-50">忘記密碼？</button> : null}
+            {authMode === "verify" ? <button type="button" disabled={busy || !email.trim()} onClick={() => void sendVerificationCode()} className="mt-4 text-sm text-stone-600 underline underline-offset-4 disabled:opacity-50">重新寄送驗證碼</button> : null}
+            {authMode === "reset" ? <button type="button" onClick={() => { setAuthMode("signin"); setMessage(""); }} className="mt-4 text-sm text-stone-600 underline underline-offset-4">返回登入</button> : null}
+          </div>
+        ) : (
+          <div className="mt-9 grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)]">
+            <aside className="space-y-2" aria-label="帳戶導覽">
+              {(["profile", "orders", "addresses", "store-credit"] as const).map((item) => (
+                <button key={item} type="button" onClick={() => { setView(item); setSelectedOrder(null); setMessage(""); }} className={"block w-full rounded-md px-4 py-3 text-left text-sm " + (view === item ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-200")}>
+                  {item === "profile" ? "個人資料" : item === "orders" ? "訂單紀錄" : item === "addresses" ? "收件地址" : "儲值金"}
+                </button>
+              ))}
+            </aside>
+
+            <div className="min-w-0">
+              {view === "profile" && profile ? (
+                <form onSubmit={(event) => void saveProfile(event)} className="max-w-2xl space-y-5">
+                  <div><h2 className="font-serif text-2xl">個人資料</h2><p className="mt-2 text-sm text-stone-600">登入電子郵件：{profile.email}</p></div>
+                  {[ ["firstName", "名字"], ["lastName", "姓氏"], ["companyName", "公司名稱"], ["phone", "電話"] ].map(([key, label]) => (
+                    <label key={key} className="block text-sm font-medium">{label}<input value={(profile[key as keyof Profile] as string | null) ?? ""} onChange={(event) => { const value = event.currentTarget.value; setProfile((current) => current ? { ...current, [key]: value } : current); }} className="mt-2 w-full rounded-md border border-stone-300 bg-white px-3 py-3 font-normal outline-none focus:border-stone-900" /></label>
+                  ))}
+                  <button disabled={busy} className="rounded-md bg-stone-900 px-5 py-3 text-sm font-medium text-white disabled:opacity-60">儲存資料</button>
+                </form>
+              ) : null}
+
+              {view === "orders" ? (
+                <div>
+                  <div className="flex items-end justify-between gap-4"><div><h2 className="font-serif text-2xl">訂單紀錄</h2><p className="mt-2 text-sm text-stone-600">共 {count} 筆訂單</p></div>{selectedOrder ? <button type="button" onClick={() => setSelectedOrder(null)} className="text-sm underline underline-offset-4">返回訂單列表</button> : null}</div>
+                  {selectedOrder ? (
+                    <div className="mt-6 border-t border-stone-300">
+                      <div className="flex flex-wrap justify-between gap-3 border-b border-stone-200 py-4 text-sm"><span>訂單 #{selectedOrder.order.displayId}</span><span>{new Date(selectedOrder.order.createdAt).toLocaleDateString("zh-TW")}</span><span>{money(selectedOrder.order.total, selectedOrder.order.currencyCode)}</span></div>
+                      {orderEdit ? <section className="mt-5 border border-amber-300 bg-amber-50 p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-serif text-xl">商店提出訂單變更</h3><p className="mt-2 text-sm leading-6 text-stone-700">請確認下方變更內容，再選擇接受或拒絕。</p></div><span className="text-xs text-stone-500">{orderEdit.requested_at ? new Date(orderEdit.requested_at).toLocaleDateString("zh-TW") : "等待你的回覆"}</span></div><div className="mt-4 space-y-2 border-t border-amber-200 pt-4 text-sm">{orderEdit.actions.map((action) => <div key={action.id}>{typeof action.details.email === "string" ? <p>訂單聯絡信箱：{action.details.email}</p> : null}{typeof action.details.no_notification === "boolean" ? <p>{action.details.no_notification ? "商店不會寄送訂單更新通知。" : "商店會寄送訂單更新通知。"}</p> : null}{action.action === "ITEM_UPDATE" && action.details.title && action.details.previous_quantity !== undefined && action.details.quantity !== undefined ? <p>商品數量調整：{action.details.title} · {action.details.previous_quantity} 件 → {action.details.quantity} 件</p> : null}{action.action === "ITEM_REMOVE" && action.details.title ? <p>移除商品：{action.details.title} · 原數量 {action.details.previous_quantity ?? "—"} 件</p> : null}{action.details.previous_order_total !== undefined && action.details.proposed_order_total !== undefined ? <p className="font-medium">訂單總額：{money(action.details.previous_order_total, selectedOrder.order.currencyCode)} → {money(action.details.proposed_order_total, selectedOrder.order.currencyCode)}</p> : null}</div>)}</div><div className="mt-5 flex flex-wrap gap-3"><button type="button" disabled={busy} onClick={() => void respondToOrderEdit("confirm")} className="rounded-md bg-stone-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-50">接受變更</button><button type="button" disabled={busy} onClick={() => void respondToOrderEdit("decline")} className="rounded-md border border-stone-400 px-4 py-2.5 text-sm hover:border-stone-900 disabled:opacity-50">拒絕變更</button></div></section> : null}
+                      {selectedOrder.items.map((item) => <div key={item.id} className="flex justify-between gap-4 border-b border-stone-200 py-4 text-sm"><span>{item.title} × {item.quantity}</span><span>{money(item.unitPrice * item.quantity, selectedOrder.order.currencyCode)}</span></div>)}
+                      {orderReturns.length ? <section className="mt-6 border-t border-stone-200 pt-5"><h3 className="font-serif text-xl">退貨進度</h3><div className="mt-3 divide-y divide-stone-200">{orderReturns.map((returnRequest) => <article key={returnRequest.id} className="py-4"><div className="flex flex-wrap justify-between gap-3 text-sm"><span>退貨 #{returnRequest.displayId}</span><span>{returnStatusLabel(returnRequest.status)}</span></div><p className="mt-2 text-xs text-stone-500">{returnRequest.requestedAt ? new Date(returnRequest.requestedAt).toLocaleDateString("zh-TW") : "等待商店確認日期"}</p><ul className="mt-2 space-y-1 text-sm text-stone-600">{returnRequest.items.map((item) => <li key={item.id}>{item.title} · 申請 {item.quantity} 件，已收 {item.receivedQuantity} 件</li>)}</ul>{(returnRequest.status === "requested" || returnRequest.status === "partially_received") && !returnRequest.claimId && !returnRequest.exchangeId ? <button type="button" disabled={busy} onClick={() => void cancelReturn(returnRequest)} className="mt-3 rounded-md border border-stone-400 px-3 py-2 text-xs hover:border-stone-900 disabled:opacity-50">撤回退貨申請</button> : null}</article>)}</div></section> : null}
+                      {orderClaims.length ? <section className="mt-6 border-t border-stone-200 pt-5"><h3 className="font-serif text-xl">退款與補寄處理</h3><div className="mt-3 divide-y divide-stone-200">{orderClaims.map((claim) => { const linkedReturn = orderReturns.find((returnRequest) => returnRequest.id === claim.returnId); return <article key={claim.id} className="py-4"><div className="flex flex-wrap justify-between gap-3 text-sm"><span>{claim.type === "refund" ? "退款申請" : "商品補寄申請"} #{claim.displayId}</span><span>{claim.canceledAt ? "已取消" : linkedReturn ? returnStatusLabel(linkedReturn.status) : "已記錄"}</span></div><p className="mt-2 text-xs text-stone-500">{new Date(claim.createdAt).toLocaleDateString("zh-TW")}</p><ul className="mt-2 space-y-1 text-sm text-stone-600">{claim.items.map((item) => <li key={item.id}>{item.isAdditionalItem ? "補寄：" : ""}{item.title} × {item.quantity}{item.reason ? " · " + ({ missing_item: "缺少品項", wrong_item: "品項錯誤", production_failure: "商品瑕疵", other: "其他" }[item.reason] ?? "") : ""}</li>)}</ul>{claim.type === "refund" && !claim.canceledAt ? <p className="mt-2 text-xs leading-5 text-stone-500">退款申請已記錄；商店會通知後續處理狀態。</p> : null}</article>; })}</div></section> : null}
+                      {orderExchanges.length ? <section className="mt-6 border-t border-stone-200 pt-5"><h3 className="font-serif text-xl">換貨進度</h3><div className="mt-3 divide-y divide-stone-200">{orderExchanges.map((exchange) => <article key={exchange.id} className="py-4"><div className="flex flex-wrap justify-between gap-3 text-sm"><span>換貨 #{exchange.displayId}</span><span>{exchange.canceledAt ? "已取消" : exchange.returnStatus ? returnStatusLabel(exchange.returnStatus) : "商店處理中"}</span></div><p className="mt-2 text-xs text-stone-500">{new Date(exchange.createdAt).toLocaleDateString("zh-TW")}</p><ul className="mt-2 space-y-1 text-sm text-stone-600">{exchange.inboundItems.map((item) => <li key={item.id}>寄回：{item.title} × {item.quantity} · 已收 {item.receivedQuantity} 件</li>)}{exchange.items.map((item) => <li key={item.id}>更換為：{item.title} × {item.quantity}</li>)}</ul></article>)}</div></section> : null}
+                      <button type="button" disabled={busy} onClick={() => void startReturn()} className="mt-5 rounded-md border border-stone-400 px-4 py-2.5 text-sm hover:border-stone-900 disabled:opacity-50">申請退貨</button>
+                      {returnableItems.length ? <div className="mt-5 space-y-3 border-t border-stone-200 pt-5"><h3 className="font-medium">選擇退貨品項與數量</h3>{returnableItems.map((item) => <label key={item.id} className="flex items-center justify-between gap-4 text-sm"><span>{item.title}（可退 {item.returnableQuantity} 件）</span><input type="number" min={0} max={item.returnableQuantity} value={returnQuantities[item.id] ?? 0} onChange={(event) => { const quantity = Math.min(item.returnableQuantity, Math.max(0, Number(event.currentTarget.value))); setReturnQuantities((current) => ({ ...current, [item.id]: quantity })); }} className="w-20 rounded-md border border-stone-300 px-2 py-2" /></label>)}<button type="button" disabled={busy} onClick={() => void submitReturn()} className="rounded-md bg-stone-900 px-4 py-2.5 text-sm text-white disabled:opacity-50">送出退貨申請</button></div> : null}
+                    </div>
+                  ) : orders.length ? (
+                    <div className="mt-6 divide-y divide-stone-200 border-y border-stone-300">{orders.map((order) => <button key={order.id} type="button" onClick={() => void openOrder(order.id)} className="flex w-full flex-wrap items-center justify-between gap-3 py-5 text-left text-sm hover:bg-stone-100"><span>訂單 #{order.displayId}<span className="ml-3 text-stone-500">{new Date(order.createdAt).toLocaleDateString("zh-TW")}</span></span><span>{money(order.total, order.currencyCode)} <span className="ml-2 text-stone-500">查看 →</span></span></button>)}</div>
+                  ) : <p className="mt-6 border-y border-stone-300 py-6 text-sm text-stone-600">目前沒有訂單。</p>}
+                  {!selectedOrder && orders.length < count ? <button type="button" disabled={busy} onClick={() => void loadMoreOrders()} className="mt-5 text-sm underline underline-offset-4 disabled:opacity-50">載入更多訂單</button> : null}
+                </div>
+              ) : null}
+
+              {view === "addresses" ? (
+                <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.8fr)]">
+                  <div><h2 className="font-serif text-2xl">收件地址</h2>{addresses.length ? <div className="mt-5 space-y-3">{addresses.map((address) => <article key={address.id} className="border border-stone-200 bg-white p-4"><div className="flex justify-between gap-3"><div className="text-sm"><p className="font-medium">{address.addressName || [address.firstName, address.lastName].filter(Boolean).join(" ") || "收件地址"}</p><p className="mt-2 text-stone-600">{[address.address1, address.address2, address.city, address.province, address.postalCode, address.countryCode?.toUpperCase()].filter(Boolean).join("、")}</p><p className="mt-1 text-stone-500">{address.phone}</p>{address.isDefaultShipping || address.isDefaultBilling ? <p className="mt-2 text-xs text-stone-500">{address.isDefaultShipping ? "預設配送" : ""}{address.isDefaultShipping && address.isDefaultBilling ? " · " : ""}{address.isDefaultBilling ? "預設帳單" : ""}</p> : null}</div><div className="flex shrink-0 gap-3 text-xs"><button type="button" onClick={() => editAddress(address)} className="underline underline-offset-4">編輯</button><button type="button" disabled={busy} onClick={() => void deleteAddress(address.id)} className="text-red-700 underline underline-offset-4">刪除</button></div></div></article>)}</div> : <p className="mt-4 text-sm text-stone-600">尚未儲存地址。</p>}</div>
+                  <form onSubmit={(event) => void saveAddress(event)} className="space-y-4 border-t border-stone-300 pt-5 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0"><div className="flex justify-between gap-4"><h3 className="font-serif text-xl">{selectedAddress ? "編輯地址" : "新增地址"}</h3>{selectedAddress ? <button type="button" onClick={() => { setSelectedAddress(null); setAddressDraft(emptyAddress); }} className="text-xs underline">取消</button> : null}</div>{textInput("addressName", "地址名稱")}{textInput("firstName", "名字", true)}{textInput("lastName", "姓氏", true)}{textInput("company", "公司名稱")}{textInput("phone", "電話")}{textInput("address1", "地址", true)}{textInput("address2", "地址補充")}{textInput("city", "縣市", true)}{textInput("province", "行政區")}{textInput("postalCode", "郵遞區號")}{textInput("countryCode", "國家代碼（例如 TW）", true)}<label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={addressDraft.isDefaultShipping} onChange={(event) => { const checked = event.currentTarget.checked; setAddressDraft((current) => ({ ...current, isDefaultShipping: checked })); }} />設為預設配送地址</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={addressDraft.isDefaultBilling} onChange={(event) => { const checked = event.currentTarget.checked; setAddressDraft((current) => ({ ...current, isDefaultBilling: checked })); }} />設為預設帳單地址</label><button disabled={busy} className="rounded-md bg-stone-900 px-5 py-3 text-sm font-medium text-white disabled:opacity-60">{selectedAddress ? "儲存變更" : "新增地址"}</button></form>
+                </div>
+              ) : null}
+
+              {view === "store-credit" ? (
+                <section className="max-w-3xl space-y-8">
+                  <div>
+                    <h2 className="font-serif text-2xl">儲值金</h2>
+                    <p className="mt-2 text-sm leading-6 text-stone-600">查看可用餘額與交易紀錄，也可以兌領商店提供的儲值金代碼。</p>
+                  </div>
+                  <form onSubmit={(event) => void claimStoreCredit(event)} className="space-y-4 border border-stone-200 bg-white p-5 sm:p-6">
+                    <label className="block text-sm font-medium">
+                      儲值金兌領碼
+                      <input
+                        required
+                        minLength={64}
+                        maxLength={64}
+                        pattern="[a-fA-F0-9]{64}"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={creditCode}
+                        onChange={(event) => setCreditCode(event.currentTarget.value)}
+                        className="mt-2 w-full rounded-md border border-stone-300 px-3 py-3 font-mono font-normal tracking-[0.08em] outline-none focus:border-stone-900"
+                      />
+                    </label>
+                    <p className="text-xs leading-5 text-stone-500">請輸入商店寄給你的 64 位英數兌領碼；兌領後餘額會綁定目前登入的帳戶。</p>
+                    <button type="submit" disabled={busy || creditCode.trim().length !== 64} className="rounded-md bg-stone-900 px-5 py-3 text-sm font-medium text-white disabled:cursor-wait disabled:opacity-50">{busy ? "處理中…" : "兌領儲值金"}</button>
+                  </form>
+
+                  {storeCreditLoadError ? <p className="border-y border-amber-300 bg-amber-50 py-4 text-sm leading-6 text-amber-950" role="alert">{storeCreditLoadError}</p> : null}
+
+                  {!storeCreditLoadError && storeCreditAccounts.length ? (
+                    <div>
+                      <h3 className="font-serif text-xl">我的餘額</h3>
+                      <div className="mt-4 divide-y divide-stone-200 border-y border-stone-300">
+                        {storeCreditAccounts.map((account) => (
+                          <article key={account.id} className="flex flex-wrap items-center justify-between gap-4 py-5">
+                            <div>
+                              <p className="text-xs uppercase tracking-[0.16em] text-stone-500">{account.currency_code.toUpperCase()} 儲值金</p>
+                              <p className="mt-2 font-serif text-2xl">{majorMoney(account.balance, account.currency_code)}</p>
+                              <p className="mt-2 text-xs text-stone-500">累計增加 {majorMoney(account.total_credits, account.currency_code)} · 累計使用 {majorMoney(account.total_debits, account.currency_code)}</p>
+                            </div>
+                            <button type="button" disabled={busy} onClick={() => void openStoreCreditAccount(account.id)} className="rounded-md border border-stone-300 px-4 py-2.5 text-sm hover:border-stone-900 disabled:opacity-50">{selectedCreditAccountId === account.id ? "重新載入紀錄" : "查看交易紀錄"}</button>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  ) : !storeCreditLoadError ? (
+                    <p className="border-y border-stone-300 py-6 text-sm text-stone-600">目前沒有儲值金餘額；取得兌領碼後可在上方加入帳戶。</p>
+                  ) : null}
+
+                  {selectedCreditAccountId ? (
+                    <div>
+                      <div className="flex flex-wrap items-end justify-between gap-3">
+                        <div>
+                          <h3 className="font-serif text-xl">交易紀錄</h3>
+                          <p className="mt-2 text-xs text-stone-500">帳戶末碼 {selectedCreditAccountId.slice(-8)} · 共 {creditTransactionCount} 筆</p>
+                        </div>
+                        <button type="button" onClick={() => { setSelectedCreditAccountId(null); setCreditTransactions([]); setCreditTransactionCount(0); }} className="text-sm underline underline-offset-4">收合</button>
+                      </div>
+                      {creditTransactions.length ? (
+                        <div className="mt-4 divide-y divide-stone-200 border-y border-stone-300">
+                          {creditTransactions.map((transaction) => (
+                            <div key={transaction.id} className="flex flex-wrap justify-between gap-3 py-4 text-sm">
+                              <div>
+                                <p className="font-medium">{transaction.note || (transaction.type === "credit" ? "儲值金增加" : "使用儲值金")}</p>
+                                <p className="mt-1 text-xs text-stone-500">{new Date(transaction.created_at).toLocaleString("zh-TW")}</p>
+                              </div>
+                              <span className={transaction.type === "credit" ? "font-medium text-emerald-800" : "font-medium text-stone-700"}>
+                                {transaction.type === "credit" ? "+" : "−"}{majorMoney(transaction.amount, storeCreditAccounts.find((account) => account.id === selectedCreditAccountId)?.currency_code ?? "TWD")}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-4 border-y border-stone-300 py-5 text-sm text-stone-600">此帳戶目前沒有交易紀錄。</p>
+                      )}
+                      {creditTransactions.length < creditTransactionCount ? <button type="button" disabled={busy} onClick={() => void loadMoreCreditTransactions()} className="mt-4 text-sm underline underline-offset-4 disabled:opacity-50">載入更多交易紀錄</button> : null}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+`;
+
 export const STARTER_THEME_V4_NEW_FILES = [
   {
     path: "src/morph/content.ts",
@@ -2128,6 +3152,16 @@ export const STARTER_THEME_V4_NEW_FILES = [
     mimeType: "text/typescript",
     content: STARTER_THEME_HOME_ROUTE_SOURCE,
     isEntry: true,
+  },
+  {
+    path: "src/routes/order-transfer.tsx",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_ORDER_TRANSFER_ROUTE_SOURCE,
+  },
+  {
+    path: "src/routes/account.tsx",
+    mimeType: "text/typescript",
+    content: STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE,
   },
 ] as const;
 

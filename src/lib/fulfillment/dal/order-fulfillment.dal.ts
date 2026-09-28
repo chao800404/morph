@@ -2,6 +2,7 @@ import { getDb } from "@/db";
 import {
   fulfillmentAddresses,
   fulfillmentItems,
+  fulfillmentLabels,
   fulfillments,
   shippingOptions,
 } from "@/db/fulfillment.schema";
@@ -20,8 +21,11 @@ import {
 } from "@/db/order.schema";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import { firstOrNull } from "@/lib/db/single-row";
+import { getConfig } from "@/server/get-config";
 
 import { fulfillmentProviderRegistry } from "../providers/fulfillment-provider-registry.server";
+import { batchGuard } from "@/lib/db/batch-guard";
 
 type FulfillmentResult =
   | { success: true; fulfillmentId: string }
@@ -43,6 +47,7 @@ export const orderFulfillmentDal = {
     items: Array<{ itemId: string; quantity: number }>;
     createdBy?: string;
   }): Promise<FulfillmentResult> {
+    getConfig();
     const db = await getDb();
     const [order] = await db
       .select()
@@ -147,14 +152,48 @@ export const orderFulfillmentDal = {
           .limit(1)
       : [];
     const fulfillmentId = crypto.randomUUID();
-    const data = await provider.create({
+    const providerResult = await provider.create({
       orderId: input.orderId,
       fulfillmentId,
+      locationId: input.locationId,
+      shippingOptionId: shipping?.method.shippingOptionId ?? null,
+      currencyCode: order.currencyCode,
+      address: deliveryAddress
+        ? {
+            firstName: deliveryAddress.firstName,
+            lastName: deliveryAddress.lastName,
+            company: deliveryAddress.company,
+            address1: deliveryAddress.address1,
+            address2: deliveryAddress.address2,
+            city: deliveryAddress.city,
+            province: deliveryAddress.province,
+            postalCode: deliveryAddress.postalCode,
+            countryCode: deliveryAddress.countryCode,
+            phone: deliveryAddress.phone,
+          }
+        : null,
+      items: requested.map(({ itemId, quantity, row }) => ({
+        lineItemId: itemId,
+        title: row!.item.title,
+        sku: row!.item.variantSku ?? "",
+        barcode: row!.item.variantBarcode ?? "",
+        quantity,
+      })),
       data: shipping?.method.data ?? {},
     });
     const now = new Date().toISOString();
     const deliveryAddressId = deliveryAddress ? crypto.randomUUID() : null;
-    const statements: BatchItem<"sqlite">[] = [];
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM orders
+          WHERE id = ${input.orderId}
+            AND version = ${order.version}
+            AND canceled_at IS NULL
+        )`,
+      ),
+    ];
     if (deliveryAddress && deliveryAddressId) {
       const {
         id: _id,
@@ -182,7 +221,7 @@ export const orderFulfillmentDal = {
         requiresShipping: requested.some(
           (request) => request.row?.item.requiresShipping,
         ),
-        data,
+        data: providerResult.data,
         metadata: {},
         createdAt: now,
         updatedAt: now,
@@ -194,6 +233,19 @@ export const orderFulfillmentDal = {
         updatedAt: now,
       }),
     );
+    for (const label of providerResult.labels) {
+      statements.push(
+        db.insert(fulfillmentLabels).values({
+          id: crypto.randomUUID(),
+          fulfillmentId,
+          trackingNumber: label.trackingNumber,
+          trackingUrl: label.trackingUrl,
+          labelUrl: label.labelUrl,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+    }
     for (const request of requested) {
       const row = request.row!;
       statements.push(
@@ -263,37 +315,95 @@ export const orderFulfillmentDal = {
         }
       }
     }
-    await db.batch(
-      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
-    );
+    try {
+      await db.batch(
+        statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+      );
+    } catch (error) {
+      try {
+        await provider.cancel({
+          orderId: input.orderId,
+          fulfillmentId,
+          data: providerResult.data,
+        });
+      } catch (compensationError) {
+        throw new AggregateError(
+          [error, compensationError],
+          "Fulfillment persistence failed and the provider could not be compensated",
+        );
+      }
+      throw error;
+    }
     return { success: true, fulfillmentId };
   },
 
   async markShipped(
     fulfillmentId: string,
     actorId?: string,
+    expectedOrderId?: string,
+    labels: Array<{
+      trackingNumber: string;
+      trackingUrl: string;
+      labelUrl: string;
+    }> = [],
   ): Promise<FulfillmentResult> {
-    return this.transition(fulfillmentId, "shipped", actorId);
+    return this.transition(
+      fulfillmentId,
+      "shipped",
+      actorId,
+      expectedOrderId,
+      labels,
+    );
   },
 
-  async markDelivered(fulfillmentId: string): Promise<FulfillmentResult> {
-    return this.transition(fulfillmentId, "delivered");
+  async markDelivered(
+    fulfillmentId: string,
+    expectedOrderId?: string,
+  ): Promise<FulfillmentResult> {
+    return this.transition(
+      fulfillmentId,
+      "delivered",
+      undefined,
+      expectedOrderId,
+    );
   },
 
-  async cancel(fulfillmentId: string): Promise<FulfillmentResult> {
+  async cancel(
+    fulfillmentId: string,
+    expectedOrderId?: string,
+  ): Promise<FulfillmentResult> {
+    getConfig();
     const db = await getDb();
-    const [row] = await db
-      .select({ fulfillment: fulfillments, orderId: orderFulfillments.orderId })
-      .from(fulfillments)
-      .innerJoin(
-        orderFulfillments,
-        eq(orderFulfillments.fulfillmentId, fulfillments.id),
-      )
-      .where(
-        and(eq(fulfillments.id, fulfillmentId), isNull(fulfillments.deletedAt)),
-      )
-      .limit(1);
+    const row = firstOrNull(
+      await db
+        .select({
+          fulfillment: fulfillments,
+          orderId: orderFulfillments.orderId,
+        })
+        .from(fulfillments)
+        .innerJoin(
+          orderFulfillments,
+          eq(orderFulfillments.fulfillmentId, fulfillments.id),
+        )
+        .where(
+          and(
+            eq(fulfillments.id, fulfillmentId),
+            isNull(fulfillments.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
     if (!row) return { success: false, reason: "NOT_FOUND" };
+    if (expectedOrderId && row.orderId !== expectedOrderId)
+      return { success: false, reason: "NOT_FOUND" };
+    const currentOrder = firstOrNull(
+      await db
+        .select({ version: orders.version })
+        .from(orders)
+        .where(and(eq(orders.id, row.orderId), isNull(orders.deletedAt)))
+        .limit(1),
+    );
+    if (!currentOrder) return { success: false, reason: "NOT_FOUND" };
     if (row.fulfillment.canceledAt) return { success: true, fulfillmentId };
     if (row.fulfillment.shippedAt)
       return { success: false, reason: "ALREADY_SHIPPED" };
@@ -321,6 +431,15 @@ export const orderFulfillmentDal = {
       );
     const now = new Date().toISOString();
     const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM orders
+          WHERE id = ${row.orderId}
+            AND version = ${currentOrder.version}
+            AND canceled_at IS NULL
+        )`,
+      ),
       db
         .update(fulfillments)
         .set({ canceledAt: now, updatedAt: now })
@@ -339,6 +458,8 @@ export const orderFulfillmentDal = {
             and(
               eq(orderItems.orderId, row.orderId),
               eq(orderItems.itemId, rowItem.fulfillmentItem.lineItemId),
+              eq(orderItems.version, currentOrder.version),
+              isNull(orderItems.deletedAt),
             ),
           ),
       );
@@ -375,15 +496,26 @@ export const orderFulfillmentDal = {
     fulfillmentId: string,
     transition: "shipped" | "delivered",
     actorId?: string,
+    expectedOrderId?: string,
+    labels: Array<{
+      trackingNumber: string;
+      trackingUrl: string;
+      labelUrl: string;
+    }> = [],
   ): Promise<FulfillmentResult> {
     const db = await getDb();
-    const [fulfillment] = await db
-      .select()
-      .from(fulfillments)
-      .where(
-        and(eq(fulfillments.id, fulfillmentId), isNull(fulfillments.deletedAt)),
-      )
-      .limit(1);
+    const fulfillment = firstOrNull(
+      await db
+        .select()
+        .from(fulfillments)
+        .where(
+          and(
+            eq(fulfillments.id, fulfillmentId),
+            isNull(fulfillments.deletedAt),
+          ),
+        )
+        .limit(1),
+    );
     if (!fulfillment) return { success: false, reason: "NOT_FOUND" };
     if (fulfillment.canceledAt)
       return { success: false, reason: "ORDER_CANCELED" };
@@ -393,6 +525,24 @@ export const orderFulfillmentDal = {
       return { success: true, fulfillmentId };
     if (transition === "delivered" && !fulfillment.shippedAt)
       return { success: false, reason: "INVALID_QUANTITY" };
+    const orderLink = firstOrNull(
+      await db
+        .select({ orderId: orderFulfillments.orderId })
+        .from(orderFulfillments)
+        .where(eq(orderFulfillments.fulfillmentId, fulfillmentId))
+        .limit(1),
+    );
+    if (!orderLink) return { success: false, reason: "NOT_FOUND" };
+    if (expectedOrderId && orderLink.orderId !== expectedOrderId)
+      return { success: false, reason: "NOT_FOUND" };
+    const currentOrder = firstOrNull(
+      await db
+        .select({ version: orders.version })
+        .from(orders)
+        .where(and(eq(orders.id, orderLink.orderId), isNull(orders.deletedAt)))
+        .limit(1),
+    );
+    if (!currentOrder) return { success: false, reason: "NOT_FOUND" };
     const items = await db
       .select()
       .from(fulfillmentItems)
@@ -404,6 +554,15 @@ export const orderFulfillmentDal = {
       );
     const now = new Date().toISOString();
     const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM orders
+          WHERE id = ${orderLink.orderId}
+            AND version = ${currentOrder.version}
+            AND canceled_at IS NULL
+        )`,
+      ),
       db
         .update(fulfillments)
         .set(
@@ -417,6 +576,19 @@ export const orderFulfillmentDal = {
         )
         .where(eq(fulfillments.id, fulfillmentId)),
     ];
+    if (transition === "shipped")
+      for (const label of labels)
+        statements.push(
+          db.insert(fulfillmentLabels).values({
+            id: crypto.randomUUID(),
+            fulfillmentId,
+            trackingNumber: label.trackingNumber,
+            trackingUrl: label.trackingUrl,
+            labelUrl: label.labelUrl,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
     for (const item of items)
       if (item.lineItemId)
         statements.push(
@@ -433,36 +605,42 @@ export const orderFulfillmentDal = {
                     updatedAt: now,
                   },
             )
-            .where(eq(orderItems.itemId, item.lineItemId)),
+            .where(
+              and(
+                eq(orderItems.orderId, orderLink.orderId),
+                eq(orderItems.version, currentOrder.version),
+                eq(orderItems.itemId, item.lineItemId),
+                isNull(orderItems.deletedAt),
+              ),
+            ),
         );
     await db.batch(
       statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
     );
     if (transition === "delivered") {
-      const [orderLink] = await db
-        .select({ orderId: orderFulfillments.orderId })
-        .from(orderFulfillments)
-        .where(eq(orderFulfillments.fulfillmentId, fulfillmentId))
-        .limit(1);
-      if (orderLink) {
-        const states = await db
-          .select()
-          .from(orderItems)
+      const states = await db
+        .select()
+        .from(orderItems)
+        .where(
+          and(
+            eq(orderItems.orderId, orderLink.orderId),
+            eq(orderItems.version, currentOrder.version),
+            isNull(orderItems.deletedAt),
+          ),
+        );
+      if (
+        states.length &&
+        states.every((state) => state.deliveredQuantity >= state.quantity)
+      )
+        await db
+          .update(orders)
+          .set({ status: "completed", updatedAt: now })
           .where(
             and(
-              eq(orderItems.orderId, orderLink.orderId),
-              isNull(orderItems.deletedAt),
+              eq(orders.id, orderLink.orderId),
+              eq(orders.version, currentOrder.version),
             ),
           );
-        if (
-          states.length &&
-          states.every((state) => state.deliveredQuantity >= state.quantity)
-        )
-          await db
-            .update(orders)
-            .set({ status: "completed", updatedAt: now })
-            .where(eq(orders.id, orderLink.orderId));
-      }
     }
     return { success: true, fulfillmentId };
   },

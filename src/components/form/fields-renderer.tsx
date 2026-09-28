@@ -22,9 +22,11 @@ import { PhoneInput } from "../ui/phone-input";
 import { UploadField } from "../upload/upload";
 import { AssetSelectField } from "./asset-select-field";
 import { ChoiceCardsField } from "./choice-cards-field";
+import { GeoZonesField } from "./geo-zones-field";
 import { InputField } from "./input-field";
 import { MetadataField } from "./metadata-field";
 import { OptionValuesField } from "./option-values-field";
+import { ShippingRulesField } from "./shipping-rules-field";
 import { SwitchField } from "./switch-field";
 
 /**
@@ -92,7 +94,7 @@ export const FieldsRenderer = ({
         if (field.type === "hidden") {
           return (
             <input
-              key={field.name}
+              key={field.renderKey ?? field.name}
               type="hidden"
               name={field.name}
               value={typeof fieldValue === "string" ? fieldValue : ""}
@@ -114,11 +116,13 @@ export const FieldsRenderer = ({
         const rendersOwnLabel =
           field.type === "choice-cards" ||
           field.type === "switch" ||
-          field.type === "tip";
+          field.type === "tip" ||
+          field.type === "geo-zones" ||
+          field.type === "shipping-rules";
 
         return (
           <div
-            key={field.name}
+            key={field.renderKey ?? field.name}
             id={`${id}-wrapper`}
             className={cn(
               "scroll-mt-28 scroll-mb-24 space-y-2",
@@ -319,6 +323,22 @@ export const FieldsRenderer = ({
                   className={field.componentClassName}
                 />
               ))}
+            {field.type === "geo-zones" && (
+              <GeoZonesField
+                field={field}
+                fieldId={id}
+                value={stringValue}
+                onChange={(value) => onChange?.(field.name, value)}
+              />
+            )}
+            {field.type === "shipping-rules" && (
+              <ShippingRulesField
+                field={field}
+                fieldId={id}
+                value={stringValue}
+                onChange={(value) => onChange?.(field.name, value)}
+              />
+            )}
             {field.type === "asset-select" && (
               <AssetSelectField
                 field={field}

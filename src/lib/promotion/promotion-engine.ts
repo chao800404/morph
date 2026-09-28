@@ -6,7 +6,13 @@ import type {
   PromotionType,
 } from "@/db/promotion.schema";
 
+/** Mirrors Medusa's shipping-method target attribute for option-type rules. */
+export const SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE =
+  "shipping_methods.shipping_option.shipping_option_type_id";
+
 export interface PromotionRuleInput {
+  id?: string;
+  description?: string | null;
   attribute: string;
   operator: PromotionRuleOperator;
   values: string[];

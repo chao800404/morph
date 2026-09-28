@@ -1,5 +1,6 @@
 import { taxDal } from "./dal/tax.dal";
 import { taxProviderRegistry } from "./providers/tax-provider-registry.server";
+import { getConfig } from "@/server/get-config";
 import {
   calculateTaxLinesWithDependencies,
   type CalculateTaxLinesInput,
@@ -13,7 +14,9 @@ const defaultDependencies: TaxCalculationDependencies = {
   providers: taxProviderRegistry,
 };
 
-export const calculateTaxLines = (input: CalculateTaxLinesInput) =>
-  calculateTaxLinesWithDependencies(input, defaultDependencies);
+export const calculateTaxLines = (input: CalculateTaxLinesInput) => {
+  getConfig();
+  return calculateTaxLinesWithDependencies(input, defaultDependencies);
+};
 
 export type { CalculateTaxLinesInput } from "./calculate-tax-lines";

@@ -1,5 +1,6 @@
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
 import {
+  getLocationFulfillmentProviders,
   getStockLocation,
   listStockLocations,
 } from "@/server/stock-location/stock-locations.serverFn";
@@ -50,5 +51,15 @@ export const stockLocationQueries = {
     queryOptions({
       queryKey: [...stockLocationQueries.all(), "detail", id],
       queryFn: () => getStockLocation({ data: { id } }),
+    }),
+  fulfillmentProviders: (stockLocationId: string) =>
+    queryOptions({
+      queryKey: [
+        ...stockLocationQueries.all(),
+        "fulfillment-providers",
+        stockLocationId,
+      ],
+      queryFn: () =>
+        getLocationFulfillmentProviders({ data: { stockLocationId } }),
     }),
 };

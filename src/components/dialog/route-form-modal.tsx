@@ -1,6 +1,6 @@
 import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { cn } from "@/lib/utils";
-import type { FormField } from "@/lib/validations/form";
+import type { FormField, FormFieldValue } from "@/lib/validations/form";
 import { useActionState, type ReactNode } from "react";
 import { useCloseOnEscape, useRouteModalClose } from "./route-modal-close";
 
@@ -81,12 +81,14 @@ export const RouteFormPage = ({
   loadingLabel = "Creating...",
   additionalActions,
   fieldsClassName,
+  onFieldChange,
 }: {
   title: string;
   description?: string;
   fields: FormField[];
   /** Grid overrides for forms whose fields are not a single column. */
   fieldsClassName?: string;
+  onFieldChange?: (name: string, value: FormFieldValue | File[]) => void;
   action: (
     state: RouteFormState,
     formData: FormData,
@@ -122,6 +124,7 @@ export const RouteFormPage = ({
           ) : null}
           <FieldsRenderer
             fields={fields}
+            onChange={onFieldChange}
             className={cn("mt-8 grid-cols-1 gap-x-6 gap-y-8", fieldsClassName)}
           />
         </div>

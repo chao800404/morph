@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, real, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /**
  * The joins between modules.
@@ -94,7 +94,7 @@ export const productVariantInventoryItems = sqliteTable(
   {
     variantId: text("variant_id").notNull(),
     inventoryItemId: text("inventory_item_id").notNull(),
-    requiredQuantity: integer("required_quantity").notNull().default(1),
+    requiredQuantity: real("required_quantity").notNull().default(1),
     ...linkTimestamps,
   },
   (table) => [

@@ -93,6 +93,84 @@ export default function LocationDetail() {
         onEdit={openEdit}
         onEditPreload={preloadEdit}
       />
+      <EditCard
+        id="location-sales-channels"
+        title="Sales channels"
+        description="Sales channels that can fulfill orders from this location."
+        fields={[
+          {
+            key: "salesChannels",
+            label: "Assigned channels",
+            value: location.salesChannels
+              .map((channel) => channel.name)
+              .join(", "),
+            displayValue:
+              location.salesChannels
+                .map((channel) => channel.name)
+                .join(", ") || "No sales channels assigned",
+          },
+        ]}
+        headerActions={
+          <Button variant="form" size="xs" asChild>
+            <Link
+              to="/dashboard/settings/$slug/$id/$page"
+              params={{ slug: "locations", id, page: "sales-channels" }}
+            >
+              Manage
+            </Link>
+          </Button>
+        }
+      />
+      <EditCard
+        id="location-fulfillment-providers"
+        title="Fulfillment providers"
+        description="Providers available to process shipments from this location."
+        fields={[
+          {
+            key: "fulfillmentProviders",
+            label: "Assigned providers",
+            value: location.fulfillmentProviders
+              .map((provider) => provider.name)
+              .join(", "),
+            displayValue:
+              location.fulfillmentProviders
+                .map((provider) => provider.name)
+                .join(", ") || "No fulfillment providers assigned",
+          },
+        ]}
+        headerActions={
+          <Button variant="form" size="xs" asChild>
+            <Link
+              to="/dashboard/settings/$slug/$id/$page"
+              params={{ slug: "locations", id, page: "fulfillment-providers" }}
+            >
+              Manage
+            </Link>
+          </Button>
+        }
+      />
+      <EditCard
+        id="location-shipping-options"
+        title="Shipping options"
+        description="Geographic service zones, shipping profiles, and flat rates offered at checkout."
+        fields={[
+          {
+            key: "shippingOptions",
+            label: "Configuration",
+            value: "Manage shipping options",
+          },
+        ]}
+        headerActions={
+          <Button variant="form" size="xs" asChild>
+            <Link
+              to="/dashboard/settings/$slug/$id/$page"
+              params={{ slug: "locations", id, page: "shipping-options" }}
+            >
+              Manage
+            </Link>
+          </Button>
+        }
+      />
       <MetadataCard
         slug="locations"
         id={id}

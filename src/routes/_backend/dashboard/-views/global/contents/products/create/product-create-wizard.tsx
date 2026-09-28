@@ -11,6 +11,7 @@ import type { ProductStatus } from "@/lib/product/dto/product.dto";
 import { createProduct } from "@/server/product/create-product.serverFn";
 import { currencyQueries } from "@queries/currency.queries";
 import { productQueries } from "@queries/product.queries";
+import { shippingProfileQueries } from "@queries/shipping-profile.queries";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { CheckCircle2, CircleDashed } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
@@ -167,6 +168,9 @@ const ProductCreateWizard = () => {
         }
 
         void queryClient.invalidateQueries({ queryKey: productQueries.all() });
+        void queryClient.invalidateQueries({
+          queryKey: shippingProfileQueries.all(),
+        });
         toast.success(result.message, { id: toastId, position: "top-center" });
         close();
       } catch (error) {

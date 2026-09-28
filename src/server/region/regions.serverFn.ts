@@ -1,5 +1,12 @@
-import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
+import {
+  fail,
+  failure,
+  ok,
+  paginationOf,
+  parseInput,
+} from "@/lib/db/server-result";
 import { regionDal } from "@/lib/region/dal/region.dal";
+import { regionWriteService } from "@/lib/region/service/region-write.service";
 import {
   createRegionInputSchema,
   deleteRegionsInputSchema,
@@ -72,7 +79,9 @@ export const getRegion = createServerFn({ method: "POST" })
  * place that needs it — see `regionDal.ensureCountryCatalog`.
  */
 export const listAssignableCountries = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(listAssignableCountriesInputSchema, data ?? {}))
+  .validator((data: unknown) =>
+    parseInput(listAssignableCountriesInputSchema, data ?? {}),
+  )
   .middleware([commerceReadMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -124,50 +133,14 @@ export const createRegion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      await regionDal.ensureCountryCatalog();
-
-      // A country belongs to one region. Checked before inserting so the author
-      // is told which country clashes, rather than losing the whole save to a
-      // unique-index error.
-      if (data.countries.length > 0) {
-        const assignable = await regionDal.listAssignableCountries(null);
-        const free = new Set(assignable.map((country) => country.iso2));
-        const taken = data.countries.filter((code) => !free.has(code));
-        if (taken.length > 0) {
-          return fail(
-            `${taken.join(", ").toUpperCase()} already belongs to another region`,
-            { errors: { countries: ["Already served by another region"] } },
-          );
-        }
-      }
-
-      const id = crypto.randomUUID();
-      const enabledProviders = new Set(
-        (await regionDal.listEnabledPaymentProviders()).map(
-          (provider) => provider.id,
-        ),
-      );
-      const invalidProviders = data.paymentProviderIds.filter(
-        (id) => !enabledProviders.has(id),
-      );
-      if (invalidProviders.length > 0) {
-        return fail("One or more payment providers are unavailable", {
-          errors: {
-            paymentProviderIds: ["Select an enabled payment provider"],
-          },
+      const result = await regionWriteService.create(data);
+      if (!result.success) {
+        return fail(result.message, {
+          error: result.error,
+          errors: result.errors,
         });
       }
-      await regionDal.create({
-        id,
-        name: data.name,
-        currencyCode: data.currencyCode,
-        automaticTaxes: data.automaticTaxes,
-        isTaxInclusive: data.isTaxInclusive,
-      });
-      await regionDal.setCountries(id, data.countries);
-      await regionDal.setPaymentProviders(id, data.paymentProviderIds);
-
-      return ok(`Region "${data.name}" created`, { id });
+      return ok(`Region "${data.name}" created`, result.data);
     } catch (error) {
       return failure(
         "Create region error",
@@ -189,50 +162,13 @@ export const updateRegion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const existing = await regionDal.findById(data.id);
-      if (!existing) return fail("Region not found", { error: "NOT_FOUND" });
-
-      if (data.countries) {
-        // Assignable already includes this region's own, so moving a country
-        // between two of its own is not reported as a clash.
-        const assignable = await regionDal.listAssignableCountries(data.id);
-        const free = new Set(assignable.map((country) => country.iso2));
-        const taken = data.countries.filter((code) => !free.has(code));
-        if (taken.length > 0) {
-          return fail(
-            `${taken.join(", ").toUpperCase()} already belongs to another region`,
-            { errors: { countries: ["Already served by another region"] } },
-          );
-        }
+      const result = await regionWriteService.update(data);
+      if (!result.success) {
+        return fail(result.message, {
+          error: result.error,
+          errors: result.errors,
+        });
       }
-
-      await regionDal.update(data.id, {
-        name: data.name,
-        currencyCode: data.currencyCode,
-        automaticTaxes: data.automaticTaxes,
-        isTaxInclusive: data.isTaxInclusive,
-        metadata: data.metadata,
-      });
-
-      if (data.countries) {
-        await regionDal.setCountries(data.id, data.countries);
-      }
-      if (data.paymentProviderIds) {
-        const enabledProviders = new Set(
-          (await regionDal.listEnabledPaymentProviders()).map(
-            (provider) => provider.id,
-          ),
-        );
-        if (data.paymentProviderIds.some((id) => !enabledProviders.has(id))) {
-          return fail("One or more payment providers are unavailable", {
-            errors: {
-              paymentProviderIds: ["Select an enabled payment provider"],
-            },
-          });
-        }
-        await regionDal.setPaymentProviders(data.id, data.paymentProviderIds);
-      }
-
       return ok("Region updated successfully", { id: data.id });
     } catch (error) {
       return failure(
@@ -254,18 +190,15 @@ export const deleteRegions = createServerFn({ method: "POST" })
     if (!input.success) return input;
     const data = input.data;
     try {
-      const existing = await regionDal.findByIds(data.ids);
-      if (existing.length === 0) {
-        return fail("No matching regions were found", { error: "NOT_FOUND" });
-      }
-
       // The countries are released back to the picker, not deleted with the
       // region — see `regionDal.softDelete`.
-      await regionDal.softDelete(existing.map((region) => region.id));
-
+      const result = await regionWriteService.deleteMany(data.ids);
+      if (!result.success) {
+        return fail(result.message, { error: result.error });
+      }
       return ok(
-        `${existing.length} region${existing.length === 1 ? "" : "s"} deleted`,
-        { deleted: existing.length },
+        `${result.data.deleted} region${result.data.deleted === 1 ? "" : "s"} deleted`,
+        result.data,
       );
     } catch (error) {
       return failure(

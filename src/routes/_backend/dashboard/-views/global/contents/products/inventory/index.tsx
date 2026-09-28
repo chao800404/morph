@@ -7,6 +7,7 @@ import {
   DataTableCard,
   type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
+import { InventoryExportAction } from "./inventory-export-action";
 import {
   inventoryQueries,
   normalizeInventoryListParams,
@@ -44,19 +45,22 @@ const columns: DataTableColumn<InventoryListItemDTO>[] = [
     key: "stocked",
     header: "In stock",
     className: "w-28",
-    cell: (item) => item.stockedQuantity,
+    cell: (item) =>
+      `${item.stockedQuantity}${item.unitOfMeasure ? ` ${item.unitOfMeasure}` : ""}`,
   },
   {
     key: "reserved",
     header: "Reserved",
     className: "w-28",
-    cell: (item) => item.reservedQuantity,
+    cell: (item) =>
+      `${item.reservedQuantity}${item.unitOfMeasure ? ` ${item.unitOfMeasure}` : ""}`,
   },
   {
     key: "available",
     header: "Available",
     className: "w-28",
-    cell: (item) => item.availableQuantity,
+    cell: (item) =>
+      `${item.availableQuantity}${item.unitOfMeasure ? ` ${item.unitOfMeasure}` : ""}`,
   },
 ];
 
@@ -69,12 +73,25 @@ const Inventory = () => {
         ?.variant?.view,
     [],
   );
+  const inventoryDetailView = useMemo(
+    () =>
+      findCollection(getConfig().client.collections.global, "inventory")?.detail
+        ?.view,
+    [],
+  );
   const returnTo = useLocation({
     select: (location) => location.href,
   });
   const search = useSearch({ strict: false }) as DashboardSearch;
   const queryClient = useQueryClient();
   const params = normalizeInventoryListParams(search);
+  const exportSortField =
+    params.sortBy === "name"
+      ? "title"
+      : params.sortBy === "updatedAt"
+        ? "updated_at"
+        : "created_at";
+  const exportOrder = `${params.sortOrder === "desc" ? "-" : ""}${exportSortField}`;
   const { data: result, isPending } = useQuery(inventoryQueries.list(params));
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: inventoryQueries.all() });
@@ -85,7 +102,14 @@ const Inventory = () => {
     <DataTableCard
       label="Inventory"
       description="Track stock across variants and locations."
-      headerActions={<CollectionCreateButton slug="inventory" />}
+      headerActions={
+        <div className="flex items-center gap-2">
+          <InventoryExportAction
+            filters={{ q: params.query, order: exportOrder }}
+          />
+          <CollectionCreateButton slug="inventory" />
+        </div>
+      }
       searchPlaceholder="Search inventory"
       sortOptions={[
         { value: "name", label: "Title" },
@@ -95,33 +119,48 @@ const Inventory = () => {
       columns={columns}
       rows={items}
       getRowId={(item) => item.id}
-      isRowClickable={(item) => Boolean(item.productId && item.variantId)}
+      isRowClickable={() => true}
       onRowClick={(item) => {
-        if (!item.productId || !item.variantId) return;
-        void navigate({
-          to: "/dashboard/$slug/$id/$page/$childId",
-          params: {
-            slug: "products",
-            id: item.productId,
-            page: "variant",
-            childId: item.variantId,
-          },
-          search: { returnTo },
-        });
+        if (item.productId && item.variantId) {
+          void navigate({
+            to: "/dashboard/$slug/$id/$page/$childId",
+            params: {
+              slug: "products",
+              id: item.productId,
+              page: "variant",
+              childId: item.variantId,
+            },
+            search: { returnTo },
+          });
+        } else {
+          void navigate({
+            to: "/dashboard/$slug/$id",
+            params: { slug: "inventory", id: item.id },
+            search: { returnTo },
+          });
+        }
       }}
       onRowPreload={(item) => {
-        if (!item.productId || !item.variantId) return;
-        void viewPreloader(variantDetailView)?.();
-        void router.preloadRoute({
-          to: "/dashboard/$slug/$id/$page/$childId",
-          params: {
-            slug: "products",
-            id: item.productId,
-            page: "variant",
-            childId: item.variantId,
-          },
-          search: { returnTo },
-        });
+        if (item.productId && item.variantId) {
+          void viewPreloader(variantDetailView)?.();
+          void router.preloadRoute({
+            to: "/dashboard/$slug/$id/$page/$childId",
+            params: {
+              slug: "products",
+              id: item.productId,
+              page: "variant",
+              childId: item.variantId,
+            },
+            search: { returnTo },
+          });
+        } else {
+          void viewPreloader(inventoryDetailView)?.();
+          void router.preloadRoute({
+            to: "/dashboard/$slug/$id",
+            params: { slug: "inventory", id: item.id },
+            search: { returnTo },
+          });
+        }
       }}
       isPending={isPending}
       errorMessage={result && !result.success ? result.message : null}

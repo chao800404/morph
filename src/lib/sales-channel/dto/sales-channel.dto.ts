@@ -27,6 +27,7 @@ export interface SalesChannelInsertDTO {
   type?: SalesChannelType;
   description?: string | null;
   isDisabled?: boolean;
+  metadata?: Metadata;
 }
 
 export interface UpdateSalesChannelDTO {

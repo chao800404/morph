@@ -4,6 +4,7 @@ export const REMOTE_OPTION_SOURCES = [
   "product-types",
   "product-tags",
   "product-categories",
+  "customers",
 ] as const;
 
 export type RemoteOptionSource = (typeof REMOTE_OPTION_SOURCES)[number];

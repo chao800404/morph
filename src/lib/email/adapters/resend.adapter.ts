@@ -10,6 +10,7 @@ export interface ResendAdapterConfig {
 let hasWarnedMissingKey = false;
 
 export class ResendAdapter implements EmailAdapter {
+  readonly id = "resend";
   private client: Resend | null = null;
   private defaultFrom: string;
   private isConfigured: boolean = false;

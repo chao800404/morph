@@ -74,10 +74,13 @@ export const salesChannelDal = {
    */
   async listPage(options: {
     query?: string | null;
+    type?: SalesChannelDTO["type"];
+    isDisabled?: boolean;
     sortBy: "name" | "createdAt" | "updatedAt";
     sortOrder: "asc" | "desc";
     page: number;
     limit: number;
+    offset?: number;
   }): Promise<{ channels: SalesChannelSummaryDTO[]; total: number }> {
     const db = await getDb();
     const conditions: SQL[] = [isNull(salesChannels.deletedAt)];
@@ -90,6 +93,10 @@ export const salesChannelDal = {
           likeContains(salesChannels.description, term),
         ) as SQL,
       );
+    }
+    if (options.type) conditions.push(eq(salesChannels.type, options.type));
+    if (options.isDisabled !== undefined) {
+      conditions.push(eq(salesChannels.isDisabled, options.isDisabled));
     }
 
     const sortColumn = {
@@ -109,7 +116,7 @@ export const salesChannelDal = {
           options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn),
         )
         .limit(options.limit)
-        .offset((options.page - 1) * options.limit),
+        .offset(options.offset ?? (options.page - 1) * options.limit),
     ]);
 
     const counts = await this.countProducts(rows.map((row) => row.id));
@@ -147,6 +154,7 @@ export const salesChannelDal = {
       type: data.type ?? "custom",
       description: data.description ?? null,
       isDisabled: data.isDisabled ?? false,
+      metadata: data.metadata ?? {},
       createdAt: now,
       updatedAt: now,
     });

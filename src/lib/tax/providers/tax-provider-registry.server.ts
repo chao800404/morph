@@ -5,7 +5,22 @@ export class TaxProviderRegistry {
   private readonly providers = new Map<string, TaxProvider>();
 
   constructor(providers: TaxProvider[] = [systemTaxProvider]) {
-    providers.forEach((provider) => this.register(provider));
+    this.install(providers);
+  }
+
+  private install(providers: TaxProvider[]) {
+    const next = new Map<string, TaxProvider>();
+    for (const provider of providers) {
+      const id = provider.id.trim();
+      if (!id || id !== provider.id || id.length > 128) {
+        throw new Error("Tax provider IDs must be 1 to 128 characters");
+      }
+      if (next.has(id))
+        throw new Error(`Tax provider is already registered: ${id}`);
+      next.set(id, provider);
+    }
+    this.providers.clear();
+    for (const [id, provider] of next) this.providers.set(id, provider);
   }
 
   register(provider: TaxProvider) {
@@ -13,6 +28,14 @@ export class TaxProviderRegistry {
       throw new Error(`Tax provider is already registered: ${provider.id}`);
     this.providers.set(provider.id, provider);
     return this;
+  }
+
+  configure(configuredProviders: TaxProvider[] = []) {
+    this.install([systemTaxProvider, ...configuredProviders]);
+  }
+
+  list() {
+    return [...this.providers.keys()];
   }
 
   get(providerId: string) {

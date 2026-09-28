@@ -180,6 +180,7 @@ export const updateProductOrganizationAction = async ({
       typeValue: valueList(data, "typeValue").at(0) ?? null,
       tagValues: valueList(data, "tagValues"),
       categoryIds: idList(data, "categoryIds"),
+      shippingProfileId: text(data, "shippingProfileId"),
     },
   });
   if (!organizationResult.success) {

@@ -1,5 +1,5 @@
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { OrderStatus } from "@/lib/order/dto/order.dto";
+import type { OrderReturnDTO, OrderStatus } from "@/lib/order/dto/order.dto";
 import type { PromotionStatus } from "@/lib/promotion/dto/promotion.dto";
 
 export const OrderStatusBadge = ({
@@ -36,6 +36,27 @@ export const PromotionStatusBadge = ({
     draft: ["grey", "Draft"],
     inactive: ["red", "Inactive"],
   }[status] as ["green" | "grey" | "red", string];
+  return (
+    <StatusBadge variant={variant} color={config[0]}>
+      {config[1]}
+    </StatusBadge>
+  );
+};
+
+export const OrderReturnStatusBadge = ({
+  status,
+  variant = "default",
+}: {
+  status: OrderReturnDTO["status"];
+  variant?: "default" | "plain";
+}) => {
+  const config = {
+    open: ["grey", "Open"],
+    requested: ["amber", "Requested"],
+    partially_received: ["amber", "Partially received"],
+    received: ["green", "Received"],
+    canceled: ["red", "Canceled"],
+  }[status] as ["green" | "grey" | "red" | "amber", string];
   return (
     <StatusBadge variant={variant} color={config[0]}>
       {config[1]}

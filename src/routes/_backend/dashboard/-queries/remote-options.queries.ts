@@ -1,6 +1,7 @@
 import { listFolderOptions } from "@/server/asset/list-items.serverFn";
 import { listPromotionCampaigns } from "@/server/marketing/promotions.serverFn";
 import { listProductTaxonomyOptions } from "@/server/product/taxonomy.serverFn";
+import { listCustomers } from "@/server/customer/customers.serverFn";
 import type { RemoteOptionSource } from "@/lib/remote-options/source";
 import { infiniteQueryOptions } from "@tanstack/react-query";
 
@@ -45,6 +46,45 @@ export const remoteOptionQueries = {
         }
         if (params.source === "promotion-campaigns") {
           return await listPromotionCampaigns({ data });
+        }
+        if (params.source === "customers") {
+          const result = await listCustomers({
+            data: {
+              query: params.query,
+              page: pageParam,
+              limit: data.limit,
+              sortBy: "email",
+              sortOrder: "asc",
+            },
+          });
+          if (!result.success || !result.data)
+            return {
+              success: false,
+              message: result.message,
+              data: null,
+              error: result.error,
+            };
+          return {
+            success: true,
+            message: result.message,
+            data: {
+              items: result.data.customers.map((customer) => {
+                const name = [customer.firstName, customer.lastName]
+                  .filter(Boolean)
+                  .join(" ");
+                return {
+                  id: customer.id,
+                  label: name
+                    ? customer.email
+                      ? `${name} (${customer.email})`
+                      : name
+                    : (customer.email ?? customer.id),
+                };
+              }),
+              selectedItems: [],
+              pagination: result.data.pagination,
+            },
+          };
         }
         const kind =
           params.source === "product-types"

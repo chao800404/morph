@@ -1,5 +1,8 @@
 import type { DashboardSearch } from "@/lib/validations/dashboard-search";
-import { listInventory } from "@/server/inventory/inventory.serverFn";
+import {
+  getInventoryItem,
+  listInventory,
+} from "@/server/inventory/inventory.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
 export const normalizeInventoryListParams = (search: DashboardSearch = {}) => ({
@@ -20,5 +23,10 @@ export const inventoryQueries = {
       queryKey: [...inventoryQueries.all(), "list", params],
       queryFn: () => listInventory({ data: params }),
       placeholderData: keepPreviousData,
+    }),
+  detail: (id: string) =>
+    queryOptions({
+      queryKey: [...inventoryQueries.all(), "detail", id],
+      queryFn: () => getInventoryItem({ data: { id } }),
     }),
 };

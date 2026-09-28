@@ -120,6 +120,194 @@ describe("StorefrontProductionService", () => {
     ).toBe(405);
     expect(catalogHandler).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes only token-authorized order transfer confirmation on the store host", async () => {
+    const confirmationHandler = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ orderTransfer: { status: "accepted" } }), {
+          headers: {
+            "access-control-allow-origin": "*",
+            "access-control-allow-methods": "GET, POST, OPTIONS",
+            "cache-control": "private, no-store",
+            "content-type": "application/json",
+          },
+        }),
+    );
+    const accountApiHandler = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ orderTransfer: { status: "pending" } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const service = new StorefrontProductionService({
+      runtime: new UnavailableThemeRuntime(),
+      resolverDeps: resolverDeps(),
+      orderTransferConfirmationHandler: confirmationHandler,
+      storefrontCustomerApiHandler: accountApiHandler,
+    });
+
+    const response = await service.handleRequest(
+      req("/api/store/orders/ord_123/transfer/accept", {
+        method: "POST",
+        headers: { "x-storefront-host": "attacker.example" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(confirmationHandler).toHaveBeenCalledWith(
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+      "ord_123",
+      "accept",
+    );
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("access-control-allow-methods")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+
+    const methodRejected = await service.handleRequest(
+      req("/api/store/orders/ord_123/transfer/accept"),
+    );
+    const requestStarted = await service.handleRequest(
+      req("/api/store/orders/ord_123/transfer/request", { method: "POST" }),
+    );
+    expect(methodRejected.status).toBe(405);
+    expect(requestStarted.status).toBe(200);
+    expect(accountApiHandler).toHaveBeenCalledWith(
+      "POST",
+      "orders/ord_123/transfer/request",
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(confirmationHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("proxies only the storefront sign-in and verification endpoints", async () => {
+    const authHandler = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ user: null }), {
+          headers: {
+            "access-control-allow-origin": "*",
+            "cache-control": "public, max-age=60",
+            "content-type": "application/json",
+            "set-cookie": "better-auth.session_token=opaque; HttpOnly; Secure; Path=/; SameSite=Lax",
+          },
+        }),
+    );
+    const service = new StorefrontProductionService({
+      runtime: new UnavailableThemeRuntime(),
+      resolverDeps: resolverDeps(),
+      storefrontAuthHandler: authHandler,
+    });
+
+    const response = await service.handleRequest(
+      req("/api/auth/get-session", {
+        headers: { "x-storefront-host": "attacker.example" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(authHandler).toHaveBeenCalledWith(
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("set-cookie")).toContain(
+      "better-auth.session_token=opaque",
+    );
+
+    const signUp = await service.handleRequest(
+      req("/api/auth/sign-up/email", { method: "POST" }),
+    );
+    const otp = await service.handleRequest(
+      req("/api/auth/email-otp/verify-email", { method: "POST" }),
+    );
+    const adminPlugin = await service.handleRequest(
+      req("/api/auth/admin/set-role", { method: "POST" }),
+    );
+    const preflight = await service.handleRequest(
+      req("/api/auth/get-session", { method: "OPTIONS" }),
+    );
+    expect(signUp.status).toBe(200);
+    expect(otp.status).toBe(200);
+    expect(adminPlugin.status).toBe(404);
+    expect(preflight.status).toBe(404);
+    expect(authHandler).toHaveBeenCalledTimes(3);
+  });
+
+  it("allows only ownership-scoped customer Store API routes on the store host", async () => {
+    const accountApiHandler = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ customer: { id: "cus_1" } }), {
+          headers: {
+            "access-control-allow-origin": "*",
+            "content-type": "application/json",
+          },
+        }),
+    );
+    const service = new StorefrontProductionService({
+      runtime: new UnavailableThemeRuntime(),
+      resolverDeps: resolverDeps(),
+      storefrontCustomerApiHandler: accountApiHandler,
+    });
+
+    const response = await service.handleRequest(
+      req("/api/store/customers/me/orders?limit=20"),
+    );
+    const cancelReturn = await service.handleRequest(
+      req("/api/store/customers/me/orders/order_1/returns/return_1", {
+        method: "DELETE",
+      }),
+    );
+    const claims = await service.handleRequest(
+      req("/api/store/customers/me/orders/order_1/claims"),
+    );
+    const exchanges = await service.handleRequest(
+      req("/api/store/customers/me/orders/order_1/exchanges"),
+    );
+    const unknown = await service.handleRequest(
+      req("/api/store/customers/me/role"),
+    );
+    const preflight = await service.handleRequest(
+      req("/api/store/customers/me", { method: "OPTIONS" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(cancelReturn.status).toBe(200);
+    expect(claims.status).toBe(200);
+    expect(exchanges.status).toBe(200);
+    expect(accountApiHandler).toHaveBeenCalledWith(
+      "GET",
+      "customers/me/orders",
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(accountApiHandler).toHaveBeenCalledWith(
+      "DELETE",
+      "customers/me/orders/order_1/returns/return_1",
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(accountApiHandler).toHaveBeenCalledWith(
+      "GET",
+      "customers/me/orders/order_1/claims",
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(accountApiHandler).toHaveBeenCalledWith(
+      "GET",
+      "customers/me/orders/order_1/exchanges",
+      expect.any(Request),
+      expect.objectContaining({ storefrontId: "sf_1", hostname: HOST }),
+    );
+    expect(unknown.status).toBe(404);
+    expect(preflight.status).toBe(405);
+    expect(accountApiHandler).toHaveBeenCalledTimes(4);
+  });
+
   it("serves a declared client asset from the immutable artifact with public caching", async () => {
     const bucket = r2();
     const runtime = { kind: "local-direct" as const, handle: vi.fn() };

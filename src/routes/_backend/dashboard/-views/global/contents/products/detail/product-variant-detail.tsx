@@ -19,6 +19,7 @@ import { EditCardHeader } from "@/routes/_backend/dashboard/-components/edit-car
 import { PageSplitLayout } from "@/routes/_backend/dashboard/-components/layout/page-split-layout";
 import { MetadataCard } from "@/routes/_backend/dashboard/-components/metadata-card/metadata-card";
 import { ProductVariantDetailSkeleton } from "./product-variant-detail-skeleton";
+import type { VariantInventoryKitItemDTO } from "@/lib/inventory/dto/inventory-kit.dto";
 import {
   normalizeVariantPriceHistoryListParams,
   productQueries,
@@ -47,6 +48,12 @@ const ProductVariantDetail = () => {
     ),
     enabled: Boolean(variantId),
   });
+  const inventoryKitQuery = useQuery({
+    ...productVariantQueries.inventoryKit(
+      variantId ?? "00000000-0000-0000-0000-000000000000",
+    ),
+    enabled: Boolean(variantId),
+  });
   const historyQuery = useQuery({
     ...productVariantQueries.priceHistory(
       normalizeVariantPriceHistoryListParams(
@@ -60,6 +67,9 @@ const ProductVariantDetail = () => {
   const product = productQuery.data?.success ? productQuery.data.data : null;
   const detail = variantQuery.data?.success ? variantQuery.data.data : null;
   const variant = detail?.variant ?? null;
+  const inventoryKit = inventoryKitQuery.data?.success
+    ? inventoryKitQuery.data.data.items
+    : [];
   const historyResult = historyQuery.data?.success
     ? historyQuery.data.data
     : null;
@@ -108,6 +118,17 @@ const ProductVariantDetail = () => {
       },
       search: { returnTo },
     });
+  const openInventoryKit = () =>
+    void navigate({
+      to: "/dashboard/$slug/$id/$page/$childId",
+      params: {
+        slug: "products",
+        id: productId,
+        page: "variant-kit",
+        childId: variantId,
+      },
+      search: { returnTo },
+    });
 
   const optionFields: EditCardField[] = product.options.map((option) => {
     const selected = option.values.find((value) =>
@@ -140,9 +161,9 @@ const ProductVariantDetail = () => {
       displayValue: variant.allowBackorder ? "Yes" : "No",
     },
     {
-      key: "quantity",
-      label: "Quantity",
-      displayValue: String(variant.inventoryQuantity),
+      key: "inventoryItems",
+      label: "Inventory items",
+      displayValue: String(variant.inventoryKit.length),
     },
   ];
   const money = (currencyCode: string, amount: number | null) => {
@@ -308,9 +329,61 @@ const ProductVariantDetail = () => {
           <EditCard
             id="variant-inventory"
             title="Inventory"
+            description="Inventory is managed per linked item and stock location."
             fields={inventoryFields}
             onEdit={() => openEdit("inventory")}
           />
+          <CardWrapper
+            id="variant-inventory-kit"
+            label="Inventory kit"
+            description="Items consumed when this variant is sold."
+            headerButton={
+              <Button size="sm" variant="outline" onClick={openInventoryKit}>
+                Manage kit
+              </Button>
+            }
+          >
+            {inventoryKitQuery.isPending ? (
+              <div className="border-t px-4 py-3 text-sm text-muted-foreground">
+                Loading inventory items…
+              </div>
+            ) : inventoryKitQuery.data && !inventoryKitQuery.data.success ? (
+              <div className="border-t px-4 py-3 text-sm text-destructive">
+                {inventoryKitQuery.data.message}
+              </div>
+            ) : inventoryKit.length === 0 ? (
+              <div className="border-t px-4 py-3 text-sm text-muted-foreground">
+                No inventory items linked.
+              </div>
+            ) : (
+              <div className="divide-y border-t">
+                {inventoryKit.map((item: VariantInventoryKitItemDTO) => (
+                  <div
+                    key={item.inventoryItemId}
+                    className="flex items-center justify-between gap-3 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-foreground">
+                        {item.title ?? "Untitled inventory item"}
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {item.sku ?? item.inventoryItemId}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right text-sm">
+                      <div>
+                        {item.requiredQuantity}
+                        {item.unitOfMeasure ? ` ${item.unitOfMeasure}` : ""} per sale
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {item.availableQuantity} available
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardWrapper>
           <MetadataCard
             slug="products"
             id={productId}

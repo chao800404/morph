@@ -27,6 +27,7 @@ export const createRegionInputSchema = z.object({
   isTaxInclusive: z.boolean().optional(),
   countries: z.array(countryCodeSchema).max(250).default([]),
   paymentProviderIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const updateRegionInputSchema = z.object({

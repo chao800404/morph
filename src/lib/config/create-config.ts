@@ -12,6 +12,9 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { ComponentType } from "react";
 import type { EmailAdapter } from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
+import type { FulfillmentProvider } from "../fulfillment/providers/fulfillment-provider";
+import type { ShippingRateProvider } from "../shipping/providers/shipping-rate-provider";
+import type { TaxProvider } from "../tax/providers/tax-provider";
 import { localization } from "../config/localization";
 import { assertCollectionsAreAddressable } from "./navigation";
 
@@ -357,6 +360,10 @@ export interface CMSUserConfig {
     email?: {
       apiKey: string;
     };
+    /** Server-bundled provider implementations. Never expose provider secrets to the client. */
+    fulfillmentProviders?: FulfillmentProvider[];
+    shippingRateProviders?: ShippingRateProvider[];
+    taxProviders?: TaxProvider[];
   };
 }
 

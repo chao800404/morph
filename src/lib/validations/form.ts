@@ -107,6 +107,8 @@ export type FormFieldValue = string | string[] | boolean;
 
 export interface FormFieldBase {
   name: string;
+  /** Optional render identity for fields whose options or default value change dynamically. */
+  renderKey?: string;
   label?: string;
   description?: string;
   placeholder?: string;
@@ -242,6 +244,39 @@ export interface OptionValueChoice {
   value: string;
 }
 
+/** One checkout-address clause used by shipping service zones. */
+export interface GeoZoneFormValue {
+  type: "country" | "province" | "city" | "zip";
+  countryCode: string;
+  provinceCode?: string;
+  city?: string;
+  postalExpression?: string;
+}
+
+export type GeoZonesFormField = FormFieldBase & {
+  type: "geo-zones";
+  countries: OptionValueChoice[];
+  maxZones?: number;
+};
+
+/** A checkout qualification clause for a shipping option. */
+export interface ShippingRuleFormValue {
+  attribute:
+    | "item_count"
+    | "subtotal"
+    | "total"
+    | "currency_code"
+    | "region_id"
+    | "sales_channel_id";
+  operator: "in" | "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "nin";
+  value: string | number | string[];
+}
+
+export type ShippingRulesFormField = FormFieldBase & {
+  type: "shipping-rules";
+  maxRules?: number;
+};
+
 /**
  * Free-form key/value pairs for a record's `metadata` column.
  *
@@ -295,6 +330,8 @@ export type FormField =
   | FolderSelectFormField
   | UploadFormField
   | OptionValuesFormField
+  | GeoZonesFormField
+  | ShippingRulesFormField
   | MetadataFormField
   | AssetSelectFormField
   | SwitchFormField
@@ -307,6 +344,7 @@ export type FormFieldType = FormField["type"];
 // so a new field type cannot silently drop `colSpan`, `className` or `disabled`.
 const formFieldBaseShape = {
   name: fieldNameSchema,
+  renderKey: z.string().max(120).optional(),
   label: z.string().optional(),
   description: z.string().optional(),
   placeholder: z.string().optional(),
@@ -423,6 +461,19 @@ const optionValuesFormFieldSchema = z.object({
   emptyMessage: z.string().optional(),
 });
 
+const geoZonesFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("geo-zones"),
+  countries: z.array(z.object({ id: z.string(), value: z.string() })).max(250),
+  maxZones: z.number().int().positive().max(250).optional(),
+});
+
+const shippingRulesFormFieldSchema = z.object({
+  ...formFieldBaseShape,
+  type: z.literal("shipping-rules"),
+  maxRules: z.number().int().positive().max(20).optional(),
+});
+
 const switchFormFieldSchema = z.object({
   ...formFieldBaseShape,
   type: z.literal("switch"),
@@ -473,6 +524,8 @@ export const formFieldSchema: z.ZodType<FormField> = z.discriminatedUnion(
     folderSelectFormFieldSchema,
     uploadFormFieldSchema,
     optionValuesFormFieldSchema,
+    geoZonesFormFieldSchema,
+    shippingRulesFormFieldSchema,
     metadataFormFieldSchema,
     assetSelectFormFieldSchema,
     switchFormFieldSchema,

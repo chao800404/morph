@@ -1,6 +1,9 @@
 import { cmsConfig } from "@/cms.config";
 import { createCMSConfig } from "@/lib/config/create-config";
 import { resendAdapter } from "@/lib/email/adapters";
+import { fulfillmentProviderRegistry } from "@/lib/fulfillment/providers/fulfillment-provider-registry.server";
+import { shippingRateProviderRegistry } from "@/lib/shipping/providers/shipping-rate-provider-registry.server";
+import { taxProviderRegistry } from "@/lib/tax/providers/tax-provider-registry.server";
 import { createIsomorphicFn } from "@tanstack/react-start";
 
 /**
@@ -17,6 +20,9 @@ export const getConfig = createIsomorphicFn()
   .server(() => {
     const { server, email, ...base } = cmsConfig;
     const secrets = server();
+    fulfillmentProviderRegistry.configure(secrets.fulfillmentProviders);
+    shippingRateProviderRegistry.configure(secrets.shippingRateProviders);
+    taxProviderRegistry.configure(secrets.taxProviders);
     return createCMSConfig({
       ...base,
       database: secrets.database,

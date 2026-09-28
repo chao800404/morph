@@ -94,7 +94,7 @@ const ProductVariant = () => {
     const fieldName = {
       general: "title",
       media: product?.options.length ? "assets" : "title",
-      inventory: "inventoryQuantity",
+      inventory: "manageInventory",
     }[editSection];
     const frame = window.requestAnimationFrame(() => {
       document
@@ -192,14 +192,6 @@ const ProductVariant = () => {
       label: "Allow backorder",
       description: "Keep selling once stock reaches zero.",
       value: variant?.allowBackorder ?? false,
-    },
-    {
-      type: "input",
-      name: "inventoryQuantity",
-      label: "Quantity",
-      inputType: "number",
-      value: String(variant?.inventoryQuantity ?? 0),
-      colSpan: 1,
     },
     ...(["height", "width", "length", "weight"] as const).map(
       (name): FormField => ({

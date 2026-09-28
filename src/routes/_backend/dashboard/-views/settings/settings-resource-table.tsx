@@ -11,6 +11,7 @@ import {
   type RowAction,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
 import { useInfoStore } from "@/routes/_backend/dashboard/-views/features/global-info/use-info-store";
+import type { FormField } from "@/lib/validations/form";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -27,6 +28,8 @@ export function SettingsResourceTable<T extends { id: string }>({
   invalidate,
   deleteAction,
   deleteName,
+  deleteFields,
+  deleteDescription,
   isDeleteDisabled,
   scope = "settings",
 }: {
@@ -50,6 +53,8 @@ export function SettingsResourceTable<T extends { id: string }>({
     errors?: Record<string, string[]>;
   }>;
   deleteName: (row: T) => string;
+  deleteFields?: (row: T) => FormField[];
+  deleteDescription?: (row: T) => string;
   isDeleteDisabled?: (row: T) => boolean;
   scope?: "global" | "settings";
 }) {
@@ -84,8 +89,11 @@ export function SettingsResourceTable<T extends { id: string }>({
     (row: T) => {
       setInfoData({
         title: `Delete ${label.replace(/s$/, "")}`,
-        description: `Are you sure you want to delete “${deleteName(row)}”? This action cannot be undone.`,
+        description:
+          deleteDescription?.(row) ??
+          `Are you sure you want to delete “${deleteName(row)}”? This action cannot be undone.`,
         fields: [
+          ...(deleteFields?.(row) ?? []),
           { type: "hidden", name: "ids", value: JSON.stringify([row.id]) },
         ],
         action: deleteAction,
@@ -95,7 +103,16 @@ export function SettingsResourceTable<T extends { id: string }>({
       });
       setInfoOpen(true);
     },
-    [deleteAction, deleteName, invalidate, label, setInfoData, setInfoOpen],
+    [
+      deleteAction,
+      deleteDescription,
+      deleteFields,
+      deleteName,
+      invalidate,
+      label,
+      setInfoData,
+      setInfoOpen,
+    ],
   );
   return (
     <DataTableCard

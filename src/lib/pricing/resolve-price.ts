@@ -8,9 +8,10 @@ export interface PricingContext {
   currencyCode: string;
   quantity: number;
   regionId?: string;
-  customerGroupId?: string;
+  customerGroupId?: string | string[];
+  customerId?: string;
   salesChannelId?: string;
-  [attribute: string]: string | number | undefined;
+  [attribute: string]: string | number | string[] | undefined;
 }
 
 export interface PriceRuleCandidate {
@@ -52,11 +53,11 @@ export interface ResolvedPrice {
 }
 
 const compare = (
-  actual: string | number | undefined,
+  actual: string | number | string[] | undefined,
   expected: string,
   operator: PricingRuleOperator,
 ) => {
-  if (actual === undefined) return false;
+  if (actual === undefined || Array.isArray(actual)) return false;
   if (operator === "eq") return String(actual) === expected;
   const left = Number(actual);
   const right = Number(expected);
@@ -96,7 +97,9 @@ const isEligible = (
   if (list.endsAt && new Date(list.endsAt) < now) return false;
   return list.rules.every((rule) => {
     const value = context[rule.attribute];
-    return value !== undefined && rule.values.includes(String(value));
+    if (value === undefined) return false;
+    const values = Array.isArray(value) ? value.map(String) : [String(value)];
+    return values.some((candidate) => rule.values.includes(candidate));
   });
 };
 
@@ -140,9 +143,13 @@ export const resolvePrice = (input: {
   const selected = eligible[0];
   if (!selected && input.baseAmount === null) return null;
   const amount = selected?.amount ?? input.baseAmount!;
+  const originalAmount =
+    eligible.find((candidate) => candidate.priceList === null)?.amount ??
+    input.baseAmount ??
+    amount;
   return {
     amount,
-    originalAmount: input.baseAmount ?? amount,
+    originalAmount,
     currencyCode: input.context.currencyCode,
     priceId: selected?.id ?? null,
     priceListId: selected?.priceList?.id ?? null,

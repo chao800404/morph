@@ -6,6 +6,7 @@ import {
   useCollectionDetailPreload,
   type DataTableColumn,
 } from "@/routes/_backend/dashboard/-components/data-table-card";
+import { AsyncCsvExportAction } from "@/routes/_backend/dashboard/-components/async-csv-export-action";
 import {
   normalizeOrderListParams,
   orderQueries,
@@ -67,7 +68,20 @@ const Orders = () => {
     <DataTableCard
       label="Orders"
       description="Manage customer orders and fulfillment."
-      headerActions={<CollectionCreateButton slug="orders" />}
+      headerActions={
+        <>
+          <AsyncCsvExportAction
+            kind="orders"
+            resourceLabel="orders"
+            description="Create a private CSV export of matching orders. The file includes order totals, addresses, and line items."
+            filters={{
+              q: params.query,
+              order: `${params.sortOrder === "desc" ? "-" : ""}${params.sortBy === "updatedAt" ? "updated_at" : "created_at"}`,
+            }}
+          />
+          <CollectionCreateButton slug="orders" />
+        </>
+      }
       searchPlaceholder="Search orders"
       sortOptions={[
         { value: "createdAt", label: "Created" },

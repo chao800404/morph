@@ -8,10 +8,16 @@ import { FieldsRenderer } from "@/components/form/fields-renderer";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type { FormField, FormFieldValue } from "@/lib/validations/form";
+import { SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE } from "@/lib/promotion/promotion-engine";
+import type {
+  FormField,
+  FormFieldValue,
+  OptionValueChoice,
+} from "@/lib/validations/form";
 import { createPromotion } from "@/server/marketing/promotions.serverFn";
 import { promotionQueries } from "@queries/marketing.queries";
-import { useQueryClient } from "@tanstack/react-query";
+import { shippingOptionTypeQueries } from "@queries/shipping-option-type.queries";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, CircleDashed, Plus, Trash2 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -128,11 +134,13 @@ const RulesEditor = ({
   description,
   rules,
   onChange,
+  shippingOptionTypeChoices,
 }: {
   label: string;
   description: string;
   rules: RuleDraft[];
   onChange: (rules: RuleDraft[]) => void;
+  shippingOptionTypeChoices?: OptionValueChoice[];
 }) => {
   const update = (id: string, patch: Partial<RuleDraft>) =>
     onChange(
@@ -152,34 +160,77 @@ const RulesEditor = ({
           <FieldsRenderer
             className="grid-cols-3 max-md:grid-cols-1"
             fields={[
-              {
-                type: "input",
-                name: "attribute",
-                label: "Attribute",
-                value: rule.attribute,
-                placeholder: "e.g. customer_group_id",
-                colSpan: 1,
-              },
+              ...(shippingOptionTypeChoices
+                ? [
+                    {
+                      type: "select" as const,
+                      name: "attribute",
+                      label: "Attribute",
+                      value: rule.attribute,
+                      options: [
+                        {
+                          label: "Shipping Option Type",
+                          value: SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE,
+                        },
+                      ],
+                      colSpan: 1,
+                    },
+                  ]
+                : [
+                    {
+                      type: "input" as const,
+                      name: "attribute",
+                      label: "Attribute",
+                      value: rule.attribute,
+                      placeholder: "e.g. customer_group_id",
+                      colSpan: 1,
+                    },
+                  ]),
               {
                 type: "select",
                 name: "operator",
                 label: "Operator",
                 value: rule.operator,
-                options: ["in", "eq", "ne", "gte", "lte", "gt", "lt"].map(
-                  (value) => ({ label: value, value }),
-                ),
+                options: shippingOptionTypeChoices
+                  ? [
+                      { label: "In", value: "in" },
+                      { label: "Not in", value: "ne" },
+                    ]
+                  : ["in", "eq", "ne", "gte", "lte", "gt", "lt"].map(
+                      (value) => ({ label: value, value }),
+                    ),
                 colSpan: 1,
               },
-              {
-                type: "input",
-                name: "values",
-                label: "Values",
-                value: rule.values,
-                placeholder: "Comma separated",
-                colSpan: 1,
-              },
+              ...(shippingOptionTypeChoices
+                ? [
+                    {
+                      type: "option-values" as const,
+                      name: "values",
+                      label: "Shipping option types",
+                      value: rule.values.split(",").filter(Boolean),
+                      choices: shippingOptionTypeChoices,
+                      placeholder: "Select shipping option types",
+                      searchPlaceholder: "Search shipping option types...",
+                      emptyMessage: "No shipping option types found.",
+                      colSpan: 1,
+                    },
+                  ]
+                : [
+                    {
+                      type: "input" as const,
+                      name: "values",
+                      label: "Values",
+                      value: rule.values,
+                      placeholder: "Comma separated",
+                      colSpan: 1,
+                    },
+                  ]),
             ]}
             onChange={(name, value) => {
+              if (name === "values" && Array.isArray(value)) {
+                update(rule.id, { values: value.join(",") });
+                return;
+              }
               if (typeof value !== "string") return;
               if (name === "operator")
                 update(rule.id, { operator: value as RuleDraft["operator"] });
@@ -208,7 +259,9 @@ const RulesEditor = ({
             ...rules,
             {
               id: crypto.randomUUID(),
-              attribute: "",
+              attribute: shippingOptionTypeChoices
+                ? SHIPPING_OPTION_TYPE_TARGET_RULE_ATTRIBUTE
+                : "",
               operator: "in",
               values: "",
             },
@@ -258,6 +311,24 @@ const PromotionCreate = () => {
   >("usage");
   const [budgetLimit, setBudgetLimit] = useState("");
   const [budgetAttribute, setBudgetAttribute] = useState("");
+  const { data: shippingOptionTypeResult } = useQuery({
+    ...shippingOptionTypeQueries.choices(),
+    enabled: template === "shipping_discount",
+  });
+  const shippingOptionTypeChoices: OptionValueChoice[] =
+    shippingOptionTypeResult?.success
+      ? shippingOptionTypeResult.data.types.map((type) => ({
+          id: type.id,
+          value: type.label,
+        }))
+      : [];
+  const shippingOptionTypeRuleDescription = !shippingOptionTypeResult
+    ? "Loading shipping option types..."
+    : shippingOptionTypeResult.success
+      ? shippingOptionTypeChoices.length
+        ? "Choose the shipping option types that receive this discount."
+        : "Add a shipping option type in Settings → Locations & Shipping to restrict this discount."
+      : shippingOptionTypeResult.message;
 
   const detailIssues = useMemo(
     () => ({
@@ -687,6 +758,15 @@ const PromotionCreate = () => {
                 description="Define which products receive the discount."
                 rules={targetRules}
                 onChange={setTargetRules}
+              />
+            ) : null}
+            {defaults.targetType === "shipping_methods" ? (
+              <RulesEditor
+                label="Target shipping methods"
+                description={shippingOptionTypeRuleDescription}
+                rules={targetRules}
+                onChange={setTargetRules}
+                shippingOptionTypeChoices={shippingOptionTypeChoices}
               />
             ) : null}
             {template === "buy_get" ? (

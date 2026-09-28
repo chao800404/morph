@@ -61,11 +61,13 @@ export const createTaxRegionInputSchema = z.object({
   countryCode,
   providerId: z.string().trim().min(1).max(200).default("tp_system"),
   defaultTaxRate: defaultTaxRateSchema,
+  metadata: metadataInputSchema.optional(),
 });
 export const createTaxProvinceInputSchema = z.object({
   parentId: idSchema("tax region"),
   provinceCode,
   defaultTaxRate: defaultTaxRateSchema,
+  metadata: metadataInputSchema.optional(),
 });
 export const updateTaxRegionInputSchema = z.object({
   id: idSchema("tax region"),
@@ -82,6 +84,7 @@ const taxRateInputShape = z.object({
   isDefault: z.boolean().default(false),
   isCombinable: z.boolean().default(false),
   rules: z.array(taxRateRuleSchema).max(500).default([]),
+  metadata: metadataInputSchema.optional(),
 });
 
 const validateTaxRateRules = (
@@ -98,7 +101,11 @@ const validateTaxRateRules = (
       message: "A default tax rate cannot have target rules",
     });
   }
-  if (value.isDefault === false && !value.rules?.length) {
+  if (
+    value.isDefault === false &&
+    value.rules !== undefined &&
+    !value.rules.length
+  ) {
     context.addIssue({
       code: "custom",
       path: ["rules"],
@@ -110,11 +117,16 @@ const validateTaxRateRules = (
 
 export const createTaxRateInputSchema =
   taxRateInputShape.superRefine(validateTaxRateRules);
-export const updateTaxRateInputSchema = taxRateInputShape
-  .partial()
-  .extend({
-    id: idSchema("tax rate"),
+export const updateTaxRateInputSchema = z
+  .object({
     taxRegionId: idSchema("tax region"),
+    name: z.string().trim().min(1).max(200).optional(),
+    code: z.string().trim().min(1).max(100).optional(),
+    rate: z.coerce.number().min(0).max(100).nullable().optional(),
+    isDefault: z.boolean().optional(),
+    isCombinable: z.boolean().optional(),
+    rules: z.array(taxRateRuleSchema).max(500).optional(),
+    id: idSchema("tax rate"),
     metadata: metadataInputSchema.optional(),
   })
   .superRefine(validateTaxRateRules);

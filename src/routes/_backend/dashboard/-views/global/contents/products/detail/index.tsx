@@ -22,8 +22,7 @@ import { ProductVariantsCard } from "./product-variants-card";
  * Laid out like Medusa's: what the product *is* runs down the main column
  * (general, media, options, variants) and how it is *classified* sits in the
  * sidebar (organization, attributes, metadata). Sales channels and shipping
- * Shipping profiles are deliberately absent because this catalogue does not
- * model product-profile assignment. Sales channels live in Organization.
+ * profiles live in Organization.
  */
 const ProductDetail = () => {
   const { id } = useParams({ strict: false }) as { id: string };

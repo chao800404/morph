@@ -1,4 +1,5 @@
 import { getDb } from "@/db";
+import type { Metadata } from "@/db/json";
 import { assets } from "@/db/asset.schema";
 import {
   cartAddresses,
@@ -25,8 +26,11 @@ import { cartReservationDal } from "@/lib/inventory/dal/cart-reservation.dal";
 import { cartPromotionDal } from "@/lib/promotion/dal/cart-promotion.dal";
 import { cartTaxDal } from "@/lib/tax/dal/cart-tax.dal";
 import type { StoreContextDTO } from "@/lib/storefront/dto/store-context.dto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
+import { firstOrNull } from "@/lib/db/single-row";
 import { calculateAmountLine, sumCartTotals } from "../cart-totals";
+import { hasCartPricingChanged } from "../cart-pricing";
 import type {
   CartAddressDTO,
   CartAddressInput,
@@ -47,22 +51,34 @@ type CartMutationResult =
         | "INVALID_ADDRESS";
     };
 
+type CartCheckoutPricingRefreshResult =
+  | { success: true; cart: CartDTO; changed: boolean }
+  | {
+      success: false;
+      reason: "NOT_FOUND" | "COMPLETED" | "NO_PRICE" | "CONFLICT";
+    };
+
+type CartStoreCreditMutationResult =
+  | { success: true; cart: CartDTO; appliedAmount: number }
+  | {
+      success: false;
+      reason: "NOT_FOUND" | "COMPLETED" | "CUSTOMER_MISMATCH" | "CONFLICT";
+    };
+
 const activeCart = async (id: string, salesChannelId: string) => {
   const db = await getDb();
-  return (
-    (
-      await db
-        .select()
-        .from(carts)
-        .where(
-          and(
-            eq(carts.id, id),
-            eq(carts.salesChannelId, salesChannelId),
-            isNull(carts.deletedAt),
-          ),
-        )
-        .limit(1)
-    )[0] ?? null
+  return firstOrNull(
+    await db
+      .select()
+      .from(carts)
+      .where(
+        and(
+          eq(carts.id, id),
+          eq(carts.salesChannelId, salesChannelId),
+          isNull(carts.deletedAt),
+        ),
+      )
+      .limit(1),
   );
 };
 
@@ -86,13 +102,18 @@ const mapAddress = (
     : null;
 
 export const cartDal = {
-  async create(context: StoreContextDTO, email?: string): Promise<CartDTO> {
+  async create(
+    context: StoreContextDTO,
+    email?: string,
+    customerId?: string,
+  ): Promise<CartDTO> {
     const db = await getDb();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     await db.insert(carts).values({
       id,
       regionId: context.regionId,
+      customerId: customerId ?? null,
       salesChannelId: context.salesChannelId,
       currencyCode: context.currencyCode,
       locale: context.localeCode,
@@ -307,6 +328,166 @@ export const cartDal = {
     };
   },
 
+  async setStoreCredit(input: {
+    cartId: string;
+    salesChannelId: string;
+    customerId?: string | null;
+    accountId: string | null;
+    availableBalance: number;
+    reference?: "store_credit_account" | "gift_card_account";
+    targetAccountId?: string;
+    metadata?: Metadata;
+  }): Promise<CartStoreCreditMutationResult> {
+    const reference = input.reference ?? "store_credit_account";
+    const cart = await activeCart(input.cartId, input.salesChannelId);
+    if (!cart) return { success: false, reason: "NOT_FOUND" };
+    if (cart.completedAt) return { success: false, reason: "COMPLETED" };
+    const customerId =
+      input.customerId === undefined ? cart.customerId : input.customerId;
+    if (cart.customerId !== customerId)
+      return { success: false, reason: "CUSTOMER_MISMATCH" };
+    if (
+      reference === "gift_card_account" &&
+      !input.accountId &&
+      !input.targetAccountId
+    )
+      return { success: false, reason: "CONFLICT" };
+    if (
+      !Number.isSafeInteger(input.availableBalance) ||
+      input.availableBalance < 0
+    )
+      return { success: false, reason: "CONFLICT" };
+
+    const db = await getDb();
+    const [cartDto, credits] = await Promise.all([
+      cartDal.findById(input.cartId, input.salesChannelId),
+      db
+        .select()
+        .from(cartCreditLines)
+        .where(
+          and(
+            eq(cartCreditLines.cartId, input.cartId),
+            isNull(cartCreditLines.deletedAt),
+          ),
+        ),
+    ]);
+    if (!cartDto) return { success: false, reason: "NOT_FOUND" };
+
+    const targetLines = credits.filter(
+      (line) =>
+        line.reference === reference &&
+        (reference === "store_credit_account" ||
+          line.referenceId === (input.targetAccountId ?? input.accountId)),
+    );
+    if (targetLines.length > 1) return { success: false, reason: "CONFLICT" };
+    const targetLine = targetLines[0] ?? null;
+    const otherCreditTotal = credits
+      .filter((line) => line.id !== targetLine?.id)
+      .reduce((sum, line) => sum + Math.max(0, line.amount), 0);
+    const availableForCredit = Math.max(
+      0,
+      cartDto.totalBeforeCredits - otherCreditTotal,
+    );
+    const appliedAmount = Math.min(input.availableBalance, availableForCredit);
+    if (appliedAmount > 0 && !input.accountId)
+      return { success: false, reason: "CONFLICT" };
+    const lineId =
+      reference === "store_credit_account"
+        ? input.cartId
+        : `gift-card:${input.cartId}:${input.targetAccountId ?? input.accountId}`;
+    const timestamp = new Date(
+      Math.max(Date.now(), Date.parse(cart.updatedAt) + 1 || Date.now()),
+    ).toISOString();
+    const customerPredicate =
+      customerId === null
+        ? isNull(carts.customerId)
+        : eq(carts.customerId, customerId);
+    const cartGuard = db
+      .update(carts)
+      .set({ updatedAt: timestamp })
+      .where(
+        and(
+          eq(carts.id, input.cartId),
+          eq(carts.salesChannelId, input.salesChannelId),
+          customerPredicate,
+          eq(carts.updatedAt, cart.updatedAt),
+          isNull(carts.completedAt),
+          isNull(carts.deletedAt),
+        ),
+      );
+    const sameCartVersion = exists(
+      db
+        .select({ id: carts.id })
+        .from(carts)
+        .where(
+          and(
+            eq(carts.id, input.cartId),
+            eq(carts.salesChannelId, input.salesChannelId),
+            customerPredicate,
+            eq(carts.updatedAt, timestamp),
+            isNull(carts.completedAt),
+            isNull(carts.deletedAt),
+          ),
+        ),
+    );
+    const mutation =
+      appliedAmount > 0
+        ? // A builder, not db.run(sql): see batchGuard for why a raw
+          // statement with bound values cannot sit in a D1 batch. Inserts
+          // only while the cart is still the version this read; the SELECT
+          // lists every column in table order.
+          db
+            .insert(cartCreditLines)
+            .select(
+              sql`SELECT ${lineId}, ${input.cartId}, ${reference},
+                ${input.accountId}, ${appliedAmount}, ${JSON.stringify(input.metadata ?? {})}, ${timestamp}, ${timestamp}, NULL
+              FROM carts
+              WHERE id = ${input.cartId}
+                AND sales_channel_id = ${input.salesChannelId}
+                AND ${customerId === null ? sql`customer_id IS NULL` : sql`customer_id = ${customerId}`}
+                AND updated_at = ${timestamp}
+                AND completed_at IS NULL
+                AND deleted_at IS NULL`,
+            )
+            .onConflictDoUpdate({
+              target: cartCreditLines.id,
+              set: {
+                cartId: sql`excluded.cart_id`,
+                reference: sql`excluded.reference`,
+                referenceId: sql`excluded.reference_id`,
+                amount: sql`excluded.amount`,
+                metadata: sql`excluded.metadata`,
+                updatedAt: sql`excluded.updated_at`,
+                deletedAt: null,
+              },
+            })
+        : db
+            .update(cartCreditLines)
+            .set({ deletedAt: timestamp, updatedAt: timestamp })
+            .where(
+              and(
+                eq(cartCreditLines.id, lineId),
+                eq(cartCreditLines.cartId, input.cartId),
+                eq(cartCreditLines.reference, reference),
+                isNull(cartCreditLines.deletedAt),
+                sameCartVersion,
+              ),
+            );
+    const results = await db.batch([cartGuard, mutation] as [
+      BatchItem<"sqlite">,
+      ...BatchItem<"sqlite">[],
+    ]);
+    const guardChanges = Number(results.at(0)?.meta.changes ?? 0);
+    const mutationChanges = Number(results.at(1)?.meta.changes ?? 0);
+    if (guardChanges !== 1 || (appliedAmount > 0 && mutationChanges !== 1))
+      return { success: false, reason: "CONFLICT" };
+
+    const updatedCart = await cartDal.findById(input.cartId, input.salesChannelId);
+    return updatedCart
+      ? { success: true, cart: updatedCart, appliedAmount }
+      : { success: false, reason: "NOT_FOUND" };
+  },
+
   async addItem(
     cartId: string,
     context: StoreContextDTO,
@@ -373,6 +554,7 @@ export const cartDal = {
       currencyCode: cart.currencyCode,
       quantity: nextQuantity,
       regionId: cart.regionId ?? undefined,
+      customerId: cart.customerId ?? undefined,
       salesChannelId: context.salesChannelId,
     });
     if (!resolvedPrice) return { success: false, reason: "NO_PRICE" };
@@ -501,6 +683,7 @@ export const cartDal = {
         currencyCode: cart.currencyCode,
         quantity,
         regionId: cart.regionId ?? undefined,
+        customerId: cart.customerId ?? undefined,
         salesChannelId,
       },
     );
@@ -526,6 +709,129 @@ export const cartDal = {
     return {
       success: true,
       cart: (await this.findById(cartId, salesChannelId))!,
+    };
+  },
+
+  /**
+   * Refresh catalogue prices and derived promotions/taxes immediately before
+   * checkout. A changed money state is returned to the caller so the customer
+   * must review it before an order can be created.
+   */
+  async refreshPricingForCheckout(
+    cartId: string,
+    salesChannelId: string,
+  ): Promise<CartCheckoutPricingRefreshResult> {
+    const cart = await activeCart(cartId, salesChannelId);
+    if (!cart) return { success: false, reason: "NOT_FOUND" };
+    if (cart.completedAt) return { success: false, reason: "COMPLETED" };
+    const before = await this.findById(cartId, salesChannelId);
+    if (!before) return { success: false, reason: "NOT_FOUND" };
+
+    const db = await getDb();
+    const items = await db
+      .select()
+      .from(cartLineItems)
+      .where(
+        and(eq(cartLineItems.cartId, cartId), isNull(cartLineItems.deletedAt)),
+      );
+    const resolvedPrices = await Promise.all(
+      items
+        .filter((item) => item.variantId && !item.isCustomPrice)
+        .map(async (item) => {
+          const resolved = await pricingDal.resolveVariantPrice(
+            item.variantId!,
+            {
+              currencyCode: cart.currencyCode,
+              quantity: item.quantity,
+              regionId: cart.regionId ?? undefined,
+              customerId: cart.customerId ?? undefined,
+              salesChannelId,
+            },
+          );
+          return { item, resolved };
+        }),
+    );
+    if (resolvedPrices.some(({ resolved }) => !resolved))
+      return { success: false, reason: "NO_PRICE" };
+
+    const changes = resolvedPrices.flatMap(({ item, resolved }) => {
+      if (!resolved) return [];
+      const compareAtUnitPrice =
+        resolved.priceListType === "sale" ? resolved.originalAmount : null;
+      if (
+        item.unitPrice === resolved.amount &&
+        item.compareAtUnitPrice === compareAtUnitPrice
+      )
+        return [];
+      return [{ item, unitPrice: resolved.amount, compareAtUnitPrice }];
+    });
+    if (changes.length) {
+      const previousTime = Date.parse(cart.updatedAt);
+      const timestamp = new Date(
+        Math.max(
+          Date.now(),
+          Number.isFinite(previousTime) ? previousTime + 1 : Date.now(),
+        ),
+      ).toISOString();
+      const cartGuard = db
+        .update(carts)
+        .set({ updatedAt: timestamp })
+        .where(
+          and(
+            eq(carts.id, cartId),
+            eq(carts.salesChannelId, salesChannelId),
+            eq(carts.updatedAt, cart.updatedAt),
+            isNull(carts.completedAt),
+            isNull(carts.deletedAt),
+          ),
+        );
+      const lineUpdates = changes.map(
+        ({ item, unitPrice, compareAtUnitPrice }) =>
+          db
+            .update(cartLineItems)
+            .set({ unitPrice, compareAtUnitPrice, updatedAt: timestamp })
+            .where(
+              and(
+                eq(cartLineItems.id, item.id),
+                eq(cartLineItems.cartId, cartId),
+                eq(cartLineItems.quantity, item.quantity),
+                eq(cartLineItems.updatedAt, item.updatedAt),
+                isNull(cartLineItems.deletedAt),
+                exists(
+                  db
+                    .select({ id: carts.id })
+                    .from(carts)
+                    .where(
+                      and(
+                        eq(carts.id, cartId),
+                        eq(carts.updatedAt, timestamp),
+                        isNull(carts.completedAt),
+                        isNull(carts.deletedAt),
+                      ),
+                    ),
+                ),
+              ),
+            ),
+      );
+      const results = await db.batch([cartGuard, ...lineUpdates] as [
+        BatchItem<"sqlite">,
+        ...BatchItem<"sqlite">[],
+      ]);
+      if (
+        !Number(results.at(0)?.meta.changes ?? 0) ||
+        results.slice(1).some((result) => !Number(result.meta.changes ?? 0))
+      )
+        return { success: false, reason: "CONFLICT" };
+    }
+
+    await cartPromotionDal.refresh(cartId);
+    await cartTaxDal.refresh(cartId);
+    const refreshed = await this.findById(cartId, salesChannelId);
+    if (!refreshed) return { success: false, reason: "NOT_FOUND" };
+    return {
+      success: true,
+      cart: refreshed,
+      changed: hasCartPricingChanged(before, refreshed),
     };
   },
 

@@ -41,10 +41,20 @@
         "binding": "THEME_BUILD_QUEUE",
         "queue": "morph-theme-builds",
       },
+      {
+        "binding": "INVENTORY_EXPORT_QUEUE",
+        "queue": "morph-inventory-exports",
+      },
     ],
     "consumers": [
       {
         "queue": "morph-theme-builds",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+      },
+      {
+        "queue": "morph-inventory-exports",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_retries": 3,
@@ -176,6 +186,18 @@
           {
             "binding": "THEME_BUILD_QUEUE",
             "queue": "morph-theme-builds",
+          },
+          {
+            "binding": "INVENTORY_EXPORT_QUEUE",
+            "queue": "morph-inventory-exports",
+          },
+        ],
+        "consumers": [
+          {
+            "queue": "morph-inventory-exports",
+            "max_batch_size": 1,
+            "max_batch_timeout": 5,
+            "max_retries": 3,
           },
         ],
       },

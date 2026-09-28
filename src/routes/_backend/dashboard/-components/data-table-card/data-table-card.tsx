@@ -68,7 +68,12 @@ export interface DataTableColumn<TRow> {
  * pager, search, sort and empty state drift apart.
  */
 export type DataTableScope =
-  "taxRate" | "orderItem" | "orderFulfillment" | "release";
+  | "taxRate"
+  | "orderItem"
+  | "orderFulfillment"
+  | "orderReturn"
+  | "orderNotification"
+  | "release";
 
 export interface DataTablePaginationInfo {
   page: number;

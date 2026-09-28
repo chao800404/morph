@@ -1,5 +1,9 @@
 import { getDb } from "@/db";
 import {
+  productCollections,
+  productOptions,
+  productOptionValues,
+  productTypes,
   productVariantAssets,
   productVariantOptionValues,
   productVariantPriceHistory,
@@ -8,7 +12,14 @@ import {
   products,
 } from "@/db/product.schema";
 import { assets } from "@/db/asset.schema";
+import { inventoryItems } from "@/db/inventory.schema";
+import {
+  productVariantInventoryItems,
+  productVariantPriceSets,
+} from "@/db/link.schema";
+import { priceSets, prices as pricingPrices } from "@/db/pricing.schema";
 import { users } from "@/db/auth.schema";
+import { priceSetDal } from "@/lib/pricing/dal/price-set.dal";
 import {
   and,
   asc,
@@ -40,13 +51,14 @@ import {
   toProductVariantDTO,
   type ProductVariantOptionValueRow,
   type ProductVariantAssetRow,
+  type ProductVariantInventoryKitRow,
   type ProductVariantPriceRow,
   type ProductVariantRow,
 } from "../mappers/product-variant.mapper";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
 const VARIANT_COLUMNS = 19;
-const PRICE_COLUMNS = 6;
+const PRICE_COLUMNS = 12;
 const OPTION_LINK_COLUMNS = 2;
 const ASSET_LINK_COLUMNS = 3;
 
@@ -61,13 +73,53 @@ const hydrate = async (
   const priceRows: ProductVariantPriceRow[] = [];
   const linkRows: ProductVariantOptionValueRow[] = [];
   const assetRows: ProductVariantAssetRow[] = [];
+  const inventoryKitRows: ProductVariantInventoryKitRow[] = [];
 
   for (const ids of chunk(variantIds, 50)) {
-    const [prices, links, variantAssets] = await Promise.all([
+    const [
+      legacyPrices,
+      normalizedPrices,
+      optionLinks,
+      variantAssets,
+      kitItems,
+    ] = await Promise.all([
       db
         .select()
         .from(productVariantPrices)
         .where(inArray(productVariantPrices.variantId, ids)),
+      db
+        .select({
+          id: pricingPrices.id,
+          variantId: productVariantPriceSets.variantId,
+          currencyCode: pricingPrices.currencyCode,
+          amount: pricingPrices.amount,
+          createdAt: pricingPrices.createdAt,
+          updatedAt: pricingPrices.updatedAt,
+        })
+        .from(productVariantPriceSets)
+        .innerJoin(
+          priceSets,
+          and(
+            eq(priceSets.id, productVariantPriceSets.priceSetId),
+            isNull(priceSets.deletedAt),
+          ),
+        )
+        .innerJoin(
+          pricingPrices,
+          and(
+            eq(pricingPrices.priceSetId, priceSets.id),
+            isNull(pricingPrices.priceListId),
+            isNull(pricingPrices.minQuantity),
+            isNull(pricingPrices.maxQuantity),
+            eq(pricingPrices.rulesCount, 0),
+            isNull(pricingPrices.deletedAt),
+          ),
+        )
+        .where(inArray(productVariantPriceSets.variantId, ids))
+        .orderBy(
+          asc(productVariantPriceSets.priceSetId),
+          asc(pricingPrices.currencyCode),
+        ),
       db
         .select()
         .from(productVariantOptionValues)
@@ -88,18 +140,166 @@ const hydrate = async (
             isNull(assets.deletedAt),
           ),
         ),
+      db
+        .select({
+          variantId: productVariantInventoryItems.variantId,
+          inventoryItemId: productVariantInventoryItems.inventoryItemId,
+          title: inventoryItems.title,
+          sku: inventoryItems.sku,
+          unitOfMeasure: inventoryItems.unitOfMeasure,
+          requiredQuantity: productVariantInventoryItems.requiredQuantity,
+        })
+        .from(productVariantInventoryItems)
+        .innerJoin(
+          inventoryItems,
+          eq(inventoryItems.id, productVariantInventoryItems.inventoryItemId),
+        )
+        .where(
+          and(
+            inArray(productVariantInventoryItems.variantId, ids),
+            isNull(inventoryItems.deletedAt),
+          ),
+        ),
     ]);
-    priceRows.push(...prices);
-    linkRows.push(...links);
+    const normalizedPriceCurrencies = new Set(
+      normalizedPrices.map(
+        (price) => `${price.variantId}:${price.currencyCode}`,
+      ),
+    );
+    priceRows.push(...normalizedPrices);
+    priceRows.push(
+      ...legacyPrices.filter(
+        (price) =>
+          !normalizedPriceCurrencies.has(
+            `${price.variantId}:${price.currencyCode}`,
+          ),
+      ),
+    );
+    linkRows.push(...optionLinks);
     assetRows.push(...variantAssets);
+    inventoryKitRows.push(...kitItems);
   }
 
   return variantRows.map((row) =>
-    toProductVariantDTO(row, priceRows, linkRows, assetRows),
+    toProductVariantDTO(row, priceRows, linkRows, assetRows, inventoryKitRows),
   );
 };
 
 export const productVariantDal = {
+  /**
+   * Build the catalogue snapshot an order line needs at the time it is created.
+   * Draft orders use the same product ownership and snapshot boundary as
+   * checkout, while remaining independent of later catalogue edits.
+   */
+  async findOrderSnapshot(variantId: string, salesChannelId?: string) {
+    const db = await getDb();
+    const [row] = await db
+      .select({
+        variantId: productVariants.id,
+        productId: products.id,
+        productTitle: products.title,
+        productDescription: products.description,
+        productSubtitle: products.subtitle,
+        productTypeId: products.typeId,
+        productCollectionId: products.collectionId,
+        productHandle: products.handle,
+        productDiscountable: products.discountable,
+        productIsGiftcard: products.isGiftcard,
+        variantTitle: productVariants.title,
+        variantSku: productVariants.sku,
+        variantBarcode: productVariants.barcode,
+        thumbnailAssetId: assets.id,
+        productType: productTypes.value,
+        productCollection: productCollections.title,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .leftJoin(
+        productCollections,
+        and(
+          eq(productCollections.id, products.collectionId),
+          isNull(productCollections.deletedAt),
+        ),
+      )
+      .leftJoin(
+        productTypes,
+        and(
+          eq(productTypes.id, products.typeId),
+          isNull(productTypes.deletedAt),
+        ),
+      )
+      .leftJoin(
+        assets,
+        and(
+          eq(
+            assets.id,
+            sql<string>`coalesce(${productVariants.thumbnailAssetId}, ${products.thumbnailAssetId})`,
+          ),
+          isNull(assets.deletedAt),
+        ),
+      )
+      .where(
+        and(
+          eq(productVariants.id, variantId),
+          isNull(productVariants.deletedAt),
+          isNull(products.deletedAt),
+          ...(salesChannelId
+            ? [
+                eq(products.status, "published"),
+                sql`EXISTS (
+                  SELECT 1 FROM product_sales_channels psc
+                  WHERE psc.product_id = ${products.id}
+                    AND psc.sales_channel_id = ${salesChannelId}
+                )`,
+              ]
+            : []),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+
+    const optionValues = await db
+      .select({
+        option: productOptions.title,
+        value: productOptionValues.value,
+        optionRank: productOptions.rank,
+        valueRank: productOptionValues.rank,
+      })
+      .from(productVariantOptionValues)
+      .innerJoin(
+        productOptionValues,
+        eq(productOptionValues.id, productVariantOptionValues.optionValueId),
+      )
+      .innerJoin(
+        productOptions,
+        eq(productOptions.id, productOptionValues.optionId),
+      )
+      .where(
+        and(
+          eq(productVariantOptionValues.variantId, variantId),
+          isNull(productOptionValues.deletedAt),
+          isNull(productOptions.deletedAt),
+        ),
+      )
+      .orderBy(asc(productOptions.rank), asc(productOptionValues.rank));
+
+    return {
+      ...row,
+      title: `${row.productTitle} - ${row.variantTitle}`,
+      subtitle: row.productSubtitle,
+      thumbnail: row.thumbnailAssetId
+        ? `/api/store/assets/${row.thumbnailAssetId}`
+        : null,
+      requiresShipping: !row.productIsGiftcard,
+      isDiscountable: row.productDiscountable,
+      isGiftcard: row.productIsGiftcard,
+      variantOptionValues: optionValues.map(({ option, value }) => ({
+        option,
+        value,
+      })),
+    };
+  },
+
   async findById(id: string): Promise<ProductVariantDTO | null> {
     const db = await getDb();
     const rows = await db
@@ -157,7 +357,7 @@ export const productVariantDal = {
           ? productVariants.updatedAt
           : productVariants.createdAt;
     const direction = options.sortOrder === "asc" ? asc : desc;
-    const offset = (options.page - 1) * options.limit;
+    const offset = options.offset ?? (options.page - 1) * options.limit;
     const [totals, rows] = await Promise.all([
       db
         .select({ value: count() })
@@ -202,7 +402,12 @@ export const productVariantDal = {
    * Every whitespace-delimited term must match somewhere, so a query such as
    * `p01 red` can match the product title and an option value respectively.
    */
-  async searchPage(options: { query: string; limit: number }): Promise<{
+  async searchPage(options: {
+    query: string;
+    limit: number;
+    /** Restrict admin pickers to sellable products in one channel. */
+    publishedSalesChannelId?: string;
+  }): Promise<{
     variants: ProductVariantSearchResultDTO[];
     total: number;
   }> {
@@ -229,11 +434,22 @@ export const productVariantDal = {
     const matches = toGlobalSearchTerms(options.query).map((term) =>
       likeContains(searchableText, term),
     );
-    const condition = and(
+    const conditions = [
       isNull(productVariants.deletedAt),
       isNull(products.deletedAt),
       ...matches,
-    );
+    ];
+    if (options.publishedSalesChannelId) {
+      conditions.push(
+        eq(products.status, "published"),
+        sql`EXISTS (
+          SELECT 1 FROM product_sales_channels psc
+          WHERE psc.product_id = ${products.id}
+            AND psc.sales_channel_id = ${options.publishedSalesChannelId}
+        )`,
+      );
+    }
+    const condition = and(...conditions);
 
     const [totals, rows] = await Promise.all([
       db
@@ -352,18 +568,28 @@ export const productVariantDal = {
       await db.insert(productVariantOptionValues).values(group);
     }
 
-    const prices = dataList.flatMap((data) =>
+    const priceSetByVariant = await priceSetDal.ensureForVariants(
+      dataList.map((data) => data.id),
+      now,
+    );
+    const basePrices = dataList.flatMap((data) =>
       (data.prices ?? []).map((price) => ({
         id: crypto.randomUUID(),
-        variantId: data.id,
+        priceSetId: priceSetByVariant.get(data.id)!,
+        priceListId: null,
+        title: null,
         currencyCode: price.currencyCode,
         amount: price.amount,
+        minQuantity: null,
+        maxQuantity: null,
+        rulesCount: 0,
         createdAt: now,
         updatedAt: now,
+        deletedAt: null,
       })),
     );
-    for (const group of chunkForInsert(prices, PRICE_COLUMNS)) {
-      await db.insert(productVariantPrices).values(group);
+    for (const group of chunkForInsert(basePrices, PRICE_COLUMNS)) {
+      await db.insert(pricingPrices).values(group);
     }
 
     for (const data of dataList) {
@@ -416,14 +642,41 @@ export const productVariantDal = {
   ): Promise<void> {
     const db = await getDb();
     const now = new Date().toISOString();
-
-    const previous = await db
-      .select()
-      .from(productVariantPrices)
-      .where(eq(productVariantPrices.variantId, variantId));
-    const previousByCurrency = new Map(
-      previous.map((price) => [price.currencyCode, price.amount]),
+    const priceSetByVariant = await priceSetDal.ensureForVariants(
+      [variantId],
+      now,
     );
+    const priceSetId = priceSetByVariant.get(variantId)!;
+    const [previousBasePrices, legacyPrices] = await Promise.all([
+      db
+        .select({
+          currencyCode: pricingPrices.currencyCode,
+          amount: pricingPrices.amount,
+        })
+        .from(pricingPrices)
+        .where(
+          and(
+            eq(pricingPrices.priceSetId, priceSetId),
+            isNull(pricingPrices.priceListId),
+            isNull(pricingPrices.minQuantity),
+            isNull(pricingPrices.maxQuantity),
+            eq(pricingPrices.rulesCount, 0),
+            isNull(pricingPrices.deletedAt),
+          ),
+        ),
+      db
+        .select({
+          currencyCode: productVariantPrices.currencyCode,
+          amount: productVariantPrices.amount,
+        })
+        .from(productVariantPrices)
+        .where(eq(productVariantPrices.variantId, variantId)),
+    ]);
+    const previousByCurrency = new Map(
+      legacyPrices.map((price) => [price.currencyCode, price.amount]),
+    );
+    for (const price of previousBasePrices)
+      previousByCurrency.set(price.currencyCode, price.amount);
     const nextByCurrency = new Map(
       prices.map((price) => [price.currencyCode, price.amount]),
     );
@@ -449,19 +702,38 @@ export const productVariantDal = {
 
     const rows = prices.map((price) => ({
       id: crypto.randomUUID(),
-      variantId,
+      priceSetId,
+      priceListId: null,
+      title: null,
       currencyCode: price.currencyCode,
       amount: price.amount,
+      minQuantity: null,
+      maxQuantity: null,
+      rulesCount: 0,
       createdAt: now,
       updatedAt: now,
+      deletedAt: null,
     }));
     const statements: BatchItem<"sqlite">[] = [
+      db
+        .update(pricingPrices)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(pricingPrices.priceSetId, priceSetId),
+            isNull(pricingPrices.priceListId),
+            isNull(pricingPrices.minQuantity),
+            isNull(pricingPrices.maxQuantity),
+            eq(pricingPrices.rulesCount, 0),
+            isNull(pricingPrices.deletedAt),
+          ),
+        ),
       db
         .delete(productVariantPrices)
         .where(eq(productVariantPrices.variantId, variantId)),
     ];
     for (const group of chunkForInsert(rows, PRICE_COLUMNS)) {
-      statements.push(db.insert(productVariantPrices).values(group));
+      statements.push(db.insert(pricingPrices).values(group));
     }
     for (const group of chunkForInsert(historyRows, 7)) {
       statements.push(db.insert(productVariantPriceHistory).values(group));
