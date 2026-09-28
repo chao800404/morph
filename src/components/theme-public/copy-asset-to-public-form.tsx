@@ -12,7 +12,7 @@ import { useState } from "react";
  * Where a library asset is copied in `public/`, and what that means, before
  * the copy is made: a snapshot the Theme owns, public at its URL once
  * published, and untouched by later changes to the asset in the library.
- * Code mode's Assets panel and the Assets page's "Site public/" both use it.
+ * Code mode's Assets panel and the Assets page's "Public" both use it.
  */
 export function CopyAssetToPublicForm({
   asset,

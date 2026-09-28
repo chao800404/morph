@@ -1074,9 +1074,9 @@ export const Contents: CollectionGroup = {
           // The site's own public/ folder: the same files Code mode lists,
           // public once published. Beside the media library, not inside it,
           // since those files are private until something uses them.
-          title: "Site public/",
+          title: "Public",
           slug: "site-public",
-          label: "Site public/",
+          label: "Public",
           index: {
             view: lazyView(
               () => import("@views/global/contents/assets/site-public"),
