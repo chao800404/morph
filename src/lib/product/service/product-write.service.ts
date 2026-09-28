@@ -1,0 +1,517 @@
+import { currencyDal } from "@/lib/currency/dal/currency.dal";
+import { inventoryDal } from "@/lib/inventory/dal/inventory.dal";
+import {
+  productCategoryDal,
+  productTagDal,
+  productTypeDal,
+} from "@/lib/product/dal/product-taxonomy.dal";
+import { productVariantDal } from "@/lib/product/dal/product-variant.dal";
+import { productDal } from "@/lib/product/dal/product.dal";
+import type {
+  ProductOptionDTO,
+  ProductOptionValueDTO,
+} from "@/lib/product/dto/product-option.dto";
+import type { ProductVariantInsertDTO } from "@/lib/product/dto/product-variant.dto";
+import { MAX_GENERATED_VARIANTS } from "@/lib/product/variant-limits";
+import { shippingProfileDal } from "@/lib/shipping/dal/shipping-profile.dal";
+import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
+import {
+  createProductInputSchema,
+  deleteProductsInputSchema,
+  optionSelectionValueCount,
+  toHandle,
+  updateProductInputSchema,
+} from "@/lib/validations/product";
+import type { z } from "zod";
+import { resolveVariantSku } from "@/server/product/product-sku";
+
+export type CreateProductInput = z.infer<
+  ReturnType<typeof createProductInputSchema>
+>;
+export type UpdateProductInput = z.infer<
+  ReturnType<typeof updateProductInputSchema>
+>;
+export type DeleteProductsInput = z.infer<typeof deleteProductsInputSchema>;
+export type ProductWriteResult =
+  | {
+      success: true;
+      message: string;
+      data: {
+        id?: string;
+        handle?: string;
+        variantCount?: number;
+        deleted?: number;
+      };
+    }
+  | {
+      success: false;
+      message: string;
+      data: null;
+      error?: string;
+      errors?: Record<string, string[]>;
+    };
+
+/** Cartesian product of option values, in option order. */
+const buildCombinations = (
+  options: ProductOptionDTO[],
+): ProductOptionValueDTO[][] =>
+  options.reduce<ProductOptionValueDTO[][]>(
+    (combinations, option) =>
+      combinations.flatMap((combination) =>
+        option.values.map((value) => [...combination, value]),
+      ),
+    [[]],
+  );
+
+/** Shared by dashboard server functions and the Admin REST API. */
+export const productWriteService = {
+  async create(
+    data: CreateProductInput,
+    actorId: string,
+  ): Promise<ProductWriteResult> {
+    try {
+      const handleResult = toHandle(data.handle, data.title);
+      if (!handleResult.success) {
+        return {
+          success: false,
+          message: "Could not derive a valid handle from the title",
+          data: null,
+          errors: {
+            handle: [handleResult.error.issues[0]?.message ?? "Invalid input"],
+          },
+        };
+      }
+      const handle = handleResult.data;
+
+      const priceCurrencyCodes = [
+        ...data.prices.map((price) => price.currencyCode),
+        ...(data.variants ?? []).flatMap((variant) =>
+          variant.prices.map((price) => price.currencyCode),
+        ),
+      ];
+      if (!(await currencyDal.areSupported(priceCurrencyCodes))) {
+        return {
+          success: false,
+          message: "A price uses a currency that is not enabled for this store",
+          data: null,
+          errors: {
+            prices: ["Choose a currency enabled in Store settings"],
+          },
+        };
+      }
+
+      if (await productDal.findByHandle(handle)) {
+        return {
+          success: false,
+          message: `A product with the handle "${handle}" already exists`,
+          data: null,
+          errors: { handle: ["This handle is already in use"] },
+        };
+      }
+
+      const selectedChannels = await salesChannelDal.findByIds(
+        data.salesChannelIds,
+      );
+      if (selectedChannels.length !== data.salesChannelIds.length) {
+        return {
+          success: false,
+          message: "One or more sales channels no longer exist",
+          data: null,
+          errors: { salesChannelIds: ["Review the selected sales channels"] },
+        };
+      }
+
+      // Only the generated matrix needs capping; an explicit list is already
+      // bounded by the input schema.
+      const combinationCount = data.options.reduce(
+        (total, option) => total * optionSelectionValueCount(option),
+        1,
+      );
+      if (
+        !data.variants &&
+        data.options.length > 0 &&
+        combinationCount > MAX_GENERATED_VARIANTS
+      ) {
+        return {
+          success: false,
+          message: `These options would generate ${combinationCount} variants, above the limit of ${MAX_GENERATED_VARIANTS}`,
+          data: null,
+          errors: { options: ["Too many option value combinations"] },
+        };
+      }
+      if (data.options.length === 0 && (data.variants?.length ?? 0) > 1) {
+        return {
+          success: false,
+          message:
+            "A product without options can only have one default variant",
+          data: null,
+          errors: { variants: ["Only one default variant is allowed"] },
+        };
+      }
+
+      // Types and tags are upserted by value, so an author can name one that
+      // does not exist yet without a separate round trip.
+      const now = new Date().toISOString();
+      const typeId = data.typeValue
+        ? await productTypeDal.ensure(data.typeValue, now)
+        : null;
+
+      const productId = crypto.randomUUID();
+      await productDal.create({
+        id: productId,
+        title: data.title,
+        handle,
+        subtitle: data.subtitle,
+        description: data.description,
+        status: data.status,
+        collectionId: data.collectionId,
+        typeId,
+        discountable: data.discountable,
+        createdBy: actorId,
+        updatedBy: actorId,
+      });
+
+      await salesChannelDal.setProductChannels(
+        productId,
+        selectedChannels.map((channel) => channel.id),
+      );
+
+      if (data.assetIds.length > 0) {
+        await productDal.setAssets(productId, data.assetIds);
+      }
+
+      if (data.tagValues.length > 0) {
+        await productDal.setTags(
+          productId,
+          await productTagDal.ensureMany(data.tagValues, now),
+        );
+      }
+
+      if (data.categoryIds.length > 0) {
+        // Unknown ids are dropped rather than rejected: a category deleted
+        // while the wizard was open should not fail the whole product.
+        await productDal.setCategories(
+          productId,
+          await productCategoryDal.filterExisting(data.categoryIds),
+        );
+      }
+
+      let variantCount = 0;
+      if (data.options.length > 0) {
+        const options = await productDal.replaceOptions(
+          productId,
+          data.options,
+          actorId,
+        );
+
+        // Option value IDs only exist after the server creates them, so the
+        // client's string values are resolved against the freshly stored rows.
+        const valueIdByOptionAndValue = new Map<string, string>();
+        options.forEach((option, optionIndex) => {
+          option.values.forEach((value) => {
+            valueIdByOptionAndValue.set(
+              `${optionIndex}:${value.value}`,
+              value.id,
+            );
+          });
+        });
+
+        const variants: ProductVariantInsertDTO[] = data.variants
+          ? data.variants.map((variant, index) => ({
+              id: crypto.randomUUID(),
+              productId,
+              title: variant.title,
+              sku: variant.sku,
+              barcode: variant.barcode,
+              rank: index,
+              manageInventory: variant.manageInventory,
+              allowBackorder: variant.allowBackorder,
+              inventoryQuantity: variant.inventoryQuantity,
+              metadata: variant.metadata,
+              optionValueIds: variant.optionValues
+                .map((value, optionIndex) =>
+                  valueIdByOptionAndValue.get(`${optionIndex}:${value}`),
+                )
+                .filter((id): id is string => id !== undefined),
+              prices: variant.prices.length > 0 ? variant.prices : data.prices,
+              createdBy: actorId,
+              updatedBy: actorId,
+            }))
+          : buildCombinations(options).map((combination, index) => ({
+              id: crypto.randomUUID(),
+              productId,
+              title: combination.map((value) => value.value).join(" / "),
+              rank: index,
+              optionValueIds: combination.map((value) => value.id),
+              prices: data.prices,
+              createdBy: actorId,
+              updatedBy: actorId,
+            }));
+
+        const reservedSkus = new Set<string>();
+        const variantsWithSkus: ProductVariantInsertDTO[] = [];
+        for (const [index, variant] of variants.entries()) {
+          variantsWithSkus.push({
+            ...variant,
+            sku: await resolveVariantSku({
+              sku: variant.sku,
+              productHandle: handle,
+              variantTitle: variant.title,
+              optionValues:
+                data.variants?.[index]?.optionValues ??
+                variants[index]?.title.split(" / ") ??
+                [],
+              index,
+              reserved: reservedSkus,
+            }),
+          });
+        }
+
+        await productVariantDal.createMany(variantsWithSkus);
+        for (const variant of variantsWithSkus) {
+          if (variant.manageInventory ?? true) {
+            await inventoryDal.ensureForVariant({
+              variantId: variant.id,
+              sku: variant.sku ?? null,
+              title: `${data.title} - ${variant.title}`,
+              quantity: variant.inventoryQuantity ?? 0,
+            });
+          }
+        }
+        variantCount = variants.length;
+      } else {
+        // A product with no options still needs one sellable variant.
+        const input = data.variants?.[0];
+        const defaultVariant: ProductVariantInsertDTO = {
+          id: crypto.randomUUID(),
+          productId,
+          title: input?.title ?? "Default",
+          barcode: input?.barcode,
+          sku: await resolveVariantSku({
+            sku: input?.sku,
+            productHandle: handle,
+            variantTitle: input?.title ?? "Default",
+            optionValues: [],
+            index: 0,
+          }),
+          rank: 0,
+          manageInventory: input?.manageInventory ?? true,
+          allowBackorder: input?.allowBackorder ?? false,
+          inventoryQuantity: input?.inventoryQuantity ?? 0,
+          metadata: input?.metadata,
+          prices: input && input.prices.length > 0 ? input.prices : data.prices,
+          createdBy: actorId,
+          updatedBy: actorId,
+        };
+        await productVariantDal.createMany([defaultVariant]);
+        if (defaultVariant.manageInventory ?? true) {
+          await inventoryDal.ensureForVariant({
+            variantId: defaultVariant.id,
+            sku: defaultVariant.sku ?? null,
+            title: `${data.title} - ${defaultVariant.title}`,
+            quantity: defaultVariant.inventoryQuantity ?? 0,
+          });
+        }
+        variantCount = 1;
+      }
+
+      return {
+        success: true,
+        message: `Product "${data.title}" created with ${variantCount} variant${variantCount === 1 ? "" : "s"}`,
+        data: { id: productId, handle, variantCount },
+      };
+    } catch (error) {
+      // D1 has no interactive transactions, so a failure here can leave the
+      // product partially written. Report it rather than implying a rollback.
+      console.error("Create product error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to create product",
+        data: null,
+        error: "CREATE_FAILED",
+      };
+    }
+  },
+
+  async update(
+    data: UpdateProductInput,
+    actorId: string,
+  ): Promise<ProductWriteResult> {
+    try {
+      const existing = await productDal.findById(data.id);
+      if (!existing) {
+        return {
+          success: false,
+          message: "Product not found",
+          data: null,
+          error: "NOT_FOUND",
+        };
+      }
+
+      // Slugified first, so a typed "Summer Shirt" becomes `summer-shirt`
+      // rather than failing validation the author cannot see.
+      let handle: string | undefined;
+      if (data.handle !== undefined) {
+        const result = toHandle(data.handle, data.title ?? existing.title);
+        if (!result.success) {
+          return {
+            success: false,
+            message: "Could not derive a valid handle",
+            data: null,
+            errors: {
+              handle: [result.error.issues[0]?.message ?? "Invalid input"],
+            },
+          };
+        }
+        handle = result.data;
+      }
+
+      if (handle && handle !== existing.handle) {
+        const clash = await productDal.findByHandle(handle);
+        if (clash && clash.id !== data.id) {
+          return {
+            success: false,
+            message: `A product with the handle "${handle}" already exists`,
+            data: null,
+            errors: { handle: ["This handle is already in use"] },
+          };
+        }
+      }
+
+      if (data.shippingProfileId) {
+        const shippingProfile = await shippingProfileDal.findById(
+          data.shippingProfileId,
+        );
+        if (!shippingProfile) {
+          return {
+            success: false,
+            message: "Shipping profile not found",
+            data: null,
+            errors: {
+              shippingProfileId: ["Choose an active shipping profile"],
+            },
+          };
+        }
+      }
+
+      const selectedChannels = data.salesChannelIds
+        ? await salesChannelDal.findByIds(data.salesChannelIds)
+        : undefined;
+      if (
+        selectedChannels &&
+        selectedChannels.length !== data.salesChannelIds?.length
+      ) {
+        return {
+          success: false,
+          message: "One or more sales channels no longer exist",
+          data: null,
+          errors: { salesChannelIds: ["Review the selected sales channels"] },
+        };
+      }
+
+      // `typeValue` is tri-state: absent leaves the type alone, `null` clears
+      // it, a string upserts by value. `undefined` must not reach the DAL as a
+      // column write or it would be indistinguishable from clearing.
+      const now = new Date().toISOString();
+      const typeId =
+        data.typeValue === undefined
+          ? undefined
+          : data.typeValue
+            ? await productTypeDal.ensure(data.typeValue, now)
+            : null;
+
+      await productDal.update(data.id, {
+        title: data.title,
+        handle,
+        subtitle: data.subtitle,
+        description: data.description,
+        status: data.status,
+        collectionId: data.collectionId,
+        typeId,
+        discountable: data.discountable,
+        metadata: data.metadata,
+        shippingProfileId: data.shippingProfileId,
+        updatedBy: actorId,
+      });
+
+      // These replace wholesale; omitting one leaves it alone.
+      if (data.assetIds) {
+        await productDal.setAssets(data.id, data.assetIds);
+      }
+
+      if (data.tagValues) {
+        await productDal.setTags(
+          data.id,
+          await productTagDal.ensureMany(data.tagValues, now),
+        );
+      }
+
+      if (data.categoryIds) {
+        await productDal.setCategories(
+          data.id,
+          await productCategoryDal.filterExisting(data.categoryIds),
+        );
+      }
+
+      if (selectedChannels) {
+        await salesChannelDal.setProductChannels(
+          data.id,
+          selectedChannels.map((channel) => channel.id),
+        );
+      }
+
+      return {
+        success: true,
+        message: "Product updated successfully",
+        data: { id: data.id },
+      };
+    } catch (error) {
+      console.error("Update product error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to update product",
+        data: null,
+        error: "UPDATE_FAILED",
+      };
+    }
+  },
+
+  async delete(
+    data: DeleteProductsInput,
+    actorId: string,
+  ): Promise<ProductWriteResult> {
+    try {
+      const existing = await productDal.findByIds(data.ids);
+      if (existing.length === 0) {
+        return {
+          success: false,
+          message: "No matching products were found",
+          data: null,
+          error: "NOT_FOUND",
+        };
+      }
+
+      await productDal.softDelete(
+        existing.map((product) => product.id),
+        actorId,
+      );
+
+      return {
+        success: true,
+        message: `${existing.length} product${existing.length === 1 ? "" : "s"} deleted`,
+        data: { deleted: existing.length },
+      };
+    } catch (error) {
+      console.error("Delete products error:", error);
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Failed to delete products",
+        data: null,
+        error: "DELETE_FAILED",
+      };
+    }
+  },
+};

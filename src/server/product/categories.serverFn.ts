@@ -1,11 +1,11 @@
 import { parseInput } from "@/lib/db/server-result";
 import { productCategoryDal } from "@/lib/product/dal/product-taxonomy.dal";
+import { productTaxonomyWriteService } from "@/lib/product/service/product-taxonomy-write.service";
 import {
   createProductCategoryInputSchema,
   deleteProductCategoriesInputSchema,
   getProductInputSchema,
   listProductCategoriesInputSchema,
-  toHandle,
   updateProductCategoryInputSchema,
 } from "@/lib/validations/product";
 import { createServerFn } from "@tanstack/react-start";
@@ -106,54 +106,13 @@ export const createProductCategory = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const handleResult = toHandle(data.handle, data.name);
-      if (!handleResult.success) {
-        return {
-          success: false,
-          message: "Could not derive a valid handle from the name",
-          data: null,
-          errors: { handle: [handleResult.error.issues[0]?.message ?? "Invalid input"] },
-        };
-      }
-      const handle = handleResult.data;
-
-      if (await productCategoryDal.findByHandle(handle)) {
-        return {
-          success: false,
-          message: `A category with the handle "${handle}" already exists`,
-          data: null,
-          errors: { handle: ["This handle is already in use"] },
-        };
-      }
-
-      if (data.parentCategoryId) {
-        const parent = await productCategoryDal.findById(data.parentCategoryId);
-        if (!parent) {
-          return {
-            success: false,
-            message: "The selected parent category no longer exists",
-            data: null,
-            errors: { parentCategoryId: ["Parent category not found"] },
-          };
-        }
-      }
-
-      const category = await productCategoryDal.create(
-        {
-          name: data.name,
-          handle,
-          description: data.description,
-          parentCategoryId: data.parentCategoryId,
-          isActive: data.isActive,
-          isInternal: data.isInternal,
-        },
-        new Date().toISOString(),
-      );
+      const result = await productTaxonomyWriteService.createCategory(data);
+      if (!result.success) return result;
 
       return {
         success: true,
-        message: `Category "${category.name}" created`,
-        data: { id: category.id },
+        message: result.message,
+        data: { id: result.data.id },
       };
     } catch (error) {
       console.error("Create product category error:", error);
@@ -178,61 +137,13 @@ export const updateProductCategory = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const existing = await productCategoryDal.findById(data.id);
-      if (!existing) {
-        return {
-          success: false,
-          message: "Category not found",
-          data: null,
-          error: "NOT_FOUND",
-        };
-      }
-
-      // Slugified first, so a typed "Summer Shirt" becomes `summer-shirt`
-      // rather than failing validation the author cannot see.
-      let handle: string | undefined;
-      if (data.handle !== undefined) {
-        const result = toHandle(data.handle, data.name ?? existing.name);
-        if (!result.success) {
-          return {
-            success: false,
-            message: "Could not derive a valid handle",
-            data: null,
-            errors: { handle: [result.error.issues[0]?.message ?? "Invalid input"] },
-          };
-        }
-        handle = result.data;
-      }
-
-      if (handle && handle !== existing.handle) {
-        const clash = await productCategoryDal.findByHandle(handle);
-        if (clash && clash.id !== data.id) {
-          return {
-            success: false,
-            message: `A category with the handle "${handle}" already exists`,
-            data: null,
-            errors: { handle: ["This handle is already in use"] },
-          };
-        }
-      }
-
-      await productCategoryDal.update(
-        data.id,
-        {
-          name: data.name,
-          handle,
-          description: data.description,
-          isActive: data.isActive,
-          isInternal: data.isInternal,
-          metadata: data.metadata,
-        },
-        new Date().toISOString(),
-      );
+      const result = await productTaxonomyWriteService.updateCategory(data);
+      if (!result.success) return result;
 
       return {
         success: true,
-        message: "Category updated successfully",
-        data: { id: data.id },
+        message: result.message,
+        data: result.data,
       };
     } catch (error) {
       console.error("Update product category error:", error);
@@ -257,26 +168,13 @@ export const deleteProductCategories = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      // Descendants go with their parent, so the count reported back is the
-      // expanded total rather than what the caller selected.
-      const deleted = await productCategoryDal.softDelete(
-        data.ids,
-        new Date().toISOString(),
-      );
-
-      if (deleted === 0) {
-        return {
-          success: false,
-          message: "No matching categories were found",
-          data: null,
-          error: "NOT_FOUND",
-        };
-      }
+      const result = await productTaxonomyWriteService.deleteCategories(data.ids);
+      if (!result.success) return result;
 
       return {
         success: true,
-        message: `${deleted} categor${deleted === 1 ? "y" : "ies"} deleted`,
-        data: { deleted },
+        message: result.message,
+        data: result.data,
       };
     } catch (error) {
       console.error("Delete product categories error:", error);

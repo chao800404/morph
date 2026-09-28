@@ -24,6 +24,7 @@ import { Route as BackendDashboardSlugRouteImport } from './routes/_backend/dash
 import { Route as ReleasePreviewReleaseIdViewportRouteImport } from './routes/release-preview/$releaseId/$viewport'
 import { Route as BackendAuthResetPasswordIndexRouteImport } from './routes/_backend/_auth/reset-password.index'
 import { Route as BackendAuthResetPasswordVerifyRouteImport } from './routes/_backend/_auth/reset-password.verify'
+import { Route as BackendApiAdminSplatRouteImport } from './routes/_backend/api/admin/$'
 import { Route as BackendApiAssetDownloadRouteImport } from './routes/_backend/api/asset/download'
 import { Route as BackendApiAuthSplatRouteImport } from './routes/_backend/api/auth/$'
 import { Route as BackendApiStoreSplatRouteImport } from './routes/_backend/api/store/$'
@@ -124,6 +125,11 @@ const BackendAuthResetPasswordVerifyRoute =
     path: '/verify',
     getParentRoute: () => BackendAuthResetPasswordRoute,
   } as any)
+const BackendApiAdminSplatRoute = BackendApiAdminSplatRouteImport.update({
+  id: '/api/admin/$',
+  path: '/api/admin/$',
+  getParentRoute: () => BackendRoute,
+} as any)
 const BackendApiAssetDownloadRoute = BackendApiAssetDownloadRouteImport.update({
   id: '/api/asset/download',
   path: '/api/asset/download',
@@ -265,6 +271,7 @@ export interface FileRoutesByFullPath {
   '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/dashboard/': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
+  '/api/admin/$': typeof BackendApiAdminSplatRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
   '/api/store/$': typeof BackendApiStoreSplatRoute
@@ -299,6 +306,7 @@ export interface FileRoutesByTo {
   '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/dashboard': typeof BackendDashboardIndexRoute
   '/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
+  '/api/admin/$': typeof BackendApiAdminSplatRoute
   '/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/api/auth/$': typeof BackendApiAuthSplatRoute
   '/api/store/$': typeof BackendApiStoreSplatRoute
@@ -339,6 +347,7 @@ export interface FileRoutesById {
   '/release-preview/$releaseId/$viewport': typeof ReleasePreviewReleaseIdViewportRoute
   '/_backend/dashboard/': typeof BackendDashboardIndexRoute
   '/_backend/_auth/reset-password/verify': typeof BackendAuthResetPasswordVerifyRoute
+  '/_backend/api/admin/$': typeof BackendApiAdminSplatRoute
   '/_backend/api/asset/download': typeof BackendApiAssetDownloadRoute
   '/_backend/api/auth/$': typeof BackendApiAuthSplatRoute
   '/_backend/api/store/$': typeof BackendApiStoreSplatRoute
@@ -377,6 +386,7 @@ export interface FileRouteTypes {
     | '/release-preview/$releaseId/$viewport'
     | '/dashboard/'
     | '/reset-password/verify'
+    | '/api/admin/$'
     | '/api/asset/download'
     | '/api/auth/$'
     | '/api/store/$'
@@ -411,6 +421,7 @@ export interface FileRouteTypes {
     | '/release-preview/$releaseId/$viewport'
     | '/dashboard'
     | '/reset-password/verify'
+    | '/api/admin/$'
     | '/api/asset/download'
     | '/api/auth/$'
     | '/api/store/$'
@@ -450,6 +461,7 @@ export interface FileRouteTypes {
     | '/release-preview/$releaseId/$viewport'
     | '/_backend/dashboard/'
     | '/_backend/_auth/reset-password/verify'
+    | '/_backend/api/admin/$'
     | '/_backend/api/asset/download'
     | '/_backend/api/auth/$'
     | '/_backend/api/store/$'
@@ -590,6 +602,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/reset-password/verify'
       preLoaderRoute: typeof BackendAuthResetPasswordVerifyRouteImport
       parentRoute: typeof BackendAuthResetPasswordRoute
+    }
+    '/_backend/api/admin/$': {
+      id: '/_backend/api/admin/$'
+      path: '/api/admin/$'
+      fullPath: '/api/admin/$'
+      preLoaderRoute: typeof BackendApiAdminSplatRouteImport
+      parentRoute: typeof BackendRoute
     }
     '/_backend/api/asset/download': {
       id: '/_backend/api/asset/download'
@@ -905,6 +924,7 @@ interface BackendRouteChildren {
   BackendAuthRoute: typeof BackendAuthRouteWithChildren
   BackendDashboardRoute: typeof BackendDashboardRouteWithChildren
   BackendAssetsSplatRoute: typeof BackendAssetsSplatRoute
+  BackendApiAdminSplatRoute: typeof BackendApiAdminSplatRoute
   BackendApiAssetDownloadRoute: typeof BackendApiAssetDownloadRoute
   BackendApiAuthSplatRoute: typeof BackendApiAuthSplatRoute
   BackendApiStoreSplatRoute: typeof BackendApiStoreSplatRoute
@@ -915,6 +935,7 @@ const BackendRouteChildren: BackendRouteChildren = {
   BackendAuthRoute: BackendAuthRouteWithChildren,
   BackendDashboardRoute: BackendDashboardRouteWithChildren,
   BackendAssetsSplatRoute: BackendAssetsSplatRoute,
+  BackendApiAdminSplatRoute: BackendApiAdminSplatRoute,
   BackendApiAssetDownloadRoute: BackendApiAssetDownloadRoute,
   BackendApiAuthSplatRoute: BackendApiAuthSplatRoute,
   BackendApiStoreSplatRoute: BackendApiStoreSplatRoute,

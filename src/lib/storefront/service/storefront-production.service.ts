@@ -23,6 +23,17 @@ import type { ThemeRuntime } from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
+const STOREFRONT_AUTH_POST_PATHS = new Set([
+  "/sign-in/email",
+  "/sign-up/email",
+  "/sign-out",
+  "/email-otp/send-verification-otp",
+  "/email-otp/verify-email",
+  "/email-otp/reset-password",
+]);
+
+const STOREFRONT_CUSTOMER_PATH =
+  /^customers\/me(?:\/addresses(?:\/[A-Za-z0-9_-]{1,128})?|\/orders(?:\/[A-Za-z0-9_-]{1,128}(?:\/(?:returns(?:\/[A-Za-z0-9_-]{1,128})?|returnable-items|claims|exchanges))?)?)?$/;
 
 /**
  * Platform-owned path a Theme reads its published content from.
@@ -60,6 +71,21 @@ function errorResponse(status: number, message: string): Response {
   });
 }
 
+function privateSameOriginResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const name of Array.from(headers.keys())) {
+    if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
+  }
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export type StorefrontProductionServiceOptions = Readonly<{
   runtime: ThemeRuntime;
   r2Bucket?: R2BucketLike;
@@ -70,6 +96,25 @@ export type StorefrontProductionServiceOptions = Readonly<{
   catalogHandler?: (
     request: Request,
     resolved: ResolvedStorefrontHost,
+  ) => Promise<Response | null>;
+  /** Better Auth endpoints allowed on the resolved, first-party store host. */
+  storefrontAuthHandler?: (
+    request: Request,
+    resolved: ResolvedStorefrontHost,
+  ) => Promise<Response>;
+  /** Customer-owned Store API paths, with identity resolved from the session cookie. */
+  storefrontCustomerApiHandler?: (
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    path: string,
+    request: Request,
+    resolved: ResolvedStorefrontHost,
+  ) => Promise<Response | null>;
+  /** The one token-authorized Store API mutation exposed on merchant hosts. */
+  orderTransferConfirmationHandler?: (
+    request: Request,
+    resolved: ResolvedStorefrontHost,
+    orderId: string,
+    action: "accept" | "decline",
   ) => Promise<Response | null>;
 }>;
 
@@ -102,8 +147,98 @@ export class StorefrontProductionService {
 
     const resolved = resolution.value;
 
-    // Merchant hosts never enter the dashboard router. Only the public,
-    // read-only catalog capability is exposed here, under the resolved host.
+    if (url.pathname === "/api/auth" || url.pathname.startsWith("/api/auth/")) {
+      const authPath = url.pathname.slice("/api/auth".length);
+      const allowed =
+        (request.method === "GET" && authPath === "/get-session") ||
+        (request.method === "POST" && STOREFRONT_AUTH_POST_PATHS.has(authPath));
+      if (!allowed) return errorResponse(404, "Not found.");
+      if (!this.options.storefrontAuthHandler) {
+        return errorResponse(503, "Storefront authentication unavailable.");
+      }
+      return privateSameOriginResponse(
+        await this.options.storefrontAuthHandler(request, resolved),
+      );
+    }
+
+    const customerApiPath = /^\/api\/store\/customers\/me(?:\/|$)/.test(
+      url.pathname,
+    );
+    if (customerApiPath) {
+      if (!STOREFRONT_CUSTOMER_PATH.test(
+        url.pathname.replace(/^\/api\/store\//, "").replace(/\/$/, ""),
+      )) {
+        return errorResponse(404, "Not found.");
+      }
+      if (
+        request.method !== "GET" &&
+        request.method !== "POST" &&
+        request.method !== "PATCH" &&
+        request.method !== "DELETE"
+      ) {
+        return errorResponse(405, "Method not allowed.");
+      }
+      if (!this.options.storefrontCustomerApiHandler) {
+        return errorResponse(503, "Store customer API unavailable.");
+      }
+      const response = await this.options.storefrontCustomerApiHandler(
+        request.method,
+        url.pathname.replace(/^\/api\/store\//, "").replace(/\/$/, ""),
+        request,
+        resolved,
+      );
+      return response
+        ? privateSameOriginResponse(response)
+        : errorResponse(404, "Not found.");
+    }
+
+    const transferPath =
+      /^\/api\/store\/orders\/([A-Za-z0-9_-]{1,128})\/transfer\/(request|accept|decline|cancel)$/.exec(
+        url.pathname,
+      );
+    if (
+      transferPath ||
+      /^\/api\/store\/orders\/[^/]+\/transfer(?:\/|$)/.test(url.pathname)
+    ) {
+      if (!transferPath) return errorResponse(404, "Not found.");
+      if (request.method !== "POST") {
+        return errorResponse(405, "Method not allowed.");
+      }
+      const action = transferPath[2] as
+        | "request"
+        | "accept"
+        | "decline"
+        | "cancel";
+      if (action === "request" || action === "cancel") {
+        if (!this.options.storefrontCustomerApiHandler) {
+          return errorResponse(503, "Store customer API unavailable.");
+        }
+        const response = await this.options.storefrontCustomerApiHandler(
+          "POST",
+          `orders/${transferPath[1]}/transfer/${action}`,
+          request,
+          resolved,
+        );
+        return response
+          ? privateSameOriginResponse(response)
+          : errorResponse(404, "Not found.");
+      }
+      if (!this.options.orderTransferConfirmationHandler) {
+        return errorResponse(503, "Order transfer confirmation unavailable.");
+      }
+      const response = await this.options.orderTransferConfirmationHandler(
+        request,
+        resolved,
+        transferPath[1]!,
+        action,
+      );
+      return response
+        ? privateSameOriginResponse(response)
+        : errorResponse(404, "Not found.");
+    }
+
+    // Merchant hosts never enter the dashboard router. Only resolved catalog,
+    // account/authentication, and transfer capabilities are exposed here.
     if (/^\/api\/store\/(?:products(?:\/|$)|assets\/)/.test(url.pathname)) {
       if (request.method !== "GET")
         return errorResponse(405, "Method not allowed.");

@@ -40,9 +40,9 @@ export type PriceListType = "sale" | "override";
  * each price carries the rules that decide whether it applies. Resolving a
  * price means picking the highest-priority price whose rules all match.
  *
- * The two do not yet talk to each other: nothing writes a price set, and the
- * variant editor still writes `productVariantPrices`. Wiring the resolver is
- * the follow-up; this establishes the shape so the migration is additive.
+ * Variant base prices live in this module as non-list prices. The legacy
+ * `productVariantPrices` table is read only as a migration compatibility
+ * fallback while existing catalog data is copied into these price sets.
  */
 export const priceSets = sqliteTable("price_sets", {
   id: text("id").primaryKey(),
@@ -132,6 +132,21 @@ export const prices = sqliteTable(
     index("prices_set_active_idx").on(table.priceSetId, table.deletedAt),
     index("prices_list_active_idx").on(table.priceListId, table.deletedAt),
     index("prices_currency_active_idx").on(table.currencyCode, table.deletedAt),
+    // A price list can define multiple quantity tiers for the same variant
+    // and currency, while an identical tier must remain unique. `ifnull`
+    // makes unbounded ends compare as a stable sentinel in SQLite's unique
+    // index (where NULL values would otherwise compare as distinct).
+    uniqueIndex("prices_list_currency_quantity_active_unique")
+      .on(
+        table.priceSetId,
+        table.priceListId,
+        table.currencyCode,
+        sql`ifnull(${table.minQuantity}, -1)`,
+        sql`ifnull(${table.maxQuantity}, -1)`,
+      )
+      .where(
+        sql`${table.priceListId} IS NOT NULL AND ${table.deletedAt} IS NULL`,
+      ),
     check("prices_amount_check", sql`${table.amount} >= 0`),
     check(
       "prices_currency_code_check",

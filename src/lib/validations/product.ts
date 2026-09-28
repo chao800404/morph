@@ -162,6 +162,7 @@ export const getProductInputSchema = z.object({
 export const productVariantInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   sku: z.string().trim().max(100).nullish(),
+  barcode: z.string().trim().max(100).nullish(),
   manageInventory: z.boolean().default(true),
   allowBackorder: z.boolean().default(false),
   inventoryQuantity: z.number().int().min(0).max(1_000_000).default(0),
@@ -170,6 +171,7 @@ export const productVariantInputSchema = z.object({
     .max(MAX_PRODUCT_OPTIONS)
     .default([]),
   prices: z.array(priceInputSchema).max(20).default([]),
+  metadata: metadataInputSchema.optional(),
 });
 
 /**
@@ -232,9 +234,15 @@ export const updateProductInputSchema = (maxAssets: number) =>
     status: productStatusSchema.optional(),
     collectionId: z.uuid().nullish(),
     typeValue: productTypeValueSchema.nullish(),
-    tagValues: productTagValuesSchema.optional(),
+    // Keep PATCH semantics: omitting tags leaves the current tags in place.
+    tagValues: z
+      .array(z.string().trim().min(1).max(100))
+      .max(20, "A product may have at most 20 tags")
+      .optional(),
     categoryIds: z.array(z.uuid()).max(20).optional(),
+    salesChannelIds: z.array(z.uuid()).max(100).optional(),
     discountable: z.boolean().optional(),
+    shippingProfileId: z.uuid("Invalid shipping profile ID").optional(),
     assetIds: z.array(z.uuid()).max(maxAssets).optional(),
     metadata: metadataInputSchema.optional(),
   });
@@ -322,6 +330,38 @@ export const updateVariantInputSchema = (maxAssets: number) =>
     metadata: metadataInputSchema.optional(),
   });
 
+export const updateVariantInventoryKitInputSchema = z
+  .object({
+    productId: z.uuid("Invalid product ID"),
+    variantId: z.uuid("Invalid variant ID"),
+    expectedUpdatedAt: z.iso.datetime(),
+    items: z
+      .array(
+        z
+          .object({
+            inventoryItemId: z.uuid("Invalid inventory item ID"),
+            requiredQuantity: z
+              .number()
+              .finite()
+              .gt(0)
+              .max(1_000_000_000),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const ids = input.items.map((item) => item.inventoryItemId);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "An inventory item can only appear once in a kit",
+      });
+    }
+  });
+
 export const deleteVariantsInputSchema = z.object({
   ids: z
     .array(z.uuid("Invalid variant ID"))
@@ -341,6 +381,7 @@ export const createCollectionInputSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(200),
   handle: typedHandleSchema.optional(),
   description: z.string().trim().max(2000).nullish(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const updateCollectionInputSchema = z.object({
@@ -423,6 +464,7 @@ export const createProductCategoryInputSchema = z.object({
   parentCategoryId: z.uuid().nullish(),
   isActive: z.boolean().default(false),
   isInternal: z.boolean().default(false),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const updateProductCategoryInputSchema = z.object({

@@ -152,13 +152,21 @@ export const geoZones = sqliteTable(
 );
 
 /** The shopper-facing category of an option, e.g. "Express". */
-export const shippingOptionTypes = sqliteTable("shipping_option_types", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  description: text("description"),
-  code: text("code").notNull(),
-  ...timestamps,
-});
+export const shippingOptionTypes = sqliteTable(
+  "shipping_option_types",
+  {
+    id: text("id").primaryKey(),
+    label: text("label").notNull(),
+    description: text("description"),
+    code: text("code").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("shipping_option_types_active_code_unique")
+      .on(table.code)
+      .where(sql`${table.deletedAt} IS NULL`),
+  ],
+);
 
 /**
  * A shipping choice offered inside one service zone.

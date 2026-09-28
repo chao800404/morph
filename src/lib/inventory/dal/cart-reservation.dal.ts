@@ -112,7 +112,13 @@ export const cartReservationDal = {
                 sum + level.stockedQuantity - level.reservedQuantity,
               0,
             );
-          return Math.floor(available / link.requiredQuantity);
+          const sellableUnits = available / link.requiredQuantity;
+          // Divide values loaded from SQLite as binary floating point. Add a
+          // few ULPs so decimal-exact ratios such as 0.6 / 0.1 do not lose an
+          // entire sellable item to a representation artifact.
+          const floatingPointTolerance =
+            Number.EPSILON * Math.abs(sellableUnits) * 4;
+          return Math.floor(sellableUnits + floatingPointTolerance);
         }),
       ),
     );

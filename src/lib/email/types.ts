@@ -1,4 +1,6 @@
 export interface EmailAdapter {
+  /** Stable provider key recorded with commerce notification attempts. */
+  readonly id?: string;
   send(params: SendEmailParams): Promise<SendEmailResult>;
   sendBatch?(params: SendEmailParams[]): Promise<SendEmailResult[]>;
 }

@@ -1,6 +1,11 @@
-import { fulfillmentItems, fulfillments } from "@/db/fulfillment.schema";
+import {
+  fulfillmentItems,
+  fulfillmentLabels,
+  fulfillments,
+} from "@/db/fulfillment.schema";
 import {
   orderAddresses,
+  orderCreditLines,
   orderItems,
   orderLineItems,
   orders,
@@ -73,12 +78,14 @@ const toAddressDTO = (
 
 export const toOrderFulfillmentDTOs = (
   rows: FulfillmentRow[],
+  labels: Array<typeof fulfillmentLabels.$inferSelect> = [],
 ): OrderFulfillmentDTO[] => {
   const grouped = new Map<string, OrderFulfillmentDTO>();
   for (const { fulfillment, item } of rows) {
     const current = grouped.get(fulfillment.id) ?? {
       id: fulfillment.id,
       locationId: fulfillment.locationId,
+      labels: [],
       shippedAt: fulfillment.shippedAt,
       deliveredAt: fulfillment.deliveredAt,
       canceledAt: fulfillment.canceledAt,
@@ -94,6 +101,14 @@ export const toOrderFulfillmentDTOs = (
     }
     grouped.set(fulfillment.id, current);
   }
+  for (const label of labels) {
+    grouped.get(label.fulfillmentId)?.labels.push({
+      id: label.id,
+      trackingNumber: label.trackingNumber,
+      trackingUrl: label.trackingUrl,
+      labelUrl: label.labelUrl,
+    });
+  }
   return [...grouped.values()];
 };
 
@@ -102,31 +117,48 @@ export const toOrderItemDTO = ({
   state,
 }: OrderItemRow): OrderItemDTO => ({
   id: item.id,
+  variantId: item.variantId,
   title: item.title,
   thumbnail: item.thumbnail,
   sku: item.variantSku,
+  isCustomPrice: item.isCustomPrice,
   quantity: state.quantity,
   fulfilledQuantity: state.fulfilledQuantity,
   unitPrice: state.unitPrice ?? item.unitPrice ?? 0,
+  compareAtUnitPrice:
+    state.compareAtUnitPrice ?? item.compareAtUnitPrice ?? null,
 });
 
 export const toOrderDetailDTO = ({
   row,
   addresses,
+  creditLines,
   payment,
   hasUnfulfilledItems,
 }: {
   row: OrderSummaryRow;
   addresses: Array<typeof orderAddresses.$inferSelect>;
+  creditLines: Array<typeof orderCreditLines.$inferSelect>;
   payment: typeof paymentCollections.$inferSelect | null;
   hasUnfulfilledItems: boolean;
 }): OrderDetailDTO => ({
   ...toOrderListDTO(row),
+  version: row.order.version,
+  noNotification: Boolean(row.order.noNotification),
   customerId: row.order.customerId,
   regionId: row.order.regionId,
   salesChannelId: row.order.salesChannelId,
   metadata: row.order.metadata ?? {},
   hasUnfulfilledItems,
+  creditLines: creditLines.map((line) => ({
+    id: line.id,
+    reference: line.reference,
+    referenceId: line.referenceId,
+    amount: line.amount,
+    metadata: line.metadata ?? {},
+    createdAt: line.createdAt,
+    updatedAt: line.updatedAt,
+  })),
   shippingAddress: toAddressDTO(addresses, row.order.shippingAddressId),
   billingAddress: toAddressDTO(addresses, row.order.billingAddressId),
   payment: payment

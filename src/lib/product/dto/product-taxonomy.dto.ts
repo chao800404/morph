@@ -13,10 +13,24 @@ export interface ProductTypeDTO {
   metadata: ProductMetadata | null;
 }
 
+/** Full admin projection for the Medusa-compatible product-types API. */
+export interface ProductTypeAdminDTO extends ProductTypeDTO {
+  externalId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ProductTagDTO {
   id: string;
   value: string;
   metadata: ProductMetadata | null;
+}
+
+/** Full admin projection for the Medusa-compatible product-tags API. */
+export interface ProductTagAdminDTO extends ProductTagDTO {
+  externalId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface ProductCategoryDTO {
@@ -71,6 +85,7 @@ export interface CreateProductCategoryDTO {
   parentCategoryId?: string | null;
   isActive?: boolean;
   isInternal?: boolean;
+  metadata?: ProductMetadata;
 }
 
 export interface UpdateProductCategoryDTO {

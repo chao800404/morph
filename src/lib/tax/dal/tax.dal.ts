@@ -93,18 +93,23 @@ const loadRuleLabels = async (
 };
 
 export const taxDal = {
-  async ensureSystemProvider() {
+  async ensureProviders(providerIds: string[]) {
+    const uniqueIds = [...new Set(providerIds)];
+    if (!uniqueIds.length) return;
     const db = await getDb();
     const now = new Date().toISOString();
-    await db
-      .insert(taxProviders)
-      .values({
-        id: "tp_system",
-        isEnabled: true,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoNothing();
+    const rows = uniqueIds.map((id) => ({
+      id,
+      isEnabled: true,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    for (const group of chunkForInsert(rows, 4)) {
+      await db.insert(taxProviders).values(group).onConflictDoNothing();
+    }
+  },
+  async ensureSystemProvider() {
+    await this.ensureProviders(["tp_system"]);
   },
   async listProviders() {
     const db = await getDb();
@@ -139,6 +144,22 @@ export const taxDal = {
       .where(and(eq(taxRegions.id, id), isNull(taxRegions.deletedAt)))
       .limit(1);
     return rows[0] ? toTaxRegionDTO(rows[0]) : null;
+  },
+  async findRegions(ids: string[]): Promise<TaxRegionDTO[]> {
+    if (!ids.length) return [];
+    const db = await getDb();
+    const rows: Array<typeof taxRegions.$inferSelect> = [];
+    for (const idChunk of chunk([...new Set(ids)], 90)) {
+      rows.push(
+        ...(await db
+          .select()
+          .from(taxRegions)
+          .where(
+            and(inArray(taxRegions.id, idChunk), isNull(taxRegions.deletedAt)),
+          )),
+      );
+    }
+    return rows.map(toTaxRegionDTO);
   },
   async findCalculationRegion(
     countryCode: string,
@@ -238,6 +259,108 @@ export const taxDal = {
         .offset((options.page - 1) * options.limit),
     ]);
     const ids = rows.map((row) => row.id);
+    const [provinceRows, rateRows] = ids.length
+      ? await Promise.all([
+          db
+            .select({ id: taxRegions.parentId, value: count() })
+            .from(taxRegions)
+            .where(
+              and(
+                inArray(taxRegions.parentId, ids),
+                isNull(taxRegions.deletedAt),
+              ),
+            )
+            .groupBy(taxRegions.parentId),
+          db
+            .select({ id: taxRates.taxRegionId, value: count() })
+            .from(taxRates)
+            .where(
+              and(
+                inArray(taxRates.taxRegionId, ids),
+                isNull(taxRates.deletedAt),
+              ),
+            )
+            .groupBy(taxRates.taxRegionId),
+        ])
+      : [[], []];
+    const provinces = new Map(
+      provinceRows.flatMap((row) =>
+        row.id ? [[row.id, Number(row.value)] as const] : [],
+      ),
+    );
+    const rates = new Map(rateRows.map((row) => [row.id, Number(row.value)]));
+    return {
+      taxRegions: rows.map((row) => ({
+        ...toTaxRegionDTO(row),
+        provinceCount: provinces.get(row.id) ?? 0,
+        taxRateCount: rates.get(row.id) ?? 0,
+      })),
+      total: Number(totalRows[0]?.value ?? 0),
+    };
+  },
+  async listAdminRegionPage(options: {
+    countryCode?: string;
+    provinceCode?: string;
+    parentId?: string;
+    providerId?: string;
+    query?: string | null;
+    sortBy: "countryCode" | "provinceCode" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ taxRegions: TaxRegionSummaryDTO[]; total: number }> {
+    const db = await getDb();
+    const conditions: SQL[] = [isNull(taxRegions.deletedAt)];
+    if (options.countryCode)
+      conditions.push(eq(taxRegions.countryCode, options.countryCode));
+    if (options.provinceCode)
+      conditions.push(eq(taxRegions.provinceCode, options.provinceCode));
+    if (options.parentId)
+      conditions.push(eq(taxRegions.parentId, options.parentId));
+    if (options.providerId)
+      conditions.push(eq(taxRegions.providerId, options.providerId));
+    if (options.query?.trim()) {
+      const search = options.query.trim();
+      const matchingCountryCodes = getCountryCatalog()
+        .filter((country) =>
+          country.displayName
+            .toLocaleLowerCase()
+            .includes(search.toLocaleLowerCase()),
+        )
+        .map((country) => country.iso2);
+      conditions.push(
+        or(
+          likeContains(taxRegions.countryCode, search),
+          likeContains(taxRegions.provinceCode, search),
+          likeContains(taxRegions.providerId, search),
+          ...(matchingCountryCodes.length
+            ? [inArray(taxRegions.countryCode, matchingCountryCodes)]
+            : []),
+        ) as SQL,
+      );
+    }
+    const sortColumn =
+      options.sortBy === "updatedAt"
+        ? taxRegions.updatedAt
+        : options.sortBy === "createdAt"
+          ? taxRegions.createdAt
+          : options.sortBy === "provinceCode"
+            ? taxRegions.provinceCode
+            : taxRegions.countryCode;
+    const condition = and(...conditions);
+    const [totalRows, rows] = await Promise.all([
+      db.select({ value: count() }).from(taxRegions).where(condition),
+      db
+        .select()
+        .from(taxRegions)
+        .where(condition)
+        .orderBy(
+          options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn),
+        )
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+    ]);
+    const ids = rows.map(({ id }) => id);
     const [provinceRows, rateRows] = ids.length
       ? await Promise.all([
           db
@@ -387,6 +510,48 @@ export const taxDal = {
       ruleRows.map((row) => toTaxRateRuleDTO(row, labels)),
     );
   },
+  async findRates(ids: string[]): Promise<TaxRateDTO[]> {
+    if (!ids.length) return [];
+    const db = await getDb();
+    const rateRows: Array<typeof taxRates.$inferSelect> = [];
+    for (const idChunk of chunk([...new Set(ids)], 90)) {
+      rateRows.push(
+        ...(await db
+          .select()
+          .from(taxRates)
+          .where(
+            and(inArray(taxRates.id, idChunk), isNull(taxRates.deletedAt)),
+          )),
+      );
+    }
+    const ruleRows: Array<typeof taxRateRules.$inferSelect> = [];
+    for (const rateIdChunk of chunk(
+      rateRows.map(({ id }) => id),
+      90,
+    )) {
+      ruleRows.push(
+        ...(await db
+          .select()
+          .from(taxRateRules)
+          .where(
+            and(
+              inArray(taxRateRules.taxRateId, rateIdChunk),
+              isNull(taxRateRules.deletedAt),
+            ),
+          )),
+      );
+    }
+    const labels = await loadRuleLabels(ruleRows);
+    const rulesByRate = new Map<string, TaxRateRuleDTO[]>();
+    ruleRows.forEach((row) => {
+      const rules = rulesByRate.get(row.taxRateId) ?? [];
+      rules.push(toTaxRateRuleDTO(row, labels));
+      rulesByRate.set(row.taxRateId, rules);
+    });
+    return rateRows.map((row) =>
+      toTaxRateDTO(row, rulesByRate.get(row.id) ?? []),
+    );
+  },
   async listRatesForRegionIds(regionIds: string[]): Promise<TaxRateDTO[]> {
     if (!regionIds.length) return [];
     const db = await getDb();
@@ -480,6 +645,80 @@ export const taxDal = {
             ),
           )
       : [];
+    const labels = await loadRuleLabels(ruleRows);
+    const rulesByRate = new Map<string, TaxRateRuleDTO[]>();
+    ruleRows.forEach((row) => {
+      const rules = rulesByRate.get(row.taxRateId) ?? [];
+      rules.push(toTaxRateRuleDTO(row, labels));
+      rulesByRate.set(row.taxRateId, rules);
+    });
+    return {
+      taxRates: rows.map((row) =>
+        toTaxRateDTO(row, rulesByRate.get(row.id) ?? []),
+      ),
+      total: Number(counts[0]?.value ?? 0),
+    };
+  },
+  async listAdminRatePage(options: {
+    taxRegionId?: string;
+    isDefault?: boolean;
+    query?: string | null;
+    sortBy: "name" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ taxRates: TaxRateDTO[]; total: number }> {
+    const db = await getDb();
+    const conditions: SQL[] = [isNull(taxRates.deletedAt)];
+    if (options.taxRegionId)
+      conditions.push(eq(taxRates.taxRegionId, options.taxRegionId));
+    if (options.isDefault !== undefined)
+      conditions.push(eq(taxRates.isDefault, options.isDefault));
+    if (options.query?.trim()) {
+      const term = options.query.trim();
+      conditions.push(
+        or(
+          likeContains(taxRates.name, term),
+          likeContains(taxRates.code, term),
+        ) as SQL,
+      );
+    }
+    const sortColumn =
+      options.sortBy === "updatedAt"
+        ? taxRates.updatedAt
+        : options.sortBy === "createdAt"
+          ? taxRates.createdAt
+          : taxRates.name;
+    const condition = and(...conditions);
+    const [counts, rows] = await Promise.all([
+      db.select({ value: count() }).from(taxRates).where(condition),
+      db
+        .select()
+        .from(taxRates)
+        .where(condition)
+        .orderBy(
+          options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn),
+        )
+        .limit(options.limit)
+        .offset((options.page - 1) * options.limit),
+    ]);
+    const ruleRows: Array<typeof taxRateRules.$inferSelect> = [];
+    for (const rateIdChunk of chunk(
+      rows.map(({ id }) => id),
+      90,
+    )) {
+      ruleRows.push(
+        ...(await db
+          .select()
+          .from(taxRateRules)
+          .where(
+            and(
+              inArray(taxRateRules.taxRateId, rateIdChunk),
+              isNull(taxRateRules.deletedAt),
+            ),
+          )),
+      );
+    }
     const labels = await loadRuleLabels(ruleRows);
     const rulesByRate = new Map<string, TaxRateRuleDTO[]>();
     ruleRows.forEach((row) => {
@@ -615,6 +854,7 @@ export const taxDal = {
     parentId?: string | null;
     providerId?: string | null;
     createdBy?: string | null;
+    metadata?: Metadata;
     defaultTaxRate?: {
       name: string;
       code: string;
@@ -664,6 +904,7 @@ export const taxDal = {
     isDefault: boolean;
     isCombinable: boolean;
     createdBy?: string | null;
+    metadata?: Metadata;
     rules?: Array<{ reference: TaxRateRuleReference; referenceId: string }>;
   }) {
     const db = await getDb();

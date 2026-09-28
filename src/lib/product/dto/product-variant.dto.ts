@@ -19,11 +19,16 @@ export interface ProductVariantPriceHistoryDTO {
   changedAt: Date;
 }
 
+export interface ProductVariantInventoryItemDTO {
+  inventoryItemId: string;
+  title: string | null;
+  sku: string | null;
+  unitOfMeasure: string | null;
+  requiredQuantity: number;
+}
+
 export type ProductVariantSortKey =
-  | "name"
-  | "createdAt"
-  | "updatedAt"
-  | `option:${string}`;
+  "name" | "createdAt" | "updatedAt" | `option:${string}`;
 
 export interface ProductVariantListParams {
   productId: string;
@@ -32,13 +37,12 @@ export interface ProductVariantListParams {
   sortOrder: "asc" | "desc";
   page: number;
   limit: number;
+  /** Exact REST offset when page-based dashboard pagination is not used. */
+  offset?: number;
 }
 
 export type ProductVariantPriceChange =
-  | "created"
-  | "increased"
-  | "decreased"
-  | "removed";
+  "created" | "increased" | "decreased" | "removed";
 
 export interface ProductVariantPriceHistoryListParams {
   variantId: string;
@@ -80,6 +84,8 @@ export interface ProductVariantDTO {
   thumbnailAssetId: string | null;
   /** Variant-specific images, restricted to the product gallery, in rank order. */
   assets: Array<{ id: string; name: string; url: string }>;
+  /** Inventory kit components and the amount consumed by one variant sale. */
+  inventoryKit: ProductVariantInventoryItemDTO[];
   /** Option values this variant is defined by, one per option axis. */
   optionValueIds: string[];
   prices: ProductVariantPriceDTO[];

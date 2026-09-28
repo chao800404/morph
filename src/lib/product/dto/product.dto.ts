@@ -46,6 +46,8 @@ export interface ProductListItemDTO extends ProductDTO {
 
 /** A product with the bounded relations the detail view needs. */
 export interface ProductDetailDTO extends ProductDTO {
+  shippingProfileId: string | null;
+  shippingProfileName: string | null;
   options: ProductOptionDTO[];
   /** Gallery asset ids in display order. */
   assetIds: string[];
@@ -116,5 +118,7 @@ export interface UpdateProductDTO {
   midCode?: string | null;
   material?: string | null;
   metadata?: ProductMetadata;
+  /** Replaces the product's single shipping profile when present. */
+  shippingProfileId?: string;
   updatedBy: string;
 }

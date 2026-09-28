@@ -41,6 +41,19 @@ const LocationsIndexPendingView = createCollectionIndexPendingView(3);
 const LocationCreatePendingView = createRouteSurfacePendingView(5);
 const LocationEditPendingView = createRouteSurfacePendingView(5);
 const LocationMetadataPendingView = createRouteSurfacePendingView(3);
+const LocationSalesChannelsPendingView = createRouteSurfacePendingView(2);
+const LocationFulfillmentProvidersPendingView =
+  createRouteSurfacePendingView(2);
+const LocationShippingOptionsPendingView = createRouteSurfacePendingView(3);
+const LocationShippingOptionCreatePendingView =
+  createRouteSurfacePendingView(6);
+const ShippingProfilesIndexPendingView = createCollectionIndexPendingView(4);
+const ShippingProfileCreatePendingView = createRouteSurfacePendingView(2);
+const ShippingProfileEditPendingView = createRouteSurfacePendingView(2);
+const SecretApiKeysIndexPendingView = createCollectionIndexPendingView(4);
+const ShippingOptionTypesIndexPendingView = createCollectionIndexPendingView(4);
+const ShippingOptionTypeCreatePendingView = createRouteSurfacePendingView(3);
+const ShippingOptionTypeEditPendingView = createRouteSurfacePendingView(3);
 const ReferenceTaxonomyIndexPendingView = createCollectionIndexPendingView(3);
 const ReferenceReasonIndexPendingView = createCollectionIndexPendingView(5);
 const ReferenceRefundIndexPendingView = createCollectionIndexPendingView(4);
@@ -204,6 +217,21 @@ export const General: CollectionGroup = {
   slug: "settings",
   title: "General",
   collections: [
+    {
+      title: "Secret API keys",
+      slug: "secret-api-keys",
+      icon: "KeyRound",
+      label: "Secret API keys",
+      index: {
+        view: lazyView(() => import("@views/settings/secret-api-keys")),
+        pendingView: SecretApiKeysIndexPendingView,
+        prefetch: async ({ queryClient }: CollectionLoadContext) => {
+          const { secretApiKeyQueries } =
+            await import("@queries/secret-api-key.queries");
+          void queryClient.prefetchQuery(secretApiKeyQueries.list());
+        },
+      },
+    },
     {
       title: "Store",
       slug: "store",
@@ -776,6 +804,198 @@ export const General: CollectionGroup = {
               stockLocationQueries.detail(params.id),
             );
           },
+        },
+        "sales-channels": {
+          view: lazyView(
+            () => import("@views/settings/locations/location-sales-channels"),
+          ),
+          pendingView: LocationSalesChannelsPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { stockLocationQueries } =
+              await import("@queries/stock-location.queries");
+            const { normalizeSalesChannelListParams, salesChannelQueries } =
+              await import("@queries/sales-channel.queries");
+            void queryClient.prefetchQuery(
+              stockLocationQueries.detail(params.id),
+            );
+            void queryClient.prefetchQuery(
+              salesChannelQueries.list(
+                normalizeSalesChannelListParams({
+                  sortBy: "name",
+                  sortOrder: "asc",
+                  page: 1,
+                  limit: 100,
+                }),
+              ),
+            );
+          },
+        },
+        "fulfillment-providers": {
+          view: lazyView(
+            () =>
+              import("@views/settings/locations/location-fulfillment-providers"),
+          ),
+          pendingView: LocationFulfillmentProvidersPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { stockLocationQueries } =
+              await import("@queries/stock-location.queries");
+            void queryClient.prefetchQuery(
+              stockLocationQueries.detail(params.id),
+            );
+            void queryClient.prefetchQuery(
+              stockLocationQueries.fulfillmentProviders(params.id),
+            );
+          },
+        },
+        "shipping-options": {
+          view: lazyView(
+            () => import("@views/settings/locations/location-shipping-options"),
+          ),
+          presentation: "replace",
+          breadcrumb: () => "Shipping options",
+          pendingView: LocationShippingOptionsPendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { shippingAdminQueries } =
+              await import("@queries/shipping-admin.queries");
+            const {
+              normalizeShippingProfileListParams,
+              shippingProfileQueries,
+            } = await import("@queries/shipping-profile.queries");
+            void queryClient.prefetchQuery(
+              shippingAdminQueries.forLocation(params.id),
+            );
+            void queryClient.prefetchQuery(
+              shippingProfileQueries.list(
+                normalizeShippingProfileListParams({
+                  sortBy: "name",
+                  sortOrder: "asc",
+                  page: 1,
+                  limit: 100,
+                }),
+              ),
+            );
+          },
+        },
+        "shipping-option-create": {
+          view: lazyView(
+            () =>
+              import("@views/settings/locations/location-shipping-option-create"),
+          ),
+          pendingView: LocationShippingOptionCreatePendingView,
+          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+            if (!params.id) return;
+            const { shippingAdminQueries } =
+              await import("@queries/shipping-admin.queries");
+            const {
+              normalizeShippingProfileListParams,
+              shippingProfileQueries,
+            } = await import("@queries/shipping-profile.queries");
+            const { stockLocationQueries } =
+              await import("@queries/stock-location.queries");
+            void queryClient.prefetchQuery(
+              shippingAdminQueries.forLocation(params.id),
+            );
+            void queryClient.prefetchQuery(
+              stockLocationQueries.detail(params.id),
+            );
+            void queryClient.prefetchQuery(
+              shippingProfileQueries.list(
+                normalizeShippingProfileListParams({
+                  sortBy: "name",
+                  sortOrder: "asc",
+                  page: 1,
+                  limit: 100,
+                }),
+              ),
+            );
+          },
+        },
+      },
+    },
+    {
+      title: "Shipping Profiles",
+      slug: "shipping-profiles",
+      icon: "PackageCheck",
+      label: "Shipping profiles",
+      index: {
+        view: lazyView(() => import("@views/settings/shipping-profiles")),
+        pendingView: ShippingProfilesIndexPendingView,
+        prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+          const { normalizeShippingProfileListParams, shippingProfileQueries } =
+            await import("@queries/shipping-profile.queries");
+          void queryClient.prefetchQuery(
+            shippingProfileQueries.list(
+              normalizeShippingProfileListParams(search),
+            ),
+          );
+        },
+      },
+      create: {
+        view: lazyView(
+          () =>
+            import("@views/settings/shipping-profiles/shipping-profile-create"),
+        ),
+        pendingView: ShippingProfileCreatePendingView,
+      },
+      edit: {
+        view: lazyView(
+          () =>
+            import("@views/settings/shipping-profiles/shipping-profile-edit"),
+        ),
+        pendingView: ShippingProfileEditPendingView,
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { shippingProfileQueries } =
+            await import("@queries/shipping-profile.queries");
+          void queryClient.prefetchQuery(
+            shippingProfileQueries.detail(params.id),
+          );
+        },
+      },
+    },
+    {
+      title: "Shipping Option Types",
+      slug: "shipping-option-types",
+      icon: "Truck",
+      label: "Shipping option types",
+      index: {
+        view: lazyView(() => import("@views/settings/shipping-option-types")),
+        pendingView: ShippingOptionTypesIndexPendingView,
+        prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+          const {
+            normalizeShippingOptionTypeListParams,
+            shippingOptionTypeQueries,
+          } = await import("@queries/shipping-option-type.queries");
+          void queryClient.prefetchQuery(
+            shippingOptionTypeQueries.list(
+              normalizeShippingOptionTypeListParams(search),
+            ),
+          );
+        },
+      },
+      create: {
+        view: lazyView(
+          () =>
+            import("@views/settings/shipping-option-types/shipping-option-type-create"),
+        ),
+        pendingView: ShippingOptionTypeCreatePendingView,
+      },
+      edit: {
+        view: lazyView(
+          () =>
+            import("@views/settings/shipping-option-types/shipping-option-type-edit"),
+        ),
+        pendingView: ShippingOptionTypeEditPendingView,
+        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+          if (!params.id) return;
+          const { shippingOptionTypeQueries } =
+            await import("@queries/shipping-option-type.queries");
+          void queryClient.prefetchQuery(
+            shippingOptionTypeQueries.detail(params.id),
+          );
         },
       },
     },

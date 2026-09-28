@@ -1,9 +1,11 @@
 import { ac, administrator, guest, user } from "@/auth/permissions";
 import {
   DEFAULT_DEV_ORIGIN,
+  isProductionRuntime,
   resolvePublicOrigin,
   type PublicOriginEnv,
 } from "@/server/public-origin";
+import { resolveStorefrontTrustedOrigin } from "./storefront-origin";
 import { localization } from "@/lib/config/localization";
 import { cmsTrustedOrigins } from "@/lib/config/trusted-origins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
@@ -32,7 +34,11 @@ export interface CloudflareBindings {
  * Build one auth configuration for both the Cloudflare runtime and the schema CLI.
  * D1 is the source of truth for users, accounts, sessions, and verifications.
  */
-function createAuth(env?: CloudflareBindings, requestUrl?: string | null) {
+function createAuth(
+  env?: CloudflareBindings,
+  requestUrl?: string | null,
+  additionalTrustedOrigins: readonly string[] = [],
+) {
   const db = env
     ? drizzle(env.DATABASE, { schema })
     : ({} as ReturnType<typeof drizzle>);
@@ -62,7 +68,12 @@ function createAuth(env?: CloudflareBindings, requestUrl?: string | null) {
     secret: env?.BETTER_AUTH_SECRET || process.env.BETTER_AUTH_SECRET,
     baseURL,
     trustedOrigins: Array.from(
-      new Set([...cmsTrustedOrigins, baseURL, "http://localhost:3000"]),
+      new Set([
+        ...cmsTrustedOrigins,
+        baseURL,
+        "http://localhost:3000",
+        ...additionalTrustedOrigins,
+      ]),
     ),
     emailAndPassword: {
       enabled: true,
@@ -176,6 +187,30 @@ function createAuth(env?: CloudflareBindings, requestUrl?: string | null) {
       tanstackStartCookies(),
     ],
   });
+}
+
+/**
+ * Use the same Better Auth configuration on a validated storefront host.
+ *
+ * `resolvedHostname` must come from StorefrontProductionService's active-domain
+ * resolution; never pass a hostname taken directly from a request header.
+ * Production storefronts are HTTPS-only and each store gets a host-only
+ * session cookie through Better Auth's existing cookie configuration.
+ */
+export function createStorefrontAuth(
+  env: CloudflareBindings,
+  requestUrl: string,
+  resolvedHostname: string,
+) {
+  const trustedOrigin = resolveStorefrontTrustedOrigin(
+    requestUrl,
+    resolvedHostname,
+    isProductionRuntime((env ?? {}) as PublicOriginEnv),
+  );
+  if (!trustedOrigin) {
+    throw new Error("The request origin does not match the resolved storefront");
+  }
+  return createAuth(env, requestUrl, [trustedOrigin]);
 }
 
 // Exported for Better Auth schema generation and client-side type inference.

@@ -1,4 +1,5 @@
 import { promotionDal } from "@/lib/promotion/dal/promotion.dal";
+import { promotionWriteService } from "@/lib/promotion/service/promotion-write.service";
 import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import {
   createPromotionInputSchema,
@@ -115,13 +116,17 @@ export const createPromotion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      if (await promotionDal.findByCode(data.code))
-        return fail("A promotion with this code already exists", {
-          errors: { code: ["This code is already in use"] },
+      const result = await promotionWriteService.create(data);
+      if (!result.success)
+        return fail(result.message, {
+          errors:
+            result.field === "code"
+              ? { code: ["This code is already in use"] }
+              : result.field === "campaign"
+                ? { campaignId: [result.message] }
+                : { targetRules: [result.message] },
         });
-      const id = crypto.randomUUID();
-      await promotionDal.create({ id, ...data });
-      return ok(`Promotion ${data.code} created`, { id });
+      return ok(`Promotion ${data.code} created`, { id: result.id });
     } catch (error) {
       return failure(
         "Create promotion error",
@@ -143,13 +148,19 @@ export const updatePromotion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const clash = await promotionDal.findByCode(data.code);
-      if (clash && clash.id !== data.id)
-        return fail("A promotion with this code already exists", {
-          errors: { code: ["This code is already in use"] },
-        });
       const { id, ...values } = data;
-      await promotionDal.update(id, values);
+      const result = await promotionWriteService.update(id, values);
+      if (!result.success)
+        return fail(result.message, {
+          errors:
+            result.field === "code"
+              ? { code: ["This code is already in use"] }
+              : result.field === "targetRules"
+                ? { targetRules: [result.message] }
+              : result.field === "campaign"
+                ? { campaignId: [result.message] }
+                : {},
+        });
       return ok("Promotion updated successfully", { id });
     } catch (error) {
       return failure(
@@ -195,7 +206,9 @@ export const deletePromotion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      await promotionDal.softDelete(data.id);
+      const result = await promotionWriteService.delete(data.id);
+      if (!result.success)
+        return fail(result.message, { error: result.error });
       return ok("Promotion deleted", { id: data.id });
     } catch (error) {
       return failure(

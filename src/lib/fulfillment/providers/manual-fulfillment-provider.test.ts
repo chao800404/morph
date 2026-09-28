@@ -7,9 +7,15 @@ describe("manualFulfillmentProvider", () => {
     const data = await manualFulfillmentProvider.create({
       orderId: "order",
       fulfillmentId: "fulfillment",
+      locationId: "location",
+      shippingOptionId: null,
+      currencyCode: "twd",
+      address: null,
+      items: [],
       data: {},
     });
-    expect(typeof data.reference).toBe("string");
+    expect(typeof data.data.reference).toBe("string");
+    expect(data.labels).toEqual([]);
   });
 
   it("preserves provider data when canceled", async () => {

@@ -20,6 +20,13 @@ export type OrderStatus =
   | "canceled"
   | "requires_action";
 
+export type OrderTransferStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "canceled"
+  | "expired";
+
 export type OrderChangeStatus =
   | "pending"
   | "requested"
@@ -154,6 +161,53 @@ export const orders = sqliteTable(
     check(
       "orders_currency_code_check",
       sql`length(${table.currencyCode}) = 3 AND ${table.currencyCode} = lower(${table.currencyCode})`,
+    ),
+  ],
+);
+
+/** A short-lived, email-verified request to attach a guest order to an account. */
+export const orderTransfers = sqliteTable(
+  "order_transfers",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    /** Snapshot used to ensure acceptance does not overwrite a changed owner. */
+    sourceCustomerId: text("source_customer_id"),
+    requesterCustomerId: text("requester_customer_id").notNull(),
+    targetEmail: text("target_email").notNull(),
+    salesChannelId: text("sales_channel_id").notNull(),
+    email: text("email").notNull(),
+    description: text("description"),
+    updateOrderEmail: integer("update_order_email", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    tokenHash: text("token_hash").notNull(),
+    status: text("status")
+      .$type<OrderTransferStatus>()
+      .notNull()
+      .default("pending"),
+    expiresAt: text("expires_at").notNull(),
+    acceptedAt: text("accepted_at"),
+    declinedAt: text("declined_at"),
+    canceledAt: text("canceled_at"),
+    createdBy: text("created_by"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("order_transfers_pending_order_unique")
+      .on(table.orderId)
+      .where(sql`${table.status} = 'pending' AND ${table.deletedAt} IS NULL`),
+    uniqueIndex("order_transfers_token_hash_unique").on(table.tokenHash),
+    index("order_transfers_customer_status_idx").on(
+      table.requesterCustomerId,
+      table.status,
+      table.deletedAt,
+    ),
+    check(
+      "order_transfers_status_check",
+      sql`${table.status} IN ('pending', 'accepted', 'declined', 'canceled', 'expired')`,
     ),
   ],
 );

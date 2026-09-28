@@ -1,6 +1,22 @@
 import { mapFirstOrNull } from "@/lib/db/single-row";
 import { getDb } from "@/db";
-import { salesChannelStockLocations } from "@/db/link.schema";
+import type { Metadata } from "@/db/json";
+import { cartShippingMethods, carts } from "@/db/cart.schema";
+import {
+  fulfillmentProviders,
+  fulfillmentSets,
+  geoZones,
+  serviceZones,
+  shippingOptions,
+  shippingOptionRules,
+} from "@/db/fulfillment.schema";
+import {
+  locationFulfillmentProviders,
+  locationFulfillmentSets,
+  salesChannelStockLocations,
+  shippingOptionPriceSets,
+} from "@/db/link.schema";
+import { salesChannels } from "@/db/sales-channel.schema";
 import {
   stockLocationAddresses,
   stockLocations,
@@ -15,11 +31,14 @@ import {
   eq,
   inArray,
   isNull,
+  sql,
   type SQL,
 } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import type {
   StockLocationAddressInputDTO,
   StockLocationDTO,
+  StockLocationFulfillmentSetDTO,
   StockLocationInsertDTO,
   UpdateStockLocationDTO,
 } from "../dto/stock-location.dto";
@@ -27,6 +46,34 @@ import { toStockLocationDTO } from "../mappers/stock-location.mapper";
 
 /** How many rows one soft-delete statement touches. See rules.md §4. */
 const DELETE_CHUNK = 50;
+
+export class StockLocationShippingInUseError extends Error {
+  constructor() {
+    super("Shipping options for this location are selected in active carts");
+    this.name = "StockLocationShippingInUseError";
+  }
+}
+
+const sqlList = (values: string[]) =>
+  sql.join(
+    values.map((value) => sql`${value}`),
+    sql`, `,
+  );
+
+/** Fulfillment sets only cascade when no other location shares them. */
+const exclusivelyOwnedSetIds = (locationIds: string[]) => {
+  const values = sqlList(locationIds);
+  return sql`
+    SELECT owned.fulfillment_set_id
+    FROM location_fulfillment_sets AS owned
+    WHERE owned.stock_location_id IN (${values})
+      AND NOT EXISTS (
+        SELECT 1 FROM location_fulfillment_sets AS other_link
+        WHERE other_link.fulfillment_set_id = owned.fulfillment_set_id
+          AND other_link.stock_location_id NOT IN (${values})
+      )
+  `;
+};
 
 type Database = Awaited<ReturnType<typeof getDb>>;
 
@@ -89,14 +136,14 @@ export const stockLocationDal = {
     sortOrder: "asc" | "desc";
     page: number;
     limit: number;
+    /** Preserve REST offsets that are not exact multiples of the page size. */
+    offset?: number;
   }): Promise<{ locations: StockLocationDTO[]; total: number }> {
     const db = await getDb();
     const conditions: SQL[] = [isNull(stockLocations.deletedAt)];
 
     if (options.query?.trim()) {
-      conditions.push(
-        likeContains(stockLocations.name, options.query.trim()),
-      );
+      conditions.push(likeContains(stockLocations.name, options.query.trim()));
     }
 
     const sortColumn = {
@@ -114,7 +161,7 @@ export const stockLocationDal = {
           options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn),
         )
         .limit(options.limit)
-        .offset((options.page - 1) * options.limit),
+        .offset(options.offset ?? (options.page - 1) * options.limit),
     ]);
 
     return {
@@ -125,25 +172,132 @@ export const stockLocationDal = {
     };
   },
 
+  async findFulfillmentSetByName(name: string): Promise<{ id: string } | null> {
+    const db = await getDb();
+    const rows = await db
+      .select({ id: fulfillmentSets.id })
+      .from(fulfillmentSets)
+      .where(
+        and(eq(fulfillmentSets.name, name), isNull(fulfillmentSets.deletedAt)),
+      )
+      .limit(1);
+    return mapFirstOrNull(rows, ({ id }) => ({ id }));
+  },
+
+  async listFulfillmentSets(
+    locationId: string,
+  ): Promise<StockLocationFulfillmentSetDTO[]> {
+    const db = await getDb();
+    const rows = await db
+      .select({ set: fulfillmentSets })
+      .from(locationFulfillmentSets)
+      .innerJoin(
+        fulfillmentSets,
+        eq(fulfillmentSets.id, locationFulfillmentSets.fulfillmentSetId),
+      )
+      .where(
+        and(
+          eq(locationFulfillmentSets.stockLocationId, locationId),
+          isNull(fulfillmentSets.deletedAt),
+        ),
+      )
+      .orderBy(asc(fulfillmentSets.name));
+    return rows.map(({ set }) => ({
+      id: set.id,
+      name: set.name,
+      type: set.type,
+      metadata: set.metadata ?? {},
+      createdAt: new Date(set.createdAt),
+      updatedAt: new Date(set.updatedAt),
+    }));
+  },
+
+  async createFulfillmentSet(input: {
+    id: string;
+    locationId: string;
+    name: string;
+    type: "shipping" | "pickup";
+    metadata?: Metadata;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const statements: BatchItem<"sqlite">[] = [
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+            SELECT 1 FROM ${stockLocations}
+            WHERE ${stockLocations.id} = ${input.locationId}
+              AND ${stockLocations.deletedAt} IS NULL
+          ) THEN 1 ELSE json('') END`,
+        })
+        .from(sql.raw("(SELECT 1)")),
+      db.insert(fulfillmentSets).values({
+        id: input.id,
+        name: input.name,
+        type: input.type,
+        metadata: input.metadata ?? {},
+        createdAt: now,
+        updatedAt: now,
+      }),
+      db.insert(locationFulfillmentSets).values({
+        stockLocationId: input.locationId,
+        fulfillmentSetId: input.id,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ];
+    try {
+      await db.batch(
+        statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+      );
+      return true;
+    } catch (error) {
+      const [location] = await db
+        .select({ id: stockLocations.id })
+        .from(stockLocations)
+        .where(
+          and(
+            eq(stockLocations.id, input.locationId),
+            isNull(stockLocations.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!location) return false;
+      throw error;
+    }
+  },
+
   async create(data: StockLocationInsertDTO): Promise<void> {
     const db = await getDb();
     const now = new Date().toISOString();
 
     let addressId: string | null = null;
+    const statements: BatchItem<"sqlite">[] = [];
     if (data.address) {
       addressId = crypto.randomUUID();
-      await db
-        .insert(stockLocationAddresses)
-        .values({ id: addressId, ...normalizeAddress(data.address), createdAt: now, updatedAt: now });
+      statements.push(
+        db.insert(stockLocationAddresses).values({
+          id: addressId,
+          ...normalizeAddress(data.address),
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
     }
 
-    await db.insert(stockLocations).values({
-      id: data.id,
-      name: data.name,
-      addressId,
-      createdAt: now,
-      updatedAt: now,
-    });
+    statements.push(
+      db.insert(stockLocations).values({
+        id: data.id,
+        name: data.name,
+        addressId,
+        metadata: data.metadata ?? {},
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
   },
 
   /**
@@ -153,44 +307,109 @@ export const stockLocationDal = {
    * distinction matters because the edit form sends only the fields it owns,
    * and a location can legitimately have no address.
    */
-  async update(id: string, data: UpdateStockLocationDTO): Promise<void> {
+  async update(
+    id: string,
+    data: UpdateStockLocationDTO,
+    expectedUpdatedAt: string,
+  ): Promise<boolean> {
     const db = await getDb();
-    const now = new Date().toISOString();
 
-    const existing = await db
-      .select({ addressId: stockLocations.addressId })
-      .from(stockLocations)
-      .where(eq(stockLocations.id, id))
+    const existingRows = await withAddress(db)
+      .where(and(eq(stockLocations.id, id), isNull(stockLocations.deletedAt)))
       .limit(1);
-    const currentAddressId = existing[0]?.addressId ?? null;
+    const existing = mapFirstOrNull(existingRows, (row) =>
+      toStockLocationDTO(row.location, row.address),
+    );
+    if (!existing || existing.updatedAt.toISOString() !== expectedUpdatedAt) {
+      return false;
+    }
+    const now = new Date(
+      Math.max(Date.now(), existing.updatedAt.getTime() + 1),
+    ).toISOString();
+    const currentAddressId = existing.address?.id ?? null;
 
     let addressId = currentAddressId;
+    const addressCondition =
+      currentAddressId === null
+        ? sql`${stockLocations.addressId} IS NULL`
+        : sql`${stockLocations.addressId} = ${currentAddressId}`;
+    const statements: BatchItem<"sqlite">[] = [
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+            SELECT 1 FROM ${stockLocations}
+            WHERE ${stockLocations.id} = ${id}
+              AND ${stockLocations.deletedAt} IS NULL
+              AND ${stockLocations.updatedAt} = ${expectedUpdatedAt}
+              AND ${addressCondition}
+          ) THEN 1 ELSE json('') END`,
+        })
+        .from(sql.raw("(SELECT 1)")),
+    ];
+
     if (data.address === null) {
       addressId = null;
     } else if (data.address) {
-      const values = normalizeAddress(data.address);
       if (currentAddressId) {
-        await db
-          .update(stockLocationAddresses)
-          .set({ ...values, updatedAt: now })
-          .where(eq(stockLocationAddresses.id, currentAddressId));
+        const normalized = normalizeAddress(data.address);
+        const { metadata: _metadata, ...addressFields } = normalized;
+        const values =
+          data.address.metadata === undefined ? addressFields : normalized;
+        statements.push(
+          db
+            .update(stockLocationAddresses)
+            .set({ ...values, updatedAt: now })
+            .where(eq(stockLocationAddresses.id, currentAddressId)),
+        );
       } else {
         addressId = crypto.randomUUID();
-        await db
-          .insert(stockLocationAddresses)
-          .values({ id: addressId, ...values, createdAt: now, updatedAt: now });
+        statements.push(
+          db.insert(stockLocationAddresses).values({
+            id: addressId,
+            ...normalizeAddress(data.address),
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
       }
     }
 
-    await db
-      .update(stockLocations)
-      .set({
-        ...(data.name !== undefined ? { name: data.name } : {}),
-        ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
-        ...(data.address !== undefined ? { addressId } : {}),
-        updatedAt: now,
-      })
-      .where(and(eq(stockLocations.id, id), isNull(stockLocations.deletedAt)));
+    statements.push(
+      db
+        .update(stockLocations)
+        .set({
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
+          ...(data.address !== undefined ? { addressId } : {}),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(stockLocations.id, id),
+            isNull(stockLocations.deletedAt),
+            eq(stockLocations.updatedAt, expectedUpdatedAt),
+          ),
+        ),
+    );
+
+    if (currentAddressId && data.address === null) {
+      statements.push(
+        db.delete(stockLocationAddresses).where(
+          and(
+            eq(stockLocationAddresses.id, currentAddressId),
+            sql`NOT EXISTS (
+                SELECT 1 FROM ${stockLocations}
+                WHERE ${stockLocations.addressId} = ${currentAddressId}
+              )`,
+          ),
+        ),
+      );
+    }
+
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+    return true;
   },
 
   /**
@@ -204,21 +423,166 @@ export const stockLocationDal = {
     if (ids.length === 0) return;
     const db = await getDb();
     const now = new Date().toISOString();
+    const uniqueIds = [...new Set(ids)];
+    const statements: BatchItem<"sqlite">[] = [];
+    const chunks: string[][] = [];
 
-    for (let index = 0; index < ids.length; index += DELETE_CHUNK) {
-      const chunk = ids.slice(index, index + DELETE_CHUNK);
-      await db
-        .update(stockLocations)
-        .set({ deletedAt: now, updatedAt: now })
+    const hasActiveCartShippingMethod = async (locationIds: string[]) => {
+      const exclusiveSetIds = exclusivelyOwnedSetIds(locationIds);
+      const rows = await db
+        .select({ id: cartShippingMethods.id })
+        .from(cartShippingMethods)
+        .innerJoin(carts, eq(carts.id, cartShippingMethods.cartId))
+        .innerJoin(
+          shippingOptions,
+          eq(shippingOptions.id, cartShippingMethods.shippingOptionId),
+        )
+        .innerJoin(
+          serviceZones,
+          eq(serviceZones.id, shippingOptions.serviceZoneId),
+        )
+        .innerJoin(
+          fulfillmentSets,
+          eq(fulfillmentSets.id, serviceZones.fulfillmentSetId),
+        )
         .where(
           and(
-            inArray(stockLocations.id, chunk),
-            isNull(stockLocations.deletedAt),
+            sql`${fulfillmentSets.id} IN (${exclusiveSetIds})`,
+            isNull(cartShippingMethods.deletedAt),
+            isNull(carts.completedAt),
+            isNull(carts.deletedAt),
+            isNull(shippingOptions.deletedAt),
+            isNull(serviceZones.deletedAt),
+            isNull(fulfillmentSets.deletedAt),
           ),
-        );
-      await db
-        .delete(salesChannelStockLocations)
-        .where(inArray(salesChannelStockLocations.stockLocationId, chunk));
+        )
+        .limit(1);
+      return rows.length > 0;
+    };
+
+    for (let index = 0; index < uniqueIds.length; index += DELETE_CHUNK) {
+      const chunk = uniqueIds.slice(index, index + DELETE_CHUNK);
+      chunks.push(chunk);
+      if (await hasActiveCartShippingMethod(chunk)) {
+        throw new StockLocationShippingInUseError();
+      }
+      const setIds = exclusivelyOwnedSetIds(chunk);
+      const zoneIds = sql`
+        SELECT id FROM service_zones
+        WHERE fulfillment_set_id IN (${setIds})
+      `;
+      const optionIds = sql`
+        SELECT id FROM shipping_options
+        WHERE service_zone_id IN (${zoneIds})
+      `;
+      const activeCartGuard = sql`NOT EXISTS (
+        SELECT 1
+        FROM cart_shipping_methods AS method
+        JOIN carts AS cart ON cart.id = method.cart_id
+        JOIN shipping_options AS option ON option.id = method.shipping_option_id
+        JOIN service_zones AS zone ON zone.id = option.service_zone_id
+        JOIN fulfillment_sets AS fulfillment_set
+          ON fulfillment_set.id = zone.fulfillment_set_id
+        WHERE fulfillment_set.id IN (${setIds})
+          AND method.deleted_at IS NULL
+          AND cart.completed_at IS NULL
+          AND cart.deleted_at IS NULL
+          AND option.deleted_at IS NULL
+          AND zone.deleted_at IS NULL
+          AND fulfillment_set.deleted_at IS NULL
+      )`;
+      statements.push(
+        db
+          .select({
+            ok: sql<number>`CASE WHEN (
+              SELECT COUNT(*) FROM ${stockLocations}
+              WHERE ${inArray(stockLocations.id, chunk)}
+                AND ${stockLocations.deletedAt} IS NULL
+            ) = ${chunk.length} AND ${activeCartGuard}
+              THEN 1 ELSE json('') END`,
+          })
+          .from(sql.raw("(SELECT 1)")),
+        db
+          .update(stockLocations)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              inArray(stockLocations.id, chunk),
+              isNull(stockLocations.deletedAt),
+            ),
+          ),
+        db
+          .update(fulfillmentSets)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              sql`${fulfillmentSets.id} IN (${setIds})`,
+              isNull(fulfillmentSets.deletedAt),
+            ),
+          ),
+        db
+          .update(serviceZones)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              sql`${serviceZones.fulfillmentSetId} IN (${setIds})`,
+              isNull(serviceZones.deletedAt),
+            ),
+          ),
+        db
+          .update(geoZones)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              sql`${geoZones.serviceZoneId} IN (${zoneIds})`,
+              isNull(geoZones.deletedAt),
+            ),
+          ),
+        db
+          .update(shippingOptions)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              sql`${shippingOptions.serviceZoneId} IN (${zoneIds})`,
+              isNull(shippingOptions.deletedAt),
+            ),
+          ),
+        db
+          .update(shippingOptionRules)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              sql`${shippingOptionRules.shippingOptionId} IN (${optionIds})`,
+              isNull(shippingOptionRules.deletedAt),
+            ),
+          ),
+        db
+          .delete(shippingOptionPriceSets)
+          .where(
+            sql`${shippingOptionPriceSets.shippingOptionId} IN (${optionIds})`,
+          ),
+        db
+          .delete(salesChannelStockLocations)
+          .where(inArray(salesChannelStockLocations.stockLocationId, chunk)),
+        db
+          .delete(locationFulfillmentProviders)
+          .where(inArray(locationFulfillmentProviders.stockLocationId, chunk)),
+        db
+          .delete(locationFulfillmentSets)
+          .where(inArray(locationFulfillmentSets.stockLocationId, chunk)),
+      );
+    }
+    try {
+      await db.batch(
+        statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+      );
+    } catch (error) {
+      for (const chunk of chunks) {
+        if (await hasActiveCartShippingMethod(chunk)) {
+          throw new StockLocationShippingInUseError();
+        }
+      }
+      throw error;
     }
   },
 
@@ -233,12 +597,6 @@ export const stockLocationDal = {
 
   async setChannels(locationId: string, channelIds: string[]): Promise<void> {
     const db = await getDb();
-    await db
-      .delete(salesChannelStockLocations)
-      .where(eq(salesChannelStockLocations.stockLocationId, locationId));
-
-    if (channelIds.length === 0) return;
-
     const now = new Date().toISOString();
     const rows = channelIds.map((salesChannelId) => ({
       salesChannelId,
@@ -246,11 +604,325 @@ export const stockLocationDal = {
       createdAt: now,
       updatedAt: now,
     }));
+    const channelsAreActive = channelIds.length
+      ? sql`(
+          SELECT COUNT(*) FROM ${salesChannels}
+          WHERE ${salesChannels.id} IN (${sql.join(
+            channelIds.map((id) => sql`${id}`),
+            sql`, `,
+          )}) AND ${salesChannels.deletedAt} IS NULL
+        ) = ${channelIds.length}`
+      : sql`1 = 1`;
 
     // Four columns, so 25 rows a statement under D1's 100-parameter ceiling.
-    for (const chunk of chunkForInsert(rows, 4)) {
-      await db.insert(salesChannelStockLocations).values(chunk);
+    const statements: BatchItem<"sqlite">[] = [
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+          SELECT 1 FROM ${stockLocations}
+          WHERE ${stockLocations.id} = ${locationId}
+            AND ${stockLocations.deletedAt} IS NULL
+        ) AND ${channelsAreActive} THEN 1 ELSE json('') END
+        `,
+        })
+        .from(sql.raw("(SELECT 1)")),
+      db
+        .delete(salesChannelStockLocations)
+        .where(eq(salesChannelStockLocations.stockLocationId, locationId)),
+      ...chunkForInsert(rows, 4).map((chunk) =>
+        db.insert(salesChannelStockLocations).values(chunk),
+      ),
+    ];
+
+    // A replacement is one logical write: readers see either the old set or
+    // the complete new set, never a location temporarily with no channels.
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+  },
+
+  /** Atomically add and remove sales-channel links, preserving untouched links. */
+  async batchChannels(
+    locationId: string,
+    add: string[],
+    remove: string[],
+  ): Promise<boolean> {
+    const db = await getDb();
+    const [location] = await db
+      .select({ id: stockLocations.id })
+      .from(stockLocations)
+      .where(
+        and(
+          eq(stockLocations.id, locationId),
+          isNull(stockLocations.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!location) return false;
+
+    if (add.length > 0) {
+      const activeChannels = await db
+        .select({ id: salesChannels.id })
+        .from(salesChannels)
+        .where(
+          and(inArray(salesChannels.id, add), isNull(salesChannels.deletedAt)),
+        );
+      if (activeChannels.length !== add.length) return false;
     }
+
+    const now = new Date().toISOString();
+    const additions = add.map((salesChannelId) => ({
+      salesChannelId,
+      stockLocationId: locationId,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const channelsAreActive = add.length
+      ? sql`(
+          SELECT COUNT(*) FROM ${salesChannels}
+          WHERE ${inArray(salesChannels.id, add)}
+            AND ${salesChannels.deletedAt} IS NULL
+        ) = ${add.length}`
+      : sql`1 = 1`;
+    const statements: BatchItem<"sqlite">[] = [
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+            SELECT 1 FROM ${stockLocations}
+            WHERE ${stockLocations.id} = ${locationId}
+              AND ${stockLocations.deletedAt} IS NULL
+          ) AND ${channelsAreActive} THEN 1 ELSE json('') END`,
+        })
+        .from(sql.raw("(SELECT 1)")),
+    ];
+    if (remove.length > 0) {
+      statements.push(
+        db
+          .delete(salesChannelStockLocations)
+          .where(
+            and(
+              eq(salesChannelStockLocations.stockLocationId, locationId),
+              inArray(salesChannelStockLocations.salesChannelId, remove),
+            ),
+          ),
+      );
+    }
+    statements.push(
+      ...chunkForInsert(additions, 4).map((chunk) =>
+        db
+          .insert(salesChannelStockLocations)
+          .values(chunk)
+          .onConflictDoNothing(),
+      ),
+    );
+
+    try {
+      await db.batch(
+        statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+      );
+      return true;
+    } catch (error) {
+      const [currentLocation] = await db
+        .select({ id: stockLocations.id })
+        .from(stockLocations)
+        .where(
+          and(
+            eq(stockLocations.id, locationId),
+            isNull(stockLocations.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!currentLocation) return false;
+      if (add.length > 0) {
+        const activeChannels = await db
+          .select({ id: salesChannels.id })
+          .from(salesChannels)
+          .where(
+            and(
+              inArray(salesChannels.id, add),
+              isNull(salesChannels.deletedAt),
+            ),
+          );
+        if (activeChannels.length !== add.length) return false;
+      }
+      throw error;
+    }
+  },
+
+  async listFulfillmentProviderIds(locationId: string): Promise<string[]> {
+    const db = await getDb();
+    const rows = await db
+      .select({
+        providerId: locationFulfillmentProviders.fulfillmentProviderId,
+      })
+      .from(locationFulfillmentProviders)
+      .innerJoin(
+        fulfillmentProviders,
+        and(
+          eq(
+            fulfillmentProviders.id,
+            locationFulfillmentProviders.fulfillmentProviderId,
+          ),
+          eq(fulfillmentProviders.isEnabled, true),
+          isNull(fulfillmentProviders.deletedAt),
+        ),
+      )
+      .where(eq(locationFulfillmentProviders.stockLocationId, locationId));
+    return rows.map((row) => row.providerId);
+  },
+
+  /** Atomically replace a location's configured fulfillment providers. */
+  async setFulfillmentProviderIds(
+    locationId: string,
+    providerIds: string[],
+  ): Promise<void> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const ids = [...new Set(providerIds)];
+    const providerRows = ids.map((id) => ({
+      id,
+      isEnabled: true,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    }));
+    const linkRows = ids.map((fulfillmentProviderId) => ({
+      stockLocationId: locationId,
+      fulfillmentProviderId,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const providersAreActive = ids.length
+      ? sql`(
+          SELECT COUNT(*) FROM ${fulfillmentProviders}
+          WHERE ${fulfillmentProviders.id} IN (${sql.join(
+            ids.map((id) => sql`${id}`),
+            sql`, `,
+          )}) AND ${fulfillmentProviders.isEnabled} = 1
+            AND ${fulfillmentProviders.deletedAt} IS NULL
+        ) = ${ids.length}`
+      : sql`1 = 1`;
+
+    const statements: BatchItem<"sqlite">[] = [
+      ...chunkForInsert(providerRows, 5).map((rows) =>
+        db
+          .insert(fulfillmentProviders)
+          .values(rows)
+          .onConflictDoUpdate({
+            target: fulfillmentProviders.id,
+            set: {
+              isEnabled: true,
+              deletedAt: null,
+              updatedAt: now,
+            },
+          }),
+      ),
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+          SELECT 1 FROM ${stockLocations}
+          WHERE ${stockLocations.id} = ${locationId}
+            AND ${stockLocations.deletedAt} IS NULL
+        ) AND ${providersAreActive} THEN 1 ELSE json('') END
+        `,
+        })
+        .from(sql.raw("(SELECT 1)")),
+      db
+        .delete(locationFulfillmentProviders)
+        .where(eq(locationFulfillmentProviders.stockLocationId, locationId)),
+      ...chunkForInsert(linkRows, 4).map((rows) =>
+        db.insert(locationFulfillmentProviders).values(rows),
+      ),
+    ];
+
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+  },
+
+  /** Atomically add and remove location/provider links without replacing peers. */
+  async batchFulfillmentProviderIds(
+    locationId: string,
+    input: { add: string[]; remove: string[] },
+  ): Promise<void> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const addIds = [...new Set(input.add)];
+    const removeIds = [...new Set(input.remove)];
+    const providerRows = addIds.map((id) => ({
+      id,
+      isEnabled: true,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    }));
+    const linkRows = addIds.map((fulfillmentProviderId) => ({
+      stockLocationId: locationId,
+      fulfillmentProviderId,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const providersAreActive = addIds.length
+      ? sql`(
+          SELECT COUNT(*) FROM ${fulfillmentProviders}
+          WHERE ${fulfillmentProviders.id} IN (${sql.join(
+            addIds.map((id) => sql`${id}`),
+            sql`, `,
+          )}) AND ${fulfillmentProviders.isEnabled} = 1
+            AND ${fulfillmentProviders.deletedAt} IS NULL
+        ) = ${addIds.length}`
+      : sql`1 = 1`;
+
+    const statements: BatchItem<"sqlite">[] = [
+      ...chunkForInsert(providerRows, 5).map((rows) =>
+        db
+          .insert(fulfillmentProviders)
+          .values(rows)
+          .onConflictDoUpdate({
+            target: fulfillmentProviders.id,
+            set: {
+              isEnabled: true,
+              deletedAt: null,
+              updatedAt: now,
+            },
+          }),
+      ),
+      db
+        .select({
+          ok: sql<number>`CASE WHEN EXISTS (
+          SELECT 1 FROM ${stockLocations}
+          WHERE ${stockLocations.id} = ${locationId}
+            AND ${stockLocations.deletedAt} IS NULL
+        ) AND ${providersAreActive} THEN 1 ELSE json('') END
+        `,
+        })
+        .from(sql.raw("(SELECT 1)")),
+      ...(removeIds.length
+        ? [
+            db
+              .delete(locationFulfillmentProviders)
+              .where(
+                and(
+                  eq(locationFulfillmentProviders.stockLocationId, locationId),
+                  inArray(
+                    locationFulfillmentProviders.fulfillmentProviderId,
+                    removeIds,
+                  ),
+                ),
+              ),
+          ]
+        : []),
+      ...chunkForInsert(linkRows, 4).map((rows) =>
+        db
+          .insert(locationFulfillmentProviders)
+          .values(rows)
+          .onConflictDoNothing(),
+      ),
+    ];
+
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
   },
 };
 
@@ -264,4 +936,5 @@ const normalizeAddress = (address: StockLocationAddressInputDTO) => ({
   province: address.province ?? null,
   postalCode: address.postalCode ?? null,
   phone: address.phone ?? null,
+  metadata: address.metadata ?? {},
 });

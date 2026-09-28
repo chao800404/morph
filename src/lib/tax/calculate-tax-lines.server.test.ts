@@ -127,6 +127,35 @@ describe("calculateTaxLines", () => {
 });
 
 describe("TaxProviderRegistry", () => {
+  it("keeps the system provider while installing configured providers", () => {
+    const registry = new TaxProviderRegistry();
+    const provider: TaxProvider = {
+      id: "tp_external",
+      getTaxLines: vi.fn().mockResolvedValue([]),
+    };
+
+    registry.configure([provider]);
+
+    expect(registry.list()).toEqual(["tp_system", "tp_external"]);
+    expect(registry.get("tp_external")).toBe(provider);
+    registry.configure([]);
+    expect(registry.list()).toEqual(["tp_system"]);
+  });
+
+  it("keeps the previous providers when a configuration is invalid", () => {
+    const registry = new TaxProviderRegistry();
+    const provider: TaxProvider = {
+      id: "tp_external",
+      getTaxLines: vi.fn().mockResolvedValue([]),
+    };
+    registry.configure([provider]);
+
+    expect(() => registry.configure([provider, provider])).toThrow(
+      "Tax provider is already registered: tp_external",
+    );
+    expect(registry.get("tp_external")).toBe(provider);
+  });
+
   it("rejects duplicate provider identifiers", () => {
     const provider: TaxProvider = {
       id: "tp_duplicate",

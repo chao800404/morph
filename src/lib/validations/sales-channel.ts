@@ -17,6 +17,7 @@ export const createSalesChannelInputSchema = z.object({
   type: z.enum(SALES_CHANNEL_TYPES).default("custom"),
   description: z.string().trim().max(2000).nullish(),
   isDisabled: z.boolean().optional(),
+  metadata: metadataInputSchema.optional(),
 });
 
 export const updateSalesChannelInputSchema = z.object({

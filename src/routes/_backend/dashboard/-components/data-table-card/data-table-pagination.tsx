@@ -41,6 +41,12 @@ export const DataTablePagination = ({
         if (scope === "orderFulfillment") {
           return { ...prev, orderFulfillmentPage: nextPage };
         }
+        if (scope === "orderReturn") {
+          return { ...prev, orderReturnPage: nextPage };
+        }
+        if (scope === "orderNotification") {
+          return { ...prev, orderNotificationPage: nextPage };
+        }
         if (scope === "release") return { ...prev, releasePage: nextPage };
         return { ...prev, page: nextPage };
       },

@@ -94,6 +94,11 @@ export const ProductOrganizationCard = ({
         )),
       ),
     },
+    {
+      key: "shipping-profile",
+      label: "Shipping Profile",
+      displayValue: product.shippingProfileName || undefined,
+    },
   ];
 
   return (

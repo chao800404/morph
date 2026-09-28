@@ -1,5 +1,5 @@
 import { apiKeyDal } from "@/lib/api-key/dal/api-key.dal";
-import { createPublishableKey } from "@/lib/api-key/publishable-key";
+import { apiKeyWriteService } from "@/lib/api-key/service/api-key-write.service";
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import {
   createPublishableApiKeyInputSchema,
@@ -26,7 +26,9 @@ export const listPublishableApiKeys = createServerFn({ method: "GET" })
   });
 
 export const createPublishableApiKey = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(createPublishableApiKeyInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(createPublishableApiKeyInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
@@ -36,27 +38,20 @@ export const createPublishableApiKey = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const channelIds = await apiKeyDal.activeSalesChannelIds(
-        data.salesChannelIds,
-      );
-      if (channelIds.length !== new Set(data.salesChannelIds).size)
-        return fail(
-          "One or more sales channels are disabled or no longer exist",
-          { error: "INVALID_SALES_CHANNEL" },
-        );
-      const key = await createPublishableKey();
-      await apiKeyDal.createPublishable({
-        id: key.id,
-        hash: key.hash,
-        salt: key.salt,
-        redacted: key.redacted,
+      const result = await apiKeyWriteService.create({
         title: data.title,
         createdBy: context.user.id,
-        salesChannelIds: channelIds,
+        salesChannelIds: data.salesChannelIds,
+        type: "publishable",
       });
+      if (!result.success) return result;
       return ok(
         "Publishable API key created. Copy it now; it cannot be shown again.",
-        { id: key.id, token: key.token, redacted: key.redacted },
+        {
+          id: result.data.id,
+          token: result.data.token,
+          redacted: result.data.redacted,
+        },
       );
     } catch (error) {
       return failure(
@@ -69,7 +64,9 @@ export const createPublishableApiKey = createServerFn({ method: "POST" })
   });
 
 export const revokePublishableApiKey = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(revokePublishableApiKeyInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(revokePublishableApiKeyInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
@@ -79,10 +76,15 @@ export const revokePublishableApiKey = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      return (await apiKeyDal.revoke(data.id, context.user.id))
+      const result = await apiKeyWriteService.revoke({
+        id: data.id,
+        actorId: context.user.id,
+        expectedType: "publishable",
+      });
+      return result.success
         ? ok("Publishable API key revoked", { id: data.id })
         : fail("Publishable API key not found or already revoked", {
-            error: "NOT_FOUND",
+            error: result.error ?? "NOT_FOUND",
           });
     } catch (error) {
       return failure(

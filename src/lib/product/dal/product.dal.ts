@@ -1,5 +1,11 @@
 import { getDb } from "@/db";
+import { shippingProfiles } from "@/db/fulfillment.schema";
+import {
+  productSalesChannels,
+  productShippingProfiles,
+} from "@/db/link.schema";
 import { mapFirstOrNull } from "@/lib/db/single-row";
+import { DEFAULT_SHIPPING_PROFILE_ID } from "@/lib/shipping/constants";
 import { assets } from "@/db/asset.schema";
 import {
   productAssets,
@@ -28,8 +34,10 @@ import {
   isNull,
   notInArray,
   or,
-  SQL,
+  sql,
+  type SQL,
 } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import type {
   ProductOptionDTO,
   ProductOptionSelectionDTO,
@@ -48,9 +56,9 @@ import { productOptionDal } from "./product-option.dal";
 import { productVariantDal } from "./product-variant.dal";
 import { MAX_GENERATED_VARIANTS } from "../variant-limits";
 import { likeContains } from "@/lib/db/like-query";
-import { productSalesChannels } from "@/db/link.schema";
 import { salesChannels } from "@/db/sales-channel.schema";
 import { toSalesChannelDTO } from "@/lib/sales-channel/mappers/sales-channel.mapper";
+import { batchGuard } from "@/lib/db/batch-guard";
 
 // Column counts drive the insert batch size; see d1-batch.ts.
 const PRODUCT_OPTION_VALUE_LINK_COLUMNS = 3;
@@ -99,6 +107,162 @@ export const productDal = {
       );
     }
     return rows.map(toProductDTO);
+  },
+
+  /** Add/remove category memberships without replacing other product links. */
+  async manageCategoryProducts(input: {
+    categoryId: string;
+    addProductIds: string[];
+    removeProductIds: string[];
+    actorId: string;
+  }): Promise<void> {
+    const productIds = [
+      ...new Set([...input.addProductIds, ...input.removeProductIds]),
+    ];
+    if (productIds.length === 0) return;
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM product_categories
+          WHERE id = ${input.categoryId} AND deleted_at IS NULL
+        )`,
+      ),
+    ];
+
+    // These checks share the same D1 batch as the writes, so a resource or
+    // product soft-delete racing the request cannot leave partial memberships.
+    for (const group of chunk(productIds, 50)) {
+      const idList = sql.join(
+        group.map((id) => sql`${id}`),
+        sql`, `,
+      );
+      statements.push(
+        batchGuard(
+          db,
+          sql`(
+            SELECT COUNT(*) FROM products
+            WHERE id IN (${idList}) AND deleted_at IS NULL
+          ) = ${group.length}`,
+        ),
+      );
+    }
+
+    for (const group of chunk(input.removeProductIds, 50)) {
+      statements.push(
+        db
+          .delete(productCategoryLinks)
+          .where(
+            and(
+              eq(productCategoryLinks.categoryId, input.categoryId),
+              inArray(productCategoryLinks.productId, group),
+            ),
+          ),
+      );
+    }
+    for (const group of chunkForInsert(
+      input.addProductIds,
+      PRODUCT_LINK_COLUMNS,
+    )) {
+      statements.push(
+        db
+          .insert(productCategoryLinks)
+          .values(
+            group.map((productId) => ({
+              productId,
+              categoryId: input.categoryId,
+            })),
+          )
+          .onConflictDoNothing(),
+      );
+    }
+    for (const group of chunk(productIds, 50)) {
+      statements.push(
+        db
+          .update(products)
+          .set({ updatedAt: now, updatedBy: input.actorId })
+          .where(and(inArray(products.id, group), isNull(products.deletedAt))),
+      );
+    }
+
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+  },
+
+  /** Medusa collections are single-valued; adding replaces a product's collection. */
+  async manageCollectionProducts(input: {
+    collectionId: string;
+    addProductIds: string[];
+    removeProductIds: string[];
+    actorId: string;
+  }): Promise<void> {
+    const productIds = [
+      ...new Set([...input.addProductIds, ...input.removeProductIds]),
+    ];
+    if (productIds.length === 0) return;
+
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM product_collections
+          WHERE id = ${input.collectionId} AND deleted_at IS NULL
+        )`,
+      ),
+    ];
+
+    for (const group of chunk(productIds, 50)) {
+      const idList = sql.join(
+        group.map((id) => sql`${id}`),
+        sql`, `,
+      );
+      statements.push(
+        batchGuard(
+          db,
+          sql`(
+            SELECT COUNT(*) FROM products
+            WHERE id IN (${idList}) AND deleted_at IS NULL
+          ) = ${group.length}`,
+        ),
+      );
+    }
+
+    for (const group of chunk(input.addProductIds, 50)) {
+      statements.push(
+        db
+          .update(products)
+          .set({
+            collectionId: input.collectionId,
+            updatedAt: now,
+            updatedBy: input.actorId,
+          })
+          .where(and(inArray(products.id, group), isNull(products.deletedAt))),
+      );
+    }
+    for (const group of chunk(input.removeProductIds, 50)) {
+      statements.push(
+        db
+          .update(products)
+          .set({ collectionId: null, updatedAt: now, updatedBy: input.actorId })
+          .where(
+            and(
+              inArray(products.id, group),
+              eq(products.collectionId, input.collectionId),
+              isNull(products.deletedAt),
+            ),
+          ),
+      );
+    }
+
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
   },
 
   /**
@@ -178,6 +342,7 @@ export const productDal = {
       categoryRows,
       organization,
       channelRows,
+      shippingProfileRows,
     ] = await Promise.all([
       this.findOptions(id),
       db
@@ -225,6 +390,22 @@ export const productDal = {
           ),
         )
         .where(eq(productSalesChannels.productId, id)),
+      db
+        .select({
+          id: shippingProfiles.id,
+          name: shippingProfiles.name,
+        })
+        .from(productShippingProfiles)
+        .innerJoin(
+          shippingProfiles,
+          and(
+            eq(shippingProfiles.id, productShippingProfiles.shippingProfileId),
+            isNull(shippingProfiles.deletedAt),
+          ),
+        )
+        .where(eq(productShippingProfiles.productId, id))
+        .orderBy(asc(shippingProfiles.name))
+        .limit(1),
     ]);
 
     return {
@@ -242,6 +423,8 @@ export const productDal = {
         toSalesChannelDTO(channel),
       ),
       salesChannelIds: channelRows.map(({ channel }) => channel.id),
+      shippingProfileId: shippingProfileRows[0]?.id ?? null,
+      shippingProfileName: shippingProfileRows[0]?.name ?? null,
     };
   },
 
@@ -259,6 +442,8 @@ export const productDal = {
     sortOrder: "asc" | "desc";
     page: number;
     limit: number;
+    /** Optional exact offset for REST clients; dashboard callers use page. */
+    offset?: number;
   }): Promise<{ products: ProductListItemDTO[]; total: number }> {
     const db = await getDb();
     const conditions: SQL[] = [isNull(products.deletedAt)];
@@ -374,7 +559,7 @@ export const productDal = {
         .where(condition)
         .orderBy(orderBy)
         .limit(options.limit)
-        .offset((options.page - 1) * options.limit),
+        .offset(options.offset ?? (options.page - 1) * options.limit),
     ]);
 
     const productIds = rows.map((row) => row.id);
@@ -495,26 +680,45 @@ export const productDal = {
   async create(data: ProductInsertDTO): Promise<void> {
     const db = await getDb();
     const now = new Date().toISOString();
-    await db.insert(products).values({
-      id: data.id,
-      title: data.title,
-      handle: data.handle,
-      subtitle: data.subtitle ?? null,
-      description: data.description ?? null,
-      status: data.status ?? "draft",
-      collectionId: data.collectionId ?? null,
-      thumbnailAssetId: data.thumbnailAssetId ?? null,
-      metadata: data.metadata ?? {},
-      createdBy: data.createdBy,
-      updatedBy: data.updatedBy,
-      createdAt: data.createdAt?.toISOString() ?? now,
-      updatedAt: data.updatedAt?.toISOString() ?? now,
-    });
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM shipping_profiles
+          WHERE id = ${DEFAULT_SHIPPING_PROFILE_ID} AND deleted_at IS NULL
+        )`,
+      ),
+      db.insert(products).values({
+        id: data.id,
+        title: data.title,
+        handle: data.handle,
+        subtitle: data.subtitle ?? null,
+        description: data.description ?? null,
+        status: data.status ?? "draft",
+        collectionId: data.collectionId ?? null,
+        thumbnailAssetId: data.thumbnailAssetId ?? null,
+        metadata: data.metadata ?? {},
+        createdBy: data.createdBy,
+        updatedBy: data.updatedBy,
+        createdAt: data.createdAt?.toISOString() ?? now,
+        updatedAt: data.updatedAt?.toISOString() ?? now,
+      }),
+      db.insert(productShippingProfiles).values({
+        productId: data.id,
+        shippingProfileId: DEFAULT_SHIPPING_PROFILE_ID,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ];
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
   },
 
   async update(id: string, data: UpdateProductDTO): Promise<void> {
     const db = await getDb();
-    await db
+    const now = new Date().toISOString();
+    const update = db
       .update(products)
       .set({
         ...(data.title !== undefined ? { title: data.title } : {}),
@@ -549,9 +753,38 @@ export const productDal = {
         ...(data.material !== undefined ? { material: data.material } : {}),
         ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
         updatedBy: data.updatedBy,
-        updatedAt: new Date().toISOString(),
+        updatedAt: now,
       })
       .where(and(eq(products.id, id), isNull(products.deletedAt)));
+    if (data.shippingProfileId === undefined) {
+      await update;
+      return;
+    }
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM products
+          WHERE id = ${id} AND deleted_at IS NULL
+        ) AND EXISTS (
+          SELECT 1 FROM shipping_profiles
+          WHERE id = ${data.shippingProfileId} AND deleted_at IS NULL
+        )`,
+      ),
+      update,
+      db
+        .delete(productShippingProfiles)
+        .where(eq(productShippingProfiles.productId, id)),
+      db.insert(productShippingProfiles).values({
+        productId: id,
+        shippingProfileId: data.shippingProfileId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ];
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
   },
 
   /**

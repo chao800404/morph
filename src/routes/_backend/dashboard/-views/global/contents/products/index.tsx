@@ -21,6 +21,8 @@ import { PRODUCT_TABLE_COLUMNS } from "./config/product-table-columns";
 import { useProductTableControls } from "./hooks/use-product-table-controls";
 import { tableViewQueries } from "@queries/table-view.queries";
 import { ProductIndexSkeleton } from "./product-index-skeleton";
+import { AsyncCsvExportAction } from "@/routes/_backend/dashboard/-components/async-csv-export-action";
+import { ProductCsvImportAction } from "@/routes/_backend/dashboard/-components/product-csv-import-action";
 
 const Products = () => {
   const { search, filters } = useProductTableControls();
@@ -29,6 +31,13 @@ const Products = () => {
   const editAction = useCollectionEditAction("products");
   const queryClient = useQueryClient();
   const params = normalizeProductListParams(search);
+  const exportOrder = `${params.sortOrder === "desc" ? "-" : ""}${
+    params.sortBy === "title"
+      ? "title"
+      : params.sortBy === "updatedAt"
+        ? "updated_at"
+        : "created_at"
+  }`;
   const { data: result, isPending } = useQuery(productQueries.list(params));
   const { data: tableViewResult } = useSuspenseQuery(
     tableViewQueries.detail("products"),
@@ -89,7 +98,28 @@ const Products = () => {
       initialColumnConfiguration={initialColumnConfiguration}
       filters={filters}
       sortOptions={PRODUCT_SORT_OPTIONS}
-      headerActions={<CollectionCreateButton slug="products" />}
+      headerActions={
+        <div className="flex items-center gap-2">
+          <ProductCsvImportAction />
+          <AsyncCsvExportAction
+            kind="products"
+            resourceLabel="products"
+            description="Create a CSV with product and variant details, prices, options, images, tags, and categories. The current search and filters are applied to the export."
+            filters={{
+              q: params.query,
+              ...(params.status ? { status: params.status } : {}),
+              ...(params.createdWithin
+                ? { created_within: params.createdWithin }
+                : {}),
+              ...(params.updatedWithin
+                ? { updated_within: params.updatedWithin }
+                : {}),
+              order: exportOrder,
+            }}
+          />
+          <CollectionCreateButton slug="products" />
+        </div>
+      }
       columns={PRODUCT_TABLE_COLUMNS}
       rows={products}
       getRowId={(product) => product.id}

@@ -1,26 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
-  createPublishableKey,
-  parsePublishableKeyId,
-  verifyPublishableKey,
+  createSecretApiKey,
+  parseSecretApiKeyId,
+  verifyApiKeyToken,
 } from "./publishable-key";
 
-describe("publishable keys", () => {
-  it("creates a one-time token whose id can be used for indexed lookup", async () => {
-    const key = await createPublishableKey();
-    expect(parsePublishableKeyId(key.token)).toBe(key.id);
-    expect(key.hash).not.toContain(key.token);
-    expect(key.redacted).not.toBe(key.token);
-    expect(await verifyPublishableKey(key.token, key.salt, key.hash)).toBe(
-      true,
-    );
-  });
-
-  it("rejects malformed and modified tokens", async () => {
-    const key = await createPublishableKey();
-    expect(parsePublishableKeyId("pk_invalid")).toBeNull();
-    expect(
-      await verifyPublishableKey(`${key.token}0`, key.salt, key.hash),
-    ).toBe(false);
+describe("secret API key generation", () => {
+  it("creates a one-time secret whose salted hash verifies", async () => {
+    const key = await createSecretApiKey();
+    expect(key.token).toMatch(/^sk_[0-9a-f-]{36}_[0-9a-f]{48}$/);
+    expect(parseSecretApiKeyId(key.token)).toBe(key.id);
+    expect(key.redacted).toBe(`${key.token.slice(0, 11)}...${key.token.slice(-4)}`);
+    expect(key.hash).not.toBe(key.token);
+    await expect(
+      verifyApiKeyToken(key.token, key.salt, key.hash),
+    ).resolves.toBe(true);
+    await expect(
+      verifyApiKeyToken(`${key.token}x`, key.salt, key.hash),
+    ).resolves.toBe(false);
   });
 });

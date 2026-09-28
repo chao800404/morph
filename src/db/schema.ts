@@ -36,6 +36,7 @@ export * from "./pricing.schema";
 
 // Selling
 export * from "./customer.schema";
+export * from "./store-credit.schema";
 export * from "./promotion.schema";
 export * from "./tax.schema";
 export * from "./fulfillment.schema";

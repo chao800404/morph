@@ -12,6 +12,8 @@ import {
 import {
   createStockLocation,
   deleteStockLocations,
+  setLocationFulfillmentProviders,
+  setLocationSalesChannels,
   updateStockLocation,
 } from "@/server/stock-location/stock-locations.serverFn";
 import { updateDashboardUserMetadata } from "@/server/auth/dashboard-users.serverFn";
@@ -167,6 +169,24 @@ export const updateLocationAction = async (data: FormData) =>
   );
 export const deleteLocationsAction = async ({ data }: { data: FormData }) =>
   result(await deleteStockLocations({ data: { ids: ids(data, "ids") } }));
+export const setLocationSalesChannelsAction = async (data: FormData) =>
+  result(
+    await setLocationSalesChannels({
+      data: {
+        stockLocationId: text(data, "stockLocationId") ?? "",
+        salesChannelIds: ids(data, "salesChannelIds"),
+      },
+    }),
+  );
+export const setLocationFulfillmentProvidersAction = async (data: FormData) =>
+  result(
+    await setLocationFulfillmentProviders({
+      data: {
+        stockLocationId: text(data, "stockLocationId") ?? "",
+        fulfillmentProviderIds: ids(data, "fulfillmentProviderIds"),
+      },
+    }),
+  );
 
 export const updateRegionMetadataAction = async ({
   data,

@@ -8,7 +8,7 @@ const randomHex = (length: number) => {
   return bytesToHex(bytes).slice(0, length);
 };
 
-export const hashPublishableKey = async (token: string, salt: string) => {
+export const hashApiKeyToken = async (token: string, salt: string) => {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(token),
@@ -29,8 +29,16 @@ export const hashPublishableKey = async (token: string, salt: string) => {
   return bytesToHex(new Uint8Array(bits));
 };
 
+/** Kept as a compatibility name for existing publishable-key callers. */
+export const hashPublishableKey = hashApiKeyToken;
+
 export const parsePublishableKeyId = (token: string): string | null => {
   const match = /^pk_([0-9a-f-]{36})_[0-9a-f]{48}$/.exec(token);
+  return match?.[1] ?? null;
+};
+
+export const parseSecretApiKeyId = (token: string): string | null => {
+  const match = /^sk_([0-9a-f-]{36})_[0-9a-f]{48}$/.exec(token);
   return match?.[1] ?? null;
 };
 
@@ -47,7 +55,20 @@ export const createPublishableKey = async () => {
   };
 };
 
-export const verifyPublishableKey = async (
+export const createSecretApiKey = async () => {
+  const id = crypto.randomUUID();
+  const token = `sk_${id}_${randomHex(48)}`;
+  const salt = randomHex(32);
+  return {
+    id,
+    token,
+    salt,
+    hash: await hashApiKeyToken(token, salt),
+    redacted: `${token.slice(0, 11)}...${token.slice(-4)}`,
+  };
+};
+
+export const verifyApiKeyToken = async (
   token: string,
   salt: string,
   expectedHash: string,
@@ -60,3 +81,6 @@ export const verifyPublishableKey = async (
   }
   return difference === 0;
 };
+
+/** Kept as a compatibility name for existing publishable-key callers. */
+export const verifyPublishableKey = verifyApiKeyToken;

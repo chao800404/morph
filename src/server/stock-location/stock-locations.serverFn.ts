@@ -1,12 +1,22 @@
-import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
+import {
+  fail,
+  failure,
+  ok,
+  paginationOf,
+  parseInput,
+} from "@/lib/db/server-result";
 import { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
 import { stockLocationDal } from "@/lib/stock-location/dal/stock-location.dal";
+import { locationFulfillmentProviderService } from "@/lib/fulfillment/service/location-fulfillment-provider.service";
+import { stockLocationWriteService } from "@/lib/stock-location/service/stock-location-write.service";
 import {
   createStockLocationInputSchema,
   deleteStockLocationsInputSchema,
   getStockLocationInputSchema,
+  getLocationFulfillmentProvidersInputSchema,
   listStockLocationsInputSchema,
   setLocationSalesChannelsInputSchema,
+  setLocationFulfillmentProvidersInputSchema,
   updateStockLocationInputSchema,
 } from "@/lib/validations/stock-location";
 import { createServerFn } from "@tanstack/react-start";
@@ -16,7 +26,9 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listStockLocations = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(listStockLocationsInputSchema, data ?? {}))
+  .validator((data: unknown) =>
+    parseInput(listStockLocationsInputSchema, data ?? {}),
+  )
   .middleware([commerceReadMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -61,10 +73,17 @@ export const getStockLocation = createServerFn({ method: "POST" })
       // Resolved through the DAL because the link has no foreign key and can
       // outlive the channel it points at.
       const salesChannels = await salesChannelDal.findByIds(channelIds);
+      const providerResult = await locationFulfillmentProviderService.list(
+        location.id,
+      );
+      if (!providerResult.success) return providerResult;
 
       return ok("Stock location fetched successfully", {
         ...location,
         salesChannels,
+        fulfillmentProviders: providerResult.data.providers.filter(
+          (provider) => provider.isAssigned,
+        ),
       });
     } catch (error) {
       return failure(
@@ -76,125 +95,76 @@ export const getStockLocation = createServerFn({ method: "POST" })
     }
   });
 
+export const getLocationFulfillmentProviders = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(getLocationFulfillmentProvidersInputSchema, data),
+  )
+  .middleware([commerceReadMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    return locationFulfillmentProviderService.list(input.data.stockLocationId);
+  });
+
+export const setLocationFulfillmentProviders = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(setLocationFulfillmentProvidersInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    return locationFulfillmentProviderService.set({
+      locationId: input.data.stockLocationId,
+      fulfillmentProviderIds: input.data.fulfillmentProviderIds,
+    });
+  });
+
 export const createStockLocation = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(createStockLocationInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(createStockLocationInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
     // renders. Letting the ZodError escape the validator instead would
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
-    const data = input.data;
-
-    try {
-      if (await stockLocationDal.findByName(data.name)) {
-        return fail(`A stock location named "${data.name}" already exists`, {
-          errors: { name: ["This name is already in use"] },
-        });
-      }
-
-      const id = crypto.randomUUID();
-      await stockLocationDal.create({
-        id,
-        name: data.name,
-        address: data.address ?? null,
-      });
-
-      return ok(`Stock location "${data.name}" created`, { id });
-    } catch (error) {
-      return failure(
-        "Create stock location error",
-        error,
-        "CREATE_FAILED",
-        "Failed to create stock location",
-      );
-    }
+    return stockLocationWriteService.create(input.data);
   });
 
 export const updateStockLocation = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(updateStockLocationInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(updateStockLocationInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
     // renders. Letting the ZodError escape the validator instead would
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
-    const data = input.data;
-
-    try {
-      const existing = await stockLocationDal.findById(data.id);
-      if (!existing) {
-        return fail("Stock location not found", { error: "NOT_FOUND" });
-      }
-
-      if (data.name && data.name !== existing.name) {
-        const clash = await stockLocationDal.findByName(data.name);
-        if (clash && clash.id !== data.id) {
-          return fail(`A stock location named "${data.name}" already exists`, {
-            errors: { name: ["This name is already in use"] },
-          });
-        }
-      }
-
-      await stockLocationDal.update(data.id, {
-        name: data.name,
-        address: data.address,
-        metadata: data.metadata,
-      });
-
-      return ok("Stock location updated successfully", { id: data.id });
-    } catch (error) {
-      return failure(
-        "Update stock location error",
-        error,
-        "UPDATE_FAILED",
-        "Failed to update stock location",
-      );
-    }
+    return stockLocationWriteService.update(input.data);
   });
 
 export const deleteStockLocations = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(deleteStockLocationsInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(deleteStockLocationsInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
     // renders. Letting the ZodError escape the validator instead would
     // reach the browser as an opaque 500 with the reason stripped.
     if (!input.success) return input;
-    const data = input.data;
-
-    try {
-      const existing = await stockLocationDal.findByIds(data.ids);
-      if (existing.length === 0) {
-        return fail("No matching stock locations were found", {
-          error: "NOT_FOUND",
-        });
-      }
-
-      // Inventory levels are not touched. They reference the location by plain
-      // id across the module boundary, and quietly deleting recorded stock
-      // because a location was archived would lose a real count. Reconciling
-      // them belongs to the inventory module, once it exists.
-      await stockLocationDal.softDelete(
-        existing.map((location) => location.id),
-      );
-
-      return ok(
-        `${existing.length} stock location${existing.length === 1 ? "" : "s"} deleted`,
-        { deleted: existing.length },
-      );
-    } catch (error) {
-      return failure(
-        "Delete stock locations error",
-        error,
-        "DELETE_FAILED",
-        "Failed to delete stock locations",
-      );
-    }
+    return stockLocationWriteService.deleteMany(input.data.ids);
   });
 
 export const setLocationSalesChannels = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(setLocationSalesChannelsInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(setLocationSalesChannelsInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already

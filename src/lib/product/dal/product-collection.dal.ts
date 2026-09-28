@@ -1,7 +1,17 @@
 import { getDb } from "@/db";
 import { mapFirstOrNull } from "@/lib/db/single-row";
 import { productCollections } from "@/db/product.schema";
-import { and, asc, count, desc, eq, inArray, isNull, or, SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  or,
+  SQL,
+} from "drizzle-orm";
 import type {
   ProductCollectionDTO,
   ProductCollectionInsertDTO,
@@ -116,6 +126,7 @@ export const productCollectionDal = {
       title: data.title,
       handle: data.handle,
       description: data.description ?? null,
+      ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
       createdBy: data.createdBy,
       updatedBy: data.updatedBy,
       createdAt: data.createdAt?.toISOString() ?? now,

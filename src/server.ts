@@ -17,6 +17,7 @@ import type { RequestHandler } from "@tanstack/react-start/server";
  */
 type StartRequestHandler = RequestHandler<Register>;
 type WorkerQueueBatch = {
+  queue?: string;
   messages: Array<{ body: unknown; ack?: () => void }>;
 };
 
@@ -88,6 +89,89 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
         });
       }
       return handleStoreCatalogGet(request, context);
+    },
+    storefrontAuthHandler: async (request, resolved) => {
+      const { createStorefrontAuth } = await import("@/auth");
+      let auth: ReturnType<typeof createStorefrontAuth>;
+      try {
+        auth = createStorefrontAuth(
+          env as never,
+          request.url,
+          resolved.hostname,
+        );
+      } catch {
+        return new Response("Invalid storefront auth origin", {
+          status: 400,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      return auth.handler(request);
+    },
+    storefrontCustomerApiHandler: async (
+      method,
+      path,
+      request,
+      resolved,
+    ) => {
+      const [
+        { storeContextDal },
+        { handleStoreCustomerRequest, handleStoreOrderTransferRequest },
+      ] = await Promise.all([
+        import("@/lib/storefront/dal/store-context.dal"),
+        import("@/lib/storefront/service/store-customer-request"),
+      ]);
+      // Bind every account request to the domain resolved by the platform,
+      // not a body, query parameter, or caller-provided storefront header.
+      const context = await storeContextDal.resolveCatalog({
+        hostname: resolved.hostname,
+      });
+      if (!context || context.storefrontId !== resolved.storefrontId) {
+        return new Response("Store customer context unavailable", {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      if (path === "customers/me" || path.startsWith("customers/me/")) {
+        return handleStoreCustomerRequest(method, path, request, context);
+      }
+      if (/^orders\/[^/]+\/transfer\/(request|cancel)$/.test(path)) {
+        return handleStoreOrderTransferRequest(
+          method,
+          path,
+          request,
+          context,
+        );
+      }
+      return null;
+    },
+    orderTransferConfirmationHandler: async (
+      request,
+      resolved,
+      orderId,
+      action,
+    ) => {
+      const [{ storeContextDal }, { handleStoreOrderTransferRequest }] =
+        await Promise.all([
+          import("@/lib/storefront/dal/store-context.dal"),
+          import("@/lib/storefront/service/store-customer-request"),
+        ]);
+      // The platform's resolved hostname is authoritative. Never accept a
+      // visitor-supplied x-storefront-host when binding a transfer token.
+      const context = await storeContextDal.resolveCatalog({
+        hostname: resolved.hostname,
+      });
+      if (!context || context.storefrontId !== resolved.storefrontId) {
+        return new Response("Order transfer context unavailable", {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      return handleStoreOrderTransferRequest(
+        "POST",
+        `orders/${orderId}/transfer/${action}`,
+        request,
+        context,
+      );
     },
     contentPorts: {
       getPublishedDocument: (args) =>
@@ -233,6 +317,12 @@ export default {
     return response;
   },
   async queue(batch: WorkerQueueBatch): Promise<void> {
+    if (batch.queue === "morph-inventory-exports") {
+      const { processInventoryExportQueue } =
+        await import("@/server/inventory-export-queue");
+      await processInventoryExportQueue(batch);
+      return;
+    }
     const { processThemeBuildQueue } =
       await import("@/server/theme-build-queue");
     await processThemeBuildQueue(batch);

@@ -38,11 +38,17 @@ import {
 } from "@/db/order.schema";
 import { paymentCollections } from "@/db/payment.schema";
 import {
+  storeCreditAccounts,
+  storeCreditTransactions,
+} from "@/db/store-credit.schema";
+import {
   promotionCampaignBudgets,
   promotionCampaignBudgetUsages,
   promotions,
 } from "@/db/promotion.schema";
 import { cartDal } from "@/lib/cart/dal/cart.dal";
+import { cartShippingDal } from "@/lib/shipping/dal/cart-shipping.dal";
+import { selectedShippingMethodsAreAvailable } from "@/lib/order/shipping-availability";
 import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import {
@@ -62,8 +68,12 @@ type CheckoutResult =
         | "SHIPPING_REQUIRED"
         | "PAYMENT_REQUIRED"
         | "PAYMENT_MISMATCH"
+        | "CART_UPDATED"
+        | "CART_CHANGED"
+        | "PRICE_UNAVAILABLE"
         | "PROMOTION_EXHAUSTED"
-        | "RESERVATION_EXPIRED";
+        | "RESERVATION_EXPIRED"
+        | "CREDIT_UNAVAILABLE";
     };
 
 export const checkoutDal = {
@@ -97,6 +107,37 @@ export const checkoutDal = {
         orderId: existingOrder.id,
         displayId: existingOrder.displayId,
       };
+    const initialCartDto = await cartDal.findById(cartId, salesChannelId);
+    if (!initialCartDto) return { success: false, reason: "NOT_FOUND" };
+    if (!initialCartDto.items.length)
+      return { success: false, reason: "EMPTY_CART" };
+    if (!initialCartDto.email)
+      return { success: false, reason: "EMAIL_REQUIRED" };
+    const pricingRefresh = await cartDal.refreshPricingForCheckout(
+      cartId,
+      salesChannelId,
+    );
+    if (!pricingRefresh.success) {
+      if (pricingRefresh.reason === "NOT_FOUND")
+        return { success: false, reason: "NOT_FOUND" };
+      if (pricingRefresh.reason === "NO_PRICE")
+        return { success: false, reason: "PRICE_UNAVAILABLE" };
+      return { success: false, reason: "CART_CHANGED" };
+    }
+    if (pricingRefresh.changed)
+      return { success: false, reason: "CART_UPDATED" };
+    const shippingRefresh = await cartShippingDal.refreshSelected(
+      cartId,
+      salesChannelId,
+    );
+    if (!shippingRefresh.success)
+      return {
+        success: false,
+        reason:
+          shippingRefresh.reason === "NOT_FOUND" ? "NOT_FOUND" : "CART_CHANGED",
+      };
+    if (shippingRefresh.changed)
+      return { success: false, reason: "CART_UPDATED" };
     const cartDto = await cartDal.findById(cartId, salesChannelId);
     if (!cartDto) return { success: false, reason: "NOT_FOUND" };
     if (!cartDto.items.length) return { success: false, reason: "EMPTY_CART" };
@@ -151,6 +192,60 @@ export const checkoutDal = {
           .from(cartPaymentCollections)
           .where(eq(cartPaymentCollections.cartId, cartId)),
       ]);
+    const storeCreditLines = credits.filter(
+      (credit) => credit.reference === "store_credit_account",
+    );
+    const giftCardLines = credits.filter(
+      (credit) => credit.reference === "gift_card_account",
+    );
+    if (
+      storeCreditLines.length > 1 ||
+      storeCreditLines.some(
+        (credit) =>
+          !credit.referenceId ||
+          !Number.isSafeInteger(credit.amount) ||
+          credit.amount <= 0,
+      ) ||
+      giftCardLines.some(
+        (credit) =>
+          !credit.referenceId ||
+          !Number.isSafeInteger(credit.amount) ||
+          credit.amount <= 0 ||
+          credit.metadata?._morph_resource_type !== "gift_card",
+      ) ||
+      new Set(giftCardLines.map((credit) => credit.referenceId)).size !==
+        giftCardLines.length
+    )
+      return { success: false, reason: "CART_CHANGED" };
+    const storeCreditLine = firstOrNull(storeCreditLines);
+    const nonAccountCreditTotal = credits
+      .filter(
+        (credit) =>
+          credit.reference !== "store_credit_account" &&
+          credit.reference !== "gift_card_account",
+      )
+      .reduce((sum, credit) => sum + Math.max(0, credit.amount), 0);
+    let creditRemaining = Math.max(
+      0,
+      cartDto.totalBeforeCredits - nonAccountCreditTotal,
+    );
+    const giftCardAmounts = new Map<string, number>();
+    for (const credit of [...giftCardLines].sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    )) {
+      const amount = Math.min(credit.amount, creditRemaining);
+      giftCardAmounts.set(credit.id, amount);
+      creditRemaining -= amount;
+    }
+    const storeCreditAppliedAmount = storeCreditLine
+      ? Math.min(storeCreditLine.amount, creditRemaining)
+      : 0;
+    const appliedCreditTotal =
+      nonAccountCreditTotal +
+      [...giftCardAmounts.values()].reduce((sum, amount) => sum + amount, 0) +
+      storeCreditAppliedAmount;
     if (items.some((item) => item.requiresShipping)) {
       if (!cart.shippingAddressId)
         return { success: false, reason: "ADDRESS_REQUIRED" };
@@ -188,6 +283,10 @@ export const checkoutDal = {
           ),
       ]);
       if (
+        !selectedShippingMethodsAreAvailable(
+          shipping,
+          shippingRefresh.availableOptions,
+        ) ||
         shippingProductIds.some(
           (productId) =>
             !requiredProfileLinks.some((link) => link.productId === productId),
@@ -203,7 +302,7 @@ export const checkoutDal = {
     }
     let paymentCollectionId: string | null = null;
     if (cartDto.total > 0) {
-      paymentCollectionId = paymentLinks[0]?.id ?? null;
+      paymentCollectionId = firstOrNull(paymentLinks)?.id ?? null;
       if (!paymentCollectionId)
         return { success: false, reason: "PAYMENT_REQUIRED" };
       const [collection] = await db
@@ -348,7 +447,7 @@ export const checkoutDal = {
     const displayRows = await db
       .select({ value: max(orders.displayId) })
       .from(orders);
-    const displayId = Number(displayRows[0]?.value ?? 0) + 1;
+    const displayId = Number(firstOrNull(displayRows)?.value ?? 0) + 1;
     const timestamp = now.toISOString();
     const lineIdMap = new Map(
       items.map((item) => [item.id, crypto.randomUUID()]),
@@ -404,7 +503,7 @@ export const checkoutDal = {
           shippingSubtotal: cartDto.shippingSubtotal,
           shippingDiscountTotal: cartDto.shippingDiscountTotal,
           shippingTaxTotal: cartDto.shippingTaxTotal,
-          creditTotal: cartDto.creditTotal,
+          creditTotal: appliedCreditTotal,
           subtotal: cartDto.subtotal,
           discountTotal: cartDto.discountTotal,
           taxTotal: cartDto.taxTotal,
@@ -555,7 +654,62 @@ export const checkoutDal = {
           }),
         );
     }
-    for (const credit of credits)
+    for (const credit of credits) {
+      const amount =
+        credit.reference === "store_credit_account"
+          ? storeCreditAppliedAmount
+          : credit.reference === "gift_card_account"
+            ? (giftCardAmounts.get(credit.id) ?? 0)
+            : credit.amount;
+      if (amount <= 0) continue;
+      if (
+        credit.reference === "store_credit_account" ||
+        credit.reference === "gift_card_account"
+      ) {
+        const isGiftCard = credit.reference === "gift_card_account";
+        const accountId = credit.referenceId!;
+        const accountEligibility = isGiftCard
+          ? sql`
+              ${storeCreditAccounts.customerId} is null
+              and json_extract(${storeCreditAccounts.metadata}, '$._morph_resource_type') = 'gift_card'
+              and (
+                json_extract(${storeCreditAccounts.metadata}, '$._morph_expires_at') is null
+                or json_extract(${storeCreditAccounts.metadata}, '$._morph_expires_at') > ${timestamp}
+              )
+            `
+          : sql`${storeCreditAccounts.customerId} = ${cart.customerId}`;
+        statements.push(
+          db
+            .update(storeCreditAccounts)
+            .set({
+              balance: sql`case
+                when ${storeCreditAccounts.status} = 'active'
+                  and ${storeCreditAccounts.deletedAt} is null
+                  and ${accountEligibility}
+                  and ${storeCreditAccounts.currencyCode} = ${cart.currencyCode}
+                  and ${storeCreditAccounts.balance} >= ${amount}
+                then ${storeCreditAccounts.balance} - ${amount}
+                else -1
+              end`,
+              updatedBy: cart.customerId,
+              updatedAt: timestamp,
+            })
+            .where(eq(storeCreditAccounts.id, accountId)),
+          db.insert(storeCreditTransactions).values({
+            id: crypto.randomUUID(),
+            accountId,
+            type: "debit",
+            amount,
+            idempotencyKey: `order:${orderId}`,
+            reference: "order",
+            referenceId: orderId,
+            note: null,
+            metadata: {},
+            createdBy: cart.customerId,
+            createdAt: timestamp,
+          }),
+        );
+      }
       statements.push(
         db.insert(orderCreditLines).values({
           id: crypto.randomUUID(),
@@ -563,12 +717,13 @@ export const checkoutDal = {
           version: 1,
           reference: credit.reference,
           referenceId: credit.referenceId,
-          amount: credit.amount,
+          amount,
           metadata: credit.metadata,
           createdAt: timestamp,
           updatedAt: timestamp,
         }),
       );
+    }
     statements.push(
       db.insert(orderCarts).values({
         orderId,
@@ -702,6 +857,16 @@ export const checkoutDal = {
         message.includes("promotion_campaign_budget_usages_limit_check")
       )
         return { success: false, reason: "PROMOTION_EXHAUSTED" };
+      if (
+        (storeCreditAppliedAmount > 0 ||
+          [...giftCardAmounts.values()].some((amount) => amount > 0)) &&
+        (message.includes("store_credit_accounts_balance_nonnegative") ||
+          message.includes(
+            "store_credit_transactions_account_idempotency_unique",
+          ) ||
+          message.includes("FOREIGN KEY constraint failed"))
+      )
+        return { success: false, reason: "CREDIT_UNAVAILABLE" };
       throw error;
     }
     return { success: true, orderId, displayId };

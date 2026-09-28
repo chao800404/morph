@@ -1,8 +1,11 @@
 import { getDb } from "@/db";
+import type { ProductMetadata } from "@/db/product.schema";
 import { firstOrNull, mapFirstOrNull } from "@/lib/db/single-row";
 import {
   productCategories,
+  productTagLinks,
   productTags,
+  products,
   productTypes,
 } from "@/db/product.schema";
 import { likeContains } from "@/lib/db/like-query";
@@ -16,20 +19,25 @@ import {
   inArray,
   isNull,
   lt,
+  sql,
   type SQL,
 } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import type {
   CreateProductCategoryDTO,
   ProductCategoryDTO,
   ProductCategoryDetailDTO,
   ProductCategoryListItemDTO,
+  ProductTagAdminDTO,
   ProductTagDTO,
+  ProductTypeAdminDTO,
   ProductTypeDTO,
   UpdateProductCategoryDTO,
 } from "../dto/product-taxonomy.dto";
 import { ancestorIdsOf } from "../category-tree";
 import { chunk, chunkForInsert } from "./d1-batch";
 import { toProductCategoryDTO } from "../mappers/product-taxonomy.mapper";
+import { batchGuard } from "@/lib/db/batch-guard";
 
 /**
  * Types, tags and categories.
@@ -45,6 +53,28 @@ import { toProductCategoryDTO } from "../mappers/product-taxonomy.mapper";
 
 const TAG_COLUMNS = 5;
 const DETAIL_CHILD_LIMIT = 100;
+
+const toProductTypeAdminDTO = (
+  row: typeof productTypes.$inferSelect,
+): ProductTypeAdminDTO => ({
+  id: row.id,
+  value: row.value,
+  metadata: row.metadata ?? null,
+  externalId: row.externalId ?? null,
+  createdAt: new Date(row.createdAt),
+  updatedAt: new Date(row.updatedAt),
+});
+
+const toProductTagAdminDTO = (
+  row: typeof productTags.$inferSelect,
+): ProductTagAdminDTO => ({
+  id: row.id,
+  value: row.value,
+  metadata: row.metadata ?? null,
+  externalId: row.externalId ?? null,
+  createdAt: new Date(row.createdAt),
+  updatedAt: new Date(row.updatedAt),
+});
 
 /**
  * Half-open range instead of `like(mpath, prefix + "%")`.
@@ -64,6 +94,132 @@ const startsWithPrefix = (prefix: string) => {
 };
 
 export const productTypeDal = {
+  async findById(id: string): Promise<ProductTypeAdminDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(productTypes)
+      .where(and(eq(productTypes.id, id), isNull(productTypes.deletedAt)))
+      .limit(1);
+    const row = firstOrNull(rows);
+    return row ? toProductTypeAdminDTO(row) : null;
+  },
+
+  async findByValue(value: string): Promise<ProductTypeAdminDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(productTypes)
+      .where(and(eq(productTypes.value, value), isNull(productTypes.deletedAt)))
+      .limit(1);
+    const row = firstOrNull(rows);
+    return row ? toProductTypeAdminDTO(row) : null;
+  },
+
+  async listPage(options: {
+    query?: string;
+    sortBy: "value" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+    offset: number;
+    limit: number;
+  }): Promise<{ types: ProductTypeAdminDTO[]; total: number }> {
+    const db = await getDb();
+    const conditions: SQL[] = [isNull(productTypes.deletedAt)];
+    if (options.query?.trim())
+      conditions.push(likeContains(productTypes.value, options.query.trim()));
+    const where = and(...conditions);
+    const sortColumn = {
+      value: productTypes.value,
+      createdAt: productTypes.createdAt,
+      updatedAt: productTypes.updatedAt,
+    }[options.sortBy];
+    const orderBy =
+      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const [totals, rows] = await Promise.all([
+      db.select({ value: count() }).from(productTypes).where(where),
+      db
+        .select()
+        .from(productTypes)
+        .where(where)
+        .orderBy(orderBy, asc(productTypes.id))
+        .limit(options.limit)
+        .offset(options.offset),
+    ]);
+    return {
+      types: rows.map(toProductTypeAdminDTO),
+      total: Number(totals[0]?.value ?? 0),
+    };
+  },
+
+  async create(input: {
+    id: string;
+    value: string;
+    metadata?: ProductMetadata;
+    externalId?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }): Promise<void> {
+    const db = await getDb();
+    await db.insert(productTypes).values({
+      id: input.id,
+      value: input.value,
+      metadata: input.metadata,
+      externalId: input.externalId ?? null,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
+    });
+  },
+
+  async update(
+    id: string,
+    input: {
+      value?: string;
+      metadata?: ProductMetadata;
+      externalId?: string | null;
+    },
+  ): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db
+      .update(productTypes)
+      .set({
+        ...(input.value === undefined ? {} : { value: input.value }),
+        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        ...(input.externalId === undefined
+          ? {}
+          : { externalId: input.externalId }),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(productTypes.id, id), isNull(productTypes.deletedAt)))
+      .returning({ id: productTypes.id });
+    return rows.length > 0;
+  },
+
+  async softDelete(id: string, actorId: string): Promise<boolean> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM product_types
+          WHERE id = ${id} AND deleted_at IS NULL
+        )`,
+      ),
+      db
+        .update(products)
+        .set({ typeId: null, updatedAt: now, updatedBy: actorId })
+        .where(and(eq(products.typeId, id), isNull(products.deletedAt))),
+      db
+        .update(productTypes)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(and(eq(productTypes.id, id), isNull(productTypes.deletedAt))),
+    ];
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+    return true;
+  },
+
   async listOptions(options: {
     query?: string;
     page: number;
@@ -77,9 +233,7 @@ export const productTypeDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(productTypes.deletedAt)];
     if (options.query?.trim())
-      conditions.push(
-        likeContains(productTypes.value, options.query.trim()),
-      );
+      conditions.push(likeContains(productTypes.value, options.query.trim()));
     const where = and(...conditions);
     const [totals, rows, selectedRows] = await Promise.all([
       db.select({ value: count() }).from(productTypes).where(where),
@@ -147,6 +301,140 @@ export const productTypeDal = {
 };
 
 export const productTagDal = {
+  async findById(id: string): Promise<ProductTagAdminDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(productTags)
+      .where(and(eq(productTags.id, id), isNull(productTags.deletedAt)))
+      .limit(1);
+    const row = firstOrNull(rows);
+    return row ? toProductTagAdminDTO(row) : null;
+  },
+
+  async findByValue(value: string): Promise<ProductTagAdminDTO | null> {
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(productTags)
+      .where(and(eq(productTags.value, value), isNull(productTags.deletedAt)))
+      .limit(1);
+    const row = firstOrNull(rows);
+    return row ? toProductTagAdminDTO(row) : null;
+  },
+
+  async listPage(options: {
+    query?: string;
+    sortBy: "value" | "createdAt" | "updatedAt";
+    sortOrder: "asc" | "desc";
+    offset: number;
+    limit: number;
+  }): Promise<{ tags: ProductTagAdminDTO[]; total: number }> {
+    const db = await getDb();
+    const conditions: SQL[] = [isNull(productTags.deletedAt)];
+    if (options.query?.trim())
+      conditions.push(likeContains(productTags.value, options.query.trim()));
+    const where = and(...conditions);
+    const sortColumn = {
+      value: productTags.value,
+      createdAt: productTags.createdAt,
+      updatedAt: productTags.updatedAt,
+    }[options.sortBy];
+    const orderBy =
+      options.sortOrder === "asc" ? asc(sortColumn) : desc(sortColumn);
+    const [totals, rows] = await Promise.all([
+      db.select({ value: count() }).from(productTags).where(where),
+      db
+        .select()
+        .from(productTags)
+        .where(where)
+        .orderBy(orderBy, asc(productTags.id))
+        .limit(options.limit)
+        .offset(options.offset),
+    ]);
+    return {
+      tags: rows.map(toProductTagAdminDTO),
+      total: Number(totals[0]?.value ?? 0),
+    };
+  },
+
+  async create(input: {
+    id: string;
+    value: string;
+    metadata?: ProductMetadata;
+    externalId?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }): Promise<void> {
+    const db = await getDb();
+    await db.insert(productTags).values({
+      id: input.id,
+      value: input.value,
+      metadata: input.metadata,
+      externalId: input.externalId ?? null,
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
+    });
+  },
+
+  async update(
+    id: string,
+    input: {
+      value?: string;
+      metadata?: ProductMetadata;
+      externalId?: string | null;
+    },
+  ): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db
+      .update(productTags)
+      .set({
+        ...(input.value === undefined ? {} : { value: input.value }),
+        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        ...(input.externalId === undefined
+          ? {}
+          : { externalId: input.externalId }),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(productTags.id, id), isNull(productTags.deletedAt)))
+      .returning({ id: productTags.id });
+    return rows.length > 0;
+  },
+
+  async softDelete(id: string, actorId: string): Promise<boolean> {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const statements: BatchItem<"sqlite">[] = [
+      batchGuard(
+        db,
+        sql`EXISTS (
+          SELECT 1 FROM product_tags
+          WHERE id = ${id} AND deleted_at IS NULL
+        )`,
+      ),
+      db
+        .update(products)
+        .set({ updatedAt: now, updatedBy: actorId })
+        .where(
+          and(
+            sql`${products.id} IN (
+              SELECT product_id FROM product_tag_links WHERE tag_id = ${id}
+            )`,
+            isNull(products.deletedAt),
+          ),
+        ),
+      db.delete(productTagLinks).where(eq(productTagLinks.tagId, id)),
+      db
+        .update(productTags)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(and(eq(productTags.id, id), isNull(productTags.deletedAt))),
+    ];
+    await db.batch(
+      statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]],
+    );
+    return true;
+  },
+
   async listOptions(options: {
     query?: string;
     page: number;
@@ -160,9 +448,7 @@ export const productTagDal = {
     const db = await getDb();
     const conditions: SQL[] = [isNull(productTags.deletedAt)];
     if (options.query?.trim())
-      conditions.push(
-        likeContains(productTags.value, options.query.trim()),
-      );
+      conditions.push(likeContains(productTags.value, options.query.trim()));
     const where = and(...conditions);
     const [totals, rows, selectedRows] = await Promise.all([
       db.select({ value: count() }).from(productTags).where(where),
@@ -238,6 +524,32 @@ export const productTagDal = {
 };
 
 export const productCategoryDal = {
+  /** Resolve exact category labels without choosing arbitrarily among branches. */
+  async findByNames(
+    names: string[],
+  ): Promise<Array<{ id: string; name: string }>> {
+    const wanted = [
+      ...new Set(names.map((name) => name.trim()).filter(Boolean)),
+    ];
+    if (wanted.length === 0) return [];
+    const db = await getDb();
+    const rows: Array<{ id: string; name: string }> = [];
+    for (const group of chunk(wanted, 50)) {
+      rows.push(
+        ...(await db
+          .select({ id: productCategories.id, name: productCategories.name })
+          .from(productCategories)
+          .where(
+            and(
+              inArray(productCategories.name, group),
+              isNull(productCategories.deletedAt),
+            ),
+          )),
+      );
+    }
+    return rows;
+  },
+
   /**
    * Every active category in tree order: a parent immediately followed by its
    * children, siblings alphabetical.
@@ -480,7 +792,7 @@ export const productCategoryDal = {
       isActive: data.isActive ?? false,
       isInternal: data.isInternal ?? false,
       rank: siblings[0]?.value ?? 0,
-      metadata: null,
+      metadata: data.metadata ?? null,
       createdAt: now,
       updatedAt: now,
     };

@@ -17,7 +17,10 @@ import {
   listProductCategories,
 } from "@/server/product/categories.serverFn";
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
-import { getVariantDetail } from "@/server/product/variants.serverFn";
+import {
+  getVariantDetail,
+  getVariantInventoryKit,
+} from "@/server/product/variants.serverFn";
 import {
   listProductVariants,
   listProductVariantsForBulkEdit,
@@ -160,6 +163,11 @@ export const productVariantQueries = {
     queryOptions({
       queryKey: [...productVariantQueries.all(), "detail", id],
       queryFn: () => getVariantDetail({ data: { id } }),
+    }),
+  inventoryKit: (id: string) =>
+    queryOptions({
+      queryKey: [...productVariantQueries.all(), "inventory-kit", id],
+      queryFn: () => getVariantInventoryKit({ data: { id } }),
     }),
   priceHistory: (params: ProductVariantPriceHistoryListParams) =>
     queryOptions({

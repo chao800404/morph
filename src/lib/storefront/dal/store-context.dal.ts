@@ -14,7 +14,7 @@ import {
   parsePublishableKeyId,
   verifyPublishableKey,
 } from "@/lib/api-key/publishable-key";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import type {
   StoreContextDTO,
   StoreCatalogContextDTO,
@@ -33,6 +33,33 @@ const normalizeHostname = (hostname: string) =>
   hostname.trim().toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
 
 export const storeContextDal = {
+  async findPrimaryActiveHostname(storefrontId: string): Promise<string | null> {
+    const db = await getDb();
+    const domain = firstOrNull(
+      await db
+        .select({ hostname: storefrontDomains.hostname })
+        .from(storefrontDomains)
+        .innerJoin(
+          storefronts,
+          eq(storefronts.id, storefrontDomains.storefrontId),
+        )
+        .where(
+          and(
+            eq(storefrontDomains.storefrontId, storefrontId),
+            eq(storefrontDomains.status, "active"),
+            eq(storefronts.status, "published"),
+            isNull(storefrontDomains.deletedAt),
+            isNull(storefronts.deletedAt),
+          ),
+        )
+        .orderBy(
+          desc(storefrontDomains.isPrimary),
+          asc(storefrontDomains.hostname),
+        )
+        .limit(1),
+    );
+    return domain?.hostname ?? null;
+  },
   async resolveForTheme(
     storefrontId: string,
     themeId: string,

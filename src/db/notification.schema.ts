@@ -9,8 +9,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { providerData, timestamps } from "./columns";
 import type { JsonValue } from "./json";
-
-export type NotificationStatus = "pending" | "success" | "failure";
+import type { NotificationStatus } from "@/lib/notification/types";
 
 /**
  * Notifications — what was sent to whom, and whether it arrived.

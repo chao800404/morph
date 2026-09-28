@@ -59,6 +59,9 @@ export const ProductVariantsBulkEditor = ({
   const variants = variantQuery.data?.success
     ? variantQuery.data.data.variants
     : [];
+  const quantityEditableVariants = variants.filter(
+    (variant) => variant.manageInventory && variant.inventoryKit.length <= 1,
+  );
   const currencyResult = currencyQuery.data;
   const currencies = currencyResult?.success
     ? currencyResult.data.supportedCurrencies
@@ -86,13 +89,11 @@ export const ProductVariantsBulkEditor = ({
       </RouteSurfaceMessage>
     );
   }
-  if (
-    mode === "inventory" &&
-    !variants.some((variant) => variant.manageInventory)
-  ) {
+  if (mode === "inventory" && quantityEditableVariants.length === 0) {
     return (
       <RouteSurfaceMessage>
-        No inventory-tracked variants to edit
+        Inventory quantities for multi-item kits are managed on each inventory
+        item. Open a variant's inventory kit to review its components.
       </RouteSurfaceMessage>
     );
   }
@@ -128,7 +129,10 @@ export const ProductVariantsBulkEditor = ({
             data: {
               productId: id,
               variants: variants
-                .filter((variant) => variant.manageInventory)
+                .filter(
+                  (variant) =>
+                    variant.manageInventory && variant.inventoryKit.length <= 1,
+                )
                 .map((variant) => ({
                   id: variant.id,
                   quantity: Number(form.get(variant.id) ?? 0),
@@ -212,7 +216,8 @@ export const ProductVariantsBulkEditor = ({
                     })
                   ) : (
                     <DataGridCell>
-                      {variant.manageInventory ? (
+                      {variant.manageInventory &&
+                      variant.inventoryKit.length <= 1 ? (
                         <DataGridInput
                           className="text-right"
                           name={variant.id}
@@ -224,7 +229,11 @@ export const ProductVariantsBulkEditor = ({
                           aria-label={`Inventory for ${variant.title}`}
                         />
                       ) : (
-                        <DataGridReadonlyCell>Not tracked</DataGridReadonlyCell>
+                        <DataGridReadonlyCell>
+                          {variant.manageInventory
+                            ? `Manage ${variant.inventoryKit.length} kit items individually`
+                            : "Not tracked"}
+                        </DataGridReadonlyCell>
                       )}
                     </DataGridCell>
                   )}

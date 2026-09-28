@@ -10,6 +10,7 @@ export interface StockLocationAddressDTO {
   province: string | null;
   postalCode: string | null;
   phone: string | null;
+  metadata: Metadata;
 }
 
 export interface StockLocationDTO {
@@ -18,6 +19,15 @@ export interface StockLocationDTO {
   /** Null when the address was deleted; the location itself survives. */
   address: StockLocationAddressDTO | null;
   /** Free-form store-defined data; never trusted to hold anything private. */
+  metadata: Metadata;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface StockLocationFulfillmentSetDTO {
+  id: string;
+  name: string;
+  type: string;
   metadata: Metadata;
   createdAt: Date;
   updatedAt: Date;
@@ -32,12 +42,14 @@ export interface StockLocationAddressInputDTO {
   province?: string | null;
   postalCode?: string | null;
   phone?: string | null;
+  metadata?: Metadata;
 }
 
 export interface StockLocationInsertDTO {
   id: string;
   name: string;
   address?: StockLocationAddressInputDTO | null;
+  metadata?: Metadata;
 }
 
 export interface UpdateStockLocationDTO {

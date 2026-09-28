@@ -65,6 +65,10 @@ export const sumCartTotals = (input: {
       input.shipping[index].isTaxInclusive ? line.taxTotal : 0,
     ),
   ].reduce((sum, amount) => sum + amount, 0);
+  const totalBeforeCredits = Math.max(
+    0,
+    subtotal - discountTotal + taxTotal - inclusiveTaxTotal,
+  );
   return {
     itemSubtotal,
     itemDiscountTotal,
@@ -76,9 +80,7 @@ export const sumCartTotals = (input: {
     subtotal,
     discountTotal,
     taxTotal,
-    total: Math.max(
-      0,
-      subtotal - discountTotal + taxTotal - inclusiveTaxTotal - creditTotal,
-    ),
+    totalBeforeCredits,
+    total: Math.max(0, totalBeforeCredits - creditTotal),
   };
 };

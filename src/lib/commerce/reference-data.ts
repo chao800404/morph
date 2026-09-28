@@ -19,6 +19,7 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   or,
 } from "drizzle-orm";
 
@@ -34,6 +35,7 @@ export type ReferenceDataKind = (typeof REFERENCE_DATA_KINDS)[number];
 export interface ReferenceDataItemDTO {
   id: string;
   name: string;
+  externalId?: string | null;
   code: string | null;
   description: string | null;
   parentId: string | null;
@@ -46,11 +48,13 @@ export interface ReferenceDataItemDTO {
 
 export interface ReferenceDataListParams {
   kind: ReferenceDataKind;
+  ids?: string[];
   query?: string;
   sortBy: "name" | "createdAt" | "updatedAt";
   sortOrder: "asc" | "desc";
   page: number;
   limit: number;
+  offset?: number;
 }
 
 const pageOf = <T>(items: T[], total: number, page: number, limit: number) => ({
@@ -69,13 +73,14 @@ const orderDirection = (order: "asc" | "desc") =>
 export const referenceDataDal = {
   async list(params: ReferenceDataListParams) {
     const db = await getDb();
-    const offset = (params.page - 1) * params.limit;
+    const offset = params.offset ?? (params.page - 1) * params.limit;
     const direction = orderDirection(params.sortOrder);
     const term = params.query?.trim();
 
     if (params.kind === "product-types") {
       const where = and(
         isNull(productTypes.deletedAt),
+        params.ids?.length ? inArray(productTypes.id, params.ids) : undefined,
         term ? likeContains(productTypes.value, term) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
@@ -116,6 +121,7 @@ export const referenceDataDal = {
         rows.map((row) => ({
           id: row.id,
           name: row.value,
+          externalId: row.externalId,
           code: null,
           description: null,
           parentId: null,
@@ -134,6 +140,7 @@ export const referenceDataDal = {
     if (params.kind === "product-tags") {
       const where = and(
         isNull(productTags.deletedAt),
+        params.ids?.length ? inArray(productTags.id, params.ids) : undefined,
         term ? likeContains(productTags.value, term) : undefined,
       );
       const [rows, [{ total }]] = await Promise.all([
@@ -178,6 +185,7 @@ export const referenceDataDal = {
         rows.map((row) => ({
           id: row.id,
           name: row.value,
+          externalId: row.externalId,
           code: null,
           description: null,
           parentId: null,
@@ -203,6 +211,7 @@ export const referenceDataDal = {
         );
       const where = and(
         isNull(returnReasons.deletedAt),
+        params.ids?.length ? inArray(returnReasons.id, params.ids) : undefined,
         term
           ? or(
               likeContains(returnReasons.label, term),
@@ -250,6 +259,7 @@ export const referenceDataDal = {
         rows.map(({ reason, parentName }) => ({
           id: reason.id,
           name: reason.label,
+          externalId: null,
           code: reason.value,
           description: reason.description,
           parentId: reason.parentReturnReasonId,
@@ -267,6 +277,7 @@ export const referenceDataDal = {
 
     const where = and(
       isNull(refundReasons.deletedAt),
+      params.ids?.length ? inArray(refundReasons.id, params.ids) : undefined,
       term
         ? or(
             likeContains(refundReasons.label, term),
@@ -312,6 +323,7 @@ export const referenceDataDal = {
       rows.map((row) => ({
         id: row.id,
         name: row.label,
+        externalId: null,
         code: row.code,
         description: row.description,
         parentId: null,
@@ -327,52 +339,93 @@ export const referenceDataDal = {
     );
   },
 
-  async find(kind: ReferenceDataKind, id: string) {
-    const db = await getDb();
-    const lookup =
-      kind === "product-types"
-        ? await db
-            .select({ term: productTypes.value })
-            .from(productTypes)
-            .where(and(eq(productTypes.id, id), isNull(productTypes.deletedAt)))
-            .limit(1)
-        : kind === "product-tags"
-          ? await db
-              .select({ term: productTags.value })
-              .from(productTags)
-              .where(and(eq(productTags.id, id), isNull(productTags.deletedAt)))
-              .limit(1)
-          : kind === "return-reasons"
-            ? await db
-                .select({ term: returnReasons.value })
-                .from(returnReasons)
-                .where(
-                  and(
-                    eq(returnReasons.id, id),
-                    isNull(returnReasons.deletedAt),
-                  ),
-                )
-                .limit(1)
-            : await db
-                .select({ term: refundReasons.code })
-                .from(refundReasons)
-                .where(
-                  and(
-                    eq(refundReasons.id, id),
-                    isNull(refundReasons.deletedAt),
-                  ),
-                )
-                .limit(1);
-    if (!lookup[0]) return null;
+  async find(
+    kind: ReferenceDataKind,
+    id: string,
+  ): Promise<ReferenceDataItemDTO | null> {
     const result = await this.list({
       kind,
-      query: lookup[0].term,
+      ids: [id],
       page: 1,
-      limit: 100,
+      limit: 1,
       sortBy: "name",
       sortOrder: "asc",
     });
-    return result.items.find((item) => item.id === id) ?? null;
+    return result.items[0] ?? null;
+  },
+
+  async duplicateExists(
+    kind: ReferenceDataKind,
+    value: string,
+    excludeId?: string,
+  ) {
+    const db = await getDb();
+    const row =
+      kind === "product-types"
+        ? await db
+            .select({ id: productTypes.id })
+            .from(productTypes)
+            .where(
+              and(
+                eq(productTypes.value, value),
+                isNull(productTypes.deletedAt),
+                excludeId ? ne(productTypes.id, excludeId) : undefined,
+              ),
+            )
+            .get()
+        : kind === "product-tags"
+          ? await db
+              .select({ id: productTags.id })
+              .from(productTags)
+              .where(
+                and(
+                  eq(productTags.value, value),
+                  isNull(productTags.deletedAt),
+                  excludeId ? ne(productTags.id, excludeId) : undefined,
+                ),
+              )
+              .get()
+          : kind === "return-reasons"
+            ? await db
+                .select({ id: returnReasons.id })
+                .from(returnReasons)
+                .where(
+                  and(
+                    eq(returnReasons.value, value),
+                    isNull(returnReasons.deletedAt),
+                    excludeId ? ne(returnReasons.id, excludeId) : undefined,
+                  ),
+                )
+                .get()
+            : await db
+                .select({ id: refundReasons.id })
+                .from(refundReasons)
+                .where(
+                  and(
+                    eq(refundReasons.code, value),
+                    isNull(refundReasons.deletedAt),
+                    excludeId ? ne(refundReasons.id, excludeId) : undefined,
+                  ),
+                )
+                .get();
+    return Boolean(row);
+  },
+
+  async hasChildren(ids: string[]) {
+    if (!ids.length) return false;
+    const db = await getDb();
+    const child = await db
+      .select({ id: returnReasons.id })
+      .from(returnReasons)
+      .where(
+        and(
+          inArray(returnReasons.parentReturnReasonId, ids),
+          isNull(returnReasons.deletedAt),
+        ),
+      )
+      .limit(1)
+      .get();
+    return Boolean(child);
   },
 
   async create(
@@ -382,19 +435,31 @@ export const referenceDataDal = {
       code?: string | null;
       description?: string | null;
       parentId?: string | null;
+      metadata?: Metadata;
+      externalId?: string | null;
     },
   ) {
     const db = await getDb();
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     if (kind === "product-types")
-      await db
-        .insert(productTypes)
-        .values({ id, value: data.name, createdAt: now, updatedAt: now });
+      await db.insert(productTypes).values({
+        id,
+        value: data.name,
+        externalId: data.externalId,
+        metadata: data.metadata,
+        createdAt: now,
+        updatedAt: now,
+      });
     else if (kind === "product-tags")
-      await db
-        .insert(productTags)
-        .values({ id, value: data.name, createdAt: now, updatedAt: now });
+      await db.insert(productTags).values({
+        id,
+        value: data.name,
+        externalId: data.externalId,
+        metadata: data.metadata,
+        createdAt: now,
+        updatedAt: now,
+      });
     else if (kind === "return-reasons")
       await db.insert(returnReasons).values({
         id,
@@ -402,6 +467,7 @@ export const referenceDataDal = {
         value: data.code ?? "",
         description: data.description,
         parentReturnReasonId: data.parentId,
+        metadata: data.metadata,
         createdAt: now,
         updatedAt: now,
       });
@@ -411,6 +477,7 @@ export const referenceDataDal = {
         label: data.name,
         code: data.code ?? "",
         description: data.description,
+        metadata: data.metadata,
         createdAt: now,
         updatedAt: now,
       });
@@ -426,6 +493,7 @@ export const referenceDataDal = {
       description?: string | null;
       parentId?: string | null;
       metadata?: Metadata;
+      externalId?: string | null;
     },
   ) {
     const db = await getDb();
@@ -433,12 +501,22 @@ export const referenceDataDal = {
     if (kind === "product-types")
       await db
         .update(productTypes)
-        .set({ value: data.name, metadata: data.metadata, updatedAt })
+        .set({
+          value: data.name,
+          externalId: data.externalId,
+          metadata: data.metadata,
+          updatedAt,
+        })
         .where(and(eq(productTypes.id, id), isNull(productTypes.deletedAt)));
     else if (kind === "product-tags")
       await db
         .update(productTags)
-        .set({ value: data.name, metadata: data.metadata, updatedAt })
+        .set({
+          value: data.name,
+          externalId: data.externalId,
+          metadata: data.metadata,
+          updatedAt,
+        })
         .where(and(eq(productTags.id, id), isNull(productTags.deletedAt)));
     else if (kind === "return-reasons")
       await db

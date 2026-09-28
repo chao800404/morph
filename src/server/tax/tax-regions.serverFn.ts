@@ -1,5 +1,14 @@
-import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
+import {
+  fail,
+  failure,
+  ok,
+  paginationOf,
+  parseInput,
+} from "@/lib/db/server-result";
 import { taxDal } from "@/lib/tax/dal/tax.dal";
+import { taxWriteService } from "@/lib/tax/service/tax-write.service";
+import { taxProviderRegistry } from "@/lib/tax/providers/tax-provider-registry.server";
+import { getConfig } from "@/server/get-config";
 import {
   createTaxProvinceInputSchema,
   createTaxRateInputSchema,
@@ -22,7 +31,9 @@ import {
 } from "../middleware/auth.middleware";
 
 export const listTaxRegions = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(listTaxRegionsInputSchema, data ?? {}))
+  .validator((data: unknown) =>
+    parseInput(listTaxRegionsInputSchema, data ?? {}),
+  )
   .middleware([commerceReadMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -179,7 +190,8 @@ export const listTaxRegionOptions = createServerFn({ method: "GET" })
   .middleware([commerceReadMiddleware])
   .handler(async () => {
     try {
-      await taxDal.ensureSystemProvider();
+      getConfig();
+      await taxDal.ensureProviders(taxProviderRegistry.list());
       return ok("Tax options fetched successfully", {
         countries: await taxDal.listAvailableCountries(),
         providers: await taxDal.listProviders(),
@@ -205,30 +217,13 @@ export const createTaxRegion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      await taxDal.ensureSystemProvider();
-      const available = new Set(
-        (await taxDal.listAvailableCountries()).map((country) => country.code),
-      );
-      if (!available.has(data.countryCode))
-        return fail("A tax region already exists for this country", {
-          errors: { countryCode: ["Select a country without a tax region"] },
-        });
-      const providers = new Set(
-        (await taxDal.listProviders()).map((provider) => provider.id),
-      );
-      if (!providers.has(data.providerId))
-        return fail("Tax provider is unavailable", {
-          errors: { providerId: ["Select an enabled provider"] },
-        });
-      const id = crypto.randomUUID();
-      await taxDal.createRegion({
-        id,
-        countryCode: data.countryCode,
-        providerId: data.providerId,
-        createdBy: context.user.id,
-        defaultTaxRate: data.defaultTaxRate,
-      });
-      return ok("Tax region created successfully", { id });
+      const result = await taxWriteService.createRegion(data, context.user.id);
+      return result.success
+        ? ok("Tax region created successfully", result.data)
+        : fail(result.message, {
+            error: result.error,
+            ...(result.errors ? { errors: result.errors } : {}),
+          });
     } catch (error) {
       return failure(
         "Create tax region error",
@@ -250,24 +245,16 @@ export const createTaxProvince = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const parent = await taxDal.findRegion(data.parentId);
-      if (!parent || parent.parentId)
-        return fail("Parent tax region not found", { error: "NOT_FOUND" });
-      if (await taxDal.provinceCodeExists(parent.id, data.provinceCode))
-        return fail("This province tax region already exists", {
-          errors: { provinceCode: ["Province code must be unique"] },
-        });
-      const id = crypto.randomUUID();
-      await taxDal.createRegion({
-        id,
-        countryCode: parent.countryCode,
-        provinceCode: data.provinceCode,
-        parentId: parent.id,
-        providerId: null,
-        createdBy: context.user.id,
-        defaultTaxRate: data.defaultTaxRate,
-      });
-      return ok("Province tax region created successfully", { id });
+      const result = await taxWriteService.createProvince(
+        data,
+        context.user.id,
+      );
+      return result.success
+        ? ok("Province tax region created successfully", result.data)
+        : fail(result.message, {
+            error: result.error,
+            ...(result.errors ? { errors: result.errors } : {}),
+          });
     } catch (error) {
       return failure(
         "Create province tax region error",
@@ -289,28 +276,13 @@ export const updateTaxRegion = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const region = await taxDal.findRegion(data.id);
-      if (!region) return fail("Tax region not found", { error: "NOT_FOUND" });
-      if (region.parentId)
-        return fail(
-          "Province and state tax regions inherit their provider and cannot be edited directly",
-          { error: "INVALID_REGION_LEVEL" },
-        );
-      if (data.providerId) {
-        const providers = new Set(
-          (await taxDal.listProviders()).map((provider) => provider.id),
-        );
-        if (!providers.has(data.providerId)) {
-          return fail("Tax provider is unavailable", {
-            errors: { providerId: ["Select an enabled provider"] },
+      const result = await taxWriteService.updateRegion(data);
+      return result.success
+        ? ok("Tax region updated successfully", result.data)
+        : fail(result.message, {
+            error: result.error,
+            ...(result.errors ? { errors: result.errors } : {}),
           });
-        }
-      }
-      await taxDal.updateRegion(data.id, {
-        providerId: data.providerId,
-        metadata: data.metadata,
-      });
-      return ok("Tax region updated successfully", { id: data.id });
     } catch (error) {
       return failure(
         "Update tax region error",
@@ -332,10 +304,11 @@ export const deleteTaxRegions = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      await taxDal.softDeleteRegions(data.ids);
+      const result = await taxWriteService.deleteRegions(data.ids);
+      if (!result.success) return fail(result.message, { error: result.error });
       return ok(
-        `${data.ids.length} tax region${data.ids.length === 1 ? "" : "s"} deleted`,
-        { deleted: data.ids.length },
+        `${result.data.deleted} tax region${result.data.deleted === 1 ? "" : "s"} deleted`,
+        result.data,
       );
     } catch (error) {
       return failure(
@@ -358,15 +331,13 @@ export const createTaxRate = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      if (!(await taxDal.findRegion(data.taxRegionId)))
-        return fail("Tax region not found", { error: "NOT_FOUND" });
-      if (!(await taxDal.ruleTargetsExist(data.rules)))
-        return fail("One or more tax rule targets no longer exist", {
-          errors: { rules: ["Refresh the page and select active targets"] },
-        });
-      const id = crypto.randomUUID();
-      await taxDal.createRate({ id, ...data, createdBy: context.user.id });
-      return ok("Tax rate created successfully", { id });
+      const result = await taxWriteService.createRate(data, context.user.id);
+      return result.success
+        ? ok("Tax rate created successfully", result.data)
+        : fail(result.message, {
+            error: result.error,
+            ...(result.errors ? { errors: result.errors } : {}),
+          });
     } catch (error) {
       return failure(
         "Create tax rate error",
@@ -388,25 +359,13 @@ export const updateTaxRate = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const existing = await taxDal.findRate(data.id);
-      if (!existing || existing.taxRegionId !== data.taxRegionId)
-        return fail("Tax rate not found", { error: "NOT_FOUND" });
-      if (data.rules) {
-        if (!(await taxDal.ruleTargetsExist(data.rules)))
-          return fail("One or more tax rule targets no longer exist", {
-            errors: { rules: ["Refresh the page and select active targets"] },
+      const result = await taxWriteService.updateRate(data);
+      return result.success
+        ? ok("Tax rate updated successfully", result.data)
+        : fail(result.message, {
+            error: result.error,
+            ...(result.errors ? { errors: result.errors } : {}),
           });
-      }
-      await taxDal.updateRate(data.id, data.taxRegionId, {
-        name: data.name,
-        code: data.code,
-        rate: data.rate,
-        isDefault: data.isDefault,
-        isCombinable: data.isCombinable,
-        metadata: data.metadata,
-        rules: data.rules,
-      });
-      return ok("Tax rate updated successfully", { id: data.id });
     } catch (error) {
       return failure(
         "Update tax rate error",
@@ -428,10 +387,11 @@ export const deleteTaxRates = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      await taxDal.softDeleteRates(data.ids);
+      const result = await taxWriteService.deleteRates(data.ids);
+      if (!result.success) return fail(result.message, { error: result.error });
       return ok(
-        `${data.ids.length} tax rate${data.ids.length === 1 ? "" : "s"} deleted`,
-        { deleted: data.ids.length },
+        `${result.data.deleted} tax rate${result.data.deleted === 1 ? "" : "s"} deleted`,
+        result.data,
       );
     } catch (error) {
       return failure(

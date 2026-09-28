@@ -23,6 +23,7 @@ export const toStockLocationAddressDTO = (
   province: row.province ?? null,
   postalCode: row.postalCode ?? null,
   phone: row.phone ?? null,
+  metadata: row.metadata ?? {},
 });
 
 export const toStockLocationDTO = (

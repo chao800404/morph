@@ -33,6 +33,8 @@ export const inventoryItems = sqliteTable(
     title: text("title"),
     description: text("description"),
     thumbnail: text("thumbnail"),
+    /** Optional display unit used for stock quantities, such as kg or m. */
+    unitOfMeasure: text("unit_of_measure"),
     /** When false the item is digital and never enters a shipment. */
     requiresShipping: integer("requires_shipping", { mode: "boolean" })
       .notNull()
@@ -75,9 +77,9 @@ export const inventoryLevels = sqliteTable(
       .references(() => inventoryItems.id, { onDelete: "cascade" }),
     /** A `stockLocations.id`. Plain text: different module. */
     locationId: text("location_id").notNull(),
-    stockedQuantity: integer("stocked_quantity").notNull().default(0),
-    reservedQuantity: integer("reserved_quantity").notNull().default(0),
-    incomingQuantity: integer("incoming_quantity").notNull().default(0),
+    stockedQuantity: real("stocked_quantity").notNull().default(0),
+    reservedQuantity: real("reserved_quantity").notNull().default(0),
+    incomingQuantity: real("incoming_quantity").notNull().default(0),
     metadata: metadata(),
     ...timestamps,
   },
@@ -124,7 +126,7 @@ export const reservationItems = sqliteTable(
     cartId: text("cart_id"),
     /** A cart line id before conversion, then the matching order line id. */
     lineItemId: text("line_item_id"),
-    quantity: integer("quantity").notNull(),
+    quantity: real("quantity").notNull(),
     allowBackorder: integer("allow_backorder", { mode: "boolean" })
       .notNull()
       .default(false),

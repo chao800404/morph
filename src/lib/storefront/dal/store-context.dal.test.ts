@@ -25,6 +25,17 @@ describe("catalog context fails closed", () => {
     expect(await storeContextDal.resolve({})).toBeNull();
     expect(db.select).not.toHaveBeenCalled();
   });
+  it("returns a hostname only for an active storefront domain", async () => {
+    mocks.getDb.mockResolvedValue(
+      database([[{ hostname: "shop.example.com" }]]),
+    );
+    await expect(storeContextDal.findPrimaryActiveHostname("sf")).resolves.toBe(
+      "shop.example.com",
+    );
+
+    mocks.getDb.mockResolvedValue(database([[]]));
+    await expect(storeContextDal.findPrimaryActiveHostname("sf")).resolves.toBeNull();
+  });
   it("allows catalog browsing without a region but still rejects checkout context", async () => {
     const results = () => [
       [{ id: "sf", salesChannelId: "sc" }],

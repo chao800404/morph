@@ -39,6 +39,7 @@ export interface RegionInsertDTO {
   currencyCode: string;
   automaticTaxes?: boolean;
   isTaxInclusive?: boolean;
+  metadata?: Metadata;
 }
 
 export interface UpdateRegionDTO {

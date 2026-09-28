@@ -18,6 +18,7 @@ import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_SOURCE,
   LEGACY_STARTER_THEME_FOOTER_SOURCE,
   LEGACY_STARTER_THEME_HEADER_SOURCE,
+  LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE,
   LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
   LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE,
   LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
@@ -37,10 +38,74 @@ import {
   LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE,
   STARTER_THEME_HEADER_SOURCE,
   STARTER_THEME_HOME_ROUTE_SOURCE,
+  STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE,
+  STARTER_THEME_ORDER_TRANSFER_ROUTE_SOURCE,
+  STARTER_THEME_V4_NEW_FILES,
   STARTER_THEME_V3_NEW_FILES,
 } from "./starter-theme-v3-files";
 
 describe("starter Principles theme source", () => {
+  it("ships a token-only order transfer confirmation route in new Themes", () => {
+    const route = STARTER_THEME_V4_NEW_FILES.find(
+      (file) => file.path === "src/routes/order-transfer.tsx",
+    );
+
+    expect(route?.content).toBe(STARTER_THEME_ORDER_TRANSFER_ROUTE_SOURCE);
+    expect(
+      STARTER_THEME_FILES.find(
+        (file) => file.path === "src/routes/order-transfer.tsx",
+      )?.content,
+    ).toBe(STARTER_THEME_ORDER_TRANSFER_ROUTE_SOURCE);
+    expect(route?.content).toContain('createFileRoute("/order-transfer")');
+    expect(route?.content).toContain('credentials: "omit"');
+    expect(route?.content).toContain('"/api/store/orders/"');
+    expect(route?.content).toContain('content: "no-referrer"');
+  });
+
+  it("ships the customer account route with same-origin auth, profile, address, order, return, and store-credit flows", () => {
+    const route = STARTER_THEME_V4_NEW_FILES.find(
+      (file) => file.path === "src/routes/account.tsx",
+    );
+
+    expect(route?.content).toBe(STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE);
+    expect(
+      STARTER_THEME_FILES.find((file) => file.path === "src/routes/account.tsx")
+        ?.content,
+    ).toBe(STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE);
+    expect(route?.content).toContain('createFileRoute("/account")');
+    expect(route?.content).toContain('"/api/auth/sign-up/email"');
+    expect(route?.content).toContain('"/api/auth/email-otp/verify-email"');
+    expect(route?.content).toContain('"/api/auth/email-otp/reset-password"');
+    expect(route?.content).toContain('"/api/store/customers/me/addresses"');
+    expect(route?.content).toContain(
+      '"/api/store/customers/me/orders?limit=20&offset="',
+    );
+    expect(route?.content).toContain('"/returnable-items"');
+    expect(route?.content).toContain('"/returns"');
+    expect(route?.content).toContain('"/claims"');
+    expect(route?.content).toContain('"/exchanges"');
+    expect(route?.content).toContain('"DELETE"');
+    expect(route?.content).toContain("撤回退貨申請");
+    expect(route?.content).toContain("退貨進度");
+    expect(route?.content).toContain("換貨進度");
+    expect(route?.content).toContain("退款與補寄處理");
+    expect(route?.content).toContain(
+      '"/api/store/customers/me/store-credit-accounts"',
+    );
+    expect(route?.content).toContain(
+      '"/api/store/store-credit-accounts/claim"',
+    );
+    expect(route?.content).toContain("/transactions?limit=20&offset=0");
+    expect(route?.content).toContain('orderPath + "/edits"');
+    expect(route?.content).toContain('"/" + action');
+    expect(route?.content).toContain("商店提出訂單變更");
+    expect(route?.content).toContain("接受變更");
+    expect(route?.content).toContain("拒絕變更");
+    expect(route?.content).toContain("載入更多交易紀錄");
+    expect(route?.content).toContain("儲值金");
+    expect(route?.content).toContain('credentials: "same-origin"');
+  });
+
   it("upgrades both untouched v12 content bindings and visibility source, preserving authored files", () => {
     const existing = STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file, index) => ({
       ...file,
@@ -89,6 +154,9 @@ describe("starter Principles theme source", () => {
     expect(plan.files.map((file) => file.path).sort()).toEqual(
       starterThemeWorkspaceFiles().map((file) => file.path).sort(),
     );
+    expect(
+      plan.files.find((file) => file.path === "src/routes/account.tsx")?.content,
+    ).toBe(STARTER_THEME_CUSTOMER_ACCOUNT_ROUTE_SOURCE);
     expect(
       plan.files.find((file) => file.path === "src/routes/index.tsx")?.content,
     ).toBe(
@@ -359,6 +427,12 @@ describe("starter Principles theme source", () => {
         ),
       ),
     ).toBe(true);
+    expect(upgrades).toContainEqual(
+      expect.objectContaining({
+        path: "src/routes/order-transfer.tsx",
+        expectMissing: true,
+      }),
+    );
     expect(
       upgrades.some((upgrade) => upgrade.path === "src/pages/index.tsx"),
     ).toBe(false);
@@ -736,6 +810,8 @@ export default function Principles({ label = "Why we choose differently" }: Prin
    */
   it("recognises every Header it has shipped, and tells them apart", () => {
     const generations = {
+      "current, without account action":
+        LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE,
       "no index, span": LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
       "index, span": LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
       "link row, keyed by position":
@@ -790,6 +866,40 @@ export default function Principles({ label = "Why we choose differently" }: Prin
       upgrades.find((file) => file.path === "src/components/Header.tsx")
         ?.content,
     ).toBe(STARTER_THEME_HEADER_SOURCE);
+  });
+
+  it("adds a storefront account link and upgrades only the untouched prior Header", () => {
+    const header = STARTER_THEME_FILES.find(
+      (file) => file.path === "src/components/Header.tsx",
+    )!.content;
+    expect(header).toContain('link={{ href: "/account" }}');
+    expect(header).toContain("Account");
+
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "header",
+        path: "src/components/Header.tsx",
+        content: LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE,
+        version: 7,
+      },
+    ]);
+    expect(
+      upgrades.find((file) => file.path === "src/components/Header.tsx")
+        ?.content,
+    ).toBe(header);
+
+    const authoredHeader =
+      LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE + "\n// merchant edit\n";
+    expect(
+      createStarterThemeWorkspaceUpgrade([
+        {
+          id: "header-authored",
+          path: "src/components/Header.tsx",
+          content: authoredHeader,
+          version: 8,
+        },
+      ]).some((file) => file.path === "src/components/Header.tsx"),
+    ).toBe(false);
   });
 
   /**

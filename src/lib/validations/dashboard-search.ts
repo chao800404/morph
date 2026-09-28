@@ -13,6 +13,7 @@ export const dashboardFixedSortKeySchema = z.enum([
   "firstName",
   "lastName",
   "code",
+  "identifier",
   "extension",
   "size",
   "createdAt",
@@ -79,12 +80,18 @@ export const dashboardSearchSchema = z.object({
   assetCreatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   /** Products list filters. */
   productStatus: z.enum(["draft", "published", "archived"]).optional(),
+  /** Campaign list status, derived from its schedule. */
+  campaignStatus: z.enum(["active", "scheduled", "expired"]).optional(),
+  /** Store Credit account status filter. */
+  storeCreditStatus: z.enum(["active", "disabled"]).optional(),
   productCreatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   productUpdatedWithin: z.enum(["24h", "7d", "30d", "90d"]).optional(),
   /** Product Options creation-date window. */
   optionCreatedWithin: z.enum(PRODUCT_OPTION_CREATED_WITHIN_VALUES).optional(),
   /** Tax sub-region table filter. */
   taxRegionHasRates: z.enum(["yes", "no"]).optional(),
+  /** Inventory reservation list can be opened scoped to one inventory item. */
+  inventoryItemId: z.uuid().optional(),
   /** Independent URL state for the Tax Overrides table on region detail. */
   taxRateQ: z.string().optional(),
   taxRatePage: z.number().optional(),
@@ -93,6 +100,9 @@ export const dashboardSearchSchema = z.object({
   /** Independent pagination for the two growing tables on Order detail. */
   orderItemPage: z.number().optional(),
   orderFulfillmentPage: z.number().optional(),
+  orderReturnPage: z.number().optional(),
+  orderNotificationPage: z.number().optional(),
+  returnId: z.uuid().optional(),
   /** Price History filters are URL state so filtered audit views are shareable. */
   priceHistoryCurrencies: z.array(z.string()).max(50).optional(),
   priceHistoryChanges: z

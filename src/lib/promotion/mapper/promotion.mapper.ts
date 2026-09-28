@@ -1,4 +1,5 @@
 import {
+  promotionCampaignBudgets,
   promotionApplicationMethods,
   promotionCampaigns,
   promotionRules,
@@ -23,6 +24,7 @@ export const toPromotionListDTO = (row: {
   limit: row.promotion.limit,
   used: row.promotion.used,
   methodType: row.method?.type ?? null,
+  applicationMethodId: row.method?.id ?? null,
   targetType: row.method?.targetType ?? null,
   value: row.method?.value ?? null,
   currencyCode: row.method?.currencyCode ?? null,
@@ -38,6 +40,8 @@ export const toPromotionRuleDTOs = (
   const grouped = new Map<string, PromotionRuleDTO>();
   for (const { rule, value } of rows) {
     const current = grouped.get(rule.id) ?? {
+      id: rule.id,
+      description: rule.description,
       attribute: rule.attribute,
       operator: rule.operator,
       values: [],
@@ -60,6 +64,7 @@ export const toPromotionCampaignDTO = (
 
 export const toPromotionDetailDTO = ({
   row,
+  campaignBudget,
   rules,
   targetRules,
   buyRules,
@@ -69,6 +74,7 @@ export const toPromotionDetailDTO = ({
     method: typeof promotionApplicationMethods.$inferSelect | null;
     campaign: typeof promotionCampaigns.$inferSelect | null;
   };
+  campaignBudget: typeof promotionCampaignBudgets.$inferSelect | null;
   rules: PromotionRuleDTO[];
   targetRules: PromotionRuleDTO[];
   buyRules: PromotionRuleDTO[];
@@ -87,6 +93,18 @@ export const toPromotionDetailDTO = ({
     ? {
         ...toPromotionCampaignDTO(row.campaign),
         description: row.campaign.description,
+        createdAt: row.campaign.createdAt,
+        updatedAt: row.campaign.updatedAt,
+        budget: campaignBudget
+          ? {
+              id: campaignBudget.id,
+              type: campaignBudget.type,
+              currencyCode: campaignBudget.currencyCode,
+              limit: campaignBudget.limit,
+              used: campaignBudget.used,
+              attribute: campaignBudget.attribute,
+            }
+          : null,
       }
     : null,
   createdAt: row.promotion.createdAt,

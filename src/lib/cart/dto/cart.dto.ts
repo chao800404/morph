@@ -67,6 +67,7 @@ export interface CartDTO {
   subtotal: number;
   taxTotal: number;
   discountTotal: number;
+  totalBeforeCredits: number;
   total: number;
   createdAt: string;
   updatedAt: string;

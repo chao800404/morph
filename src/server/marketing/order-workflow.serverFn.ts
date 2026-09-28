@@ -208,7 +208,7 @@ export const cancelOrderFulfillment = createServerFn({ method: "POST" })
 export const cancelOrder = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(orderOperationInputSchema, data))
   .middleware([commerceAdminMiddleware])
-  .handler(async ({ data: input }) => {
+  .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
     // renders. Letting the ZodError escape the validator instead would
     // reach the browser as an opaque 500 with the reason stripped.
@@ -216,12 +216,18 @@ export const cancelOrder = createServerFn({ method: "POST" })
     const data = input.data;
 
     try {
-      const result = await orderWorkflowDal.cancel(data.orderId);
+      const result = await orderWorkflowDal.cancel(
+        data.orderId,
+        context.user.id,
+      );
       return result.success
         ? ok("Order canceled", { orderId: data.orderId })
         : {
             success: false as const,
-            message: "Order could not be canceled",
+            message:
+              result.reason === "STORE_CREDIT_UNAVAILABLE"
+                ? "Store credit could not be restored, so the order was not canceled"
+                : "Order could not be canceled",
             data: null,
             error: result.reason,
           };

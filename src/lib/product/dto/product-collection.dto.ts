@@ -25,6 +25,7 @@ export interface ProductCollectionDTO {
 
 export interface ProductCollectionInsertDTO extends CreateProductCollectionDTO {
   id: string;
+  metadata?: ProductMetadata;
   createdAt?: Date;
   updatedAt?: Date;
 }

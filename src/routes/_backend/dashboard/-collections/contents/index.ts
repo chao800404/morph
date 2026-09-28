@@ -25,6 +25,7 @@ const ProductVariantMetadataPendingView = createRouteSurfacePendingView(3);
 const ProductVariantPricingPendingView = createRouteSurfacePendingView(4);
 const ProductVariantPricesPendingView = createRouteSurfacePendingView(2);
 const ProductVariantInventoryPendingView = createRouteSurfacePendingView(1);
+const ProductVariantInventoryKitPendingView = createRouteSurfacePendingView(5);
 const ProductAttributesPendingView = createRouteSurfacePendingView(9);
 const ProductMetadataPendingView = createRouteSurfacePendingView(3);
 const CollectionsIndexPendingView = createCollectionIndexPendingView(3);
@@ -37,6 +38,12 @@ const CategoryDetailPendingView = TableDetailSkeleton;
 const CategoryEditPendingView = createRouteSurfacePendingView(4);
 const CategoryMetadataPendingView = createRouteSurfacePendingView(3);
 const InventoryIndexPendingView = createCollectionIndexPendingView(5);
+const InventoryCreatePendingView = createRouteSurfacePendingView(6);
+const InventoryEditPendingView = createRouteSurfacePendingView(6);
+const InventoryLocationPendingView = createRouteSurfacePendingView(3);
+const ReservationCreatePendingView = createRouteSurfacePendingView(5);
+const ReservationEditPendingView = createRouteSurfacePendingView(5);
+const ReservationIndexPendingView = createCollectionIndexPendingView(5);
 const OptionsIndexPendingView = createCollectionIndexPendingView(3);
 const OptionCreatePendingView = createRouteSurfacePendingView(3);
 const OptionEditPendingView = createRouteSurfacePendingView(3);
@@ -395,6 +402,39 @@ export const Contents: CollectionGroup = {
             );
           },
         },
+        "variant-kit": {
+          view: lazyView(
+            () =>
+              import("@views/global/contents/products/detail/product-variant-inventory-kit"),
+          ),
+          pendingView: ProductVariantInventoryKitPendingView,
+          prefetch: async ({
+            queryClient,
+            params,
+            search,
+          }: CollectionLoadContext) => {
+            if (!params.id || !params.childId) return;
+            const [
+              { inventoryQueries, normalizeInventoryListParams },
+              { productQueries, productVariantQueries },
+            ] = await Promise.all([
+              import("@queries/inventory.queries"),
+              import("@queries/product.queries"),
+            ]);
+            void queryClient.prefetchQuery(productQueries.detail(params.id));
+            void queryClient.prefetchQuery(
+              productVariantQueries.detail(params.childId),
+            );
+            void queryClient.prefetchQuery(
+              productVariantQueries.inventoryKit(params.childId),
+            );
+            void queryClient.prefetchQuery(
+              inventoryQueries.list(
+                normalizeInventoryListParams({ ...search, limit: 50 }),
+              ),
+            );
+          },
+        },
         attributes: {
           view: lazyView(
             () =>
@@ -674,6 +714,92 @@ export const Contents: CollectionGroup = {
           title: "Inventory",
           slug: "inventory",
           label: "Inventory",
+          create: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/inventory-create"),
+            ),
+            pendingView: InventoryCreatePendingView,
+          },
+          detail: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/inventory-detail"),
+            ),
+            pendingView: TableDetailSkeleton,
+            breadcrumb: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return null;
+              const { inventoryQueries } =
+                await import("@queries/inventory.queries");
+              const result = await queryClient.ensureQueryData(
+                inventoryQueries.detail(params.id),
+              );
+              return result.success ? result.data.title : null;
+            },
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const { inventoryQueries } =
+                await import("@queries/inventory.queries");
+              void queryClient.prefetchQuery(
+                inventoryQueries.detail(params.id),
+              );
+            },
+          },
+          edit: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/inventory-edit"),
+            ),
+            pendingView: InventoryEditPendingView,
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const { inventoryQueries } =
+                await import("@queries/inventory.queries");
+              void queryClient.prefetchQuery(
+                inventoryQueries.detail(params.id),
+              );
+            },
+          },
+          pages: {
+            "location-levels": {
+              view: lazyView(
+                () =>
+                  import("@views/global/contents/products/inventory/inventory-location-level"),
+              ),
+              pendingView: InventoryLocationPendingView,
+              prefetch: async ({
+                queryClient,
+                params,
+              }: CollectionLoadContext) => {
+                if (!params.id) return;
+                const [{ inventoryQueries }, { stockLocationQueries }] =
+                  await Promise.all([
+                    import("@queries/inventory.queries"),
+                    import("@queries/stock-location.queries"),
+                  ]);
+                void queryClient.prefetchQuery(
+                  inventoryQueries.detail(params.id),
+                );
+                void queryClient.prefetchQuery(
+                  stockLocationQueries.list({
+                    sortBy: "name",
+                    sortOrder: "asc",
+                    page: 1,
+                    limit: 100,
+                  }),
+                );
+              },
+            },
+          },
           index: {
             view: lazyView(
               () => import("@views/global/contents/products/inventory"),
@@ -687,6 +813,102 @@ export const Contents: CollectionGroup = {
                 await import("@queries/inventory.queries");
               void queryClient.prefetchQuery(
                 inventoryQueries.list(normalizeInventoryListParams(search)),
+              );
+            },
+          },
+        },
+        {
+          title: "Reservations",
+          slug: "reservations",
+          label: "Reservations",
+          create: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/reservation-create"),
+            ),
+            pendingView: ReservationCreatePendingView,
+            prefetch: async ({
+              queryClient,
+              search,
+            }: CollectionLoadContext) => {
+              const { inventoryQueries, normalizeInventoryListParams } =
+                await import("@queries/inventory.queries");
+              void queryClient.prefetchQuery(
+                inventoryQueries.list(
+                  normalizeInventoryListParams({ limit: 100 }),
+                ),
+              );
+              if (search.inventoryItemId) {
+                void queryClient.prefetchQuery(
+                  inventoryQueries.detail(search.inventoryItemId),
+                );
+              }
+            },
+          },
+          detail: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/reservation-detail"),
+            ),
+            pendingView: SimpleDetailSkeleton,
+            breadcrumb: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return null;
+              const { reservationQueries } =
+                await import("@queries/reservation.queries");
+              const result = await queryClient.ensureQueryData(
+                reservationQueries.detail(params.id),
+              );
+              return result.success
+                ? `Reservation · ${result.data.inventoryItemSku ?? result.data.inventoryItemTitle ?? result.data.id}`
+                : null;
+            },
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const { reservationQueries } =
+                await import("@queries/reservation.queries");
+              void queryClient.prefetchQuery(
+                reservationQueries.detail(params.id),
+              );
+            },
+          },
+          edit: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/reservation-edit"),
+            ),
+            pendingView: ReservationEditPendingView,
+            prefetch: async ({
+              queryClient,
+              params,
+            }: CollectionLoadContext) => {
+              if (!params.id) return;
+              const { reservationQueries } =
+                await import("@queries/reservation.queries");
+              void queryClient.prefetchQuery(
+                reservationQueries.detail(params.id),
+              );
+            },
+          },
+          index: {
+            view: lazyView(
+              () =>
+                import("@views/global/contents/products/inventory/reservations"),
+            ),
+            pendingView: ReservationIndexPendingView,
+            prefetch: async ({
+              queryClient,
+              search,
+            }: CollectionLoadContext) => {
+              const { normalizeReservationListParams, reservationQueries } =
+                await import("@queries/reservation.queries");
+              void queryClient.prefetchQuery(
+                reservationQueries.list(normalizeReservationListParams(search)),
               );
             },
           },
