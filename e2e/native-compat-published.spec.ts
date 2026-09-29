@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +36,8 @@ import {
  *
  * The same files as `native-compat.test.ts` (the built Worker, in CI) and
  * `native-compat-preview.spec.ts`. What differs from Start's own behaviour is
- * asserted as a `KNOWN GAP`, which fails once the gap closes.
+ * asserted as a `KNOWN GAP`, which fails once the gap closes; none is left
+ * here.
  *
  * Sandbox transport only, like publish.spec.ts: the build runs in the
  * container. Needs `MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true` and
@@ -363,24 +370,62 @@ test.describe("TanStack Start on the published storefront", () => {
     await context.close();
   });
 
-  // The Theme Worker answers each of these correctly on its own; Core's
-  // static files answer first on a storefront hostname.
-  test("KNOWN GAP: Morph's own static files answer a storefront's paths", async () => {
-    const platformFavicon = readFileSync("public/favicon.ico");
+  // Decided by hostname: the storefront gets the Theme's files and the
+  // platform hostname keeps Morph's, for the very same path.
+  test("answers a path both sides have with each owner's own file", async ({
+    request: platform,
+  }) => {
     const favicon = await request("/favicon.ico");
+    expect(favicon.status).toBe(200);
     expect(sha256(new Uint8Array(await favicon.arrayBuffer()))).toBe(
-      sha256(platformFavicon),
+      sha256(ICO),
     );
-    expect(sha256(platformFavicon)).not.toBe(sha256(ICO));
 
+    const platformFavicon = await platform.get("/favicon.ico");
+    expect(platformFavicon.status()).toBe(200);
+    expect(sha256(await platformFavicon.body())).toBe(
+      sha256(readFileSync("public/favicon.ico")),
+    );
+  });
+
+  test("serves the Theme's route for a path Morph also has a file for", async () => {
     const robots = await request("/robots.txt");
-    expect(await robots.text()).toBe(readFileSync("public/robots.txt", "utf8"));
+    expect(await robots.text()).toBe("User-agent: *\nAllow: /\n");
+  });
 
-    // The Theme has no manifest.json at all.
+  // Neither a Theme file nor a Theme route matches this path — the starter
+  // has no catch-all route — so a 200 could only be a fallback to Morph.
+  test("answers a path the Theme has nothing for with the Theme's 404, not Morph's file", async () => {
     const manifest = await request("/manifest.json");
-    expect(manifest.status).toBe(200);
-    expect(await manifest.text()).toBe(
+    expect(manifest.status).toBe(404);
+    expect(await manifest.text()).not.toBe(
       readFileSync("public/manifest.json", "utf8"),
     );
+  });
+
+  // `/assets/` is where both Morph's build and the Theme's build put their
+  // hashed files. The prefix does not decide the owner; the hostname does.
+  test("serves the Theme's built assets under /assets/ on the storefront only", async ({
+    request: platform,
+  }) => {
+    const assetsDir = join(
+      artifactDir,
+      "artifact",
+      "runtime",
+      "client",
+      "assets",
+    );
+    const script = readdirSync(assetsDir).find((name) => name.endsWith(".js"));
+    expect(script, "the published build has a client script").toBeTruthy();
+    const bytes = readFileSync(join(assetsDir, script!));
+
+    const onStorefront = await request(`/assets/${script}`);
+    expect(onStorefront.status).toBe(200);
+    expect(sha256(new Uint8Array(await onStorefront.arrayBuffer()))).toBe(
+      sha256(bytes),
+    );
+
+    const onPlatform = await platform.get(`/assets/${script}`);
+    expect(sha256(await onPlatform.body())).not.toBe(sha256(bytes));
   });
 });

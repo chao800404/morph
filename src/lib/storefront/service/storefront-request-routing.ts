@@ -153,6 +153,25 @@ export function shouldRouteToStorefront(
 }
 
 /**
+ * Whether Morph Core's own static files may answer this request.
+ *
+ * Only on a platform hostname. A storefront hostname is the merchant's site
+ * and a preview hostname is a Theme's, so neither may be answered with the
+ * platform's favicon, robots.txt or build assets — whatever those happen to
+ * be. Decided by hostname, like the storefront routing above, never by a list
+ * of file names: a file added to Morph's `public/` later must not reach a
+ * storefront either.
+ */
+export function mayServePlatformAssets(
+  request: Request,
+  env: Record<string, unknown> | undefined,
+): boolean {
+  const host = request.headers.get("host") ?? safeUrlHostname(request.url);
+  if (isPreviewHostname(host, env)) return false;
+  return isPlatformHostname(host, collectPlatformHostnames(env));
+}
+
+/**
  * Hostnames that must never be connected as a storefront domain.
  *
  * Routing classifies platform hosts first, so a storefront registered on a

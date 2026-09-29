@@ -10,6 +10,27 @@
   // User-owned entry instead of "@tanstack/react-start/server-entry".
   // See src/server.ts for why (TanStack/router#7285 breaks SSR HMR).
   "main": "src/server.ts",
+  // Morph's static files (its public/ and build assets) are served by the
+  // Worker, through this binding, and only on a platform hostname. Without
+  // run_worker_first, Cloudflare answers any path matching one of them before
+  // the Worker sees the hostname, so a merchant's storefront would get Morph's
+  // /favicon.ico, /robots.txt or /manifest.json. See src/server/platform-assets.ts.
+  // The directory is the build's client output, which the Vite plugin sets.
+  // The exceptions are Vite's dev-server module paths, which no deployed asset
+  // directory has: sent through the Worker, each of a page's ~90 modules waits
+  // on it in local dev, and sign-in took ~37s to hydrate instead of ~2s.
+  "assets": {
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/*",
+      "!/@vite/*",
+      "!/@id/*",
+      "!/@fs/*",
+      "!/@react-refresh",
+      "!/src/*",
+      "!/node_modules/*",
+    ],
+  },
   "observability": {
     "enabled": true,
   },

@@ -4,6 +4,7 @@ import {
   createThemeRuntime,
   isPlatformHostname,
   isReservedPlatformHostname,
+  mayServePlatformAssets,
   resolveThemeServiceBindingName,
   shouldRouteToStorefront,
 } from "./storefront-request-routing";
@@ -226,5 +227,54 @@ describe("isReservedPlatformHostname", () => {
     expect(isReservedPlatformHostname("client.com", env)).toBe(false);
     expect(isReservedPlatformHostname("www.client.com", env)).toBe(false);
     expect(isReservedPlatformHostname("shop.client.com", env)).toBe(false);
+  });
+});
+
+describe("mayServePlatformAssets", () => {
+  const env = { PUBLIC_URL: "https://admin.client.com" };
+  const req = (url: string, host?: string) =>
+    new Request(url, host ? { headers: { host } } : undefined);
+
+  it("serves platform files on platform hostnames", () => {
+    for (const url of [
+      "https://admin.client.com/favicon.ico",
+      "http://localhost:3000/robots.txt",
+      "https://morph.team.workers.dev/assets/main.js",
+    ]) {
+      expect(mayServePlatformAssets(req(url), env), url).toBe(true);
+    }
+  });
+
+  it("never serves them on a storefront hostname, whatever the path", () => {
+    for (const path of [
+      "/favicon.ico",
+      "/robots.txt",
+      "/manifest.json",
+      "/assets/main.js",
+      "/new-file.png",
+    ]) {
+      expect(
+        mayServePlatformAssets(req(`https://client.com${path}`), env),
+        path,
+      ).toBe(false);
+    }
+  });
+
+  it("never serves them on a preview hostname", () => {
+    expect(
+      mayServePlatformAssets(
+        req("http://5173-abc.preview.localhost:3000/favicon.ico"),
+        env,
+      ),
+    ).toBe(false);
+  });
+
+  it("decides by the Host header, like storefront routing", () => {
+    expect(
+      mayServePlatformAssets(
+        req("http://127.0.0.1:3000/favicon.ico", "client.com"),
+        env,
+      ),
+    ).toBe(false);
   });
 });
