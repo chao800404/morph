@@ -154,6 +154,58 @@ describe("theme import protection", () => {
     expect(diagnostics).toHaveLength(0);
   });
 
+  it("allows Start server imports used only in a file route's server handlers", () => {
+    // Start removes the `server` property from the client build, so this is
+    // how its own documentation writes a server route that reads a cookie.
+    const diagnostics = collectThemeImportProtectionDiagnostics(
+      [
+        file(
+          "src/routes/api/cookie.ts",
+          'import { createFileRoute } from "@tanstack/react-router"; import { getCookie } from "@tanstack/react-start/server"; export const Route = createFileRoute("/api/cookie")({ server: { handlers: { GET: async () => Response.json({ value: getCookie("a") }) } } });',
+        ),
+      ],
+      { target: "client", entryPaths: ["src/routes/api/cookie.ts"] },
+    );
+
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("still blocks the same import when it is used outside the route's server property", () => {
+    const diagnostics = collectThemeImportProtectionDiagnostics(
+      [
+        file(
+          "src/routes/page.tsx",
+          'import { createFileRoute } from "@tanstack/react-router"; import { getCookie } from "@tanstack/react-start/server"; export const Route = createFileRoute("/page")({ component: () => String(getCookie("a")), server: { handlers: { GET: async () => new Response("ok") } } });',
+        ),
+      ],
+      { target: "client", entryPaths: ["src/routes/page.tsx"] },
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+      ]),
+    );
+  });
+
+  it("does not treat any other `server` property as a server route", () => {
+    const diagnostics = collectThemeImportProtectionDiagnostics(
+      [
+        file(
+          "src/pages/index.tsx",
+          'import { getRequest } from "@tanstack/react-start/server"; export const config = { server: () => getRequest() };',
+        ),
+      ],
+      { target: "client", entryPaths: ["src/pages/index.tsx"] },
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+      ]),
+    );
+  });
+
   it("blocks a direct Start server import that is outside a compiler boundary", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [

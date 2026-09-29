@@ -103,24 +103,71 @@ export default { createIsomorphicFn, createClientOnlyFn, createServerOnlyFn };
 `;
 
 /**
- * Stub the preview build substitutes for the Start server module.
+ * What the Start server module exports, when the real module cannot be read.
+ * Only a fallback: the stub takes its names from the module itself, so a name
+ * added to Start cannot be missing from it.
+ */
+const FALLBACK_START_SERVER_EXPORTS = [
+  "getRequest",
+  "getRequestHeaders",
+  "getRequestHeader",
+  "getRequestIP",
+  "setResponseHeader",
+  "setResponseStatus",
+  "getCookie",
+  "getCookies",
+  "setCookie",
+  "deleteCookie",
+] as const;
+
+/**
+ * Prelude of the Start server stub: what every export does when called.
  *
  * Every export throws: the preview never calls them, and a silent no-op would
- * let server-only code appear to work in a build that cannot support it.
+ * let server-only code appear to work in a build that cannot support it. This
+ * matters most for the request context — cookies, headers, the request — which
+ * a browser cannot imitate: pretending to would hand back a value that is not
+ * the request's.
  */
-const STUB_SOURCE = `const unavailable = (name) => () => {
+const STUB_PRELUDE = `const unavailable = (name) => () => {
   throw new Error(
     "Theme preview cannot call " + name + "(): server APIs run only in the deployed Theme Worker.",
   );
 };
-export const getRequest = unavailable("getRequest");
-export const getRequestHeaders = unavailable("getRequestHeaders");
-export const getRequestHeader = unavailable("getRequestHeader");
-export const getRequestIP = unavailable("getRequestIP");
-export const setResponseHeader = unavailable("setResponseHeader");
-export const setResponseStatus = unavailable("setResponseStatus");
-export default {};
 `;
+
+const isExportName = (name: string) =>
+  name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name);
+
+/** The stub body for these export names. */
+function startServerStubSource(names: readonly string[]): string {
+  return (
+    STUB_PRELUDE +
+    names
+      .map((name) => "export const " + name + " = unavailable(" + JSON.stringify(name) + ");\n")
+      .join("") +
+    "export default {};\n"
+  );
+}
+
+/**
+ * The stub for `@tanstack/react-start/server`, exporting every name the real
+ * module does, each of which throws when called.
+ *
+ * A fixed list went stale: a Theme importing `getCookie` failed the whole
+ * Theme build, because every build also runs this client-only preview build
+ * and a name the stub lacked is a build error, not a runtime one. Names that
+ * exist but are unsupported must fail when called, with a message that says
+ * so, not when imported.
+ */
+let startServerStub: Promise<string> | null = null;
+async function loadStartServerStub(): Promise<string> {
+  startServerStub ??= import("@tanstack/react-start/server").then(
+    (real) => startServerStubSource(Object.keys(real).filter(isExportName)),
+    () => startServerStubSource(FALLBACK_START_SERVER_EXPORTS),
+  );
+  return startServerStub;
+}
 
 /**
  * The same stub, emitted as source for a config generated inside a container.
@@ -153,8 +200,17 @@ export function themePreviewServerStubPluginSource(): string {
     }
     return null;
   },
-  load(id) {
-    if (id === ${JSON.stringify(VIRTUAL_ID)}) return ${JSON.stringify(STUB_SOURCE)};
+  async load(id) {
+    if (id === ${JSON.stringify(VIRTUAL_ID)}) {
+      let names = ${JSON.stringify(FALLBACK_START_SERVER_EXPORTS)};
+      try {
+        const real = await import(${JSON.stringify(THEME_START_SERVER_SPECIFIER)});
+        names = Object.keys(real).filter((name) => name !== "default" && /^[A-Za-z_$][\\w$]*$/.test(name));
+      } catch {}
+      return ${JSON.stringify(STUB_PRELUDE)} +
+        names.map((name) => "export const " + name + " = unavailable(" + JSON.stringify(name) + ");\\n").join("") +
+        "export default {};\\n";
+    }
     if (id === ${JSON.stringify(ASYNC_HOOKS_VIRTUAL_ID)}) {
       return ${JSON.stringify(ASYNC_HOOKS_STUB_SOURCE)};
     }
@@ -188,8 +244,8 @@ export function createThemePreviewServerStubPlugin() {
       }
       return null;
     },
-    load(id: string) {
-      if (id === VIRTUAL_ID) return STUB_SOURCE;
+    async load(id: string) {
+      if (id === VIRTUAL_ID) return loadStartServerStub();
       if (id === ASYNC_HOOKS_VIRTUAL_ID) return ASYNC_HOOKS_STUB_SOURCE;
       if (id === START_FN_STUBS_VIRTUAL_ID) return START_FN_STUBS_SOURCE;
       return null;

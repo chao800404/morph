@@ -1,11 +1,12 @@
 import type { Page } from "@playwright/test";
 
 import {
+  NATIVE_COMPAT_COOKIE_HELPER_FILES,
   NATIVE_COMPAT_FILES,
   type NativeCompatFile,
 } from "../src/lib/storefront/compat/native-compat-theme";
 
-export { NATIVE_COMPAT_FILES };
+export { NATIVE_COMPAT_COOKIE_HELPER_FILES, NATIVE_COMPAT_FILES };
 
 /**
  * Writing and removing the native compatibility Theme files, through the same

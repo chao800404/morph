@@ -245,6 +245,37 @@ function isSafeBoundaryFunction(
   return property === "client" && rootName === "createIsomorphicFn";
 }
 
+/**
+ * Whether an ancestor is the `server` property of a file route's options:
+ * `createFileRoute("/x")({ server: { handlers: { GET: … } } })`.
+ *
+ * Start's compiler removes that property from the client build, so whatever
+ * only it uses — `getCookie`, a database client — never reaches the client
+ * graph. Reporting it would refuse a route Start builds, the way its own
+ * documentation writes server routes.
+ */
+function isFileRouteServerProperty(
+  ancestor: any,
+  ancestors: readonly any[],
+  safeBoundaryNames: ReadonlySet<string>,
+): boolean {
+  if (ancestor?.type !== "ObjectProperty" || ancestor.computed) return false;
+  const key = ancestor.key;
+  const name = key?.type === "Identifier" ? key.name : key?.value;
+  if (name !== "server") return false;
+  // The options object is the argument of `createFileRoute(path)(options)`.
+  const options = ancestors[ancestors.length - 1];
+  const call = ancestors[ancestors.length - 2];
+  return (
+    options?.type === "ObjectExpression" &&
+    call?.type === "CallExpression" &&
+    Array.isArray(call.arguments) &&
+    call.arguments.includes(options) &&
+    getCalleeRootName(call.callee) === "createFileRoute" &&
+    safeBoundaryNames.has("createFileRoute")
+  );
+}
+
 function isIdentifierBinding(node: any, parent: any): boolean {
   if (!parent) return false;
   if (
@@ -301,6 +332,7 @@ function packageImportUsesOnlySafeBoundary(
             "createMiddleware",
             "createIsomorphicFn",
             "createServerOnlyFn",
+            "createFileRoute",
           ].includes(importedName) &&
           specifier.local?.name
         ) {
@@ -368,7 +400,16 @@ function packageImportUsesOnlySafeBoundary(
             safeBoundaryNames,
           );
         });
-        if (!inSafeBoundary) unsafeUsage = true;
+        const inServerRoute =
+          target === "client" &&
+          parents.some((ancestor, index) =>
+            isFileRouteServerProperty(
+              ancestor,
+              parents.slice(0, index),
+              safeBoundaryNames,
+            ),
+          );
+        if (!inSafeBoundary && !inServerRoute) unsafeUsage = true;
       }
     }
     for (const [key, value] of Object.entries(node)) {

@@ -187,9 +187,13 @@ describe(
   "a Theme using Start's cookie helpers",
   { timeout: BUILD_BUDGET_MS + 60_000 },
   () => {
-    // A plain Start app builds this. When it builds here too, replace this with
-    // a test that it builds and that the helpers work in the Worker.
-    it("KNOWN GAP: fails the whole build, because the preview stub lacks getCookie", async () => {
+    let dir = "";
+    let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
+
+    beforeAll(async () => {
+      // Every Theme build also runs a client-only preview build, whose stand-in
+      // for `@tanstack/react-start/server` once lacked these names and failed
+      // the whole build. The stub now exports every name the real module has.
       const result = await new LocalViteThemeBuildRunner({
         maxDurationMs: BUILD_BUDGET_MS,
       }).run(
@@ -198,12 +202,51 @@ describe(
           "native-compat-cookies",
         ),
       );
-      // Every Theme build also runs the client-only preview build, and its
-      // stand-in for `@tanstack/react-start/server` has no cookie helpers.
-      expect(result.success).toBe(false);
-      expect(result.success ? "" : result.errorMessage).toMatch(
-        /"getCookie" is not exported by "\u0000morph-theme-start-server-stub"/,
+      if (!result.success) throw new Error(result.errorMessage);
+      dir = mkdtempSync(join(tmpdir(), "native-compat-cookies-"));
+      for (const artifact of result.artifacts) {
+        const path = join(dir, artifact.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, artifact.content as Uint8Array | string);
+      }
+      worker = await unstable_startWorker({
+        config: join(dir, "runtime/server/wrangler.json"),
+        dev: { server: { port: 0 }, inspector: false, logLevel: "error" },
+      });
+      await worker.ready;
+    }, BUILD_BUDGET_MS + 60_000);
+
+    afterAll(async () => {
+      await worker?.dispose();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("builds, and getCookie, setCookie and deleteCookie work in the Worker", async () => {
+      const set = await worker!.fetch("http://localhost/api/compat-cookie");
+      expect(await set.json()).toEqual({ before: null });
+      expect(set.headers.get("set-cookie")).toMatch(
+        /compat_helper=set; Path=\/; HttpOnly/i,
       );
+
+      const read = await worker!.fetch("http://localhost/api/compat-cookie", {
+        headers: { cookie: "compat_helper=set" },
+      });
+      expect(await read.json()).toEqual({ before: "set" });
+
+      const cleared = await worker!.fetch(
+        "http://localhost/api/compat-cookie?clear",
+        { headers: { cookie: "compat_helper=set" } },
+      );
+      expect(cleared.headers.get("set-cookie")).toMatch(
+        /compat_helper=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)/i,
+      );
+    });
+
+    it("reads a cookie in a server function during SSR", async () => {
+      const response = await worker!.fetch("http://localhost/compat-cookies", {
+        headers: { cookie: "compat_helper=from-header" },
+      });
+      expect(await response.text()).toContain("from-header");
     });
   },
 );

@@ -22,6 +22,7 @@ import {
   settleSelection,
 } from "./helpers";
 import {
+  NATIVE_COMPAT_COOKIE_HELPER_FILES,
   NATIVE_COMPAT_FILES,
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -60,8 +61,12 @@ const HOST = "native-compat.localhost";
 const THEME_WORKER_PORT = 8799;
 const IMAGE_PATH = "public/images/native-compat.png";
 const FAVICON_PATH = "public/favicon.ico";
+const THEME_FILES = [
+  ...NATIVE_COMPAT_FILES,
+  ...NATIVE_COMPAT_COOKIE_HELPER_FILES,
+];
 const ALL_PATHS = [
-  ...NATIVE_COMPAT_FILES.map((file) => file.path),
+  ...THEME_FILES.map((file) => file.path),
   IMAGE_PATH,
   FAVICON_PATH,
 ];
@@ -187,7 +192,7 @@ test.describe("TanStack Start on the published storefront", () => {
     // Anything an earlier run left behind would refuse the new uploads.
     const cleared = await removeThemeFiles(page, scope!, ALL_PATHS);
     expect(cleared.success, JSON.stringify(cleared)).toBe(true);
-    const saved = await writeThemeFiles(page, scope!, NATIVE_COMPAT_FILES);
+    const saved = await writeThemeFiles(page, scope!, THEME_FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     for (const [path, bytes] of [
       [IMAGE_PATH, PNG],
@@ -325,6 +330,20 @@ test.describe("TanStack Start on the published storefront", () => {
     expect(moved.headers.get("location")).toBe("/compat-other");
     const redirected = await request("/compat-redirect");
     expect(redirected.headers.get("location")).toContain("/compat-other");
+  });
+
+  // Built in the container, where the preview stub is generated into the
+  // config as text: a Theme using Start's cookie helpers must build there too.
+  test("passes a cookie set by Start's setCookie through Core", async () => {
+    const set = await request("/api/compat-cookie");
+    expect(await set.json()).toEqual({ before: null });
+    expect(set.headers.get("set-cookie")).toMatch(
+      /compat_helper=set; Path=\/; HttpOnly/i,
+    );
+    const read = await request("/api/compat-cookie", {
+      headers: { cookie: "compat_helper=set" },
+    });
+    expect(await read.json()).toEqual({ before: "set" });
   });
 
   test("serves a public/ image at its root URL", async () => {

@@ -5,6 +5,7 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { EDITOR_PATH, previewFrame } from "./helpers";
 import {
+  NATIVE_COMPAT_COOKIE_HELPER_FILES,
   NATIVE_COMPAT_FILES,
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -27,7 +28,8 @@ import {
 test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to a seeded editor store.");
 
 const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
-const FILE_PATHS = NATIVE_COMPAT_FILES.map((file) => file.path);
+const ALL_FILES = [...NATIVE_COMPAT_FILES, ...NATIVE_COMPAT_COOKIE_HELPER_FILES];
+const FILE_PATHS = ALL_FILES.map((file) => file.path);
 
 /** A signed-in page outside a test: hooks get no project context of their own. */
 async function signedInPage(browser: Browser) {
@@ -56,7 +58,7 @@ test.describe("TanStack Start in the Live Preview", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const saved = await writeThemeFiles(page, scope!, NATIVE_COMPAT_FILES);
+    const saved = await writeThemeFiles(page, scope!, ALL_FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     await page.context().close();
   });
@@ -102,6 +104,21 @@ test.describe("TanStack Start in the Live Preview", () => {
     await expect(
       previewFrame(page).getByText(
         "Theme preview cannot call getRequest(): server APIs run only in the deployed Theme Worker.",
+      ),
+    ).toBeVisible({ timeout: 90_000 });
+  });
+
+  // Start's cookie helpers read the request, which a browser cannot supply. The
+  // Theme builds and previews (the page below is reached through the editor),
+  // and the call says why it cannot run here; the published Worker runs it.
+  // Until the preview runs Start's server, this is the behaviour to expect.
+  test("KNOWN GAP: a cookie helper is refused when called, saying so", async ({
+    page,
+  }) => {
+    await openRoute(page, "/compat-cookies");
+    await expect(
+      previewFrame(page).getByText(
+        "Theme preview cannot call getCookie(): server APIs run only in the deployed Theme Worker.",
       ),
     ).toBeVisible({ timeout: 90_000 });
   });
