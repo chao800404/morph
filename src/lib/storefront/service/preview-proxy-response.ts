@@ -1,4 +1,5 @@
 import { isolateSvgResponse } from "../theme-svg-isolation";
+import { withoutPlatformCookies } from "./preview-proxy-credentials";
 
 /**
  * Makes a refused Live Preview request something a browser will ask again.
@@ -28,11 +29,13 @@ export function uncacheablePreviewError(response: Response): Response {
 }
 
 /**
- * What the preview proxy sends for a container's response: a refusal that
- * is never stored, since it is about this moment and a browser that kept it
- * would stop asking; and an SVG, whatever in the container sent it, with the
- * platform's isolation headers.
+ * What the preview proxy sends for a container's response: no cookie under a
+ * platform credential's name; a refusal that is never stored, since it is
+ * about this moment and a browser that kept it would stop asking; and an SVG,
+ * whatever in the container sent it, with the platform's isolation headers.
  */
 export function finishPreviewResponse(response: Response): Response {
-  return isolateSvgResponse(uncacheablePreviewError(response));
+  return isolateSvgResponse(
+    uncacheablePreviewError(withoutPlatformCookies(response)),
+  );
 }

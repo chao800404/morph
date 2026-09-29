@@ -236,6 +236,9 @@ importers:
       tanstack-theme-kit:
         specifier: ^0.2.1
         version: 0.2.1(react@19.2.1)(typescript@5.9.3)
+      tldts:
+        specifier: 7.0.19
+        version: 7.0.19
       use-debounce:
         specifier: ^10.0.6
         version: 10.0.6(react@19.2.1)

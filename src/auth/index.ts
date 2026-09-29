@@ -6,6 +6,7 @@ import {
   type PublicOriginEnv,
 } from "@/server/public-origin";
 import { resolveStorefrontTrustedOrigin } from "./storefront-origin";
+import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
 import { localization } from "@/lib/config/localization";
 import { cmsTrustedOrigins } from "@/lib/config/trusted-origins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
@@ -133,6 +134,9 @@ function createAuth(
       },
     },
     advanced: {
+      // Named here so the Live Preview proxy can know the platform's cookies
+      // from the same value; see `isPlatformCredentialCookieName`.
+      cookiePrefix: AUTH_COOKIE_PREFIX,
       ipAddress: {
         // Cloudflare overwrites cf-connecting-ip at edge; fallback to x-forwarded-for in dev
         ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"],

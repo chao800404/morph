@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { LocalThemeWorkspaceWriter } from "./local-theme-workspace-writer";
+import { boundedPreviewLogAppender } from "./bounded-preview-log";
 import {
   isLoopbackPreviewHostname,
   LOCAL_PREVIEW_HOST,
@@ -303,9 +304,9 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
     const logs: string[] = [];
-    const addLog = (line: string) => {
-      if (logs.length < this.maxLogLines) logs.push(line);
-    };
+    const addLog = boundedPreviewLogAppender(logs, {
+      maxLines: this.maxLogLines,
+    });
 
     // A local transport must not be reachable off this machine. Refused rather
     // than ignored: a caller that configured a preview hostname expects that
