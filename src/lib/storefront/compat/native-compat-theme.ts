@@ -171,9 +171,8 @@ export const NATIVE_COMPAT_FILES: readonly NativeCompatFile[] = [
 
 /**
  * Start's own cookie helpers, the way its documentation writes them. Kept
- * separate because a Theme that imports them does not build today: the
- * client-only preview build that runs inside every Theme build stubs
- * `@tanstack/react-start/server` without them (known gap).
+ * apart from the rest so a build that includes them says what they cost: they
+ * use the request context, which the Live Preview cannot supply.
  */
 export const NATIVE_COMPAT_COOKIE_HELPER_FILES: readonly NativeCompatFile[] = [
   {
@@ -184,6 +183,28 @@ import { readCompatCookie } from "../compat/cookies";
 export const Route = createFileRoute("/compat-cookies")({
   loader: async () => readCompatCookie(),
   component: () => <p data-compat="cookie">{JSON.stringify(Route.useLoaderData())}</p>,
+});
+`,
+  },
+  {
+    path: "src/routes/api/compat-cookie.ts",
+    content: String.raw`import { createFileRoute } from "@tanstack/react-router";
+import { deleteCookie, getCookie, setCookie } from "@tanstack/react-start/server";
+
+export const Route = createFileRoute("/api/compat-cookie")({
+  server: {
+    handlers: {
+      GET: async ({ request }) => {
+        const before = getCookie("compat_helper") ?? null;
+        if (new URL(request.url).searchParams.has("clear")) {
+          deleteCookie("compat_helper", { path: "/" });
+        } else {
+          setCookie("compat_helper", "set", { path: "/", httpOnly: true });
+        }
+        return Response.json({ before });
+      },
+    },
+  },
 });
 `,
   },
