@@ -238,6 +238,36 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     }
   });
 
+  it("runs wrangler in its own directory, loading no .env, with the destination pinned", async () => {
+    let execCommand = "";
+    let execOptions: any = {};
+    const exec = vi.fn(async (command: string, options?: any) => {
+      execCommand = command;
+      execOptions = options ?? {};
+      return { exitCode: 0, success: true, stdout: "", stderr: "" };
+    });
+    const { session, writes } = sandboxStub(exec);
+
+    await deployer(session).deploy(request);
+
+    expect(execOptions.cwd).toBe("/workspace/deploy/run");
+    expect(session.mkdir).toHaveBeenCalledWith("/workspace/deploy/run", {
+      recursive: true,
+    });
+    // No artifact lands where wrangler runs and reads `.env` from.
+    for (const { path } of writes) {
+      expect(path.startsWith("/workspace/deploy/run/")).toBe(false);
+    }
+    expect(execCommand).toBe(
+      "/opt/morph-toolchain/node_modules/.bin/wrangler deploy --config /workspace/deploy/server/wrangler.json --env-file /dev/null",
+    );
+    expect(execOptions.env).toMatchObject({
+      CLOUDFLARE_API_BASE_URL: "https://api.cloudflare.com/client/v4",
+      WRANGLER_API_ENVIRONMENT: "production",
+      CLOUDFLARE_COMPLIANCE_REGION: "public",
+    });
+  });
+
   it("scrubs credentials out of failure output", async () => {
     const exec = vi.fn(async () => ({
       exitCode: 1,

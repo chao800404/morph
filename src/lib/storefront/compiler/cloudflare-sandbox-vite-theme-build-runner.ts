@@ -60,6 +60,8 @@ export interface CloudflareSandboxSession {
     options?: {
       timeout?: number;
       timeoutMs?: number;
+      /** Working directory; the SDK's default is `/workspace`. */
+      cwd?: string;
       env?: Record<string, string>;
     },
   ): Promise<CloudflareSandboxExecResult>;
