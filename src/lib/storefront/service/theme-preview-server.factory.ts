@@ -87,7 +87,7 @@ export function createServerThemePreviewServer(
         enabled: false,
         reason: host.reason,
         message:
-          "The Live Preview server needs its own hostname, separate from every Morph hostname.",
+          "The Live Preview server needs a hostname on a site of its own, separate from every Morph hostname.",
       };
     }
     return {

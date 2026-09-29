@@ -16,6 +16,7 @@ import {
   THEME_PREVIEW_SERVER_BASE_PATH,
 } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { boundedPreviewLogAppender } from "./bounded-preview-log";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 import {
   isDirtyWorkspaceMarker,
@@ -523,9 +524,9 @@ export class CloudflareSandboxVitePreviewServer {
   ): Promise<StartPreviewServerResult> {
     const requestStartedAt = Date.now();
     const logs: string[] = [];
-    const addLog = (line: string) => {
-      if (logs.length < this.maxLogLines) logs.push(line);
-    };
+    const addLog = boundedPreviewLogAppender(logs, {
+      maxLines: this.maxLogLines,
+    });
 
     // One rule, shared with the editor side that later frames the URL. A
     // preview on any platform host would put Theme code in Morph's cookie jar.

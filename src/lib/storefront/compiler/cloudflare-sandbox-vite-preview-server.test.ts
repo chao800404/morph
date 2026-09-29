@@ -250,7 +250,8 @@ const startWith = (
     files: THEME,
     entry: "src/pages/index.tsx",
     previewHostname: "preview.example.com",
-    env: { PUBLIC_URL: "https://admin.example.com" },
+    // A different site from the preview host's: the same site is refused.
+    env: { PUBLIC_URL: "https://admin.example.net" },
     ...overrides,
   });
 };
@@ -312,12 +313,24 @@ describe("CloudflareSandboxVitePreviewServer", () => {
   it("refuses to serve user code from any Morph host, however it is written", async () => {
     const harness = createSession("ready");
     const result = await startWith(harness, {
-      previewHostname: "Admin.Example.com.",
+      previewHostname: "Admin.Example.net.",
     });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errorMessage).toContain("PLATFORM_PREVIEW_HOST");
+    expect(harness.commands).toEqual([]);
+  });
+
+  it("refuses a host on a Morph host's site before touching the container", async () => {
+    const harness = createSession("ready");
+    const result = await startWith(harness, {
+      previewHostname: "preview.example.net",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorMessage).toContain("SAME_SITE_PREVIEW_HOST");
     expect(harness.commands).toEqual([]);
   });
 

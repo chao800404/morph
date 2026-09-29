@@ -129,6 +129,7 @@
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.0.6",
     "tanstack-theme-kit": "^0.2.1",
+    "tldts": "7.0.19",
     "use-debounce": "^10.0.6",
     "zod": "^4.2.0",
     "zod-form-data": "^3.0.1",

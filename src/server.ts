@@ -215,10 +215,25 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
  */
 async function proxyPreviewRequest(request: Request): Promise<Response | null> {
   try {
-    const { proxyToSandbox, getSandbox } = await import("@cloudflare/sandbox");
     const { env, waitUntil } = await import("cloudflare:workers");
+    const { isSandboxPreviewRequest, previewRequestFor } =
+      await import("@/lib/storefront/service/preview-proxy-credentials");
+    if (
+      !isSandboxPreviewRequest(
+        new URL(request.url),
+        env as unknown as Record<string, unknown>,
+      )
+    ) {
+      return null;
+    }
+    const { proxyToSandbox, getSandbox } = await import("@cloudflare/sandbox");
     const startedAt = Date.now();
-    const response = await proxyToSandbox(request, env as never);
+    // Platform credentials are removed before the SDK sees the request, so
+    // nothing past this point, Theme code included, can receive them.
+    const response = await proxyToSandbox(
+      previewRequestFor(request),
+      env as never,
+    );
     if (response) {
       const durationMs = Date.now() - startedAt;
       const { observePreviewProxyResponse, previewResponseObservation } =

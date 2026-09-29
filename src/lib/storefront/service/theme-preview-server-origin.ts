@@ -1,3 +1,4 @@
+import { getDomain } from "tldts";
 import { normalizeStorefrontHostname } from "./storefront-host-resolver";
 import { collectPlatformHostnames } from "./storefront-request-routing";
 import { isLoopbackPreviewHostname } from "@/lib/storefront/compiler/local-preview-host";
@@ -15,7 +16,10 @@ import { isLoopbackPreviewHostname } from "@/lib/storefront/compiler/local-previ
  */
 
 export type PreviewServerHostRefusal =
-  "MISSING_PREVIEW_HOST" | "INVALID_PREVIEW_HOST" | "PLATFORM_PREVIEW_HOST";
+  | "MISSING_PREVIEW_HOST"
+  | "INVALID_PREVIEW_HOST"
+  | "PLATFORM_PREVIEW_HOST"
+  | "SAME_SITE_PREVIEW_HOST";
 
 export type PreviewServerHostConfig =
   | Readonly<{ enabled: true; hostname: string }>
@@ -57,11 +61,42 @@ export function resolveThemePreviewServerHost({
     return { enabled: false, reason: "INVALID_PREVIEW_HOST" };
   }
 
-  if (collectPlatformHostnames(env).has(hostname)) {
+  const platformHostnames = collectPlatformHostnames(env);
+  if (platformHostnames.has(hostname)) {
     return { enabled: false, reason: "PLATFORM_PREVIEW_HOST" };
   }
 
+  // A different host is not enough: `preview.morph.app` and `morph.app` are
+  // one site, so SameSite does not separate them and a cookie either of them
+  // scopes to the parent reaches the other. The preview needs a site of its
+  // own. Loopback names are the development exception, and only those: they
+  // never name a deployed Morph.
+  if (!isLoopbackPreviewHostname(hostname)) {
+    const site = registrableDomain(hostname);
+    if (!site) {
+      return { enabled: false, reason: "INVALID_PREVIEW_HOST" };
+    }
+    for (const platformHostname of platformHostnames) {
+      if (registrableDomain(platformHostname) === site) {
+        return { enabled: false, reason: "SAME_SITE_PREVIEW_HOST" };
+      }
+    }
+  }
+
   return { enabled: true, hostname };
+}
+
+/**
+ * The site a hostname belongs to, by the Public Suffix List.
+ *
+ * The list's private section is included on purpose: it is where hosts such as
+ * `workers.dev` are, whose subdomains belong to different owners. Without it,
+ * `a.workers.dev` and `b.workers.dev` would be read as one site, and every
+ * suffix a browser treats as public would be misjudged the same way. `null`
+ * for an IP address or a name with no registrable part.
+ */
+function registrableDomain(hostname: string): string | null {
+  return getDomain(hostname, { allowPrivateDomains: true }) ?? null;
 }
 
 /**

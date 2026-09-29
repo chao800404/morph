@@ -17,11 +17,56 @@ const validate = (url: string, hostname = "preview.example.com") =>
   validateExposedPreviewUrl({ url, hostname, env: ENV });
 
 describe("resolving the host a preview server may run Theme code on", () => {
-  it("accepts a host that is nobody else's", () => {
-    expect(resolve("preview.example.com")).toEqual({
+  it("accepts a host on a site that is nobody else's", () => {
+    expect(resolve("preview.example.net")).toEqual({
       enabled: true,
-      hostname: "preview.example.com",
+      hostname: "preview.example.net",
     });
+  });
+
+  it("refuses a host on the same site as a platform host", () => {
+    // `preview.example.com` is not a platform host, but it is the same site as
+    // `admin.example.com`: SameSite does not separate them, and a cookie either
+    // one scopes to `example.com` reaches the other.
+    for (const host of ["preview.example.com", "a.b.example.com", "example.com"]) {
+      expect(resolve(host)).toEqual({
+        enabled: false,
+        reason: "SAME_SITE_PREVIEW_HOST",
+      });
+    }
+  });
+
+  it("reads sites by the Public Suffix List, private section included", () => {
+    // `workers.dev` subdomains belong to different accounts. Read without the
+    // private section they would all be one site, `workers.dev`.
+    const env = { PUBLIC_URL: "https://morph.acme.workers.dev" };
+    const resolveOn = (host: string) =>
+      resolveThemePreviewServerHost({ configuredPreviewHostname: host, env });
+    expect(resolveOn("preview.other.workers.dev")).toEqual({
+      enabled: true,
+      hostname: "preview.other.workers.dev",
+    });
+    expect(resolveOn("preview.acme.workers.dev")).toEqual({
+      enabled: false,
+      reason: "SAME_SITE_PREVIEW_HOST",
+    });
+  });
+
+  it("excepts loopback names only, not every private address", () => {
+    const env = { PUBLIC_URL: "http://localhost:3000" };
+    const resolveOn = (host: string) =>
+      resolveThemePreviewServerHost({ configuredPreviewHostname: host, env });
+    expect(resolveOn("preview.localhost")).toEqual({
+      enabled: true,
+      hostname: "preview.localhost",
+    });
+    // No site to compare, and not a development loopback name either.
+    for (const host of ["10.0.0.5", "192.168.1.10"]) {
+      expect(resolveOn(host)).toEqual({
+        enabled: false,
+        reason: "INVALID_PREVIEW_HOST",
+      });
+    }
   });
 
   it("fails closed when no host is configured", () => {
