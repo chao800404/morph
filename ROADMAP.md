@@ -399,7 +399,14 @@ Starter bootstrap 與 workspace upgrade 契約：
 完整 Start 預覽開放給一般使用者前必須完成（任一未完成都不開放；文件記載不等於解決）：
 
 - ✅ 預覽網域須為不同的可註冊網域（PSL，含私有區段；僅 loopback 名稱為開發例外）；代理在呼叫 Sandbox SDK 前移除平台憑證 Cookie（名稱由 Better Auth 設定推導）與 `x-morph-*` 標頭，並擋下容器設定平台保留名稱的 `Set-Cookie`；預覽啟動日誌在接收時即限制行數、單行與總量
-- 預覽外連政策：預設拒絕加允許清單，僅套用於預覽容器，不影響建置與部署；本地未必強制執行，須在部署環境驗證
+- 預覽預設拒絕外連（第一步已做，不是完整網路隔離）：預覽容器改用獨立的 `PreviewSandbox`（`enableInternet = false`、`interceptHttps`，Worker 端拒絕 handler），HTTP／HTTPS 一律得到平台的 `PREVIEW_EGRESS_DENIED` 回應，拒絕日誌只記方法與目的主機並限頻限量；建置與部署的 `Sandbox` 不變。仍待：
+  - **部署環境驗收**：本地只證明接線與 HTTP／HTTPS 行為。本地實測非 80／443 埠（1.1.1.1:8443）TCP 仍能建立連線，官方文件說正式環境會拒絕，必須在 Cloudflare 上實測；休眠喚醒、重啟後政策也須在部署環境再驗
+  - DNS 仍經 Cloudflare 解析器送出，查詢名稱可夾帶少量資料外傳，不宣稱已封住
+  - 允許清單（限制目的地、協定、埠、方法、重新導向、回應大小與頻率），與商店資料改走有範圍的平台 API
+  - 建置容器同樣執行不可信 Theme 程式，外連政策尚未處理
+  - 外連限制不等於容器內隔離：Theme 仍可能碰到 localhost、控制服務與同容器其他程序
+- 預覽外連允許清單的介面訊息須說明是預覽政策拒絕，不是 TanStack Start 不支援
+- Wrangler 版本升級時必須一併重跑部署目的地與 `.env` 對照測試（`sandbox-wrangler-deploy-destination.test.ts` 已比對容器固定版本與 repo 版本）
 - 資源預算：單一容器上限，以及每人啟動頻率、並行數與存活時間
 - 跨預覽 Cookie 注入：所有預覽共用預覽網域的父網域，Theme 可用 `document.cookie` 設定父網域 Cookie 送到其他人的預覽，代理無法攔截。長期方向是把預覽網域列入 PSL 私有區段；在那之前預覽之間不算隔離
 - 控制服務授權未確認，不依賴容器內隔離作為防線；容器內快取、設定目錄與正式環境的秘密盤點仍未完成

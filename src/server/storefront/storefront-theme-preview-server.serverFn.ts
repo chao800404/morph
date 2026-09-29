@@ -23,6 +23,10 @@ import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindi
 import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
 import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
+import {
+  previewProxyEnv,
+  previewSandboxBinding,
+} from "@/lib/storefront/service/preview-sandbox-binding";
 import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
 import { withSignedPreviewMedia } from "./preview-media-urls";
@@ -71,14 +75,6 @@ const touchThemePreviewServerInputSchema = themePreviewServerInputSchema.extend(
   },
 );
 
-type PreviewEnv = {
-  THEME_PREVIEW_HOSTNAME?: string;
-  Sandbox?: unknown;
-  /** Loopback origin a locally-run preview sidecar listens on. */
-  MORPH_LOCAL_THEME_PREVIEW_ORIGIN?: string;
-  /** The token that sidecar was started with. */
-  MORPH_LOCAL_THEME_PREVIEW_TOKEN?: string;
-};
 
 export const startThemePreviewServer = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
@@ -366,7 +362,7 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
         new Request(new URL(PREVIEW_ADDRESS_PROBE_PATH, address), {
           headers: { Accept: "text/html" },
         }),
-        env as never,
+        previewProxyEnv(env as unknown as Record<string, unknown>) as never,
       );
       if (!response) return answer("unknown", null);
       const code =
@@ -470,7 +466,9 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
 
       const { getSandbox } = await import("@cloudflare/sandbox");
       const sandbox = getSandbox(
-        (env as unknown as PreviewEnv).Sandbox as never,
+        previewSandboxBinding(
+          env as unknown as Record<string, unknown>,
+        ) as never,
         previewId,
       ) as unknown as FenceSandbox & {
         getExposedPorts?(

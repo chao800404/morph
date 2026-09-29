@@ -215,17 +215,18 @@ test("a script-carrying SVG runs in no browser when opened directly through the 
       .url(),
   ).origin;
 
-  // This run's own container: the e2e Sandbox, holding the workspace. The
-  // file goes straight in, outside the product.
+  // This run's own preview container, holding the workspace. The file goes
+  // straight in, outside the product. Previews run under PreviewSandbox, and
+  // wrangler names the local image after the class.
   const container = execFileSync("docker", [
     "ps",
     "--format",
-    "{{.ID}} {{.Names}}",
+    "{{.ID}} {{.Image}}",
   ])
     .toString()
     .trim()
     .split("\n")
-    .filter((line) => line.includes("0f95e829"))
+    .filter((line) => line.includes(" cloudflare-dev/previewsandbox:"))
     .map((line) => line.split(" ")[0]!)
     .find((id) => {
       try {

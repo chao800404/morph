@@ -44,6 +44,10 @@ if (import.meta.hot) {
 }
 
 export { Sandbox } from "@cloudflare/sandbox";
+export { PreviewSandbox } from "@/server/preview-sandbox";
+// Carries a container's outbound requests to its class's outbound policy.
+// Without this export the SDK cannot intercept them at all.
+export { ContainerProxy } from "@cloudflare/sandbox";
 
 /**
  * Production storefront traffic arrives on merchant hostnames and must never
@@ -227,12 +231,15 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
       return null;
     }
     const { proxyToSandbox, getSandbox } = await import("@cloudflare/sandbox");
+    const { previewProxyEnv, previewSandboxBinding } =
+      await import("@/lib/storefront/service/preview-sandbox-binding");
+    const bindings = env as unknown as Record<string, unknown>;
     const startedAt = Date.now();
     // Platform credentials are removed before the SDK sees the request, so
     // nothing past this point, Theme code included, can receive them.
     const response = await proxyToSandbox(
       previewRequestFor(request),
-      env as never,
+      previewProxyEnv(bindings) as never,
     );
     if (response) {
       const durationMs = Date.now() - startedAt;
@@ -248,7 +255,7 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
             durationMs,
             readContainerState: async (sandboxId) => {
               const sandbox = getSandbox(
-                (env as unknown as { Sandbox: never }).Sandbox,
+                previewSandboxBinding(bindings) as never,
                 sandboxId,
                 { normalizeId: true },
               ) as unknown as { getState?: () => Promise<{ status?: string }> };

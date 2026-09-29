@@ -4,6 +4,7 @@ import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-
 import type { ThemePreviewServer } from "@/lib/storefront/compiler/theme-preview-server.types";
 import { isProductionEnvironment } from "./storefront-domain-provider";
 import { LocalPreviewSidecarClient } from "./local-preview-sidecar-client";
+import { previewSandboxBinding } from "./preview-sandbox-binding";
 import type {
   LocalPreviewSidecarApplyFilesRequest,
   LocalPreviewSidecarApplyFilesResult,
@@ -75,7 +76,20 @@ function readString(value: unknown): string | null {
 export function createServerThemePreviewServer(
   bindings: Record<string, unknown> = env as unknown as Record<string, unknown>,
 ): ThemePreviewServerSelection {
-  const sandboxBinding = bindings.Sandbox;
+  // Previews run under their own class, with the preview's outbound policy;
+  // never under the build and deploy `Sandbox`, which has none.
+  const sandboxBinding = previewSandboxBinding(bindings);
+
+  if (!sandboxBinding && bindings.Sandbox) {
+    // Containers exist here but the preview's class is not bound. Refused
+    // rather than run on `Sandbox` or handed to the local transport.
+    return {
+      enabled: false,
+      reason: "PREVIEW_SANDBOX_UNBOUND",
+      message:
+        "The Live Preview needs the PreviewSandbox binding, which runs previews under their own outbound policy.",
+    };
+  }
 
   if (sandboxBinding) {
     const host = resolveThemePreviewServerHost({

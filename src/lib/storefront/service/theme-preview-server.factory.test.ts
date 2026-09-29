@@ -14,7 +14,11 @@ import { validateLoopbackPreviewUrl } from "./theme-preview-server-origin";
  * depends on knowing it.
  */
 
-const SANDBOX = { Sandbox: { fake: "binding" } };
+// Both classes are bound wherever containers are, as in wrangler.jsonc.
+const SANDBOX = {
+  Sandbox: { fake: "build-and-deploy" },
+  PreviewSandbox: { fake: "preview" },
+};
 const PREVIEW_HOST = { THEME_PREVIEW_HOSTNAME: "preview.localhost" };
 const LOCAL = {
   MORPH_LOCAL_THEME_PREVIEW_ORIGIN: "http://127.0.0.1:5199",
@@ -33,6 +37,31 @@ describe("choosing the Live Preview transport", () => {
     expect(selection.previewHostname).toBe("preview.localhost");
     // File application is the caller's, because it holds the container.
     expect(selection.applyFiles).toBeUndefined();
+  });
+
+  it("runs previews under PreviewSandbox, never the build and deploy Sandbox", () => {
+    const selection = createServerThemePreviewServer({
+      ...SANDBOX,
+      ...PREVIEW_HOST,
+    });
+    expect(selection.enabled).toBe(true);
+    if (!selection.enabled) return;
+    expect(
+      (selection.server as unknown as { sandboxBinding: unknown })
+        .sandboxBinding,
+    ).toBe(SANDBOX.PreviewSandbox);
+  });
+
+  it("is refused when only Sandbox is bound, rather than run without the preview's policy", () => {
+    const selection = createServerThemePreviewServer({
+      Sandbox: SANDBOX.Sandbox,
+      ...PREVIEW_HOST,
+      ...LOCAL,
+    });
+    expect(selection).toMatchObject({
+      enabled: false,
+      reason: "PREVIEW_SANDBOX_UNBOUND",
+    });
   });
 
   it("keeps the container even when the local variables are also set", () => {

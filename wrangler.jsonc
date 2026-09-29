@@ -88,6 +88,13 @@
         "name": "Sandbox",
         "class_name": "Sandbox",
       },
+      // Live Preview containers: the same image, with the preview's outbound
+      // policy (src/server/preview-sandbox.ts). Builds and deployments stay
+      // on `Sandbox`.
+      {
+        "name": "PreviewSandbox",
+        "class_name": "PreviewSandbox",
+      },
     ],
   },
   "migrations": [
@@ -95,10 +102,18 @@
       "tag": "v1",
       "new_sqlite_classes": ["Sandbox"],
     },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PreviewSandbox"],
+    },
   ],
   "containers": [
     {
       "class_name": "Sandbox",
+      "image": "./Dockerfile.sandbox",
+    },
+    {
+      "class_name": "PreviewSandbox",
       "image": "./Dockerfile.sandbox",
     },
   ],
