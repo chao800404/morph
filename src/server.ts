@@ -297,7 +297,18 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
 
 export default {
   async fetch(...args: Parameters<StartRequestHandler>): Promise<Response> {
-    const request = args[0];
+    let request = args[0];
+    // Dev only: a preview-host request parked past Morph's own Vite; see
+    // dev-preview-passthrough.ts. A deployed Worker never restores one.
+    if (import.meta.env.DEV) {
+      const { restoreDevPreviewRequest } =
+        await import("@/server/dev-preview-passthrough");
+      const restored = restoreDevPreviewRequest(request);
+      if (restored) {
+        request = restored;
+        args[0] = restored;
+      }
+    }
     const url = new URL(request.url);
 
     // Store APIs are Morph-owned and bypass the Vite container. Preview
