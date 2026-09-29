@@ -270,6 +270,20 @@ export default {
       return handleStorefrontRequest(request);
     }
 
+    // Morph's own static files, on a platform hostname only. A storefront
+    // never gets this far, and a preview hostname is refused inside.
+    {
+      const [{ servePlatformAsset }, { env }] = await Promise.all([
+        import("@/server/platform-assets"),
+        import("cloudflare:workers"),
+      ]);
+      const asset = await servePlatformAsset(
+        request,
+        env as unknown as Record<string, unknown>,
+      );
+      if (asset) return asset;
+    }
+
     // Library media for Live Preview pages, which hold no session. Answered
     // on the platform host only, and only for a signed address.
     if (url.pathname.startsWith("/_morph/preview-media/")) {

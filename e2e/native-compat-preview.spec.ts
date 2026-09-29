@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { EDITOR_PATH, previewFrame } from "./helpers";
@@ -122,5 +125,33 @@ test.describe("TanStack Start in the Live Preview", () => {
     // The dev server's HTML shell, not the route's JSON.
     expect(answer.status).toBe(200);
     expect(answer.type).toMatch(/^text\/html/);
+  });
+
+  // A preview hostname is the Theme's site, like a storefront's. This Theme
+  // has neither file, so anything served must not be Morph's own.
+  test("does not answer a preview's root paths with Morph's own files", async ({
+    page,
+  }) => {
+    await openRoute(page, "/compat-other");
+    const frame = previewFrame(page);
+    await expect(frame.locator('[data-compat="other"]')).toHaveText("other", {
+      timeout: 90_000,
+    });
+    for (const [path, platformFile] of [
+      ["/favicon.ico", "public/favicon.ico"],
+      ["/robots.txt", "public/robots.txt"],
+    ] as const) {
+      const served = await frame.locator("body").evaluate(async (_, path) => {
+        const response = await fetch(new URL(path, location.origin).href);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        return [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+      }, path);
+      expect(served, path).not.toBe(
+        createHash("sha256").update(readFileSync(platformFile)).digest("hex"),
+      );
+    }
   });
 });
