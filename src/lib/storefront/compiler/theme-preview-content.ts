@@ -179,7 +179,7 @@ export function themePreviewContentModuleSource(): string {
   return `import {
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
-  readPreviewRuntimeChannel,
+  documentPreviewRuntimeChannel,
 } from "./preview/preview-protocol";
 import initialSnapshot from "./preview-content-snapshot";
 
@@ -192,7 +192,7 @@ const snapshot = initialSnapshot;
 if (import.meta.hot) {
   import.meta.hot.accept("./preview-content-snapshot", () => {});
 }
-const previewChannel = readPreviewRuntimeChannel(window.location.href);
+const previewChannel = documentPreviewRuntimeChannel();
 const pendingCatalogRequests = new Map();
 let nextCatalogRequestId = 0;
 

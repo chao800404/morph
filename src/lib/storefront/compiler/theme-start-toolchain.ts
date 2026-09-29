@@ -33,6 +33,10 @@ export const THEME_START_BUILD_DEPENDENCIES: Readonly<
 
 const PLATFORM_OWNED_THEME_BUILD_PATHS = new Set([
   "__entry.tsx",
+  // The Start Live Preview's Worker entry and page module; see
+  // theme-preview-start-runtime.ts, whose constants name the same paths.
+  "__morph_preview_worker.ts",
+  "__morph_preview_client.ts",
   "src/routeTree.gen.ts",
   "vite.config.ts",
   "vite.config.js",

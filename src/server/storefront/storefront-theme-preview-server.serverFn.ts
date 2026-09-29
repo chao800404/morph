@@ -75,6 +75,14 @@ const touchThemePreviewServerInputSchema = themePreviewServerInputSchema.extend(
   },
 );
 
+type PreviewEnv = {
+  /**
+   * PROTOTYPE switch: `start` serves the Live Preview through the Start
+   * server in workerd (theme-preview-start-runtime.ts). Unset keeps today's
+   * client-only preview. Not for deployment.
+   */
+  MORPH_THEME_PREVIEW_RUNTIME?: string;
+};
 
 export const startThemePreviewServer = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
@@ -170,6 +178,9 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       sourceGeneration,
       loadBinary: workspace.loadBinary,
       env: env as unknown as Record<string, unknown>,
+      ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
+        ? { previewRuntime: "start" as const }
+        : {}),
     });
     if (!started.ok) {
       const traceId = recordPreviewStartFailure({

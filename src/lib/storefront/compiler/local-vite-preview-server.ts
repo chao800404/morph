@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { LocalThemeWorkspaceWriter } from "./local-theme-workspace-writer";
 import { boundedPreviewLogAppender } from "./bounded-preview-log";
@@ -15,6 +17,7 @@ import { planFencedStart, planFencedWrite } from "./preview-write-fence";
 import {
   materializeThemeSandboxWorkspace,
   planThemeSandboxWorkspace,
+  type ThemePreviewRuntime,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
 import type {
@@ -107,14 +110,25 @@ export type LocalVitePreviewServerOptions = Readonly<{
   staleTempMs?: number;
 }>;
 
+/** A running dev server, in this process or (Start preview) in a child. */
+type PreviewServerHandle = Readonly<{
+  listening(): boolean;
+  close(): Promise<void>;
+}>;
+
 type RunningPreview = Readonly<{
   /** Host path the workspace was laid out in. */
   root: string;
   workspaceFingerprint: string;
   url: string;
   origin: string;
-  server: ViteDevServer;
+  server: PreviewServerHandle;
 }>;
+
+/** The forked child that serves one Start preview; see the child's header. */
+const START_PREVIEW_CHILD = fileURLToPath(
+  new URL("./local-vite-preview-child.mjs", import.meta.url),
+);
 
 /** The origin of a URL, or null when it is not one this can read. */
 function safeOrigin(url: string | null | undefined): string | null {
@@ -126,8 +140,14 @@ function safeOrigin(url: string | null | undefined): string | null {
   }
 }
 
-function withPreviewServerBase(origin: string): string {
-  return new URL(THEME_PREVIEW_SERVER_BASE_PATH, `${origin}/`).toString();
+function withPreviewServerBase(
+  origin: string,
+  runtime?: ThemePreviewRuntime,
+): string {
+  return new URL(
+    runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH,
+    `${origin}/`,
+  ).toString();
 }
 
 function withReadyTimeout<T>(
@@ -345,6 +365,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       approvedDependencies: this.approvedDependencies,
       mode: "preview-server",
       previewContent: input.previewContent,
+      previewRuntime: input.previewRuntime,
       hostWorkspaceRoot,
       toolchainRoot: this.toolchainRoot.split(path.sep).join("/"),
     });
@@ -504,6 +525,51 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         const workspaceMs = Date.now() - workspaceStartedAt;
 
         const startedAt = Date.now();
+        if (input.previewRuntime === "start") {
+          try {
+            const child = await this.startChildServer(root, addLog);
+            const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
+            const url = withPreviewServerBase(origin, input.previewRuntime);
+            this.running.set(input.previewId, {
+              root,
+              workspaceFingerprint: prepared.workspaceFingerprint,
+              url,
+              origin,
+              server: child.handle,
+            });
+            return {
+              ok: true,
+              url,
+              processId: undefined,
+              readyMs: Date.now() - startedAt,
+              timings: {
+                ...this.timings({
+                  requestStartedAt,
+                  workspacePlanMs,
+                  workspaceReused: false,
+                  reusedProcess: false,
+                }),
+                workspaceMs,
+                workspaceMaterializeMs,
+                mkdirCalls,
+                writeCalls,
+                readCalls: 0,
+                viteReadyMs: Date.now() - startedAt,
+              },
+              hoistedContentFields: prepared.hoistedContentFields,
+              warnings: prepared.previewWarnings,
+              logs,
+            };
+          } catch (error) {
+            return {
+              ok: false,
+              stage: "preview-server-start",
+              errorMessage:
+                error instanceof Error ? error.message : "Failed to start preview",
+              logs,
+            };
+          }
+        }
         let server: ViteDevServer | null = null;
         try {
           server = await createServer({
@@ -565,13 +631,16 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           }
 
           const origin = `http://${LOCAL_PREVIEW_HOST}:${boundPort}`;
-          const url = withPreviewServerBase(origin);
+          const url = withPreviewServerBase(origin, input.previewRuntime);
           this.running.set(input.previewId, {
             root,
             workspaceFingerprint: prepared.workspaceFingerprint,
             url,
             origin,
-            server,
+            server: {
+              listening: () => server!.httpServer?.listening === true,
+              close: () => this.closeServer(server!),
+            },
           });
 
           return {
@@ -634,7 +703,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   }): Promise<boolean> {
     const running = this.running.get(input.previewId);
     if (!running) return false;
-    if (running.server.httpServer?.listening !== true) return false;
+    if (!running.server.listening()) return false;
     if (!input.expectedOrigin) return true;
     const expected = safeOrigin(input.expectedOrigin);
     return expected !== null && expected === running.origin;
@@ -837,7 +906,81 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const running = this.running.get(previewId);
     this.running.delete(previewId);
     if (!running) return;
-    await this.closeServer(running.server);
+    await running.server.close();
+  }
+
+  /**
+   * Forks one dev server for a Start preview and waits until it listens.
+   * Its output joins this start's log; it exits when this process does.
+   */
+  private startChildServer(
+    root: string,
+    addLog: (line: string) => void,
+  ): Promise<{ port: number; handle: PreviewServerHandle }> {
+    return new Promise((resolve, reject) => {
+      const child = fork(
+        START_PREVIEW_CHILD,
+        [root, LOCAL_PREVIEW_HOST, String(this.port)],
+        {
+          cwd: root,
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          env: { PATH: process.env.PATH ?? "", NODE_ENV: "development" },
+        },
+      );
+      let alive = true;
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        reject(
+          new Error(
+            `LOCAL_PREVIEW_TIMEOUT: Vite did not start listening within ${this.readyTimeoutMs}ms.`,
+          ),
+        );
+      }, this.readyTimeoutMs);
+      const onOutput = (chunk: Buffer) => {
+        for (const line of chunk.toString("utf8").split("\n")) {
+          if (line.trim()) addLog(line);
+        }
+      };
+      child.stdout?.on("data", onOutput);
+      child.stderr?.on("data", onOutput);
+      child.on("exit", () => {
+        alive = false;
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error("PREVIEW_SERVER_EXITED: Vite exited before it was ready to serve."));
+        }
+      });
+      child.on("message", (message: { type?: string; port?: number; message?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (message?.type === "ready" && typeof message.port === "number") {
+          resolve({
+            port: message.port,
+            handle: {
+              listening: () => alive,
+              close: () =>
+                new Promise<void>((done) => {
+                  if (!alive) return done();
+                  const force = setTimeout(() => child.kill("SIGKILL"), this.stopTimeoutMs);
+                  child.once("exit", () => {
+                    clearTimeout(force);
+                    done();
+                  });
+                  child.kill("SIGTERM");
+                }),
+            },
+          });
+        } else {
+          child.kill("SIGKILL");
+          reject(new Error(message?.message ?? "PREVIEW_SERVER_START_FAILED"));
+        }
+      });
+    });
   }
 
   /**

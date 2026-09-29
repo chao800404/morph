@@ -6,6 +6,7 @@ import {
   type ThemeWorkspaceWriter,
   isBinaryWorkspaceFile,
   type ThemeWorkspaceBinaryLoader,
+  type ThemePreviewRuntime,
 } from "./theme-sandbox-workspace";
 import {
   writeSandboxWorkspaceFile,
@@ -142,9 +143,12 @@ async function waitForProcessToStop(
   return false;
 }
 
-function withPreviewServerBase(exposedUrl: string): string {
+function withPreviewServerBase(
+  exposedUrl: string,
+  runtime?: ThemePreviewRuntime,
+): string {
   const url = new URL(exposedUrl);
-  url.pathname = THEME_PREVIEW_SERVER_BASE_PATH;
+  url.pathname = previewServerPath(runtime);
   return url.toString();
 }
 
@@ -237,7 +241,18 @@ export type StartPreviewServerInput = Readonly<{
    * process boundary carries binary files its own way.
    */
   loadBinary?: ThemeWorkspaceBinaryLoader;
+  /**
+   * PROTOTYPE: `start` serves the Theme through the Start server in workerd,
+   * at the root path; see `theme-preview-start-runtime.ts`. Absent means
+   * today's client-only preview.
+   */
+  previewRuntime?: ThemePreviewRuntime;
 }>;
+
+/** Where a preview of this runtime is framed, on the exposed origin. */
+export function previewServerPath(runtime: ThemePreviewRuntime | undefined): string {
+  return runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH;
+}
 
 export type StartPreviewServerResult =
   | Readonly<{
@@ -630,6 +645,7 @@ export class CloudflareSandboxVitePreviewServer {
         approvedDependencies: this.approvedDependencies,
         mode: "preview-server",
         previewContent: input.previewContent,
+        previewRuntime: input.previewRuntime,
       });
       const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {
@@ -892,7 +908,7 @@ export class CloudflareSandboxVitePreviewServer {
         exposePortMs = Date.now() - exposePortStartedAt;
         exposedUrl = exposed.url;
       }
-      const previewUrl = withPreviewServerBase(exposedUrl);
+      const previewUrl = withPreviewServerBase(exposedUrl, input.previewRuntime);
       observation.address = {
         reused: Boolean(activePort),
         digest: previewAddressDigest(exposedUrl),
@@ -1059,7 +1075,12 @@ export class CloudflareSandboxVitePreviewServer {
       const portReady = process.waitForPort
         ? process
             .waitForPort(THEME_PREVIEW_SERVER_PORT, {
-              path: THEME_PREVIEW_SERVER_BASE_PATH,
+              // A Start preview's root is a server-rendered page; its content
+              // endpoint answers without rendering anything.
+              path:
+                input.previewRuntime === "start"
+                  ? "/_morph/content"
+                  : THEME_PREVIEW_SERVER_BASE_PATH,
             })
             .then(() => "ready" as const)
             .catch((error) => {

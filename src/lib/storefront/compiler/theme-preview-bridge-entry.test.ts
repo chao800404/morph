@@ -102,8 +102,10 @@ describe("the script a Live Preview page runs for the editor", () => {
   it("says nothing when no editor is behind the page", () => {
     // Someone following a preview URL directly gets a working storefront, not
     // messages fired at whatever happens to be hosting them.
+    // Read from the URL the document was loaded with (see
+    // documentPreviewRuntimeChannel), which has no channel in that case.
     expect(BRIDGE).toContain(
-      "const channel = readPreviewRuntimeChannel(window.location.href);",
+      "const channel = documentPreviewRuntimeChannel();",
     );
     expect(BRIDGE.match(/if \(!channel\) return;/g)?.length).toBeGreaterThan(1);
   });

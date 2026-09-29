@@ -22,7 +22,7 @@ import {
 export function themePreviewBridgeEntrySource(): string {
   return `import {
   postPreviewToEditorMessage,
-  readPreviewRuntimeChannel,
+  documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
 } from "./preview/preview-protocol";
 import {
@@ -50,7 +50,7 @@ import { updatePreviewContent } from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
-const channel = readPreviewRuntimeChannel(window.location.href);
+const channel = documentPreviewRuntimeChannel();
 
 // Off until the editor asks for it, so a preview being merely watched behaves
 // like the real storefront: links follow, menus open, carousels advance. In
