@@ -6,6 +6,7 @@ import {
   createRootRouteWithContext,
 } from "@tanstack/react-router";
 
+import { onceInBrowser } from "@/lib/once-in-browser";
 import { getPublicURL } from "@/server/getPublicURL";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import appCss from "../styles.css?url";
@@ -14,6 +15,11 @@ interface RouterContext {
   queryClient: QueryClient;
   publicURL?: string;
 }
+
+// The origin cannot change while a page is open, and `beforeLoad` runs on
+// every navigation, so the browser asks for it once. Nothing about the user is
+// in it; it is the deployment's address.
+const loadPublicURL = onceInBrowser(() => getPublicURL());
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   head: () => ({
@@ -38,7 +44,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   }),
   beforeLoad: async () => {
     try {
-      const publicURL = await getPublicURL();
+      const publicURL = await loadPublicURL();
 
       return {
         publicURL,
