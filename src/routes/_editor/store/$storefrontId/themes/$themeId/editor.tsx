@@ -4,7 +4,11 @@ import {
 } from "@/lib/validations/storefront-theme";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, stripSearchParams } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  stripSearchParams,
+  useRouterState,
+} from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
 import { VisualEditorShell } from "../../../../-components/visual-editor-shell";
@@ -66,6 +70,16 @@ function VisualEditorRoute() {
       }),
     [navigate],
   );
+  // Where the router is going rather than where it has loaded: `search` keeps
+  // the old location until the new one's `beforeLoad` and loader finish, and
+  // the router moves this back itself if that navigation fails or is replaced.
+  const navigatingRoutePath = useRouterState({
+    select: (state) => {
+      const routePath = (state.location.search as { routePath?: unknown })
+        .routePath;
+      return typeof routePath === "string" && routePath ? routePath : "/";
+    },
+  });
 
   if (query.isPending) return <VisualEditorPending />;
 
@@ -109,6 +123,7 @@ function VisualEditorRoute() {
       context={result.data}
       search={search}
       onSearchChange={handleSearchChange}
+      navigatingRoutePath={navigatingRoutePath}
       currentUser={routeContext?.session?.user}
     />
   );
@@ -118,11 +133,13 @@ function ReadyVisualEditorRoute({
   context,
   search,
   onSearchChange,
+  navigatingRoutePath,
   currentUser,
 }: {
   context: Parameters<typeof VisualEditorShell>[0]["context"];
   search: StorefrontThemeEditorSearch;
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  navigatingRoutePath: string;
   currentUser: Parameters<typeof VisualEditorShell>[0]["currentUser"];
 }) {
   const normalizedSearch = normalizeEditorTemplateSearch(context, search);
@@ -157,6 +174,7 @@ function ReadyVisualEditorRoute({
       context={context}
       search={normalizedSearch}
       onSearchChange={onSearchChange}
+      navigatingRoutePath={navigatingRoutePath}
       currentUser={currentUser}
     />
   );

@@ -242,6 +242,7 @@ import {
   reduceLivePreviewLifecycle,
 } from "./live-preview-lifecycle";
 import {
+  editorRoutePathsMatch,
   resolveEditorTemplate,
   routeOwnsDocument,
   routePathFromTemplatePlaceholder,
@@ -505,6 +506,12 @@ type EditorShellProps = {
   context: StorefrontThemeEditorDTO;
   search: StorefrontThemeEditorSearch;
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
+  /**
+   * The route path of the navigation in progress, if one is: where the router
+   * is going, while `search` is still where it has been. Undefined when the
+   * caller has no router to ask, in which case `search.routePath` stands in.
+   */
+  navigatingRoutePath?: string;
   currentUser?: {
     id?: string;
     name?: string;
@@ -618,6 +625,7 @@ export function VisualEditorShell({
   context,
   search,
   onSearchChange,
+  navigatingRoutePath,
   currentUser,
 }: EditorShellProps) {
   // The design surface owns the panel widths as CSS custom properties so a
@@ -792,7 +800,7 @@ export function VisualEditorShell({
   useEffect(() => {
     if (
       pendingRoutePath !== null &&
-      pendingRoutePath === (search.routePath ?? null)
+      editorRoutePathsMatch(pendingRoutePath, search.routePath)
     ) {
       setPendingRoutePath(null);
     }
@@ -1923,7 +1931,13 @@ export function VisualEditorShell({
   useEffect(() => {
     if (
       !pendingRoutePath ||
-      pendingRoutePath === search.routePath ||
+      editorRoutePathsMatch(pendingRoutePath, search.routePath) ||
+      // Already on its way there. `search` changes only once the router has
+      // loaded the new location; asking again before then restarts that load.
+      editorRoutePathsMatch(
+        pendingRoutePath,
+        navigatingRoutePath ?? search.routePath,
+      ) ||
       !pendingThemeRoute
     ) {
       return;
@@ -1940,6 +1954,7 @@ export function VisualEditorShell({
   }, [
     activeTemplate,
     context.templates,
+    navigatingRoutePath,
     onSearchChange,
     pendingRoutePath,
     pendingThemeRoute,
@@ -1947,7 +1962,7 @@ export function VisualEditorShell({
   ]);
   const routeStructurePending = Boolean(
     (pendingRoutePath !== null &&
-      pendingRoutePath !== search.routePath &&
+      !editorRoutePathsMatch(pendingRoutePath, search.routePath) &&
       (!pendingThemeRoute ||
         !themeRouteStructureCache.has(pendingThemeRoute.sourcePath))) ||
     (search.routePath &&
