@@ -7,6 +7,7 @@ import {
   previewStorefrontThemeRollback,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import { queryOptions } from "@tanstack/react-query";
+import { retryUnlessRefused } from "@/lib/query/retry-policy";
 
 export const storefrontThemeFileQueries = {
   all: () => ["storefront-theme-files"] as const,
@@ -29,7 +30,7 @@ export const storefrontThemeFileQueries = {
       // A schema/configuration failure should reach the editor promptly instead
       // of keeping the Live Preview spinner alive through the default backoff.
       // One short retry still covers a transient local D1 cold start.
-      retry: 1,
+      retry: retryUnlessRefused(1),
       retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
     }),
 

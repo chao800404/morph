@@ -1,0 +1,426 @@
+import { execFileSync } from "node:child_process";
+import {
+  expect,
+  test,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
+import { EDITOR_PATH, openContentTab, openEditor } from "./helpers";
+
+/**
+ * What the editor does with unsaved work when who is signed in changes.
+ *
+ * Each case edits the seeded home page's hero in Code, where the draft is
+ * plain to read back from Monaco — by the marker comments it carries, since
+ * saving from Code formats the source first, and checks four things the author depends
+ * on: nothing is sent while writes are paused, the draft stays, saving waits
+ * for the author to confirm, and what is saved is the newest draft — never
+ * an older copy, never over someone else's newer save, never as another
+ * account.
+ *
+ * Sessions: a case that signs out signs in a context of its own first, so
+ * the session it ends is its own — the stored one in `e2e/.auth/user.json` is
+ * shared by every other spec and is never signed out here. A case that only
+ * needs the browser to stop sending a session clears its cookies instead,
+ * which ends nothing on the server; putting them back is signing in again.
+ * Sign-in is rate limited (five a minute), which is the other reason to use
+ * it only where signing out is the point.
+ */
+
+/** Seeded by `scripts/seed-e2e.mjs`, with the same password. */
+const SECOND_EMAIL = "e2e-second-admin@morph.invalid";
+const MARKER = "editor-writes-paused";
+
+const email = () => process.env.E2E_EMAIL!;
+const password = () => process.env.E2E_PASSWORD!;
+
+const STORAGE_STATE = "e2e/.auth/user.json";
+
+async function signIn(context: BrowserContext, address: string) {
+  const origin = new URL(test.info().project.use.baseURL!).origin;
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await context.request.post("/api/auth/sign-in/email", {
+      data: { email: address, password: password() },
+      headers: { origin },
+    });
+    // Rate limited: wait for the window rather than fail on it.
+    if (response.status() === 429 && attempt < 6) {
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+      continue;
+    }
+    expect(response.ok(), `sign-in as ${address}`).toBe(true);
+    return;
+  }
+}
+
+async function signOut(context: BrowserContext) {
+  const origin = new URL(test.info().project.use.baseURL!).origin;
+  const response = await context.request.post("/api/auth/sign-out", {
+    data: {},
+    headers: { origin },
+  });
+  expect(response.ok(), "sign-out").toBe(true);
+}
+
+/** An editor on a session of its own, for a case that signs out. */
+async function signedInEditor(browser: Browser, address = email()) {
+  const { baseURL } = test.info().project.use;
+  const context = await browser.newContext({
+    baseURL,
+    viewport: { width: 1600, height: 950 },
+  });
+  await signIn(context, address);
+  const page = await context.newPage();
+  await openEditor(page);
+  return { context, page };
+}
+
+/** An editor on the shared session, for a case that never signs out. */
+async function sharedEditor(browser: Browser) {
+  const { baseURL } = test.info().project.use;
+  const context = await browser.newContext({
+    baseURL,
+    viewport: { width: 1600, height: 950 },
+    storageState: STORAGE_STATE,
+  });
+  const page = await context.newPage();
+  await openEditor(page);
+  return { context, page };
+}
+
+/** Opens the hero in Code and returns its path. */
+async function openHeroInCode(page: Page) {
+  await page.getByRole("button", { name: "hero", exact: true }).click();
+  await openContentTab(page);
+  const openInCode = page.locator('button[title$=" in Monaco Code Editor"]');
+  const hero = (await openInCode.getAttribute("title"))!
+    .replace(/^Open /, "")
+    .replace(/ in Monaco Code Editor$/, "");
+  await openInCode.click();
+  await expect
+    .poll(() => readSource(page, hero).catch(() => null), { timeout: 30_000 })
+    .not.toBeNull();
+  return hero;
+}
+
+function readSource(page: Page, path: string) {
+  return page.evaluate(
+    (target) =>
+      (window as any).monaco.editor
+        .getModels()
+        .find((model: any) => model.uri.path.endsWith(target))
+        .getValue() as string,
+    path,
+  );
+}
+
+async function editAndSave(page: Page, path: string, next: string) {
+  await page.evaluate(
+    ({ target, value }) =>
+      (window as any).monaco.editor
+        .getModels()
+        .find((model: any) => model.uri.path.endsWith(target))
+        .setValue(value),
+    { target: path, value: next },
+  );
+  await page.keyboard.press("Control+s");
+}
+
+/** Counts the saves of `path` this page sends to the server from now on. */
+function countSaves(page: Page, path: string) {
+  const counter = { sent: 0 };
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/_serverFn/") &&
+      (request.postData() ?? "").includes(path)
+    ) {
+      counter.sent += 1;
+    }
+  });
+  return counter;
+}
+
+const pausedNotice = (page: Page) =>
+  page.locator("[data-editor-writes-paused]");
+
+const withoutMarkers = (source: string) =>
+  source
+    .split("\n")
+    .filter((line) => !line.includes(MARKER))
+    .join("\n");
+
+/** Puts the hero back as it was, from a session of its own. */
+async function restoreHero(browser: Browser, hero: string) {
+  const { context, page } = await sharedEditor(browser);
+  try {
+    await openHeroInCode(page);
+    const source = await readSource(page, hero);
+    if (withoutMarkers(source) === source) return;
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        (response.request().postData() ?? "").includes(hero),
+      { timeout: 30_000 },
+    );
+    await editAndSave(page, hero, withoutMarkers(source));
+    expect((await saved).ok()).toBe(true);
+  } finally {
+    await context.close();
+  }
+}
+
+/** The run's own database, as `scripts/seed-e2e.mjs` reaches it. */
+function runSql(command: string) {
+  const env =
+    (process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
+      ? ["--env", "local_preview_e2e"]
+      : [];
+  execFileSync(
+    "npx",
+    [
+      "wrangler",
+      "d1",
+      "execute",
+      "DATABASE",
+      "--local",
+      ...env,
+      "--persist-to",
+      process.env.MORPH_E2E_STATE_DIR!,
+      "--command",
+      command,
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
+}
+
+test.describe("unsaved work when the signed-in account changes", () => {
+  test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+
+  test("signed out: the draft stays, nothing is sent, and the newest draft is saved on confirmation", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await signedInEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    const first = `${original}\n/* ${MARKER} first */`;
+    const newest = `${first}\n/* ${MARKER} newest */`;
+    try {
+      await signOut(context);
+      await editAndSave(page, hero, first);
+      await expect(pausedNotice(page)).toContainText(
+        "Your sign-in has expired",
+      );
+
+      // Paused: a keyboard save sends nothing, and the edit is kept.
+      const saves = countSaves(page, hero);
+      await editAndSave(page, hero, newest);
+      await page.waitForTimeout(2_000);
+      expect(saves.sent).toBe(0);
+      expect(await readSource(page, hero)).toContain(`${MARKER} newest`);
+
+      await signIn(context, email());
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText("Signed in again");
+      // Verified is not consent: still nothing sent.
+      expect(saves.sent).toBe(0);
+
+      await pausedNotice(page)
+        .getByRole("button", { name: "Save my changes" })
+        .click();
+      await expect(pausedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+
+      // What was saved is the newest draft, as a fresh load reads it.
+      await openEditor(page);
+      await openHeroInCode(page);
+      await expect
+        .poll(() => readSource(page, hero))
+        .toContain(`${MARKER} newest`);
+      expect(await readSource(page, hero)).toContain(`${MARKER} first`);
+    } finally {
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("session lost: after the first refusal nothing more is sent", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    try {
+      // As a session cookie that has expired: the browser has none to send.
+      await context.clearCookies();
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} lost */`);
+      await expect(pausedNotice(page)).toContainText(
+        "Your sign-in has expired",
+      );
+
+      const saves = countSaves(page, hero);
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} lost again */`);
+      await page.waitForTimeout(2_000);
+      expect(saves.sent).toBe(0);
+      expect(await readSource(page, hero)).toContain(`${MARKER} lost again`);
+    } finally {
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("no permission: writes stay paused even with a session, until access returns", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    const draft = `${original}\n/* ${MARKER} denied */`;
+    // The session caches the role in a cookie for minutes; dropping that
+    // cookie makes the next request read the role from the database.
+    const forgetCachedRole = () =>
+      context.clearCookies({ name: /session_data/ });
+    try {
+      runSql(
+        `UPDATE users SET role = 'user' WHERE email = '${email().replace(/'/g, "''")}';`,
+      );
+      await forgetCachedRole();
+      await editAndSave(page, hero, draft);
+      await expect(pausedNotice(page)).toContainText(
+        "Your account cannot change this Theme",
+      );
+
+      // Signed in, still not allowed: checking again keeps it paused.
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText(
+        "Your account cannot change this Theme",
+      );
+      expect(await readSource(page, hero)).toContain(`${MARKER} denied`);
+
+      runSql(
+        `UPDATE users SET role = 'admin' WHERE email = '${email().replace(/'/g, "''")}';`,
+      );
+      await forgetCachedRole();
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText("Signed in again");
+      await pausedNotice(page)
+        .getByRole("button", { name: "Save my changes" })
+        .click();
+      await expect(pausedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+    } finally {
+      runSql(
+        `UPDATE users SET role = 'admin' WHERE email = '${email().replace(/'/g, "''")}';`,
+      );
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("another account signed in here: the draft is never saved as that account", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await signedInEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    try {
+      // Another tab of the same browser signs out and in as someone else.
+      await signOut(context);
+      await signIn(context, SECOND_EMAIL);
+      // Coming back to the editor is when it looks.
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(pausedNotice(page)).toContainText(
+        "A different account is signed in",
+      );
+
+      const saves = countSaves(page, hero);
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} other */`);
+      await page.waitForTimeout(2_000);
+      expect(saves.sent).toBe(0);
+
+      // Checking again as the other account changes nothing.
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText(
+        "A different account is signed in",
+      );
+      expect(saves.sent).toBe(0);
+    } finally {
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("another tab saved the same file first: resuming does not overwrite it", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    const mine = `${original}\n/* ${MARKER} mine */`;
+    const theirs = `${original}\n/* ${MARKER} theirs */`;
+    const other = await sharedEditor(browser);
+    const session = await context.cookies();
+    try {
+      await context.clearCookies();
+      await editAndSave(page, hero, mine);
+      await expect(pausedNotice(page)).toContainText(
+        "Your sign-in has expired",
+      );
+
+      // Meanwhile the file is saved from elsewhere.
+      await openHeroInCode(other.page);
+      const saved = other.page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          (response.request().postData() ?? "").includes(hero),
+        { timeout: 30_000 },
+      );
+      await editAndSave(other.page, hero, theirs);
+      expect((await saved).ok()).toBe(true);
+
+      // Signed in again: the browser has its session back.
+      await context.addCookies(session);
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText("Signed in again");
+      await pausedNotice(page)
+        .getByRole("button", { name: "Save my changes" })
+        .click();
+
+      // The newer save moved the Theme on, so this tab's save is refused and
+      // its edit comes back under the Theme's own conflict notice — still
+      // here, unsaved, for the author to decide on.
+      await expect(
+        page.getByText("Remote source changes detected in this theme"),
+      ).toBeVisible({ timeout: 30_000 });
+      const kept = await readSource(page, hero);
+      expect(kept).toContain(`${MARKER} mine`);
+      expect(kept).not.toContain(`${MARKER} theirs`);
+      await openEditor(other.page);
+      await openHeroInCode(other.page);
+      await expect
+        .poll(() => readSource(other.page, hero))
+        .toContain(`${MARKER} theirs`);
+      expect(await readSource(other.page, hero)).not.toContain(
+        `${MARKER} mine`,
+      );
+    } finally {
+      await other.context.close();
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+});

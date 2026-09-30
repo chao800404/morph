@@ -52,6 +52,16 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
    * unsaved; it stays marked until it is saved or discarded.
    */
   sourceConflict?: boolean;
+  /**
+   * A save of this file was not sent, or was refused, because the editor's
+   * writes are paused on who is signed in (see `editor-write-gate`). The
+   * local edit is intact and still unsaved.
+   *
+   * Kept apart from `sourceConflict`: signing in again does not settle a
+   * Theme that moved on, and a Theme that moved on is not settled by signing
+   * in. Cleared only when the content it held is saved or discarded.
+   */
+  authPaused?: boolean;
 };
 
 export type ThemeConflictResolution = ThemeFileServerState & {
@@ -111,6 +121,8 @@ export interface ThemeWorkspaceStore {
   markDirty: (path: string, scope?: WorkspaceScope) => void;
   /** Marks a save refused on the Theme's source generation; see `sourceConflict`. */
   markSourceConflict: (path: string, scope?: WorkspaceScope) => void;
+  /** Marks a save held back by paused writes; see `authPaused`. */
+  markAuthPaused: (path: string, scope?: WorkspaceScope) => void;
   markSaved: (
     saved: StorefrontThemeFileDTO & { sourceGeneration?: number },
     scope?: WorkspaceScope,
@@ -667,6 +679,33 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       });
     },
 
+    markAuthPaused: (path, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: {
+            ...current,
+            dirty: current.localContent !== current.serverContent,
+            saveState: current.conflict
+              ? ("conflict" as const)
+              : ("dirty" as const),
+            errorMessage: undefined,
+            authPaused: true,
+          },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
     markSaved: (saved, scope, sourceGeneration) => {
       set((state) => {
         const resolvedScope = scope ?? {
@@ -691,6 +730,9 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             conflict: undefined,
             errorMessage: undefined,
             sourceConflict: undefined,
+            // An earlier save landing says nothing about the newer content
+            // still waiting; only saving that content clears its pause.
+            authPaused: stillDirty ? current.authPaused : undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -868,6 +910,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             conflict: undefined,
             errorMessage: undefined,
             sourceConflict: undefined,
+            authPaused: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -914,6 +957,16 @@ export function sourceConflictPaths(
 ): string[] {
   return Object.values(workspaceFiles)
     .filter((file) => file.sourceConflict && file.dirty)
+    .map((file) => file.path)
+    .sort();
+}
+
+/** The files whose saves wait on writes being resumed. */
+export function authPausedPaths(
+  workspaceFiles: Readonly<Record<string, ThemeWorkspaceFileState>>,
+): string[] {
+  return Object.values(workspaceFiles)
+    .filter((file) => file.authPaused && file.dirty)
     .map((file) => file.path)
     .sort();
 }

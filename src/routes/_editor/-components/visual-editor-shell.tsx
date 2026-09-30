@@ -4,6 +4,25 @@ import {
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
+import {
+  isEditorWriteGatePaused,
+  isEditorWritePaused,
+  refusalOfError,
+} from "@/lib/storefront/editor/editor-write-gate";
+import {
+  templateIdOfPendingContentKey,
+  verifyEditorWriter,
+} from "@/lib/storefront/editor/editor-write-recovery";
+import {
+  editorWriteGateFor,
+  useEditorWriteGateStore,
+} from "@/lib/storefront/store/editor-write-gate-store";
+import { getSession } from "@/server/auth/getSession";
+import {
+  editorSignedOut,
+  reportEditorReadFailure,
+  sendEditorWrite,
+} from "@/lib/storefront/editor/send-editor-write";
 import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
@@ -134,6 +153,7 @@ import {
   renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
   ensureStorefrontThemeRouteTemplate,
+  getStorefrontThemeEditor,
   promoteStorefrontThemeText,
 } from "@/server/storefront/storefront-themes.serverFn";
 import type {
@@ -216,6 +236,7 @@ import {
   toWorkspaceKey,
   themeFileWritePrecondition,
   sourceConflictPaths,
+  authPausedPaths,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -296,6 +317,7 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
+import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
   awaitsOwnSave,
   planPreviewSync,
@@ -715,8 +737,13 @@ export function VisualEditorShell({
   const previousAssistantPanelTabRef =
     useRef<EditorAssistantPanelTab>(assistantPanelTab);
   const autoEnabledSelectionForStylesRef = useRef(false);
+  /**
+   * `paused` is its own state: the content was not sent because the editor's
+   * writes are paused on who is signed in. It is still pending, like a failed
+   * save, but resending it waits on writes being resumed.
+   */
   const [draftSaveState, setDraftSaveState] = useState<
-    "idle" | "saving" | "error"
+    "idle" | "saving" | "error" | "paused"
   >("idle");
   /**
    * Content writes the server refused because the document moved under them,
@@ -845,15 +872,20 @@ export function VisualEditorShell({
 
   const createGroupMutation = useMutation({
     mutationFn: async () => {
-      const res = await createStorefrontCommentGroup({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: activeTemplate?.id ?? "",
-          name: `Group ${commentGroups.length + 1}`,
-          viewportWidth: previewWidth,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontCommentGroup({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: activeTemplate?.id ?? "",
+              name: `Group ${commentGroups.length + 1}`,
+              viewportWidth: previewWidth,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -888,14 +920,19 @@ export function VisualEditorShell({
       groupId: string;
       viewportWidth: number;
     }) => {
-      const res = await updateStorefrontCommentGroup({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          groupId,
-          viewportWidth,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          updateStorefrontCommentGroup({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              groupId,
+              viewportWidth,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -943,19 +980,24 @@ export function VisualEditorShell({
       expectedReleaseGeneration: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
-      return publishStorefrontThemeTemplate({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: activeTemplate.id,
-          sourceRevisionId: variables.sourceRevisionId,
-          themeBuildId: variables.themeBuildId,
-          note: variables.note,
-          expectedDraftRevisionId: variables.expectedDraftRevisionId,
-          expectedDraftGeneration: variables.expectedDraftGeneration,
-          expectedReleaseGeneration: variables.expectedReleaseGeneration,
-        },
-      });
+      return sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          publishStorefrontThemeTemplate({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: activeTemplate.id,
+              sourceRevisionId: variables.sourceRevisionId,
+              themeBuildId: variables.themeBuildId,
+              note: variables.note,
+              expectedDraftRevisionId: variables.expectedDraftRevisionId,
+              expectedDraftGeneration: variables.expectedDraftGeneration,
+              expectedReleaseGeneration: variables.expectedReleaseGeneration,
+            },
+          }),
+      );
     },
     onSuccess: async (result) => {
       if (!result.success) {
@@ -1012,20 +1054,27 @@ export function VisualEditorShell({
       resetProps?: string[];
     }) => {
       if (!activeTemplate) throw new Error("No active template");
-      return updateStorefrontThemeSectionProps({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: variables.templateId ?? activeTemplate.id,
-          sectionId: variables.sectionId,
-          props: variables.props,
-          expectedDraftGeneration: variables.expectedDraftGeneration,
-          ...(variables.routePath ? { routePath: variables.routePath } : {}),
-          ...(variables.resetProps?.length
-            ? { resetProps: variables.resetProps }
-            : {}),
-        },
-      });
+      return sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          updateStorefrontThemeSectionProps({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: variables.templateId ?? activeTemplate.id,
+              sectionId: variables.sectionId,
+              props: variables.props,
+              expectedDraftGeneration: variables.expectedDraftGeneration,
+              ...(variables.routePath
+                ? { routePath: variables.routePath }
+                : {}),
+              ...(variables.resetProps?.length
+                ? { resetProps: variables.resetProps }
+                : {}),
+            },
+          }),
+      );
     },
     /**
      * A request that never landed has no decision in it, so nobody is asked:
@@ -1037,7 +1086,11 @@ export function VisualEditorShell({
      * the same stale payload again — the thing the refusal exists to stop. That
      * one is rebased first, on a press.
      */
-    retry: 2,
+    //
+    // Paused writes are not retried either: asking again gives the same
+    // answer, and the content is kept pending for when writes resume.
+    retry: (failureCount, error) =>
+      !isEditorWritePaused(error) && failureCount < 2,
     retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
     onMutate: () => setDraftSaveState("saving"),
     onSuccess: async (result) => {
@@ -1054,7 +1107,12 @@ export function VisualEditorShell({
         ).queryKey,
       });
     },
-    onError: () => {
+    onError: (error) => {
+      // Explained once by the paused-writes notice, not per section.
+      if (isEditorWritePaused(error)) {
+        setDraftSaveState("paused");
+        return;
+      }
       setDraftSaveState("error");
       toast.error("Failed to update section properties");
     },
@@ -1104,13 +1162,21 @@ export function VisualEditorShell({
           let templateId = queueKey;
           const routePath = routePathFromTemplatePlaceholder(templateId);
           if (routePath !== null) {
-            const ensured = await ensureStorefrontThemeRouteTemplate({
-              data: {
+            const ensured = await sendEditorWrite(
+              {
                 storefrontId: context.storefront.id,
                 themeId: context.theme.id,
-                routePath,
               },
-            });
+              "theme",
+              () =>
+                ensureStorefrontThemeRouteTemplate({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    routePath,
+                  },
+                }),
+            );
             if (!ensured.success) return ensured;
             templateId = ensured.data.id;
             routeTemplateIdsRef.current.set(queueKey, templateId);
@@ -1134,7 +1200,16 @@ export function VisualEditorShell({
             observed: templateDraftGenerationRef.current,
             templates: context.templates,
           });
-          const result = await op(expectedDraftGeneration, templateId);
+          // Every document write queued here — content, rename, promote —
+          // meets the paused-writes check at the one place it is sent.
+          const result = await sendEditorWrite(
+            {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+            },
+            "theme",
+            () => op(expectedDraftGeneration, templateId),
+          );
           if (
             result.success &&
             result.data !== null &&
@@ -1580,13 +1655,18 @@ export function VisualEditorShell({
     abortBuildWait("user");
     if (!buildId) return;
     try {
-      const result = await cancelThemeBuild({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          buildId,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          cancelThemeBuild({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              buildId,
+            },
+          }),
+      );
       if (!result.success) {
         toast.error(result.message || "Failed to cancel the build.");
         return;
@@ -1671,12 +1751,17 @@ export function VisualEditorShell({
   const starterInitAttemptRef = useRef<string | null>(null);
   const starterInitMutation = useMutation({
     mutationFn: async () => {
-      const result = await initStorefrontStarterTheme({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          initStorefrontStarterTheme({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+            },
+          }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -2266,14 +2351,19 @@ export function VisualEditorShell({
       const expectedSourceGeneration = useThemeWorkspaceStore
         .getState()
         .getAcceptedSourceGeneration(workspaceScope);
-      const result = await createStorefrontThemePage({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          routePath,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontThemePage({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              routePath,
+              expectedSourceGeneration,
+            },
+          }),
+      );
       if (result?.success !== true) {
         // A conflict is somebody else's work, not a bad path. Refreshing is
         // what lets the author see it before deciding what to do, and is the
@@ -2325,16 +2415,21 @@ export function VisualEditorShell({
       const expectedSourceGeneration = useThemeWorkspaceStore
         .getState()
         .getAcceptedSourceGeneration(workspaceScope);
-      const result = await deleteStorefrontThemePage({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          sourcePath: route.sourcePath,
-          expectedFileId: file.id,
-          expectedVersion: file.version,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          deleteStorefrontThemePage({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              sourcePath: route.sourcePath,
+              expectedFileId: file.id,
+              expectedVersion: file.version,
+              expectedSourceGeneration,
+            },
+          }),
+      );
       if (result?.success !== true) {
         if (result?.error === "SOURCE_GENERATION_CONFLICT") {
           await queryClient.invalidateQueries({
@@ -2706,6 +2801,16 @@ export function VisualEditorShell({
         }
         return styleRevision;
       }
+      // Signed out, the write would only be refused, and it carries this
+      // tab's unsaved drafts to the server; the page catches up once writes
+      // resume and the drafts are saved through the ordinary path.
+      if (
+        editorSignedOut({
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        })
+      )
+        return styleRevision;
       const sequence = ++previewSyncSequenceRef.current;
       for (const file of planned) {
         lastPreviewSyncByPathRef.current.set(file.path, sequence);
@@ -2816,7 +2921,19 @@ export function VisualEditorShell({
             });
           }
         })
-        .catch(() => {
+        .catch((error) => {
+          // Refused for who is asking, not a sandbox that is gone:
+          // reconnecting would be refused the same way.
+          if (refusalOfError(error, "read")) {
+            reportEditorReadFailure(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+              },
+              error,
+            );
+            return;
+          }
           if (!targetPreviewKey) return;
           dispatchPreviewLifecycle({
             type: "automatic-recovery",
@@ -2997,6 +3114,12 @@ export function VisualEditorShell({
             themeId: context.theme.id,
             previewOrigin,
           },
+        }).catch((error: unknown) => {
+          reportEditorReadFailure(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            error,
+          );
+          throw error;
         });
         const answer = result?.success === true ? result.data.state : "unknown";
         console.info(`[preview-probe] ${answer}`);
@@ -3034,6 +3157,13 @@ export function VisualEditorShell({
       // iframe can no longer reach.
       const previewOrigin = previewSourceOriginRef.current;
       if (!previewOrigin) return;
+      if (
+        editorSignedOut({
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        })
+      )
+        return;
       void touchThemePreviewServer({
         data: {
           storefrontId: context.storefront.id,
@@ -3056,7 +3186,12 @@ export function VisualEditorShell({
             });
           }
         })
-        .catch(() => {});
+        .catch((error) =>
+          reportEditorReadFailure(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            error,
+          ),
+        );
     };
 
     const timer = window.setInterval(
@@ -3155,6 +3290,7 @@ export function VisualEditorShell({
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
       | { status: "source-conflict" }
+      | { status: "auth-paused" }
     > => {
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
@@ -3168,6 +3304,7 @@ export function VisualEditorShell({
           | { status: "saved"; file: StorefrontThemeFileDTO }
           | { status: "superseded" }
           | { status: "source-conflict" }
+          | { status: "auth-paused" }
         > => {
           const current = useThemeWorkspaceStore
             .getState()
@@ -3187,16 +3324,29 @@ export function VisualEditorShell({
               .getState()
               .getAcceptedSourceGeneration(workspaceScope);
 
-            const res = await saveStorefrontThemeFile({
-              data: {
-                storefrontId: context.storefront.id,
-                themeId: context.theme.id,
-                path: filePath,
-                content: contentToSave,
-                ...themeFileWritePrecondition(current),
-                expectedSourceGeneration: acceptedGeneration,
-              },
-            });
+            let res: Awaited<ReturnType<typeof saveStorefrontThemeFile>>;
+            try {
+              res = await sendEditorWrite(workspaceScope, "theme", () =>
+                saveStorefrontThemeFile({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    path: filePath,
+                    content: contentToSave,
+                    ...themeFileWritePrecondition(current),
+                    expectedSourceGeneration: acceptedGeneration,
+                  },
+                }),
+              );
+            } catch (error) {
+              if (!isEditorWritePaused(error)) throw error;
+              // Not sent, or refused for who is asking: the edit stays in the
+              // workspace, marked, and goes when writes are resumed.
+              useThemeWorkspaceStore
+                .getState()
+                .markAuthPaused(filePath, workspaceScope);
+              return { status: "auth-paused" };
+            }
 
             if (!res.success) {
               if (res.error === "SOURCE_GENERATION_CONFLICT") {
@@ -3410,7 +3560,8 @@ export function VisualEditorShell({
       );
       if (
         result.status === "superseded" ||
-        result.status === "source-conflict"
+        result.status === "source-conflict" ||
+        result.status === "auth-paused"
       ) {
         return null;
       }
@@ -3929,6 +4080,210 @@ export function VisualEditorShell({
     }
   }, [handleUnifiedSaveFile, workspaceScope]);
 
+  /**
+   * Writes paused on who is signed in, and what getting them going again
+   * involves; see `editor-write-gate` and `EditorWritesPausedNotice`.
+   */
+  const writeGate = useEditorWriteGateStore((state) =>
+    editorWriteGateFor(state.gates, workspaceScope),
+  );
+  const authPausedFiles = useMemo(
+    () => authPausedPaths(workspaceFiles),
+    [workspaceFiles],
+  );
+  const writesPaused = isEditorWriteGatePaused(writeGate);
+  const pausedUnsavedCount =
+    authPausedFiles.length +
+    (writesPaused ? pendingPropsMapRef.current.size : 0);
+  const [isResumingWrites, setIsResumingWrites] = useState(false);
+
+  // A read that finds nobody signed in pauses writes too, before any write
+  // has to be refused to find out.
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.type === "updated" && event.action.type === "error") {
+          reportEditorReadFailure(workspaceScope, event.action.error);
+        }
+      }),
+    [queryClient, workspaceScope],
+  );
+
+  // What is kept is in memory only, so leaving the page would lose it.
+  useEffect(() => {
+    if (!writesPaused || pausedUnsavedCount === 0) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [pausedUnsavedCount, writesPaused]);
+
+  // Another tab can sign this browser out, or into another account, without
+  // any request of this editor being refused — the other account may be
+  // allowed to write. So each time the editor comes back into view it asks
+  // who is signed in, before the author's next edit can be sent.
+  useEffect(() => {
+    const ownerUserId = currentUser?.id;
+    if (!ownerUserId) return;
+    let inFlight = false;
+    let lastAskedAt = 0;
+    const ask = () => {
+      if (document.visibilityState !== "visible" || inFlight) return;
+      if (Date.now() - lastAskedAt < 2_000) return;
+      inFlight = true;
+      lastAskedAt = Date.now();
+      void getSession()
+        .then((session) => {
+          const gates = useEditorWriteGateStore.getState();
+          const userId = session?.user?.id;
+          if (!userId) gates.pause(workspaceScope, "AUTH_REQUIRED", "theme");
+          else if (userId !== ownerUserId) gates.writerChanged(workspaceScope);
+        })
+        // No answer is no evidence either way; the next write will tell.
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    window.addEventListener("focus", ask);
+    document.addEventListener("visibilitychange", ask);
+    return () => {
+      window.removeEventListener("focus", ask);
+      document.removeEventListener("visibilitychange", ask);
+    };
+  }, [currentUser?.id, workspaceScope]);
+
+  // The drafts held while paused belong to the account that made them.
+  useEffect(() => {
+    if (!writesPaused || !currentUser?.id) return;
+    useEditorWriteGateStore
+      .getState()
+      .claimOwner(workspaceScope, currentUser.id);
+  }, [currentUser?.id, workspaceScope, writesPaused]);
+
+  const openSignInTab = useCallback(() => {
+    window.open("/sign-in", "_blank", "noopener");
+  }, []);
+
+  const checkWriterAgain = useCallback(async () => {
+    const epoch = useEditorWriteGateStore
+      .getState()
+      .beginVerification(workspaceScope);
+    if (epoch === null) return;
+    // The account the held drafts belong to — recorded when writes paused —
+    // not whoever this editor was opened by since: another account can
+    // open the same Theme in this tab while the first one's drafts wait.
+    const ownerUserId = writeGate.ownerUserId ?? currentUser?.id;
+    const answer = ownerUserId
+      ? await verifyEditorWriter({
+          ownerUserId,
+          readSession: () => getSession(),
+          readTheme: () =>
+            getStorefrontThemeEditor({
+              data: {
+                storefrontId: workspaceScope.storefrontId,
+                themeId: workspaceScope.themeId,
+              },
+            }),
+        })
+      : // No record of who opened the editor, so no way to tell them apart.
+        ("different-account" as const);
+    const gate = useEditorWriteGateStore
+      .getState()
+      .finishVerification(workspaceScope, epoch, answer);
+    if (answer === "unanswered") {
+      toast.error("Could not check your sign-in. Try again.");
+      return;
+    }
+    if (gate.recovery !== "verified") return;
+    // Reads and the preview can come back now; the paused writes wait for
+    // the author to choose to save them.
+    void queryClient.invalidateQueries();
+    if (previewLifecycle.phase === "failed") {
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
+    }
+  }, [
+    currentUser?.id,
+    previewLifecycle.phase,
+    queryClient,
+    workspaceScope,
+    writeGate.ownerUserId,
+  ]);
+
+  /**
+   * Sends what paused writes kept, once the author confirms after a current
+   * verification.
+   *
+   * Not a replay of the requests that were refused. Each file is compared
+   * with what the server holds now: a save whose answer was lost may have
+   * landed, and then the content is already there and nothing is sent. The
+   * rest go through the ordinary save paths, whose version checks decide —
+   * a Theme that moved on comes back as the usual conflict, never overwritten.
+   * Content goes through its own path the same way. One-off actions — delete,
+   * move, publish, build — are not repeated; the author presses them again.
+   */
+  const resumePausedWrites = useCallback(async () => {
+    if (
+      !useEditorWriteGateStore
+        .getState()
+        .confirmResume(workspaceScope, writeGate.epoch)
+    ) {
+      return;
+    }
+    setIsResumingWrites(true);
+    const readFiles = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    try {
+      // Code mode keeps its own drafts; its save goes through the same path.
+      await editorCodeWorkspaceRef.current?.saveAll();
+      for (const path of authPausedPaths(readFiles())) {
+        const current = readFiles()[path];
+        if (!current || current.conflict) continue;
+        const latest = await getStorefrontThemeFile({
+          data: {
+            storefrontId: workspaceScope.storefrontId,
+            themeId: workspaceScope.themeId,
+            path,
+          },
+        }).catch(() => null);
+        if (
+          latest?.success &&
+          latest.data &&
+          latest.data.content === current.localContent
+        ) {
+          markWorkspaceSaved(latest.data, workspaceScope);
+          continue;
+        }
+        await handleUnifiedSaveFile(path, current.localContent, {
+          fromHistory: true,
+        });
+      }
+      for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+        const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
+        if (!templateId) continue;
+        await commitSectionPending(templateId, key).catch(() => {
+          // Reported by the save itself, and still pending if it failed.
+        });
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not save your changes.",
+      );
+    } finally {
+      setIsResumingWrites(false);
+    }
+  }, [
+    commitSectionPending,
+    handleUnifiedSaveFile,
+    markWorkspaceSaved,
+    workspaceScope,
+    writeGate.epoch,
+  ]);
+
   const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
     if (isBuildPending) return { ok: false };
 
@@ -3969,15 +4324,20 @@ export function VisualEditorShell({
         .getBaseSourceGeneration(workspaceScope);
 
       // 1. Freeze current source files into a revision snapshot
-      const freezeResult = await createStorefrontThemeRevision({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          expectedSourceGeneration: currentGeneration,
-          message: "Build Preview Snapshot",
-          source: "manual",
-        },
-      });
+      const freezeResult = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontThemeRevision({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              expectedSourceGeneration: currentGeneration,
+              message: "Build Preview Snapshot",
+              source: "manual",
+            },
+          }),
+      );
 
       if (!freezeResult.success || !freezeResult.data?.id) {
         toast.error(
@@ -3988,13 +4348,18 @@ export function VisualEditorShell({
       }
 
       // 2. Request compilation & immutable R2 artifact persistence
-      const buildResult = await createPreviewBuild({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          sourceRevisionId: freezeResult.data.id,
-        },
-      });
+      const buildResult = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createPreviewBuild({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              sourceRevisionId: freezeResult.data.id,
+            },
+          }),
+      );
 
       if (!buildResult.success || !buildResult.data) {
         toast.error(buildResult.message || "Theme build failed");
@@ -5255,32 +5620,37 @@ export function VisualEditorShell({
             expectedFileId: routeFile.id,
             expectedVersion: routeFile.version,
           };
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId: workspaceScope.storefrontId,
-          themeId: workspaceScope.themeId,
-          files: [
-            ...copyPlan.files.map((file) => ({
-              path: file.path,
-              content: file.content,
-              mimeType: file.mimeType,
-              expectMissing: true as const,
-            })),
-            {
-              path: routeFile.path,
-              content: replacement.code,
-              mimeType: routeFile.mimeType,
-              ...routePrecondition,
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              files: [
+                ...copyPlan.files.map((file) => ({
+                  path: file.path,
+                  content: file.content,
+                  mimeType: file.mimeType,
+                  expectMissing: true as const,
+                })),
+                {
+                  path: routeFile.path,
+                  content: replacement.code,
+                  mimeType: routeFile.mimeType,
+                  ...routePrecondition,
+                },
+              ],
+              deletions: [],
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+              createRevision: true,
+              revisionMessage: `Create page-specific copy of ${componentPath}`,
             },
-          ],
-          deletions: [],
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Create page-specific copy of ${componentPath}`,
-        },
-      });
+          }),
+      );
       if (!result.success) {
         return { success: false, message: result.message };
       }
@@ -5554,26 +5924,31 @@ export function VisualEditorShell({
                 expectedFileId: routeFile.id,
                 expectedVersion: routeFile.version,
               };
-          const saved = await saveStorefrontThemeFilesBatch({
-            data: {
-              storefrontId: workspaceScope.storefrontId,
-              themeId: workspaceScope.themeId,
-              files: [
-                {
-                  path: routeFile.path,
-                  content: result.code,
-                  mimeType: routeFile.mimeType,
-                  ...routePrecondition,
+          const saved = await sendEditorWrite(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            "theme",
+            () =>
+              saveStorefrontThemeFilesBatch({
+                data: {
+                  storefrontId: workspaceScope.storefrontId,
+                  themeId: workspaceScope.themeId,
+                  files: [
+                    {
+                      path: routeFile.path,
+                      content: result.code,
+                      mimeType: routeFile.mimeType,
+                      ...routePrecondition,
+                    },
+                  ],
+                  deletions,
+                  expectedSourceGeneration: useThemeWorkspaceStore
+                    .getState()
+                    .getAcceptedSourceGeneration(workspaceScope),
+                  createRevision: true,
+                  revisionMessage: `Remove section ${sectionId}`,
                 },
-              ],
-              deletions,
-              expectedSourceGeneration: useThemeWorkspaceStore
-                .getState()
-                .getAcceptedSourceGeneration(workspaceScope),
-              createRevision: true,
-              revisionMessage: `Remove section ${sectionId}`,
-            },
-          });
+              }),
+          );
           if (!saved.success) {
             return { success: false, message: saved.message };
           }
@@ -6520,32 +6895,37 @@ export function VisualEditorShell({
             expectedFileId: routeFile.id,
             expectedVersion: routeFile.version,
           };
-      const saved = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId: workspaceScope.storefrontId,
-          themeId: workspaceScope.themeId,
-          files: [
-            ...copiedFiles.map((file) => ({
-              path: file.path,
-              content: file.content,
-              mimeType: file.mimeType,
-              expectMissing: true as const,
-            })),
-            {
-              path: routeFile.path,
-              content: result.code,
-              mimeType: routeFile.mimeType,
-              ...routePrecondition,
+      const saved = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              files: [
+                ...copiedFiles.map((file) => ({
+                  path: file.path,
+                  content: file.content,
+                  mimeType: file.mimeType,
+                  expectMissing: true as const,
+                })),
+                {
+                  path: routeFile.path,
+                  content: result.code,
+                  mimeType: routeFile.mimeType,
+                  ...routePrecondition,
+                },
+              ],
+              deletions: [],
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+              createRevision: true,
+              revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
             },
-          ],
-          deletions: [],
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
-        },
-      });
+          }),
+      );
       if (!saved.success) throw new Error(saved.message);
 
       useThemeWorkspaceStore
@@ -7975,12 +8355,23 @@ export function VisualEditorShell({
           </Popover>
         </div>
       </header>
-      <EditorSourceConflictNotice
-        className="col-start-1 row-start-2"
-        paths={pendingSourceConflicts}
-        saving={isSavingSourceConflicts}
-        onSave={() => void saveSourceConflicts()}
-      />
+      {/* Two notices, never merged: signing in again does not settle a
+          Theme that moved on, and the reverse. */}
+      <div className="col-start-1 row-start-2 flex flex-col">
+        <EditorWritesPausedNotice
+          gate={writeGate}
+          unsavedCount={pausedUnsavedCount}
+          saving={isResumingWrites}
+          onSignIn={openSignInTab}
+          onCheckAgain={() => void checkWriterAgain()}
+          onSave={() => void resumePausedWrites()}
+        />
+        <EditorSourceConflictNotice
+          paths={pendingSourceConflicts}
+          saving={isSavingSourceConflicts}
+          onSave={() => void saveSourceConflicts()}
+        />
+      </div>
 
       {/*
         A build is the compiled artifact, not something the editor can act

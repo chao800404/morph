@@ -30,6 +30,7 @@ import {
 } from "@/server/storefront/storefront-releases.serverFn";
 import { storefrontReleaseQueries } from "../-queries/storefront-release.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
 
 interface ReleaseHistoryProps {
   open: boolean;
@@ -149,9 +150,14 @@ function ReleaseHistorySurface({
 
   const rename = useMutation({
     mutationFn: async (input: { releaseId: string; note: string }) => {
-      const result = await renameStorefrontRelease({
-        data: { storefrontId, themeId, ...input },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          renameStorefrontRelease({
+            data: { storefrontId, themeId, ...input },
+          }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -195,16 +201,21 @@ function ReleaseHistorySurface({
 
   const activate = useMutation({
     mutationFn: async (releaseId: string) => {
-      const result = await activateStorefrontRelease({
-        data: {
-          storefrontId,
-          releaseId,
-          expectedActiveReleaseId: expectedActiveReleaseId(
-            rows,
-            activeReleaseId,
-          ),
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          activateStorefrontRelease({
+            data: {
+              storefrontId,
+              releaseId,
+              expectedActiveReleaseId: expectedActiveReleaseId(
+                rows,
+                activeReleaseId,
+              ),
+            },
+          }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },

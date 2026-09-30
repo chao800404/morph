@@ -34,6 +34,15 @@ import { hashPassword } from "better-auth/crypto";
 const USER_ID = "00000000-0000-4000-8000-00000000e2e1";
 const ACCOUNT_ID = "00000000-0000-4000-8000-00000000e2e2";
 const PRODUCT_ID = "00000000-0000-4000-8000-00000000e2e3";
+/**
+ * A second administrator, for the editor's account-switch tests: signing
+ * another account into the same browser must never let one account's unsaved
+ * work be saved as the other's. Same password as the first; its address is
+ * fixed and non-routable, and `e2e/editor-writes-paused.spec.ts` names it.
+ */
+const SECOND_USER_ID = "00000000-0000-4000-8000-00000000e2e4";
+const SECOND_ACCOUNT_ID = "00000000-0000-4000-8000-00000000e2e5";
+const SECOND_EMAIL = "e2e-second-admin@morph.invalid";
 /** Written by `currency.dal`, and the channel the storefront reads through. */
 const SALES_CHANNEL_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -175,6 +184,12 @@ async function main() {
     `ON CONFLICT(id) DO UPDATE SET email = excluded.email, role = 'admin', email_verified = 1, updated_at = ${epochMs(at)};`,
     `INSERT INTO accounts (id, account_id, provider_id, user_id, password, created_at, updated_at)`,
     `VALUES (${quote(ACCOUNT_ID)}, ${quote(USER_ID)}, 'credential', ${quote(USER_ID)}, ${quote(hash)}, ${epochMs(at)}, ${epochMs(at)})`,
+    `ON CONFLICT(id) DO UPDATE SET password = excluded.password, updated_at = ${epochMs(at)};`,
+    `INSERT INTO users (id, name, email, email_verified, role, created_at, updated_at)`,
+    `VALUES (${quote(SECOND_USER_ID)}, 'E2E Second', ${quote(SECOND_EMAIL)}, 1, 'admin', ${epochMs(at)}, ${epochMs(at)})`,
+    `ON CONFLICT(id) DO UPDATE SET email = excluded.email, role = 'admin', email_verified = 1, updated_at = ${epochMs(at)};`,
+    `INSERT INTO accounts (id, account_id, provider_id, user_id, password, created_at, updated_at)`,
+    `VALUES (${quote(SECOND_ACCOUNT_ID)}, ${quote(SECOND_USER_ID)}, 'credential', ${quote(SECOND_USER_ID)}, ${quote(hash)}, ${epochMs(at)}, ${epochMs(at)})`,
     `ON CONFLICT(id) DO UPDATE SET password = excluded.password, updated_at = ${epochMs(at)};`,
     `INSERT INTO products (id, title, handle, status, is_giftcard, discountable, created_by, updated_by, created_at, updated_at)`,
     `VALUES (${quote(PRODUCT_ID)}, 'E2E Product', 'e2e-product', 'published', 0, 1, ${quote(USER_ID)}, ${quote(USER_ID)}, ${quote(iso(at))}, ${quote(iso(at))})`,

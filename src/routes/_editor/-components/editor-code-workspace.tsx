@@ -55,6 +55,11 @@ import {
 } from "./editor-code-binary-file";
 import { writeThemeBinaryFile } from "../-queries/theme-binary-files";
 import {
+  isEditorWritePaused,
+  refusalOfThemeBinaryWrite,
+} from "@/lib/storefront/editor/editor-write-gate";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
+import {
   scanPublicUrlReferences,
   type PublicUrlScan,
 } from "@/lib/storefront/editor/public-url-references";
@@ -1251,18 +1256,20 @@ const EditorCodeWorkspaceContent = forwardRef<
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
         path
       ];
-      const res = await saveStorefrontThemeFile({
-        data: {
-          storefrontId,
-          themeId,
-          path,
-          content,
-          ...themeFileWritePrecondition(state),
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-        },
-      });
+      const res = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFile({
+          data: {
+            storefrontId,
+            themeId,
+            path,
+            content,
+            ...themeFileWritePrecondition(state),
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+          },
+        }),
+      );
       if (!res.success) {
         if (res.error === "SOURCE_GENERATION_CONFLICT") {
           // The same persistent state the editor shell shows and resolves;
@@ -1306,6 +1313,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (!onSaveFile) onRestartPreview?.();
     },
     onError: (err, variables) => {
+      if (isEditorWritePaused(err)) {
+        useThemeWorkspaceStore
+          .getState()
+          .markAuthPaused(variables.path, workspaceScope);
+        return;
+      }
       const fileState = useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
@@ -1405,14 +1418,16 @@ const EditorCodeWorkspaceContent = forwardRef<
           "Reopen this version: its restore plan is out of date.",
         );
       }
-      const result = await rollbackStorefrontThemeRevision({
-        data: {
-          storefrontId,
-          themeId,
-          revisionNumber,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        rollbackStorefrontThemeRevision({
+          data: {
+            storefrontId,
+            themeId,
+            revisionNumber,
+            expectedSourceGeneration,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1497,9 +1512,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   });
   const manifestMigrationMutation = useMutation({
     mutationFn: async () => {
-      const result = await applyThemeManifestMigrationServerFn({
-        data: { storefrontId, themeId },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        applyThemeManifestMigrationServerFn({
+          data: { storefrontId, themeId },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1574,13 +1591,15 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const starterBootstrapApplyMutation = useMutation({
     mutationFn: async (expectedSourceGeneration: number) => {
-      const result = await applyStarterThemeWorkspace({
-        data: {
-          storefrontId,
-          themeId,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        applyStarterThemeWorkspace({
+          data: {
+            storefrontId,
+            themeId,
+            expectedSourceGeneration,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1655,18 +1674,20 @@ const EditorCodeWorkspaceContent = forwardRef<
       expectedFileId: string;
       expectedVersion: number;
     }) => {
-      const result = await deleteStorefrontThemeFile({
-        data: {
-          storefrontId,
-          themeId,
-          path,
-          expectedFileId,
-          expectedVersion,
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        deleteStorefrontThemeFile({
+          data: {
+            storefrontId,
+            themeId,
+            path,
+            expectedFileId,
+            expectedVersion,
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1731,21 +1752,29 @@ const EditorCodeWorkspaceContent = forwardRef<
             ]),
           });
           if (problem) throw new Error(problem);
-          const result = await writeThemeBinaryFile({
-            storefrontId,
-            themeId,
-            path: write.path,
-            bytes: write.bytes,
-            expectedSourceGeneration: useThemeWorkspaceStore
-              .getState()
-              .getAcceptedSourceGeneration(workspaceScope),
-            precondition: write.replacing
-              ? {
-                  expectedFileId: write.replacing.id,
-                  expectedVersion: write.replacing.version,
-                }
-              : { expectMissing: true },
-          });
+          // An HTTP route rather than a server function: its refusal is
+          // read from the endpoint's own 401/403 contract.
+          const result = await sendEditorWrite(
+            workspaceScope,
+            "theme",
+            () =>
+              writeThemeBinaryFile({
+                storefrontId,
+                themeId,
+                path: write.path,
+                bytes: write.bytes,
+                expectedSourceGeneration: useThemeWorkspaceStore
+                  .getState()
+                  .getAcceptedSourceGeneration(workspaceScope),
+                precondition: write.replacing
+                  ? {
+                      expectedFileId: write.replacing.id,
+                      expectedVersion: write.replacing.version,
+                    }
+                  : { expectMissing: true },
+              }),
+            { refusalOfResult: refusalOfThemeBinaryWrite },
+          );
           if (!result.ok) throw new Error(result.message);
           useThemeWorkspaceStore
             .getState()
@@ -1802,17 +1831,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       asset: SelectedAsset;
       path: string;
     }) => {
-      const result = await copyAssetToThemePublic({
-        data: {
-          storefrontId,
-          themeId,
-          assetId: asset.id,
-          path,
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        copyAssetToThemePublic({
+          data: {
+            storefrontId,
+            themeId,
+            assetId: asset.id,
+            path,
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1843,34 +1874,36 @@ const EditorCodeWorkspaceContent = forwardRef<
       copies: ReadonlyArray<{ from: string; to: string }>;
       publicUrlRewrite?: PublicUrlRewriteRequest;
     }) => {
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId,
-          themeId,
-          files: [],
-          deletions: [],
-          binaryCopies: copies.map((copy) => {
-            const binary = binaryFileByPath.get(copy.from);
-            if (!binary) {
-              throw new Error(`${copy.from} is no longer in the workspace.`);
-            }
-            return {
-              ...copy,
-              expectedFileId: binary.id,
-              expectedVersion: binary.version,
-            };
-          }),
-          ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage:
-            copies.length === 1
-              ? `Copy ${copies[0]!.from} to ${copies[0]!.to}`
-              : `Copy ${copies.length} files`,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFilesBatch({
+          data: {
+            storefrontId,
+            themeId,
+            files: [],
+            deletions: [],
+            binaryCopies: copies.map((copy) => {
+              const binary = binaryFileByPath.get(copy.from);
+              if (!binary) {
+                throw new Error(`${copy.from} is no longer in the workspace.`);
+              }
+              return {
+                ...copy,
+                expectedFileId: binary.id,
+                expectedVersion: binary.version,
+              };
+            }),
+            ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+            createRevision: true,
+            revisionMessage:
+              copies.length === 1
+                ? `Copy ${copies[0]!.from} to ${copies[0]!.to}`
+                : `Copy ${copies.length} files`,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -1952,19 +1985,21 @@ const EditorCodeWorkspaceContent = forwardRef<
         };
       }
 
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId,
-          themeId,
-          files: [],
-          deletions,
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Delete folder ${folderPath}`,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFilesBatch({
+          data: {
+            storefrontId,
+            themeId,
+            files: [],
+            deletions,
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+            createRevision: true,
+            revisionMessage: `Delete folder ${folderPath}`,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return {
         folderPath,
@@ -2153,27 +2188,29 @@ const EditorCodeWorkspaceContent = forwardRef<
       // duplicates, or with nothing, for as long as the gap lasted. URL
       // references the author chose to update are planned again by the
       // server and written in the same batch.
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId,
-          themeId,
-          files: batch.files,
-          deletions: batch.deletions,
-          routePathMoves: batch.routePathMoves,
-          ...(batch.binaryCopies.length > 0
-            ? { binaryCopies: batch.binaryCopies }
-            : {}),
-          ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage:
-            moves.length === 1
-              ? `Move ${moves[0].from} to ${moves[0].to}`
-              : `Move ${moves.length} files`,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFilesBatch({
+          data: {
+            storefrontId,
+            themeId,
+            files: batch.files,
+            deletions: batch.deletions,
+            routePathMoves: batch.routePathMoves,
+            ...(batch.binaryCopies.length > 0
+              ? { binaryCopies: batch.binaryCopies }
+              : {}),
+            ...(publicUrlRewrite ? { publicUrlRewrite } : {}),
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+            createRevision: true,
+            revisionMessage:
+              moves.length === 1
+                ? `Move ${moves[0].from} to ${moves[0].to}`
+                : `Move ${moves.length} files`,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return {
         ...result.data,
@@ -2318,41 +2355,43 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (plan.files.length === 0 && plan.binaryCopies.length === 0) {
         return { plan, result: null };
       }
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId,
-          themeId,
-          files: plan.files.map((file) => ({
-            path: file.path,
-            content: file.content,
-            mimeType: file.mimeType,
-            expectMissing: true,
-          })),
-          deletions: [],
-          ...(plan.binaryCopies.length > 0
-            ? {
-                binaryCopies: plan.binaryCopies.map((copy) => {
-                  const binary = binaryFileByPath.get(copy.from);
-                  if (!binary) {
-                    throw new Error(
-                      `${copy.from} is no longer in the workspace.`,
-                    );
-                  }
-                  return {
-                    ...copy,
-                    expectedFileId: binary.id,
-                    expectedVersion: binary.version,
-                  };
-                }),
-              }
-            : {}),
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Copy ${paths.length === 1 ? paths[0] : `${paths.length} items`}`,
-        },
-      });
+      const result = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFilesBatch({
+          data: {
+            storefrontId,
+            themeId,
+            files: plan.files.map((file) => ({
+              path: file.path,
+              content: file.content,
+              mimeType: file.mimeType,
+              expectMissing: true,
+            })),
+            deletions: [],
+            ...(plan.binaryCopies.length > 0
+              ? {
+                  binaryCopies: plan.binaryCopies.map((copy) => {
+                    const binary = binaryFileByPath.get(copy.from);
+                    if (!binary) {
+                      throw new Error(
+                        `${copy.from} is no longer in the workspace.`,
+                      );
+                    }
+                    return {
+                      ...copy,
+                      expectedFileId: binary.id,
+                      expectedVersion: binary.version,
+                    };
+                  }),
+                }
+              : {}),
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+            createRevision: true,
+            revisionMessage: `Copy ${paths.length === 1 ? paths[0] : `${paths.length} items`}`,
+          },
+        }),
+      );
       if (!result.success) throw new Error(result.message);
       return { plan, result: result.data };
     },
@@ -2401,19 +2440,21 @@ const EditorCodeWorkspaceContent = forwardRef<
     }) => {
       // `expectMissing` is the create precondition: the write is refused if the
       // path already exists, so creating can never overwrite existing work.
-      const res = await saveStorefrontThemeFile({
-        data: {
-          storefrontId,
-          themeId,
-          path,
-          content,
-          mimeType,
-          expectMissing: true,
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-        },
-      });
+      const res = await sendEditorWrite(workspaceScope, "theme", () =>
+        saveStorefrontThemeFile({
+          data: {
+            storefrontId,
+            themeId,
+            path,
+            content,
+            mimeType,
+            expectMissing: true,
+            expectedSourceGeneration: useThemeWorkspaceStore
+              .getState()
+              .getAcceptedSourceGeneration(workspaceScope),
+          },
+        }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
