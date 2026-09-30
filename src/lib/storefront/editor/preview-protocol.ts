@@ -359,6 +359,20 @@ export type PreviewSelectionMessage = {
 /** A resource the preview page asked for and did not get. */
 export type PreviewResourceFailure = Readonly<{ path: string; status: number }>;
 
+/**
+ * Points a loading preview page reports passing, each once, in whatever order
+ * the page reaches them: module scripts run before `DOMContentLoaded`, so the
+ * bridge can start before the document is parsed.
+ */
+export const PREVIEW_LOAD_MILESTONES = [
+  "script",
+  "dom",
+  "bridge",
+  "load",
+  "ready",
+] as const;
+export type PreviewLoadMilestone = (typeof PREVIEW_LOAD_MILESTONES)[number];
+
 export type PreviewToEditorMessage =
   | { type: "morph:storefront-preview-ready" }
   | {
@@ -377,6 +391,22 @@ export type PreviewToEditorMessage =
       /** Page scripts whose module graph failed to load. */
       failedScripts: readonly string[];
       /** Time since the page's first script ran. */
+      elapsedMs: number;
+    }
+  | {
+      /**
+       * That a loading page is still moving, from the same first script.
+       *
+       * Lets the editor tell a slow page from a stopped one. A claim from a
+       * frame that runs Theme JavaScript, so it can only ever make the editor
+       * wait — within its own overall limit — never make it act.
+       */
+      type: "morph:storefront-preview-diagnostic";
+      kind: "progress";
+      /** Milestones reached so far, each once, in the order reached. */
+      reached: readonly PreviewLoadMilestone[];
+      /** Resources that have finished loading, counted as they finished. */
+      resources: number;
       elapsedMs: number;
     }
   | {
@@ -992,6 +1022,7 @@ function isDiagnosticPath(value: unknown): value is string {
 function parsePreviewDiagnostic(
   value: Record<string, unknown>,
 ): PreviewToEditorMessage | null {
+  if (value.kind === "progress") return parsePreviewLoadProgress(value);
   if (value.kind !== "script-failed" && value.kind !== "load-summary") {
     return null;
   }
@@ -1025,6 +1056,35 @@ function parsePreviewDiagnostic(
     kind: value.kind,
     failures,
     failedScripts: value.failedScripts as string[],
+    elapsedMs: Math.round(value.elapsedMs),
+  };
+}
+
+function isPreviewLoadMilestone(value: unknown): value is PreviewLoadMilestone {
+  return (PREVIEW_LOAD_MILESTONES as readonly unknown[]).includes(value);
+}
+
+function parsePreviewLoadProgress(
+  value: Record<string, unknown>,
+): PreviewToEditorMessage | null {
+  if (
+    !Array.isArray(value.reached) ||
+    value.reached.length > PREVIEW_LOAD_MILESTONES.length ||
+    !value.reached.every(isPreviewLoadMilestone) ||
+    new Set(value.reached).size !== value.reached.length ||
+    !Number.isSafeInteger(value.resources) ||
+    (value.resources as number) < 0 ||
+    typeof value.elapsedMs !== "number" ||
+    !Number.isFinite(value.elapsedMs) ||
+    value.elapsedMs < 0
+  ) {
+    return null;
+  }
+  return {
+    type: "morph:storefront-preview-diagnostic",
+    kind: "progress",
+    reached: value.reached as PreviewLoadMilestone[],
+    resources: value.resources as number,
     elapsedMs: Math.round(value.elapsedMs),
   };
 }
