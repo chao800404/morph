@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import {
+  editorRoutePathsMatch,
   normalizeEditorTemplateSearch,
   resolveEditorTemplate,
   routeOwnsDocument,
@@ -112,5 +113,21 @@ describe("routes with a document of their own", () => {
     const id = routeTemplatePlaceholderId("/contact");
     expect(routePathFromTemplatePlaceholder(id)).toBe("/contact");
     expect(routePathFromTemplatePlaceholder("index-template")).toBeNull();
+  });
+});
+
+describe("editorRoutePathsMatch", () => {
+  it("reads Home the same with or without a path in the URL", () => {
+    for (const home of ["/", undefined, null, ""]) {
+      expect(editorRoutePathsMatch("/", home)).toBe(true);
+      expect(editorRoutePathsMatch(home, "/")).toBe(true);
+    }
+  });
+
+  it("tells other pages apart, from Home and from each other", () => {
+    expect(editorRoutePathsMatch("/products", "/products")).toBe(true);
+    expect(editorRoutePathsMatch("/products", undefined)).toBe(false);
+    expect(editorRoutePathsMatch("/products", "/")).toBe(false);
+    expect(editorRoutePathsMatch("/products", "/products/$slug")).toBe(false);
   });
 });

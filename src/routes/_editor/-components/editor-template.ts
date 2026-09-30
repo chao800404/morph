@@ -169,6 +169,21 @@ export function routeOwnsDocument(routePath: string | undefined): boolean {
   );
 }
 
+/**
+ * Whether two editor route paths name the same page.
+ *
+ * The home page has two spellings: `"/"` where the editor asks for it, and no
+ * `routePath` at all in the URL, where the search middleware strips the
+ * default. Compared as they are, a pending switch to Home never matched the
+ * URL it had produced, so it was never cleared and kept asking again.
+ */
+export function editorRoutePathsMatch(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  return (a || "/") === (b || "/");
+}
+
 export function toEditorTemplateSearch(
   template: EditorTemplate,
 ): Pick<
