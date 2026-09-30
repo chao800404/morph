@@ -1,3 +1,4 @@
+import { accessDenied, authRequired } from "@/lib/auth/auth-failure";
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { getAuthWithAdmin } from "../auth/helpers";
@@ -12,7 +13,7 @@ export const authMiddleware = createMiddleware({ type: "function" }).server(
     });
 
     if (!session?.user) {
-      throw new Error("Unauthorized: Please sign in to continue");
+      throw authRequired();
     }
 
     return next({
@@ -45,11 +46,11 @@ export const assetAdminMiddleware = createMiddleware({
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
-    throw new Error("Unauthorized: Please sign in to continue");
+    throw authRequired();
   }
 
   if (!hasAnyRole(session.user.role, ["admin"])) {
-    throw new Error("Forbidden: Administrator access is required");
+    throw accessDenied("Forbidden: Administrator access is required");
   }
 
   return next({
@@ -73,11 +74,11 @@ export const productAdminMiddleware = createMiddleware({
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
-    throw new Error("Unauthorized: Please sign in to continue");
+    throw authRequired();
   }
 
   if (!hasAnyRole(session.user.role, ["admin"])) {
-    throw new Error("Forbidden: Administrator access is required");
+    throw accessDenied("Forbidden: Administrator access is required");
   }
 
   return next({
@@ -97,10 +98,10 @@ export const productReadMiddleware = createMiddleware({
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
-    throw new Error("Unauthorized: Please sign in to continue");
+    throw authRequired();
   }
   if (!hasAnyRole(session.user.role, ["admin", "user"])) {
-    throw new Error(
+    throw accessDenied(
       "Forbidden: Catalogue access is not assigned to this account",
     );
   }
@@ -131,10 +132,10 @@ const roleMiddleware = (allowedRoles: readonly string[], forbidden: string) =>
     const session = await auth.api.getSession({ headers: request.headers });
 
     if (!session?.user) {
-      throw new Error("Unauthorized: Please sign in to continue");
+      throw authRequired();
     }
     if (!hasAnyRole(session.user.role, allowedRoles)) {
-      throw new Error(forbidden);
+      throw accessDenied(forbidden);
     }
 
     return next({
@@ -172,10 +173,10 @@ export const assetReadMiddleware = createMiddleware({
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
-    throw new Error("Unauthorized: Please sign in to continue");
+    throw authRequired();
   }
   if (!hasAnyRole(session.user.role, ["admin", "user"])) {
-    throw new Error("Forbidden: Asset access is not assigned to this account");
+    throw accessDenied("Forbidden: Asset access is not assigned to this account");
   }
 
   return next({

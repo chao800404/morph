@@ -5,6 +5,7 @@ import {
   DASHBOARD_CACHE_GC_TIME,
   DASHBOARD_CACHE_STALE_TIME,
 } from "@/lib/query/cache-policy";
+import { queryRetry } from "@/lib/query/retry-policy";
 
 // Import the generated route tree
 import { routeTree } from "./routeTree.gen";
@@ -16,6 +17,7 @@ export const getRouter = () => {
       queries: {
         staleTime: DASHBOARD_CACHE_STALE_TIME,
         gcTime: DASHBOARD_CACHE_GC_TIME,
+        retry: queryRetry,
       },
     },
   });
