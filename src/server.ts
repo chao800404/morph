@@ -1,5 +1,6 @@
 import type { Register } from "@tanstack/react-router";
 import type { RequestHandler } from "@tanstack/react-start/server";
+import { keepImport } from "@/server/keep-import";
 
 /**
  * Worker entry.
@@ -200,10 +201,30 @@ async function handleStorefrontRequest(request: Request): Promise<Response> {
   return service.handleRequest(request);
 }
 
+// Loaded on first use and then kept; see keep-import.ts for why a bare
+// `await import()` here cost a round trip to Vite on every request in dev.
+// Modules only: `env` and everything read from a request stay per request.
+const loadWorkersRuntime = keepImport(() => import("cloudflare:workers"));
+const loadStorefrontRouting = keepImport(
+  () => import("@/lib/storefront/service/storefront-request-routing"),
+);
+const loadPreviewCredentials = keepImport(
+  () => import("@/lib/storefront/service/preview-proxy-credentials"),
+);
+const loadSandboxSdk = keepImport(() => import("@cloudflare/sandbox"));
+const loadPreviewSandboxBinding = keepImport(
+  () => import("@/lib/storefront/service/preview-sandbox-binding"),
+);
+const loadPreviewObservation = keepImport(
+  () => import("@/lib/storefront/service/preview-proxy-observation"),
+);
+const loadPreviewResponse = keepImport(
+  () => import("@/lib/storefront/service/preview-proxy-response"),
+);
+
 async function isStorefrontHost(request: Request): Promise<boolean> {
-  const { shouldRouteToStorefront } =
-    await import("@/lib/storefront/service/storefront-request-routing");
-  const { env } = await import("cloudflare:workers");
+  const { shouldRouteToStorefront } = await loadStorefrontRouting();
+  const { env } = await loadWorkersRuntime();
   return shouldRouteToStorefront(
     request,
     env as unknown as Record<string, unknown>,
@@ -219,9 +240,9 @@ async function isStorefrontHost(request: Request): Promise<boolean> {
  */
 async function proxyPreviewRequest(request: Request): Promise<Response | null> {
   try {
-    const { env, waitUntil } = await import("cloudflare:workers");
+    const { env, waitUntil } = await loadWorkersRuntime();
     const { isSandboxPreviewRequest, previewRequestFor } =
-      await import("@/lib/storefront/service/preview-proxy-credentials");
+      await loadPreviewCredentials();
     if (
       !isSandboxPreviewRequest(
         new URL(request.url),
@@ -230,9 +251,9 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
     ) {
       return null;
     }
-    const { proxyToSandbox, getSandbox } = await import("@cloudflare/sandbox");
+    const { proxyToSandbox, getSandbox } = await loadSandboxSdk();
     const { previewProxyEnv, previewSandboxBinding } =
-      await import("@/lib/storefront/service/preview-sandbox-binding");
+      await loadPreviewSandboxBinding();
     const bindings = env as unknown as Record<string, unknown>;
     const startedAt = Date.now();
     // Platform credentials are removed before the SDK sees the request, so
@@ -244,7 +265,7 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
     if (response) {
       const durationMs = Date.now() - startedAt;
       const { observePreviewProxyResponse, previewResponseObservation } =
-        await import("@/lib/storefront/service/preview-proxy-observation");
+        await loadPreviewObservation();
       // Recorded after the response is on its way; the page never waits on it.
       if (previewResponseObservation(response.status, durationMs)) {
         waitUntil(
@@ -265,8 +286,7 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
           }).catch(() => {}),
         );
       }
-      const { finishPreviewResponse } =
-        await import("@/lib/storefront/service/preview-proxy-response");
+      const { finishPreviewResponse } = await loadPreviewResponse();
       return finishPreviewResponse(response);
     }
     return response;
