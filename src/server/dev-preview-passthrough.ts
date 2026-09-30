@@ -37,7 +37,10 @@ export function isDevPreviewHost(
   const suffix = `.${previewHostname.toLowerCase()}`;
   if (!host.endsWith(suffix)) return false;
   const label = host.slice(0, -suffix.length);
-  return /^\d{2,5}-[a-z0-9-]+$/.test(label);
+  // Underscores included: the SDK's preview tokens are [a-z0-9_]. A token
+  // with one was left to Morph's Vite, which served Morph's own modules to
+  // the preview, and the page never hydrated.
+  return /^\d{2,5}-[a-z0-9_-]+$/.test(label);
 }
 
 /**

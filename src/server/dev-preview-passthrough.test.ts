@@ -12,6 +12,9 @@ describe("isDevPreviewHost", () => {
   it.each([
     "5173-d71a98ea08efb7c153cfb496c699d0dd-token.preview.localhost:3100",
     "5173-abc.preview.localhost",
+    // The Sandbox SDK's tokens are [a-z0-9_]; this one was left to Morph's
+    // Vite, which answered with Morph's own modules and broke hydration.
+    "5173-d71a98ea08efb7c153cfb496c699d0dd-_fkpsl7llmqaatv1.preview.localhost:3100",
   ])("parks the preview host %s", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(true);
   });
@@ -22,6 +25,14 @@ describe("isDevPreviewHost", () => {
     "evil.preview.localhost",
     "5173-abc.preview.localhost.evil.test",
     "shop.localtest.me:3000",
+    // Accepting underscores widens the token only: the port, the single
+    // label and the configured suffix are still required.
+    "5173_abc.preview.localhost",
+    "5173-abc.sub.preview.localhost",
+    "5173-.preview.localhost",
+    "a5173-abc.preview.localhost",
+    "5173-abc_def.preview.localhost.evil.test",
+    "5173-abc_def.evilpreview.localhost",
     undefined,
   ])("leaves %s to Morph's own dev server", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(false);
