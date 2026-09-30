@@ -394,13 +394,64 @@ function resolveSectionEntryImplementationPath(
   return entryPath;
 }
 
-function routeSectionRecords(
-  files: Array<{ path: string; content?: string }>,
-): Array<{
+type RouteSectionRecord = Readonly<{
   componentRef: string;
   sectionType: string;
   componentSourcePath: string;
-}> {
+}>;
+
+/**
+ * Every route's sections, parsed once per file list rather than once per call.
+ *
+ * Parsing parses every route with Babel, and it is asked for from render: the
+ * style Inspector did it twice on each render, and a page switch spent two to
+ * three seconds of main thread on it. Keyed by the list object, so lists in use
+ * at the same time — the editor's and a preview's — each keep theirs, and one
+ * no longer used is released with it.
+ *
+ * The key alone cannot tell a list edited in place from the one that was
+ * parsed, so each entry also holds a snapshot of what the parse read: every
+ * path and content string, copied at the time. A list whose snapshot differs is
+ * parsed again.
+ */
+const routeSectionRecordsCache = new WeakMap<
+  object,
+  Readonly<{ snapshot: readonly (string | null)[]; records: readonly RouteSectionRecord[] }>
+>();
+
+function routeSectionInputSnapshot(
+  files: ReadonlyArray<{ path: string; content?: string }>,
+): (string | null)[] {
+  const snapshot: (string | null)[] = [];
+  for (const file of files) snapshot.push(file.path, file.content ?? null);
+  return snapshot;
+}
+
+function sameSnapshot(
+  left: readonly (string | null)[],
+  right: readonly (string | null)[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function routeSectionRecords(
+  files: Array<{ path: string; content?: string }>,
+): readonly RouteSectionRecord[] {
+  const snapshot = routeSectionInputSnapshot(files);
+  const cached = routeSectionRecordsCache.get(files);
+  if (cached && sameSnapshot(cached.snapshot, snapshot)) return cached.records;
+  const records = parseRouteSectionRecords(files);
+  routeSectionRecordsCache.set(files, { snapshot, records });
+  return records;
+}
+
+function parseRouteSectionRecords(
+  files: Array<{ path: string; content?: string }>,
+): RouteSectionRecord[] {
   const contentFiles = sourceFilesWithContent(files);
   const registry = buildThemeRouteRegistry(contentFiles);
   const records: Array<{

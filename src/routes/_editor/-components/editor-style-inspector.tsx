@@ -765,16 +765,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     }
   }, [activeComputedStyleRevision]);
 
-  const componentPath =
-    (selection?.sourceFilePath &&
-    themeFiles?.some((file) => file.path === selection.sourceFilePath)
-      ? selection.sourceFilePath
-      : null) ??
-    getComponentFilePath(
-      section.type,
-      themeFiles,
-      section.componentRef ?? undefined,
-    );
   /**
    * The component the section is made of, whatever element was clicked.
    *
@@ -782,12 +772,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * shared component is that component's file. A question about how this
    * section binds one of its own fields has to be asked of the section's
    * component: the shared one has never heard of the field.
+   *
+   * Looked up once per section and file list, not on every render: without a
+   * Theme manifest the lookup parses every route.
    */
-  const sectionComponentPath = getComponentFilePath(
-    section.type,
-    themeFiles,
-    section.componentRef ?? undefined,
+  const sectionComponentPath = useMemo(
+    () =>
+      getComponentFilePath(
+        section.type,
+        themeFiles,
+        section.componentRef ?? undefined,
+      ),
+    [section.componentRef, section.type, themeFiles],
   );
+  const componentPath =
+    (selection?.sourceFilePath &&
+    themeFiles?.some((file) => file.path === selection.sourceFilePath)
+      ? selection.sourceFilePath
+      : null) ?? sectionComponentPath;
   const activeSourceLocation = selection?.sourceLocation ?? null;
   const propString = (key: string): string | undefined =>
     typeof props[key] === "string" ? props[key] : undefined;
