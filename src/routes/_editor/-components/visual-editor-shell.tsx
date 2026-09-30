@@ -242,6 +242,12 @@ import {
   reduceLivePreviewLifecycle,
 } from "./live-preview-lifecycle";
 import {
+  createPreviewFrameLoadWatchdog,
+  documentVisibility,
+  type PreviewFrameLoadExpiry,
+  type PreviewFrameLoadWatchdog,
+} from "./preview-frame-load-watchdog";
+import {
   editorRoutePathsMatch,
   resolveEditorTemplate,
   routeOwnsDocument,
@@ -553,14 +559,21 @@ const PREVIEW_HEARTBEAT_TIMEOUT_MS = 15_000;
 const PREVIEW_LIVENESS_FAILURE_MESSAGE =
   "Live Preview stopped responding after one automatic reconnect. Retry Preview to reconnect.";
 /**
- * How long a frame may take to announce itself before it is called
- * unreachable. Generous, because this covers a cold dev server compiling the
- * Theme for the first time — but finite, because the alternative is a canvas
- * that spins forever at a sandbox that was never going to answer.
+ * Why a frame that never announced itself was given up on, in the author's
+ * terms. How long it may take, and what counts as still loading, is
+ * `preview-frame-load-watchdog`'s to decide.
  */
-const PREVIEW_FRAME_LOAD_TIMEOUT_MS = 45_000;
-const PREVIEW_UNREACHABLE_FAILURE_MESSAGE =
-  "Live Preview never finished loading after one automatic reconnect. Retry Preview to reconnect.";
+const PREVIEW_FRAME_LOAD_FAILURE_MESSAGES: Record<
+  PreviewFrameLoadExpiry,
+  string
+> = {
+  unreachable:
+    "Live Preview never answered after one automatic reconnect. Retry Preview to reconnect.",
+  stalled:
+    "Live Preview loading timed out: it stopped making progress after one automatic reconnect. Retry Preview to reconnect.",
+  "too-slow":
+    "Live Preview loading timed out: it was still loading after one automatic reconnect. Retry Preview to reconnect.",
+};
 const PREVIEW_ADDRESS_STALE_MESSAGE =
   "Live Preview's address stopped answering after one automatic reconnect. Retry Preview to reconnect.";
 const PREVIEW_SOURCE_TIMEOUT_MS = 15_000;
@@ -2434,6 +2447,11 @@ export function VisualEditorShell({
     lastPongAt: number;
     failed: boolean;
   } | null>(null);
+  /** The watchdog for the frame still loading, if one is, and whose it is. */
+  const previewFrameLoadWatchdogRef = useRef<{
+    key: string;
+    watchdog: PreviewFrameLoadWatchdog;
+  } | null>(null);
   const {
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
@@ -2861,15 +2879,25 @@ export function VisualEditorShell({
 
     if (previewLifecycle.phase === "loading-frame" && previewLifecycle.key) {
       const key = previewLifecycle.key;
-      const timer = window.setTimeout(() => {
-        dispatchPreviewLifecycle({
-          type: "automatic-recovery",
-          key,
-          message: PREVIEW_UNREACHABLE_FAILURE_MESSAGE,
-          at: Date.now(),
-        });
-      }, PREVIEW_FRAME_LOAD_TIMEOUT_MS);
-      return () => window.clearTimeout(timer);
+      const watchdog = createPreviewFrameLoadWatchdog({
+        visibility: documentVisibility(),
+        onExpire: (reason) => {
+          dispatchPreviewLifecycle({
+            type: "automatic-recovery",
+            key,
+            message: PREVIEW_FRAME_LOAD_FAILURE_MESSAGES[reason],
+            at: Date.now(),
+          });
+        },
+      });
+      const entry = { key, watchdog };
+      previewFrameLoadWatchdogRef.current = entry;
+      return () => {
+        watchdog.dispose();
+        if (previewFrameLoadWatchdogRef.current === entry) {
+          previewFrameLoadWatchdogRef.current = null;
+        }
+      };
     }
 
     if (previewLifecycle.phase === "syncing-source" && previewLifecycle.key) {
@@ -4655,6 +4683,12 @@ export function VisualEditorShell({
     const handlePreviewDiagnostic = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-diagnostic") return;
+      if (message.kind === "progress") {
+        // Only the watchdog for this frame may be kept waiting by it.
+        const loading = previewFrameLoadWatchdogRef.current;
+        if (loading?.key === previewKey) loading.watchdog.progress(message);
+        return;
+      }
       const failures = message.failures
         .map((failure) => `${failure.status} ${failure.path}`)
         .join(", ");

@@ -1,4 +1,8 @@
 import { PREVIEW_EMPTY_TEXT_LINE_ATTRIBUTE } from "@/lib/storefront/editor/preview-empty-text-layout";
+import {
+  THEME_PREVIEW_BRIDGE_READY_EVENT,
+  THEME_PREVIEW_BRIDGE_STARTED_EVENT,
+} from "./theme-preview-diagnostic-script";
 
 /**
  * The script a Live Preview page runs so the editor can find content in it.
@@ -494,9 +498,14 @@ function reportReady() {
     channel,
   );
   reportStructure();
+  window.dispatchEvent(new Event("${THEME_PREVIEW_BRIDGE_READY_EVENT}"));
 }
 
 if (channel) {
+  // For the page's first script, which reports load progress to the editor
+  // and cannot import anything from this graph.
+  window.dispatchEvent(new Event("${THEME_PREVIEW_BRIDGE_STARTED_EVENT}"));
+
   const ensurePreviewRoot = () => {
     // A marked element that React has since replaced is not the page any
     // more, so it cannot go on answering for it.
