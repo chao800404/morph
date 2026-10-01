@@ -1858,6 +1858,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                       renameValue.trim() || null,
                     );
                     setRenameCandidate(null);
+                  } catch (error) {
+                    // Kept open with the name typed, so pressing Rename
+                    // again is all it takes; the reason is said once.
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "The section could not be renamed.",
+                    );
                   } finally {
                     setRenamePending(false);
                   }
@@ -1886,8 +1894,8 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                 {deleteCandidate?.kind === "detach"
                   ? "This copies the section's component into a folder this page owns and points only this page at the copy. Other pages, and every later Add section, keep using the original, and later changes to the original don't reach this copy."
                   : deleteCandidate?.kind === "section"
-                  ? "This removes the section from the Theme route source and its content from this page. If the section has its own page copy, those files are deleted with it. To bring it back, restore an earlier revision from the file history in Code mode."
-                  : "This removes the selected element and all of its nested content from the Theme source. The change can be undone from the editor history."}
+                    ? "This removes the section from the Theme route source and its content from this page. If the section has its own page copy, those files are deleted with it. To bring it back, restore an earlier revision from the file history in Code mode."
+                    : "This removes the selected element and all of its nested content from the Theme source. The change can be undone from the editor history."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
