@@ -27,7 +27,7 @@ The visible effects:
 - the Code tab switched to the route file, so a Code-mode save wrote `src/routes/index.tsx` instead of the component being edited;
 - canvas selection lost elements mid-scan.
 
-Fix (`d1181ea`): the overlays carry `data-morph-editor-ui`, and the structure observer drops mutations that come only from editor UI. After it, the same probe saw no structure reports in that window, and the canvas style edit and the `public/` root-URL Code save pass under Start. The stale-measurement editor test also read the preview channel from the frame's own address, which a Start preview drops on its first navigation; it now reads the iframe `src` and passes on both runtimes.
+Fix (`d1181ea`, then `1ea09af`): the structure observer leaves out a mutation only when it is inside one of the editor's two overlays, or adds or removes nothing but them. The overlays are recognised by identity (`owns`), so a Theme cannot hide its own structure by imitating a marker; the first version used a `data-morph-editor-ui` attribute and was replaced for that reason. Unit tests with a real `MutationObserver` show a Theme node added or removed, a Theme element's attribute, class and text changes, and a Theme node added together with an overlay all still reported. After it, the same probe saw no structure reports in that window, and the canvas style edit and the `public/` root-URL Code save pass under Start. The stale-measurement editor test also read the preview channel from the frame's own address, which a Start preview drops on its first navigation; it now reads the iframe `src` and passes on both runtimes.
 
 ## Editor suites under the Start runtime
 
