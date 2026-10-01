@@ -35,11 +35,7 @@ Fix (`d1181ea`): the overlays carry `data-morph-editor-ui`, and the structure ob
 
 ## Open gaps
 
-1. **A Code save can stall while a Start preview applies it** (`text-promotion`). The save request and two preview-file updates to Morph's dev server were sent and never answered. The editor stayed on "Saving…", the switch back to Design waited for it, and the case failed on the canvas.
-   - It failed alone twice, and once more with the overlay fix reverted, so the fix did not cause it.
-   - The same case passes on the client-only runtime, and once passed under Start earlier.
-   - The file save path does not call the preview, so this looks like the dev server as a whole not answering while the Start preview processes the change. The cause is not known.
-   - Traces: `fp-start-20261002-045445`, `fp-start-20261002-050249`.
+1. ~~A Code save can stall while a Start preview applies it~~ — **not a stall; a test race, now fixed.** The first reading of `text-promotion`'s trace marked the save as never answered, but the trace simply ended 1.8 s after the save went out. The shared helper `saveEditedSource` waited for any POST carrying the file path, and under Start the preview's own file sync (which goes out first, while the save waits on its formatter) matched it. The test then switched to Design, which correctly waited for the save, and probed the canvas while still in Code. The helper now waits for the `saveStorefrontThemeFile` call itself and requires its body to say the file was saved. After that, `text-promotion` and `public-root-url` pass on both runtimes (`fp-start-20261002-053012`, `fp-client-20261002-053531`). The same helper is on main and is corrected there separately.
 2. **A Theme's default (Lax) cookie is not kept inside the editor canvas.** The preview is framed cross-site, which the preview's security boundary requires: a registrable domain of its own. Opened as its own page the same cookie round-trips. This is asserted as a `KNOWN GAP` and follows from the isolation requirement; it is not a bug to remove.
 3. **Measured locally only.** Not in Cloudflare, not with the Sandbox container's real startup, network or resource limits.
 
@@ -58,6 +54,5 @@ Client run 2 was slower in everything, page load included (2.2–2.4 s against a
 
 ## Before this could replace the client-only preview
 
-- Find and fix gap 1, a Code save stalling under Start.
 - Measure in an isolated Cloudflare environment: cold and warm start, time to interactive.
 - The preconditions in ROADMAP "TanStack Start 原生相容" for opening a full Start preview to users: outbound allow-list, resource budgets, cross-preview cookie isolation, control-service authorization. None of them is addressed here.
