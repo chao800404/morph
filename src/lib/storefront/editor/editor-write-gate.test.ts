@@ -9,6 +9,7 @@ import {
   editorWriteRefusal,
   editorWriterChanged,
   finishEditorWriteVerification,
+  isEarlierSignInRefusal,
   pauseEditorWrites,
   refusalOfError,
   refusalOfThemeBinaryWrite,
@@ -20,6 +21,10 @@ import {
   authRequired,
 } from "@/lib/auth/auth-failure";
 
+/** Numbers verifications in order, as the tab-wide count does. */
+let stampCount = 0;
+const nextStamp = () => ++stampCount;
+
 const signedOut = () =>
   pauseEditorWrites(OPEN_EDITOR_WRITE_GATE, "AUTH_REQUIRED", "theme");
 
@@ -27,7 +32,7 @@ function verifyTo(
   gate: EditorWriteGate,
   answer: Parameters<typeof finishEditorWriteVerification>[2],
 ) {
-  const begun = beginEditorWriteVerification(gate)!;
+  const begun = beginEditorWriteVerification(gate, nextStamp)!;
   return finishEditorWriteVerification(begun, begun.epoch, answer);
 }
 
@@ -140,7 +145,7 @@ describe("recovering", () => {
   });
 
   it("ignores an answer to a verification the editor has moved past", () => {
-    const begun = beginEditorWriteVerification(signedOut())!;
+    const begun = beginEditorWriteVerification(signedOut(), nextStamp)!;
     // The session goes again while the question is in flight.
     const refused = pauseEditorWrites(begun, "AUTH_REQUIRED", "theme");
     const late = finishEditorWriteVerification(
@@ -153,9 +158,11 @@ describe("recovering", () => {
   });
 
   it("has nothing to verify when nothing is paused, and never runs two at once", () => {
-    expect(beginEditorWriteVerification(OPEN_EDITOR_WRITE_GATE)).toBeNull();
-    const begun = beginEditorWriteVerification(signedOut())!;
-    expect(beginEditorWriteVerification(begun)).toBeNull();
+    expect(
+      beginEditorWriteVerification(OPEN_EDITOR_WRITE_GATE, nextStamp),
+    ).toBeNull();
+    const begun = beginEditorWriteVerification(signedOut(), nextStamp)!;
+    expect(beginEditorWriteVerification(begun, nextStamp)).toBeNull();
   });
 
   it("goes back to waiting when the question itself fails", () => {
@@ -231,5 +238,82 @@ describe("a request refused for another account", () => {
     const changed = pauseEditorWrites(verified, "ACCOUNT_CHANGED", "theme");
     expect(changed.recovery).toBe("different-account");
     expect(confirmEditorWriteResume(changed, verified.epoch)).toBe(changed);
+  });
+});
+
+describe("a sign-in refusal of a request sent before the latest verification", () => {
+  /** Paused, then verified: the request was sent under `sentUnder`. */
+  function verifiedAfter() {
+    const paused = signedOut();
+    const sentUnder = paused.verificationStamp;
+    const begun = beginEditorWriteVerification(paused, nextStamp)!;
+    const verified = finishEditorWriteVerification(
+      begun,
+      begun.epoch,
+      "verified",
+    );
+    return { sentUnder, begun, verified };
+  }
+
+  it("does not undo the verification it was sent before", () => {
+    const { sentUnder, verified } = verifiedAfter();
+    expect(
+      pauseEditorWrites(verified, "AUTH_REQUIRED", "theme", sentUnder),
+    ).toBe(verified);
+    expect(isEarlierSignInRefusal(verified, "AUTH_REQUIRED", sentUnder)).toBe(
+      true,
+    );
+  });
+
+  it("does not undo a verification still in flight, which then finishes as verified", () => {
+    const { sentUnder, begun } = verifiedAfter();
+    const after = pauseEditorWrites(begun, "AUTH_REQUIRED", "theme", sentUnder);
+    expect(after).toBe(begun);
+    expect(
+      finishEditorWriteVerification(after, after.epoch, "verified").recovery,
+    ).toBe("verified");
+  });
+
+  it("does not close writes reopened since", () => {
+    const { sentUnder, verified } = verifiedAfter();
+    const open = confirmEditorWriteResume(verified, verified.epoch);
+    expect(open.verificationStamp).toBe(verified.verificationStamp);
+    expect(pauseEditorWrites(open, "AUTH_REQUIRED", "theme", sentUnder)).toBe(
+      open,
+    );
+    expect(canSendEditorWrite(open, "theme")).toBe(true);
+  });
+
+  it("still counts when the request was sent once the verification began", () => {
+    const { begun } = verifiedAfter();
+    const after = pauseEditorWrites(
+      begun,
+      "AUTH_REQUIRED",
+      "theme",
+      begun.verificationStamp,
+    );
+    expect(after.recovery).toBe("still-signed-out");
+    expect(finishEditorWriteVerification(after, begun.epoch, "verified")).toBe(
+      after,
+    );
+  });
+
+  it("still counts when nothing says when it was sent", () => {
+    const { verified } = verifiedAfter();
+    expect(pauseEditorWrites(verified, "AUTH_REQUIRED", "theme").recovery).toBe(
+      "still-signed-out",
+    );
+  });
+
+  it("is only the sign-in refusal: another account or no permission still count", () => {
+    const { sentUnder, verified } = verifiedAfter();
+    expect(
+      pauseEditorWrites(verified, "ACCOUNT_CHANGED", "theme", sentUnder)
+        .recovery,
+    ).toBe("different-account");
+    const open = confirmEditorWriteResume(verified, verified.epoch);
+    expect(
+      pauseEditorWrites(open, "ACCESS_DENIED", "theme", sentUnder).denied,
+    ).toEqual(["theme"]);
   });
 });
