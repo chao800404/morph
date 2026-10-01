@@ -31,7 +31,10 @@ Fix (`d1181ea`): the overlays carry `data-morph-editor-ui`, and the structure ob
 
 ## Editor suites under the Start runtime
 
-`native-compat-preview`, `editor`, `editor-writes-paused`, `auth-failure`, `preview-frame-load`, `public-root-url`, `text-promotion` and `responsive`, after the fix: **49 passed, 3 skipped, 1 failed** (`fp-start-20261002-041800`).
+`native-compat-preview`, `editor`, `editor-writes-paused`, `auth-failure`, `preview-frame-load`, `public-root-url`, `text-promotion` and `responsive`:
+
+- after the overlay fix: **49 passed, 3 skipped, 1 failed** (`fp-start-20261002-041800`); the failure was the test race described under gap 1;
+- after the helper fix as well: **50 passed, 3 skipped, 0 failed** (`fp-start-20261002-055426`). The 3 skipped are the client-only `KNOWN GAP` cases.
 
 ## Open gaps
 
