@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { optimisticListMutation } from "@/lib/query/optimistic-list";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
 import { CommentGroupItem } from "./comments/comment-group-item";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
 
 type EditorCommentsSidebarProps = {
   storefrontId: string;
@@ -130,13 +131,18 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       name?: string;
       viewportWidth?: number;
     }) => {
-      const res = await updateStorefrontCommentGroup({
-        data: {
-          storefrontId,
-          themeId,
-          ...data,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          updateStorefrontCommentGroup({
+            data: {
+              storefrontId,
+              themeId,
+              ...data,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -169,13 +175,18 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
 
   const deleteGroupMutation = useMutation({
     mutationFn: async (groupId: string) => {
-      const res = await deleteStorefrontCommentGroup({
-        data: {
-          storefrontId,
-          themeId,
-          groupId,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          deleteStorefrontCommentGroup({
+            data: {
+              storefrontId,
+              themeId,
+              groupId,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -191,13 +202,18 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
 
   const clearResolvedGroupMutation = useMutation({
     mutationFn: async (groupId: string) => {
-      const res = await clearStorefrontCommentGroupResolved({
-        data: {
-          storefrontId,
-          themeId,
-          groupId,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          clearStorefrontCommentGroupResolved({
+            data: {
+              storefrontId,
+              themeId,
+              groupId,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -222,14 +238,19 @@ export const EditorCommentsSidebar = memo(function EditorCommentsSidebar({
       threadId: string;
       resolved: boolean;
     }) => {
-      const res = await resolveStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          threadId,
-          resolved,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          resolveStorefrontCommentThread({
+            data: {
+              storefrontId,
+              themeId,
+              threadId,
+              resolved,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },

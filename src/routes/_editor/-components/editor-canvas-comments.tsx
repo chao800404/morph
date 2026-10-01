@@ -25,6 +25,7 @@ import { storefrontCommentQueries } from "../-queries/storefront-comment.queries
 import { CommentPin } from "./comments/comment-pin";
 import { CommentThreadCard } from "./comments/comment-thread-card";
 import { getAuthorPalette, getInitials } from "./comments/comment-utils";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
 
 type EditorCanvasCommentsProps = {
   storefrontId: string;
@@ -153,19 +154,24 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
             ? "tablet"
             : "desktop";
 
-      const res = await createStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          templateId,
-          groupId: activeGroupId ?? undefined,
-          viewportWidth: currentWidth,
-          viewport: currentViewport,
-          positionX,
-          positionY,
-          content,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          createStorefrontCommentThread({
+            data: {
+              storefrontId,
+              themeId,
+              templateId,
+              groupId: activeGroupId ?? undefined,
+              viewportWidth: currentWidth,
+              viewport: currentViewport,
+              positionX,
+              positionY,
+              content,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -195,15 +201,20 @@ export const EditorCanvasComments = memo(function EditorCanvasComments({
       positionX: number;
       positionY: number;
     }) => {
-      const res = await updateStorefrontCommentThreadPosition({
-        data: {
-          storefrontId,
-          themeId,
-          threadId,
-          positionX,
-          positionY,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          updateStorefrontCommentThreadPosition({
+            data: {
+              storefrontId,
+              themeId,
+              threadId,
+              positionX,
+              positionY,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },

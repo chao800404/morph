@@ -1,3 +1,7 @@
+import {
+  EDITOR_WRITER_HEADER,
+  getActiveEditorWriter,
+} from "@/lib/auth/editor-writer";
 import type { StorefrontThemeBinaryFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 
 /**
@@ -62,9 +66,14 @@ export async function writeThemeBinaryFile(input: {
           expectedVersion: String(input.precondition.expectedVersion),
         }),
   });
+  const writer = getActiveEditorWriter();
   const response = await fetch(`${THEME_BINARY_FILE_ENDPOINT}?${query}`, {
     method: "POST",
-    headers: { "content-type": "application/octet-stream" },
+    headers: {
+      "content-type": "application/octet-stream",
+      // Which account this editor belongs to; see editor-writer.ts.
+      ...(writer ? { [EDITOR_WRITER_HEADER]: writer } : {}),
+    },
     body: input.bytes,
     credentials: "same-origin",
   });

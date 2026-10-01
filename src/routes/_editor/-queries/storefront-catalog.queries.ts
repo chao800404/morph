@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
+import { retryUnlessRefused } from "@/lib/query/retry-policy";
 
 export const storefrontCatalogQueries = {
   preview: (
@@ -30,6 +31,6 @@ export const storefrontCatalogQueries = {
         return result.data;
       },
       staleTime: 0,
-      retry: 1,
+      retry: retryUnlessRefused(1),
     }),
 };

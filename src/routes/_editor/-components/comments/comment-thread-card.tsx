@@ -22,6 +22,7 @@ import {
 import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatRelativeTime, getInitials } from "./comment-utils";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
 
 type CommentThreadCardProps = {
   thread: StorefrontCommentThreadDTO;
@@ -56,14 +57,19 @@ export const CommentThreadCard = memo(function CommentThreadCard({
 
   const replyMutation = useMutation({
     mutationFn: async (content: string) => {
-      const res = await replyStorefrontComment({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-          content,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          replyStorefrontComment({
+            data: {
+              storefrontId,
+              themeId,
+              threadId: thread.id,
+              content,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -78,14 +84,19 @@ export const CommentThreadCard = memo(function CommentThreadCard({
 
   const resolveMutation = useMutation({
     mutationFn: async (resolved: boolean) => {
-      const res = await resolveStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-          resolved,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          resolveStorefrontCommentThread({
+            data: {
+              storefrontId,
+              themeId,
+              threadId: thread.id,
+              resolved,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -116,13 +127,18 @@ export const CommentThreadCard = memo(function CommentThreadCard({
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      const res = await deleteStorefrontCommentThread({
-        data: {
-          storefrontId,
-          themeId,
-          threadId: thread.id,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          deleteStorefrontCommentThread({
+            data: {
+              storefrontId,
+              themeId,
+              threadId: thread.id,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },

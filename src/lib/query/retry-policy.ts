@@ -19,3 +19,16 @@ export function queryRetry(failureCount: number, error: unknown): boolean {
   if (classifyAuthFailure(error) !== null) return false;
   return !isServer && failureCount < DEFAULT_BROWSER_RETRIES;
 }
+
+/**
+ * A query's own retry count, stopped early by an auth refusal.
+ *
+ * For queries that set their own count: without this, their `retry` replaces
+ * `queryRetry` entirely and a refusal would be asked again anyway.
+ */
+export function retryUnlessRefused<TError = Error>(
+  limit: number,
+): (failureCount: number, error: TError) => boolean {
+  return (failureCount, error) =>
+    classifyAuthFailure(error) === null && failureCount < limit;
+}
