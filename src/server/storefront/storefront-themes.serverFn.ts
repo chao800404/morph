@@ -163,6 +163,14 @@ export const reorderStorefrontThemeSections = createServerFn({ method: "POST" })
             error: "NOT_FOUND",
           });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      // The document moved since this tab last saw it; see
+      // `updateStorefrontThemeSectionProps`.
+      if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
+        return fail("Template draft was modified concurrently.", {
+          error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
       return failure(
         "Reorder storefront theme sections error",
         error,
@@ -188,6 +196,14 @@ export const renameStorefrontThemeSection = createServerFn({ method: "POST" })
         ? ok("Section renamed", result)
         : fail("Theme template or section not found", { error: "NOT_FOUND" });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      // The document moved since this tab last saw it; see
+      // `updateStorefrontThemeSectionProps`.
+      if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
+        return fail("Template draft was modified concurrently.", {
+          error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
       return failure(
         "Rename storefront theme section error",
         error,

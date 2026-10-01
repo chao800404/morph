@@ -7024,6 +7024,47 @@ export function VisualEditorShell({
    * the same template queue so it takes its turn behind a pending content
    * edit rather than racing it for the draft generation.
    */
+  /**
+   * After a structural write was refused because the document moved: loads
+   * the document as it is now, and makes its draft generation the one this
+   * tab writes against next — so the author's next press is judged against
+   * what they can now see, rather than refused for the same reason forever.
+   *
+   * Only while nothing of this document is pending: pending content carries
+   * edits made against the older version and goes through its own rebase
+   * ("Load latest, keep mine"), which takes the generation itself.
+   */
+  const adoptLatestDocument = useCallback(
+    async (requestedTemplateId: string) => {
+      const templateId =
+        routeTemplateIdsRef.current.get(requestedTemplateId) ??
+        requestedTemplateId;
+      const fresh = await queryClient.fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      });
+      if (!fresh.success) return;
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === templateId,
+      );
+      if (typeof template?.draftGeneration !== "number") return;
+      const pendingHere = Array.from(pendingPropsMapRef.current.keys()).some(
+        (key) =>
+          key.startsWith(`${templateId}:`) ||
+          key.startsWith(`${requestedTemplateId}:`),
+      );
+      if (pendingHere) return;
+      templateDraftGenerationRef.current.set(
+        templateId,
+        template.draftGeneration,
+      );
+    },
+    [context.storefront.id, context.theme.id, queryClient],
+  );
+
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
       // The binding, not the active template: on a page whose document is not
@@ -7046,6 +7087,15 @@ export function VisualEditorShell({
           }),
       );
       if (result && !result.success) {
+        if ((result as { error?: string }).error === TEMPLATE_DRAFT_CONFLICT) {
+          await adoptLatestDocument(boundTemplateId);
+          // Thrown, so the dialog stays open with the name typed: pressing
+          // Rename again applies it on top of the version just loaded. Not
+          // sent again on its own.
+          throw new Error(
+            "This page was changed elsewhere. The latest version is loaded; press Rename again to apply your name.",
+          );
+        }
         toast.error(result.message);
         return;
       }
@@ -7058,6 +7108,7 @@ export function VisualEditorShell({
     },
     [
       activeTemplate,
+      adoptLatestDocument,
       context.storefront.id,
       context.templates,
       context.theme.id,
