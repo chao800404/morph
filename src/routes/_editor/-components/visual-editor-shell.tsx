@@ -668,6 +668,15 @@ const viewportOptions = [
   { value: "mobile", label: "Mobile", icon: Smartphone },
 ] as const;
 
+/** Whether a press on the canvas landed on an interactive control within it. */
+function isCanvasControl(target: EventTarget, canvas: Element): boolean {
+  if (!(target instanceof Element) || target === canvas) return false;
+  const control = target.closest(
+    "button, a[href], input, select, textarea, [role='button']",
+  );
+  return control !== null && canvas.contains(control);
+}
+
 export function VisualEditorShell({
   context,
   search,
@@ -7842,6 +7851,11 @@ export function VisualEditorShell({
 
   const handleCanvasPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      // A press on a control drawn over the canvas — Retry Preview on a
+      // failed load — is that control's. Panning would capture the pointer,
+      // its release would go to the canvas, and the control would never be
+      // clicked.
+      if (isCanvasControl(event.target, event.currentTarget)) return;
       if (isCommentMode && (activeCommentThreadId || draftCommentPin)) {
         setActiveCommentThreadId(null);
         setDraftCommentPin(null);
