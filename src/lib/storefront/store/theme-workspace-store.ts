@@ -72,6 +72,14 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
    * reporting a version conflict on it, or the edit being discarded.
    */
   unconfirmedContent?: string;
+  /**
+   * The last save of this file was refused for a sign-in that has been
+   * verified since (see `EditorWriteRefusedEarlier`). The edit is kept and
+   * reported as unsaved; nothing sends it again on its own — autosave
+   * included — until the author saves. Cleared once a save of the file
+   * lands, a version conflict is answered, or the edit is discarded.
+   */
+  refusedEarlier?: boolean;
 };
 
 export type ThemeConflictResolution = ThemeFileServerState & {
@@ -133,6 +141,8 @@ export interface ThemeWorkspaceStore {
   markSourceConflict: (path: string, scope?: WorkspaceScope) => void;
   /** Marks a save held back by paused writes; see `authPaused`. */
   markAuthPaused: (path: string, scope?: WorkspaceScope) => void;
+  /** Marks a save refused for an earlier sign-in; see `refusedEarlier`. */
+  markRefusedEarlier: (path: string, scope?: WorkspaceScope) => void;
   /** Marks a save sent and never answered; see `unconfirmedContent`. */
   markUnconfirmed: (
     path: string,
@@ -745,6 +755,25 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       });
     },
 
+    markRefusedEarlier: (path, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: { ...current, refusedEarlier: true },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
     markUnconfirmed: (path, content, scope) => {
       set((state) => {
         const { key, workspaceFiles } = getTargetWorkspace(state, scope);
@@ -792,6 +821,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             // still waiting; only saving that content clears its pause.
             authPaused: stillDirty ? current.authPaused : undefined,
             unconfirmedContent: undefined,
+            refusedEarlier: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -854,6 +884,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             errorMessage: undefined,
             // The server has answered with what it holds.
             unconfirmedContent: undefined,
+            refusedEarlier: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -973,6 +1004,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             sourceConflict: undefined,
             authPaused: undefined,
             unconfirmedContent: undefined,
+            refusedEarlier: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };

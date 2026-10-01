@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth/auth-failure";
 import {
   confirmLostSave,
+  earlierRefusalStillApplies,
   settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
@@ -249,5 +250,49 @@ describe("confirmLostSave", () => {
       }),
     ).rejects.toThrow("network");
     expect(markLanded).not.toHaveBeenCalled();
+  });
+});
+
+describe("earlierRefusalStillApplies", () => {
+  const sentAgainst = { serverFileId: "file-1", serverVersion: 3 };
+
+  it("applies while the edit it carried is unsaved and the file has not moved", () => {
+    expect(
+      earlierRefusalStillApplies(sentAgainst, {
+        serverFileId: "file-1",
+        serverVersion: 3,
+        dirty: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not undo a newer save of the file that landed since", () => {
+    // Sent, verified, a newer save landed, and only then the old refusal.
+    expect(
+      earlierRefusalStillApplies(sentAgainst, {
+        serverFileId: "file-1",
+        serverVersion: 4,
+        dirty: false,
+      }),
+    ).toBe(false);
+    // The newer save landed, and the author kept typing after it.
+    expect(
+      earlierRefusalStillApplies(sentAgainst, {
+        serverFileId: "file-1",
+        serverVersion: 4,
+        dirty: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not apply once the edit is discarded or the file is gone", () => {
+    expect(
+      earlierRefusalStillApplies(sentAgainst, {
+        serverFileId: "file-1",
+        serverVersion: 3,
+        dirty: false,
+      }),
+    ).toBe(false);
+    expect(earlierRefusalStillApplies(sentAgainst, undefined)).toBe(false);
   });
 });

@@ -8,10 +8,13 @@ import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
 import {
   isEditorWriteGatePaused,
   isEditorWritePaused,
+  isEditorWriteRefusedEarlier,
   refusalOfError,
 } from "@/lib/storefront/editor/editor-write-gate";
+import { currentRequestStamp } from "@/lib/storefront/editor/editor-request-sequence";
 import {
   confirmLostSave,
+  earlierRefusalStillApplies,
   settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
@@ -1126,6 +1129,11 @@ export function VisualEditorShell({
         setDraftSaveState("paused");
         return;
       }
+      if (isEditorWriteRefusedEarlier(error)) {
+        setDraftSaveState("error");
+        toast.error(error.message);
+        return;
+      }
       setDraftSaveState("error");
       toast.error("Failed to update section properties");
     },
@@ -1303,8 +1311,12 @@ export function VisualEditorShell({
                 return result;
               },
               (error: unknown) => {
-                // Sent, and no answer came back: it may have landed.
-                if (!isEditorWritePaused(error)) {
+                // Sent, and no answer came back: it may have landed. A
+                // refusal answered for an earlier sign-in is an answer.
+                if (
+                  !isEditorWritePaused(error) &&
+                  !isEditorWriteRefusedEarlier(error)
+                ) {
                   unconfirmedContentRef.current.set(key, entry);
                   syncUnconfirmedContentCount();
                 }
@@ -3523,6 +3535,10 @@ export function VisualEditorShell({
               .getAcceptedSourceGeneration(workspaceScope);
 
             let res: Awaited<ReturnType<typeof saveStorefrontThemeFile>>;
+            const sentAgainst = {
+              serverFileId: current.serverFileId,
+              serverVersion: current.serverVersion,
+            };
             try {
               res = await sendEditorWrite(workspaceScope, "theme", () =>
                 saveStorefrontThemeFile({
@@ -3537,6 +3553,19 @@ export function VisualEditorShell({
                 }),
               );
             } catch (error) {
+              if (isEditorWriteRefusedEarlier(error)) {
+                // Answered: refused, for a sign-in that has been verified
+                // since. Not unanswered, and not paused again. Reported as
+                // this save's failure, with the edit kept — unless a newer
+                // save of the file landed meanwhile, which it does not undo.
+                if (!earlierRefusalStillApplies(sentAgainst, readCurrent())) {
+                  return { status: "superseded" };
+                }
+                useThemeWorkspaceStore
+                  .getState()
+                  .markRefusedEarlier(filePath, workspaceScope);
+                throw error;
+              }
               if (!isEditorWritePaused(error)) {
                 // Sent, and no answer came back: it may have landed. Nothing
                 // more goes on its own until the server has been asked.
@@ -4361,11 +4390,15 @@ export function VisualEditorShell({
       if (Date.now() - lastAskedAt < 2_000) return;
       inFlight = true;
       lastAskedAt = Date.now();
+      // An answer asked before the author's latest sign-in was verified says
+      // nothing about it; see `isEarlierSignInRefusal`.
+      const sentUnder = currentRequestStamp();
       void getSession()
         .then((session) => {
           const gates = useEditorWriteGateStore.getState();
           const userId = session?.user?.id;
-          if (!userId) gates.pause(workspaceScope, "AUTH_REQUIRED", "theme");
+          if (!userId)
+            gates.pause(workspaceScope, "AUTH_REQUIRED", "theme", sentUnder);
           else if (userId !== ownerUserId) gates.writerChanged(workspaceScope);
         })
         // No answer is no evidence either way; the next write will tell.

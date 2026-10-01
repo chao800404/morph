@@ -1,4 +1,8 @@
 import { createMiddleware } from "@tanstack/react-start";
+import {
+  currentRequestStamp,
+  stampRequestError,
+} from "@/lib/storefront/editor/editor-request-sequence";
 
 /**
  * Which account an open editor belongs to, said with every request it makes.
@@ -35,13 +39,26 @@ export const EDITOR_WRITER_HEADER = "x-morph-editor-writer";
 /**
  * Sends the claim with every server function call. Registered once, in
  * `src/start.ts`, so no call site can forget it.
+ *
+ * Also stamps a failed call's error with the sign-in verification it was sent
+ * under — each attempt, retries and refetches included — so a refusal that
+ * arrives after a later verification cannot undo it (see
+ * `editor-request-sequence`).
  */
 export const editorWriterMiddleware = createMiddleware({
   type: "function",
-}).client(async ({ next }) =>
-  // Undefined outside an editor, which the server reads as no claim.
-  next({ sendContext: { editorWriter: activeEditorWriter ?? undefined } }),
-);
+}).client(async ({ next }) => {
+  const sentUnder = currentRequestStamp();
+  try {
+    // Undefined outside an editor, which the server reads as no claim.
+    return await next({
+      sendContext: { editorWriter: activeEditorWriter ?? undefined },
+    });
+  } catch (error) {
+    stampRequestError(error, sentUnder);
+    throw error;
+  }
+});
 
 /**
  * Whether a request claimed to be for an account other than `userId`.
