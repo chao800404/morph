@@ -159,6 +159,44 @@ function isServerFn(url: string, name: string) {
   }
 }
 
+/**
+ * The next answer to a save of `path` itself — not the preview's file sync,
+ * which carries the same path. Resolves to whether it landed: a refused save
+ * is answered with 200 too, and only the body tells them apart.
+ */
+async function nextFileSave(page: Page, path: string) {
+  const response = await page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isFileSave(
+        response.request().url(),
+        response.request().postData() ?? "",
+        path,
+      ),
+    { timeout: 30_000 },
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.text()).includes("Theme file saved");
+}
+
+/**
+ * The next answer to a section content write: "saved", "conflict" (the
+ * document moved), or "failed".
+ */
+async function nextContentWrite(page: Page) {
+  const response = await page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFn(response.request().url(), "updateStorefrontThemeSectionProps"),
+    { timeout: 30_000 },
+  );
+  expect(response.ok()).toBe(true);
+  const body = await response.text();
+  if (body.includes("Theme section props updated")) return "saved" as const;
+  if (body.includes("TEMPLATE_DRAFT_CONFLICT")) return "conflict" as const;
+  return "failed" as const;
+}
+
 /** Counts the calls of the section content write, from now on. */
 function countContentWrites(page: Page) {
   const counter = { sent: 0 };
@@ -239,20 +277,10 @@ async function writeSectionField(
 ) {
   const field = await sectionContentField(page, section, index);
   if ((await field.inputValue()) === value) return;
-  const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      isServerFn(response.request().url(), "updateStorefrontThemeSectionProps"),
-    { timeout: 30_000 },
-  );
+  const answer = nextContentWrite(page);
   await field.fill(value);
   await field.press("Tab");
-  // A refused write is answered with 200 too; only the body says it landed.
-  const response = await saved;
-  expect(response.ok()).toBe(true);
-  expect(await response.text(), `the write of ${value}`).toContain(
-    "Theme section props updated",
-  );
+  expect(await answer, `the write of ${value}`).toBe("saved");
 }
 
 const withoutMarkers = (source: string) =>
@@ -268,14 +296,9 @@ async function restoreHero(browser: Browser, hero: string) {
     await openHeroInCode(page);
     const source = await readSource(page, hero);
     if (withoutMarkers(source) === source) return;
-    const saved = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        (response.request().postData() ?? "").includes(hero),
-      { timeout: 30_000 },
-    );
+    const landed = nextFileSave(page, hero);
     await editAndSave(page, hero, withoutMarkers(source));
-    expect((await saved).ok()).toBe(true);
+    expect(await landed, "the hero restored").toBe(true);
   } finally {
     await context.close();
   }
@@ -776,18 +799,10 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       const restore = await heroContentField(page).catch(() => null);
       if (restore && (await restore.inputValue()) !== original) {
-        const saved = page.waitForResponse(
-          (response) =>
-            response.request().method() === "POST" &&
-            isServerFn(
-              response.request().url(),
-              "updateStorefrontThemeSectionProps",
-            ),
-          { timeout: 30_000 },
-        );
+        const answer = nextContentWrite(page);
         await restore.fill(original);
         await restore.press("Tab");
-        expect((await saved).ok()).toBe(true);
+        expect(await answer, "the field restored").toBe("saved");
       }
       await context.close();
     }
@@ -851,16 +866,20 @@ test.describe("unsaved work when the signed-in account changes", () => {
         value("theirs"),
       );
 
+      const resend = nextContentWrite(page).catch(() => "none" as const);
       await unconfirmedNotice(page)
         .getByRole("button", { name: "Check and save" })
         .click();
       await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+      await page.waitForTimeout(2_000);
       const afterCheck = writes.sent;
+      const checkAnswer = afterCheck > afterLanded ? await resend : "none";
 
       return {
         page,
         value,
         resentByCheck: afterCheck - afterLanded,
+        checkAnswer,
         finish: async () => {
           // Whatever the path, the author's newest edit and the other tab's
           // are both what the server holds, once each.
@@ -905,8 +924,10 @@ test.describe("unsaved work when the signed-in account changes", () => {
   /** Edits the hero again, expects the conflict, and loads the latest. */
   async function nextEditThroughConflict(page: Page, next: string) {
     const field = await heroContentField(page, 0);
+    const refused = nextContentWrite(page);
     await field.fill(next);
     await field.press("Tab");
+    expect(await refused, "the next edit, sent").toBe("conflict");
     await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
       "aria-label",
       "Out of date",
@@ -914,7 +935,14 @@ test.describe("unsaved work when the signed-in account changes", () => {
     );
     // Refused, and kept: the newest edit is still here.
     await expect(await heroContentField(page, 0)).toHaveValue(next);
+    await loadLatestKeepMine(page);
+  }
+
+  /** Presses Load latest, keep mine, and waits for the rebased write to land. */
+  async function loadLatestKeepMine(page: Page) {
+    const rebased = nextContentWrite(page);
     await page.getByRole("button", { name: "Load latest, keep mine" }).click();
+    expect(await rebased, "the rebased write").toBe("saved");
     await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
       "aria-label",
       /^(Unpublished|Published)$/,
@@ -925,24 +953,12 @@ test.describe("unsaved work when the signed-in account changes", () => {
   /** Edits the hero again; resolves a conflict if there is one. */
   async function nextEditThroughConflictOrSave(page: Page, next: string) {
     const field = await heroContentField(page, 0);
+    const answer = nextContentWrite(page);
     await field.fill(next);
     await field.press("Tab");
-    const status = page.locator("[data-editor-save-status]");
-    await expect(status).toHaveAttribute(
-      "aria-label",
-      /^(Unpublished|Published|Out of date)$/,
-      { timeout: 30_000 },
-    );
-    if ((await status.getAttribute("aria-label")) === "Out of date") {
-      await page
-        .getByRole("button", { name: "Load latest, keep mine" })
-        .click();
-      await expect(status).toHaveAttribute(
-        "aria-label",
-        /^(Unpublished|Published)$/,
-        { timeout: 30_000 },
-      );
-    }
+    const first = await answer;
+    expect(first, "the next edit, sent").not.toBe("failed");
+    if (first === "conflict") await loadLatestKeepMine(page);
   }
 
   test("after a landed write is confirmed, the next edit meets the conflict and keeps both writers' changes", async ({
@@ -981,17 +997,11 @@ test.describe("unsaved work when the signed-in account changes", () => {
     try {
       // Sent once more, under the generation this tab holds: refused.
       expect(run.resentByCheck).toBe(1);
+      expect(run.checkAnswer).toBe("conflict");
       await expect(
         run.page.locator("[data-editor-save-status]"),
       ).toHaveAttribute("aria-label", "Out of date", { timeout: 30_000 });
-      await run.page
-        .getByRole("button", { name: "Load latest, keep mine" })
-        .click();
-      await expect(
-        run.page.locator("[data-editor-save-status]"),
-      ).toHaveAttribute("aria-label", /^(Unpublished|Published)$/, {
-        timeout: 30_000,
-      });
+      await loadLatestKeepMine(run.page);
       await nextEditThroughConflictOrSave(run.page, run.value("next"));
       await run.finish();
     } finally {
@@ -1019,14 +1029,9 @@ test.describe("unsaved work when the signed-in account changes", () => {
 
       // Meanwhile the file is saved from elsewhere.
       await openHeroInCode(other.page);
-      const saved = other.page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" &&
-          (response.request().postData() ?? "").includes(hero),
-        { timeout: 30_000 },
-      );
+      const landed = nextFileSave(other.page, hero);
       await editAndSave(other.page, hero, theirs);
-      expect((await saved).ok()).toBe(true);
+      expect(await landed, "the other tab's save").toBe(true);
 
       // Signed in again: the browser has its session back.
       await context.addCookies(session);
@@ -1038,11 +1043,15 @@ test.describe("unsaved work when the signed-in account changes", () => {
         .getByRole("button", { name: "Save my changes" })
         .click();
 
-      // The newer save moved the Theme on, so this tab's save is refused and
-      // its edit comes back under the Theme's own conflict notice — still
-      // here, unsaved, for the author to decide on.
+      // The other save moved the file on, so this tab's edit is not written
+      // over it: it comes back under one of the existing conflict notices —
+      // the file's own, when the file list refreshed after checking found the
+      // newer version first, or the Theme's, when the save itself was refused
+      // first — still here, unsaved, for the author to decide on.
       await expect(
-        page.getByText("Remote source changes detected in this theme"),
+        page
+          .getByText("Remote source changes detected in this theme")
+          .or(page.getByText(/Conflict: Server conflict/)),
       ).toBeVisible({ timeout: 30_000 });
       const kept = await readSource(page, hero);
       expect(kept).toContain(`${MARKER} mine`);
