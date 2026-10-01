@@ -324,14 +324,23 @@ test.describe("visual editor", () => {
       return { frameHeight, contentHeight };
     });
 
+    // The channel the frame was loaded with. Read from the editor's iframe
+    // element rather than the frame's own location: a TanStack Start preview
+    // navigates on load, and its address no longer carries the query (the
+    // bridge keeps the channel it was loaded with; see
+    // documentPreviewRuntimeChannel).
+    const frameSrc = new URL((await frame.getAttribute("src"))!, page.url());
+    const channel = {
+      editorOrigin: frameSrc.searchParams.get("editorOrigin"),
+      previewSession: frameSrc.searchParams.get("previewSession"),
+    };
+    expect(channel.editorOrigin, "the frame's editor origin").toBeTruthy();
+    expect(channel.previewSession, "the frame's preview session").toBeTruthy();
     await previewFrame(page)
       .locator("body")
-      .evaluate(() => {
-        const previewUrl = new URL(window.location.href);
-        const editorOrigin = previewUrl.searchParams.get("editorOrigin");
-        const previewSession = previewUrl.searchParams.get("previewSession");
+      .evaluate((_body, { editorOrigin, previewSession }) => {
         if (!editorOrigin || !previewSession) {
-          throw new Error("Preview channel is missing from the iframe URL");
+          throw new Error("Preview channel is missing from the iframe src");
         }
         window.parent.postMessage(
           {
@@ -342,7 +351,7 @@ test.describe("visual editor", () => {
           },
           editorOrigin,
         );
-      });
+      }, channel);
 
     await page.waitForTimeout(250);
     await expect

@@ -55,6 +55,8 @@ export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
   // 1. Persistent Selected Overlay (Solid 2px border, Glow ring, Bold badge)
   const selectedOverlay = document.createElement("div");
   selectedOverlay.setAttribute("aria-hidden", "true");
+  // The editor's own UI, not the Theme's: see EDITOR_UI_ATTRIBUTE.
+  selectedOverlay.setAttribute("data-morph-editor-ui", "");
   Object.assign(selectedOverlay.style, {
     position: "fixed",
     zIndex: "2147483646",
@@ -134,6 +136,7 @@ export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
   // 2. Hover Overlay (1.5px dashed border, Light blue transparent mask, Subtle badge)
   const hoverOverlay = document.createElement("div");
   hoverOverlay.setAttribute("aria-hidden", "true");
+  hoverOverlay.setAttribute("data-morph-editor-ui", "");
   Object.assign(hoverOverlay.style, {
     position: "fixed",
     zIndex: "2147483645",

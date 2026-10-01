@@ -563,7 +563,29 @@ if (channel) {
     "data-morph-node",
     "data-morph-element",
   ]);
-  const structureObserver = new MutationObserver((mutations) => {
+  // The editor's own overlays are appended to <body>. A Theme mounted into
+  // a container of its own keeps them outside the observed root, but one
+  // that owns the whole document — a TanStack Start preview — is observed
+  // from <body>, overlays included. Their every update was then reported as
+  // a change of the page's structure, the editor answered with another
+  // selection, the overlays updated again, and the reports never stopped.
+  const isEditorUi = (node: Node | null) => {
+    const element =
+      node instanceof Element ? node : (node?.parentElement ?? null);
+    return Boolean(element?.closest("[data-morph-editor-ui]"));
+  };
+  const isThemeMutation = (mutation: MutationRecord) => {
+    if (isEditorUi(mutation.target)) return false;
+    if (mutation.type !== "childList") return true;
+    const changed = [
+      ...Array.from(mutation.addedNodes),
+      ...Array.from(mutation.removedNodes),
+    ];
+    return changed.length === 0 || !changed.every(isEditorUi);
+  };
+  const structureObserver = new MutationObserver((allMutations) => {
+    const mutations = allMutations.filter(isThemeMutation);
+    if (mutations.length === 0) return;
     if (
       mutations.some(
         (mutation) =>
