@@ -1074,10 +1074,14 @@ test.describe("unsaved work when the signed-in account changes", () => {
       // the file's own, when the file list refreshed after checking found the
       // newer version first, or the Theme's, when the save itself was refused
       // first — still here, unsaved, for the author to decide on.
+      //
+      // The file's notice is two spans, "Conflict:" and "Server conflict
+      // (vN)…", with no space between them in the document, so it is matched
+      // by the second span alone.
       await expect(
         page
           .getByText("Remote source changes detected in this theme")
-          .or(page.getByText(/Conflict: Server conflict/)),
+          .or(page.getByText(/^Server conflict \(v\d+\)/)),
       ).toBeVisible({ timeout: 30_000 });
       const kept = await readSource(page, hero);
       expect(kept).toContain(`${MARKER} mine`);
