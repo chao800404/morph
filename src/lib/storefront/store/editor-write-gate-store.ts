@@ -12,6 +12,7 @@ import {
   type EditorWriteRefusal,
   type EditorWriteVerification,
 } from "../editor/editor-write-gate";
+import { beginVerificationStamp } from "../editor/editor-request-sequence";
 import { toWorkspaceKey, type WorkspaceScope } from "./theme-workspace-store";
 
 /**
@@ -32,6 +33,8 @@ export type EditorWriteGateStore = {
     scope: WorkspaceScope,
     refusal: EditorWriteRefusal,
     area: EditorWriteArea,
+    /** The stamp the refused request was sent under; see `isEarlierSignInRefusal`. */
+    sentUnder?: number,
   ) => EditorWriteGate;
   /** The epoch to finish with, or null when there is nothing to verify. */
   beginVerification: (scope: WorkspaceScope) => number | null;
@@ -65,10 +68,14 @@ export const useEditorWriteGateStore = create<EditorWriteGateStore>(
 
     return {
       gates: {},
-      pause: (scope, refusal, area) =>
-        update(scope, (gate) => pauseEditorWrites(gate, refusal, area))!,
+      pause: (scope, refusal, area, sentUnder) =>
+        update(scope, (gate) =>
+          pauseEditorWrites(gate, refusal, area, sentUnder),
+        )!,
       beginVerification: (scope) =>
-        update(scope, beginEditorWriteVerification)?.epoch ?? null,
+        update(scope, (gate) =>
+          beginEditorWriteVerification(gate, beginVerificationStamp),
+        )?.epoch ?? null,
       finishVerification: (scope, epoch, answer) =>
         update(scope, (gate) =>
           finishEditorWriteVerification(gate, epoch, answer),

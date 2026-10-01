@@ -53,6 +53,12 @@ export type EditorWriteGate = Readonly<{
    * earlier — a verification, a save confirmation — can tell it is stale.
    */
   epoch: number;
+  /**
+   * The number of the latest verification begun on this gate (see
+   * `editor-request-sequence`), kept when the gate opens again. A sign-in
+   * refusal of a request sent before it no longer decides anything here.
+   */
+  verificationStamp: number;
 }>;
 
 export const OPEN_EDITOR_WRITE_GATE: EditorWriteGate = {
@@ -61,7 +67,31 @@ export const OPEN_EDITOR_WRITE_GATE: EditorWriteGate = {
   recovery: "none",
   ownerUserId: null,
   epoch: 0,
+  verificationStamp: 0,
 };
+
+/**
+ * Whether a refusal is an `AUTH_REQUIRED` for a request sent before the
+ * gate's latest verification began.
+ *
+ * Such a request went out while nobody was signed in, which the verification
+ * already knows; its refusal arriving later must not undo what the
+ * verification found. Only this refusal: `ACCOUNT_CHANGED` and
+ * `ACCESS_DENIED` keep their meaning however old the request, and a request
+ * sent once a verification began is judged as before. The request itself
+ * still failed — see `EditorWriteRefusedEarlier`.
+ */
+export function isEarlierSignInRefusal(
+  gate: EditorWriteGate,
+  refusal: EditorWriteRefusal,
+  sentUnder: number | undefined,
+): boolean {
+  return (
+    refusal === "AUTH_REQUIRED" &&
+    sentUnder !== undefined &&
+    sentUnder < gate.verificationStamp
+  );
+}
 
 /** Records whose work a paused gate holds; the first claim stands. */
 export function claimEditorWriteGate(
@@ -103,7 +133,10 @@ export function pauseEditorWrites(
   gate: EditorWriteGate,
   refusal: EditorWriteRefusal,
   area: EditorWriteArea,
+  /** The stamp the refused request was sent under, when known. */
+  sentUnder?: number,
 ): EditorWriteGate {
+  if (isEarlierSignInRefusal(gate, refusal, sentUnder)) return gate;
   if (refusal === "ACCOUNT_CHANGED") return editorWriterChanged(gate);
   if (refusal === "AUTH_REQUIRED") {
     if (!gate.signedOut) {
@@ -133,14 +166,24 @@ export function pauseEditorWrites(
   };
 }
 
-/** Starts asking who is signed in; null when nothing is paused. */
+/**
+ * Starts asking who is signed in; null when nothing is paused.
+ *
+ * `stamp` is called only when a verification does begin, and numbers it.
+ */
 export function beginEditorWriteVerification(
   gate: EditorWriteGate,
+  stamp: () => number,
 ): EditorWriteGate | null {
   if (!isEditorWriteGatePaused(gate) || gate.recovery === "verifying") {
     return null;
   }
-  return { ...gate, recovery: "verifying", epoch: gate.epoch + 1 };
+  return {
+    ...gate,
+    recovery: "verifying",
+    epoch: gate.epoch + 1,
+    verificationStamp: stamp(),
+  };
 }
 
 /**
@@ -213,7 +256,11 @@ export function confirmEditorWriteResume(
   epoch: number,
 ): EditorWriteGate {
   if (gate.epoch !== epoch || gate.recovery !== "verified") return gate;
-  return { ...OPEN_EDITOR_WRITE_GATE, epoch: gate.epoch + 1 };
+  return {
+    ...OPEN_EDITOR_WRITE_GATE,
+    epoch: gate.epoch + 1,
+    verificationStamp: gate.verificationStamp,
+  };
 }
 
 /**
@@ -253,6 +300,30 @@ export function isEditorWritePaused(
   error: unknown,
 ): error is EditorWritePaused {
   return error instanceof EditorWritePaused;
+}
+
+/**
+ * Thrown when a write sent before the author signed in again was refused for
+ * that, and arrives once writes are open again.
+ *
+ * It does not reopen the question of who is signed in — that was verified
+ * after it was sent — but the write did fail: the edit it carried stays, and
+ * nothing sends it again on its own. Not an unanswered write either; the
+ * server answered.
+ */
+export class EditorWriteRefusedEarlier extends Error {
+  constructor() {
+    super(
+      "An earlier save was refused because you were not signed in at the time. Your changes are kept; check them and save again.",
+    );
+    this.name = "EditorWriteRefusedEarlier";
+  }
+}
+
+export function isEditorWriteRefusedEarlier(
+  error: unknown,
+): error is EditorWriteRefusedEarlier {
+  return error instanceof EditorWriteRefusedEarlier;
 }
 
 /** Why a write in `area` may not be sent now, or null when it may. */

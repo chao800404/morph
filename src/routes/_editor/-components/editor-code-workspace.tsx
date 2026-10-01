@@ -2907,6 +2907,17 @@ const EditorCodeWorkspaceContent = forwardRef<
       // author's own save (or the notice's) does; this also ends an autosave
       // that was waiting behind that save.
       if (hasUnconfirmedSave(workspaceScope)) return;
+      // Refused for an earlier sign-in: only the author's own save sends it.
+      if (
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          )[path]?.refusedEarlier
+      ) {
+        return;
+      }
       if (saveInFlightRef.current || saveMutation.isPending) {
         autoSaveTimersRef.current.set(
           path,
