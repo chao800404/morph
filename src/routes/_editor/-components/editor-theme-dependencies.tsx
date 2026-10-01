@@ -33,6 +33,7 @@ import {
   listThemeDependencies,
   requestThemeDependency,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
+import { sendEditorWrite } from "@/lib/storefront/editor/send-editor-write";
 
 const dependenciesQueryKey = (storefrontId: string, themeId: string) =>
   ["editor-theme-dependencies", storefrontId, themeId] as const;
@@ -115,14 +116,19 @@ export function EditorThemeDependenciesDialog({
           "Build Preview must be up to date before enabling a package.",
         );
       }
-      const result = await requestThemeDependency({
-        data: {
-          storefrontId,
-          themeId,
-          sourceRevisionId,
-          packageName,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId, themeId },
+        "theme",
+        () =>
+          requestThemeDependency({
+            data: {
+              storefrontId,
+              themeId,
+              sourceRevisionId,
+              packageName,
+            },
+          }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },

@@ -1,9 +1,32 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   commitPendingContent,
+  sectionContentLanded,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
+import {
+  isEditorWriteGatePaused,
+  isEditorWritePaused,
+  refusalOfError,
+} from "@/lib/storefront/editor/editor-write-gate";
+import {
+  confirmLostSave,
+  settleHeldFile,
+  templateIdOfPendingContentKey,
+  verifyEditorWriter,
+} from "@/lib/storefront/editor/editor-write-recovery";
+import {
+  editorWriteGateFor,
+  useEditorWriteGateStore,
+} from "@/lib/storefront/store/editor-write-gate-store";
+import { getSession } from "@/server/auth/getSession";
+import { setActiveEditorWriter } from "@/lib/auth/editor-writer";
+import {
+  editorSignedOut,
+  reportEditorReadFailure,
+  sendEditorWrite,
+} from "@/lib/storefront/editor/send-editor-write";
 import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
@@ -134,6 +157,7 @@ import {
   renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
   ensureStorefrontThemeRouteTemplate,
+  getStorefrontThemeEditor,
   promoteStorefrontThemeText,
 } from "@/server/storefront/storefront-themes.serverFn";
 import type {
@@ -216,6 +240,8 @@ import {
   toWorkspaceKey,
   themeFileWritePrecondition,
   sourceConflictPaths,
+  authPausedPaths,
+  unconfirmedPaths,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -296,6 +322,11 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
+import {
+  EditorUnconfirmedSavesNotice,
+  UNCONFIRMED_SAVE_HOLD,
+} from "./editor-unconfirmed-saves-notice";
+import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
   awaitsOwnSave,
   planPreviewSync,
@@ -715,8 +746,13 @@ export function VisualEditorShell({
   const previousAssistantPanelTabRef =
     useRef<EditorAssistantPanelTab>(assistantPanelTab);
   const autoEnabledSelectionForStylesRef = useRef(false);
+  /**
+   * `paused` is its own state: the content was not sent because the editor's
+   * writes are paused on who is signed in. It is still pending, like a failed
+   * save, but resending it waits on writes being resumed.
+   */
   const [draftSaveState, setDraftSaveState] = useState<
-    "idle" | "saving" | "error"
+    "idle" | "saving" | "error" | "paused"
   >("idle");
   /**
    * Content writes the server refused because the document moved under them,
@@ -845,15 +881,20 @@ export function VisualEditorShell({
 
   const createGroupMutation = useMutation({
     mutationFn: async () => {
-      const res = await createStorefrontCommentGroup({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: activeTemplate?.id ?? "",
-          name: `Group ${commentGroups.length + 1}`,
-          viewportWidth: previewWidth,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontCommentGroup({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: activeTemplate?.id ?? "",
+              name: `Group ${commentGroups.length + 1}`,
+              viewportWidth: previewWidth,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -888,14 +929,19 @@ export function VisualEditorShell({
       groupId: string;
       viewportWidth: number;
     }) => {
-      const res = await updateStorefrontCommentGroup({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          groupId,
-          viewportWidth,
-        },
-      });
+      const res = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          updateStorefrontCommentGroup({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              groupId,
+              viewportWidth,
+            },
+          }),
+      );
       if (!res.success) throw new Error(res.message);
       return res.data;
     },
@@ -943,19 +989,24 @@ export function VisualEditorShell({
       expectedReleaseGeneration: number;
     }) => {
       if (!activeTemplate) throw new Error("No active template");
-      return publishStorefrontThemeTemplate({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: activeTemplate.id,
-          sourceRevisionId: variables.sourceRevisionId,
-          themeBuildId: variables.themeBuildId,
-          note: variables.note,
-          expectedDraftRevisionId: variables.expectedDraftRevisionId,
-          expectedDraftGeneration: variables.expectedDraftGeneration,
-          expectedReleaseGeneration: variables.expectedReleaseGeneration,
-        },
-      });
+      return sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          publishStorefrontThemeTemplate({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: activeTemplate.id,
+              sourceRevisionId: variables.sourceRevisionId,
+              themeBuildId: variables.themeBuildId,
+              note: variables.note,
+              expectedDraftRevisionId: variables.expectedDraftRevisionId,
+              expectedDraftGeneration: variables.expectedDraftGeneration,
+              expectedReleaseGeneration: variables.expectedReleaseGeneration,
+            },
+          }),
+      );
     },
     onSuccess: async (result) => {
       if (!result.success) {
@@ -1001,6 +1052,19 @@ export function VisualEditorShell({
   );
   const templateDraftGenerationRef = useRef<Map<string, number>>(new Map());
   const templateDraftRevisionIdRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Content writes sent and never answered, by pending key, with the entry
+   * that was sent. While any is here no content is sent on its own; see
+   * `settleUnconfirmedContent`.
+   */
+  const unconfirmedContentRef = useRef<Map<string, PendingContentEntry>>(
+    new Map(),
+  );
+  const [unconfirmedContentCount, setUnconfirmedContentCount] = useState(0);
+  const syncUnconfirmedContentCount = useCallback(
+    () => setUnconfirmedContentCount(unconfirmedContentRef.current.size),
+    [],
+  );
 
   const updatePropsMutation = useMutation({
     mutationFn: (variables: {
@@ -1012,33 +1076,35 @@ export function VisualEditorShell({
       resetProps?: string[];
     }) => {
       if (!activeTemplate) throw new Error("No active template");
-      return updateStorefrontThemeSectionProps({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          templateId: variables.templateId ?? activeTemplate.id,
-          sectionId: variables.sectionId,
-          props: variables.props,
-          expectedDraftGeneration: variables.expectedDraftGeneration,
-          ...(variables.routePath ? { routePath: variables.routePath } : {}),
-          ...(variables.resetProps?.length
-            ? { resetProps: variables.resetProps }
-            : {}),
-        },
-      });
+      return sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          updateStorefrontThemeSectionProps({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              templateId: variables.templateId ?? activeTemplate.id,
+              sectionId: variables.sectionId,
+              props: variables.props,
+              expectedDraftGeneration: variables.expectedDraftGeneration,
+              ...(variables.routePath
+                ? { routePath: variables.routePath }
+                : {}),
+              ...(variables.resetProps?.length
+                ? { resetProps: variables.resetProps }
+                : {}),
+            },
+          }),
+      );
     },
-    /**
-     * A request that never landed has no decision in it, so nobody is asked:
-     * it goes again a couple of times, and the author hears about it only once
-     * those are spent. Same backoff shape as the editor's other queries.
-     *
-     * A conflict is not retried, and cannot be by accident: it comes back as a
-     * resolved failure rather than a rejection, so retrying would mean sending
-     * the same stale payload again — the thing the refusal exists to stop. That
-     * one is rebased first, on a press.
-     */
-    retry: 2,
-    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
+    // Never retried on its own. A request with no answer may have landed:
+    // the draft generation would stop a resend from overwriting anyone, but
+    // cannot say whether the first one landed. The content stays pending, and
+    // the server is asked before it is sent again (`settleUnconfirmedContent`).
+    // A conflict comes back as a resolved failure and is rebased on a press;
+    // a paused write waits for writes to resume.
+    retry: false,
     onMutate: () => setDraftSaveState("saving"),
     onSuccess: async (result) => {
       if (!result.success) {
@@ -1054,7 +1120,12 @@ export function VisualEditorShell({
         ).queryKey,
       });
     },
-    onError: () => {
+    onError: (error) => {
+      // Explained once by the paused-writes notice, not per section.
+      if (isEditorWritePaused(error)) {
+        setDraftSaveState("paused");
+        return;
+      }
       setDraftSaveState("error");
       toast.error("Failed to update section properties");
     },
@@ -1104,13 +1175,21 @@ export function VisualEditorShell({
           let templateId = queueKey;
           const routePath = routePathFromTemplatePlaceholder(templateId);
           if (routePath !== null) {
-            const ensured = await ensureStorefrontThemeRouteTemplate({
-              data: {
+            const ensured = await sendEditorWrite(
+              {
                 storefrontId: context.storefront.id,
                 themeId: context.theme.id,
-                routePath,
               },
-            });
+              "theme",
+              () =>
+                ensureStorefrontThemeRouteTemplate({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    routePath,
+                  },
+                }),
+            );
             if (!ensured.success) return ensured;
             templateId = ensured.data.id;
             routeTemplateIdsRef.current.set(queueKey, templateId);
@@ -1134,7 +1213,16 @@ export function VisualEditorShell({
             observed: templateDraftGenerationRef.current,
             templates: context.templates,
           });
-          const result = await op(expectedDraftGeneration, templateId);
+          // Every document write queued here — content, rename, promote —
+          // meets the paused-writes check at the one place it is sent.
+          const result = await sendEditorWrite(
+            {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+            },
+            "theme",
+            () => op(expectedDraftGeneration, templateId),
+          );
           if (
             result.success &&
             result.data !== null &&
@@ -1166,7 +1254,23 @@ export function VisualEditorShell({
     ((sectionId: string, props: Record<string, unknown>) => void) | null
   >(null);
   const commitSectionPending = useCallback(
-    async (tid: string, key: string, recordHistory = true) => {
+    async (
+      tid: string,
+      key: string,
+      recordHistory = true,
+      /**
+       * Sent because the author asked (try again, save, publish), after
+       * `settleUnconfirmedContent`. Anything else is held while a content
+       * write is unanswered.
+       */
+      confirmed = false,
+    ) => {
+      if (!confirmed && unconfirmedContentRef.current.size > 0) {
+        setDraftSaveState("error");
+        throw new Error(
+          "An earlier save was not answered. Your changes are kept; check before saving again.",
+        );
+      }
       const clearConflict = () =>
         setContentConflicts((current) => {
           if (!(key in current)) return current;
@@ -1190,6 +1294,22 @@ export function VisualEditorShell({
                 expectedDraftGeneration: generation,
                 routePath: entry.routePath,
               }),
+            ).then(
+              (result) => {
+                // Answered, either way: nothing is left to find out.
+                if (unconfirmedContentRef.current.delete(key)) {
+                  syncUnconfirmedContentCount();
+                }
+                return result;
+              },
+              (error: unknown) => {
+                // Sent, and no answer came back: it may have landed.
+                if (!isEditorWritePaused(error)) {
+                  unconfirmedContentRef.current.set(key, entry);
+                  syncUnconfirmedContentCount();
+                }
+                throw error;
+              },
             ),
           onSaved: recordHistory
             ? (entry, baseline) => {
@@ -1216,8 +1336,77 @@ export function VisualEditorShell({
         throw error;
       }
     },
-    [enqueueTemplateMutation, updatePropsMutation, history],
+    [
+      enqueueTemplateMutation,
+      updatePropsMutation,
+      history,
+      syncUnconfirmedContentCount,
+    ],
   );
+
+  /**
+   * Asks the server whether the content writes that were never answered
+   * landed, before anything is sent again.
+   *
+   * By content, per section (`sectionContentLanded`): a write whose every
+   * value the section now holds landed, and is recorded as saved; anything
+   * typed since stays pending. The draft generation is not taken from the
+   * server — whether only this write moved it cannot be told — so a later
+   * write to a document that moved goes through the existing conflict.
+   * A write that did not land stays pending, to be sent by the caller.
+   *
+   * Throws, deciding nothing, when the server cannot be asked.
+   */
+  const settleUnconfirmedContent = useCallback(async () => {
+    const unconfirmed = Array.from(unconfirmedContentRef.current);
+    if (unconfirmed.length === 0) return;
+    const fresh = await queryClient.fetchQuery({
+      ...storefrontThemeQueries.detail(context.storefront.id, context.theme.id),
+      staleTime: 0,
+    });
+    if (!fresh.success) {
+      throw new Error(
+        fresh.message ?? "Could not check whether your changes were saved.",
+      );
+    }
+    for (const [key, sent] of unconfirmed) {
+      const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
+      if (!templateId) continue;
+      // A route document may have been created by the write itself.
+      const routePath = routePathFromTemplatePlaceholder(templateId);
+      const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const template =
+        fresh.data.templates.find((entry) => entry.id === realId) ??
+        (routePath !== null
+          ? fresh.data.templates.find((entry) => entry.routePath === routePath)
+          : undefined);
+      const section = template?.document.sections.find(
+        (entry) => entry.id === sent.sectionId,
+      );
+      unconfirmedContentRef.current.delete(key);
+      if (!sectionContentLanded(sent, section)) continue;
+      const now = pendingPropsMapRef.current.get(key);
+      // Compared by content, not by reference: the same values can be
+      // pending again under a new entry (a field re-emits on blur), and the
+      // server holding them leaves nothing to send.
+      if (!now || now === sent || sectionContentLanded(now, section)) {
+        pendingPropsMapRef.current.delete(key);
+        pendingPropsBaselineRef.current.delete(key);
+      } else {
+        // A newer edit stays pending, on top of what landed.
+        pendingPropsBaselineRef.current.set(key, {
+          ...pendingPropsBaselineRef.current.get(key),
+          ...sent.props,
+        });
+      }
+    }
+    syncUnconfirmedContentCount();
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    queryClient,
+    syncUnconfirmedContentCount,
+  ]);
 
   /**
    * Rebases conflicted content onto the document as it is now, then saves it.
@@ -1276,7 +1465,7 @@ export function VisualEditorShell({
         );
       }
 
-      await commitSectionPending(templateId, key).catch(() => {
+      await commitSectionPending(templateId, key, true, true).catch(() => {
         // Reported by the mutation, and recorded again if it conflicted.
       });
     }
@@ -1290,21 +1479,38 @@ export function VisualEditorShell({
   /**
    * Sends content that a failed save left pending, once, when the author asks.
    *
-   * Nothing is rebased here: a request that never landed changed nothing on the
-   * server, so the payload that was refused is the payload to send. Conflicted
-   * content is not touched — that has to go through the update, not a resend.
+   * A write that was never answered may have landed, so the server is asked
+   * first (`settleUnconfirmedContent`), and only what did not land is sent.
+   * Nothing is rebased here; conflicted content is not touched — that has to
+   * go through the update, not a resend.
    */
   const retryFailedContent = useCallback(async () => {
-    const templateId = pageTemplateId;
-    if (!templateId) return;
-    const prefix = `${templateId}:`;
-    for (const key of Array.from(pendingPropsMapRef.current.keys())) {
-      if (!key.startsWith(prefix)) continue;
-      await commitSectionPending(templateId, key).catch(() => {
+    try {
+      await settleUnconfirmedContent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not check whether your changes were saved.",
+      );
+      return;
+    }
+    for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+      if (key in contentConflictsRef.current) continue;
+      const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
+      if (!templateId) continue;
+      await commitSectionPending(templateId, key, true, true).catch(() => {
         // Reported by the mutation, and still pending if it failed again.
       });
     }
-  }, [pageTemplateId, commitSectionPending]);
+    // Everything landed or was sent: nothing is left to try again.
+    if (
+      pendingPropsMapRef.current.size === 0 &&
+      unconfirmedContentRef.current.size === 0
+    ) {
+      setDraftSaveState("idle");
+    }
+  }, [commitSectionPending, settleUnconfirmedContent]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -1312,6 +1518,12 @@ export function VisualEditorShell({
       if (!tid) return;
       const prefix = `${tid}:`;
       await templateMutationQueueRef.current.get(tid)?.catch(() => {});
+      // A flush runs ahead of another step (publish, a structural edit) and
+      // is not the author asking to save, so a write that was never answered
+      // stops it here: nothing is checked or sent until Check and save.
+      if (unconfirmedContentRef.current.size > 0) {
+        throw new Error(UNCONFIRMED_SAVE_HOLD);
+      }
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
         if (!key.startsWith(prefix)) continue;
         const timer = pendingPropsTimersRef.current.get(key);
@@ -1580,13 +1792,18 @@ export function VisualEditorShell({
     abortBuildWait("user");
     if (!buildId) return;
     try {
-      const result = await cancelThemeBuild({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          buildId,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          cancelThemeBuild({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              buildId,
+            },
+          }),
+      );
       if (!result.success) {
         toast.error(result.message || "Failed to cancel the build.");
         return;
@@ -1671,12 +1888,17 @@ export function VisualEditorShell({
   const starterInitAttemptRef = useRef<string | null>(null);
   const starterInitMutation = useMutation({
     mutationFn: async () => {
-      const result = await initStorefrontStarterTheme({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          initStorefrontStarterTheme({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+            },
+          }),
+      );
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
@@ -2266,14 +2488,19 @@ export function VisualEditorShell({
       const expectedSourceGeneration = useThemeWorkspaceStore
         .getState()
         .getAcceptedSourceGeneration(workspaceScope);
-      const result = await createStorefrontThemePage({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          routePath,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontThemePage({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              routePath,
+              expectedSourceGeneration,
+            },
+          }),
+      );
       if (result?.success !== true) {
         // A conflict is somebody else's work, not a bad path. Refreshing is
         // what lets the author see it before deciding what to do, and is the
@@ -2325,16 +2552,21 @@ export function VisualEditorShell({
       const expectedSourceGeneration = useThemeWorkspaceStore
         .getState()
         .getAcceptedSourceGeneration(workspaceScope);
-      const result = await deleteStorefrontThemePage({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          sourcePath: route.sourcePath,
-          expectedFileId: file.id,
-          expectedVersion: file.version,
-          expectedSourceGeneration,
-        },
-      });
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          deleteStorefrontThemePage({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              sourcePath: route.sourcePath,
+              expectedFileId: file.id,
+              expectedVersion: file.version,
+              expectedSourceGeneration,
+            },
+          }),
+      );
       if (result?.success !== true) {
         if (result?.error === "SOURCE_GENERATION_CONFLICT") {
           await queryClient.invalidateQueries({
@@ -2706,6 +2938,16 @@ export function VisualEditorShell({
         }
         return styleRevision;
       }
+      // Signed out, the write would only be refused, and it carries this
+      // tab's unsaved drafts to the server; the page catches up once writes
+      // resume and the drafts are saved through the ordinary path.
+      if (
+        editorSignedOut({
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        })
+      )
+        return styleRevision;
       const sequence = ++previewSyncSequenceRef.current;
       for (const file of planned) {
         lastPreviewSyncByPathRef.current.set(file.path, sequence);
@@ -2816,7 +3058,19 @@ export function VisualEditorShell({
             });
           }
         })
-        .catch(() => {
+        .catch((error) => {
+          // Refused for who is asking, not a sandbox that is gone:
+          // reconnecting would be refused the same way.
+          if (refusalOfError(error, "read")) {
+            reportEditorReadFailure(
+              {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+              },
+              error,
+            );
+            return;
+          }
           if (!targetPreviewKey) return;
           dispatchPreviewLifecycle({
             type: "automatic-recovery",
@@ -2997,6 +3251,12 @@ export function VisualEditorShell({
             themeId: context.theme.id,
             previewOrigin,
           },
+        }).catch((error: unknown) => {
+          reportEditorReadFailure(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            error,
+          );
+          throw error;
         });
         const answer = result?.success === true ? result.data.state : "unknown";
         console.info(`[preview-probe] ${answer}`);
@@ -3034,6 +3294,13 @@ export function VisualEditorShell({
       // iframe can no longer reach.
       const previewOrigin = previewSourceOriginRef.current;
       if (!previewOrigin) return;
+      if (
+        editorSignedOut({
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+        })
+      )
+        return;
       void touchThemePreviewServer({
         data: {
           storefrontId: context.storefront.id,
@@ -3056,7 +3323,12 @@ export function VisualEditorShell({
             });
           }
         })
-        .catch(() => {});
+        .catch((error) =>
+          reportEditorReadFailure(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            error,
+          ),
+        );
     };
 
     const timer = window.setInterval(
@@ -3151,10 +3423,17 @@ export function VisualEditorShell({
       filePath: string,
       contentToSave: string,
       targetRevision: number,
+      /**
+       * The author asked for this save (a keyboard save, Check and save,
+       * Save my changes). Only such a save may go while a save of this
+       * Theme is unanswered; anything else is held. See `unconfirmedContent`.
+       */
+      confirmed = false,
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
       | { status: "source-conflict" }
+      | { status: "auth-paused" }
     > => {
       const fileOpKey = getScopedOpKey(filePath);
       const themeOpKey = `${workspaceScope.storefrontId}:${workspaceScope.themeId}`;
@@ -3168,35 +3447,111 @@ export function VisualEditorShell({
           | { status: "saved"; file: StorefrontThemeFileDTO }
           | { status: "superseded" }
           | { status: "source-conflict" }
+          | { status: "auth-paused" }
         > => {
-          const current = useThemeWorkspaceStore
-            .getState()
-            .getWorkspaceFiles(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            )[filePath];
+          const readCurrent = () =>
+            useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath];
+          let current = readCurrent();
           if (!current)
             throw new Error(`Workspace file "${filePath}" is missing`);
           if (current.conflict)
             throw new Error("File has an unresolved conflict.");
+          if (
+            !confirmed &&
+            unconfirmedPaths(
+              useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                ),
+            ).length > 0
+          ) {
+            throw new Error(UNCONFIRMED_SAVE_HOLD);
+          }
 
           markWorkspaceSaving(filePath, workspaceScope);
 
           try {
+            // An earlier save of this file was sent and never answered. It
+            // may have landed, so the server is asked before anything is
+            // sent again; see `confirmLostSave`. With no answer this throws,
+            // and the file stays as it is.
+            if (current.unconfirmedContent !== undefined) {
+              const confirmed: { file?: StorefrontThemeFileDTO } = {};
+              await confirmLostSave({
+                unconfirmedContent: current.unconfirmedContent,
+                readLatest: async () => {
+                  const latest = await getStorefrontThemeFile({
+                    data: {
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                      path: filePath,
+                    },
+                  }).catch((error: unknown) => {
+                    reportEditorReadFailure(workspaceScope, error);
+                    throw error;
+                  });
+                  if (latest.success) return latest.data ?? null;
+                  if (latest.error === "NOT_FOUND") return null;
+                  throw new Error(latest.message);
+                },
+                markLanded: (latest) => {
+                  confirmed.file = latest;
+                  markWorkspaceSaved(latest, workspaceScope);
+                },
+              });
+              // What would be sent is what the server already holds.
+              if (confirmed.file?.content === contentToSave) {
+                return { status: "saved", file: confirmed.file };
+              }
+              current = readCurrent();
+              if (!current)
+                throw new Error(`Workspace file "${filePath}" is missing`);
+              if (current.conflict)
+                throw new Error("File has an unresolved conflict.");
+              markWorkspaceSaving(filePath, workspaceScope);
+            }
+
             const acceptedGeneration = useThemeWorkspaceStore
               .getState()
               .getAcceptedSourceGeneration(workspaceScope);
 
-            const res = await saveStorefrontThemeFile({
-              data: {
-                storefrontId: context.storefront.id,
-                themeId: context.theme.id,
-                path: filePath,
-                content: contentToSave,
-                ...themeFileWritePrecondition(current),
-                expectedSourceGeneration: acceptedGeneration,
-              },
-            });
+            let res: Awaited<ReturnType<typeof saveStorefrontThemeFile>>;
+            try {
+              res = await sendEditorWrite(workspaceScope, "theme", () =>
+                saveStorefrontThemeFile({
+                  data: {
+                    storefrontId: context.storefront.id,
+                    themeId: context.theme.id,
+                    path: filePath,
+                    content: contentToSave,
+                    ...themeFileWritePrecondition(current),
+                    expectedSourceGeneration: acceptedGeneration,
+                  },
+                }),
+              );
+            } catch (error) {
+              if (!isEditorWritePaused(error)) {
+                // Sent, and no answer came back: it may have landed. Nothing
+                // more goes on its own until the server has been asked.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markUnconfirmed(filePath, contentToSave, workspaceScope);
+                throw error;
+              }
+              // Not sent, or refused for who is asking: the edit stays in the
+              // workspace, marked, and goes when writes are resumed.
+              useThemeWorkspaceStore
+                .getState()
+                .markAuthPaused(filePath, workspaceScope);
+              return { status: "auth-paused" };
+            }
 
             if (!res.success) {
               if (res.error === "SOURCE_GENERATION_CONFLICT") {
@@ -3352,6 +3707,8 @@ export function VisualEditorShell({
         fromHistory?: boolean;
         renderDocument?: boolean;
         preserveCanvasPosition?: boolean;
+        /** The author asked for this save; see `saveThemeFileSequentially`. */
+        confirmed?: boolean;
       },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
@@ -3407,10 +3764,12 @@ export function VisualEditorShell({
         filePath,
         content,
         nextRevision,
+        options?.confirmed ?? false,
       );
       if (
         result.status === "superseded" ||
-        result.status === "source-conflict"
+        result.status === "source-conflict" ||
+        result.status === "auth-paused"
       ) {
         return null;
       }
@@ -3707,6 +4066,22 @@ export function VisualEditorShell({
 
   const handlePublish = useCallback(
     async (note?: string) => {
+      // Publishing is not asking to save: whatever is unanswered is checked
+      // and saved first, through Check and save, or nothing is published.
+      if (
+        unconfirmedContentRef.current.size > 0 ||
+        unconfirmedPaths(
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ),
+        ).length > 0
+      ) {
+        toast.error(`Cannot publish: ${UNCONFIRMED_SAVE_HOLD}`);
+        return;
+      }
       if (monacoDirtyFiles.length > 0) {
         toast.error(
           `Cannot publish: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
@@ -3913,12 +4288,15 @@ export function VisualEditorShell({
       // unsaved; saving through it is what clears that record. Whatever it
       // did not cover — an edit made in Design mode — goes through the same
       // save path directly.
-      await editorCodeWorkspaceRef.current?.saveAll();
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
       const files = readFiles();
       for (const path of sourceConflictPaths(files)) {
         const content = files[path]?.localContent;
         if (content === undefined) continue;
-        await handleUnifiedSaveFile(path, content, { fromHistory: true });
+        await handleUnifiedSaveFile(path, content, {
+          fromHistory: true,
+          confirmed: true,
+        });
       }
     } catch (error) {
       toast.error(
@@ -3928,6 +4306,257 @@ export function VisualEditorShell({
       setIsSavingSourceConflicts(false);
     }
   }, [handleUnifiedSaveFile, workspaceScope]);
+
+  /**
+   * Writes paused on who is signed in, and what getting them going again
+   * involves; see `editor-write-gate` and `EditorWritesPausedNotice`.
+   */
+  const writeGate = useEditorWriteGateStore((state) =>
+    editorWriteGateFor(state.gates, workspaceScope),
+  );
+  const authPausedFiles = useMemo(
+    () => authPausedPaths(workspaceFiles),
+    [workspaceFiles],
+  );
+  const writesPaused = isEditorWriteGatePaused(writeGate);
+  const pausedUnsavedCount =
+    authPausedFiles.length +
+    (writesPaused ? pendingPropsMapRef.current.size : 0);
+  const [isResumingWrites, setIsResumingWrites] = useState(false);
+
+  // A read that finds nobody signed in pauses writes too, before any write
+  // has to be refused to find out.
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.type === "updated" && event.action.type === "error") {
+          reportEditorReadFailure(workspaceScope, event.action.error);
+        }
+      }),
+    [queryClient, workspaceScope],
+  );
+
+  // What is kept is in memory only, so leaving the page would lose it.
+  useEffect(() => {
+    if (!writesPaused || pausedUnsavedCount === 0) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [pausedUnsavedCount, writesPaused]);
+
+  // Another tab can sign this browser out, or into another account, without
+  // any request of this editor being refused — the other account may be
+  // allowed to write. So each time the editor comes back into view it asks
+  // who is signed in, before the author's next edit can be sent.
+  useEffect(() => {
+    const ownerUserId = currentUser?.id;
+    if (!ownerUserId) return;
+    let inFlight = false;
+    let lastAskedAt = 0;
+    const ask = () => {
+      if (document.visibilityState !== "visible" || inFlight) return;
+      if (Date.now() - lastAskedAt < 2_000) return;
+      inFlight = true;
+      lastAskedAt = Date.now();
+      void getSession()
+        .then((session) => {
+          const gates = useEditorWriteGateStore.getState();
+          const userId = session?.user?.id;
+          if (!userId) gates.pause(workspaceScope, "AUTH_REQUIRED", "theme");
+          else if (userId !== ownerUserId) gates.writerChanged(workspaceScope);
+        })
+        // No answer is no evidence either way; the next write will tell.
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    window.addEventListener("focus", ask);
+    document.addEventListener("visibilitychange", ask);
+    return () => {
+      window.removeEventListener("focus", ask);
+      document.removeEventListener("visibilitychange", ask);
+    };
+  }, [currentUser?.id, workspaceScope]);
+
+  // The drafts held while paused belong to the account that made them.
+  useEffect(() => {
+    if (!writesPaused || !currentUser?.id) return;
+    useEditorWriteGateStore
+      .getState()
+      .claimOwner(workspaceScope, currentUser.id);
+  }, [currentUser?.id, workspaceScope, writesPaused]);
+
+  // Every request this editor makes says which account it belongs to, and
+  // the server refuses one whose session belongs to someone else.
+  useEffect(() => {
+    setActiveEditorWriter(currentUser?.id ?? null);
+    return () => setActiveEditorWriter(null);
+  }, [currentUser?.id]);
+
+  const openSignInTab = useCallback(() => {
+    window.open("/sign-in", "_blank", "noopener");
+  }, []);
+
+  const checkWriterAgain = useCallback(async () => {
+    const epoch = useEditorWriteGateStore
+      .getState()
+      .beginVerification(workspaceScope);
+    if (epoch === null) return;
+    // The account the held drafts belong to — recorded when writes paused —
+    // not whoever this editor was opened by since: another account can
+    // open the same Theme in this tab while the first one's drafts wait.
+    const ownerUserId = writeGate.ownerUserId ?? currentUser?.id;
+    const answer = ownerUserId
+      ? await verifyEditorWriter({
+          ownerUserId,
+          readSession: () => getSession(),
+          readTheme: () =>
+            getStorefrontThemeEditor({
+              data: {
+                storefrontId: workspaceScope.storefrontId,
+                themeId: workspaceScope.themeId,
+              },
+            }),
+        })
+      : // No record of who opened the editor, so no way to tell them apart.
+        ("different-account" as const);
+    const gate = useEditorWriteGateStore
+      .getState()
+      .finishVerification(workspaceScope, epoch, answer);
+    if (answer === "unanswered") {
+      toast.error("Could not check your sign-in. Try again.");
+      return;
+    }
+    if (gate.recovery !== "verified") return;
+    // Reads and the preview can come back now; the paused writes wait for
+    // the author to choose to save them.
+    void queryClient.invalidateQueries();
+    if (previewLifecycle.phase === "failed") {
+      dispatchPreviewLifecycle({ type: "manual-recovery" });
+    }
+  }, [
+    currentUser?.id,
+    previewLifecycle.phase,
+    queryClient,
+    workspaceScope,
+    writeGate.ownerUserId,
+  ]);
+
+  /**
+   * Sends what paused writes kept, once the author confirms after a current
+   * verification.
+   *
+   * Not a replay of the requests that were refused. Each file is compared
+   * with what the server holds now: a save whose answer was lost may have
+   * landed, and then the content is already there and nothing is sent. The
+   * rest go through the ordinary save paths, whose version checks decide —
+   * a Theme that moved on comes back as the usual conflict, never overwritten.
+   * Content goes through its own path the same way. One-off actions — delete,
+   * move, publish, build — are not repeated; the author presses them again.
+   */
+  const resumePausedWrites = useCallback(async () => {
+    if (
+      !useEditorWriteGateStore
+        .getState()
+        .confirmResume(workspaceScope, writeGate.epoch)
+    ) {
+      return;
+    }
+    setIsResumingWrites(true);
+    const readFiles = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    try {
+      // Code mode keeps its own drafts; its save goes through the same path.
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      for (const path of authPausedPaths(readFiles())) {
+        await settleHeldFile({
+          readDraft: () => readFiles()[path],
+          readLatest: async () => {
+            const latest = await getStorefrontThemeFile({
+              data: {
+                storefrontId: workspaceScope.storefrontId,
+                themeId: workspaceScope.themeId,
+                path,
+              },
+            });
+            return latest.success && latest.data ? latest.data : null;
+          },
+          markLanded: (latest) => markWorkspaceSaved(latest, workspaceScope),
+          save: (content) =>
+            handleUnifiedSaveFile(path, content, {
+              fromHistory: true,
+              confirmed: true,
+            }),
+        });
+      }
+      await settleUnconfirmedContent();
+      for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+        const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
+        if (!templateId) continue;
+        await commitSectionPending(templateId, key, true, true).catch(() => {
+          // Reported by the save itself, and still pending if it failed.
+        });
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not save your changes.",
+      );
+    } finally {
+      setIsResumingWrites(false);
+    }
+  }, [
+    commitSectionPending,
+    handleUnifiedSaveFile,
+    markWorkspaceSaved,
+    settleUnconfirmedContent,
+    workspaceScope,
+    writeGate.epoch,
+  ]);
+
+  /**
+   * Saves that went out and were never answered; see
+   * `EditorUnconfirmedSavesNotice`. Checking is the author's confirmation:
+   * each save path asks the server first and sends only what did not land.
+   */
+  const unconfirmedFiles = useMemo(
+    () => unconfirmedPaths(workspaceFiles),
+    [workspaceFiles],
+  );
+  const [isCheckingUnconfirmed, setIsCheckingUnconfirmed] = useState(false);
+  const checkUnconfirmedSaves = useCallback(async () => {
+    const readFiles = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    setIsCheckingUnconfirmed(true);
+    try {
+      // Code mode keeps its own drafts; its save goes through the same path.
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      for (const path of unconfirmedPaths(readFiles())) {
+        const content = readFiles()[path]?.localContent;
+        if (content === undefined) continue;
+        await handleUnifiedSaveFile(path, content, {
+          fromHistory: true,
+          confirmed: true,
+        });
+      }
+      await retryFailedContent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not check whether your changes were saved.",
+      );
+    } finally {
+      setIsCheckingUnconfirmed(false);
+    }
+  }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
 
   const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
     if (isBuildPending) return { ok: false };
@@ -3969,15 +4598,20 @@ export function VisualEditorShell({
         .getBaseSourceGeneration(workspaceScope);
 
       // 1. Freeze current source files into a revision snapshot
-      const freezeResult = await createStorefrontThemeRevision({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          expectedSourceGeneration: currentGeneration,
-          message: "Build Preview Snapshot",
-          source: "manual",
-        },
-      });
+      const freezeResult = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createStorefrontThemeRevision({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              expectedSourceGeneration: currentGeneration,
+              message: "Build Preview Snapshot",
+              source: "manual",
+            },
+          }),
+      );
 
       if (!freezeResult.success || !freezeResult.data?.id) {
         toast.error(
@@ -3988,13 +4622,18 @@ export function VisualEditorShell({
       }
 
       // 2. Request compilation & immutable R2 artifact persistence
-      const buildResult = await createPreviewBuild({
-        data: {
-          storefrontId: context.storefront.id,
-          themeId: context.theme.id,
-          sourceRevisionId: freezeResult.data.id,
-        },
-      });
+      const buildResult = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          createPreviewBuild({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              sourceRevisionId: freezeResult.data.id,
+            },
+          }),
+      );
 
       if (!buildResult.success || !buildResult.data) {
         toast.error(buildResult.message || "Theme build failed");
@@ -5255,32 +5894,37 @@ export function VisualEditorShell({
             expectedFileId: routeFile.id,
             expectedVersion: routeFile.version,
           };
-      const result = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId: workspaceScope.storefrontId,
-          themeId: workspaceScope.themeId,
-          files: [
-            ...copyPlan.files.map((file) => ({
-              path: file.path,
-              content: file.content,
-              mimeType: file.mimeType,
-              expectMissing: true as const,
-            })),
-            {
-              path: routeFile.path,
-              content: replacement.code,
-              mimeType: routeFile.mimeType,
-              ...routePrecondition,
+      const result = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              files: [
+                ...copyPlan.files.map((file) => ({
+                  path: file.path,
+                  content: file.content,
+                  mimeType: file.mimeType,
+                  expectMissing: true as const,
+                })),
+                {
+                  path: routeFile.path,
+                  content: replacement.code,
+                  mimeType: routeFile.mimeType,
+                  ...routePrecondition,
+                },
+              ],
+              deletions: [],
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+              createRevision: true,
+              revisionMessage: `Create page-specific copy of ${componentPath}`,
             },
-          ],
-          deletions: [],
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Create page-specific copy of ${componentPath}`,
-        },
-      });
+          }),
+      );
       if (!result.success) {
         return { success: false, message: result.message };
       }
@@ -5554,26 +6198,31 @@ export function VisualEditorShell({
                 expectedFileId: routeFile.id,
                 expectedVersion: routeFile.version,
               };
-          const saved = await saveStorefrontThemeFilesBatch({
-            data: {
-              storefrontId: workspaceScope.storefrontId,
-              themeId: workspaceScope.themeId,
-              files: [
-                {
-                  path: routeFile.path,
-                  content: result.code,
-                  mimeType: routeFile.mimeType,
-                  ...routePrecondition,
+          const saved = await sendEditorWrite(
+            { storefrontId: context.storefront.id, themeId: context.theme.id },
+            "theme",
+            () =>
+              saveStorefrontThemeFilesBatch({
+                data: {
+                  storefrontId: workspaceScope.storefrontId,
+                  themeId: workspaceScope.themeId,
+                  files: [
+                    {
+                      path: routeFile.path,
+                      content: result.code,
+                      mimeType: routeFile.mimeType,
+                      ...routePrecondition,
+                    },
+                  ],
+                  deletions,
+                  expectedSourceGeneration: useThemeWorkspaceStore
+                    .getState()
+                    .getAcceptedSourceGeneration(workspaceScope),
+                  createRevision: true,
+                  revisionMessage: `Remove section ${sectionId}`,
                 },
-              ],
-              deletions,
-              expectedSourceGeneration: useThemeWorkspaceStore
-                .getState()
-                .getAcceptedSourceGeneration(workspaceScope),
-              createRevision: true,
-              revisionMessage: `Remove section ${sectionId}`,
-            },
-          });
+              }),
+          );
           if (!saved.success) {
             return { success: false, message: saved.message };
           }
@@ -6342,6 +6991,47 @@ export function VisualEditorShell({
    * the same template queue so it takes its turn behind a pending content
    * edit rather than racing it for the draft generation.
    */
+  /**
+   * After a structural write was refused because the document moved: loads
+   * the document as it is now, and makes its draft generation the one this
+   * tab writes against next — so the author's next press is judged against
+   * what they can now see, rather than refused for the same reason forever.
+   *
+   * Only while nothing of this document is pending: pending content carries
+   * edits made against the older version and goes through its own rebase
+   * ("Load latest, keep mine"), which takes the generation itself.
+   */
+  const adoptLatestDocument = useCallback(
+    async (requestedTemplateId: string) => {
+      const templateId =
+        routeTemplateIdsRef.current.get(requestedTemplateId) ??
+        requestedTemplateId;
+      const fresh = await queryClient.fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      });
+      if (!fresh.success) return;
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === templateId,
+      );
+      if (typeof template?.draftGeneration !== "number") return;
+      const pendingHere = Array.from(pendingPropsMapRef.current.keys()).some(
+        (key) =>
+          key.startsWith(`${templateId}:`) ||
+          key.startsWith(`${requestedTemplateId}:`),
+      );
+      if (pendingHere) return;
+      templateDraftGenerationRef.current.set(
+        templateId,
+        template.draftGeneration,
+      );
+    },
+    [context.storefront.id, context.theme.id, queryClient],
+  );
+
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
       // The binding, not the active template: on a page whose document is not
@@ -6364,6 +7054,15 @@ export function VisualEditorShell({
           }),
       );
       if (result && !result.success) {
+        if ((result as { error?: string }).error === TEMPLATE_DRAFT_CONFLICT) {
+          await adoptLatestDocument(boundTemplateId);
+          // Thrown, so the dialog stays open with the name typed: pressing
+          // Rename again applies it on top of the version just loaded. Not
+          // sent again on its own.
+          throw new Error(
+            "This page was changed elsewhere. The latest version is loaded; press Rename again to apply your name.",
+          );
+        }
         toast.error(result.message);
         return;
       }
@@ -6376,6 +7075,7 @@ export function VisualEditorShell({
     },
     [
       activeTemplate,
+      adoptLatestDocument,
       context.storefront.id,
       context.templates,
       context.theme.id,
@@ -6520,32 +7220,37 @@ export function VisualEditorShell({
             expectedFileId: routeFile.id,
             expectedVersion: routeFile.version,
           };
-      const saved = await saveStorefrontThemeFilesBatch({
-        data: {
-          storefrontId: workspaceScope.storefrontId,
-          themeId: workspaceScope.themeId,
-          files: [
-            ...copiedFiles.map((file) => ({
-              path: file.path,
-              content: file.content,
-              mimeType: file.mimeType,
-              expectMissing: true as const,
-            })),
-            {
-              path: routeFile.path,
-              content: result.code,
-              mimeType: routeFile.mimeType,
-              ...routePrecondition,
+      const saved = await sendEditorWrite(
+        { storefrontId: context.storefront.id, themeId: context.theme.id },
+        "theme",
+        () =>
+          saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              files: [
+                ...copiedFiles.map((file) => ({
+                  path: file.path,
+                  content: file.content,
+                  mimeType: file.mimeType,
+                  expectMissing: true as const,
+                })),
+                {
+                  path: routeFile.path,
+                  content: result.code,
+                  mimeType: routeFile.mimeType,
+                  ...routePrecondition,
+                },
+              ],
+              deletions: [],
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+              createRevision: true,
+              revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
             },
-          ],
-          deletions: [],
-          expectedSourceGeneration: useThemeWorkspaceStore
-            .getState()
-            .getAcceptedSourceGeneration(workspaceScope),
-          createRevision: true,
-          revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
-        },
-      });
+          }),
+      );
       if (!saved.success) throw new Error(saved.message);
 
       useThemeWorkspaceStore
@@ -6719,6 +7424,12 @@ export function VisualEditorShell({
 
   const handleSwitchToDesign = useCallback(async () => {
     if (isFlushingCodeChanges) return;
+    // Switching modes would save Code drafts on the way; with a save
+    // unanswered that is not the author's call to make for them.
+    if (unconfirmedFiles.length > 0) {
+      toast.error(UNCONFIRMED_SAVE_HOLD);
+      return;
+    }
     if (monacoDirtyFiles.length > 0) {
       setIsFlushingCodeChanges(true);
       try {
@@ -6736,7 +7447,12 @@ export function VisualEditorShell({
       }
     }
     switchToDesign();
-  }, [isFlushingCodeChanges, monacoDirtyFiles.length, switchToDesign]);
+  }, [
+    isFlushingCodeChanges,
+    monacoDirtyFiles.length,
+    switchToDesign,
+    unconfirmedFiles.length,
+  ]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -7975,12 +8691,29 @@ export function VisualEditorShell({
           </Popover>
         </div>
       </header>
-      <EditorSourceConflictNotice
-        className="col-start-1 row-start-2"
-        paths={pendingSourceConflicts}
-        saving={isSavingSourceConflicts}
-        onSave={() => void saveSourceConflicts()}
-      />
+      {/* Separate notices, never merged: signing in again does not settle
+          a Theme that moved on, a dropped connection says nothing about
+          either, and the reverse of each. */}
+      <div className="col-start-1 row-start-2 flex flex-col">
+        <EditorWritesPausedNotice
+          gate={writeGate}
+          unsavedCount={pausedUnsavedCount}
+          saving={isResumingWrites}
+          onSignIn={openSignInTab}
+          onCheckAgain={() => void checkWriterAgain()}
+          onSave={() => void resumePausedWrites()}
+        />
+        <EditorUnconfirmedSavesNotice
+          count={unconfirmedFiles.length + unconfirmedContentCount}
+          checking={isCheckingUnconfirmed}
+          onCheck={() => void checkUnconfirmedSaves()}
+        />
+        <EditorSourceConflictNotice
+          paths={pendingSourceConflicts}
+          saving={isSavingSourceConflicts}
+          onSave={() => void saveSourceConflicts()}
+        />
+      </div>
 
       {/*
         A build is the compiled artifact, not something the editor can act
