@@ -62,6 +62,16 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
    * in. Cleared only when the content it held is saved or discarded.
    */
   authPaused?: boolean;
+  /**
+   * The content of a save that was sent and never answered: the connection
+   * dropped, or the answer was cut off. It may have landed. Nothing more is
+   * sent for this Theme on its own until the server has been asked what it
+   * holds (see `confirmLostSave`); the author's next save does that first.
+   *
+   * Cleared once an answer is known: a save of this file landing, the server
+   * reporting a version conflict on it, or the edit being discarded.
+   */
+  unconfirmedContent?: string;
 };
 
 export type ThemeConflictResolution = ThemeFileServerState & {
@@ -123,6 +133,12 @@ export interface ThemeWorkspaceStore {
   markSourceConflict: (path: string, scope?: WorkspaceScope) => void;
   /** Marks a save held back by paused writes; see `authPaused`. */
   markAuthPaused: (path: string, scope?: WorkspaceScope) => void;
+  /** Marks a save sent and never answered; see `unconfirmedContent`. */
+  markUnconfirmed: (
+    path: string,
+    content: string,
+    scope?: WorkspaceScope,
+  ) => void;
   markSaved: (
     saved: StorefrontThemeFileDTO & { sourceGeneration?: number },
     scope?: WorkspaceScope,
@@ -384,6 +400,29 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
           }
 
           if (current.saveState === "saving") continue;
+
+          // A save that was never answered, answered now by the server's
+          // own copy: it landed. Recorded as saved, keeping anything typed
+          // since — not shown as a conflict with the author's own write.
+          if (
+            current.unconfirmedContent !== undefined &&
+            current.unconfirmedContent === file.content
+          ) {
+            const stillDirty = current.localContent !== file.content;
+            next[file.path] = {
+              ...current,
+              ...presentOnServer(file.id, file.version),
+              serverContent: file.content,
+              dirty: stillDirty,
+              saveState: stillDirty ? "dirty" : "clean",
+              conflict: undefined,
+              errorMessage: undefined,
+              authPaused: stillDirty ? current.authPaused : undefined,
+              unconfirmedContent: undefined,
+            };
+            hasChanges = true;
+            continue;
+          }
 
           if (!current.serverExists && current.dirty) {
             const isSameConflict =
@@ -706,6 +745,25 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       });
     },
 
+    markUnconfirmed: (path, content, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: { ...current, unconfirmedContent: content },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
     markSaved: (saved, scope, sourceGeneration) => {
       set((state) => {
         const resolvedScope = scope ?? {
@@ -733,6 +791,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             // An earlier save landing says nothing about the newer content
             // still waiting; only saving that content clears its pause.
             authPaused: stillDirty ? current.authPaused : undefined,
+            unconfirmedContent: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -793,6 +852,8 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             saveState: "conflict" as const,
             conflict,
             errorMessage: undefined,
+            // The server has answered with what it holds.
+            unconfirmedContent: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -911,6 +972,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             errorMessage: undefined,
             sourceConflict: undefined,
             authPaused: undefined,
+            unconfirmedContent: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };
@@ -967,6 +1029,16 @@ export function authPausedPaths(
 ): string[] {
   return Object.values(workspaceFiles)
     .filter((file) => file.authPaused && file.dirty)
+    .map((file) => file.path)
+    .sort();
+}
+
+/** The files with a save sent and never answered; see `unconfirmedContent`. */
+export function unconfirmedPaths(
+  workspaceFiles: Readonly<Record<string, ThemeWorkspaceFileState>>,
+): string[] {
+  return Object.values(workspaceFiles)
+    .filter((file) => file.unconfirmedContent !== undefined)
     .map((file) => file.path)
     .sort();
 }

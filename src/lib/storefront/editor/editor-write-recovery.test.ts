@@ -6,6 +6,7 @@ import {
   authRequired,
 } from "@/lib/auth/auth-failure";
 import {
+  confirmLostSave,
   settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
@@ -178,7 +179,7 @@ describe("settleHeldFile", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("leaves a file in conflict to its own resolution, and sends when the server cannot answer", async () => {
+  it("leaves a file in conflict to its own resolution, and sends nothing when the server cannot answer", async () => {
     const conflicted = { localContent: "mine", conflict: { kind: "modified" } };
     const save = vi.fn(async () => {});
     await expect(
@@ -198,8 +199,55 @@ describe("settleHeldFile", () => {
         markLanded: vi.fn(),
         save,
       }),
-    ).resolves.toBe("sent");
-    // Sent through the ordinary save, whose version check still decides.
-    expect(save).toHaveBeenCalledTimes(1);
+    ).resolves.toBe("unanswered");
+    // No answer is not "it did not land": nothing is sent on a guess.
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("confirmLostSave", () => {
+  it("records a save that landed, and only that version", async () => {
+    const markLanded = vi.fn();
+    await expect(
+      confirmLostSave({
+        unconfirmedContent: "sent",
+        readLatest: async () => ({ content: "sent", version: 3 }),
+        markLanded,
+      }),
+    ).resolves.toBe("landed");
+    expect(markLanded).toHaveBeenCalledWith({ content: "sent", version: 3 });
+  });
+
+  it("leaves to the ordinary save a file that holds something else, or nothing", async () => {
+    const markLanded = vi.fn();
+    await expect(
+      confirmLostSave({
+        unconfirmedContent: "sent",
+        readLatest: async () => ({ content: "before", version: 2 }),
+        markLanded,
+      }),
+    ).resolves.toBe("not-landed");
+    await expect(
+      confirmLostSave({
+        unconfirmedContent: "sent",
+        readLatest: async () => null,
+        markLanded,
+      }),
+    ).resolves.toBe("not-landed");
+    expect(markLanded).not.toHaveBeenCalled();
+  });
+
+  it("decides nothing when the server cannot be asked", async () => {
+    const markLanded = vi.fn();
+    await expect(
+      confirmLostSave({
+        unconfirmedContent: "sent",
+        readLatest: async () => {
+          throw new Error("network");
+        },
+        markLanded,
+      }),
+    ).rejects.toThrow("network");
+    expect(markLanded).not.toHaveBeenCalled();
   });
 });

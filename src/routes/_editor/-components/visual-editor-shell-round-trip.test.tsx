@@ -92,6 +92,12 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => ({
 const updateSectionProps = vi.hoisted(() => vi.fn());
 
 /**
+ * The editor's read of the Theme, which is how a write that got no answer is
+ * checked before anything is sent again.
+ */
+const getThemeEditor = vi.hoisted(() => vi.fn());
+
+/**
  * What the stub panel asks the shell to patch.
  *
  * A `line:column` location rather than a marker, because
@@ -109,6 +115,7 @@ vi.mock(
   async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
+    getStorefrontThemeEditor: getThemeEditor,
   }),
 );
 
@@ -253,6 +260,26 @@ async function commitInlineText(value = "Hello") {
     fieldPath: "heading",
     value,
   });
+}
+
+/** The editor's read of the Theme, with the hero holding `props`. */
+function editorHolding(props: Record<string, unknown>) {
+  return {
+    success: true,
+    message: "ok",
+    data: {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [{ id: "hero", type: "hero", props }],
+          },
+        },
+      ],
+    },
+  };
 }
 
 /** The header's own marker, which outlives the toast. */
@@ -439,48 +466,79 @@ describe("a content save that fails", () => {
     );
   });
 
-  it("offers one more send once the attempts are spent", async () => {
+  it("is not sent again by itself when the request gets no answer", async () => {
     updateSectionProps.mockRejectedValue(new Error("offline"));
     renderShell();
     await commitInlineText();
 
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
-    // Three attempts: the first, and the two the retry allowance spent.
-    expect(updateSectionProps).toHaveBeenCalledTimes(3);
-
-    const attempts = updateSectionProps.mock.calls.length;
-    updateSectionProps.mockResolvedValue({
-      success: true,
-      data: { draftGeneration: 8 },
-    } as never);
-    act(() => {
-      screen.getByRole("button", { name: "Try again" }).click();
-    });
-
-    await waitFor(() =>
-      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(attempts),
-    );
-    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    // No answer is not "it did not land": it may have, so nothing goes again
+    // on its own — not this write, and not the next edit either.
+    await commitInlineText("Hello again");
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
-  it("goes again by itself when the request never lands", async () => {
-    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+  it("asks the server before sending again, and sends what did not land once", async () => {
     updateSectionProps
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({
         success: true,
-        data: { draftGeneration: 8 },
+        data: { draftGeneration: 2 },
       } as never);
+    getThemeEditor.mockResolvedValue(editorHolding({}));
     renderShell();
-
     await commitInlineText();
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    getThemeEditor.mockClear();
 
-    // The first attempt is refused by the network, not by the server, so the
-    // same payload goes again without asking — and the author is told nothing,
-    // because there was no decision for them to make.
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
-    expect(error).not.toHaveBeenCalled();
+    // Asked first; the server did not hold the edit, so it went once more.
+    expect(getThemeEditor).toHaveBeenCalled();
+    expect(getThemeEditor.mock.invocationCallOrder[0]!).toBeLessThan(
+      updateSectionProps.mock.invocationCallOrder[1]!,
+    );
     await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+  });
+
+  it("does not send again a write that landed when its answer was lost", async () => {
+    updateSectionProps.mockRejectedValue(new Error("offline"));
+    // The server made the write; only the answer was lost on the way back.
+    getThemeEditor.mockResolvedValue(editorHolding({ heading: "Hello" }));
+    renderShell();
+    await commitInlineText();
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
+    await waitFor(() => expect(saveStatus()).not.toBe("Save failed"));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("decides nothing when the server cannot be asked", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockRejectedValue(new Error("offline"));
+    getThemeEditor.mockRejectedValue(new Error("offline"));
+    renderShell();
+    await commitInlineText();
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+
+    act(() => {
+      screen.getByRole("button", { name: "Try again" }).click();
+    });
+
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toBe("Save failed");
   });
 
   it("says so when the request never lands", async () => {

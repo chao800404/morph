@@ -41,6 +41,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   themeFileWritePrecondition,
+  unconfirmedPaths,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { cn } from "@/lib/utils";
@@ -2742,7 +2743,11 @@ const EditorCodeWorkspaceContent = forwardRef<
 
     const existingAutoSave = autoSaveTimersRef.current.get(path);
     if (existingAutoSave) clearTimeout(existingAutoSave);
-    if (isDirty && !externalConflictFiles?.[path]) {
+    if (
+      isDirty &&
+      !externalConflictFiles?.[path] &&
+      !hasUnconfirmedSave(workspaceScope)
+    ) {
       autoSaveTimersRef.current.set(
         path,
         setTimeout(() => {
@@ -2890,6 +2895,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   const handleAutoSaveFile = useCallback(
     async (path: string): Promise<void> => {
       if (externalConflictFiles?.[path] || !draftDirtyRef.current[path]) return;
+      // A save went out and was never answered. Autosave sends nothing more
+      // until the server has been asked whether it landed, which the
+      // author's own save (or the notice's) does; this also ends an autosave
+      // that was waiting behind that save.
+      if (hasUnconfirmedSave(workspaceScope)) return;
       if (saveInFlightRef.current || saveMutation.isPending) {
         autoSaveTimersRef.current.set(
           path,
@@ -2929,7 +2939,11 @@ const EditorCodeWorkspaceContent = forwardRef<
         }
       }
 
-      if (draftDirtyRef.current[path] && !externalConflictFiles?.[path]) {
+      if (
+        draftDirtyRef.current[path] &&
+        !externalConflictFiles?.[path] &&
+        !hasUnconfirmedSave(workspaceScope)
+      ) {
         autoSaveTimersRef.current.set(
           path,
           setTimeout(() => {
@@ -4879,3 +4893,17 @@ const EditorCodeWorkspaceContent = forwardRef<
 });
 
 export const EditorCodeWorkspace = memo(EditorCodeWorkspaceContent);
+
+/** Whether a save in this Theme was sent and never answered. */
+function hasUnconfirmedSave(scope: {
+  storefrontId: string;
+  themeId: string;
+}): boolean {
+  return (
+    unconfirmedPaths(
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(scope.storefrontId, scope.themeId),
+    ).length > 0
+  );
+}

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { commitPendingContent } from "./pending-content-write";
+import {
+  commitPendingContent,
+  sectionContentLanded,
+} from "./pending-content-write";
 
 /** The error a call rejected with, whether or not it has a code. */
 async function rejectionOf(promise: Promise<unknown>) {
@@ -114,5 +117,62 @@ describe("content acknowledgement boundary", () => {
     expect(state.pending.get(state.key)?.props.heading).toBe("newer");
     expect(state.baselines.get(state.key)?.heading).toBe("edited");
     expect(onSaved).toHaveBeenCalledOnce();
+  });
+});
+
+describe("sectionContentLanded", () => {
+  const sent = (props: Record<string, unknown>) => ({
+    sectionId: "hero",
+    props,
+  });
+
+  it("answers by content: every sent value is held, whatever else is", () => {
+    expect(
+      sectionContentLanded(
+        sent({ heading: "New", links: [{ label: "A", href: "/a" }] }),
+        {
+          props: {
+            // Same values, another key order, and fields the write left alone.
+            links: [{ href: "/a", label: "A" }],
+            heading: "New",
+            subheading: "kept",
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("answers no for a value that differs, is missing, or a section that is gone", () => {
+    expect(
+      sectionContentLanded(sent({ heading: "New" }), {
+        props: { heading: "Old" },
+      }),
+    ).toBe(false);
+    expect(sectionContentLanded(sent({ heading: "New" }), { props: {} })).toBe(
+      false,
+    );
+    expect(
+      sectionContentLanded(sent({ links: [{ label: "A" }] }), {
+        props: { links: [{ label: "A" }, { label: "B" }] },
+      }),
+    ).toBe(false);
+    expect(sectionContentLanded(sent({ heading: "New" }), undefined)).toBe(
+      false,
+    );
+  });
+
+  it("reads `enabled` from the section, where the server stores it", () => {
+    expect(
+      sectionContentLanded(sent({ enabled: false }), {
+        enabled: false,
+        props: {},
+      }),
+    ).toBe(true);
+    expect(sectionContentLanded(sent({ enabled: false }), { props: {} })).toBe(
+      false,
+    );
+    expect(sectionContentLanded(sent({ enabled: true }), { props: {} })).toBe(
+      true,
+    );
   });
 });

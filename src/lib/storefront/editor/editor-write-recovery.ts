@@ -80,6 +80,9 @@ export function templateIdOfPendingContentKey(
  *   never the copy read before it.
  *
  * A file in a version conflict is left to the conflict's own resolution.
+ *
+ * A server that cannot be asked is no answer: nothing is sent, and the file
+ * stays held ("unanswered"), rather than sending on a guess.
  */
 export async function settleHeldFile<TLatest extends { content: string }>({
   readDraft,
@@ -91,12 +94,17 @@ export async function settleHeldFile<TLatest extends { content: string }>({
   readLatest: () => Promise<TLatest | null>;
   markLanded: (latest: TLatest) => void;
   save: (content: string) => Promise<unknown>;
-}): Promise<"landed" | "sent" | "skipped"> {
+}): Promise<"landed" | "sent" | "skipped" | "unanswered"> {
   const asked = readDraft();
   if (!asked || asked.conflict) return "skipped";
   // The value, not the object: the draft may change while the server answers.
   const askedContent = asked.localContent;
-  const latest = await readLatest().catch(() => null);
+  let latest: TLatest | null;
+  try {
+    latest = await readLatest();
+  } catch {
+    return "unanswered";
+  }
   if (latest && latest.content === askedContent) {
     markLanded(latest);
     return "landed";
@@ -105,4 +113,39 @@ export async function settleHeldFile<TLatest extends { content: string }>({
   if (!now || now.conflict) return "skipped";
   await save(now.localContent);
   return "sent";
+}
+
+/**
+ * Finds out whether a save that was sent and never answered landed.
+ *
+ * A dropped connection or a cut-off answer says nothing about the write: the
+ * server may have made it. The version precondition would stop a resend from
+ * overwriting someone else, but cannot say whether the first one landed, so
+ * the server is asked what it holds before anything is sent again.
+ *
+ * - The server holds exactly the content that was sent: it landed, and that
+ *   version is recorded (`markLanded`) so the next save is made against it.
+ * - It holds something else, or no file: either it did not land, or someone
+ *   saved over it since. Both are left to the ordinary save, whose version
+ *   check turns the second into a conflict rather than an overwrite.
+ * - The server cannot be asked: this throws, and nothing is decided.
+ *
+ * `readLatest` resolves `null` only when the server says there is no such
+ * file, and throws when it gave no answer.
+ */
+export async function confirmLostSave<TLatest extends { content: string }>({
+  unconfirmedContent,
+  readLatest,
+  markLanded,
+}: {
+  unconfirmedContent: string;
+  readLatest: () => Promise<TLatest | null>;
+  markLanded: (latest: TLatest) => void;
+}): Promise<"landed" | "not-landed"> {
+  const latest = await readLatest();
+  if (latest && latest.content === unconfirmedContent) {
+    markLanded(latest);
+    return "landed";
+  }
+  return "not-landed";
 }

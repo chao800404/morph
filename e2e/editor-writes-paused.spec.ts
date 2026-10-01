@@ -6,7 +6,12 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { EDITOR_PATH, openContentTab, openEditor } from "./helpers";
+import {
+  EDITOR_PATH,
+  openContentTab,
+  openEditor,
+  settleSelection,
+} from "./helpers";
 
 /**
  * What the editor does with unsaved work when who is signed in changes.
@@ -135,18 +140,37 @@ async function editAndSave(page: Page, path: string, next: string) {
  * path in its body.
  */
 function isFileSave(url: string, body: string, path: string) {
+  return body.includes(path) && isServerFn(url, "saveStorefrontThemeFile");
+}
+
+/** Whether a request calls the server function exported as `name`. */
+function isServerFn(url: string, name: string) {
   const id = url.split("/_serverFn/")[1]?.split(/[/?]/)[0];
-  if (!id || !body.includes(path)) return false;
+  if (!id) return false;
   try {
     const decoded = JSON.parse(
       Buffer.from(id.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
         "utf8",
       ),
     ) as { export?: string };
-    return /^saveStorefrontThemeFile_/.test(decoded.export ?? "");
+    return (decoded.export ?? "").startsWith(`${name}_`);
   } catch {
     return false;
   }
+}
+
+/** Counts the calls of the section content write, from now on. */
+function countContentWrites(page: Page) {
+  const counter = { sent: 0 };
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      isServerFn(request.url(), "updateStorefrontThemeSectionProps")
+    ) {
+      counter.sent += 1;
+    }
+  });
+  return counter;
 }
 
 /** Counts the calls of the file save itself for `path`, from now on. */
@@ -180,6 +204,21 @@ function countSaves(page: Page, path: string) {
 
 const pausedNotice = (page: Page) =>
   page.locator("[data-editor-writes-paused]");
+
+const unconfirmedNotice = (page: Page) =>
+  page.locator("[data-editor-unconfirmed-saves]");
+
+/** The hero's first content field in Design. */
+async function heroContentField(page: Page) {
+  await page.getByRole("button", { name: "hero", exact: true }).click();
+  await settleSelection(page);
+  await openContentTab(page);
+  const field = page
+    .locator('[data-slot="inspector-content-field"] input')
+    .first();
+  await expect(field).toBeVisible({ timeout: 30_000 });
+  return field;
+}
 
 const withoutMarkers = (source: string) =>
   source
@@ -470,7 +509,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
     }
   });
 
-  test("connection lost is not signed out: no pause, and the draft stays", async ({
+  test("connection lost before the save arrived: not resent on its own, checked, then sent once", async ({
     browser,
   }) => {
     test.setTimeout(300_000);
@@ -492,18 +531,213 @@ test.describe("unsaved work when the signed-in account changes", () => {
       );
       await editAndSave(page, hero, `${original}\n/* ${MARKER} offline */`);
       await expect.poll(() => saves.sent, { timeout: 15_000 }).toBe(1);
+      // Long enough for autosave (700 ms, 250 ms behind a save in flight) to
+      // have gone several times over, had it been allowed to.
       await page.waitForTimeout(5_000);
 
-      // Not a sign-in problem: nothing paused, and the draft is still here.
-      // (Code autosave may send the same content again once the explicit
-      // save has failed; that predates this change and is not asserted.)
+      // Not a sign-in problem, the draft is still here, and nothing went
+      // again on its own.
       await expect(pausedNotice(page)).toHaveCount(0);
-      expect(saves.sent).toBeGreaterThanOrEqual(1);
+      await expect(unconfirmedNotice(page)).toBeVisible();
+      expect(saves.sent).toBe(1);
       expect(await readSource(page, hero)).toContain(`${MARKER} offline`);
+
+      // Back online, the author checks: the server does not hold it, so it
+      // is sent — once.
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await unconfirmedNotice(page)
+        .getByRole("button", { name: "Check and save" })
+        .click();
+      await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+      expect(saves.sent).toBe(2);
+
+      const check = await sharedEditor(browser);
+      try {
+        await openHeroInCode(check.page);
+        expect(await readSource(check.page, hero)).toContain(
+          `${MARKER} offline`,
+        );
+      } finally {
+        await check.context.close();
+      }
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await context.close();
       await restoreHero(browser, hero);
+    }
+  });
+
+  test("the save landed and only its answer was lost: checked, not sent again", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    try {
+      const saves = countFileSaves(page, hero);
+      // The save reaches the server and is made; the answer is cut off on
+      // its way back. Only the first one: anything after it would pass.
+      let cut = false;
+      await page.route("**/_serverFn/**", async (route) => {
+        const request = route.request();
+        if (cut || !isFileSave(request.url(), request.postData() ?? "", hero)) {
+          return route.fallback();
+        }
+        cut = true;
+        const response = await route.fetch();
+        expect(response.ok(), "the save itself was made").toBe(true);
+        await route.abort("connectionreset");
+      });
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} landed */`);
+      await expect.poll(() => saves.sent, { timeout: 15_000 }).toBe(1);
+      await page.waitForTimeout(5_000);
+
+      await expect(pausedNotice(page)).toHaveCount(0);
+      await expect(unconfirmedNotice(page)).toBeVisible();
+      expect(saves.sent).toBe(1);
+
+      // Checking finds the save on the server: recorded as saved, and not
+      // sent again — no second write, and no conflict with itself.
+      await unconfirmedNotice(page)
+        .getByRole("button", { name: "Check and save" })
+        .click();
+      await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+      await page.waitForTimeout(2_000);
+      expect(saves.sent).toBe(1);
+      await expect(
+        page.getByText("Remote source changes detected in this theme"),
+      ).toHaveCount(0);
+      expect(await readSource(page, hero)).toContain(`${MARKER} landed`);
+
+      const check = await sharedEditor(browser);
+      try {
+        await openHeroInCode(check.page);
+        const held = await readSource(check.page, hero);
+        // Applied once: the marker is there, and only once.
+        expect(held.split(`${MARKER} landed`).length - 1).toBe(1);
+      } finally {
+        await check.context.close();
+      }
+
+      // The next save. This tab did not take the Theme's source generation
+      // from the check, so it may meet the source-conflict notice once; it
+      // must go through on that press and overwrite nothing.
+      const before = saves.sent;
+      await editAndSave(
+        page,
+        hero,
+        `${await readSource(page, hero)}\n/* ${MARKER} next */`,
+      );
+      await expect.poll(() => saves.sent, { timeout: 15_000 }).toBe(before + 1);
+      const sourceConflict = page.getByText(
+        "Remote source changes detected in this theme",
+      );
+      await page.waitForTimeout(3_000);
+      const metConflict = (await sourceConflict.count()) > 0;
+      test.info().annotations.push({
+        type: "next-save",
+        description: metConflict ? "source-conflict-once" : "saved-directly",
+      });
+      if (metConflict) {
+        await page
+          .getByRole("status")
+          .filter({ hasText: "Remote source changes detected" })
+          .getByRole("button", { name: "Save my changes" })
+          .click();
+        await expect(sourceConflict).toHaveCount(0, { timeout: 30_000 });
+      }
+      const after = await sharedEditor(browser);
+      try {
+        await openHeroInCode(after.page);
+        const held = await readSource(after.page, hero);
+        expect(held.split(`${MARKER} landed`).length - 1).toBe(1);
+        expect(held.split(`${MARKER} next`).length - 1).toBe(1);
+      } finally {
+        await after.context.close();
+      }
+    } finally {
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("a content write that landed with its answer lost is not sent again", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const field = await heroContentField(page);
+    const original = await field.inputValue();
+    const marker = `${MARKER} content ${Date.now()}`;
+    try {
+      const writes = countContentWrites(page);
+      let cut = false;
+      await page.route("**/_serverFn/**", async (route) => {
+        if (
+          cut ||
+          !isServerFn(
+            route.request().url(),
+            "updateStorefrontThemeSectionProps",
+          )
+        ) {
+          return route.fallback();
+        }
+        cut = true;
+        const response = await route.fetch();
+        expect(response.ok(), "the write itself was made").toBe(true);
+        await route.abort("connectionreset");
+      });
+      await field.fill(marker);
+      await field.press("Tab");
+      await expect.poll(() => writes.sent, { timeout: 15_000 }).toBe(1);
+      await page.waitForTimeout(5_000);
+
+      // Not retried on its own, and the edit is kept.
+      expect(writes.sent).toBe(1);
+      await expect(unconfirmedNotice(page)).toBeVisible();
+      await expect(pausedNotice(page)).toHaveCount(0);
+
+      await unconfirmedNotice(page)
+        .getByRole("button", { name: "Check and save" })
+        .click();
+      await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+      await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+        "aria-label",
+        /^(Unpublished|Published)$/,
+        { timeout: 30_000 },
+      );
+      await page.waitForTimeout(2_000);
+      // Found on the server, so nothing was sent again, and the author is
+      // not asked to resolve a conflict with their own write.
+      expect(writes.sent).toBe(1);
+      await expect(
+        page.getByRole("button", { name: "Load latest, keep mine" }),
+      ).toHaveCount(0);
+
+      // And it is what the server holds.
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await openEditor(page);
+      await expect(await heroContentField(page)).toHaveValue(marker);
+    } finally {
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      const restore = await heroContentField(page).catch(() => null);
+      if (restore && (await restore.inputValue()) !== original) {
+        const saved = page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            isServerFn(
+              response.request().url(),
+              "updateStorefrontThemeSectionProps",
+            ),
+          { timeout: 30_000 },
+        );
+        await restore.fill(original);
+        await restore.press("Tab");
+        expect((await saved).ok()).toBe(true);
+      }
+      await context.close();
     }
   });
 

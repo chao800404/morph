@@ -1,6 +1,7 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   commitPendingContent,
+  sectionContentLanded,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
@@ -10,6 +11,7 @@ import {
   refusalOfError,
 } from "@/lib/storefront/editor/editor-write-gate";
 import {
+  confirmLostSave,
   settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
@@ -239,6 +241,7 @@ import {
   themeFileWritePrecondition,
   sourceConflictPaths,
   authPausedPaths,
+  unconfirmedPaths,
   useThemeWorkspaceStore,
 } from "@/lib/storefront/store/theme-workspace-store";
 import { storefrontCommentQueries } from "../-queries/storefront-comment.queries";
@@ -319,6 +322,7 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
+import { EditorUnconfirmedSavesNotice } from "./editor-unconfirmed-saves-notice";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
   awaitsOwnSave,
@@ -1045,6 +1049,19 @@ export function VisualEditorShell({
   );
   const templateDraftGenerationRef = useRef<Map<string, number>>(new Map());
   const templateDraftRevisionIdRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Content writes sent and never answered, by pending key, with the entry
+   * that was sent. While any is here no content is sent on its own; see
+   * `settleUnconfirmedContent`.
+   */
+  const unconfirmedContentRef = useRef<Map<string, PendingContentEntry>>(
+    new Map(),
+  );
+  const [unconfirmedContentCount, setUnconfirmedContentCount] = useState(0);
+  const syncUnconfirmedContentCount = useCallback(
+    () => setUnconfirmedContentCount(unconfirmedContentRef.current.size),
+    [],
+  );
 
   const updatePropsMutation = useMutation({
     mutationFn: (variables: {
@@ -1078,22 +1095,13 @@ export function VisualEditorShell({
           }),
       );
     },
-    /**
-     * A request that never landed has no decision in it, so nobody is asked:
-     * it goes again a couple of times, and the author hears about it only once
-     * those are spent. Same backoff shape as the editor's other queries.
-     *
-     * A conflict is not retried, and cannot be by accident: it comes back as a
-     * resolved failure rather than a rejection, so retrying would mean sending
-     * the same stale payload again — the thing the refusal exists to stop. That
-     * one is rebased first, on a press.
-     */
-    //
-    // Paused writes are not retried either: asking again gives the same
-    // answer, and the content is kept pending for when writes resume.
-    retry: (failureCount, error) =>
-      !isEditorWritePaused(error) && failureCount < 2,
-    retryDelay: (attemptIndex) => Math.min(500 * 2 ** attemptIndex, 2_000),
+    // Never retried on its own. A request with no answer may have landed:
+    // the draft generation would stop a resend from overwriting anyone, but
+    // cannot say whether the first one landed. The content stays pending, and
+    // the server is asked before it is sent again (`settleUnconfirmedContent`).
+    // A conflict comes back as a resolved failure and is rebased on a press;
+    // a paused write waits for writes to resume.
+    retry: false,
     onMutate: () => setDraftSaveState("saving"),
     onSuccess: async (result) => {
       if (!result.success) {
@@ -1243,7 +1251,23 @@ export function VisualEditorShell({
     ((sectionId: string, props: Record<string, unknown>) => void) | null
   >(null);
   const commitSectionPending = useCallback(
-    async (tid: string, key: string, recordHistory = true) => {
+    async (
+      tid: string,
+      key: string,
+      recordHistory = true,
+      /**
+       * Sent because the author asked (try again, save, publish), after
+       * `settleUnconfirmedContent`. Anything else is held while a content
+       * write is unanswered.
+       */
+      confirmed = false,
+    ) => {
+      if (!confirmed && unconfirmedContentRef.current.size > 0) {
+        setDraftSaveState("error");
+        throw new Error(
+          "An earlier save was not answered. Your changes are kept; check before saving again.",
+        );
+      }
       const clearConflict = () =>
         setContentConflicts((current) => {
           if (!(key in current)) return current;
@@ -1267,6 +1291,22 @@ export function VisualEditorShell({
                 expectedDraftGeneration: generation,
                 routePath: entry.routePath,
               }),
+            ).then(
+              (result) => {
+                // Answered, either way: nothing is left to find out.
+                if (unconfirmedContentRef.current.delete(key)) {
+                  syncUnconfirmedContentCount();
+                }
+                return result;
+              },
+              (error: unknown) => {
+                // Sent, and no answer came back: it may have landed.
+                if (!isEditorWritePaused(error)) {
+                  unconfirmedContentRef.current.set(key, entry);
+                  syncUnconfirmedContentCount();
+                }
+                throw error;
+              },
             ),
           onSaved: recordHistory
             ? (entry, baseline) => {
@@ -1293,8 +1333,73 @@ export function VisualEditorShell({
         throw error;
       }
     },
-    [enqueueTemplateMutation, updatePropsMutation, history],
+    [
+      enqueueTemplateMutation,
+      updatePropsMutation,
+      history,
+      syncUnconfirmedContentCount,
+    ],
   );
+
+  /**
+   * Asks the server whether the content writes that were never answered
+   * landed, before anything is sent again.
+   *
+   * By content, per section (`sectionContentLanded`): a write whose every
+   * value the section now holds landed, and is recorded as saved; anything
+   * typed since stays pending. The draft generation is not taken from the
+   * server — whether only this write moved it cannot be told — so a later
+   * write to a document that moved goes through the existing conflict.
+   * A write that did not land stays pending, to be sent by the caller.
+   *
+   * Throws, deciding nothing, when the server cannot be asked.
+   */
+  const settleUnconfirmedContent = useCallback(async () => {
+    const unconfirmed = Array.from(unconfirmedContentRef.current);
+    if (unconfirmed.length === 0) return;
+    const fresh = await queryClient.fetchQuery({
+      ...storefrontThemeQueries.detail(context.storefront.id, context.theme.id),
+      staleTime: 0,
+    });
+    if (!fresh.success) {
+      throw new Error(
+        fresh.message ?? "Could not check whether your changes were saved.",
+      );
+    }
+    for (const [key, sent] of unconfirmed) {
+      const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
+      if (!templateId) continue;
+      // A route document may have been created by the write itself.
+      const routePath = routePathFromTemplatePlaceholder(templateId);
+      const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const template =
+        fresh.data.templates.find((entry) => entry.id === realId) ??
+        (routePath !== null
+          ? fresh.data.templates.find((entry) => entry.routePath === routePath)
+          : undefined);
+      const section = template?.document.sections.find(
+        (entry) => entry.id === sent.sectionId,
+      );
+      unconfirmedContentRef.current.delete(key);
+      if (!sectionContentLanded(sent, section)) continue;
+      if (pendingPropsMapRef.current.get(key) === sent) {
+        pendingPropsMapRef.current.delete(key);
+        pendingPropsBaselineRef.current.delete(key);
+      } else {
+        // A newer edit stays pending, on top of what landed.
+        pendingPropsBaselineRef.current.set(key, {
+          ...pendingPropsBaselineRef.current.get(key),
+          ...sent.props,
+        });
+      }
+    }
+    syncUnconfirmedContentCount();
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    queryClient,
+    syncUnconfirmedContentCount,
+  ]);
 
   /**
    * Rebases conflicted content onto the document as it is now, then saves it.
@@ -1353,7 +1458,7 @@ export function VisualEditorShell({
         );
       }
 
-      await commitSectionPending(templateId, key).catch(() => {
+      await commitSectionPending(templateId, key, true, true).catch(() => {
         // Reported by the mutation, and recorded again if it conflicted.
       });
     }
@@ -1367,21 +1472,38 @@ export function VisualEditorShell({
   /**
    * Sends content that a failed save left pending, once, when the author asks.
    *
-   * Nothing is rebased here: a request that never landed changed nothing on the
-   * server, so the payload that was refused is the payload to send. Conflicted
-   * content is not touched — that has to go through the update, not a resend.
+   * A write that was never answered may have landed, so the server is asked
+   * first (`settleUnconfirmedContent`), and only what did not land is sent.
+   * Nothing is rebased here; conflicted content is not touched — that has to
+   * go through the update, not a resend.
    */
   const retryFailedContent = useCallback(async () => {
-    const templateId = pageTemplateId;
-    if (!templateId) return;
-    const prefix = `${templateId}:`;
-    for (const key of Array.from(pendingPropsMapRef.current.keys())) {
-      if (!key.startsWith(prefix)) continue;
-      await commitSectionPending(templateId, key).catch(() => {
+    try {
+      await settleUnconfirmedContent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not check whether your changes were saved.",
+      );
+      return;
+    }
+    for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
+      if (key in contentConflictsRef.current) continue;
+      const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
+      if (!templateId) continue;
+      await commitSectionPending(templateId, key, true, true).catch(() => {
         // Reported by the mutation, and still pending if it failed again.
       });
     }
-  }, [pageTemplateId, commitSectionPending]);
+    // Everything landed or was sent: nothing is left to try again.
+    if (
+      pendingPropsMapRef.current.size === 0 &&
+      unconfirmedContentRef.current.size === 0
+    ) {
+      setDraftSaveState("idle");
+    }
+  }, [commitSectionPending, settleUnconfirmedContent]);
 
   const flushTemplatePendingProps = useCallback(
     async (targetTemplateId?: string) => {
@@ -1389,12 +1511,15 @@ export function VisualEditorShell({
       if (!tid) return;
       const prefix = `${tid}:`;
       await templateMutationQueueRef.current.get(tid)?.catch(() => {});
+      // Flushing is the author's own step (save, publish, leave), so a write
+      // that was never answered is checked here and the rest is sent.
+      await settleUnconfirmedContent();
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
         if (!key.startsWith(prefix)) continue;
         const timer = pendingPropsTimersRef.current.get(key);
         if (timer !== undefined) clearTimeout(timer);
         pendingPropsTimersRef.current.delete(key);
-        await commitSectionPending(tid, key);
+        await commitSectionPending(tid, key, true, true);
       }
       if (
         [...pendingPropsMapRef.current.keys()].some((key) =>
@@ -1411,7 +1536,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [pageTemplateId, commitSectionPending],
+    [pageTemplateId, commitSectionPending, settleUnconfirmedContent],
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
@@ -3308,12 +3433,14 @@ export function VisualEditorShell({
           | { status: "source-conflict" }
           | { status: "auth-paused" }
         > => {
-          const current = useThemeWorkspaceStore
-            .getState()
-            .getWorkspaceFiles(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            )[filePath];
+          const readCurrent = () =>
+            useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath];
+          let current = readCurrent();
           if (!current)
             throw new Error(`Workspace file "${filePath}" is missing`);
           if (current.conflict)
@@ -3322,6 +3449,46 @@ export function VisualEditorShell({
           markWorkspaceSaving(filePath, workspaceScope);
 
           try {
+            // An earlier save of this file was sent and never answered. It
+            // may have landed, so the server is asked before anything is
+            // sent again; see `confirmLostSave`. With no answer this throws,
+            // and the file stays as it is.
+            if (current.unconfirmedContent !== undefined) {
+              const confirmed: { file?: StorefrontThemeFileDTO } = {};
+              await confirmLostSave({
+                unconfirmedContent: current.unconfirmedContent,
+                readLatest: async () => {
+                  const latest = await getStorefrontThemeFile({
+                    data: {
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                      path: filePath,
+                    },
+                  }).catch((error: unknown) => {
+                    reportEditorReadFailure(workspaceScope, error);
+                    throw error;
+                  });
+                  if (latest.success) return latest.data ?? null;
+                  if (latest.error === "NOT_FOUND") return null;
+                  throw new Error(latest.message);
+                },
+                markLanded: (latest) => {
+                  confirmed.file = latest;
+                  markWorkspaceSaved(latest, workspaceScope);
+                },
+              });
+              // What would be sent is what the server already holds.
+              if (confirmed.file?.content === contentToSave) {
+                return { status: "saved", file: confirmed.file };
+              }
+              current = readCurrent();
+              if (!current)
+                throw new Error(`Workspace file "${filePath}" is missing`);
+              if (current.conflict)
+                throw new Error("File has an unresolved conflict.");
+              markWorkspaceSaving(filePath, workspaceScope);
+            }
+
             const acceptedGeneration = useThemeWorkspaceStore
               .getState()
               .getAcceptedSourceGeneration(workspaceScope);
@@ -3341,7 +3508,14 @@ export function VisualEditorShell({
                 }),
               );
             } catch (error) {
-              if (!isEditorWritePaused(error)) throw error;
+              if (!isEditorWritePaused(error)) {
+                // Sent, and no answer came back: it may have landed. Nothing
+                // more goes on its own until the server has been asked.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markUnconfirmed(filePath, contentToSave, workspaceScope);
+                throw error;
+              }
               // Not sent, or refused for who is asking: the edit stays in the
               // workspace, marked, and goes when writes are resumed.
               useThemeWorkspaceStore
@@ -4267,10 +4441,11 @@ export function VisualEditorShell({
             handleUnifiedSaveFile(path, content, { fromHistory: true }),
         });
       }
+      await settleUnconfirmedContent();
       for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
         const templateId = templateIdOfPendingContentKey(key, entry.sectionId);
         if (!templateId) continue;
-        await commitSectionPending(templateId, key).catch(() => {
+        await commitSectionPending(templateId, key, true, true).catch(() => {
           // Reported by the save itself, and still pending if it failed.
         });
       }
@@ -4285,9 +4460,46 @@ export function VisualEditorShell({
     commitSectionPending,
     handleUnifiedSaveFile,
     markWorkspaceSaved,
+    settleUnconfirmedContent,
     workspaceScope,
     writeGate.epoch,
   ]);
+
+  /**
+   * Saves that went out and were never answered; see
+   * `EditorUnconfirmedSavesNotice`. Checking is the author's confirmation:
+   * each save path asks the server first and sends only what did not land.
+   */
+  const unconfirmedFiles = useMemo(
+    () => unconfirmedPaths(workspaceFiles),
+    [workspaceFiles],
+  );
+  const [isCheckingUnconfirmed, setIsCheckingUnconfirmed] = useState(false);
+  const checkUnconfirmedSaves = useCallback(async () => {
+    const readFiles = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+    setIsCheckingUnconfirmed(true);
+    try {
+      // Code mode keeps its own drafts; its save goes through the same path.
+      await editorCodeWorkspaceRef.current?.saveAll();
+      for (const path of unconfirmedPaths(readFiles())) {
+        const content = readFiles()[path]?.localContent;
+        if (content === undefined) continue;
+        await handleUnifiedSaveFile(path, content, { fromHistory: true });
+      }
+      await retryFailedContent();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not check whether your changes were saved.",
+      );
+    } finally {
+      setIsCheckingUnconfirmed(false);
+    }
+  }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
 
   const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
     if (isBuildPending) return { ok: false };
@@ -8360,8 +8572,9 @@ export function VisualEditorShell({
           </Popover>
         </div>
       </header>
-      {/* Two notices, never merged: signing in again does not settle a
-          Theme that moved on, and the reverse. */}
+      {/* Separate notices, never merged: signing in again does not settle
+          a Theme that moved on, a dropped connection says nothing about
+          either, and the reverse of each. */}
       <div className="col-start-1 row-start-2 flex flex-col">
         <EditorWritesPausedNotice
           gate={writeGate}
@@ -8370,6 +8583,11 @@ export function VisualEditorShell({
           onSignIn={openSignInTab}
           onCheckAgain={() => void checkWriterAgain()}
           onSave={() => void resumePausedWrites()}
+        />
+        <EditorUnconfirmedSavesNotice
+          count={unconfirmedFiles.length + unconfirmedContentCount}
+          checking={isCheckingUnconfirmed}
+          onCheck={() => void checkUnconfirmedSaves()}
         />
         <EditorSourceConflictNotice
           paths={pendingSourceConflicts}

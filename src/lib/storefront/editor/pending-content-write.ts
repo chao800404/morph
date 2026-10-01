@@ -69,3 +69,56 @@ export async function commitPendingContent<
   onSaved?.(entry, baseline);
   return result;
 }
+
+/**
+ * Whether a section, as the server holds it, already has every value a
+ * content write sent — by content, not by reference.
+ *
+ * The server merges a content write into the section's props (`enabled` goes
+ * to the section itself), so a landed write is one whose every sent value is
+ * there. Values the server normalises differently answer "no", which is the
+ * safe side: the write is then sent again under its draft generation, and a
+ * document that moved turns it into the existing conflict, never an
+ * overwrite.
+ */
+export function sectionContentLanded(
+  sent: PendingContentEntry,
+  section: { props?: unknown; enabled?: boolean } | undefined,
+): boolean {
+  if (!section) return false;
+  const held = (section.props ?? {}) as Record<string, unknown>;
+  return Object.entries(sent.props).every(([key, value]) =>
+    key === "enabled"
+      ? (section.enabled !== false) === value
+      : sameContent(held[key], value),
+  );
+}
+
+function sameContent(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => sameContent(item, right[index]))
+    );
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftEntries = Object.entries(left).filter(([, v]) => v !== undefined);
+  const rightRecord = right as Record<string, unknown>;
+  const rightKeys = Object.keys(rightRecord).filter(
+    (key) => rightRecord[key] !== undefined,
+  );
+  return (
+    leftEntries.length === rightKeys.length &&
+    leftEntries.every(([key, value]) => sameContent(value, rightRecord[key]))
+  );
+}
