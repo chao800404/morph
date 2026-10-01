@@ -375,12 +375,37 @@ export async function saveEditedSource(
         .setValue(next),
     { target: path, next: edit(source) },
   );
+  // The save itself. A request merely carrying the path can be the preview's
+  // own file sync, which goes out first while the save waits on its
+  // formatter; and a refused save is answered with 200 too, so the body is
+  // what says it landed.
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "saveStorefrontThemeFile") &&
       (response.request().postData() ?? "").includes(path),
     { timeout: 30_000 },
   );
   await page.keyboard.press("Control+s");
-  expect((await saved).ok()).toBe(true);
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  expect(await response.text(), `the save of ${path}`).toContain(
+    "Theme file saved",
+  );
+}
+
+/** Whether a request calls the server function exported as `name`. */
+export function isServerFunctionCall(url: string, name: string) {
+  const id = url.split("/_serverFn/")[1]?.split(/[/?]/)[0];
+  if (!id) return false;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(id.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
+        "utf8",
+      ),
+    ) as { export?: string };
+    return (decoded.export ?? "").startsWith(`${name}_`);
+  } catch {
+    return false;
+  }
 }
