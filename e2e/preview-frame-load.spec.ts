@@ -116,12 +116,16 @@ test.describe("a Live Preview frame that is slow to load", () => {
     test.setTimeout(300_000);
     const documents = countFrameDocuments(page);
     let answered = 0;
+    let retried = false;
 
     // The first few requests go through, so the page has started and said
-    // so; everything after that is never answered.
+    // so; everything after that is never answered — not even after Retry,
+    // so the stalled frame cannot recover by itself and only a working Retry
+    // can bring the preview back. Requests made after Retry go through.
     await page.route("**/*", async (route) => {
       const request = route.request();
       if (!isPreviewSubresource(page, request)) return route.fallback();
+      if (retried) return answer(route);
       if (answered >= 10) return;
       answered += 1;
       await answer(route);
@@ -143,11 +147,15 @@ test.describe("a Live Preview frame that is slow to load", () => {
       "one automatic reconnect, then no more attempts",
     ).toHaveLength(2);
 
-    await page.unrouteAll({ behavior: "ignoreErrors" });
+    retried = true;
+    // A real pointer press, as an author makes it: the canvas behind the
+    // alert used to capture the pointer and swallow the click.
     await alert.getByRole("button", { name: "Retry Preview" }).click();
     await expect(
       previewFrame(page).locator("[data-storefront-section-id]").first(),
     ).toBeAttached({ timeout: 120_000 });
     await expect(page.getByRole("alert")).toHaveCount(0);
+    // Brought back by a new frame, not by the stalled one recovering.
+    expect(documents.length, "a new frame after Retry").toBeGreaterThan(2);
   });
 });
