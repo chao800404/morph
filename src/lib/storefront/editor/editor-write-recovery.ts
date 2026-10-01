@@ -45,6 +45,7 @@ export async function verifyEditorWriter({
     const code = classifyAuthFailure(error);
     if (code === "AUTH_REQUIRED") return "signed-out";
     if (code === "ACCESS_DENIED") return "access-denied";
+    if (code === "ACCOUNT_CHANGED") return "different-account";
     return "unanswered";
   }
 }
@@ -63,4 +64,45 @@ export function templateIdOfPendingContentKey(
   const suffix = `:${sectionId}`;
   if (!key.endsWith(suffix) || key.length === suffix.length) return null;
   return key.slice(0, key.length - suffix.length);
+}
+
+/**
+ * Settles one file held while writes were paused, once the author confirms.
+ *
+ * The server is asked what it holds first, because a save whose answer was
+ * lost may have landed. Two rules about the draft, which can change while
+ * that question is out:
+ *
+ * - Only the content that matched is recorded as saved. `markLanded` is
+ *   expected to keep anything newer unsaved (the workspace's `markSaved`
+ *   compares against the content it holds at that moment).
+ * - What is sent is the draft as it is when sending, read after the answer —
+ *   never the copy read before it.
+ *
+ * A file in a version conflict is left to the conflict's own resolution.
+ */
+export async function settleHeldFile<TLatest extends { content: string }>({
+  readDraft,
+  readLatest,
+  markLanded,
+  save,
+}: {
+  readDraft: () => { localContent: string; conflict?: unknown } | undefined;
+  readLatest: () => Promise<TLatest | null>;
+  markLanded: (latest: TLatest) => void;
+  save: (content: string) => Promise<unknown>;
+}): Promise<"landed" | "sent" | "skipped"> {
+  const asked = readDraft();
+  if (!asked || asked.conflict) return "skipped";
+  // The value, not the object: the draft may change while the server answers.
+  const askedContent = asked.localContent;
+  const latest = await readLatest().catch(() => null);
+  if (latest && latest.content === askedContent) {
+    markLanded(latest);
+    return "landed";
+  }
+  const now = readDraft();
+  if (!now || now.conflict) return "skipped";
+  await save(now.localContent);
+  return "sent";
 }

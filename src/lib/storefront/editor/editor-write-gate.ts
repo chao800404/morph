@@ -83,7 +83,11 @@ export function canSendEditorWrite(
   return !gate.signedOut && !gate.denied.includes(area);
 }
 
-export type EditorWriteRefusal = "AUTH_REQUIRED" | "ACCESS_DENIED";
+export type EditorWriteRefusal =
+  | "AUTH_REQUIRED"
+  | "ACCESS_DENIED"
+  /** Someone else is signed in than the account the editor belongs to. */
+  | "ACCOUNT_CHANGED";
 
 /**
  * The gate after a request failed with `refusal`, or the same gate when the
@@ -100,6 +104,7 @@ export function pauseEditorWrites(
   refusal: EditorWriteRefusal,
   area: EditorWriteArea,
 ): EditorWriteGate {
+  if (refusal === "ACCOUNT_CHANGED") return editorWriterChanged(gate);
   if (refusal === "AUTH_REQUIRED") {
     if (!gate.signedOut) {
       return {
@@ -228,6 +233,8 @@ const PAUSE_MESSAGES: Record<EditorWritePauseReason, string> = {
     "Your sign-in has expired. Nothing was saved; your unsaved changes are kept in this tab.",
   ACCESS_DENIED:
     "Your account is not allowed to make this change. Nothing was saved; your unsaved changes are kept in this tab.",
+  ACCOUNT_CHANGED:
+    "A different account is signed in. Nothing was saved; your unsaved changes are kept in this tab.",
   AWAITING_CONFIRMATION:
     "Saving is paused until you choose Save my changes. Your unsaved changes are kept in this tab.",
 };
@@ -254,6 +261,7 @@ export function editorWriteRefusal(
   area: EditorWriteArea,
 ): EditorWritePauseReason | null {
   if (gate.recovery === "verified") return "AWAITING_CONFIRMATION";
+  if (gate.recovery === "different-account") return "ACCOUNT_CHANGED";
   if (gate.signedOut) return "AUTH_REQUIRED";
   if (gate.denied.includes(area)) return "ACCESS_DENIED";
   return null;
@@ -271,6 +279,8 @@ export function refusalOfError(
 ): EditorWriteRefusal | null {
   const code = classifyAuthFailure(error);
   if (code === "AUTH_REQUIRED") return "AUTH_REQUIRED";
+  // From a read as much as a write: either way, another account is here.
+  if (code === "ACCOUNT_CHANGED") return "ACCOUNT_CHANGED";
   if (code === "ACCESS_DENIED" && kind === "write") return "ACCESS_DENIED";
   return null;
 }
@@ -293,6 +303,9 @@ export function refusalOfThemeBinaryWrite(result: {
   }
   if (result.status === 403 && result.error === "FORBIDDEN") {
     return "ACCESS_DENIED";
+  }
+  if (result.status === 409 && result.error === "ACCOUNT_CHANGED") {
+    return "ACCOUNT_CHANGED";
   }
   return null;
 }

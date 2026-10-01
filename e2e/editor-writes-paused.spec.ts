@@ -127,6 +127,42 @@ async function editAndSave(page: Page, path: string, next: string) {
   await page.keyboard.press("Control+s");
 }
 
+/**
+ * Whether a request is a call of the Theme file save itself.
+ *
+ * A server function's id is base64 JSON naming its export; reading it is how
+ * the save is told apart from the preview's file sync, which carries the same
+ * path in its body.
+ */
+function isFileSave(url: string, body: string, path: string) {
+  const id = url.split("/_serverFn/")[1]?.split(/[/?]/)[0];
+  if (!id || !body.includes(path)) return false;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(id.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
+        "utf8",
+      ),
+    ) as { export?: string };
+    return /^saveStorefrontThemeFile_/.test(decoded.export ?? "");
+  } catch {
+    return false;
+  }
+}
+
+/** Counts the calls of the file save itself for `path`, from now on. */
+function countFileSaves(page: Page, path: string) {
+  const counter = { sent: 0 };
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      isFileSave(request.url(), request.postData() ?? "", path)
+    ) {
+      counter.sent += 1;
+    }
+  });
+  return counter;
+}
+
 /** Counts the saves of `path` this page sends to the server from now on. */
 function countSaves(page: Page, path: string) {
   const counter = { sent: 0 };
@@ -356,6 +392,116 @@ test.describe("unsaved work when the signed-in account changes", () => {
       );
       expect(saves.sent).toBe(0);
     } finally {
+      await context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("another account signed in, editor never looked: the server refuses the save", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    try {
+      // Another tab signs this browser in as someone else.
+      await signIn(context, SECOND_EMAIL);
+      // No focus, no visibility change: the editor has had no reason to
+      // ask who is signed in. The save itself says whose it is.
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} unasked */`);
+      await expect(pausedNotice(page)).toContainText(
+        "A different account is signed in",
+      );
+      expect(await readSource(page, hero)).toContain(`${MARKER} unasked`);
+    } finally {
+      await context.close();
+    }
+    // Nothing was written as the other account.
+    const check = await sharedEditor(browser);
+    try {
+      await openHeroInCode(check.page);
+      expect(await readSource(check.page, hero)).not.toContain(MARKER);
+    } finally {
+      await check.context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("verified, then another account signs in before saving: the save is refused", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    const session = await context.cookies();
+    try {
+      await context.clearCookies();
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} late */`);
+      await expect(pausedNotice(page)).toContainText(
+        "Your sign-in has expired",
+      );
+      await context.addCookies(session);
+      await pausedNotice(page)
+        .getByRole("button", { name: "Check again" })
+        .click();
+      await expect(pausedNotice(page)).toContainText("Signed in again");
+
+      // Between checking and saving, another tab signs in as someone else.
+      await signIn(context, SECOND_EMAIL);
+      await pausedNotice(page)
+        .getByRole("button", { name: "Save my changes" })
+        .click();
+      await expect(pausedNotice(page)).toContainText(
+        "A different account is signed in",
+      );
+      expect(await readSource(page, hero)).toContain(`${MARKER} late`);
+    } finally {
+      await context.close();
+    }
+    const check = await sharedEditor(browser);
+    try {
+      await openHeroInCode(check.page);
+      expect(await readSource(check.page, hero)).not.toContain(MARKER);
+    } finally {
+      await check.context.close();
+      await restoreHero(browser, hero);
+    }
+  });
+
+  test("connection lost is not signed out: no pause, and the draft stays", async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { context, page } = await sharedEditor(browser);
+    const hero = await openHeroInCode(page);
+    const original = await readSource(page, hero);
+    try {
+      const saves = countFileSaves(page, hero);
+      // The save's request fails in the network, with no answer at all.
+      // Only the save: the preview's own sync is left alone.
+      await page.route("**/_serverFn/**", (route) =>
+        isFileSave(
+          route.request().url(),
+          route.request().postData() ?? "",
+          hero,
+        )
+          ? route.abort("internetdisconnected")
+          : route.fallback(),
+      );
+      await editAndSave(page, hero, `${original}\n/* ${MARKER} offline */`);
+      await expect.poll(() => saves.sent, { timeout: 15_000 }).toBe(1);
+      await page.waitForTimeout(5_000);
+
+      // Not a sign-in problem: nothing paused, and the draft is still here.
+      // (Code autosave may send the same content again once the explicit
+      // save has failed; that predates this change and is not asserted.)
+      await expect(pausedNotice(page)).toHaveCount(0);
+      expect(saves.sent).toBeGreaterThanOrEqual(1);
+      expect(await readSource(page, hero)).toContain(`${MARKER} offline`);
+    } finally {
+      await page.unrouteAll({ behavior: "ignoreErrors" });
       await context.close();
       await restoreHero(browser, hero);
     }

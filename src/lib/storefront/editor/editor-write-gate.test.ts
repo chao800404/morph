@@ -14,7 +14,11 @@ import {
   refusalOfThemeBinaryWrite,
   type EditorWriteGate,
 } from "./editor-write-gate";
-import { accessDenied, authRequired } from "@/lib/auth/auth-failure";
+import {
+  accessDenied,
+  accountChanged,
+  authRequired,
+} from "@/lib/auth/auth-failure";
 
 const signedOut = () =>
   pauseEditorWrites(OPEN_EDITOR_WRITE_GATE, "AUTH_REQUIRED", "theme");
@@ -196,5 +200,36 @@ describe("whose work a paused gate holds", () => {
     const verified = verifyTo(held, "verified");
     const opened = confirmEditorWriteResume(verified, verified.epoch);
     expect(opened.ownerUserId).toBeNull();
+  });
+});
+
+describe("a request refused for another account", () => {
+  it("pauses as another account, from a read or a write", () => {
+    const gate = pauseEditorWrites(
+      OPEN_EDITOR_WRITE_GATE,
+      "ACCOUNT_CHANGED",
+      "theme",
+    );
+    expect(gate.recovery).toBe("different-account");
+    expect(editorWriteRefusal(gate, "theme")).toBe("ACCOUNT_CHANGED");
+    expect(refusalOfError(accountChanged(), "read")).toBe("ACCOUNT_CHANGED");
+    expect(refusalOfError(accountChanged(), "write")).toBe("ACCOUNT_CHANGED");
+  });
+
+  it("reads it from the binary endpoint's own answer", () => {
+    expect(
+      refusalOfThemeBinaryWrite({
+        ok: false,
+        status: 409,
+        error: "ACCOUNT_CHANGED",
+      }),
+    ).toBe("ACCOUNT_CHANGED");
+  });
+
+  it("undoes a verification that was waiting to be confirmed", () => {
+    const verified = verifyTo(signedOut(), "verified");
+    const changed = pauseEditorWrites(verified, "ACCOUNT_CHANGED", "theme");
+    expect(changed.recovery).toBe("different-account");
+    expect(confirmEditorWriteResume(changed, verified.epoch)).toBe(changed);
   });
 });

@@ -1,7 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { accessDenied, authRequired } from "@/lib/auth/auth-failure";
 import {
+  accessDenied,
+  accountChanged,
+  authRequired,
+} from "@/lib/auth/auth-failure";
+import {
+  settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
 } from "./editor-write-recovery";
@@ -96,5 +101,105 @@ describe("templateIdOfPendingContentKey", () => {
   it("refuses a key that does not end in its section", () => {
     expect(templateIdOfPendingContentKey("tpl_1:hero-2", "hero-1")).toBeNull();
     expect(templateIdOfPendingContentKey(":hero-1", "hero-1")).toBeNull();
+  });
+});
+
+describe("verifyEditorWriter and another account", () => {
+  it("reads a Theme refused as another account's as a different account", async () => {
+    await expect(
+      verify({
+        theme: async () => {
+          throw accountChanged();
+        },
+      }).result,
+    ).resolves.toBe("different-account");
+  });
+});
+
+describe("settleHeldFile", () => {
+  function held(initial: string) {
+    const draft = { localContent: initial } as {
+      localContent: string;
+      conflict?: unknown;
+    };
+    return draft;
+  }
+
+  it("records a lost answer that had landed, and sends nothing", async () => {
+    const draft = held("mine");
+    const save = vi.fn(async () => {});
+    const markLanded = vi.fn();
+    await expect(
+      settleHeldFile({
+        readDraft: () => draft,
+        readLatest: async () => ({ content: "mine", version: 2 }),
+        markLanded,
+        save,
+      }),
+    ).resolves.toBe("landed");
+    expect(markLanded).toHaveBeenCalledWith({ content: "mine", version: 2 });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("sends the draft as it is when sending, not as it was when asked", async () => {
+    const draft = held("first");
+    const save = vi.fn(async () => {});
+    await settleHeldFile({
+      readDraft: () => draft,
+      readLatest: async () => {
+        // The author keeps typing while the server is asked.
+        draft.localContent = "first and more";
+        return { content: "theirs" };
+      },
+      markLanded: vi.fn(),
+      save,
+    });
+    expect(save).toHaveBeenCalledWith("first and more");
+  });
+
+  it("records only the matching version when the draft moved on meanwhile", async () => {
+    const draft = held("first");
+    const save = vi.fn(async () => {});
+    const markLanded = vi.fn();
+    await expect(
+      settleHeldFile({
+        readDraft: () => draft,
+        readLatest: async () => {
+          draft.localContent = "first and more";
+          return { content: "first" };
+        },
+        markLanded,
+        save,
+      }),
+    ).resolves.toBe("landed");
+    // The newer content is left to markLanded's own comparison (the
+    // workspace keeps it unsaved) and to the editor's next save.
+    expect(markLanded).toHaveBeenCalledWith({ content: "first" });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("leaves a file in conflict to its own resolution, and sends when the server cannot answer", async () => {
+    const conflicted = { localContent: "mine", conflict: { kind: "modified" } };
+    const save = vi.fn(async () => {});
+    await expect(
+      settleHeldFile({
+        readDraft: () => conflicted,
+        readLatest: async () => ({ content: "x" }),
+        markLanded: vi.fn(),
+        save,
+      }),
+    ).resolves.toBe("skipped");
+    await expect(
+      settleHeldFile({
+        readDraft: () => held("mine"),
+        readLatest: async () => {
+          throw new Error("network");
+        },
+        markLanded: vi.fn(),
+        save,
+      }),
+    ).resolves.toBe("sent");
+    // Sent through the ordinary save, whose version check still decides.
+    expect(save).toHaveBeenCalledTimes(1);
   });
 });

@@ -10,6 +10,7 @@ import {
   refusalOfError,
 } from "@/lib/storefront/editor/editor-write-gate";
 import {
+  settleHeldFile,
   templateIdOfPendingContentKey,
   verifyEditorWriter,
 } from "@/lib/storefront/editor/editor-write-recovery";
@@ -18,6 +19,7 @@ import {
   useEditorWriteGateStore,
 } from "@/lib/storefront/store/editor-write-gate-store";
 import { getSession } from "@/server/auth/getSession";
+import { setActiveEditorWriter } from "@/lib/auth/editor-writer";
 import {
   editorSignedOut,
   reportEditorReadFailure,
@@ -4163,6 +4165,13 @@ export function VisualEditorShell({
       .claimOwner(workspaceScope, currentUser.id);
   }, [currentUser?.id, workspaceScope, writesPaused]);
 
+  // Every request this editor makes says which account it belongs to, and
+  // the server refuses one whose session belongs to someone else.
+  useEffect(() => {
+    setActiveEditorWriter(currentUser?.id ?? null);
+    return () => setActiveEditorWriter(null);
+  }, [currentUser?.id]);
+
   const openSignInTab = useCallback(() => {
     window.open("/sign-in", "_blank", "noopener");
   }, []);
@@ -4241,25 +4250,21 @@ export function VisualEditorShell({
       // Code mode keeps its own drafts; its save goes through the same path.
       await editorCodeWorkspaceRef.current?.saveAll();
       for (const path of authPausedPaths(readFiles())) {
-        const current = readFiles()[path];
-        if (!current || current.conflict) continue;
-        const latest = await getStorefrontThemeFile({
-          data: {
-            storefrontId: workspaceScope.storefrontId,
-            themeId: workspaceScope.themeId,
-            path,
+        await settleHeldFile({
+          readDraft: () => readFiles()[path],
+          readLatest: async () => {
+            const latest = await getStorefrontThemeFile({
+              data: {
+                storefrontId: workspaceScope.storefrontId,
+                themeId: workspaceScope.themeId,
+                path,
+              },
+            });
+            return latest.success && latest.data ? latest.data : null;
           },
-        }).catch(() => null);
-        if (
-          latest?.success &&
-          latest.data &&
-          latest.data.content === current.localContent
-        ) {
-          markWorkspaceSaved(latest.data, workspaceScope);
-          continue;
-        }
-        await handleUnifiedSaveFile(path, current.localContent, {
-          fromHistory: true,
+          markLanded: (latest) => markWorkspaceSaved(latest, workspaceScope),
+          save: (content) =>
+            handleUnifiedSaveFile(path, content, { fromHistory: true }),
         });
       }
       for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {

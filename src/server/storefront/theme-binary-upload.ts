@@ -1,3 +1,7 @@
+import {
+  EDITOR_WRITER_HEADER,
+  claimsAnotherWriter,
+} from "@/lib/auth/editor-writer";
 import { z } from "zod";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import type { ThemeSourceStore } from "@/lib/storefront/storage/theme-storage.types";
@@ -107,6 +111,15 @@ export async function handleThemeBinaryUpload(
   }
   if (!user) {
     return refuse(401, "UNAUTHORIZED", "Please sign in to continue");
+  }
+  // Signed in, but as someone other than the editor that sent this; see
+  // editor-writer.ts. Refused before anything is read or written.
+  if (claimsAnotherWriter(request.headers.get(EDITOR_WRITER_HEADER), user.id)) {
+    return refuse(
+      409,
+      "ACCOUNT_CHANGED",
+      "A different account is signed in than the one this editor belongs to",
+    );
   }
   if (!hasAnyRole(user.role, ["admin"])) {
     return refuse(403, "FORBIDDEN", "Administrator access is required");

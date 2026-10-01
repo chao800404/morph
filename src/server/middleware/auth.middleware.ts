@@ -1,10 +1,18 @@
-import { accessDenied, authRequired } from "@/lib/auth/auth-failure";
+import {
+  accessDenied,
+  accountChanged,
+  authRequired,
+} from "@/lib/auth/auth-failure";
+import {
+  claimsAnotherWriter,
+  editorWriterClaim,
+} from "@/lib/auth/editor-writer";
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { getAuthWithAdmin } from "../auth/helpers";
 
 export const authMiddleware = createMiddleware({ type: "function" }).server(
-  async ({ next }) => {
+  async ({ next, context }) => {
     const request = getRequest();
     const auth = getAuthWithAdmin();
 
@@ -14,6 +22,10 @@ export const authMiddleware = createMiddleware({ type: "function" }).server(
 
     if (!session?.user) {
       throw authRequired();
+    }
+    // Signed in, but as someone other than the editor that sent this.
+    if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+      throw accountChanged();
     }
 
     return next({
@@ -40,13 +52,17 @@ export const hasAnyRole = (role: unknown, allowedRoles: readonly string[]) =>
  */
 export const assetAdminMiddleware = createMiddleware({
   type: "function",
-}).server(async ({ next }) => {
+}).server(async ({ next, context }) => {
   const request = getRequest();
   const auth = getAuthWithAdmin();
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
     throw authRequired();
+  }
+  // Signed in, but as someone other than the editor that sent this.
+  if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+    throw accountChanged();
   }
 
   if (!hasAnyRole(session.user.role, ["admin"])) {
@@ -68,13 +84,17 @@ export const assetAdminMiddleware = createMiddleware({
  */
 export const productAdminMiddleware = createMiddleware({
   type: "function",
-}).server(async ({ next }) => {
+}).server(async ({ next, context }) => {
   const request = getRequest();
   const auth = getAuthWithAdmin();
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
     throw authRequired();
+  }
+  // Signed in, but as someone other than the editor that sent this.
+  if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+    throw accountChanged();
   }
 
   if (!hasAnyRole(session.user.role, ["admin"])) {
@@ -92,13 +112,17 @@ export const productAdminMiddleware = createMiddleware({
 
 export const productReadMiddleware = createMiddleware({
   type: "function",
-}).server(async ({ next }) => {
+}).server(async ({ next, context }) => {
   const request = getRequest();
   const auth = getAuthWithAdmin();
   const session = await auth.api.getSession({ headers: request.headers });
 
   if (!session?.user) {
     throw authRequired();
+  }
+  // Signed in, but as someone other than the editor that sent this.
+  if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+    throw accountChanged();
   }
   if (!hasAnyRole(session.user.role, ["admin", "user"])) {
     throw accessDenied(
@@ -126,13 +150,17 @@ export const productReadMiddleware = createMiddleware({
  * operator no way to know which permission they are missing.
  */
 const roleMiddleware = (allowedRoles: readonly string[], forbidden: string) =>
-  createMiddleware({ type: "function" }).server(async ({ next }) => {
+  createMiddleware({ type: "function" }).server(async ({ next, context }) => {
     const request = getRequest();
     const auth = getAuthWithAdmin();
     const session = await auth.api.getSession({ headers: request.headers });
 
     if (!session?.user) {
       throw authRequired();
+    }
+    // Signed in, but as someone other than the editor that sent this.
+    if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+      throw accountChanged();
     }
     if (!hasAnyRole(session.user.role, allowedRoles)) {
       throw accessDenied(forbidden);
@@ -167,7 +195,7 @@ export const userAdminMiddleware = roleMiddleware(
 
 export const assetReadMiddleware = createMiddleware({
   type: "function",
-}).server(async ({ next }) => {
+}).server(async ({ next, context }) => {
   const request = getRequest();
   const auth = getAuthWithAdmin();
   const session = await auth.api.getSession({ headers: request.headers });
@@ -175,8 +203,14 @@ export const assetReadMiddleware = createMiddleware({
   if (!session?.user) {
     throw authRequired();
   }
+  // Signed in, but as someone other than the editor that sent this.
+  if (claimsAnotherWriter(editorWriterClaim(context), session.user.id)) {
+    throw accountChanged();
+  }
   if (!hasAnyRole(session.user.role, ["admin", "user"])) {
-    throw accessDenied("Forbidden: Asset access is not assigned to this account");
+    throw accessDenied(
+      "Forbidden: Asset access is not assigned to this account",
+    );
   }
 
   return next({

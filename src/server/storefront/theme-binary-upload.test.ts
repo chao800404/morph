@@ -212,3 +212,31 @@ describe("the binary file write entry", () => {
     expect(response.status).toBe(422);
   });
 });
+
+describe("the editor's account claim", () => {
+  it("refuses an upload made for another account, before saving", async () => {
+    const { deps: d, saveBinaryFile } = deps();
+    const response = await handleThemeBinaryUpload(
+      upload(PNG, { headers: { "x-morph-editor-writer": "user-other" } }),
+      d,
+    );
+    expect(response.status).toBe(409);
+    expect(await errorOf(response)).toBe("ACCOUNT_CHANGED");
+    expect(saveBinaryFile).not.toHaveBeenCalled();
+  });
+
+  it("accepts the signed-in account's own claim, or none", async () => {
+    const claims: Record<string, string>[] = [
+      { "x-morph-editor-writer": "user-1" },
+      {},
+    ];
+    for (const headers of claims) {
+      const { deps: d } = deps();
+      const response = await handleThemeBinaryUpload(
+        upload(PNG, { headers }),
+        d,
+      );
+      expect(response.status).not.toBe(409);
+    }
+  });
+});

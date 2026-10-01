@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { authFailureSerializationAdapter } from "@/lib/auth/auth-failure-serialization";
+import { editorWriterMiddleware } from "@/lib/auth/editor-writer";
 import { startCsrfMiddleware, startInstance } from "./start";
 
 /** How Start itself recognises its CSRF middleware (`csrfSymbol`). */
@@ -16,6 +17,11 @@ describe("start instance", () => {
     expect(middlewares.some((middleware) => CSRF_MARK in middleware)).toBe(
       true,
     );
+  });
+
+  it("sends the open editor's account with every server function call", async () => {
+    const options = await startInstance.getOptions();
+    expect(options.functionMiddleware).toContain(editorWriterMiddleware);
   });
 
   it("registers the auth failure adapter", async () => {

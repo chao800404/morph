@@ -1,5 +1,6 @@
 import { createCsrfMiddleware, createStart } from "@tanstack/react-start";
 import { authFailureSerializationAdapter } from "@/lib/auth/auth-failure-serialization";
+import { editorWriterMiddleware } from "@/lib/auth/editor-writer";
 
 /**
  * Start's own configuration for this app.
@@ -17,6 +18,8 @@ export const startCsrfMiddleware = createCsrfMiddleware({
 
 export const startInstance = createStart(() => ({
   requestMiddleware: [startCsrfMiddleware],
+  // Says which account an open editor belongs to; see editor-writer.ts.
+  functionMiddleware: [editorWriterMiddleware],
   // Lets a server function's refusal reach the browser with its code; see
   // auth-failure.ts.
   serializationAdapters: [authFailureSerializationAdapter],
