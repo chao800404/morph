@@ -208,16 +208,51 @@ const pausedNotice = (page: Page) =>
 const unconfirmedNotice = (page: Page) =>
   page.locator("[data-editor-unconfirmed-saves]");
 
-/** The hero's first content field in Design. */
-async function heroContentField(page: Page) {
-  await page.getByRole("button", { name: "hero", exact: true }).click();
+/** One of the hero's content fields in Design, the first by default. */
+function heroContentField(page: Page, index = 0) {
+  return sectionContentField(page, "hero", index);
+}
+
+/** One of a section's text content fields in Design. */
+async function sectionContentField(page: Page, section: string, index = 0) {
+  await page.getByRole("button", { name: section, exact: true }).click();
   await settleSelection(page);
   await openContentTab(page);
   const field = page
     .locator('[data-slot="inspector-content-field"] input')
-    .first();
+    .nth(index);
   await expect(field).toBeVisible({ timeout: 30_000 });
   return field;
+}
+
+/** Writes a hero content field and waits for the write to land. */
+function writeHeroField(page: Page, index: number, value: string) {
+  return writeSectionField(page, "hero", index, value);
+}
+
+/** Writes a section's content field and waits for the write to land. */
+async function writeSectionField(
+  page: Page,
+  section: string,
+  index: number,
+  value: string,
+) {
+  const field = await sectionContentField(page, section, index);
+  if ((await field.inputValue()) === value) return;
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFn(response.request().url(), "updateStorefrontThemeSectionProps"),
+    { timeout: 30_000 },
+  );
+  await field.fill(value);
+  await field.press("Tab");
+  // A refused write is answered with 200 too; only the body says it landed.
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  expect(await response.text(), `the write of ${value}`).toContain(
+    "Theme section props updated",
+  );
 }
 
 const withoutMarkers = (source: string) =>
@@ -542,9 +577,18 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(saves.sent).toBe(1);
       expect(await readSource(page, hero)).toContain(`${MARKER} offline`);
 
-      // Back online, the author checks: the server does not hold it, so it
-      // is sent — once.
+      // Back online. Switching to Design is not asking to save: it stops
+      // and says why, sends nothing, and leaves the author in Code.
       await page.unrouteAll({ behavior: "ignoreErrors" });
+      await page.getByRole("button", { name: "Design", exact: true }).click();
+      await expect(
+        page.getByText("It could not be confirmed whether an earlier save"),
+      ).toBeVisible();
+      await page.waitForTimeout(2_000);
+      expect(saves.sent).toBe(1);
+      expect(await readSource(page, hero)).toContain(`${MARKER} offline`);
+
+      // The author checks: the server does not hold it, so it is sent — once.
       await unconfirmedNotice(page)
         .getByRole("button", { name: "Check and save" })
         .click();
@@ -699,6 +743,14 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(unconfirmedNotice(page)).toBeVisible();
       await expect(pausedNotice(page)).toHaveCount(0);
 
+      // Publishing is not asking to save: it cannot be started until the
+      // unanswered write is checked.
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await expect(
+        page.getByRole("button", { name: /^Publish$/ }),
+      ).toBeDisabled();
+      expect(writes.sent).toBe(1);
+
       await unconfirmedNotice(page)
         .getByRole("button", { name: "Check and save" })
         .click();
@@ -738,6 +790,212 @@ test.describe("unsaved work when the signed-in account changes", () => {
         expect((await saved).ok()).toBe(true);
       }
       await context.close();
+    }
+  });
+
+  /**
+   * A content write lands and its answer is cut off; meanwhile another tab
+   * writes `theirs` into `other`. Checks what the author is left with: their
+   * newest edit, the other tab's, and nothing dropped.
+   */
+  async function landedThenAnotherWriter(
+    browser: Browser,
+    other: { section: string; index: number },
+  ) {
+    const { context, page } = await sharedEditor(browser);
+    let otherTab: Awaited<ReturnType<typeof sharedEditor>> | null = null;
+    const originals = {
+      mine: await (await heroContentField(page, 0)).inputValue(),
+      theirs: await (
+        await sectionContentField(page, other.section, other.index)
+      ).inputValue(),
+    };
+    const stamp = Date.now();
+    const value = (name: string) => `${MARKER} ${name} ${stamp}`;
+    const writes = countContentWrites(page);
+    try {
+      // A write answered normally first, so this tab holds the document's
+      // generation from its own writes.
+      await writeHeroField(page, 0, value("first"));
+
+      // The next write is made; its answer is cut off.
+      let cut = false;
+      await page.route("**/_serverFn/**", async (route) => {
+        if (
+          cut ||
+          !isServerFn(
+            route.request().url(),
+            "updateStorefrontThemeSectionProps",
+          )
+        ) {
+          return route.fallback();
+        }
+        cut = true;
+        const response = await route.fetch();
+        expect(response.ok(), "the write itself was made").toBe(true);
+        await route.abort("connectionreset");
+      });
+      const field = await heroContentField(page, 0);
+      await field.fill(value("landed"));
+      await field.press("Tab");
+      await expect(unconfirmedNotice(page)).toBeVisible({ timeout: 15_000 });
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      const afterLanded = writes.sent;
+
+      // Meanwhile another tab, opened on the document as it is now, writes.
+      otherTab = await sharedEditor(browser);
+      await writeSectionField(
+        otherTab.page,
+        other.section,
+        other.index,
+        value("theirs"),
+      );
+
+      await unconfirmedNotice(page)
+        .getByRole("button", { name: "Check and save" })
+        .click();
+      await expect(unconfirmedNotice(page)).toHaveCount(0, { timeout: 30_000 });
+      const afterCheck = writes.sent;
+
+      return {
+        page,
+        value,
+        resentByCheck: afterCheck - afterLanded,
+        finish: async () => {
+          // Whatever the path, the author's newest edit and the other tab's
+          // are both what the server holds, once each.
+          const check = await sharedEditor(browser);
+          try {
+            await expect(await heroContentField(check.page, 0)).toHaveValue(
+              value("next"),
+            );
+            await expect(
+              await sectionContentField(check.page, other.section, other.index),
+            ).toHaveValue(value("theirs"));
+          } finally {
+            await check.context.close();
+          }
+        },
+        cleanup: async () => {
+          await page.unrouteAll({ behavior: "ignoreErrors" });
+          await otherTab?.context.close();
+          await context.close();
+          const restore = await sharedEditor(browser);
+          try {
+            await writeHeroField(restore.page, 0, originals.mine);
+            await writeSectionField(
+              restore.page,
+              other.section,
+              other.index,
+              originals.theirs,
+            );
+          } finally {
+            await restore.context.close();
+          }
+        },
+      };
+    } catch (error) {
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await otherTab?.context.close();
+      await context.close();
+      throw error;
+    }
+  }
+
+  /** Edits the hero again, expects the conflict, and loads the latest. */
+  async function nextEditThroughConflict(page: Page, next: string) {
+    const field = await heroContentField(page, 0);
+    await field.fill(next);
+    await field.press("Tab");
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Out of date",
+      { timeout: 30_000 },
+    );
+    // Refused, and kept: the newest edit is still here.
+    await expect(await heroContentField(page, 0)).toHaveValue(next);
+    await page.getByRole("button", { name: "Load latest, keep mine" }).click();
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      /^(Unpublished|Published)$/,
+      { timeout: 30_000 },
+    );
+  }
+
+  /** Edits the hero again; resolves a conflict if there is one. */
+  async function nextEditThroughConflictOrSave(page: Page, next: string) {
+    const field = await heroContentField(page, 0);
+    await field.fill(next);
+    await field.press("Tab");
+    const status = page.locator("[data-editor-save-status]");
+    await expect(status).toHaveAttribute(
+      "aria-label",
+      /^(Unpublished|Published|Out of date)$/,
+      { timeout: 30_000 },
+    );
+    if ((await status.getAttribute("aria-label")) === "Out of date") {
+      await page
+        .getByRole("button", { name: "Load latest, keep mine" })
+        .click();
+      await expect(status).toHaveAttribute(
+        "aria-label",
+        /^(Unpublished|Published)$/,
+        { timeout: 30_000 },
+      );
+    }
+  }
+
+  test("after a landed write is confirmed, the next edit meets the conflict and keeps both writers' changes", async ({
+    browser,
+  }) => {
+    test.setTimeout(420_000);
+    // The other tab writes another section: the hero write stays provable.
+    const run = await landedThenAnotherWriter(browser, {
+      section: "editorial-intro",
+      index: 0,
+    });
+    try {
+      // Confirmed by the check: nothing sent again.
+      expect(run.resentByCheck).toBe(0);
+      // This tab never took the document's generation from the check, and
+      // the other tab moved it again: the next edit is refused, kept, and
+      // rebased on a press.
+      await nextEditThroughConflict(run.page, run.value("next"));
+      await run.finish();
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  test("a landed write that another writer changed around cannot be confirmed: sent once, refused, rebased without overwriting", async ({
+    browser,
+  }) => {
+    test.setTimeout(420_000);
+    // The other tab writes another field of the same section. A content
+    // write carries the section's whole props, so the server no longer holds
+    // every value this tab sent and the check cannot say it landed.
+    const run = await landedThenAnotherWriter(browser, {
+      section: "hero",
+      index: 1,
+    });
+    try {
+      // Sent once more, under the generation this tab holds: refused.
+      expect(run.resentByCheck).toBe(1);
+      await expect(
+        run.page.locator("[data-editor-save-status]"),
+      ).toHaveAttribute("aria-label", "Out of date", { timeout: 30_000 });
+      await run.page
+        .getByRole("button", { name: "Load latest, keep mine" })
+        .click();
+      await expect(
+        run.page.locator("[data-editor-save-status]"),
+      ).toHaveAttribute("aria-label", /^(Unpublished|Published)$/, {
+        timeout: 30_000,
+      });
+      await nextEditThroughConflictOrSave(run.page, run.value("next"));
+      await run.finish();
+    } finally {
+      await run.cleanup();
     }
   });
 

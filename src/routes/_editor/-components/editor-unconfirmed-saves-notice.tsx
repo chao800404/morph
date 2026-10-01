@@ -3,13 +3,23 @@ import { cn } from "@/lib/utils";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
 
 /**
- * A save went out and no answer came back: the connection dropped, or the
- * answer was cut off on the way.
+ * Why a step that would send a save is held while a save is unanswered.
  *
- * It may have landed, so nothing more is sent on its own. Checking asks the
- * server what it holds first: what arrived is recorded as saved, and only
- * what did not is sent, once. Kept apart from `EditorWritesPausedNotice`: a
- * dropped connection says nothing about who is signed in.
+ * Shared by every place that stops: publishing, switching modes, a
+ * structural edit, and the save paths themselves.
+ */
+export const UNCONFIRMED_SAVE_HOLD =
+  "It could not be confirmed whether an earlier save was stored. Your changes are kept. Use Check and save first.";
+
+/**
+ * A save went out and no answer came back: the connection dropped, the
+ * answer was cut off on the way, or the server failed without saying why.
+ *
+ * It may have been stored, so nothing more is sent until the author checks.
+ * Checking asks the server what it holds first: what was stored stays saved,
+ * and only what was not is sent, once. Kept apart from
+ * `EditorWritesPausedNotice`: an unanswered save says nothing about who is
+ * signed in.
  */
 export function EditorUnconfirmedSavesNotice({
   count,
@@ -40,13 +50,14 @@ export function EditorUnconfirmedSavesNotice({
       />
       <div className="min-w-0 flex-1">
         <p className="font-medium text-foreground">
-          The connection dropped while saving. It is not known whether{" "}
-          {count === 1 ? "that save" : `${count} saves`} arrived.
+          Could not confirm whether{" "}
+          {count === 1 ? "a change was" : `${count} changes were`} saved. Your
+          changes are kept.
         </p>
         <p className="text-muted-foreground">
-          Your changes are kept in this tab, and nothing more is sent until you
-          check. Checking asks the server first: what arrived stays saved, and
-          only the rest is sent.
+          Nothing more is sent, and publishing waits, until you check. Checking
+          asks the server first: what was stored stays saved, and only the rest
+          is sent.
         </p>
       </div>
       <Button

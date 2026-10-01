@@ -322,7 +322,10 @@ import { usePreviewSelection } from "./use-preview-selection";
 import { useEditorContextReset } from "./use-editor-context-reset";
 import { createPreviewMediaCache } from "@/lib/storefront/editor/preview-media-cache";
 import { EditorSourceConflictNotice } from "./editor-source-conflict-notice";
-import { EditorUnconfirmedSavesNotice } from "./editor-unconfirmed-saves-notice";
+import {
+  EditorUnconfirmedSavesNotice,
+  UNCONFIRMED_SAVE_HOLD,
+} from "./editor-unconfirmed-saves-notice";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
   awaitsOwnSave,
@@ -1382,7 +1385,11 @@ export function VisualEditorShell({
       );
       unconfirmedContentRef.current.delete(key);
       if (!sectionContentLanded(sent, section)) continue;
-      if (pendingPropsMapRef.current.get(key) === sent) {
+      const now = pendingPropsMapRef.current.get(key);
+      // Compared by content, not by reference: the same values can be
+      // pending again under a new entry (a field re-emits on blur), and the
+      // server holding them leaves nothing to send.
+      if (!now || now === sent || sectionContentLanded(now, section)) {
         pendingPropsMapRef.current.delete(key);
         pendingPropsBaselineRef.current.delete(key);
       } else {
@@ -1511,15 +1518,18 @@ export function VisualEditorShell({
       if (!tid) return;
       const prefix = `${tid}:`;
       await templateMutationQueueRef.current.get(tid)?.catch(() => {});
-      // Flushing is the author's own step (save, publish, leave), so a write
-      // that was never answered is checked here and the rest is sent.
-      await settleUnconfirmedContent();
+      // A flush runs ahead of another step (publish, a structural edit) and
+      // is not the author asking to save, so a write that was never answered
+      // stops it here: nothing is checked or sent until Check and save.
+      if (unconfirmedContentRef.current.size > 0) {
+        throw new Error(UNCONFIRMED_SAVE_HOLD);
+      }
       for (const key of Array.from(pendingPropsMapRef.current.keys())) {
         if (!key.startsWith(prefix)) continue;
         const timer = pendingPropsTimersRef.current.get(key);
         if (timer !== undefined) clearTimeout(timer);
         pendingPropsTimersRef.current.delete(key);
-        await commitSectionPending(tid, key, true, true);
+        await commitSectionPending(tid, key);
       }
       if (
         [...pendingPropsMapRef.current.keys()].some((key) =>
@@ -1536,7 +1546,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [pageTemplateId, commitSectionPending, settleUnconfirmedContent],
+    [pageTemplateId, commitSectionPending],
   );
 
   const previewSourceOriginRef = useRef<string | null>(null);
@@ -3413,6 +3423,12 @@ export function VisualEditorShell({
       filePath: string,
       contentToSave: string,
       targetRevision: number,
+      /**
+       * The author asked for this save (a keyboard save, Check and save,
+       * Save my changes). Only such a save may go while a save of this
+       * Theme is unanswered; anything else is held. See `unconfirmedContent`.
+       */
+      confirmed = false,
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -3445,6 +3461,19 @@ export function VisualEditorShell({
             throw new Error(`Workspace file "${filePath}" is missing`);
           if (current.conflict)
             throw new Error("File has an unresolved conflict.");
+          if (
+            !confirmed &&
+            unconfirmedPaths(
+              useThemeWorkspaceStore
+                .getState()
+                .getWorkspaceFiles(
+                  workspaceScope.storefrontId,
+                  workspaceScope.themeId,
+                ),
+            ).length > 0
+          ) {
+            throw new Error(UNCONFIRMED_SAVE_HOLD);
+          }
 
           markWorkspaceSaving(filePath, workspaceScope);
 
@@ -3678,6 +3707,8 @@ export function VisualEditorShell({
         fromHistory?: boolean;
         renderDocument?: boolean;
         preserveCanvasPosition?: boolean;
+        /** The author asked for this save; see `saveThemeFileSequentially`. */
+        confirmed?: boolean;
       },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
@@ -3733,6 +3764,7 @@ export function VisualEditorShell({
         filePath,
         content,
         nextRevision,
+        options?.confirmed ?? false,
       );
       if (
         result.status === "superseded" ||
@@ -4034,6 +4066,22 @@ export function VisualEditorShell({
 
   const handlePublish = useCallback(
     async (note?: string) => {
+      // Publishing is not asking to save: whatever is unanswered is checked
+      // and saved first, through Check and save, or nothing is published.
+      if (
+        unconfirmedContentRef.current.size > 0 ||
+        unconfirmedPaths(
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ),
+        ).length > 0
+      ) {
+        toast.error(`Cannot publish: ${UNCONFIRMED_SAVE_HOLD}`);
+        return;
+      }
       if (monacoDirtyFiles.length > 0) {
         toast.error(
           `Cannot publish: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
@@ -4240,12 +4288,15 @@ export function VisualEditorShell({
       // unsaved; saving through it is what clears that record. Whatever it
       // did not cover — an edit made in Design mode — goes through the same
       // save path directly.
-      await editorCodeWorkspaceRef.current?.saveAll();
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
       const files = readFiles();
       for (const path of sourceConflictPaths(files)) {
         const content = files[path]?.localContent;
         if (content === undefined) continue;
-        await handleUnifiedSaveFile(path, content, { fromHistory: true });
+        await handleUnifiedSaveFile(path, content, {
+          fromHistory: true,
+          confirmed: true,
+        });
       }
     } catch (error) {
       toast.error(
@@ -4422,7 +4473,7 @@ export function VisualEditorShell({
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      await editorCodeWorkspaceRef.current?.saveAll();
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
       for (const path of authPausedPaths(readFiles())) {
         await settleHeldFile({
           readDraft: () => readFiles()[path],
@@ -4438,7 +4489,10 @@ export function VisualEditorShell({
           },
           markLanded: (latest) => markWorkspaceSaved(latest, workspaceScope),
           save: (content) =>
-            handleUnifiedSaveFile(path, content, { fromHistory: true }),
+            handleUnifiedSaveFile(path, content, {
+              fromHistory: true,
+              confirmed: true,
+            }),
         });
       }
       await settleUnconfirmedContent();
@@ -4483,11 +4537,14 @@ export function VisualEditorShell({
     setIsCheckingUnconfirmed(true);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      await editorCodeWorkspaceRef.current?.saveAll();
+      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
       for (const path of unconfirmedPaths(readFiles())) {
         const content = readFiles()[path]?.localContent;
         if (content === undefined) continue;
-        await handleUnifiedSaveFile(path, content, { fromHistory: true });
+        await handleUnifiedSaveFile(path, content, {
+          fromHistory: true,
+          confirmed: true,
+        });
       }
       await retryFailedContent();
     } catch (error) {
@@ -7316,6 +7373,12 @@ export function VisualEditorShell({
 
   const handleSwitchToDesign = useCallback(async () => {
     if (isFlushingCodeChanges) return;
+    // Switching modes would save Code drafts on the way; with a save
+    // unanswered that is not the author's call to make for them.
+    if (unconfirmedFiles.length > 0) {
+      toast.error(UNCONFIRMED_SAVE_HOLD);
+      return;
+    }
     if (monacoDirtyFiles.length > 0) {
       setIsFlushingCodeChanges(true);
       try {
@@ -7333,7 +7396,12 @@ export function VisualEditorShell({
       }
     }
     switchToDesign();
-  }, [isFlushingCodeChanges, monacoDirtyFiles.length, switchToDesign]);
+  }, [
+    isFlushingCodeChanges,
+    monacoDirtyFiles.length,
+    switchToDesign,
+    unconfirmedFiles.length,
+  ]);
 
   useEffect(() => {
     if (!previewKey) return;

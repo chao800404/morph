@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import {
   SECTION_SOURCE_UNCONFIRMED,
   TEMPLATE_DRAFT_CONFLICT,
+  TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
 import { getDb } from "@/db";
 import { withReleaseNote } from "@/lib/storefront/release-note";
@@ -476,7 +477,7 @@ async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("malformed JSON") || message.includes("constraint")) {
       throw new Error(
-        "CONFLICT_DRAFT_GENERATION_MISMATCH: Template was modified concurrently.",
+        `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Template was modified concurrently.`,
       );
     }
     throw error;

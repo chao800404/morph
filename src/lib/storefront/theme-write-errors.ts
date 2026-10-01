@@ -11,6 +11,14 @@
 export const TEMPLATE_DRAFT_CONFLICT = "TEMPLATE_DRAFT_CONFLICT";
 
 /**
+ * What the document write raises when the draft generation it was given is
+ * no longer the document's. A server function that writes a document turns it
+ * into `TEMPLATE_DRAFT_CONFLICT`.
+ */
+export const TEMPLATE_DRAFT_GENERATION_MISMATCH =
+  "CONFLICT_DRAFT_GENERATION_MISMATCH";
+
+/**
  * A content write the saved source cannot vouch for.
  *
  * The section's route (or layout) decides its structure through `content(...)`,
