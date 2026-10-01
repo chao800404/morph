@@ -116,6 +116,32 @@ export async function settleHeldFile<TLatest extends { content: string }>({
 }
 
 /**
+ * Whether a save refused earlier (see `EditorWriteRefusedEarlier`) still
+ * describes the file: the edit it carried is unsaved, and nothing has been
+ * saved over the version it was sent against.
+ *
+ * A save of the file that landed since — or the edit discarded — is newer
+ * than this refusal, and is not undone by it.
+ */
+export function earlierRefusalStillApplies(
+  sentAgainst: { serverFileId: string | null; serverVersion: number | null },
+  now:
+    | {
+        serverFileId: string | null;
+        serverVersion: number | null;
+        dirty: boolean;
+      }
+    | undefined,
+): boolean {
+  return Boolean(
+    now &&
+    now.dirty &&
+    now.serverFileId === sentAgainst.serverFileId &&
+    now.serverVersion === sentAgainst.serverVersion,
+  );
+}
+
+/**
  * Finds out whether a save that was sent and never answered landed.
  *
  * A dropped connection or a cut-off answer says nothing about the write: the
