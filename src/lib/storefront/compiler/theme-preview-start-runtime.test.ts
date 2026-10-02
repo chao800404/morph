@@ -1,5 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
+import {
+  START_PREVIEW_ADDRESS_PROBE_PATH,
+  START_PREVIEW_ID_HEADER,
+} from "../service/preview-address-probe";
 
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 
@@ -20,7 +25,10 @@ import {
 } from "./theme-preview-start-runtime";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 
-const plan = (previewRuntime?: ThemePreviewRuntime, mode: "build" | "preview-server" = "preview-server") => {
+const plan = (
+  previewRuntime?: ThemePreviewRuntime,
+  mode: "build" | "preview-server" = "preview-server",
+) => {
   const result = planThemeSandboxWorkspace({
     files: STARTER_THEME_FILES as never,
     entry: "src/routes/index.tsx",
@@ -39,11 +47,74 @@ const plan = (previewRuntime?: ThemePreviewRuntime, mode: "build" | "preview-ser
 };
 
 describe("a Start Live Preview workspace (prototype)", () => {
+  it("answers health without invoking Start or a Theme loader", async () => {
+    let calls = 0;
+    const sandbox = {
+      Request,
+      Response,
+      URL,
+      Headers,
+      fetch: globalThis.fetch,
+      startEntry: {
+        fetch: async () => {
+          calls++;
+          return new Response("theme");
+        },
+      },
+      entry: undefined as unknown as {
+        fetch: (request: Request) => Promise<Response>;
+      },
+    };
+    runInNewContext(
+      themePreviewStartWorkerSource("instance-123")
+        .replace(
+          'import startEntry from "@tanstack/react-start/server-entry";',
+          "",
+        )
+        .replace("export default {", "entry = {"),
+      sandbox,
+    );
+    for (const method of ["GET", "HEAD"]) {
+      const response = await sandbox.entry.fetch(
+        new Request(
+          `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`,
+          { method },
+        ),
+      );
+      expect(response.status).toBe(204);
+      expect(response.headers.get(START_PREVIEW_ID_HEADER)).toBe(
+        "instance-123",
+      );
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.text()).toBe("");
+    }
+    expect(
+      (
+        await sandbox.entry.fetch(
+          new Request(
+            `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`,
+            { method: "POST" },
+          ),
+        )
+      ).status,
+    ).toBe(405);
+    expect(calls).toBe(0);
+    expect(
+      await (
+        await sandbox.entry.fetch(
+          new Request("https://preview.example/api/theme"),
+        )
+      ).text(),
+    ).toBe("theme");
+    expect(calls).toBe(1);
+  });
   it("leaves today's client-only preview unchanged by default", () => {
     const { files } = plan();
     expect(files.has("/workspace/index.html")).toBe(true);
     expect(files.has("/workspace/__entry.tsx")).toBe(true);
-    expect(files.has(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(false);
+    expect(files.has(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
+      false,
+    );
     const config = files.get("/workspace/vite.config.ts")!;
     expect(config).toContain("const isStartPreview = false;");
     expect(JSON.parse(files.get("/workspace/wrangler.json")!).main).toBe(
@@ -57,7 +128,7 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(files.has("/workspace/index.html")).toBe(false);
     expect(files.has("/workspace/__entry.tsx")).toBe(false);
     expect(files.get(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
-      themePreviewStartWorkerSource(),
+      themePreviewStartWorkerSource("start-preview-test"),
     );
     expect(files.get(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(
       themePreviewStartClientSource(),
@@ -80,12 +151,19 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(files.get("/workspace/vite.config.ts")).toContain(
       "const isStartPreview = false;",
     );
-    expect(files.has(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(false);
+    expect(files.has(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
+      false,
+    );
   });
 
   it("keeps both platform files out of an author's reach", () => {
-    for (const path of [THEME_PREVIEW_START_WORKER_PATH, THEME_PREVIEW_START_CLIENT_PATH]) {
-      expect(refuseThemeWorkspacePath(path)).toMatch(/^RESERVED_THEME_BUILD_PATH/);
+    for (const path of [
+      THEME_PREVIEW_START_WORKER_PATH,
+      THEME_PREVIEW_START_CLIENT_PATH,
+    ]) {
+      expect(refuseThemeWorkspacePath(path)).toMatch(
+        /^RESERVED_THEME_BUILD_PATH/,
+      );
     }
   });
 
@@ -102,8 +180,12 @@ describe("a Start Live Preview workspace (prototype)", () => {
   it("tells Theme server code to read content from an origin only the entry answers", () => {
     const source = themePreviewStartWorkerSource();
     expect(THEME_PREVIEW_START_CONTENT_ORIGIN.endsWith(".invalid")).toBe(true);
-    expect(source).toContain('headers.set("x-morph-content-origin", CONTENT_ORIGIN)');
-    expect(source).toContain('import startEntry from "@tanstack/react-start/server-entry"');
+    expect(source).toContain(
+      'headers.set("x-morph-content-origin", CONTENT_ORIGIN)',
+    );
+    expect(source).toContain(
+      'import startEntry from "@tanstack/react-start/server-entry"',
+    );
   });
 });
 
@@ -132,10 +214,11 @@ describe("previewOutboundRefusal", () => {
     expect(previewOutboundRefusal(url)).toBe(reason);
   });
 
-  it.each(["https://example.com/", "https://api.stripe.com/v1", "http://8.8.8.8/"])(
-    "passes the public host %s",
-    (url) => {
-      expect(previewOutboundRefusal(url)).toBeNull();
-    },
-  );
+  it.each([
+    "https://example.com/",
+    "https://api.stripe.com/v1",
+    "http://8.8.8.8/",
+  ])("passes the public host %s", (url) => {
+    expect(previewOutboundRefusal(url)).toBeNull();
+  });
 });

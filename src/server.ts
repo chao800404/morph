@@ -221,6 +221,9 @@ const loadPreviewObservation = keepImport(
 const loadPreviewResponse = keepImport(
   () => import("@/lib/storefront/service/preview-proxy-response"),
 );
+const loadDevPreviewPassthrough = keepImport(
+  () => import("@/server/dev-preview-passthrough"),
+);
 
 async function isStorefrontHost(request: Request): Promise<boolean> {
   const { shouldRouteToStorefront } = await loadStorefrontRouting();
@@ -302,7 +305,7 @@ export default {
     // dev-preview-passthrough.ts. A deployed Worker never restores one.
     if (import.meta.env.DEV) {
       const { restoreDevPreviewRequest } =
-        await import("@/server/dev-preview-passthrough");
+        await loadDevPreviewPassthrough();
       const restored = restoreDevPreviewRequest(request);
       if (restored) {
         request = restored;

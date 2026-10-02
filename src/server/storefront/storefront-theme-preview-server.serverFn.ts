@@ -36,7 +36,8 @@ import {
 } from "@/lib/storefront/compiler/preview-server-observation";
 import {
   classifyPreviewAddressProbe,
-  PREVIEW_ADDRESS_PROBE_PATH,
+  previewAddressProbePath,
+  START_PREVIEW_ID_HEADER,
   previewAddressBelongsTo,
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
@@ -370,16 +371,34 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
     try {
       const { proxyToSandbox } = await import("@cloudflare/sandbox");
       const response = await proxyToSandbox(
-        new Request(new URL(PREVIEW_ADDRESS_PROBE_PATH, address), {
-          headers: { Accept: "text/html" },
-        }),
+        new Request(
+          new URL(
+            previewAddressProbePath(
+              (env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME,
+            ),
+            address,
+          ),
+          {
+            headers: { Accept: "*/*" },
+            signal: AbortSignal.timeout(10_000),
+          },
+        ),
         previewProxyEnv(env as unknown as Record<string, unknown>) as never,
       );
       if (!response) return answer("unknown", null);
       const code =
         response.status >= 400 ? await readPreviewErrorCode(response) : null;
       if (response.status < 400) await response.body?.cancel();
-      const state = classifyPreviewAddressProbe(response.status, code);
+      const state = classifyPreviewAddressProbe(
+        response.status,
+        code,
+        (env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
+          ? {
+              expected: previewId,
+              actual: response.headers.get(START_PREVIEW_ID_HEADER),
+            }
+          : undefined,
+      );
       logPreviewServerEvent("probe", {
         previewId,
         framedAddress: previewAddressDigest(previewOrigin),

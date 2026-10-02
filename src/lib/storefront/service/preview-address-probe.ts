@@ -22,6 +22,16 @@ export type PreviewAddressState = "serving" | "stale" | "unknown";
 /** Path requested to check an address: the preview page itself. */
 export const PREVIEW_ADDRESS_PROBE_PATH = "/__morph-theme-preview__/";
 
+/** Platform-owned Start endpoint: never invokes a Theme loader. */
+export const START_PREVIEW_ADDRESS_PROBE_PATH = "/__morph_preview_health";
+export const START_PREVIEW_ID_HEADER = "x-morph-preview-id";
+
+export function previewAddressProbePath(runtime: string | undefined): string {
+  return runtime === "start"
+    ? START_PREVIEW_ADDRESS_PROBE_PATH
+    : PREVIEW_ADDRESS_PROBE_PATH;
+}
+
 /**
  * Whether an address the editor sent is this author's own preview.
  *
@@ -61,7 +71,13 @@ export function previewAddressBelongsTo(args: {
 export function classifyPreviewAddressProbe(
   status: number,
   code: string | null,
+  identity?: { expected: string; actual: string | null },
 ): PreviewAddressState {
+  if (status < 400 && identity) {
+    return status === 204 && identity.actual === identity.expected
+      ? "serving"
+      : "unknown";
+  }
   if (status < 400) return "serving";
   if (status === 410 && code === "STALE_PREVIEW_URL") return "stale";
   if (status === 404 && code === "INVALID_TOKEN") return "stale";

@@ -521,7 +521,7 @@ export function planThemeSandboxWorkspace({
   if (startPreview) {
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_WORKER_PATH}`,
-      themePreviewStartWorkerSource(),
+      themePreviewStartWorkerSource(buildId),
     );
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_CLIENT_PATH}`,

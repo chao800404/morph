@@ -18,6 +18,7 @@ import {
 } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { boundedPreviewLogAppender } from "./bounded-preview-log";
+import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 import {
   isDirtyWorkspaceMarker,
@@ -250,7 +251,9 @@ export type StartPreviewServerInput = Readonly<{
 }>;
 
 /** Where a preview of this runtime is framed, on the exposed origin. */
-export function previewServerPath(runtime: ThemePreviewRuntime | undefined): string {
+export function previewServerPath(
+  runtime: ThemePreviewRuntime | undefined,
+): string {
   return runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH;
 }
 
@@ -908,7 +911,10 @@ export class CloudflareSandboxVitePreviewServer {
         exposePortMs = Date.now() - exposePortStartedAt;
         exposedUrl = exposed.url;
       }
-      const previewUrl = withPreviewServerBase(exposedUrl, input.previewRuntime);
+      const previewUrl = withPreviewServerBase(
+        exposedUrl,
+        input.previewRuntime,
+      );
       observation.address = {
         reused: Boolean(activePort),
         digest: previewAddressDigest(exposedUrl),
@@ -1075,11 +1081,10 @@ export class CloudflareSandboxVitePreviewServer {
       const portReady = process.waitForPort
         ? process
             .waitForPort(THEME_PREVIEW_SERVER_PORT, {
-              // A Start preview's root is a server-rendered page; its content
-              // endpoint answers without rendering anything.
+              // Readiness is platform-owned and never runs a Theme loader.
               path:
                 input.previewRuntime === "start"
-                  ? "/_morph/content"
+                  ? START_PREVIEW_ADDRESS_PROBE_PATH
                   : THEME_PREVIEW_SERVER_BASE_PATH,
             })
             .then(() => "ready" as const)

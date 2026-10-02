@@ -2,6 +2,10 @@ import { themePreviewContentModuleSource } from "./theme-preview-content";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { THEME_PREVIEW_BRIDGE_PATH } from "./theme-preview-bridge-entry";
 import {
+  START_PREVIEW_ADDRESS_PROBE_PATH,
+  START_PREVIEW_ID_HEADER,
+} from "../service/preview-address-probe";
+import {
   THEME_PREVIEW_CONTENT_MODULE_PATH,
   THEME_PREVIEW_CONTENT_PATH,
   THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH,
@@ -144,7 +148,7 @@ function contentResolverSource(): string {
  *
  * The Worker is given no bindings: there is nothing in `env` to reach.
  */
-export function themePreviewStartWorkerSource(): string {
+export function themePreviewStartWorkerSource(previewId = ""): string {
   return `import startEntry from "@tanstack/react-start/server-entry";
 
 const CONTENT_ORIGIN = ${JSON.stringify(THEME_PREVIEW_START_CONTENT_ORIGIN)};
@@ -189,6 +193,15 @@ const HEAD_SCRIPTS =
 
 export default {
   async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname === ${JSON.stringify(START_PREVIEW_ADDRESS_PROBE_PATH)}) {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response(null, { status: 405, headers: { Allow: "GET, HEAD", "cache-control": "no-store" } });
+      }
+      return new Response(null, {
+        status: 204,
+        headers: { "cache-control": "no-store", ${JSON.stringify(START_PREVIEW_ID_HEADER)}: ${JSON.stringify(previewId)} },
+      });
+    }
     const headers = new Headers(request.headers);
     headers.set("x-morph-content-origin", CONTENT_ORIGIN);
     const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
