@@ -228,12 +228,30 @@ export async function enableSelection(page: Page) {
  * press a panel instead of the page; and a point over a child selects the
  * child, which is matched by a different rule and would pass regardless of the
  * behaviour under test.
+ *
+ * It first waits for the canvas to accept input. Until the preview is ready
+ * the editor keeps the frame transparent and `pointer-events: none`, so every
+ * point passes through it to the editor below. Playwright counts an
+ * `opacity: 0` element as visible, so text inside can already pass
+ * `toBeVisible()` then. The clicks here go through `page.mouse`, which gets
+ * none of a locator click's waiting for the target to receive events.
  */
 export async function clickExposedElement(
   page: Page,
   candidates: Locator,
   skip = 0,
 ): Promise<string | null> {
+  await expect
+    .poll(
+      () =>
+        page
+          .locator("iframe")
+          .first()
+          .evaluate((frame) => getComputedStyle(frame).pointerEvents)
+          .catch(() => "none"),
+      { message: "the canvas never accepted input", timeout: 60_000 },
+    )
+    .not.toBe("none");
   const frameBox = await page.locator("iframe").first().boundingBox();
   if (!frameBox) return null;
   const total = await candidates.count();
