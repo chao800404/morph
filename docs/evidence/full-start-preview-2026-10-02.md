@@ -93,17 +93,35 @@ This follow-up does not establish that the prototype can replace the current pre
   on purpose (TanStack/router#5715, virtual `#tanstack-*` entries), so
   forcing them in is not a safe fix. Both the per-request cost of the
   Sandbox path and the depth of that graph are candidates; this was one run.
-- **The local number is inflated by HTTP/1.1.** All 160 preview requests in
-  `-144044` used HTTP/1.1 (the local preview host is plain
-  `http://…localhost:3100`). Six connections were opened in total (connect
-  time summed to 6 ms) and reused, which is the browser's per-host limit.
-  Per request, the HAR time is 1.46 s at p50 (server wait 1.30 s), while
-  the time from issuing a request to its end was 5–10 s for the TanStack
-  modules: the rest is queueing for one of the six connections. A deployed
-  preview URL is HTTPS through Cloudflare and can multiplex, so this part
-  of the delay is specific to the local setup. Local startup numbers for
-  the Start runtime should not be read as what users get; the per-request
-  wait and the depth of the import graph remain.
+- **HTTP/1.1 is not what limits it (measured, corrects an earlier reading).**
+  All 160 preview requests in `-144044` used HTTP/1.1 over six reused
+  connections, and requests queued in the browser for one of them. That was
+  read as the local number being inflated by HTTP/1.1. Measured directly in
+  `-150955`: the same Start preview, opened on its own page, 8 times in
+  alternating order, each in a fresh browser context, over HTTP/1.1 (the dev
+  server) and over HTTP/2 (a local TLS front that only forwards; measurement
+  only, not in the repo). 157 resources each time.
+
+  | Run | Protocol | Load | Hydrated | Queued p50 | Server wait p50 |
+  | --- | -------- | ---- | -------- | ---------- | --------------- |
+  | 0   | HTTP/1.1 | 3.2  | 19.4     | 1.40       | 0.60            |
+  | 1   | HTTP/2   | 0.8  | 7.2      | 0.005      | 0.95            |
+  | 2   | HTTP/2   | 0.8  | 19.8     | 0.002      | 1.43            |
+  | 3   | HTTP/1.1 | 2.7  | 31.8     | 2.33       | 1.12            |
+  | 4   | HTTP/1.1 | 3.5  | 32.9     | 2.45       | 1.14            |
+  | 5   | HTTP/2   | 2.6  | 31.0     | 0.004      | 4.38            |
+  | 6   | HTTP/2   | 2.5  | 30.6     | 0.005      | 4.28            |
+  | 7   | HTTP/1.1 | 2.5  | 17.2     | 0.66       | 0.36            |
+
+  Seconds. Hydrated, median of four: HTTP/1.1 25.6, HTTP/2 25.2. HTTP/2
+  removes the browser's queue, but the server's wait grows by about as much:
+  the requests now wait behind the server instead of the browser. Both
+  protocols complete about 5–9 requests per second in seven of the eight
+  runs (run 1, about 20). So the limit is the
+  throughput of the server path (Morph's dev Worker → the Sandbox Durable
+  Object → the container → Vite), not the browser's connection limit, and
+  HTTP/2 alone would not shorten a deployed preview's hydration. Large spread
+  between runs (7–33 s) on both protocols; four runs each, one session.
 
 - Two hydration-wait experiments did not fix text promotion and were restored;
   no runtime change from those experiments is retained. First experiment
