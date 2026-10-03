@@ -15,6 +15,43 @@ test.skip(
 );
 
 test.describe("visual editor", () => {
+  test("the Code file tree scrolls when its rows exceed the sidebar", async ({
+    page,
+  }) => {
+    await openEditor(page);
+    await page.getByRole("button", { name: "Code", exact: true }).click();
+
+    const tree = page.getByRole("tree", { name: "Theme files" });
+    const scrollArea = tree.locator(
+      "xpath=ancestor::*[@data-slot='scroll-area']",
+    );
+    const viewport = scrollArea.locator("[data-slot='scroll-area-viewport']");
+
+    await expect
+      .poll(() =>
+        viewport.evaluate(
+          (element) => element.scrollHeight > element.clientHeight,
+        ),
+      )
+      .toBe(true);
+    await viewport.hover();
+    await page.mouse.wheel(0, 700);
+    await expect
+      .poll(() => viewport.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+
+    await page.mouse.wheel(0, 10_000);
+    await expect
+      .poll(() =>
+        viewport.evaluate(
+          (element) =>
+            element.scrollTop + element.clientHeight >=
+            element.scrollHeight - 1,
+        ),
+      )
+      .toBe(true);
+  });
+
   test("a page can be created, populated, and removed without a source conflict", async ({
     page,
   }) => {

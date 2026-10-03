@@ -267,6 +267,24 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     ).toBe("vs-dark");
   });
 
+  it("keeps the Explorer scroll area shrinkable when its tree is long", () => {
+    renderWorkspace({
+      tree: Array.from({ length: 80 }, (_, index) => ({
+        name: `file-${index}.tsx`,
+        path: `src/file-${index}.tsx`,
+        isDirectory: false,
+      })),
+    });
+    const tree = screen.getByRole("tree", { name: "Theme files" });
+    const scrollArea = tree.closest('[data-slot="scroll-area"]');
+    // jsdom has no layout: guard the flex sizing contract here; browser E2E
+    // checks actual wheel scrolling and reachability of the bottom rows.
+    expect(scrollArea?.classList.contains("min-h-0")).toBe(true);
+    expect(scrollArea?.classList.contains("flex-1")).toBe(true);
+    expect(scrollArea?.parentElement?.classList.contains("min-h-0")).toBe(true);
+    expect(screen.queryByText("file-79.tsx")).not.toBeNull();
+  });
+
   /**
    * Monaco's own default, which is the platform's: Cmd on macOS and Ctrl
    * elsewhere goes to a definition, and Alt/Option adds a cursor — the same
@@ -1259,7 +1277,9 @@ describe("EditorCodeWorkspace binary files", () => {
     expect(
       await screen.findByRole("menuitem", { name: /Upload Files/ }),
     ).toBeTruthy();
-    expect(screen.queryByRole("menuitem", { name: "Delete Folder" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Delete Folder" }),
+    ).toBeNull();
   });
 
   it("refuses the Delete key on public/ itself", async () => {
