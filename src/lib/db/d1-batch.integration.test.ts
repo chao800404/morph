@@ -19,6 +19,11 @@ import { getDb } from "@/db";
 import { productDal } from "@/lib/product/dal/product.dal";
 import { regionDal } from "@/lib/region/dal/region.dal";
 import { storeCreditDal } from "@/lib/store-credit/dal/store-credit.dal";
+import { giftCardDal } from "@/lib/gift-card/dal/gift-card.dal";
+import { checkoutDal } from "@/lib/order/dal/checkout.dal";
+import { carts, cartLineItems } from "@/db/cart.schema";
+import { cartPaymentCollections } from "@/db/link.schema";
+import { paymentCollections } from "@/db/payment.schema";
 
 import { batchGuard } from "./batch-guard";
 
@@ -90,6 +95,209 @@ const count = async (query: string, ...values: unknown[]) =>
     .prepare(query)
     .bind(...values)
     .first<{ n: number }>())!.n;
+
+describe("gift card issuance in real D1", () => {
+  const input = (id: string, code: string) => ({
+    id,
+    code,
+    codeHash: `hash-${code}`,
+    currencyCode: "usd",
+    amount: 2500,
+    expiresAt: null,
+    note: null,
+    createdBy: "admin",
+    now: NOW,
+  });
+
+  it("creates the card, backing account and ledger together", async () => {
+    expect(await giftCardDal.create(input("issued-card", "GIFT-ISSUED"))).toBe(
+      "created",
+    );
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM gift_cards WHERE id = ?",
+        "issued-card",
+      ),
+    ).toBe(1);
+    expect(
+      await d1
+        .prepare("SELECT balance FROM store_credit_accounts WHERE id = ?")
+        .bind("issued-card")
+        .first(),
+    ).toEqual({ balance: 2500 });
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM store_credit_transactions WHERE account_id = ?",
+        "issued-card",
+      ),
+    ).toBe(1);
+    expect(
+      await giftCardDal.setStatus({
+        id: "issued-card",
+        status: "disabled",
+        updatedBy: "admin",
+        now: "2026-01-02T00:00:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      await d1
+        .prepare("SELECT status FROM gift_cards WHERE id = ?")
+        .bind("issued-card")
+        .first(),
+    ).toEqual({ status: "disabled" });
+    expect(
+      await d1
+        .prepare("SELECT status FROM store_credit_accounts WHERE id = ?")
+        .bind("issued-card")
+        .first(),
+    ).toEqual({ status: "disabled" });
+  });
+
+  it("reports duplicate codes without leaving a partial account", async () => {
+    await giftCardDal.create(input("first-code", "GIFT-DUPLICATE"));
+    expect(
+      await giftCardDal.create(input("second-code", "GIFT-DUPLICATE")),
+    ).toBe("duplicate-code");
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM store_credit_accounts WHERE id = ?",
+        "second-code",
+      ),
+    ).toBe(0);
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM store_credit_transactions WHERE account_id = ?",
+        "second-code",
+      ),
+    ).toBe(0);
+  });
+});
+
+describe("gift card checkout in real D1", () => {
+  async function cart(
+    id: string,
+    quantity: number,
+    value = 2500,
+    authorized = true,
+  ) {
+    const db = await getDb();
+    await db
+      .insert(carts)
+      .values({
+      id,
+      salesChannelId: "gift-channel",
+      regionId: "gift-region",
+        email: "buyer@example.com",
+        currencyCode: "usd",
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    await db
+      .insert(cartLineItems)
+      .values({
+        id: `${id}-line`,
+        cartId: id,
+        title: "Gift card",
+        quantity,
+        unitPrice: value,
+        isGiftcard: true,
+        isDiscountable: false,
+        requiresShipping: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    await db
+      .insert(paymentCollections)
+      .values({
+        id: `${id}-payment`,
+        amount: quantity * value,
+        authorizedAmount: authorized ? quantity * value : 0,
+        currencyCode: "usd",
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+    await db
+      .insert(cartPaymentCollections)
+      .values({
+        cartId: id,
+        paymentCollectionId: `${id}-payment`,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+  }
+
+  it("issues one card per unit and replaying checkout does not issue more", async () => {
+    await cart("gift-checkout", 2);
+    const result = await checkoutDal.complete("gift-checkout", "gift-channel");
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error(result.reason);
+    const cards = await giftCardDal.listForOrder(result.orderId);
+    expect(cards).toHaveLength(2);
+    expect(new Set(cards.map((card) => card.code)).size).toBe(2);
+    expect(
+      cards.every((card) => card.value === 2500 && card.currencyCode === "usd"),
+    ).toBe(true);
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM store_credit_transactions WHERE reference_id = ? AND reference = 'gift_card_issue'",
+        result.orderId,
+      ),
+    ).toBe(2);
+    expect(await checkoutDal.complete("gift-checkout", "gift-channel")).toEqual(
+      result,
+    );
+    expect(await giftCardDal.listForOrder(result.orderId)).toHaveLength(2);
+  });
+
+  it("does not issue cards without authorized payment or above the unit limit", async () => {
+    await cart("gift-unpaid", 1, 2500, false);
+    expect(await checkoutDal.complete("gift-unpaid", "gift-channel")).toEqual({
+      success: false,
+      reason: "PAYMENT_REQUIRED",
+    });
+    await cart("gift-limit", 51);
+    expect(await checkoutDal.complete("gift-limit", "gift-channel")).toEqual({
+      success: false,
+      reason: "GIFT_CARD_LIMIT",
+    });
+    expect(
+      await count(
+        "SELECT count(*) AS n FROM order_carts WHERE cart_id IN ('gift-unpaid', 'gift-limit')",
+      ),
+    ).toBe(0);
+  });
+
+  it("rolls the order back if issuing its gift card fails", async () => {
+    await cart("gift-rollback", 1, 333);
+    await d1
+      .prepare(
+        "CREATE TRIGGER refuse_fixture_card BEFORE INSERT ON gift_cards WHEN NEW.value = 333 BEGIN SELECT RAISE(ABORT, 'fixture issue failure'); END",
+      )
+      .run();
+    try {
+      await expect(
+        checkoutDal.complete("gift-rollback", "gift-channel"),
+      ).rejects.toThrow("fixture issue failure");
+      expect(
+        await count(
+          "SELECT count(*) AS n FROM order_carts WHERE cart_id = 'gift-rollback'",
+        ),
+      ).toBe(0);
+      expect(
+        await count(
+          "SELECT count(*) AS n FROM store_credit_accounts WHERE balance = 333",
+        ),
+      ).toBe(0);
+      expect(
+        await d1
+          .prepare("SELECT completed_at FROM carts WHERE id = 'gift-rollback'")
+          .first(),
+      ).toEqual({ completed_at: null });
+    } finally {
+      await d1.prepare("DROP TRIGGER refuse_fixture_card").run();
+    }
+  });
+});
 
 describe("batchGuard in a real D1 batch", () => {
   const gate = sqliteTable("batch_guard_gate", { id: text("id").primaryKey() });

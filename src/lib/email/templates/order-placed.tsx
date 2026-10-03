@@ -16,16 +16,24 @@ export interface PlacedOrderEmailItem {
   unitPrice: string;
 }
 
+export interface PlacedOrderEmailGiftCard {
+  code: string;
+  value: string;
+  expiresAt: string | null;
+}
+
 export default function OrderPlacedEmail({
   appName,
   orderDisplayId,
   items,
   total,
+  giftCards = [],
 }: {
   appName: string;
   orderDisplayId: number;
   items: PlacedOrderEmailItem[];
   total: string;
+  giftCards?: PlacedOrderEmailGiftCard[];
 }) {
   return (
     <Html>
@@ -56,6 +64,22 @@ export default function OrderPlacedEmail({
               records.
             </Text>
           </Section>
+          {giftCards.length > 0 ? (
+            <Section>
+              <Heading as="h3" style={{ fontSize: "16px" }}>
+                Your gift cards
+              </Heading>
+              {giftCards.map((giftCard) => (
+                <Text key={giftCard.code} style={rowStyle}>
+                  Code: <strong>{giftCard.code}</strong> · Value:{" "}
+                  {giftCard.value}
+                  {giftCard.expiresAt
+                    ? ` · Expires: ${giftCard.expiresAt.slice(0, 10)}`
+                    : ""}
+                </Text>
+              ))}
+            </Section>
+          ) : null}
           <Section>
             <Heading as="h3" style={{ fontSize: "16px" }}>
               Items

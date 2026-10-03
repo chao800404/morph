@@ -1,6 +1,7 @@
 import { retryOrderPlacedEmail, sendOrderPlacedEmail } from "@/lib/email";
 import { notificationDal } from "@/lib/notification/dal/notification.dal";
 import { orderDal } from "@/lib/order/dal/order.dal";
+import { giftCardDal } from "@/lib/gift-card/dal/gift-card.dal";
 
 export type RetryOrderPlacedNotificationResult =
   | { success: true }
@@ -48,6 +49,9 @@ export async function notifyOrderPlaced(input: {
       page += 1;
     } while (items.length < total);
 
+    const issuedGiftCards = items.some((item) => item.isGiftcard)
+      ? await giftCardDal.listForOrder(input.orderId)
+      : [];
     const delivery = await sendOrderPlacedEmail({
       email: order.email,
       orderId: order.id,
@@ -61,6 +65,7 @@ export async function notifyOrderPlaced(input: {
         unitPrice: item.unitPrice,
       })),
       total: order.total,
+      ...(issuedGiftCards.length ? { giftCards: issuedGiftCards } : {}),
     });
     return delivery.success;
   } catch {

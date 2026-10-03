@@ -121,6 +121,7 @@ export const toOrderItemDTO = ({
   title: item.title,
   thumbnail: item.thumbnail,
   sku: item.variantSku,
+  isGiftcard: item.isGiftcard,
   isCustomPrice: item.isCustomPrice,
   quantity: state.quantity,
   fulfilledQuantity: state.fulfilledQuantity,

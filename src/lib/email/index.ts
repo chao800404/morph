@@ -289,6 +289,12 @@ export async function sendOrderPlacedEmail(input: {
     unitPrice: number;
   }>;
   total: number;
+  giftCards?: Array<{
+    code: string;
+    value: number;
+    currencyCode: string;
+    expiresAt: string | null;
+  }>;
 }): Promise<SendEmailResult> {
   try {
     const config = getConfig();
@@ -309,6 +315,11 @@ export async function sendOrderPlacedEmail(input: {
         unitPrice: formatAmount(item.unitPrice),
       })),
       total: formatAmount(input.total),
+      giftCards: (input.giftCards ?? []).map((giftCard) => ({
+        code: giftCard.code,
+        value: formatAmount(giftCard.value),
+        expiresAt: giftCard.expiresAt,
+      })),
     };
     const html = await render(OrderPlacedEmail(data));
     return await sendCommerceNotificationEmail(
@@ -349,6 +360,16 @@ const orderPlacedEmailDataSchema = z.object({
     )
     .max(500),
   total: z.string().max(64),
+  giftCards: z
+    .array(
+      z.object({
+        code: z.string().min(1).max(64),
+        value: z.string().max(64),
+        expiresAt: z.string().nullable(),
+      }),
+    )
+    .max(500)
+    .optional(),
 });
 
 /** Retry a failed order confirmation with the exact template data originally recorded. */

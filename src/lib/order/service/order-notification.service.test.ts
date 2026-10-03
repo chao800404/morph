@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { retryOrderPlacedEmail, sendOrderPlacedEmail } from "@/lib/email";
 import { orderDal } from "@/lib/order/dal/order.dal";
 import { notificationDal } from "@/lib/notification/dal/notification.dal";
+import { giftCardDal } from "@/lib/gift-card/dal/gift-card.dal";
 import {
   convertDraftOrderAndNotifyCustomer,
   notifyOrderPlaced,
@@ -11,6 +12,9 @@ import {
 vi.mock("@/lib/email", () => ({
   sendOrderPlacedEmail: vi.fn(),
   retryOrderPlacedEmail: vi.fn(),
+}));
+vi.mock("@/lib/gift-card/dal/gift-card.dal", () => ({
+  giftCardDal: { listForOrder: vi.fn() },
 }));
 vi.mock("@/lib/notification/dal/notification.dal", () => ({
   notificationDal: { findRetryableOrderPlaced: vi.fn() },
@@ -61,6 +65,31 @@ beforeEach(() => {
 });
 
 describe("order placed notification", () => {
+  it("delivers only cards issued for this order", async () => {
+    vi.mocked(orderDal.listItemsPage).mockResolvedValue({
+      items: [
+        {
+          id: "gift-line",
+          title: "Gift card",
+          quantity: 1,
+          unitPrice: 2500,
+          sku: null,
+          isGiftcard: true,
+        },
+      ],
+      total: 1,
+    } as never);
+    const cards = [
+      { code: "GIFT-TEST", value: 2500, currencyCode: "usd", expiresAt: null },
+    ];
+    vi.mocked(giftCardDal.listForOrder).mockResolvedValue(cards);
+    expect(await notifyOrderPlaced({ orderId })).toBe(true);
+    expect(giftCardDal.listForOrder).toHaveBeenCalledWith(orderId);
+    expect(sendOrderPlacedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ giftCards: cards }),
+    );
+  });
+
   it("sends the order snapshot and pages at its original version", async () => {
     await expect(notifyOrderPlaced({ orderId })).resolves.toBe(true);
 

@@ -1,6 +1,10 @@
 import { getDb } from "@/db";
 import type { Metadata } from "@/db/json";
-import { storeCreditAccounts, storeCreditTransactions } from "@/db/schema";
+import {
+  giftCards,
+  storeCreditAccounts,
+  storeCreditTransactions,
+} from "@/db/schema";
 import { firstOrNull } from "@/lib/db/single-row";
 import { likeContains } from "@/lib/db/like-query";
 import { databaseErrorMessage } from "@/lib/order/database-error";
@@ -91,7 +95,9 @@ export const giftCardDal = {
       );
     }
     if (input.query?.trim()) {
-      conditions.push(likeContains(storeCreditAccounts.id, input.query.trim())!);
+      conditions.push(
+        likeContains(storeCreditAccounts.id, input.query.trim())!,
+      );
     }
     const where = and(...conditions);
     const sortColumn =
@@ -99,10 +105,7 @@ export const giftCardDal = {
         ? storeCreditAccounts.balance
         : storeCreditAccounts.createdAt;
     const [countRows, rows] = await Promise.all([
-      db
-        .select({ value: count() })
-        .from(storeCreditAccounts)
-        .where(where),
+      db.select({ value: count() }).from(storeCreditAccounts).where(where),
       db
         .select({
           account: storeCreditAccounts,
@@ -195,6 +198,7 @@ export const giftCardDal = {
 
   async create(input: {
     id: string;
+    code: string;
     codeHash: string;
     currencyCode: string;
     amount: number;
@@ -226,6 +230,25 @@ export const giftCardDal = {
           updatedAt: input.now,
           deletedAt: null,
         }),
+        db.insert(giftCards).values({
+          id: input.id,
+          storeCreditAccountId: input.id,
+          code: input.code,
+          codeHash: input.codeHash,
+          value: input.amount,
+          currencyCode: input.currencyCode,
+          status: "active",
+          expiresAt: input.expiresAt,
+          reference: null,
+          referenceId: null,
+          lineItemId: null,
+          note: input.note,
+          createdBy: input.createdBy,
+          updatedBy: input.createdBy,
+          createdAt: input.now,
+          updatedAt: input.now,
+          deletedAt: null,
+        }),
         db.insert(storeCreditTransactions).values({
           id: crypto.randomUUID(),
           accountId: input.id,
@@ -242,10 +265,17 @@ export const giftCardDal = {
       ] as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
       return "created";
     } catch (error) {
+      const message = databaseErrorMessage(error);
       if (
-        databaseErrorMessage(error).includes(
-          "store_credit_accounts_code_hash_unique",
-        )
+        message.includes("store_credit_accounts_code_hash_unique") ||
+        message.includes("gift_cards_code_hash_unique") ||
+        message.includes("gift_cards_code_unique") ||
+        // D1/SQLite reports the conflicting column, rather than its index.
+        message.includes(
+          "UNIQUE constraint failed: store_credit_accounts.code_hash",
+        ) ||
+        message.includes("UNIQUE constraint failed: gift_cards.code_hash") ||
+        message.includes("UNIQUE constraint failed: gift_cards.code")
       )
         return "duplicate-code";
       throw error;
@@ -297,22 +327,43 @@ export const giftCardDal = {
     now: string;
   }): Promise<boolean> {
     const db = await getDb();
-    const rows = await db
-      .update(storeCreditAccounts)
-      .set({
-        status: input.status,
-        updatedBy: input.updatedBy,
-        updatedAt: input.now,
-      })
-      .where(
-        and(
-          eq(storeCreditAccounts.id, input.id),
-          isNull(storeCreditAccounts.deletedAt),
-          giftCardCondition,
+    const [rows] = await db.batch([
+      db
+        .update(storeCreditAccounts)
+        .set({
+          status: input.status,
+          updatedBy: input.updatedBy,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(storeCreditAccounts.id, input.id),
+            isNull(storeCreditAccounts.deletedAt),
+            giftCardCondition,
+          ),
+        )
+        .returning({ id: storeCreditAccounts.id }),
+      db
+        .update(giftCards)
+        .set({
+          status: input.status,
+          updatedBy: input.updatedBy,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(giftCards.storeCreditAccountId, input.id),
+            isNull(giftCards.deletedAt),
+            sql`exists (
+              select 1 from store_credit_accounts
+              where store_credit_accounts.id = ${input.id}
+                and store_credit_accounts.updated_at = ${input.now}
+            )`,
+          ),
         ),
-      )
-      .returning({ id: storeCreditAccounts.id });
-    return firstOrNull(rows) !== null;
+    ] as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+    if (!firstOrNull(rows)) return false;
+    return true;
   },
 
   async updateDetails(input: {
@@ -325,7 +376,10 @@ export const giftCardDal = {
     const db = await getDb();
     const current = firstOrNull(
       await db
-        .select({ metadata: storeCreditAccounts.metadata, updatedAt: storeCreditAccounts.updatedAt })
+        .select({
+          metadata: storeCreditAccounts.metadata,
+          updatedAt: storeCreditAccounts.updatedAt,
+        })
         .from(storeCreditAccounts)
         .where(
           and(
@@ -348,22 +402,78 @@ export const giftCardDal = {
     const updatedAt = new Date(
       Math.max(Date.parse(input.now), Date.parse(current.updatedAt) + 1),
     ).toISOString();
-    const rows = await db
-      .update(storeCreditAccounts)
-      .set({
-        metadata: nextMetadata,
-        updatedBy: input.updatedBy,
-        updatedAt,
+    const [rows] = await db.batch([
+      db
+        .update(storeCreditAccounts)
+        .set({
+          metadata: nextMetadata,
+          updatedBy: input.updatedBy,
+          updatedAt,
+        })
+        .where(
+          and(
+            eq(storeCreditAccounts.id, input.id),
+            eq(storeCreditAccounts.updatedAt, current.updatedAt),
+            isNull(storeCreditAccounts.deletedAt),
+            giftCardCondition,
+          ),
+        )
+        .returning({ id: storeCreditAccounts.id }),
+      db
+        .update(giftCards)
+        .set({
+          ...(input.expiresAt !== undefined
+            ? { expiresAt: input.expiresAt }
+            : {}),
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          updatedBy: input.updatedBy,
+          updatedAt,
+        })
+        .where(
+          and(
+            eq(giftCards.storeCreditAccountId, input.id),
+            isNull(giftCards.deletedAt),
+            // Gated on the account write above having landed, not on this
+            // row's own updatedAt: redemptions move the account's timestamp
+            // without touching this row, so comparing the two silently
+            // skipped the update and left the delivered expiry stale.
+            sql`exists (
+              select 1 from store_credit_accounts
+              where store_credit_accounts.id = ${input.id}
+                and store_credit_accounts.updated_at = ${updatedAt}
+            )`,
+          ),
+        ),
+    ] as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+    if (!firstOrNull(rows)) return "conflict";
+    return "updated";
+  },
+
+  /** Codes issued from a completed order for the customer confirmation email. */
+  async listForOrder(orderId: string): Promise<
+    Array<{
+      code: string;
+      value: number;
+      currencyCode: string;
+      expiresAt: string | null;
+    }>
+  > {
+    const db = await getDb();
+    return db
+      .select({
+        code: giftCards.code,
+        value: giftCards.value,
+        currencyCode: giftCards.currencyCode,
+        expiresAt: giftCards.expiresAt,
       })
+      .from(giftCards)
       .where(
         and(
-          eq(storeCreditAccounts.id, input.id),
-          eq(storeCreditAccounts.updatedAt, current.updatedAt),
-          isNull(storeCreditAccounts.deletedAt),
-          giftCardCondition,
+          eq(giftCards.reference, "order"),
+          eq(giftCards.referenceId, orderId),
+          isNull(giftCards.deletedAt),
         ),
       )
-      .returning({ id: storeCreditAccounts.id });
-    return firstOrNull(rows) ? "updated" : "conflict";
+      .orderBy(asc(giftCards.createdAt), asc(giftCards.id));
   },
 };
