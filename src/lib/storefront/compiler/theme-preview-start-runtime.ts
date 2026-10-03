@@ -230,11 +230,26 @@ export default {
  * bridge.
  */
 export function themePreviewStartClientSource(): string {
-  return `import { documentPreviewRuntimeChannel } from "/src/morph/preview/preview-protocol.ts";
+  return `import { documentPreviewRuntimeChannel, parseEditorToPreviewWindowEvent } from "/src/morph/preview/preview-protocol.ts";
 
 // Read before anything can navigate: Start uses browser history, and the
 // first navigation drops the query the editor's channel is carried in.
 documentPreviewRuntimeChannel();
+
+// SSR can paint the editor's selectable sections before React has hydrated.
+// Keep those early, authenticated edits in the existing content snapshot,
+// without touching the SSR DOM. The bridge takes over after hydration.
+const contentModule = import("/${THEME_PREVIEW_CONTENT_MODULE_PATH}");
+let contentChangedBeforeBridge = false;
+const receiveEarlyContent = (event) => {
+  const message = parseEditorToPreviewWindowEvent(event);
+  if (message?.type !== "morph:storefront-preview-update-section-props") return;
+  void contentModule.then(({ updatePreviewContent }) => {
+    updatePreviewContent(message.sectionId, message.props, message.enabled, message.resetKeys);
+    contentChangedBeforeBridge = true;
+  }, () => {}); // The awaited module below reports an import failure once.
+};
+window.addEventListener("message", receiveEarlyContent);
 
 const HYDRATION_WAIT_LIMIT_MS = 30_000;
 
@@ -262,7 +277,11 @@ Object.defineProperty(window, "__morphPreviewRouter", {
 });
 
 await whenHydrated();
-await import("/${THEME_PREVIEW_CONTENT_MODULE_PATH}");
+await contentModule;
 await import("/${THEME_PREVIEW_BRIDGE_PATH}");
+window.removeEventListener("message", receiveEarlyContent);
+if (contentChangedBeforeBridge && window.__morphPreviewRouter) {
+  await window.__morphPreviewRouter.invalidate({ sync: true });
+}
 `;
 }

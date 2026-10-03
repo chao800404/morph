@@ -1,4 +1,8 @@
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
+import {
+  PREVIEW_ADDRESS_PROBE_PATH,
+  START_PREVIEW_ID_HEADER,
+} from "../service/preview-address-probe";
 import { themePreviewRootPublicPluginSource } from "./theme-preview-root-public";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
@@ -679,6 +683,28 @@ const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
 // The Start server itself serves this preview, in workerd, at the root path;
 // see theme-preview-start-runtime.ts.
 const isStartPreview = ${startPreview ? "true" : "false"};
+// Start's Worker entry owns this endpoint in Start mode. The client-only
+// runtime answers it here before Vite's base/HTML middleware, without running
+// Theme code. Both carry the identity of the workspace actually started.
+const previewHealthPlugin = isLivePreview && !isStartPreview ? {
+  name: "morph-preview-health",
+  enforce: "pre",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const url = new URL(req.url || "/", "http://preview.invalid");
+      if (url.pathname !== ${JSON.stringify(PREVIEW_ADDRESS_PROBE_PATH)}) return next();
+      res.setHeader("cache-control", "no-store");
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.statusCode = 405;
+        res.setHeader("Allow", "GET, HEAD");
+      } else {
+        res.statusCode = 204;
+        res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+      }
+      res.end();
+    });
+  },
+} : null;
 const previewContentPlugin = ${
     mode === "preview-server" ? themePreviewContentPluginSource() : "null"
   };
@@ -974,6 +1000,7 @@ export default defineConfig({
     // module and the Node builtin its storage context imports cannot
     // resolve. Stubbed here as well as in the in-process runner, from one
     // shared definition.
+    ...(previewHealthPlugin ? [previewHealthPlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewRootPublicPlugin ? [previewRootPublicPlugin] : []),
     ${themePreviewServerStubPluginSource()},

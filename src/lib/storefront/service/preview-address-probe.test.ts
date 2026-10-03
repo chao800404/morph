@@ -46,12 +46,14 @@ describe("previewAddressBelongsTo", () => {
 });
 
 describe("classifyPreviewAddressProbe", () => {
-  it("selects the platform endpoint only for Start previews", () => {
+  it("keeps the same platform endpoint even if runtime selection changes", () => {
     expect(previewAddressProbePath("start")).toBe(
       START_PREVIEW_ADDRESS_PROBE_PATH,
     );
     expect(previewAddressProbePath(undefined)).toBe(PREVIEW_ADDRESS_PROBE_PATH);
     expect(previewAddressProbePath("client")).toBe(PREVIEW_ADDRESS_PROBE_PATH);
+    expect(START_PREVIEW_ADDRESS_PROBE_PATH).toBe(PREVIEW_ADDRESS_PROBE_PATH);
+    expect(PREVIEW_ADDRESS_PROBE_PATH).toBe("/_morph/preview-health");
   });
 
   it("requires a matching Start instance, not a Theme page or a redirect", () => {

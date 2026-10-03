@@ -993,6 +993,7 @@ export function VisualEditorShell({
   const commentThreads = commentsQuery.data?.data ?? [];
   const publishMutation = useMutation({
     mutationFn: (variables: {
+      templateId: string;
       sourceRevisionId?: string;
       themeBuildId?: string;
       note?: string;
@@ -1009,7 +1010,7 @@ export function VisualEditorShell({
             data: {
               storefrontId: context.storefront.id,
               themeId: context.theme.id,
-              templateId: activeTemplate.id,
+              templateId: variables.templateId,
               sourceRevisionId: variables.sourceRevisionId,
               themeBuildId: variables.themeBuildId,
               note: variables.note,
@@ -1806,7 +1807,10 @@ export function VisualEditorShell({
     controller.abort(reason);
   }, []);
 
-  useEffect(() => () => abortBuildWait("unmount"), [abortBuildWait]);
+  useEffect(
+    () => () => abortBuildWait("unmount"),
+    [abortBuildWait, context.storefront.id, context.theme.id],
+  );
 
   const handleCancelBuild = useCallback(async () => {
     const buildId = buildIdRef.current;
@@ -2910,6 +2914,8 @@ export function VisualEditorShell({
         };
         /** Sent again once this tab's own save returned; see `awaitsOwnSave`. */
         retryAfterOwnSave?: boolean;
+        /** A server-side authoring operation saved these files, not the container. */
+        justSavedPaths?: readonly string[];
       },
     ) => {
       const styleRevision = latestStyleRevisionRef.current + 1;
@@ -2934,6 +2940,7 @@ export function VisualEditorShell({
           .getState()
           .getWorkspaceFiles(context.storefront.id, context.theme.id),
         previewWrittenRef.current,
+        new Set(options?.justSavedPaths),
       );
       // Every revision is told to the page, written or not. It is the
       // handshake the page stamps its selection reports with, and the editor
@@ -4102,8 +4109,23 @@ export function VisualEditorShell({
     ],
   );
 
+  // A build can finish after the author switches pages. Never apply the old
+  // publish intent to the new page merely because its build completed.
+  const publishTargetRef = useRef("");
+  const publishDirtyFilesRef = useRef(monacoDirtyFiles);
+  publishDirtyFilesRef.current = monacoDirtyFiles;
+  const publishMountedRef = useRef(true);
+  useEffect(() => {
+    publishMountedRef.current = true;
+    return () => {
+      publishMountedRef.current = false;
+    };
+  }, []);
+  publishTargetRef.current = `${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`;
+
   const handlePublish = useCallback(
     async (note?: string) => {
+      const publishTarget = publishTargetRef.current;
       // Publishing is not asking to save: whatever is unanswered is checked
       // and saved first, through Check and save, or nothing is published.
       if (
@@ -4266,7 +4288,44 @@ export function VisualEditorShell({
         }
       }
 
+      // Waiting is not permission to publish edits made during the build.
+      // Keep the frozen build and the original draft/release CAS conditions;
+      // refuse a changed target/source instead of rebuilding or replaying.
+      const latestWorkspace = useThemeWorkspaceStore.getState();
+      if (
+        !publishMountedRef.current ||
+        publishTargetRef.current !== publishTarget ||
+        publishDirtyFilesRef.current.length > 0 ||
+        latestWorkspace.hasUnsavedEdits(workspaceScope) ||
+        latestWorkspace.hasActiveConflictsOrErrors(workspaceScope) ||
+        latestWorkspace.getBaseSourceGeneration(workspaceScope) !==
+          currentGeneration
+      ) {
+        toast.error(
+          "Cannot publish: the page or source changed while building. Review your changes and publish again.",
+        );
+        return;
+      }
+      const latestFiles = await themeFilesQuery.refetch();
+      if (
+        !publishMountedRef.current ||
+        publishTargetRef.current !== publishTarget ||
+        publishDirtyFilesRef.current.length > 0 ||
+        latestFiles.isError ||
+        latestFiles.data?.sourceGeneration !== currentGeneration ||
+        useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope) ||
+        useThemeWorkspaceStore
+          .getState()
+          .hasActiveConflictsOrErrors(workspaceScope)
+      ) {
+        toast.error(
+          "Cannot publish: could not confirm the unchanged source after building.",
+        );
+        return;
+      }
+
       await publishMutation.mutateAsync({
+        templateId: activeTemplate.id,
         sourceRevisionId: publishBuild?.sourceRevisionId,
         themeBuildId: publishBuild?.id,
         note: note?.trim() || undefined,
@@ -4601,7 +4660,7 @@ export function VisualEditorShell({
   }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
 
   const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
-    if (isBuildPending) return { ok: false };
+    if (isBuildPending || buildWaitAbortRef.current) return { ok: false };
 
     if (themeFiles.length === 0) {
       toast.error(
@@ -4633,6 +4692,8 @@ export function VisualEditorShell({
 
     setIsBuildPending(true);
     setBuildDiagnostics(null);
+    const abortController = new AbortController();
+    buildWaitAbortRef.current = abortController;
 
     try {
       const currentGeneration = useThemeWorkspaceStore
@@ -4655,6 +4716,7 @@ export function VisualEditorShell({
           }),
       );
 
+      if (abortController.signal.aborted) return { ok: false };
       if (!freezeResult.success || !freezeResult.data?.id) {
         toast.error(
           freezeResult.message || "Failed to snapshot source files for build",
@@ -4677,6 +4739,7 @@ export function VisualEditorShell({
           }),
       );
 
+      if (abortController.signal.aborted) return { ok: false };
       if (!buildResult.success || !buildResult.data) {
         toast.error(buildResult.message || "Theme build failed");
         setBuildDiagnostics({ error: buildResult.message });
@@ -4686,9 +4749,6 @@ export function VisualEditorShell({
 
       let build: StorefrontThemeBuildDTO = buildResult.data;
       buildIdRef.current = build.id;
-
-      const abortController = new AbortController();
-      buildWaitAbortRef.current = abortController;
 
       const waitResult = await waitForThemeBuild({
         build,
@@ -4720,6 +4780,8 @@ export function VisualEditorShell({
       if (build.status === "succeeded") {
         let token = (buildResult.data as StorefrontThemeBuildPreviewDTO)
           .previewToken;
+        if (abortController.signal.aborted) return { ok: false };
+
         if (!token) {
           const tokenResult = await getPreviewBuildToken({
             data: {
@@ -4733,6 +4795,7 @@ export function VisualEditorShell({
           }
         }
 
+        if (abortController.signal.aborted) return { ok: false };
         if (!token) {
           toast.error("Build succeeded but preview capability token missing.");
           setBuildDiagnostics({
@@ -6516,7 +6579,11 @@ export function VisualEditorShell({
           content:
             file.path === saved.file.path ? saved.file.content : file.content,
         })),
-        { renderDocument: true, preserveCanvasPosition: true },
+        {
+          renderDocument: true,
+          preserveCanvasPosition: true,
+          justSavedPaths: [saved.file.path],
+        },
       );
       // The value is this page's; the preview hears it the way it hears any
       // content edit, since the files it was just sent only hold the default.

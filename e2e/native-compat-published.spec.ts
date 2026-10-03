@@ -171,7 +171,9 @@ test.describe("TanStack Start on the published storefront", () => {
     await worker?.dispose();
     if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
     const page = await signedInPage(browser);
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    // Fixture cleanup needs the authenticated app origin, not an editor that
+    // starts a preview while these files are being removed.
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     if (domainId) {
       await serverFn(
         page,
@@ -188,7 +190,10 @@ test.describe("TanStack Start on the published storefront", () => {
   test("publishes the Theme and serves it on a storefront hostname", async ({
     page,
   }) => {
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    // Prepare through the real authenticated Code save/upload APIs before
+    // opening the editor. Starting an old preview during fixture replacement
+    // races the test's own subsequent openEditor with a runtime restart.
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     // Anything an earlier run left behind would refuse the new uploads.
     const cleared = await removeThemeFiles(page, scope!, ALL_PATHS);
     expect(cleared.success, JSON.stringify(cleared)).toBe(true);

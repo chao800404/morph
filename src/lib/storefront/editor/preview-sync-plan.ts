@@ -25,6 +25,8 @@ export function planPreviewSync(
   workspace: Readonly<Record<string, ThemeWorkspaceFileState>>,
   /** What this tab last wrote into the preview, by path. */
   written: ReadonlyMap<string, string>,
+  /** Paths returned by a successful source write in this tab, not all saved files. */
+  justSavedPaths: ReadonlySet<string> = new Set(),
 ): PreviewSyncFile[] {
   const planned: PreviewSyncFile[] = [];
   for (const file of files) {
@@ -34,7 +36,7 @@ export function planPreviewSync(
       state !== undefined &&
       file.content === state.serverContent &&
       (lastWritten === undefined || lastWritten === file.content);
-    if (untouched) continue;
+    if (untouched && !justSavedPaths.has(file.path)) continue;
     planned.push({
       path: file.path,
       content: file.content,

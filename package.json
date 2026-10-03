@@ -63,7 +63,7 @@
     "@babel/parser": "^7.26.9",
     "@better-auth/drizzle-adapter": "1.6.23",
     "@cloudflare/sandbox": "0.12.7",
-    "@cloudflare/vite-plugin": "^1.50.0",
+    "@cloudflare/vite-plugin": "^1.62.4",
     "@dnd-kit/react": "^0.2.1",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -160,6 +160,6 @@
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.7",
     "web-vitals": "^5.1.0",
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.146.0"
   }
 }

@@ -8,7 +8,7 @@ export const THEME_START_TOOLCHAIN = {
   viteReact: "5.2.0",
   tailwind: "4.1.17",
   tailwindVite: "4.1.17",
-  cloudflareVite: "1.50.0",
+  cloudflareVite: "1.62.4",
 } as const;
 
 export const THEME_START_RUNTIME_DEPENDENCIES: Readonly<

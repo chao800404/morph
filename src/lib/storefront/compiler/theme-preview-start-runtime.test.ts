@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import {
   START_PREVIEW_ADDRESS_PROBE_PATH,
@@ -47,6 +47,61 @@ const plan = (
 };
 
 describe("a Start Live Preview workspace (prototype)", () => {
+  it("keeps validated edits arriving before hydration, then refreshes the existing router", async () => {
+    const listeners = new Set<(event: unknown) => void>();
+    const timers: (() => void)[] = [];
+    const snapshot: Record<string, unknown> = {};
+    const updatePreviewContent = vi.fn((id: string, props: unknown) => {
+      snapshot[id] = props;
+    });
+    const invalidate = vi.fn(async () => {});
+    const browser: Record<string, unknown> = {
+      addEventListener: (_type: string, listener: (event: unknown) => void) =>
+        listeners.add(listener),
+      removeEventListener: (
+        _type: string,
+        listener: (event: unknown) => void,
+      ) => listeners.delete(listener),
+    };
+    const loadBridge = vi.fn(async () => {});
+    const source = themePreviewStartClientSource()
+      .replace(/^import .*;\n/, "")
+      .replace('import("/src/morph/preview-content.ts")', "contentPromise")
+      .replace('import("/src/morph/preview-bridge.ts")', "loadBridge()");
+    const execution = runInNewContext(`(async () => { ${source} })()`, {
+      window: browser,
+      document: { readyState: "complete" },
+      performance: { now: () => 0 },
+      setTimeout: (callback: () => void) => timers.push(callback),
+      requestAnimationFrame: (callback: () => void) => callback(),
+      documentPreviewRuntimeChannel: () => ({}),
+      parseEditorToPreviewWindowEvent: (event: {
+        trusted?: boolean;
+        data: unknown;
+      }) => (event.trusted ? event.data : null),
+      contentPromise: Promise.resolve({ updatePreviewContent }),
+      loadBridge,
+    }) as Promise<void>;
+    const message = {
+      type: "morph:storefront-preview-update-section-props",
+      sectionId: "hero",
+      props: { eyebrow: "latest" },
+    };
+    for (const listener of listeners) {
+      listener({ trusted: false, data: message });
+      listener({ trusted: true, data: message });
+    }
+    await Promise.resolve();
+    expect(updatePreviewContent).toHaveBeenCalledTimes(1);
+    expect(snapshot.hero).toEqual({ eyebrow: "latest" });
+    expect(loadBridge).not.toHaveBeenCalled();
+    browser.__TSR_ROUTER__ = { invalidate };
+    timers.shift()!();
+    await execution;
+    expect(loadBridge).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith({ sync: true });
+    expect(listeners.size).toBe(0);
+  });
   it("answers health without invoking Start or a Theme loader", async () => {
     let calls = 0;
     const sandbox = {

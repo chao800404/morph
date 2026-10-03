@@ -18,6 +18,9 @@ export type ThemeBuildWaitArgs = {
   /** Returns the current build, or null when the poll could not be read. */
   poll: (buildId: string) => Promise<StorefrontThemeBuildDTO | null>;
   signal: AbortSignal;
+  /** Optional finite budget for callers that only want a status sample.
+   * Interactive build/publish waits follow the same build until it settles
+   * or the caller cancels; elapsed polls are not a build outcome. */
   maxAttempts?: number;
   /** Resolves after `ms`, or immediately once aborted. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -30,15 +33,13 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve();
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
   });
 }
 
@@ -55,7 +56,7 @@ export async function waitForThemeBuild({
   build: initialBuild,
   poll,
   signal,
-  maxAttempts = 30,
+  maxAttempts = Number.POSITIVE_INFINITY,
   sleep = defaultSleep,
   intervalMs = 1000,
 }: ThemeBuildWaitArgs): Promise<ThemeBuildWaitOutcome> {
@@ -79,7 +80,17 @@ export async function waitForThemeBuild({
     }
     // A poll that could not be read is not evidence about the build, so the
     // last known state is kept and the next attempt decides.
-    if (polled) build = polled;
+    if (polled) {
+      if (
+        polled.id !== initialBuild.id ||
+        polled.sourceRevisionId !== initialBuild.sourceRevisionId ||
+        polled.storefrontId !== initialBuild.storefrontId ||
+        polled.themeId !== initialBuild.themeId
+      ) {
+        throw new Error("Build identity changed while waiting.");
+      }
+      build = polled;
+    }
   }
 
   return isThemeBuildPending(build.status)

@@ -55,6 +55,31 @@ import { updatePreviewContent } from "./preview-content";
 // following the preview URL directly. It renders; it just says nothing.
 const channel = documentPreviewRuntimeChannel();
 
+// Updating the browser snapshot alone cannot update Start's hydrated route
+// context. Re-run the existing router loaders, which read that same snapshot
+// through the preview content endpoint. Coalesce a frame's section messages;
+// never reload the document or introduce a second content provider.
+let contentRefreshScheduled = false;
+function refreshPreviewContent() {
+  if (contentRefreshScheduled) return;
+  contentRefreshScheduled = true;
+  requestAnimationFrame(() => {
+    contentRefreshScheduled = false;
+    const router = window.__morphPreviewRouter;
+    if (typeof router?.invalidate !== "function") return;
+    void Promise.resolve()
+      .then(() => router.invalidate({ sync: true }))
+      .then(() => {
+        restoreSelectedSection();
+        reportStructure();
+        drawOverlays();
+      })
+      .catch(() => {
+        console.warn("[morph-preview] content refresh failed; the previous render may still be visible.");
+      });
+  });
+}
+
 // Off until the editor asks for it, so a preview being merely watched behaves
 // like the real storefront: links follow, menus open, carousels advance. In
 // select mode the click belongs to the editor instead, which is the only way
@@ -458,10 +483,10 @@ function scheduleSelectedTargetReport() {
 let selectionRevision = 0;
 
 if (import.meta.hot) {
-  import.meta.hot.on("vite:afterUpdate", () => {
-    acknowledgePendingStyleRevision();
-  });
-
+  // afterUpdate names one Vite payload, not the whole written revision. A
+  // CSS-only payload can finish while its following component is importing.
+  // The HTTP application queue above acknowledges only after every payload
+  // in its response has completed, and only for the still-pending revision.
   import.meta.hot.on("vite:error", () => {
     if (pendingStyleRevision === null || !channel) return;
     const styleRevision = pendingStyleRevision;
@@ -980,6 +1005,7 @@ if (channel) {
         message.enabled,
         message.resetKeys,
       );
+      refreshPreviewContent();
       const section = document.querySelector(
         previewSectionSelector(message.sectionId),
       );

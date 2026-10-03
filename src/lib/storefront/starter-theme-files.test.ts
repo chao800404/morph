@@ -344,7 +344,7 @@ describe("starter Principles theme source", () => {
     });
     expect(packageJson.devDependencies).toMatchObject({
       "@tanstack/router-plugin": "1.168.23",
-      "@cloudflare/vite-plugin": "1.50.0",
+      "@cloudflare/vite-plugin": "1.62.4",
       vite: "7.3.5",
     });
   });

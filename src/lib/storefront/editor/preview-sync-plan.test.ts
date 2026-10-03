@@ -70,6 +70,20 @@ describe("planPreviewSync", () => {
     ).toEqual([]);
   });
 
+  it("syncs an explicitly just-saved file even without a prior preview write", () => {
+    expect(
+      planPreviewSync(
+        [
+          { path: HERO, content: "hero v2" },
+          { path: HELLO, content: "hello v5" },
+        ],
+        workspace,
+        new Map(),
+        new Set([HERO]),
+      ),
+    ).toEqual([{ path: HERO, content: "hero v2", baseVersion: 2 }]);
+  });
+
   it("does not claim the version a save in flight might produce", () => {
     expect(
       planPreviewSync(

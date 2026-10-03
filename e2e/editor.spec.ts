@@ -92,7 +92,11 @@ test.describe("visual editor", () => {
       // A newly-created route intentionally starts with an empty <main> and
       // therefore has no section markers until the author adds one. Wait for
       // that route shell rather than accepting a marker left by the old page.
-      await expect(previewFrame(page).locator("main").first()).toBeAttached({
+      await expect(
+        previewFrame(page).locator(
+          `main[data-morph-source-file="src/routes/${routePath.slice(1)}.tsx"]`,
+        ),
+      ).toBeAttached({
         timeout: 45_000,
       });
       await expect(page.getByText("Loading React preview…")).toHaveCount(0, {

@@ -19,17 +19,15 @@ import { previewRouteFromHostname } from "./preview-proxy-observation";
 
 export type PreviewAddressState = "serving" | "stale" | "unknown";
 
-/** Path requested to check an address: the preview page itself. */
-export const PREVIEW_ADDRESS_PROBE_PATH = "/__morph-theme-preview__/";
-
-/** Platform-owned Start endpoint: never invokes a Theme loader. */
-export const START_PREVIEW_ADDRESS_PROBE_PATH = "/__morph_preview_health";
+/** Platform-owned in both runtimes, under the already-reserved namespace. */
+export const PREVIEW_ADDRESS_PROBE_PATH = "/_morph/preview-health";
+export const START_PREVIEW_ADDRESS_PROBE_PATH = PREVIEW_ADDRESS_PROBE_PATH;
 export const START_PREVIEW_ID_HEADER = "x-morph-preview-id";
 
-export function previewAddressProbePath(runtime: string | undefined): string {
-  return runtime === "start"
-    ? START_PREVIEW_ADDRESS_PROBE_PATH
-    : PREVIEW_ADDRESS_PROBE_PATH;
+export function previewAddressProbePath(_runtime?: string): string {
+  // Probe the instance that is running, not the runtime a later request's
+  // environment happens to select. Both modes answer the same contract.
+  return PREVIEW_ADDRESS_PROBE_PATH;
 }
 
 /**

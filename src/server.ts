@@ -261,9 +261,12 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
     const startedAt = Date.now();
     // Platform credentials are removed before the SDK sees the request, so
     // nothing past this point, Theme code included, can receive them.
-    const response = await proxyToSandbox(
+    const { proxyPreviewModuleRequest, finishPreviewResponse } =
+      await loadPreviewResponse();
+    const response = await proxyPreviewModuleRequest(
       previewRequestFor(request),
-      previewProxyEnv(bindings) as never,
+      (moduleRequest) =>
+        proxyToSandbox(moduleRequest, previewProxyEnv(bindings) as never),
     );
     if (response) {
       const durationMs = Date.now() - startedAt;
@@ -289,7 +292,6 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
           }).catch(() => {}),
         );
       }
-      const { finishPreviewResponse } = await loadPreviewResponse();
       return finishPreviewResponse(response);
     }
     return response;

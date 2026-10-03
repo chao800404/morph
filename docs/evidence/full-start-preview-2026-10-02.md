@@ -123,6 +123,28 @@ This follow-up does not establish that the prototype can replace the current pre
   HTTP/2 alone would not shorten a deployed preview's hydration. Large spread
   between runs (7–33 s) on both protocols; four runs each, one session.
 
+- **Hop by hop: the path, not Vite (`-152420`).** The 102 module paths the
+  frame had loaded, requested again from Node (warm: Vite had already
+  transformed them), two rounds in alternating order. Measurement only, not
+  in the repo; read-only GETs to this run's own container.
+
+  | Path                                      | All at once             | One by one                    |
+  | ----------------------------------------- | ----------------------- | ----------------------------- |
+  | A: inside the container, straight to Vite | 0.20–0.29 s (358–509/s) | p50 1 ms                      |
+  | C: dev server with the preview Host       | 4.6–5.4 s (19–22/s)     | p50 55–66 ms, 5.8–9.1 s total |
+
+  Vite answers the whole set in under 0.3 s. Through Morph's dev Worker, the
+  Sandbox Durable Object and the container's proxy, the same set takes about
+  5 s, and sending it all at once is barely faster than one by one (wait p50
+  4.0–4.5 s): the path handles about one request at a time, roughly 50 ms
+  each. That serialisation, not Vite and not the browser's connections, is
+  what limits the frame's load. Which part of the path serialises (the
+  Worker's own handling, the Durable Object, or the container proxy) is not
+  measured yet. The host-to-container-IP comparison (B) did not connect
+  (Docker's container network is not reachable from this host) and is left
+  out. In the browser the same modules took longer than here (first-time
+  transforms, the import waterfall); this isolates the path's own cost.
+
 - Two hydration-wait experiments did not fix text promotion and were restored;
   no runtime change from those experiments is retained. First experiment
   (`-133422`): **2 passed, 1 failed** (text promotion). Second experiment

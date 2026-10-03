@@ -10,6 +10,10 @@ import {
 } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
+import {
+  PREVIEW_ADDRESS_PROBE_PATH,
+  START_PREVIEW_ID_HEADER,
+} from "../service/preview-address-probe";
 
 /**
  * The local transport, against a real Vite dev server.
@@ -171,6 +175,19 @@ describe("the local Live Preview transport", () => {
     const content = await fetch(new URL("/_morph/content?path=/", started.url));
     expect(content.status).toBe(200);
     expect(await content.json()).toMatchObject({ slots: {} });
+
+    for (const method of ["GET", "HEAD", "POST"]) {
+      const health = await fetch(
+        new URL(PREVIEW_ADDRESS_PROBE_PATH, started.url),
+        { method },
+      );
+      expect(health.status).toBe(method === "POST" ? 405 : 204);
+      expect(health.headers.get("cache-control")).toBe("no-store");
+      expect(health.headers.get(START_PREVIEW_ID_HEADER)).toBe(
+        method === "POST" ? null : "theme-a-user-1",
+      );
+      expect(await health.text()).toBe("");
+    }
 
     expect(started.hoistedContentFields).toEqual([]);
     expect(started.processId).toBeUndefined();
