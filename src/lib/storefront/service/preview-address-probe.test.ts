@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   classifyPreviewAddressProbe,
   previewAddressBelongsTo,
+  previewAddressProbePath,
+  START_PREVIEW_ADDRESS_PROBE_PATH,
+  PREVIEW_ADDRESS_PROBE_PATH,
 } from "./preview-address-probe";
 
 const OWN = {
@@ -43,6 +46,40 @@ describe("previewAddressBelongsTo", () => {
 });
 
 describe("classifyPreviewAddressProbe", () => {
+  it("keeps the same platform endpoint even if runtime selection changes", () => {
+    expect(previewAddressProbePath("start")).toBe(
+      START_PREVIEW_ADDRESS_PROBE_PATH,
+    );
+    expect(previewAddressProbePath(undefined)).toBe(PREVIEW_ADDRESS_PROBE_PATH);
+    expect(previewAddressProbePath("client")).toBe(PREVIEW_ADDRESS_PROBE_PATH);
+    expect(START_PREVIEW_ADDRESS_PROBE_PATH).toBe(PREVIEW_ADDRESS_PROBE_PATH);
+    expect(PREVIEW_ADDRESS_PROBE_PATH).toBe("/_morph/preview-health");
+  });
+
+  it("requires a matching Start instance, not a Theme page or a redirect", () => {
+    const matching = { expected: OWN.previewId, actual: OWN.previewId };
+    expect(classifyPreviewAddressProbe(204, null, matching)).toBe("serving");
+    for (const status of [200, 302, 404, 500]) {
+      expect(classifyPreviewAddressProbe(status, null, matching)).toBe(
+        "unknown",
+      );
+    }
+    expect(
+      classifyPreviewAddressProbe(204, null, { ...matching, actual: null }),
+    ).toBe("unknown");
+    expect(
+      classifyPreviewAddressProbe(204, null, {
+        ...matching,
+        actual: "another-preview",
+      }),
+    ).toBe("unknown");
+    expect(classifyPreviewAddressProbe(404, "INVALID_TOKEN", matching)).toBe(
+      "stale",
+    );
+    expect(
+      classifyPreviewAddressProbe(410, "STALE_PREVIEW_URL", matching),
+    ).toBe("stale");
+  });
   it("treats only the SDK's two refusals as a stale address", () => {
     expect(classifyPreviewAddressProbe(200, null)).toBe("serving");
     expect(classifyPreviewAddressProbe(304, null)).toBe("serving");

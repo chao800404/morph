@@ -257,6 +257,15 @@ const startWith = (
 };
 
 describe("CloudflareSandboxVitePreviewServer", () => {
+  it("checks the platform health endpoint for Start readiness", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness, { previewRuntime: "start" })).ok).toBe(
+      true,
+    );
+    expect(harness.waitedPorts).toEqual([
+      { port: THEME_PREVIEW_SERVER_PORT, path: "/_morph/preview-health" },
+    ]);
+  });
   it("serves the Theme from its own origin once Vite reports itself ready", async () => {
     const harness = createSession("ready");
     const result = await startWith(harness);

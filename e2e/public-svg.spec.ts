@@ -208,12 +208,11 @@ test("a script-carrying SVG runs in no browser when opened directly through the 
   );
   test.setTimeout(240_000);
   await openEditor(page);
-  const origin = new URL(
-    page
-      .frames()
-      .find((frame) => frame.url().includes("/__morph-theme-preview__/"))!
-      .url(),
-  ).origin;
+  const origin = await previewFrame(page)
+    .locator("body")
+    .evaluate(() => location.origin);
+  const previewId = /^5173-([a-f0-9]{32})-/.exec(new URL(origin).hostname)?.[1];
+  expect(previewId, "the active preview's identity").toBeTruthy();
 
   // This run's own preview container, holding the workspace. The file goes
   // straight in, outside the product. Previews run under PreviewSandbox, and
@@ -228,21 +227,30 @@ test("a script-carrying SVG runs in no browser when opened directly through the 
     .split("\n")
     .filter((line) => line.includes(" cloudflare-dev/previewsandbox:"))
     .map((line) => line.split(" ")[0]!)
-    .find((id) => {
+    .filter((id) => {
       try {
-        execFileSync("docker", ["exec", id, "test", "-d", "/workspace/src"]);
-        return true;
+        const config = JSON.parse(
+          execFileSync(
+            "docker",
+            ["exec", id, "cat", "/workspace/wrangler.json"],
+            {
+              timeout: 5_000,
+              maxBuffer: 64 * 1024,
+            },
+          ).toString(),
+        ) as { name?: string };
+        return config.name === `morph-theme-${previewId}`;
       } catch {
         return false;
       }
     });
-  expect(container, "this run's Sandbox container").toBeTruthy();
+  expect(container, "exactly this preview's Sandbox container").toHaveLength(1);
   execFileSync(
     "docker",
     [
       "exec",
       "-i",
-      container!,
+      container[0]!,
       "sh",
       "-c",
       "mkdir -p /workspace/public/icons && cat > /workspace/public/icons/e2e-evil.svg",
@@ -254,10 +262,15 @@ test("a script-carrying SVG runs in no browser when opened directly through the 
     const context = await target.newContext();
     const direct = await context.newPage();
     const served = [];
-    for (const url of [
-      `${origin}/icons/e2e-evil.svg`,
-      `${origin}/__morph-theme-preview__/icons/e2e-evil.svg`,
-    ]) {
+    const paths =
+      process.env.MORPH_E2E_PREVIEW_RUNTIME === "start"
+        ? ["/icons/e2e-evil.svg"]
+        : [
+            "/icons/e2e-evil.svg",
+            "/__morph-theme-preview__/icons/e2e-evil.svg",
+          ];
+    for (const path of paths) {
+      const url = `${origin}${path}`;
       const response = await direct.goto(url);
       await direct.waitForTimeout(1_000);
       served.push({

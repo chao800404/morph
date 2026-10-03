@@ -1415,10 +1415,31 @@ export function readPreviewRuntimeChannel(
   }
 }
 
+/** The channel this document was loaded with, once one has been read. */
+let documentChannel: PreviewMessageChannel | null = null;
+
+/**
+ * The editor channel this preview document was loaded with.
+ *
+ * The editor frames a preview with the channel in its query string. A
+ * client-only preview never changes its URL (memory history), so reading
+ * `location` on every message was the same as reading it once. A Theme that
+ * runs Start in the preview uses browser history, and its first navigation
+ * drops that query: the page then ignored the editor's heartbeat and was
+ * reloaded as unresponsive. The first channel read is kept for the life of
+ * the document instead. A new channel always comes with a new document, since
+ * the editor reloads the frame for a new session.
+ */
+export function documentPreviewRuntimeChannel(): PreviewMessageChannel | null {
+  if (documentChannel) return documentChannel;
+  documentChannel = readPreviewRuntimeChannel(window.location.href);
+  return documentChannel;
+}
+
 export function parseEditorToPreviewWindowEvent(
   event: MessageEvent<unknown>,
 ): EditorToPreviewMessage | null {
-  const channel = readPreviewRuntimeChannel(window.location.href);
+  const channel = documentPreviewRuntimeChannel();
   if (!channel) return null;
   return parseEditorToPreviewEvent(event, {
     expectedOrigin: channel.targetOrigin,
@@ -1465,7 +1486,7 @@ export function postEditorToPreviewMessage(
 
 export function postPreviewToEditorMessage(
   message: PreviewToEditorMessage,
-  channel = readPreviewRuntimeChannel(window.location.href),
+  channel = documentPreviewRuntimeChannel(),
 ) {
   if (
     !channel ||

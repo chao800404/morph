@@ -221,6 +221,9 @@ const loadPreviewObservation = keepImport(
 const loadPreviewResponse = keepImport(
   () => import("@/lib/storefront/service/preview-proxy-response"),
 );
+const loadDevPreviewPassthrough = keepImport(
+  () => import("@/server/dev-preview-passthrough"),
+);
 
 async function isStorefrontHost(request: Request): Promise<boolean> {
   const { shouldRouteToStorefront } = await loadStorefrontRouting();
@@ -258,9 +261,12 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
     const startedAt = Date.now();
     // Platform credentials are removed before the SDK sees the request, so
     // nothing past this point, Theme code included, can receive them.
-    const response = await proxyToSandbox(
+    const { proxyPreviewModuleRequest, finishPreviewResponse } =
+      await loadPreviewResponse();
+    const response = await proxyPreviewModuleRequest(
       previewRequestFor(request),
-      previewProxyEnv(bindings) as never,
+      (moduleRequest) =>
+        proxyToSandbox(moduleRequest, previewProxyEnv(bindings) as never),
     );
     if (response) {
       const durationMs = Date.now() - startedAt;
@@ -286,7 +292,6 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
           }).catch(() => {}),
         );
       }
-      const { finishPreviewResponse } = await loadPreviewResponse();
       return finishPreviewResponse(response);
     }
     return response;
@@ -297,7 +302,18 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
 
 export default {
   async fetch(...args: Parameters<StartRequestHandler>): Promise<Response> {
-    const request = args[0];
+    let request = args[0];
+    // Dev only: a preview-host request parked past Morph's own Vite; see
+    // dev-preview-passthrough.ts. A deployed Worker never restores one.
+    if (import.meta.env.DEV) {
+      const { restoreDevPreviewRequest } =
+        await loadDevPreviewPassthrough();
+      const restored = restoreDevPreviewRequest(request);
+      if (restored) {
+        request = restored;
+        args[0] = restored;
+      }
+    }
     const url = new URL(request.url);
 
     // Store APIs are Morph-owned and bypass the Vite container. Preview

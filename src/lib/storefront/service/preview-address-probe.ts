@@ -19,8 +19,16 @@ import { previewRouteFromHostname } from "./preview-proxy-observation";
 
 export type PreviewAddressState = "serving" | "stale" | "unknown";
 
-/** Path requested to check an address: the preview page itself. */
-export const PREVIEW_ADDRESS_PROBE_PATH = "/__morph-theme-preview__/";
+/** Platform-owned in both runtimes, under the already-reserved namespace. */
+export const PREVIEW_ADDRESS_PROBE_PATH = "/_morph/preview-health";
+export const START_PREVIEW_ADDRESS_PROBE_PATH = PREVIEW_ADDRESS_PROBE_PATH;
+export const START_PREVIEW_ID_HEADER = "x-morph-preview-id";
+
+export function previewAddressProbePath(_runtime?: string): string {
+  // Probe the instance that is running, not the runtime a later request's
+  // environment happens to select. Both modes answer the same contract.
+  return PREVIEW_ADDRESS_PROBE_PATH;
+}
 
 /**
  * Whether an address the editor sent is this author's own preview.
@@ -61,7 +69,13 @@ export function previewAddressBelongsTo(args: {
 export function classifyPreviewAddressProbe(
   status: number,
   code: string | null,
+  identity?: { expected: string; actual: string | null },
 ): PreviewAddressState {
+  if (status < 400 && identity) {
+    return status === 204 && identity.actual === identity.expected
+      ? "serving"
+      : "unknown";
+  }
   if (status < 400) return "serving";
   if (status === 410 && code === "STALE_PREVIEW_URL") return "stale";
   if (status === 404 && code === "INVALID_TOKEN") return "stale";

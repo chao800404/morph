@@ -736,7 +736,7 @@ const sandboxPackageSource = `${JSON.stringify(
     type: "module",
     dependencies: {
       ...sortedRootDependencies,
-      wrangler: "4.118.0",
+      wrangler: "4.146.0",
     },
   },
   null,

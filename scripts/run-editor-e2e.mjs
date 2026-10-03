@@ -23,7 +23,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
@@ -842,6 +842,8 @@ async function main() {
   ]);
 
   log("seeding the account and one published product");
+  // A fresh actor gives each Sandbox run its own preview DO identity.
+  if (!USES_SIDECAR) process.env.MORPH_E2E_USER_ID = randomUUID();
   run("node", [
     "scripts/seed-e2e.mjs", "--persist-to", stateDir, "--env", WRANGLER_ENV,
   ]);

@@ -1,4 +1,5 @@
 import { THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH } from "./theme-workspace-path";
+import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
 import type {
   StorefrontPageDocument,
   StorefrontTemplateType,
@@ -78,7 +79,9 @@ export async function createThemePreviewContentSnapshot(args: {
   );
   const routeDocuments = new Map(
     args.templates.flatMap((template) =>
-      template.routePath ? [[template.routePath, template.document] as const] : [],
+      template.routePath
+        ? [[template.routePath, template.document] as const]
+        : [],
     ),
   );
   const pageDocuments = new Map(
@@ -179,7 +182,7 @@ export function themePreviewContentModuleSource(): string {
   return `import {
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
-  readPreviewRuntimeChannel,
+  documentPreviewRuntimeChannel,
 } from "./preview/preview-protocol";
 import initialSnapshot from "./preview-content-snapshot";
 
@@ -192,7 +195,7 @@ const snapshot = initialSnapshot;
 if (import.meta.hot) {
   import.meta.hot.accept("./preview-content-snapshot", () => {});
 }
-const previewChannel = readPreviewRuntimeChannel(window.location.href);
+const previewChannel = documentPreviewRuntimeChannel();
 const pendingCatalogRequests = new Map();
 let nextCatalogRequestId = 0;
 
@@ -230,7 +233,9 @@ export function previewContentForPath(pathname) {
 }
 
 export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
-  const content = previewContentForPath(window.__morphPreviewRouter?.state?.location?.pathname || "/");
+  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
+    (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
+  const content = previewContentForPath(pathname);
   if (enabled === false) {
     delete content.slots[sectionId];
     if (!content.hiddenSlots.includes(sectionId)) content.hiddenSlots.push(sectionId);

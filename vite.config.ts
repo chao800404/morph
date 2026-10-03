@@ -6,6 +6,11 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import viteTsConfigPaths from "vite-tsconfig-paths";
+import {
+  DEV_PREVIEW_PASSTHROUGH_HEADER,
+  DEV_PREVIEW_PASSTHROUGH_PATH,
+  isDevPreviewHost,
+} from "./src/server/dev-preview-passthrough";
 
 /**
  * Workaround for upstream TanStack Start bug (TanStack/router#6609):
@@ -72,8 +77,38 @@ function tanstackServerFnValidateFix(): Plugin {
   };
 }
 
+/**
+ * Dev only: a Live Preview host's requests go to the Worker, not to this Vite.
+ *
+ * A Start Live Preview is served at the root of its own host, so its module
+ * URLs (`/src/...`, `/@vite/client`, `/node_modules/...`) are ones this Vite
+ * would otherwise answer from Morph's own source. Registered before Vite's
+ * middlewares, it parks such a request on a path Vite does not own; the
+ * Worker restores it (src/server/dev-preview-passthrough.ts). The preview
+ * hostname is the Worker's THEME_PREVIEW_HOSTNAME (`preview.localhost` in
+ * wrangler.jsonc); override with MORPH_DEV_PREVIEW_HOSTNAME.
+ */
+function morphDevPreviewPassthrough(): Plugin {
+  const previewHostname =
+    process.env.MORPH_DEV_PREVIEW_HOSTNAME ?? "preview.localhost";
+  return {
+    name: "morph:dev-preview-passthrough",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (isDevPreviewHost(req.headers.host, previewHostname)) {
+          req.headers[DEV_PREVIEW_PASSTHROUGH_HEADER] = req.url ?? "/";
+          req.url = DEV_PREVIEW_PASSTHROUGH_PATH;
+        }
+        next();
+      });
+    },
+  };
+}
+
 const config = defineConfig({
   plugins: [
+    morphDevPreviewPassthrough(),
     tanstackServerFnValidateFix(),
     // Skipped for an end-to-end run: its event bus binds a fixed port (42069),
     // so a run started beside a developer's own `pnpm dev` dies before serving

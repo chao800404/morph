@@ -48,8 +48,42 @@ export type PreviewSelectionOverlays = Readonly<{
   dragHandle: HTMLElement;
   setDragHandle(visible: boolean, title?: string): void;
   position(state: PreviewOverlayState): void;
+  /**
+   * Whether `node` is one of these overlays or inside one, by identity —
+   * never by a marker a Theme could put on its own elements.
+   */
+  owns(node: Node | null): boolean;
   dispose(): void;
 }>;
+
+/**
+ * Whether a DOM mutation is only the editor's own overlays changing.
+ *
+ * The overlays are appended to `<body>`. A Theme that owns the whole document
+ * — a TanStack Start preview — is observed from `<body>`, so without this
+ * every overlay update read as a change of the page's structure: the editor
+ * answered it, the overlays updated again, and the reports never stopped.
+ *
+ * Only what the overlays own is left out. A mutation inside an overlay, or
+ * one that only adds or removes overlay elements, is the editor's; any
+ * mutation that touches a Theme node, alone or together with an overlay, is
+ * the Theme's and is still reported.
+ */
+export function isPreviewEditorUiMutation(
+  mutation: Pick<
+    MutationRecord,
+    "type" | "target" | "addedNodes" | "removedNodes"
+  >,
+  owns: (node: Node | null) => boolean,
+): boolean {
+  if (owns(mutation.target)) return true;
+  if (mutation.type !== "childList") return false;
+  const changed = [
+    ...Array.from(mutation.addedNodes),
+    ...Array.from(mutation.removedNodes),
+  ];
+  return changed.length > 0 && changed.every((node) => owns(node));
+}
 
 export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
   // 1. Persistent Selected Overlay (Solid 2px border, Glow ring, Bold badge)
@@ -191,8 +225,16 @@ export function createPreviewSelectionOverlays(): PreviewSelectionOverlays {
     tagElement.textContent = `<${item.tagName}>`;
   };
 
+  const owns = (node: Node | null) =>
+    node !== null &&
+    (node === selectedOverlay ||
+      node === hoverOverlay ||
+      selectedOverlay.contains(node) ||
+      hoverOverlay.contains(node));
+
   return {
     dragHandle: selectedDragHandle,
+    owns,
     setDragHandle(visible, title) {
       selectedDragHandle.style.display = visible ? "inline-grid" : "none";
       if (title) selectedDragHandle.title = title;

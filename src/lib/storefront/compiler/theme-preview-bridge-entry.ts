@@ -22,7 +22,7 @@ import {
 export function themePreviewBridgeEntrySource(): string {
   return `import {
   postPreviewToEditorMessage,
-  readPreviewRuntimeChannel,
+  documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
 } from "./preview/preview-protocol";
 import {
@@ -35,7 +35,10 @@ import {
   selectionStyleSnapshot,
 } from "./preview/preview-dom";
 import { startPreviewHeightReporter } from "./preview/preview-height-reporter";
-import { createPreviewSelectionOverlays } from "./preview/preview-selection-overlays";
+import {
+  createPreviewSelectionOverlays,
+  isPreviewEditorUiMutation,
+} from "./preview/preview-selection-overlays";
 import {
   createSelectionStylePreview,
   selectionStylePreviewNeedsOverlayUpdate,
@@ -50,7 +53,32 @@ import { updatePreviewContent } from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
-const channel = readPreviewRuntimeChannel(window.location.href);
+const channel = documentPreviewRuntimeChannel();
+
+// Updating the browser snapshot alone cannot update Start's hydrated route
+// context. Re-run the existing router loaders, which read that same snapshot
+// through the preview content endpoint. Coalesce a frame's section messages;
+// never reload the document or introduce a second content provider.
+let contentRefreshScheduled = false;
+function refreshPreviewContent() {
+  if (contentRefreshScheduled) return;
+  contentRefreshScheduled = true;
+  requestAnimationFrame(() => {
+    contentRefreshScheduled = false;
+    const router = window.__morphPreviewRouter;
+    if (typeof router?.invalidate !== "function") return;
+    void Promise.resolve()
+      .then(() => router.invalidate({ sync: true }))
+      .then(() => {
+        restoreSelectedSection();
+        reportStructure();
+        drawOverlays();
+      })
+      .catch(() => {
+        console.warn("[morph-preview] content refresh failed; the previous render may still be visible.");
+      });
+  });
+}
 
 // Off until the editor asks for it, so a preview being merely watched behaves
 // like the real storefront: links follow, menus open, carousels advance. In
@@ -455,10 +483,10 @@ function scheduleSelectedTargetReport() {
 let selectionRevision = 0;
 
 if (import.meta.hot) {
-  import.meta.hot.on("vite:afterUpdate", () => {
-    acknowledgePendingStyleRevision();
-  });
-
+  // afterUpdate names one Vite payload, not the whole written revision. A
+  // CSS-only payload can finish while its following component is importing.
+  // The HTTP application queue above acknowledges only after every payload
+  // in its response has completed, and only for the still-pending revision.
   import.meta.hot.on("vite:error", () => {
     if (pendingStyleRevision === null || !channel) return;
     const styleRevision = pendingStyleRevision;
@@ -563,7 +591,15 @@ if (channel) {
     "data-morph-node",
     "data-morph-element",
   ]);
-  const structureObserver = new MutationObserver((mutations) => {
+  // The editor's own overlays are appended to <body>; a Theme that owns the
+  // whole document is observed from there. See isPreviewEditorUiMutation.
+  const structureObserver = new MutationObserver((allMutations) => {
+    const mutations = overlays
+      ? allMutations.filter(
+          (mutation) => !isPreviewEditorUiMutation(mutation, overlays.owns),
+        )
+      : allMutations;
+    if (mutations.length === 0) return;
     if (
       mutations.some(
         (mutation) =>
@@ -969,6 +1005,7 @@ if (channel) {
         message.enabled,
         message.resetKeys,
       );
+      refreshPreviewContent();
       const section = document.querySelector(
         previewSectionSelector(message.sectionId),
       );

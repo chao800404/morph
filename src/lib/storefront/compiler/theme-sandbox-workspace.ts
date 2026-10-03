@@ -1,4 +1,8 @@
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
+import {
+  PREVIEW_ADDRESS_PROBE_PATH,
+  START_PREVIEW_ID_HEADER,
+} from "../service/preview-address-probe";
 import { themePreviewRootPublicPluginSource } from "./theme-preview-root-public";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
@@ -34,6 +38,12 @@ import {
   THEME_PREVIEW_BRIDGE_PATH,
 } from "./theme-preview-bridge-entry";
 import type { ThemeBuildDiagnostic } from "./theme-build-runner.types";
+import {
+  THEME_PREVIEW_START_CLIENT_PATH,
+  THEME_PREVIEW_START_WORKER_PATH,
+  themePreviewStartClientSource,
+  themePreviewStartWorkerSource,
+} from "./theme-preview-start-runtime";
 import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
@@ -190,7 +200,19 @@ export type PrepareThemeWorkspaceInput = Readonly<{
   mode: ThemeWorkspaceMode;
   /** Render-only draft data, available solely to a preview workspace. */
   previewContent?: ThemePreviewContentSnapshot;
+  /**
+   * What serves a preview workspace (PROTOTYPE, `preview-server` only).
+   *
+   * `client`, the default, is today's browser-only Vite app under
+   * `THEME_PREVIEW_SERVER_BASE_PATH`. `start` runs the Start server itself
+   * in workerd, at the root path, the way the runtime build is configured;
+   * see `theme-preview-start-runtime.ts`. Ignored for a Theme without Start
+   * routes and for a build.
+   */
+  previewRuntime?: ThemePreviewRuntime;
 }>;
+
+export type ThemePreviewRuntime = "client" | "start";
 
 export type PlanThemeWorkspaceInput = Omit<
   PrepareThemeWorkspaceInput,
@@ -276,6 +298,7 @@ export function planThemeSandboxWorkspace({
   approvedDependencies,
   mode,
   previewContent,
+  previewRuntime,
   hostWorkspaceRoot: requestedHostWorkspaceRoot,
   toolchainRoot: requestedToolchainRoot,
 }: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
@@ -462,6 +485,12 @@ export function planThemeSandboxWorkspace({
     );
   }
 
+  // The Start server itself serves this preview, in workerd, at the root.
+  const startPreview =
+    mode === "preview-server" &&
+    previewRuntime === "start" &&
+    Boolean(routeRegistry);
+
   if (routeRegistry) {
     const routerFile = files.find(
       (file) => file.path.replace(/\\/g, "/") === "src/router.tsx",
@@ -481,7 +510,11 @@ export function planThemeSandboxWorkspace({
             .slice(0, 63),
           compatibility_date: "2025-09-02",
           compatibility_flags: ["nodejs_compat"],
-          main: "@tanstack/react-start/server-entry",
+          // A Start preview enters through the platform's wrapper, which
+          // decides what Theme server code may reach. No bindings either way.
+          main: startPreview
+            ? `./${THEME_PREVIEW_START_WORKER_PATH}`
+            : "@tanstack/react-start/server-entry",
         },
         null,
         2,
@@ -489,8 +522,21 @@ export function planThemeSandboxWorkspace({
     );
   }
 
-  // Generate bootstrap entry and index.html if needed
-  if (!hasCustomIndexHtml) {
+  if (startPreview) {
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PREVIEW_START_WORKER_PATH}`,
+      themePreviewStartWorkerSource(buildId),
+    );
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PREVIEW_START_CLIENT_PATH}`,
+      themePreviewStartClientSource(),
+    );
+  }
+
+  // Generate bootstrap entry and index.html if needed. A Start preview has
+  // neither: Start renders the document, and the Worker entry adds the
+  // preview's scripts to it.
+  if (!hasCustomIndexHtml && !startPreview) {
     const bootstrapPath = `${workspaceRoot}/__entry.tsx`;
     queueWorkspaceFile(bootstrapPath, bootstrap.content);
 
@@ -634,6 +680,31 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
+// The Start server itself serves this preview, in workerd, at the root path;
+// see theme-preview-start-runtime.ts.
+const isStartPreview = ${startPreview ? "true" : "false"};
+// Start's Worker entry owns this endpoint in Start mode. The client-only
+// runtime answers it here before Vite's base/HTML middleware, without running
+// Theme code. Both carry the identity of the workspace actually started.
+const previewHealthPlugin = isLivePreview && !isStartPreview ? {
+  name: "morph-preview-health",
+  enforce: "pre",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const url = new URL(req.url || "/", "http://preview.invalid");
+      if (url.pathname !== ${JSON.stringify(PREVIEW_ADDRESS_PROBE_PATH)}) return next();
+      res.setHeader("cache-control", "no-store");
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.statusCode = 405;
+        res.setHeader("Allow", "GET, HEAD");
+      } else {
+        res.statusCode = 204;
+        res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+      }
+      res.end();
+    });
+  },
+} : null;
 const previewContentPlugin = ${
     mode === "preview-server" ? themePreviewContentPluginSource() : "null"
   };
@@ -646,7 +717,7 @@ const previewSvgIsolationPlugin = ${
 // preview's base, as the storefront serves it at the root; see
 // theme-preview-root-public.ts. Preview only: builds keep Vite's own serving.
 const previewRootPublicPlugin = ${
-    mode === "preview-server"
+    mode === "preview-server" && !startPreview
       ? themePreviewRootPublicPluginSource(hostRootLiteral)
       : "null"
   };
@@ -789,6 +860,18 @@ if (
     if (viteCommand === "serve" && normalizedResolved.includes("/node_modules/.vite/")) {
       return null;
     }
+    // Start's dev server resolves the package a server function or
+    // middleware comes from by absolute path, tagged with this query, to
+    // find the function's id. The package itself was imported by name and
+    // judged above; this is Start looking it up again, never a Theme.
+    if (
+      isStartPreview &&
+      viteCommand === "serve" &&
+      /[?&]server-fn-module-lookup(?:&|$)/.test(source) &&
+      path.resolve(source.split("?")[0]).replace(/\\\\/g, "/").startsWith(${JSON.stringify(`${toolchainRoot}/node_modules/`)})
+    ) {
+      return null;
+    }
     throw new Error(
       'UNAPPROVED_DEPENDENCY_PATH: Direct filesystem imports from node_modules are forbidden in theme source files. Use approved bare module specifiers instead (attempted: "' + source + '").'
     );
@@ -799,6 +882,43 @@ if (
 
 
 if (typeof source === "string" && source.startsWith("\\0")) {
+  return null;
+}
+
+// The Cloudflare plugin's dev runner imports its own entry modules by name.
+// Vite reports a top-level import as coming from \`<root>/index.html\`, a file
+// a Start preview never has (the planner refuses one), so this matches the
+// runner and no Theme module. Serving a Start preview only.
+if (
+  isStartPreview &&
+  viteCommand === "serve" &&
+  typeof source === "string" &&
+  source.startsWith("virtual:cloudflare/") &&
+  importer === ${hostPathLiteral("/index.html")}
+) {
+  return null;
+}
+// Start's dev-style collector looks modules up by URL, which Vite reports as
+// imported from \`<root>/index.html\` (see above); a Node built-in the Worker
+// graph already holds (Start's storage context) is one of them.
+if (
+  isStartPreview &&
+  viteCommand === "serve" &&
+  (!importer || importer === ${hostPathLiteral("/index.html")}) &&
+  typeof source === "string" &&
+  source.startsWith("node:")
+) {
+  return null;
+}
+// ...and the modules those entries import (Node.js globals, the user entry).
+// Their importer is the plugin's own \`\\0virtual:cloudflare/\` module, which no
+// Theme file can be.
+if (
+  isStartPreview &&
+  viteCommand === "serve" &&
+  typeof importer === "string" &&
+  importer.startsWith("\\0virtual:cloudflare/")
+) {
   return null;
 }
 
@@ -840,7 +960,7 @@ return null;
 
 export default defineConfig({
   root: ${hostRootLiteral},
-  base: isStartRuntimeBuild
+  base: isStartRuntimeBuild || isStartPreview
 ? "/"
 : isLivePreview
   ? ${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}
@@ -854,11 +974,33 @@ export default defineConfig({
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
     dependencyEnforcerPlugin,
   ]
+: isStartPreview
+? [
+    // The runtime build's plugins, served: Start's server runs in workerd
+    // through the Cloudflare plugin, as it does once published. The
+    // preview's own middleware comes first so its endpoints answer before
+    // the Worker does. No debugger port, no persisted state: the Worker has
+    // no bindings to persist.
+    ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
+    ...(previewContentPlugin ? [previewContentPlugin] : []),
+    ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
+    cloudflare({
+      viteEnvironment: { name: "ssr" },
+      inspectorPort: false,
+      persistState: false,
+    }),
+    tailwindcss(),
+    tanstackStart(),
+    viteReact(),
+    ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
+    dependencyEnforcerPlugin,
+  ]
 : [
     // Preview is client-only and has no Start plugin, so the Start server
     // module and the Node builtin its storage context imports cannot
     // resolve. Stubbed here as well as in the in-process runner, from one
     // shared definition.
+    ...(previewHealthPlugin ? [previewHealthPlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewRootPublicPlugin ? [previewRootPublicPlugin] : []),
     ${themePreviewServerStubPluginSource()},
@@ -875,7 +1017,7 @@ export default defineConfig({
   },
   // Keep these off esbuild's pre-bundling path so the preview's server-API
   // stubs, which are Rollup plugins, are what answers for them.
-  optimizeDeps: {
+  optimizeDeps: isStartPreview ? undefined : {
     include: ${JSON.stringify([
       "react",
       "react-dom",
@@ -985,6 +1127,8 @@ export function unplannedWorkspaceFiles(
         !filePath.includes("/../") &&
         !filePath.startsWith(`${workspaceRoot}/node_modules/`) &&
         !filePath.startsWith(`${workspaceRoot}/.vite/`) &&
+        // The Cloudflare plugin's scratch space, in a Start preview.
+        !filePath.startsWith(`${workspaceRoot}/.wrangler/`) &&
         !filePath.startsWith(`${workspaceRoot}/dist/`) &&
         !isPlatformOwnedThemeBuildPath(
           filePath.slice(workspaceRoot.length + 1),

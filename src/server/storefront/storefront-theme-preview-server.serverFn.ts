@@ -36,7 +36,8 @@ import {
 } from "@/lib/storefront/compiler/preview-server-observation";
 import {
   classifyPreviewAddressProbe,
-  PREVIEW_ADDRESS_PROBE_PATH,
+  previewAddressProbePath,
+  START_PREVIEW_ID_HEADER,
   previewAddressBelongsTo,
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
@@ -75,6 +76,14 @@ const touchThemePreviewServerInputSchema = themePreviewServerInputSchema.extend(
   },
 );
 
+type PreviewEnv = {
+  /**
+   * PROTOTYPE switch: `start` serves the Live Preview through the Start
+   * server in workerd (theme-preview-start-runtime.ts). Unset keeps today's
+   * client-only preview. Not for deployment.
+   */
+  MORPH_THEME_PREVIEW_RUNTIME?: string;
+};
 
 export const startThemePreviewServer = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
@@ -170,6 +179,9 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       sourceGeneration,
       loadBinary: workspace.loadBinary,
       env: env as unknown as Record<string, unknown>,
+      ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
+        ? { previewRuntime: "start" as const }
+        : {}),
     });
     if (!started.ok) {
       const traceId = recordPreviewStartFailure({
@@ -359,8 +371,9 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
     try {
       const { proxyToSandbox } = await import("@cloudflare/sandbox");
       const response = await proxyToSandbox(
-        new Request(new URL(PREVIEW_ADDRESS_PROBE_PATH, address), {
-          headers: { Accept: "text/html" },
+        new Request(new URL(previewAddressProbePath(), address), {
+          headers: { Accept: "*/*" },
+          signal: AbortSignal.timeout(10_000),
         }),
         previewProxyEnv(env as unknown as Record<string, unknown>) as never,
       );
@@ -368,7 +381,10 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
       const code =
         response.status >= 400 ? await readPreviewErrorCode(response) : null;
       if (response.status < 400) await response.body?.cancel();
-      const state = classifyPreviewAddressProbe(response.status, code);
+      const state = classifyPreviewAddressProbe(response.status, code, {
+        expected: previewId,
+        actual: response.headers.get(START_PREVIEW_ID_HEADER),
+      });
       logPreviewServerEvent("probe", {
         previewId,
         framedAddress: previewAddressDigest(previewOrigin),

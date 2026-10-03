@@ -31,7 +31,11 @@ import { execFileSync } from "node:child_process";
 import { hashPassword } from "better-auth/crypto";
 
 /** Fixed so a re-run updates the same rows instead of making new ones. */
-const USER_ID = "00000000-0000-4000-8000-00000000e2e1";
+const USER_ID =
+  process.env.MORPH_E2E_USER_ID ?? "00000000-0000-4000-8000-00000000e2e1";
+if (!/^[a-zA-Z0-9-]{1,64}$/.test(USER_ID)) {
+  throw new Error("INVALID_E2E_USER_ID");
+}
 const ACCOUNT_ID = "00000000-0000-4000-8000-00000000e2e2";
 const PRODUCT_ID = "00000000-0000-4000-8000-00000000e2e3";
 /**

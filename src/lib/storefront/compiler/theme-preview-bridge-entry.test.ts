@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { parse } from "@babel/parser";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   themePreviewBridgeEntrySource,
   THEME_PREVIEW_BRIDGE_PATH,
@@ -53,7 +53,7 @@ describe("the script a Live Preview page runs for the editor", () => {
 
   it("marks the mounted route so a page row can select the page root", () => {
     expect(BRIDGE).toContain('"data-morph-route-path"');
-    expect(BRIDGE).toContain("message.routePath ?? \"/\"");
+    expect(BRIDGE).toContain('message.routePath ?? "/"');
   });
 
   it("says on the document which tool the pointer is", () => {
@@ -102,8 +102,10 @@ describe("the script a Live Preview page runs for the editor", () => {
   it("says nothing when no editor is behind the page", () => {
     // Someone following a preview URL directly gets a working storefront, not
     // messages fired at whatever happens to be hosting them.
+    // Read from the URL the document was loaded with (see
+    // documentPreviewRuntimeChannel), which has no channel in that case.
     expect(BRIDGE).toContain(
-      "const channel = readPreviewRuntimeChannel(window.location.href);",
+      "const channel = documentPreviewRuntimeChannel();",
     );
     expect(BRIDGE.match(/if \(!channel\) return;/g)?.length).toBeGreaterThan(1);
   });
@@ -195,9 +197,56 @@ describe("applying document changes to the real React preview", () => {
       BRIDGE.indexOf('"morph:storefront-preview-update-section-props"'),
     );
     expect(update).toContain("updatePreviewContent(");
+    expect(update).toContain("refreshPreviewContent();");
     expect(update).toContain(
       'section.toggleAttribute("hidden", !message.enabled)',
     );
+  });
+
+  it("refreshes hydrated route content once per frame, then reports the new DOM", async () => {
+    const source = BRIDGE.slice(
+      BRIDGE.indexOf("let contentRefreshScheduled = false;"),
+      BRIDGE.indexOf("// Off until the editor asks"),
+    );
+    const frames: (() => void)[] = [];
+    let finish!: () => void;
+    const invalidate = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const restore = vi.fn();
+    const report = vi.fn();
+    const draw = vi.fn();
+    const refresh = new Function(
+      "window",
+      "requestAnimationFrame",
+      "restoreSelectedSection",
+      "reportStructure",
+      "drawOverlays",
+      source + "; return refreshPreviewContent;",
+    )(
+      { __morphPreviewRouter: { invalidate } },
+      (callback: () => void) => frames.push(callback),
+      restore,
+      report,
+      draw,
+    );
+    refresh();
+    refresh();
+    expect(frames).toHaveLength(1);
+    frames.shift()!();
+    await Promise.resolve();
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith({ sync: true });
+    expect(report).not.toHaveBeenCalled();
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(restore).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledOnce();
+    expect(draw).toHaveBeenCalledOnce();
+    refresh();
+    expect(frames).toHaveLength(1);
   });
 
   it("moves only sibling sections when the document order changes", () => {
@@ -348,6 +397,65 @@ describe("changing which page the editor is showing", () => {
 });
 
 describe("confirming the Theme source the editor is waiting on", () => {
+  it("does not acknowledge a CSS payload before the component payload finishes", async () => {
+    const source = BRIDGE.slice(
+      BRIDGE.indexOf("let pendingStyleRevision = null;"),
+      BRIDGE.indexOf("function acknowledgePendingStyleRevision()"),
+    );
+    const hotSource = BRIDGE.slice(
+      BRIDGE.indexOf("if (import.meta.hot) {"),
+      BRIDGE.indexOf("/** The sibling of the dragged element"),
+    ).replaceAll("import.meta.hot", "hot");
+    const callbacks = new Map<string, () => void>();
+    const acknowledge = vi.fn();
+    let finishComponent!: () => void;
+    const component = new Promise<void>((resolve) => {
+      finishComponent = resolve;
+    });
+    const apply = vi.fn(async (payload: { kind: string }) => {
+      if (payload.kind === "component") await component;
+      callbacks.get("vite:afterUpdate")?.();
+    });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ sequence: 0 })))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sequence: 2,
+            entries: [
+              { sequence: 1, payload: { kind: "css" } },
+              { sequence: 2, payload: { kind: "component" } },
+            ],
+          }),
+        ),
+      );
+    const run = new Function(
+      "fetch",
+      "globalThis",
+      "acknowledgePendingStyleRevision",
+      "hot",
+      `${source}\n${hotSource}\npendingStyleRevision = 1;\napplyWrittenThemeRevision(1);\nreturn previewHmrApplyQueue;`,
+    );
+    const done = run(
+      fetch,
+      { __morphApplyViteHmrPayload: apply },
+      acknowledge,
+      {
+        on: (name: string, callback: () => void) =>
+          callbacks.set(name, callback),
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+      expect(acknowledge).not.toHaveBeenCalled();
+    } finally {
+      finishComponent();
+      await done;
+    }
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+  });
+
   it("applies Vite's native HMR payload over the preview HTTP bridge", () => {
     expect(BRIDGE).toContain("/_morph/hmr?cursor=1");
     expect(BRIDGE).toContain("/_morph/hmr?after=");
@@ -360,7 +468,8 @@ describe("confirming the Theme source the editor is waiting on", () => {
     // Morph writes the files into the container and the page updates itself.
     // Saying "applied" on receiving the message would report someone else's
     // work as done, and the editor would trust a preview showing the old one.
-    expect(BRIDGE).toContain('import.meta.hot.on("vite:afterUpdate"');
+    expect(BRIDGE).not.toContain('import.meta.hot.on("vite:afterUpdate"');
+    expect(BRIDGE).toContain("if (pendingStyleRevision === styleRevision)");
     const onMessage = BRIDGE.slice(
       BRIDGE.indexOf("morph:storefront-preview-update-theme-files"),
     );
@@ -376,8 +485,10 @@ describe("confirming the Theme source the editor is waiting on", () => {
   });
 
   it("re-reads the page, because the update changed what is on it", () => {
-    const afterUpdate = BRIDGE.slice(BRIDGE.indexOf('"vite:afterUpdate"'));
-    expect(afterUpdate.slice(0, 600)).toContain(
+    const application = BRIDGE.slice(
+      BRIDGE.indexOf("await applyPayload(entry.payload)"),
+    );
+    expect(application.slice(0, 300)).toContain(
       "acknowledgePendingStyleRevision();",
     );
     expect(
@@ -404,7 +515,9 @@ describe("confirming the Theme source the editor is waiting on", () => {
   });
 
   it("confirms each revision once", () => {
-    const afterUpdate = BRIDGE.slice(BRIDGE.indexOf('"vite:afterUpdate"'));
-    expect(afterUpdate).toContain("pendingStyleRevision = null;");
+    const acknowledgment = BRIDGE.slice(
+      BRIDGE.indexOf("function acknowledgePendingStyleRevision()"),
+    );
+    expect(acknowledgment).toContain("pendingStyleRevision = null;");
   });
 });

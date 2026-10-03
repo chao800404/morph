@@ -392,7 +392,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 1 | ✅ 相容性測試進 repo，已知缺口以 `KNOWN GAP` 斷言 | 驗證 |
 | 2 | ✅ 商家網域不得拿到平台靜態檔：Worker 先於靜態資產（`run_worker_first`，僅 Vite dev 模組路徑例外），只在平台網域取平台檔（依網域而非檔名）；`/assets/` 依網域區分擁有者；Theme 有檔與沒檔（404）都測。部署後需驗 Cloudflare 真實行為 | 正確性 |
 | 3 | ✅ 預覽專用替身不再拖垮正式建置：`@tanstack/react-start/server` 的替身改由真實模組讀出全部匯出名稱，每個都在呼叫時明確回報預覽不支援，不在匯入時讓建置失敗（`getCookie` 等）；Theme 匯入檢查接受 file route `server` 屬性內的 server-only 匯入（Start 於 client 移除該屬性）。預覽產物本身待第 4 步完成後退役 | 正確性 |
-| 4 | 完整 TanStack Start 預覽：沿用 Sandbox、版本同步與權限機制執行真正的 Start server（workerd），先原型驗證 SSR、server functions、cookies、middleware、server routes、HMR、啟動時間，再接回編輯器；預覽的 server 程式不得取得正式商店寫入權限或 secret | 架構 |
+| 4 | 🧪 完整 TanStack Start 預覽已接入既有編輯器與兩種傳輸，仍為 opt-in：只有平台明確設定 `MORPH_THEME_PREVIEW_RUNTIME=start` 才啟用，不設仍為原有純前端預覽。本機真實 Sandbox 已驗證 SSR、server functions、cookies、middleware、server routes、HMR、Design、SVG 隔離、文字升級與發布後店面；證據見 `docs/evidence/full-start-preview-2026-10-03.md`。這不代表雲端驗收完成或可以一般開放，下列開放前條件仍全部保留；預覽的 server 程式不得取得正式商店寫入權限或 secret | 架構 |
 | 5 | `public/` 開放經格式檢查的文字檔（`.txt`、`.xml`、`.json`、`.webmanifest`；SVG 仍驗證）；新店不需先改 Design 即可發布初始 Document（仍走 revision、OCC、publication） | 功能 |
 | 6 | Design 依能力顯示：只有 server handler 的 route 標為端點；同時有頁面與 handler 的 route 仍可編輯 | 介面 |
 

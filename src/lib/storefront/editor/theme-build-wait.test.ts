@@ -9,6 +9,66 @@ const buildWith = (status: string): StorefrontThemeBuildDTO =>
 const immediateSleep = () => Promise.resolve();
 
 describe("waitForThemeBuild", () => {
+  it("follows the same build beyond 30 polls until it succeeds", async () => {
+    let attempts = 0;
+    const poll = vi.fn(async (_buildId: string) =>
+      buildWith(++attempts === 39 ? "succeeded" : "building"),
+    );
+    const result = await waitForThemeBuild({
+      build: buildWith("queued"),
+      poll,
+      signal: new AbortController().signal,
+      sleep: immediateSleep,
+    });
+    expect(result.outcome).toBe("settled");
+    expect(poll).toHaveBeenCalledTimes(39);
+    expect(poll.mock.calls.every(([id]) => id === "build-1234abcd")).toBe(true);
+  });
+
+  it("rejects a different build instead of adopting its result", async () => {
+    await expect(
+      waitForThemeBuild({
+        build: buildWith("queued"),
+        poll: async () => ({ ...buildWith("succeeded"), id: "another-build" }),
+        signal: new AbortController().signal,
+        sleep: immediateSleep,
+      }),
+    ).rejects.toThrow("Build identity changed");
+  });
+
+  it("can cancel a long-running wait without creating or adopting another build", async () => {
+    const controller = new AbortController();
+    let attempts = 0;
+    const poll = vi.fn(async (_buildId: string) => {
+      if (++attempts === 40) controller.abort("user");
+      return buildWith("building");
+    });
+    const result = await waitForThemeBuild({
+      build: buildWith("building"),
+      poll,
+      signal: controller.signal,
+      sleep: immediateSleep,
+    });
+    expect(result).toMatchObject({ outcome: "aborted", reason: "user" });
+    expect(poll).toHaveBeenCalledTimes(40);
+  });
+
+  it("rejects a changed frozen source revision", async () => {
+    const initial = { ...buildWith("queued"), sourceRevisionId: "revision-a" };
+    await expect(
+      waitForThemeBuild({
+        build: initial,
+        poll: async () => ({
+          ...initial,
+          status: "succeeded",
+          sourceRevisionId: "revision-b",
+        }),
+        signal: new AbortController().signal,
+        sleep: immediateSleep,
+      }),
+    ).rejects.toThrow("Build identity changed");
+  });
+
   it("reports a build that succeeds", async () => {
     const poll = vi
       .fn()

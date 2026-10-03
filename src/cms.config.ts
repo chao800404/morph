@@ -105,7 +105,7 @@ export const cmsConfig = defineConfig({
       "@tanstack/react-router": "1.170.18",
       "@tanstack/react-start": "1.168.32",
       "@tanstack/router-plugin": "1.168.23",
-      "@cloudflare/vite-plugin": "1.50.0",
+      "@cloudflare/vite-plugin": "1.62.4",
     },
   },
   trustedOrigins: cmsTrustedOrigins,
