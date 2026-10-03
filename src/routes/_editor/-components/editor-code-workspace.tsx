@@ -4101,9 +4101,9 @@ const EditorCodeWorkspaceContent = forwardRef<
       {/* Left: Theme Workspace side bar */}
       <div
         style={CODE_SIDEBAR_STYLE}
-        className="flex shrink-0 flex-col border-r bg-card/60 overflow-hidden"
+        className="flex min-h-0 shrink-0 flex-col border-r bg-card/60 overflow-hidden"
       >
-        <div className="flex h-10 items-center justify-between border-b px-3 text-xs font-semibold text-muted-foreground">
+        <div className="flex h-10 shrink-0 items-center justify-between border-b px-3 text-xs font-semibold text-muted-foreground">
           <div className="flex items-center gap-1.5 min-w-0">
             <Code2 className="size-3.5 text-primary shrink-0" />
             <span className="uppercase tracking-wider text-[11px] font-semibold text-foreground/80 truncate">
@@ -4248,7 +4248,7 @@ const EditorCodeWorkspaceContent = forwardRef<
             onReplaceAll={handleReplaceAll}
           />
         ) : (
-          <ScrollArea className="flex-1 p-1">
+          <ScrollArea className="min-h-0 flex-1 p-1">
             <DragDropProvider
               sensors={dragSensors}
               onDragEnd={(event) => {
