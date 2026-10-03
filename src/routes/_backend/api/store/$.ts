@@ -707,6 +707,8 @@ export const Route = createFileRoute("/_backend/api/store/$")({
                     RESERVATION_EXPIRED: "Inventory reservation has expired",
                     CREDIT_UNAVAILABLE:
                       "A store credit or gift card changed or no longer has enough balance",
+                    GIFT_CARD_LIMIT:
+                      "An order can issue at most 50 gift cards. Reduce the gift card quantity and try again",
                   }[result.reason],
                 },
                 result.reason === "NOT_FOUND" ? 404 : 409,

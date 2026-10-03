@@ -612,7 +612,8 @@ export const cartDal = {
         variantBarcode: catalogue.variant.barcode,
         variantTitle: catalogue.variant.title,
         requiresShipping: !catalogue.product.isGiftcard,
-        isDiscountable: catalogue.product.discountable,
+        isDiscountable:
+          catalogue.product.discountable && !catalogue.product.isGiftcard,
         isGiftcard: catalogue.product.isGiftcard,
         isTaxInclusive: context.isTaxInclusive,
         unitPrice: resolvedPrice.amount,

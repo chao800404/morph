@@ -48,6 +48,7 @@ export interface OrderItemDTO {
   title: string;
   thumbnail: string | null;
   sku: string | null;
+  isGiftcard?: boolean;
   isCustomPrice: boolean;
   quantity: number;
   fulfilledQuantity: number;

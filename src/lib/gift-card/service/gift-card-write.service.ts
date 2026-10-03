@@ -6,6 +6,7 @@ import { fail, ok, type ServerResult } from "@/lib/db/server-result";
 import { hashInviteToken } from "@/lib/invite/token";
 import { storeCreditDal } from "@/lib/store-credit/dal/store-credit.dal";
 import type { StoreCreditTransactionDTO } from "@/lib/store-credit/dto/store-credit.dto";
+import { createGiftCardCode, normalizeGiftCardCode } from "../code";
 import { giftCardDal } from "../dal/gift-card.dal";
 import type { GiftCardDTO } from "../dto/gift-card.dto";
 
@@ -31,14 +32,6 @@ type GiftCardWriteDependencies = {
   now: () => string;
 };
 
-const randomGiftCardCode = () => {
-  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const bytes = crypto.getRandomValues(new Uint8Array(20));
-  const characters = Array.from(bytes, (byte) => alphabet[byte & 31]);
-  const sections = characters.join("").match(/.{1,4}/g) ?? [];
-  return `GIFT-${sections.join("-")}`;
-};
-
 const toMinorAmount = (amount: string, currencyCode: string) => {
   const currency = findCurrency(currencyCode);
   if (!currency) return null;
@@ -47,8 +40,6 @@ const toMinorAmount = (amount: string, currencyCode: string) => {
   const minor = toMinorUnits(amount, currency);
   return Number.isSafeInteger(minor) && minor > 0 ? minor : null;
 };
-
-const normalizeCode = (code: string) => code.trim().toUpperCase();
 
 const noStoreMetadata: Metadata = {};
 
@@ -67,7 +58,7 @@ export const createGiftCardWriteService = (
     findCart: cartDal.findById,
     setCartCredit: cartDal.setStoreCredit,
     createId: () => crypto.randomUUID(),
-    createCode: randomGiftCardCode,
+    createCode: createGiftCardCode,
     hashCode: hashInviteToken,
     now: () => new Date().toISOString(),
     ...overrides,
@@ -115,7 +106,8 @@ export const createGiftCardWriteService = (
         const code = deps.createCode();
         const created = await deps.create({
           id,
-          codeHash: await deps.hashCode(normalizeCode(code)),
+          code,
+          codeHash: await deps.hashCode(normalizeGiftCardCode(code)),
           currencyCode,
           amount,
           expiresAt,
@@ -179,8 +171,7 @@ export const createGiftCardWriteService = (
       idempotencyKey: string;
     }): Promise<ServerResult<{ giftCard: GiftCardDTO }>> {
       const giftCard = await deps.findGiftCard(input.id);
-      if (!giftCard)
-        return fail("Gift card not found", { error: "NOT_FOUND" });
+      if (!giftCard) return fail("Gift card not found", { error: "NOT_FOUND" });
       if (giftCard.status === "disabled")
         return fail("This gift card is disabled", { error: "DISABLED" });
       const amount = toMinorAmount(input.amount, giftCard.currencyCode);
@@ -233,8 +224,7 @@ export const createGiftCardWriteService = (
         updatedBy: input.actorId,
         now: deps.now(),
       });
-      if (!updated)
-        return fail("Gift card not found", { error: "NOT_FOUND" });
+      if (!updated) return fail("Gift card not found", { error: "NOT_FOUND" });
       const giftCard = await deps.findGiftCard(input.id);
       return giftCard
         ? ok("Gift card status updated", { giftCard })
@@ -248,8 +238,7 @@ export const createGiftCardWriteService = (
       actorId: string;
     }): Promise<ServerResult<{ giftCard: GiftCardDTO }>> {
       const current = await deps.findGiftCard(input.id);
-      if (!current)
-        return fail("Gift card not found", { error: "NOT_FOUND" });
+      if (!current) return fail("Gift card not found", { error: "NOT_FOUND" });
       if (input.expiresAt !== undefined && input.expiresAt !== null) {
         const expiresAt = Date.parse(input.expiresAt);
         if (!Number.isFinite(expiresAt) || expiresAt <= Date.parse(deps.now()))
@@ -295,13 +284,16 @@ export const createGiftCardWriteService = (
         currencyCode: string;
       }>
     > {
-      const codeHash = await deps.hashCode(normalizeCode(input.code));
+      const codeHash = await deps.hashCode(normalizeGiftCardCode(input.code));
       const giftCard = await deps.findForRedemption(codeHash);
       if (!giftCard)
         return fail("Gift card code is invalid", { error: "INVALID_CODE" });
       if (giftCard.status !== "active")
         return fail("This gift card is disabled", { error: "DISABLED" });
-      if (giftCard.expiresAt && Date.parse(giftCard.expiresAt) <= Date.parse(deps.now()))
+      if (
+        giftCard.expiresAt &&
+        Date.parse(giftCard.expiresAt) <= Date.parse(deps.now())
+      )
         return fail("This gift card has expired", { error: "EXPIRED" });
       if (giftCard.balance <= 0)
         return fail("This gift card has no remaining balance", {
@@ -350,7 +342,7 @@ export const createGiftCardWriteService = (
       code: string;
     }): Promise<ServerResult<{ cart: CartDTO }>> {
       const giftCard = await deps.findForRedemption(
-        await deps.hashCode(normalizeCode(input.code)),
+        await deps.hashCode(normalizeGiftCardCode(input.code)),
       );
       if (!giftCard)
         return fail("Gift card code is invalid", { error: "INVALID_CODE" });

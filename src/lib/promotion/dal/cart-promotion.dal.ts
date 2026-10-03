@@ -236,7 +236,11 @@ export const cartPromotionDal = {
       id: item.id,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
-      isDiscountable: item.isDiscountable,
+      // The issued card is worth its unit price, so a discount on the line
+      // would mint more credit than the customer paid. Enforced here rather
+      // than only when the line is created, so carts that predate the rule
+      // are covered too.
+      isDiscountable: item.isDiscountable && !item.isGiftcard,
       attributes: {
         variant_id: item.variantId,
         product_id: item.productId,

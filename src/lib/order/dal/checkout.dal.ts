@@ -37,6 +37,7 @@ import {
   orderSummaries,
 } from "@/db/order.schema";
 import { paymentCollections } from "@/db/payment.schema";
+import { giftCards } from "@/db/gift-card.schema";
 import {
   storeCreditAccounts,
   storeCreditTransactions,
@@ -49,6 +50,12 @@ import {
 import { cartDal } from "@/lib/cart/dal/cart.dal";
 import { cartShippingDal } from "@/lib/shipping/dal/cart-shipping.dal";
 import { selectedShippingMethodsAreAvailable } from "@/lib/order/shipping-availability";
+import {
+  createGiftCardCode,
+  GIFT_CARD_MAX_UNITS_PER_ORDER,
+  normalizeGiftCardCode,
+} from "@/lib/gift-card/code";
+import { hashInviteToken } from "@/lib/invite/token";
 import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import {
@@ -73,7 +80,8 @@ type CheckoutResult =
         | "PRICE_UNAVAILABLE"
         | "PROMOTION_EXHAUSTED"
         | "RESERVATION_EXPIRED"
-        | "CREDIT_UNAVAILABLE";
+        | "CREDIT_UNAVAILABLE"
+        | "GIFT_CARD_LIMIT";
     };
 
 export const checkoutDal = {
@@ -192,6 +200,12 @@ export const checkoutDal = {
           .from(cartPaymentCollections)
           .where(eq(cartPaymentCollections.cartId, cartId)),
       ]);
+    const giftCardUnits = items.reduce(
+      (sum, item) => sum + (item.isGiftcard ? Math.max(0, item.quantity) : 0),
+      0,
+    );
+    if (giftCardUnits > GIFT_CARD_MAX_UNITS_PER_ORDER)
+      return { success: false, reason: "GIFT_CARD_LIMIT" };
     const storeCreditLines = credits.filter(
       (credit) => credit.reference === "store_credit_account",
     );
@@ -593,6 +607,76 @@ export const checkoutDal = {
             updatedAt: timestamp,
           }),
         );
+    }
+    // A gift card product is a buyable denomination. Issue one independent
+    // anonymous store-credit account per purchased unit in the same D1 batch
+    // as the order, so a committed order can never exist without its card.
+    for (const item of items) {
+      if (!item.isGiftcard || item.quantity <= 0) continue;
+      const value = item.unitPrice ?? 0;
+      if (value <= 0) continue;
+      const lineItemId = lineIdMap.get(item.id)!;
+      for (let unit = 0; unit < item.quantity; unit += 1) {
+        const giftCardId = crypto.randomUUID();
+        const code = createGiftCardCode();
+        const codeHash = await hashInviteToken(normalizeGiftCardCode(code));
+        statements.push(
+          db.insert(storeCreditAccounts).values({
+            id: giftCardId,
+            customerId: null,
+            codeHash,
+            currencyCode: cart.currencyCode,
+            status: "active",
+            balance: value,
+            metadata: {
+              _morph_resource_type: "gift_card",
+              _morph_initial_value: value,
+              _morph_expires_at: null,
+              _morph_note: null,
+              _morph_reference: "order",
+              _morph_reference_id: orderId,
+              _morph_line_item_id: lineItemId,
+            },
+            createdBy: cart.customerId,
+            updatedBy: cart.customerId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            deletedAt: null,
+          }),
+          db.insert(giftCards).values({
+            id: giftCardId,
+            storeCreditAccountId: giftCardId,
+            code,
+            codeHash,
+            value,
+            currencyCode: cart.currencyCode,
+            status: "active",
+            expiresAt: null,
+            reference: "order",
+            referenceId: orderId,
+            lineItemId,
+            note: null,
+            createdBy: cart.customerId,
+            updatedBy: cart.customerId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            deletedAt: null,
+          }),
+          db.insert(storeCreditTransactions).values({
+            id: crypto.randomUUID(),
+            accountId: giftCardId,
+            type: "credit",
+            amount: value,
+            idempotencyKey: `gift-card:issue:${giftCardId}`,
+            reference: "gift_card_issue",
+            referenceId: orderId,
+            note: null,
+            metadata: {},
+            createdBy: cart.customerId,
+            createdAt: timestamp,
+          }),
+        );
+      }
     }
     for (const method of shipping) {
       const orderShippingId = shippingIdMap.get(method.id)!;

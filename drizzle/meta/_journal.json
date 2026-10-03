@@ -393,6 +393,13 @@
       "when": 1790517137396,
       "tag": "0060_store_credit_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1790947651291,
+      "tag": "0070_gift_cards",
+      "breakpoints": true
     }
   ]
 }
