@@ -144,6 +144,11 @@ jobs:
       - name: Check the e2e runner keeps reading the dev server
         run: pnpm check:e2e-runner
 
+      - name: Check balanced shards cover the complete collected suite
+        run: |
+          node --test scripts/check-e2e-shards.test.mjs
+          node scripts/check-e2e-shards.mjs
+
   editor-e2e-local-preview:
     name: Editor E2E shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest

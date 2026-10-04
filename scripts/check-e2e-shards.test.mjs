@@ -1,6 +1,42 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyCoverage } from "./check-e2e-shards.mjs";
+import { EDITOR_SHARDS, editorShardArguments } from "./editor-e2e-shards.mjs";
+
+test("balanced whole-file plan contains each file once and matches exact paths", () => {
+  const files = EDITOR_SHARDS.flat();
+  assert.equal(files.length, 24);
+  assert.equal(new Set(files).size, files.length);
+  for (const [index, shard] of EDITOR_SHARDS.entries()) {
+    const args = editorShardArguments([`--shard=${index + 1}/3`]);
+    assert.equal(args.length, shard.length);
+    assert.ok(!args.some((arg) => arg.startsWith("--shard")));
+    for (const [i, file] of shard.entries()) {
+      const pattern = new RegExp(args[i]);
+      assert.ok(pattern.test(`/repo/e2e/${file}`));
+      assert.ok(pattern.test(`C:\\repo\\e2e\\${file}`));
+      assert.ok(!pattern.test(`/repo/e2e/${file}.backup`));
+      assert.ok(!pattern.test(`/repo/not-e2e/${file}`));
+    }
+  }
+});
+test("full and focused invocations are not narrowed", () => {
+  assert.deepEqual(editorShardArguments([]), []);
+  assert.deepEqual(editorShardArguments(["editor.spec.ts", "--grep=save"]), [
+    "editor.spec.ts",
+    "--grep=save",
+  ]);
+});
+test("invalid and duplicate shard flags fail rather than silently losing coverage", () => {
+  for (const args of [
+    ["--shard=0/3"],
+    ["--shard=4/3"],
+    ["--shard=1/4"],
+    ["--shard=1/3", "--shard=2/3"],
+  ]) {
+    assert.throws(() => editorShardArguments(args), /EDITOR_SHARD_INVALID/);
+  }
+});
 
 const record = (id, project = "editor", status = "passed") => ({
   id,
@@ -20,6 +56,21 @@ test("complete isolated shards retain exact coverage and both preconditions", ()
 });
 test("missing report fails", () =>
   assert.throws(() => verifyCoverage(expected, shards().slice(1), true)));
+test("a new collected test absent from the allocation fails", () => {
+  assert.throws(
+    () =>
+      verifyCoverage([...expected, record("new-file-test")], shards(), true),
+    /coverage differs/,
+  );
+});
+test("a missing test fails even without a duplicate and with enough tests run", () => {
+  const reports = shards();
+  reports[2].pop();
+  assert.throws(
+    () => verifyCoverage(expected, reports, true),
+    /coverage differs/,
+  );
+});
 test("a missing test replaced by a duplicate cannot preserve acceptance", () => {
   const reports = shards();
   reports[2][2] = reports[0][2];

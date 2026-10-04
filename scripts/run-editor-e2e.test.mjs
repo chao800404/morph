@@ -45,6 +45,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { editorShardArguments } from "./editor-e2e-shards.mjs";
 
 const RUNNER = fileURLToPath(new URL("./run-editor-e2e.mjs", import.meta.url));
 
@@ -85,6 +86,7 @@ if (tool === "vite") {
     })
     .listen(port);
 } else if (tool === "playwright") {
+  if (process.env.FAKE_ARGS_FILE) writeFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(rest));
   const mode = process.env.FAKE_PLAYWRIGHT_MODE;
   if (mode === "hang") {
     writeFileSync(process.env.FAKE_PLAYWRIGHT_PID_FILE, String(process.pid));
@@ -267,13 +269,24 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
     { timeout: 90_000 },
     async () => {
       const report = path.join(scratch, "retained", "shard-1.json");
+      const argsFile = path.join(scratch, "retained", "arguments.json");
       const result = await runRunner(
-        { FAKE_REPORT_STATUS: "passed", MORPH_E2E_REPORT_PATH: report },
+        {
+          FAKE_REPORT_STATUS: "passed",
+          MORPH_E2E_REPORT_PATH: report,
+          FAKE_ARGS_FILE: argsFile,
+        },
         undefined,
         ["--shard=1/3"],
       );
       assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
       assert.match(result.stdout, /7 tests executed/);
+      assert.deepEqual(JSON.parse(await readFile(argsFile, "utf8")), [
+        "test",
+        "--project=editor",
+        "--reporter=line,json",
+        ...editorShardArguments(["--shard=1/3"]),
+      ]);
       assert.equal(
         JSON.parse(await readFile(report, "utf8")).suites[0].specs.length,
         7,
@@ -281,6 +294,14 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       assert.deepEqual(result.leftBehind, []);
     },
   );
+
+  it("rejects an unsupported shard before starting services", async () => {
+    const result = await runRunner({}, undefined, ["--shard=1/4"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /EDITOR_SHARD_INVALID/);
+    assert.ok(!result.stdout.includes("starting the dev server"));
+    assert.deepEqual(result.leftBehind, []);
+  });
 
   it(
     "keeps reading the dev server, so the suite's requests are all answered",
