@@ -25,7 +25,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -227,7 +227,9 @@ function run(command, args, env = {}) {
     env: { ...process.env, ...env },
   });
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} exited with ${result.status}`);
+    throw new Error(
+      `${command} ${args.join(" ")} exited with ${result.status}`,
+    );
   }
 }
 
@@ -620,7 +622,6 @@ function parseEnvFile(contents) {
   return values;
 }
 
-
 /**
  * The part of publishing that the browser cannot see.
  *
@@ -722,10 +723,14 @@ async function verifyPublishedRelease() {
 
   log(`serving the reconstructed artifact on ${THEME_WORKER_PORT}`);
   start("theme worker", "npx", [
-    "wrangler", "dev",
-    "--config", verified.workerConfig,
-    "--port", String(THEME_WORKER_PORT),
-    "--ip", "127.0.0.1",
+    "wrangler",
+    "dev",
+    "--config",
+    verified.workerConfig,
+    "--port",
+    String(THEME_WORKER_PORT),
+    "--ip",
+    "127.0.0.1",
   ]);
   const origin = `http://127.0.0.1:${THEME_WORKER_PORT}`;
   await waitForOk(origin, "the reconstructed theme worker");
@@ -798,7 +803,10 @@ async function main() {
     ...(await Promise.all(
       [".dev.vars", ".dev.vars.local", `.dev.vars.${WRANGLER_ENV}`]
         .filter((file) => file !== ".dev.vars." && existsSync(file))
-        .map(async (file) => [file, parseEnvFile(await readFile(file, "utf8"))]),
+        .map(async (file) => [
+          file,
+          parseEnvFile(await readFile(file, "utf8")),
+        ]),
     )),
   ];
   const credentialsFound = credentialSources.flatMap(([source, values]) =>
@@ -836,16 +844,26 @@ async function main() {
 
   log("applying migrations");
   run("npx", [
-    "wrangler", "d1", "migrations", "apply", "DATABASE",
-    "--local", ...(WRANGLER_ENV ? ["--env", WRANGLER_ENV] : []),
-    "--persist-to", stateDir,
+    "wrangler",
+    "d1",
+    "migrations",
+    "apply",
+    "DATABASE",
+    "--local",
+    ...(WRANGLER_ENV ? ["--env", WRANGLER_ENV] : []),
+    "--persist-to",
+    stateDir,
   ]);
 
   log("seeding the account and one published product");
   // A fresh actor gives each Sandbox run its own preview DO identity.
   if (!USES_SIDECAR) process.env.MORPH_E2E_USER_ID = randomUUID();
   run("node", [
-    "scripts/seed-e2e.mjs", "--persist-to", stateDir, "--env", WRANGLER_ENV,
+    "scripts/seed-e2e.mjs",
+    "--persist-to",
+    stateDir,
+    "--env",
+    WRANGLER_ENV,
   ]);
   // `--env ""` is deliberate above: the seed reads an empty value as "the
   // default environment" and drops the flag, which is not something `--env`
@@ -866,26 +884,33 @@ async function main() {
   // Snapshotted before anything can start a container, so the difference is this
   // run's and nothing earlier is ever a candidate for removal.
   containersBefore = runningContainers();
-  if (containersBefore) log(`${containersBefore.size} container(s) already running`);
+  if (containersBefore)
+    log(`${containersBefore.size} container(s) already running`);
 
   log(`starting the dev server on ${DEV_PORT}`);
-  start("dev server", "npx", ["vite", "dev", "--port", String(DEV_PORT)], {
-    // Unset, not empty: an empty `CLOUDFLARE_ENV` is still a named environment
-    // as far as the plugin is concerned.
-    ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
-    MORPH_E2E_STATE_DIR: stateDir,
-  }, (line) => {
-    if (!line.includes("storefront.theme.build.timings")) return;
-    // The line is JSON inside whatever the dev server wraps around it, so the
-    // object is taken from the first brace rather than by parsing the line.
-    const start = line.indexOf("{");
-    if (start < 0) return;
-    try {
-      buildTimings.push(JSON.parse(line.slice(start)));
-    } catch {
-      /* A line split across chunks by something other than a newline. */
-    }
-  });
+  start(
+    "dev server",
+    "npx",
+    ["vite", "dev", "--port", String(DEV_PORT)],
+    {
+      // Unset, not empty: an empty `CLOUDFLARE_ENV` is still a named environment
+      // as far as the plugin is concerned.
+      ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
+      MORPH_E2E_STATE_DIR: stateDir,
+    },
+    (line) => {
+      if (!line.includes("storefront.theme.build.timings")) return;
+      // The line is JSON inside whatever the dev server wraps around it, so the
+      // object is taken from the first brace rather than by parsing the line.
+      const start = line.indexOf("{");
+      if (start < 0) return;
+      try {
+        buildTimings.push(JSON.parse(line.slice(start)));
+      } catch {
+        /* A line split across chunks by something other than a newline. */
+      }
+    },
+  );
   await waitForOk(DEV_ORIGIN, "the dev server");
   log("dev server ready");
 
@@ -895,7 +920,10 @@ async function main() {
   // and ignored. Both spellings work now.
   const passed = process.argv.slice(2);
   const extra = passed[0] === "--" ? passed.slice(1) : passed;
-  const report = path.join(stateDir, "playwright-report.json");
+  const report = process.env.MORPH_E2E_REPORT_PATH
+    ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
+    : path.join(stateDir, "playwright-report.json");
+  await mkdir(path.dirname(report), { recursive: true });
   const reporting = extra.some((argument) => argument.startsWith("--reporter"))
     ? []
     : ["--reporter=line,json"];
@@ -918,11 +946,18 @@ async function main() {
 
   await verifyPublishedRelease();
 
-  if (extra.length === 0 && reporting.length > 0) {
+  // A shard is still a suite, not a focused diagnostic run. Passing --shard
+  // must not disable the protection against an all-skipped green job.
+  const shard =
+    extra.length === 1 && /^--shard=([1-9]\d*)\/([1-9]\d*)$/.exec(extra[0]);
+  if ((extra.length === 0 || shard) && reporting.length > 0) {
     const ran = await testsRun(report);
-    if (ran < MIN_TESTS_RUN) {
+    const minimum = shard
+      ? Math.max(3, Math.ceil(MIN_TESTS_RUN / Number(shard[2])))
+      : MIN_TESTS_RUN;
+    if (ran < minimum) {
       throw new Error(
-        `TOO_FEW_TESTS_RAN: ${ran} test(s) executed, expected at least ${MIN_TESTS_RUN}. Playwright reported success, but a suite that skipped itself passes the same way one that ran does. Check that .env.e2e still carries E2E_EDITOR_PATH, E2E_EMAIL and E2E_PASSWORD.`,
+        `TOO_FEW_TESTS_RAN: ${ran} test(s) executed, expected at least ${minimum}. Playwright reported success, but a suite that skipped itself passes the same way one that ran does. Check that .env.e2e still carries E2E_EDITOR_PATH, E2E_EMAIL and E2E_PASSWORD.`,
       );
     }
     log(`${ran} tests executed`);

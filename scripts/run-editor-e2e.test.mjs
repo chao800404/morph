@@ -104,6 +104,13 @@ if (tool === "vite") {
       process.exit(1);
     }
     console.log("FAKE_PLAYWRIGHT_ANSWERED " + answered);
+    if (process.env.FAKE_REPORT_STATUS) {
+      writeFileSync(process.env.PLAYWRIGHT_JSON_OUTPUT_NAME, JSON.stringify({
+        suites: [{ specs: Array.from({ length: 7 }, () => ({
+          tests: [{ results: [{ status: process.env.FAKE_REPORT_STATUS }] }]
+        })) }]
+      }));
+    }
     process.exit(mode === "fail" ? 1 : 0);
   }
 } else {
@@ -194,7 +201,7 @@ after(async () => {
  * Starts the real runner in the scratch directory. `onStarted` gets the child
  * for cases that have to act on it mid-run.
  */
-async function runRunner(extraEnv, onStarted) {
+async function runRunner(extraEnv, onStarted, extraArgs = ["fake.spec.ts"]) {
   const pidDir = await mkdtemp(path.join(scratch, "pids-"));
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -206,7 +213,7 @@ async function runRunner(extraEnv, onStarted) {
       delete env[key];
     }
   }
-  const child = spawn(process.execPath, [RUNNER, "--", "fake.spec.ts"], {
+  const child = spawn(process.execPath, [RUNNER, "--", ...extraArgs], {
     cwd: scratch,
     env: {
       ...env,
@@ -240,6 +247,41 @@ async function runRunner(extraEnv, onStarted) {
 }
 
 describe("the e2e runner while the dev server writes more than a pipe holds", () => {
+  it(
+    "a shard still rejects an all-skipped suite",
+    { timeout: 90_000 },
+    async () => {
+      const result = await runRunner(
+        { FAKE_REPORT_STATUS: "skipped" },
+        undefined,
+        ["--shard=1/3"],
+      );
+      assert.equal(result.code, 1);
+      assert.match(result.stderr + result.stdout, /TOO_FEW_TESTS_RAN/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "a shard validates execution and retains its report outside disposable state",
+    { timeout: 90_000 },
+    async () => {
+      const report = path.join(scratch, "retained", "shard-1.json");
+      const result = await runRunner(
+        { FAKE_REPORT_STATUS: "passed", MORPH_E2E_REPORT_PATH: report },
+        undefined,
+        ["--shard=1/3"],
+      );
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      assert.match(result.stdout, /7 tests executed/);
+      assert.equal(
+        JSON.parse(await readFile(report, "utf8")).suites[0].specs.length,
+        7,
+      );
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
   it(
     "keeps reading the dev server, so the suite's requests are all answered",
     { timeout: 90_000 },

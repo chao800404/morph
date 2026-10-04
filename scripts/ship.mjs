@@ -67,6 +67,32 @@ export function decide(checks, requiredOnly) {
   const pending = checks.filter((check) => check.status !== "COMPLETED");
   const required = checks.filter((check) => check.name === REQUIRED_CHECK);
 
+  // Dependent jobs may not appear in the rollup until their dependencies finish.
+  // A green partial rollup is not proof that sharded acceptance has completed.
+  if (checks.some((check) => /^Editor E2E shard \d+\/3$/.test(check.name))) {
+    const names = [
+      ...[1, 2, 3].map((index) => `Editor E2E shard ${index}/3`),
+      "Editor end-to-end (local preview transport)",
+    ];
+    for (const name of names) {
+      const matching = checks.filter((check) => check.name === name);
+      if (matching.length === 0) {
+        pending.push({ name, status: "QUEUED", conclusion: null });
+      }
+      for (const check of matching) {
+        if (
+          check.status === "COMPLETED" &&
+          check.conclusion !== "SUCCESS" &&
+          !unhappy.includes(check)
+        ) {
+          unhappy.push(check);
+        }
+      }
+    }
+    if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
+    if (pending.length > 0) return { verdict: "wait", unhappy, pending };
+  }
+
   if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
   const merge = requiredOnly
     ? required.length > 0 && required.every(passed)
@@ -107,16 +133,24 @@ export function describeUnhappy(unhappy) {
 }
 
 async function ship() {
-  const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { quiet: true });
+  const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    quiet: true,
+  });
   // Named rather than counted: the point is which commits are about to become
   // public, and a number does not let anyone recognise the wrong branch.
-  const ahead = branch === "main"
-    ? ""
-    : run("git", ["log", "--oneline", "origin/main..HEAD"], { quiet: true });
+  const ahead =
+    branch === "main"
+      ? ""
+      : run("git", ["log", "--oneline", "origin/main..HEAD"], { quiet: true });
   const refusal = preflight({ branch, ahead });
   if (refusal) throw new Error(refusal);
   log(`shipping ${ahead.split("\n").length} commit(s) from ${branch}:`);
-  console.log(ahead.split("\n").map((line) => `         ${line}`).join("\n"));
+  console.log(
+    ahead
+      .split("\n")
+      .map((line) => `         ${line}`)
+      .join("\n"),
+  );
 
   // Warned about, not blocked. A dirty tree is normal here — work in progress that
   // is deliberately not ready is the reason `git add -- <paths>` exists — but it is
@@ -124,7 +158,12 @@ async function ship() {
   const dirty = run("git", ["status", "--short"], { quiet: true });
   if (dirty) {
     log("these are NOT going (uncommitted):");
-    console.log(dirty.split("\n").map((line) => `         ${line}`).join("\n"));
+    console.log(
+      dirty
+        .split("\n")
+        .map((line) => `         ${line}`)
+        .join("\n"),
+    );
   }
 
   // Before the push, because a guard that fails here fails the pull request too,
@@ -139,7 +178,20 @@ async function ship() {
   log(`pushing ${branch}`);
   run("git", ["push", "-q", "-u", "origin", "HEAD"]);
 
-  const existing = run("gh", ["pr", "list", "--head", branch, "--json", "number", "-q", ".[0].number // empty"], { quiet: true });
+  const existing = run(
+    "gh",
+    [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--json",
+      "number",
+      "-q",
+      ".[0].number // empty",
+    ],
+    { quiet: true },
+  );
   if (existing) {
     log(`pull request #${existing} already open for this branch`);
   } else {
@@ -148,16 +200,19 @@ async function ship() {
   }
 
   const requiredOnly = process.env.MORPH_SHIP_REQUIRED_ONLY === "1";
-  log(requiredOnly ? "waiting for the required check" : "waiting for every check");
+  log(
+    requiredOnly ? "waiting for the required check" : "waiting for every check",
+  );
 
-  // Longer than the slowest job it waits for. `editor-e2e-local-preview` is
-  // `timeout-minutes: 30`, so a 20-minute deadline here reported CI as timed out
-  // when the script had simply given up first — a message about the wrong system.
-  const deadline = Date.now() + 35 * 60_000;
+  // The 30-minute matrix is followed by a 10-minute aggregate acceptance job.
+  // Allow both phases rather than abandoning an otherwise valid running CI.
+  const deadline = Date.now() + 45 * 60_000;
   for (;;) {
     const rollup =
       JSON.parse(
-        run("gh", ["pr", "view", "--json", "statusCheckRollup"], { quiet: true }),
+        run("gh", ["pr", "view", "--json", "statusCheckRollup"], {
+          quiet: true,
+        }),
       ).statusCheckRollup ?? [];
     const checks = rollup.filter((check) => check.name);
     // A whitelist, so a conclusion GitHub adds later is refused rather than
@@ -178,7 +233,9 @@ async function ship() {
         `CHECKS_TIMED_OUT: still waiting on ${pending.map((check) => check.name).join(", ")}. Nothing merged.`,
       );
     }
-    log(`  still running: ${pending.map((check) => check.name).join(", ") || "(none reported yet)"}`);
+    log(
+      `  still running: ${pending.map((check) => check.name).join(", ") || "(none reported yet)"}`,
+    );
     await new Promise((resolve) => setTimeout(resolve, 20_000));
   }
 
@@ -190,7 +247,9 @@ async function ship() {
   // where nothing is left to undo.
   run("gh", ["pr", "merge", "--merge", "--delete-branch"]);
   run("git", ["pull", "-q"]);
-  log(`done — main is now ${run("git", ["rev-parse", "HEAD"], { quiet: true }).slice(0, 7)}`);
+  log(
+    `done — main is now ${run("git", ["rev-parse", "HEAD"], { quiet: true }).slice(0, 7)}`,
+  );
 }
 
 /**

@@ -35,15 +35,93 @@ const other = (conclusion, status = "COMPLETED") => ({
   status,
   conclusion,
 });
-const verdict = (checks, requiredOnly = false) => decide(checks, requiredOnly).verdict;
+const verdict = (checks, requiredOnly = false) =>
+  decide(checks, requiredOnly).verdict;
 
 describe("waiting for every check", () => {
+  it("waits when a dependent acceptance job has not appeared yet", () => {
+    const shards = [1, 2, 3].map((index) => ({
+      name: `Editor E2E shard ${index}/3`,
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    }));
+    for (const requiredOnly of [false, true]) {
+      assert.equal(
+        verdict([guard("SUCCESS"), ...shards], requiredOnly),
+        "wait",
+      );
+      assert.equal(
+        verdict([guard("SUCCESS"), shards[0]], requiredOnly),
+        "wait",
+      );
+    }
+    for (const conclusion of ["SKIPPED", "NEUTRAL"]) {
+      assert.equal(
+        verdict([
+          guard("SUCCESS"),
+          ...shards,
+          {
+            name: "Editor end-to-end (local preview transport)",
+            status: "COMPLETED",
+            conclusion,
+          },
+        ]),
+        "refuse",
+      );
+      assert.equal(
+        verdict([guard("SUCCESS"), { ...shards[0], conclusion }]),
+        "refuse",
+      );
+    }
+  });
+  it("waits for every shard and the aggregate acceptance check", () => {
+    const shards = [1, 2, 3].map((index) => ({
+      name: `Editor E2E shard ${index}/3`,
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    }));
+    const acceptance = {
+      name: "Editor end-to-end (local preview transport)",
+      status: "IN_PROGRESS",
+      conclusion: null,
+    };
+    assert.equal(verdict([guard("SUCCESS"), ...shards, acceptance]), "wait");
+    assert.equal(
+      verdict([
+        guard("SUCCESS"),
+        ...shards,
+        { ...acceptance, status: "COMPLETED", conclusion: "SUCCESS" },
+      ]),
+      "merge",
+    );
+    assert.equal(
+      verdict([
+        guard("SUCCESS"),
+        ...shards,
+        { ...acceptance, status: "COMPLETED", conclusion: "FAILURE" },
+      ]),
+      "refuse",
+    );
+    assert.equal(
+      verdict([
+        guard("SUCCESS"),
+        ...shards.slice(0, 2),
+        { ...shards[2], conclusion: "CANCELLED" },
+        acceptance,
+      ]),
+      "refuse",
+    );
+  });
+
   it("merges when they have all reported success", () => {
     assert.equal(verdict([guard("SUCCESS"), other("SUCCESS")]), "merge");
   });
 
   it("waits while one is still running", () => {
-    assert.equal(verdict([guard("SUCCESS"), other(null, "IN_PROGRESS")]), "wait");
+    assert.equal(
+      verdict([guard("SUCCESS"), other(null, "IN_PROGRESS")]),
+      "wait",
+    );
   });
 
   it("waits on an empty rollup rather than treating it as agreement", () => {
@@ -71,7 +149,10 @@ describe("refusing anything that did not report success", () => {
   });
 
   it("refuses a job waiting on a person", () => {
-    assert.equal(verdict([guard("SUCCESS"), other("ACTION_REQUIRED")]), "refuse");
+    assert.equal(
+      verdict([guard("SUCCESS"), other("ACTION_REQUIRED")]),
+      "refuse",
+    );
   });
 
   it("names what was not green, with its conclusion", () => {
@@ -85,7 +166,10 @@ describe("refusing anything that did not report success", () => {
 
 describe("MORPH_SHIP_REQUIRED_ONLY", () => {
   it("merges once the required check passes, ignoring the rest", () => {
-    assert.equal(verdict([guard("SUCCESS"), other(null, "IN_PROGRESS")], true), "merge");
+    assert.equal(
+      verdict([guard("SUCCESS"), other(null, "IN_PROGRESS")], true),
+      "merge",
+    );
   });
 
   it("does not merge before the required check exists", () => {
@@ -127,7 +211,10 @@ describe("refusing before anything reaches the remote", () => {
   });
 
   it("allows a branch with commits ahead", () => {
-    assert.equal(preflight({ branch: "fix/thing", ahead: "abc1234 a commit" }), null);
+    assert.equal(
+      preflight({ branch: "fix/thing", ahead: "abc1234 a commit" }),
+      null,
+    );
   });
 });
 
@@ -135,17 +222,25 @@ describe("what a refused merge says", () => {
   it("names every check that was not green, with its conclusion", () => {
     const message = describeUnhappy([
       { name: "Typecheck, test, build", conclusion: "FAILURE" },
-      { name: "Editor end-to-end (local preview transport)", conclusion: "CANCELLED" },
+      {
+        name: "Editor end-to-end (local preview transport)",
+        conclusion: "CANCELLED",
+      },
     ]);
     assert.match(message, /^CHECK_NOT_GREEN:/);
     assert.match(message, /Typecheck, test, build \(FAILURE\)/);
-    assert.match(message, /end-to-end \(local preview transport\) \(CANCELLED\)/);
+    assert.match(
+      message,
+      /end-to-end \(local preview transport\) \(CANCELLED\)/,
+    );
   });
 
   it("says nothing was merged and the work is still there", () => {
     // The sentence a person reads at the point they most expect to have lost
     // something. `CANCELLED` reaching here at all is the fix this file guards.
-    const message = describeUnhappy([{ name: "Architecture guards", conclusion: "CANCELLED" }]);
+    const message = describeUnhappy([
+      { name: "Architecture guards", conclusion: "CANCELLED" },
+    ]);
     assert.match(message, /Nothing merged/);
     assert.match(message, /still there/);
   });
@@ -160,7 +255,13 @@ describe("the name of the required check", () => {
     // a rename now fails here instead of failing as "every pull request waits
     // forever", which is the symptom that names nothing.
     const workflow = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), "..", ".github", "workflows", "ci.yml"),
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        ".github",
+        "workflows",
+        "ci.yml",
+      ),
       "utf8",
     );
     const names = [...workflow.matchAll(/^\s{4}name:\s*(.+)$/gm)].map((match) =>
