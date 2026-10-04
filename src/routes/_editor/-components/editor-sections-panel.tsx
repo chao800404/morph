@@ -834,6 +834,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onRenameSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
+  const pageRoutes = useMemo(
+    () => themeRoutes.filter((route) => !route.isServerOnly),
+    [themeRoutes],
+  );
+  const endpointRoutes = useMemo(
+    () => themeRoutes.filter((route) => route.isServerOnly),
+    [themeRoutes],
+  );
   const activeTemplate = resolveEditorTemplate(context, search);
   const previewEditableNodes = editableNodes ?? NO_EDITABLE_NODES;
   const documentSections = activeTemplate?.document.sections ?? NO_SECTIONS;
@@ -1345,7 +1353,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
           {themeRoutes.length > 0 ? (
             <EditorPagesSearch
-              routes={themeRoutes}
+              routes={pageRoutes}
               onPrefetchRoute={onPrefetchThemeRoute}
               onOpenRoute={onOpenThemeRoute}
             />
@@ -1377,7 +1385,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                     className="shrink-0 px-1 text-[10px] tabular-nums text-sidebar-foreground"
                     aria-live="polite"
                   >
-                    {themeRoutes.length}/{themeRoutes.length}
+                    {pageRoutes.length}/{pageRoutes.length}
                   </span>
                   {onAddPage ? (
                     <button
@@ -1394,7 +1402,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
                 <CollapsibleContent>
                   <SidebarMenu aria-label="Theme pages">
-                    {themeRoutes.map((route) => (
+                    {pageRoutes.map((route) => (
                       <SidebarMenuItem
                         key={`${route.sourcePath}:${route.path}`}
                         className="group/page"
@@ -1448,6 +1456,32 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
           ) : null}
 
           <SidebarContent className="min-h-0 w-full">
+            {endpointRoutes.length > 0 ? (
+              <SidebarGroup
+                className="border-b p-2"
+                aria-label="Theme endpoints"
+              >
+                <div className="px-1 pb-1 text-xs font-medium text-muted-foreground">
+                  Endpoints · Code only
+                </div>
+                <SidebarMenu>
+                  {endpointRoutes.map((route) => (
+                    <SidebarMenuItem key={route.sourcePath}>
+                      <SidebarMenuButton
+                        type="button"
+                        size="sm"
+                        disabled={!onOpenThemeRouteCode}
+                        onClick={() => onOpenThemeRouteCode?.(route)}
+                        title={`Open endpoint source ${route.sourcePath}`}
+                      >
+                        <Code2 aria-hidden="true" />
+                        <span>{route.path}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroup>
+            ) : null}
             {unboundSectionCandidates.length > 0 ? (
               <SidebarGroup
                 className="border-b border-dashed p-2"

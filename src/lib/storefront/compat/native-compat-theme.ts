@@ -14,6 +14,8 @@
  * end-to-end compatibility run (Live Preview and the published storefront).
  */
 
+import { NATIVE_COMPAT_TRANSPORT_FILES } from "./native-compat-transport";
+
 export type NativeCompatFile = Readonly<{ path: string; content: string }>;
 
 const START = String.raw`import { createMiddleware, createStart } from "@tanstack/react-start";
@@ -158,6 +160,7 @@ export const Route = createFileRoute("/robots.txt")({
 `;
 
 export const NATIVE_COMPAT_FILES: readonly NativeCompatFile[] = [
+  ...NATIVE_COMPAT_TRANSPORT_FILES,
   { path: "src/start.ts", content: START },
   { path: "src/compat/fns.ts", content: FNS },
   { path: "src/routes/compat.tsx", content: COMPAT_PAGE },

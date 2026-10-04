@@ -117,6 +117,7 @@ export interface ThemeWorkspaceStore {
     themeId: string,
     themeFiles: StorefrontThemeFileDTO[],
     sourceGeneration?: number,
+    unreadPaths?: readonly string[],
   ) => void;
   getAcceptedSourceGeneration: (scope?: WorkspaceScope) => number;
   getBaseSourceGeneration: (scope?: WorkspaceScope) => number;
@@ -393,7 +394,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
       return state.files;
     },
 
-    hydrateFromQuery: (storefrontId, themeId, themeFiles, sourceGeneration) => {
+    hydrateFromQuery: (storefrontId, themeId, themeFiles, sourceGeneration, unreadPaths = []) => {
       const targetKey = toWorkspaceKey(storefrontId, themeId);
       set((state) => {
         const currentWorkspaceFiles = state.workspaces[targetKey] ?? {};
@@ -500,7 +501,7 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
         }
 
         for (const [path, current] of Object.entries(currentWorkspaceFiles)) {
-          if (incoming.has(path) || !current.serverExists) continue;
+          if (incoming.has(path) || unreadPaths.includes(path) || !current.serverExists) continue;
           if (current.saveState === "saving") continue;
 
           if (current.dirty) {

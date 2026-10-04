@@ -1,4 +1,7 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
+import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
+import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
   commitPendingContent,
   sectionContentLanded,
@@ -2055,6 +2058,7 @@ export function VisualEditorShell({
         context.theme.id,
         themeFilesQuery.data.files,
         themeFilesQuery.data.sourceGeneration,
+        (themeFilesQuery.data.binaryFiles ?? []).map((file) => file.path),
       );
     }
   }, [
@@ -2062,6 +2066,7 @@ export function VisualEditorShell({
     context.theme.id,
     themeFilesQuery.data?.files,
     themeFilesQuery.data?.sourceGeneration,
+    themeFilesQuery.data?.binaryFiles,
     hydrateWorkspace,
   ]);
 
@@ -2073,7 +2078,7 @@ export function VisualEditorShell({
         content: workspaceFiles[file.path]?.localContent ?? file.content,
       })),
       ...Object.values(workspaceFiles)
-        .filter((file) => !serverPaths.has(file.path))
+        .filter((file) => !serverPaths.has(file.path) && !isThemePublicPath(file.path))
         .map((file) => ({
           id: `local:${file.path}`,
           storefrontId: context.storefront.id,
@@ -2101,7 +2106,7 @@ export function VisualEditorShell({
       ReturnType<typeof deriveThemeRouteSections>
     >();
     for (const route of themeRouteRegistry.routes) {
-      if (route.kind !== "route") continue;
+      if (route.kind !== "route" || route.isServerOnly) continue;
       cache.set(
         route.sourcePath,
         deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
@@ -2632,6 +2637,10 @@ export function VisualEditorShell({
 
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
+      if (route.isServerOnly) {
+        handleJumpToCode(route.sourcePath, 1, 1);
+        return;
+      }
       setPendingRouteSelection({
         routePath: route.path,
         sectionId: route.path,
@@ -2653,7 +2662,9 @@ export function VisualEditorShell({
   /** Explicit request for a route's source, from the page row's own control. */
   const handleOpenThemeRouteCode = useCallback(
     (route: ThemeRouteRecord) => {
-      handleOpenThemeRoute(route);
+      // Endpoints have no Design page/template. Opening their source must not
+      // navigate the canvas or create a content document for that URL.
+      if (!route.isServerOnly) handleOpenThemeRoute(route);
       handleJumpToCode(route.sourcePath, 1, 1);
     },
     [handleJumpToCode, handleOpenThemeRoute],
@@ -3557,7 +3568,14 @@ export function VisualEditorShell({
             };
             try {
               res = await sendEditorWrite(workspaceScope, "theme", () =>
-                saveStorefrontThemeFile({
+                isEditablePublicTextPath(filePath) ? writeThemePublicTextFile({
+                  storefrontId: context.storefront.id,
+                  themeId: context.theme.id,
+                  path: filePath,
+                  content: contentToSave,
+                  precondition: themeFileWritePrecondition(current),
+                  expectedSourceGeneration: acceptedGeneration,
+                }) : saveStorefrontThemeFile({
                   data: {
                     storefrontId: context.storefront.id,
                     themeId: context.theme.id,
@@ -3662,7 +3680,7 @@ export function VisualEditorShell({
                 context.theme.id,
               ).queryKey,
               (old) => {
-                if (!old?.files) return old;
+                if (!old?.files || isThemePublicPath(filePath)) return old;
                 const exists = old.files.some((file) => file.path === filePath);
                 return {
                   ...old,

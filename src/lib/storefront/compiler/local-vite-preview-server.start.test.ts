@@ -8,6 +8,13 @@ import {
   NATIVE_COMPAT_FILES,
 } from "@/lib/storefront/compat/native-compat-theme";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { NATIVE_COMPAT_PUBLIC_FILES } from "../compat/native-compat-public-files";
+import {
+  assertRawResponse,
+  assertMultipart,
+  assertByteStreaming,
+} from "../compat/assert-native-transport";
+import { calculateThemeSourceSha256 } from "../storage/cloudflare-r2-theme-source-blob-store";
 
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
@@ -53,11 +60,28 @@ beforeAll(async () => {
       ...STARTER_THEME_FILES,
       ...NATIVE_COMPAT_FILES,
       ...NATIVE_COMPAT_COOKIE_HELPER_FILES,
+      ...NATIVE_COMPAT_PUBLIC_FILES.map((file) => {
+        const bytes = new TextEncoder().encode(file.content);
+        return {
+          path: file.path,
+          binary: {
+            digest: calculateThemeSourceSha256(bytes),
+            sizeBytes: bytes.byteLength,
+          },
+        };
+      }),
     ] as never,
     entry: "src/routes/index.tsx",
     previewHostname: "127.0.0.1",
     env: {},
     previewRuntime: "start",
+    loadBinary: async (ref) => {
+      const file = NATIVE_COMPAT_PUBLIC_FILES.find(
+        (file) => calculateThemeSourceSha256(new TextEncoder().encode(file.content)) === ref.digest,
+      );
+      if (!file) throw new Error("Missing fixture blob");
+      return new TextEncoder().encode(file.content);
+    },
   });
   if (!started.ok) throw new Error(`${started.stage}: ${started.errorMessage}`);
   const url = new URL(started.url);
@@ -74,6 +98,31 @@ const request = (pathname: string, init?: RequestInit) =>
   fetch(origin + pathname, { redirect: "manual", ...init });
 
 describe("the Start Live Preview on the local transport (prototype)", { timeout: 120_000 }, () => {
+  it("preserves raw Response status, headers and binary body from a server function", async () => {
+    await assertRawResponse(request);
+  });
+  it("delivers the first server-function stream bytes before releasing the remainder", async () => {
+    await assertByteStreaming(request);
+  });
+  it("accepts POST FormData fields and a binary file through a server function", async () => {
+    await assertMultipart(request);
+  });
+  it("serves data public files byte-for-byte with their format MIME types", async () => {
+    for (const file of NATIVE_COMPAT_PUBLIC_FILES) {
+      const response = await request(file.path.slice("public".length));
+      expect(response.status, file.path).toBe(200);
+      // Vite's static middleware uses text/xml; artifacts use application/xml.
+      // Accept the two XML MIME types, never an HTML/octet-stream fallback.
+      const mime = response.headers.get("content-type")?.split(";")[0];
+      expect(
+        file.mimeType === "application/xml" ? ["application/xml", "text/xml"] : [file.mimeType],
+        file.path,
+      ).toContain(mime);
+      expect(new Uint8Array(await response.arrayBuffer()), file.path).toEqual(
+        new TextEncoder().encode(file.content),
+      );
+    }
+  });
   it("server-renders a loader calling a server function, with request middleware", async () => {
     const response = await request("/compat");
     expect(response.status).toBe(200);
@@ -114,7 +163,9 @@ describe("the Start Live Preview on the local transport (prototype)", { timeout:
     expect(setCookie).toMatch(/HttpOnly/i);
     expect(await first.json()).toEqual({ before: null });
     const cookie = setCookie.split(";")[0]!;
-    const second = await request("/api/compat-cookie", { headers: { cookie } });
+    const second = await request("/api/compat-cookie", {
+      headers: { cookie },
+    });
     expect(await second.json()).toEqual({ before: "set" });
     const page = await (await request("/compat-cookies", { headers: { cookie } })).text();
     expect(page).toContain('data-compat="cookie">{&quot;value&quot;:&quot;set&quot;}');

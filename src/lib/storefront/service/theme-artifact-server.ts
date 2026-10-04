@@ -2,6 +2,7 @@ import {
   isSvgContentType,
   SVG_ISOLATION_HEADERS,
 } from "../theme-svg-isolation";
+import { themePublicTextMimeType } from "../theme-public-files";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import type {
   CanonicalThemeBuildManifest,
@@ -30,6 +31,8 @@ const MIME_FALLBACKS: Record<string, string> = {
 };
 
 export function resolveMimeFallback(filename: string): string {
+  const publicTextType = themePublicTextMimeType(filename);
+  if (publicTextType) return publicTextType;
   const dotIdx = filename.lastIndexOf(".");
   if (dotIdx === -1) return "application/octet-stream";
   const ext = filename.slice(dotIdx).toLowerCase();
