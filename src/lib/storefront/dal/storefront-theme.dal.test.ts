@@ -832,6 +832,76 @@ export default function Hero() { return <h1 />; }`;
       );
     });
 
+    it("prepares and publishes a new source route without a Design content write", async () => {
+      seed();
+      const ensured = await ensure("/aboutus");
+      expect(ensured.ok).toBe(true);
+      if (!ensured.ok) throw new Error(ensured.reason);
+      const before = await storefrontThemeDal.findEditorContext(
+        "storefront-a",
+        "theme-a",
+      );
+      const untouched = before?.templates.find(
+        (item) => item.id === ensured.template.id,
+      )?.document;
+      // This fixture declares a Hero in route source. Editor context derives
+      // that structure without a Design write; first publication must preserve
+      // it, not incorrectly insist that every new route has zero sections.
+      expect(untouched?.sections).toEqual([
+        {
+          id: "about-hero",
+          type: "hero",
+          componentRef: "src/components/Hero.tsx",
+          enabled: true,
+          props: {},
+        },
+      ]);
+      const draft = await storefrontThemeDal.prepareInitialTemplateDraft({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: ensured.template.id,
+        expectedDraftGeneration: ensured.template.draftGeneration,
+        expectedSourceGeneration: 1,
+        createdBy: "user-1",
+      });
+      expect(draft?.document).toEqual(untouched);
+      expect(draft?.draftRevisionId).toEqual(expect.any(String));
+      // Same immutable-source fixture as the existing initial-publish DAL
+      // acceptance; full source/build/browser evidence is tested separately.
+      sqlite.exec(`INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+        VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+      const published = await storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: ensured.template.id,
+        expectedDraftRevisionId: draft!.draftRevisionId,
+        expectedDraftGeneration: draft!.draftGeneration,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: acceptRevision,
+      });
+      expect(published).toMatchObject({ releaseCreated: true });
+      const after = await storefrontThemeDal.findEditorContext(
+        "storefront-a",
+        "theme-a",
+      );
+      expect(
+        after?.templates.find((item) => item.id === ensured.template.id)
+          ?.publishedRevisionId,
+      ).toBe(draft!.draftRevisionId);
+      expect(
+        after?.templates.find((item) => item.id === "template-home")
+          ?.draftRevisionId,
+      ).toBeNull();
+      expect(
+        sqlite
+          .prepare(
+            "SELECT created_by FROM storefront_theme_template_revisions WHERE id = ?",
+          )
+          .get(draft!.draftRevisionId),
+      ).toEqual({ created_by: "user-1" });
+    });
+
     it("creates none where a type covers the route, or no route exists", async () => {
       seed();
       expect(await ensure("/")).toMatchObject({ ok: false });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import {
+  editorPublishTargetKey,
   editorRoutePathsMatch,
   normalizeEditorTemplateSearch,
   resolveEditorTemplate,
@@ -18,6 +19,36 @@ const context = {
     { id: "product-template", type: "product", name: "Product" },
   ],
 } as unknown as StorefrontThemeEditorDTO;
+
+describe("publish target identity", () => {
+  const scope = { storefrontId: "store", themeId: "theme" };
+  it("does not abandon a route publish when its borrowed id is materialized", () => {
+    expect(editorPublishTargetKey(scope, "home", "/new-route")).toBe(
+      editorPublishTargetKey(scope, "new-template", "/new-route"),
+    );
+  });
+  it("rejects a switch between routes borrowing the same homepage", () => {
+    expect(editorPublishTargetKey(scope, "home", "/first")).not.toBe(
+      editorPublishTargetKey(scope, "home", "/second"),
+    );
+  });
+  it("keeps Theme, store and ordinary template switches distinct", () => {
+    const target = editorPublishTargetKey(scope, "home", undefined);
+    expect(editorPublishTargetKey(scope, "product", undefined)).not.toBe(
+      target,
+    );
+    expect(
+      editorPublishTargetKey({ ...scope, themeId: "other" }, "home", undefined),
+    ).not.toBe(target);
+    expect(
+      editorPublishTargetKey(
+        { ...scope, storefrontId: "other" },
+        "home",
+        undefined,
+      ),
+    ).not.toBe(target);
+  });
+});
 
 describe("normalizeEditorTemplateSearch", () => {
   it("fills a missing template id before the preview is created", () => {

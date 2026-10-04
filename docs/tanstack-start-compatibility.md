@@ -40,13 +40,15 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    Spreads, computed options and unresolved option objects conservatively retain
    existing page behaviour; this does not execute Theme code to resolve them.
    No second registry or new write/delete path is introduced.
-3. **Initial publish without a Design edit (existing template rows).** Explicit
+3. **Initial publish without a Design edit (existing and new static routes).** Explicit
    publication preparation materializes the existing selected and layout
    Documents through the normal revision writer and source/draft CAS. Reads
    remain non-mutating; an existing draft is never replaced or rebased by this
-   preparation. Layer-specific local acceptance is recorded below. Newly
-   introduced source-only routes without a template row remain outside this
-   acceptance, as does Cloudflare deployment.
+   preparation. Newly introduced static source routes use the existing
+   ensureRouteTemplate path before preparation, rather than publishing the
+   temporarily borrowed home template. Full local Sandbox build/publish/Core
+   storefront acceptance is recorded below. Cloudflare deployment remains
+   outside this acceptance.
 4. **Expanded transport coverage (layer-specific acceptance below).**
    Raw Response, multipart/FormData and streaming now have native fixtures.
    Dynamic server routes and route middleware have explicit shared fixtures
@@ -80,6 +82,54 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    functions; runtime selection remains opt-in. Dynamic `.server` imports are
    still deliberately refused by Morph's conservative usage analysis. These
    tests are local evidence, not Cloudflare deployment acceptance.
+
+## Code-only full publish acceptance (2026-10-05, local Sandbox)
+
+- The missing-row regression was reproduced before the fix: Publish handed
+  off a build but created no document for the selected new static Code route.
+  An earlier test attempt waited for a sortable Design row absent from this
+  source-only page; that readiness failure is not product evidence.
+- Publish now ensures that route's own document through the existing
+  authenticated route-template writer, then prepares it and the layout through
+  the existing initial-revision path. The borrowed home document is not
+  prepared in its place. Source/draft/release CAS and immutable build checks
+  remain in force; no alternate storage, build or publication API is added.
+- Publish intent is bound to store, Theme and the selected route. Replacing
+  a borrowed template id with that route's real id does not abandon the
+  attempt; switching between different source-only routes does. Three unit
+  regressions cover these identities. DAL acceptance additionally verifies
+  an untouched source-derived Hero document, actor attribution and release
+  publication without a Design content write. The initial assertion expecting
+  zero sections was corrected because that fixture declares a Hero.
+- Local-sidecar first-publish preparation: four tests passed, including the
+  existing-template and missing-route-row scenarios plus runner setup. Builds
+  are deliberately aborted in that layer; it is not full publication proof.
+- Full local Sandbox acceptance uses the ordinary Code save/upload APIs and
+  clicks Publish directly, with neither a Design edit nor a manual build.
+  The first complete run passed all 12 tests (including runner setup), with
+  exactly one build and one publish request. The build took about 49 seconds,
+  so the UI demonstrably waited beyond the former 30-second boundary.
+- The suite reads the published artifact back from the run's local R2,
+  verifies its manifest, starts the built Theme Worker and serves it through
+  Morph Core on a local storefront hostname. It checks SSR, browser GET/POST
+  server functions, middleware, HttpOnly cookies, errors, navigation, public
+  bytes and platform/static-file separation. This is a real container build
+  and local publication, not a deployment to Cloudflare.
+- Final Sandbox rerun also passed all 12 tests (zero failures/skips), including
+  a window sentinel proving that shopper Link navigation does not reload the
+  document. Final output: `/tmp/codex-start-publish-sandbox-final-results`;
+  log: `/tmp/codex-start-publish-sandbox-final.log`. The spec itself runs the
+  artifact verifier; the runner's separate handoff verifier is not invoked.
+- Logs and test outputs are separate `/tmp/codex-start-publish-*` paths.
+  Full repository validation passed: typecheck, data-layer typecheck,
+  E2E assertion guard, 4,377 tests (one existing
+  skip), and production build including client-secret, sidecar-exclusion and
+  deployment-artifact guards. The initial typecheck found two test-only
+  literal browser-import paths; these now use the existing variable-path
+  import pattern, and the whole validation chain was rerun successfully.
+  Preview runtime remains opt-in. Production wiring, cloud isolation/capacity,
+  external API policy and APIs not exercised by this fixture remain separate
+  gates; this evidence does not claim all native Start functionality.
 
 ## Code-only initial-publish acceptance (2026-10-04, local)
 

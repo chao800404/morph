@@ -57,6 +57,19 @@ export function templateForRoute(
 /** Placeholder binding for a route whose own document is created on first write. */
 const ROUTE_TEMPLATE_PLACEHOLDER_PREFIX = "route-template:";
 
+/** A pending publish stays bound to its page, not a temporarily borrowed id. */
+export function editorPublishTargetKey(
+  scope: Readonly<{ storefrontId: string; themeId: string }>,
+  templateId: string | undefined,
+  routePath: string | undefined,
+): string {
+  return JSON.stringify([
+    scope.storefrontId,
+    scope.themeId,
+    routePath ? ["route", routePath] : ["template", templateId ?? ""],
+  ]);
+}
+
 export function routeTemplatePlaceholderId(routePath: string): string {
   return `${ROUTE_TEMPLATE_PLACEHOLDER_PREFIX}${routePath}`;
 }
