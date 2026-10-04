@@ -31,8 +31,11 @@ traces and reports are uploaded under unique per-shard artifact names.
 
 The aggregate keeps the original `Editor end-to-end (local preview transport)`
 check name. It runs even after failures and refuses any failed, cancelled, or
-skipped matrix. `pnpm ship` still waits for every reported CI check. No branch
-protection or required-only shortcut is changed.
+skipped matrix. When shard checks appear, `pnpm ship` requires all three shard
+checks and the aggregate to report success, including when the aggregate has
+not appeared in GitHub's rollup yet. Missing checks keep it waiting; skipped or
+neutral shard acceptance is not success. This also prevents a required-only
+shortcut from bypassing sharded acceptance. Branch protection is unchanged.
 
 Typecheck, Vitest and Build remain in their existing job for this first stage.
 Wall-clock savings and runner-minute costs must be measured on the new CI;

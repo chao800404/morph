@@ -39,6 +39,41 @@ const verdict = (checks, requiredOnly = false) =>
   decide(checks, requiredOnly).verdict;
 
 describe("waiting for every check", () => {
+  it("waits when a dependent acceptance job has not appeared yet", () => {
+    const shards = [1, 2, 3].map((index) => ({
+      name: `Editor E2E shard ${index}/3`,
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    }));
+    for (const requiredOnly of [false, true]) {
+      assert.equal(
+        verdict([guard("SUCCESS"), ...shards], requiredOnly),
+        "wait",
+      );
+      assert.equal(
+        verdict([guard("SUCCESS"), shards[0]], requiredOnly),
+        "wait",
+      );
+    }
+    for (const conclusion of ["SKIPPED", "NEUTRAL"]) {
+      assert.equal(
+        verdict([
+          guard("SUCCESS"),
+          ...shards,
+          {
+            name: "Editor end-to-end (local preview transport)",
+            status: "COMPLETED",
+            conclusion,
+          },
+        ]),
+        "refuse",
+      );
+      assert.equal(
+        verdict([guard("SUCCESS"), { ...shards[0], conclusion }]),
+        "refuse",
+      );
+    }
+  });
   it("waits for every shard and the aggregate acceptance check", () => {
     const shards = [1, 2, 3].map((index) => ({
       name: `Editor E2E shard ${index}/3`,
