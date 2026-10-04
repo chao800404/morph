@@ -27,8 +27,11 @@ import {
   readThemePathAliases,
 } from "./theme-path-aliases";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
+import { themePublicTextMimeType } from "../theme-public-files";
 
 function getMimeType(filePath: string): string {
+  const publicTextType = themePublicTextMimeType(filePath);
+  if (publicTextType) return publicTextType;
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case ".html":

@@ -1,4 +1,5 @@
 import type { Sandbox } from "@cloudflare/sandbox";
+import { themePublicTextMimeType } from "../theme-public-files";
 import {
   DEFAULT_APPROVED_DEPENDENCIES,
   type SandboxViteThemeBuildRunnerOptions,
@@ -83,6 +84,8 @@ export type CloudflareSandboxViteRunnerOptions =
   };
 
 function getMimeType(filePath: string): string {
+  const publicTextType = themePublicTextMimeType(filePath);
+  if (publicTextType) return publicTextType;
   const ext = filePath.includes(".")
     ? filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
     : "";

@@ -16,6 +16,7 @@ import {
   previewThemeManifestMigration,
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
+  getStorefrontThemeFile,
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
   EditorCodeWorkspace,
@@ -49,6 +50,7 @@ vi.mock(
     previewThemeManifestMigration: vi.fn(),
     saveStorefrontThemeFile: vi.fn(),
     saveStorefrontThemeFilesBatch: vi.fn(),
+    getStorefrontThemeFile: vi.fn(),
   }),
 );
 
@@ -188,6 +190,7 @@ const legacyManifestFile: StorefrontThemeFileDTO = {
 };
 
 function renderWorkspace(props?: {
+  binaryFiles?: StorefrontThemeBinaryFileDTO[];
   files?: StorefrontThemeFileDTO[];
   tree?: StorefrontThemeFileTreeNode[];
   workspaceRef?: RefObject<EditorCodeWorkspaceHandle | null>;
@@ -211,6 +214,7 @@ function renderWorkspace(props?: {
         storefrontId="store-1"
         themeId="theme-1"
         files={props?.files ?? [file]}
+        binaryFiles={props?.binaryFiles}
         tree={
           props?.tree ?? [
             {
@@ -247,6 +251,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       themeId: "theme-1",
     });
     vi.mocked(deleteStorefrontThemeFile).mockReset();
+    vi.mocked(getStorefrontThemeFile).mockReset();
     vi.mocked(applyThemeManifestMigrationServerFn).mockReset();
     vi.mocked(previewThemeManifestMigration).mockReset();
     vi.mocked(configureThemeTypeScript).mockClear();
@@ -265,6 +270,28 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
         .getByRole("textbox", { name: "Code editor" })
         .getAttribute("data-theme"),
     ).toBe("vs-dark");
+  });
+
+  it("loads public text only when opened and saves through the shared editor boundary without formatting", async () => {
+    const publicFile: StorefrontThemeBinaryFileDTO = {
+      ...file, id: "robots", path: "public/robots.txt", encoding: "binary",
+      blobDigest: "a".repeat(64), sizeBytes: 14, mimeType: "text/plain", isEntry: false,
+    };
+    const projected = { ...file, id: "robots", path: publicFile.path, content: "User-agent: *\n", mimeType: "text/plain", isEntry: false };
+    vi.mocked(getStorefrontThemeFile).mockResolvedValue({ success: true, message: "loaded", data: projected });
+    const onSaveFile = vi.fn(async (_path: string, content: string) => ({ ...projected, content, version: 2 }));
+    renderWorkspace({ binaryFiles: [publicFile], onSaveFile, tree: [
+      { name: "Hero.tsx", path: file.path, isDirectory: false },
+      { name: "robots.txt", path: publicFile.path, isDirectory: false, encoding: "binary" },
+    ] });
+    expect(getStorefrontThemeFile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("robots.txt"));
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Code editor" }) as HTMLTextAreaElement).value).toBe(projected.content));
+    fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), { target: { value: "User-agent: *\nDisallow: /private\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    await waitFor(() => expect(onSaveFile).toHaveBeenCalledWith(publicFile.path, "User-agent: *\nDisallow: /private\n", { confirmed: true }));
+    expect(formatEditorCode).not.toHaveBeenCalled();
+    await waitFor(() => expect(useThemeWorkspaceStore.getState().files[publicFile.path].serverVersion).toBe(2));
   });
 
   it("keeps the Explorer scroll area shrinkable when its tree is long", () => {
@@ -799,7 +826,7 @@ describe("EditorCodeWorkspace file creation", () => {
     vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
       success: true,
       message: "ok",
-      data: { ...file, id: "file-2", path: "src/components/Promo.tsx" },
+      data: { ...file, id: "file-2", path: "src/components/Promo.tsx", sourceGeneration: 7 },
     } as never);
 
     renderTree();
@@ -825,6 +852,11 @@ describe("EditorCodeWorkspace file creation", () => {
     expect(String(payload.data.content)).toContain(
       "export const contentFields",
     );
+    await waitFor(() => {
+      expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration({
+        storefrontId: "store-1", themeId: "theme-1",
+      })).toBe(7);
+    });
   });
 
   it("keeps the parent folder prefix out of the inline file name input", async () => {

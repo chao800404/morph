@@ -71,7 +71,7 @@ export const storefrontThemeFileQueries = {
       },
     }),
 
-  file: (storefrontId: string, themeId: string, path: string) =>
+  file: (storefrontId: string, themeId: string, path: string, blobIdentity?: string) =>
     queryOptions({
       queryKey: [
         "storefront-theme-files",
@@ -79,6 +79,7 @@ export const storefrontThemeFileQueries = {
         themeId,
         "file",
         path,
+        ...(blobIdentity ? [blobIdentity] : []),
       ] as const,
       queryFn: async () => {
         const result = await getStorefrontThemeFile({

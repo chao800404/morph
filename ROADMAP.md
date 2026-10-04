@@ -383,6 +383,8 @@ Starter bootstrap 與 workspace upgrade 契約：
 
 ### TanStack Start 原生相容（2026-09-29 排定，依序）
 
+目前各層證據與剩餘能力盤點見 [`docs/tanstack-start-compatibility.md`](docs/tanstack-start-compatibility.md)。文字靜態檔延伸既有 bytes 流程；Code 建立／編輯已有本機驗收，不能因此宣稱全部 Start 功能或 Cloudflare 驗收完成。
+
 目標：同一份 Theme 原始碼在本地、Live Preview、發布後具有一致的 TanStack Start 行為，差別只在資料與權限。Design 是額外工具，不限制 Code；Design 無法安全編輯的部分標示 Code only。承諾範圍是 Cloudflare Workers 可執行的 TanStack Start 能力，不是所有 Node.js 套件或本機系統功能。一項能力只有在預覽與正式建置都通過測試後才列為支援，不以 import 檢查放行。
 
 相容性測試同一組 Theme 檔案（`src/lib/storefront/compat/native-compat-theme.ts`）跑三處：`native-compat.test.ts`（建置出的 Worker，CI）、`e2e/native-compat-preview.spec.ts`（Live Preview，CI）、`e2e/native-compat-published.spec.ts`（發布後經 Morph Core 的店面網域，Sandbox）。尚未解決的差異寫成 `KNOWN GAP` 斷言，缺口一修好就會失敗，必須改成一般斷言。
@@ -395,6 +397,10 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 4 | 🧪 完整 TanStack Start 預覽已接入既有編輯器與兩種傳輸，仍為 opt-in：只有平台明確設定 `MORPH_THEME_PREVIEW_RUNTIME=start` 才啟用，不設仍為原有純前端預覽。本機真實 Sandbox 已驗證 SSR、server functions、cookies、middleware、server routes、HMR、Design、SVG 隔離、文字升級與發布後店面；證據見 `docs/evidence/full-start-preview-2026-10-03.md`。這不代表雲端驗收完成或可以一般開放，下列開放前條件仍全部保留；預覽的 server 程式不得取得正式商店寫入權限或 secret | 架構 |
 | 5 | `public/` 開放經格式檢查的文字檔（`.txt`、`.xml`、`.json`、`.webmanifest`；SVG 仍驗證）；新店不需先改 Design 即可發布初始 Document（仍走 revision、OCC、publication） | 功能 |
 | 6 | Design 依能力顯示：只有 server handler 的 route 標為端點；同時有頁面與 handler 的 route 仍可編輯 | 介面 |
+
+`codex/start-public-text` 這項變更已接上第 5 步經格式檢查的文字檔上傳與 Code 建立／編輯／儲存。`public/` 仍走既有 bytes、revision、build、publish 路徑，不建立文字存檔旁路；Monaco 按需讀取，沿用登入暫停、草稿保留、結果不明先讀回與 OCC。同項變更也實作第 6 步：既有 route registry 明確識別的純 server handler 路由在 Design 顯示為 Code-only 端點，混合頁面與 lazy/component 拆分路由仍可編輯。不執行 Theme 程式來解析未知選項；未知時保留既有頁面行為。實際驗收與仍缺少的能力以 `docs/tanstack-start-compatibility.md` 為準；初始發布仍待驗證。
+
+同項變更另補 native transport 驗收：原生 server function 的 Response、FormData 與串流共用既有相容性 Theme，本機 Start 預覽、建置 Worker 的 HTTP，以及瀏覽器皆有分層證據；typed stream 目前只驗到預覽瀏覽器。建置串流測試使用 identity encoding，不代表壓縮傳輸或 Cloudflare 驗收已通過。新的已知缺口是 handler-only 的本地 `.server` 匯入仍被擋；不能只放寬檢查器，須一併處理舊純前端預覽的 server-code 邊界。完整狀態見相容性清單。
 
 完整 Start 預覽開放給一般使用者前必須完成（任一未完成都不開放；文件記載不等於解決）：
 

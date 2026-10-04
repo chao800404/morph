@@ -105,6 +105,47 @@ function renderPanel(
 }
 
 describe("EditorSectionsPanel pages", () => {
+  it("opens handler-only endpoints in Code without page preview or deletion controls", () => {
+    const endpoint: ThemeRouteRecord = {
+      id: "/robots.txt",
+      path: "/robots.txt",
+      sourcePath: "src/routes/robots[.]txt.ts",
+      kind: "route",
+      dynamic: false,
+      componentName: null,
+      isServerOnly: true,
+    };
+    const mixed: ThemeRouteRecord = {
+      id: "/mixed",
+      path: "/mixed",
+      sourcePath: "src/routes/mixed.tsx",
+      kind: "route",
+      dynamic: false,
+      componentName: "Page",
+      isServerOnly: false,
+    };
+    const onOpenThemeRoute = vi.fn();
+    const onOpenThemeRouteCode = vi.fn();
+    renderPanel(vi.fn(), vi.fn(), {
+      themeRoutes: [endpoint, mixed],
+      onOpenThemeRoute,
+      onOpenThemeRouteCode,
+      onDeletePage: vi.fn(),
+    });
+    expect(screen.getByText("Endpoints · Code only")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Delete page /robots.txt" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "/robots.txt" }));
+    expect(onOpenThemeRouteCode).toHaveBeenCalledWith(endpoint);
+    expect(onOpenThemeRoute).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "/mixed" }));
+    expect(onOpenThemeRoute).toHaveBeenCalledWith(mixed);
+    expect(
+      screen.getByRole("button", { name: "Delete page /mixed" }),
+    ).toBeTruthy();
+  });
+
   const routes = [
     {
       id: "/",
@@ -204,7 +245,9 @@ describe("EditorSectionsPanel visibility controls", () => {
     fireEvent.pointerDown(addButton, { button: 0, ctrlKey: false });
     // The choice is where the copy stops following the library, so it says so.
     expect(
-      await screen.findByText(/Later changes to the section library don.t update it/),
+      await screen.findByText(
+        /Later changes to the section library don.t update it/,
+      ),
     ).toBeTruthy();
     fireEvent.click(await screen.findByRole("menuitem", { name: "promo" }));
 

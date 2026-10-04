@@ -69,6 +69,8 @@ export type ThemeRouteRecord = {
   isVirtual?: boolean;
   /** Named route component that the bounded Design runtime can execute. */
   componentName: string | null;
+  /** Positively identified handler-only route; unknown options remain pages. */
+  isServerOnly?: boolean;
 };
 
 export type ThemeRouteDiagnostic = {
@@ -322,7 +324,8 @@ export function parseThemeRouteSourcePath(
   // when its final route segment is pathless (for example `_marketing.tsx`).
   const isPathless = isPathlessSegment(segments.at(-1));
   const isNonNested = segments.some(
-    (segment) => segment.endsWith("_") && !hasEscapedTrailingUnderscore(segment),
+    (segment) =>
+      segment.endsWith("_") && !hasEscapedTrailingUnderscore(segment),
   );
   const urlSegments = segments
     .filter((segment) => !isPathlessSegment(segment))
@@ -472,6 +475,45 @@ function readStaticRouteArgument(argument: any): string | null {
 
 export const SAFE_THEME_INLINE_ROUTE_COMPONENT = "__MorphInlineRouteComponent";
 
+function readServerOnlyOptions(object: any): boolean {
+  if (object?.type !== "ObjectExpression") return false;
+  // Spreads/computed options may supply a page component. Do not hide them
+  // from Design merely because static analysis cannot resolve their contents.
+  if (
+    object.properties.some(
+      (property: any) => property.type === "SpreadElement" || property.computed,
+    )
+  )
+    return false;
+  const propertyNamed = (value: any, name: string) =>
+    value?.properties?.find(
+      (property: any) =>
+        property.type === "ObjectProperty" &&
+        !property.computed &&
+        (property.key?.name === name || property.key?.value === name),
+    );
+  if (
+    object.properties.some(
+      (property: any) =>
+        property.key?.name === "component" ||
+        property.key?.value === "component",
+    )
+  )
+    return false;
+  if (
+    object.properties.filter(
+      (property: any) =>
+        property.key?.name === "server" || property.key?.value === "server",
+    ).length !== 1
+  )
+    return false;
+  const server = propertyNamed(object, "server")?.value;
+  return (
+    server?.type === "ObjectExpression" &&
+    Boolean(propertyNamed(server, "handlers"))
+  );
+}
+
 function readObjectComponentProperty(object: any): string | null {
   if (object?.type !== "ObjectExpression") return null;
   const property = object.properties?.find(
@@ -495,6 +537,7 @@ function readRouteDeclaration(ast: any): {
   kind: "root" | "route";
   path: string;
   componentName: string | null;
+  isServerOnly?: boolean;
 } | null {
   for (const statement of ast.program.body ?? []) {
     const declaration =
@@ -530,12 +573,15 @@ function readRouteDeclaration(ast: any): {
         return {
           kind: "root",
           path: "/",
-          componentName: readObjectComponentProperty(initializer.arguments?.[0]),
+          componentName: readObjectComponentProperty(
+            initializer.arguments?.[0],
+          ),
         };
       }
       return {
         ...declarationResult,
         componentName: readObjectComponentProperty(initializer.arguments?.[0]),
+        isServerOnly: readServerOnlyOptions(initializer.arguments?.[0]),
       };
     }
   }
@@ -625,7 +671,10 @@ function readUnsupportedRouteConfigDiagnostics(
     );
   }
   if (config.disableTypes === true) {
-    unsupported("disableTypes", "Code Mode requires the generated TypeScript route types.");
+    unsupported(
+      "disableTypes",
+      "Code Mode requires the generated TypeScript route types.",
+    );
   }
   if (
     config.routeToken !== undefined &&
@@ -639,11 +688,11 @@ function readUnsupportedRouteConfigDiagnostics(
   ) {
     unsupported("indexToken", 'use the default "index" token.');
   }
-  if (
-    config.routeFilePrefix !== undefined &&
-    config.routeFilePrefix !== ""
-  ) {
-    unsupported("routeFilePrefix", "custom route prefixes are not mirrored by Code Mode.");
+  if (config.routeFilePrefix !== undefined && config.routeFilePrefix !== "") {
+    unsupported(
+      "routeFilePrefix",
+      "custom route prefixes are not mirrored by Code Mode.",
+    );
   }
   if (
     config.routeFileIgnorePrefix !== undefined &&
@@ -655,13 +704,22 @@ function readUnsupportedRouteConfigDiagnostics(
     config.routeFileIgnorePattern !== undefined &&
     config.routeFileIgnorePattern !== ""
   ) {
-    unsupported("routeFileIgnorePattern", "custom ignore patterns are not mirrored by Code Mode.");
+    unsupported(
+      "routeFileIgnorePattern",
+      "custom ignore patterns are not mirrored by Code Mode.",
+    );
   }
   if (config.virtualRouteConfig !== undefined) {
-    unsupported("virtualRouteConfig", "virtual routes require executing user configuration code.");
+    unsupported(
+      "virtualRouteConfig",
+      "virtual routes require executing user configuration code.",
+    );
   }
   if (config.plugins !== undefined) {
-    unsupported("plugins", "generator plugins are not executed in the bounded editor registry.");
+    unsupported(
+      "plugins",
+      "generator plugins are not executed in the bounded editor registry.",
+    );
   }
 
   return diagnostics;
@@ -712,10 +770,7 @@ export function buildThemeRouteRegistry(
     const sourceFileName = metadata.relativePath.split("/").at(-1) ?? "";
     const sourceFileStem = sourceFileName.replace(/\.[cm]?[jt]sx?$/, "");
     const finalSourceToken = splitFlatRouteSegments(sourceFileStem).at(-1);
-    if (
-      finalSourceToken?.startsWith("(") &&
-      finalSourceToken.endsWith(")")
-    ) {
+    if (finalSourceToken?.startsWith("(") && finalSourceToken.endsWith(")")) {
       diagnostics.push({
         level: "error",
         code: "INVALID_ROUTE_PATH",
@@ -863,6 +918,7 @@ export function buildThemeRouteRegistry(
       isSplat: metadata.isSplat,
       parentSourcePath: null,
       componentName: declaredRoute?.componentName ?? null,
+      isServerOnly: declaredRoute?.isServerOnly ?? false,
     });
   }
 
@@ -888,6 +944,9 @@ export function buildThemeRouteRegistry(
         ...(owner.routePieces ?? {}),
         [piece.type]: piece.path,
       };
+      if (piece.type === "component" || piece.type === "lazy") {
+        owner.isServerOnly = false;
+      }
       continue;
     }
     if (piece.type === "lazy") {

@@ -65,14 +65,15 @@ export const EditorPathNavigator = memo(function EditorPathNavigator({
   // template fallback keeps the navigator useful while the source workspace
   // is still being initialized.
   const templateRoutes = useMemo(() => {
-    const sourceRoutes = themeRoutes.filter((route) => route.kind === "route");
-    if (sourceRoutes.length > 0) {
+    const sourceRoutes = themeRoutes.filter(
+      (route) => route.kind === "route" && !route.isServerOnly,
+    );
+    if (themeRoutes.some((route) => route.kind === "route")) {
       return sourceRoutes.map((route) => {
         const template =
           templateForRoute(context.templates, route.path) ??
           context.templates.find(
-            (candidate) =>
-              !candidate.routePath && candidate.type !== "layout",
+            (candidate) => !candidate.routePath && candidate.type !== "layout",
           ) ??
           context.templates[0];
         return {

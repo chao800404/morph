@@ -54,7 +54,9 @@ import {
   BinaryFileIcon,
   EditorCodeBinaryFile,
 } from "./editor-code-binary-file";
-import { writeThemeBinaryFile } from "../-queries/theme-binary-files";
+import { writeThemeBinaryFile, writeThemePublicTextFile } from "../-queries/theme-binary-files";
+import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
+import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import {
   isEditorWritePaused,
   refusalOfThemeBinaryWrite,
@@ -273,7 +275,8 @@ function getLanguage(path: string): string {
   if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
   if (path.endsWith(".jsx") || path.endsWith(".js")) return "javascript";
   if (path.endsWith(".css")) return "css";
-  if (path.endsWith(".json")) return "json";
+  if (path.endsWith(".json") || path.endsWith(".webmanifest")) return "json";
+  if (path.endsWith(".xml")) return "xml";
   if (path.endsWith(".html")) return "html";
   return "plaintext";
 }
@@ -457,7 +460,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   {
     storefrontId,
     themeId,
-    files,
+    files: sourceFiles,
     tree,
     binaryFiles = EMPTY_BINARY_FILES,
     initialActiveFilePath,
@@ -468,7 +471,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     onThemeFilesMoved,
     onDirtyFilesChange,
     onSaveFile,
-    onPreviewFilesChange,
+    onPreviewFilesChange: onSourcePreviewFilesChange,
     onBuildPreview,
     externalDiagnostics,
     dependencySourceRevisionId,
@@ -476,6 +479,17 @@ const EditorCodeWorkspaceContent = forwardRef<
   ref,
 ) {
   const queryClient = useQueryClient();
+  const [openedPublicText, setOpenedPublicText] = useState<Record<string, StorefrontThemeFileDTO>>({});
+  const files = useMemo(() => [
+    ...sourceFiles,
+    ...Object.values(openedPublicText).filter((file) =>
+      file.storefrontId === storefrontId && file.themeId === themeId &&
+      binaryFiles.some((binary) => binary.path === file.path) &&
+      !sourceFiles.some((source) => source.path === file.path)),
+  ], [sourceFiles, openedPublicText, binaryFiles, storefrontId, themeId]);
+  const onPreviewFilesChange = useCallback((entries: Array<{ path: string; content: string }>) => {
+    onSourcePreviewFilesChange?.(entries.filter((file) => !isThemePublicPath(file.path)));
+  }, [onSourcePreviewFilesChange]);
   const binaryFileByPath = useMemo(
     () => new Map(binaryFiles.map((file) => [file.path, file])),
     [binaryFiles],
@@ -1103,6 +1117,27 @@ const EditorCodeWorkspaceContent = forwardRef<
     );
   }, [activeFilePath, files, generatedRouteTreeFile]);
   const activeFileIsGenerated = activeFilePath === GENERATED_ROUTE_TREE_PATH;
+  const activePublicTextMetadata = binaryFileByPath.get(activeFilePath);
+  const publicTextQuery = useQuery({
+    ...storefrontThemeFileQueries.file(storefrontId, themeId, activeFilePath,
+      activePublicTextMetadata ? `${activePublicTextMetadata.blobDigest}:${activePublicTextMetadata.version}` : undefined),
+    enabled: Boolean(activePublicTextMetadata && isEditablePublicTextPath(activeFilePath)),
+  });
+  useEffect(() => {
+    const loaded = publicTextQuery.data;
+    if (!loaded || !activePublicTextMetadata || !isEditablePublicTextPath(loaded.path)) return;
+    // A replacement during the read must refresh metadata, not attach new
+    // bytes to the old file/version shown by the explorer.
+    if (loaded.id !== activePublicTextMetadata.id || loaded.version !== activePublicTextMetadata.version) {
+      void queryClient.invalidateQueries({ queryKey: storefrontThemeFileQueries.tree(storefrontId, themeId).queryKey });
+      return;
+    }
+    const current = useThemeWorkspaceStore.getState().getWorkspaceFiles(storefrontId, themeId)[loaded.path];
+    if (current?.serverExists && current.serverFileId === loaded.id && current.serverVersion > loaded.version) return;
+    setOpenedPublicText((previous) => previous[loaded.path] === loaded ? previous : { ...previous, [loaded.path]: loaded });
+    useThemeWorkspaceStore.getState().hydrateFromQuery(storefrontId, themeId,
+      [...sourceFiles, loaded], undefined, binaryFiles.map((file) => file.path));
+  }, [publicTextQuery.data, activePublicTextMetadata, sourceFiles, binaryFiles, storefrontId, themeId, queryClient]);
 
   // Monaco can swap the model without remounting the React editor. Refresh the
   // semantic tag decorations after that transition so a hot reload or a tab
@@ -1263,7 +1298,11 @@ const EditorCodeWorkspaceContent = forwardRef<
         path
       ];
       const res = await sendEditorWrite(workspaceScope, "theme", () =>
-        saveStorefrontThemeFile({
+        isEditablePublicTextPath(path) ? writeThemePublicTextFile({
+          storefrontId, themeId, path, content,
+          precondition: themeFileWritePrecondition(state),
+          expectedSourceGeneration: useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(workspaceScope),
+        }) : saveStorefrontThemeFile({
           data: {
             storefrontId,
             themeId,
@@ -1316,7 +1355,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       // HMR payload. Recreating the iframe here discards component state and
       // makes switching back to Design look like a page reload. Standalone
       // consumers without that boundary still need the full restart hook.
-      if (!onSaveFile) onRestartPreview?.();
+      if (!onSaveFile || isThemePublicPath(saved.path)) onRestartPreview?.();
     },
     onError: (err, variables) => {
       if (isEditorWritePaused(err)) {
@@ -2447,7 +2486,11 @@ const EditorCodeWorkspaceContent = forwardRef<
       // `expectMissing` is the create precondition: the write is refused if the
       // path already exists, so creating can never overwrite existing work.
       const res = await sendEditorWrite(workspaceScope, "theme", () =>
-        saveStorefrontThemeFile({
+        isEditablePublicTextPath(path) ? writeThemePublicTextFile({
+          storefrontId, themeId, path, content,
+          precondition: { expectMissing: true },
+          expectedSourceGeneration: useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(workspaceScope),
+        }) : saveStorefrontThemeFile({
           data: {
             storefrontId,
             themeId,
@@ -2466,10 +2509,16 @@ const EditorCodeWorkspaceContent = forwardRef<
     },
     onSuccess: async (saved) => {
       if (!saved) return;
-      markWorkspaceSaved(saved, workspaceScope);
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
       });
+      // The old tree omits a just-created binary file. Publish its editor
+      // baseline only after the refreshed tree includes the bytes reference,
+      // so source-only hydration cannot classify it as remotely deleted.
+      markWorkspaceSaved(saved, workspaceScope, saved.sourceGeneration);
+      if (isEditablePublicTextPath(saved.path)) {
+        setOpenedPublicText((previous) => ({ ...previous, [saved.path]: saved }));
+      }
       setCreatingInFolder(null);
       setNewFilePath("");
       setCreatingFolderIn(null);
@@ -2532,7 +2581,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (createMutation.isPending) return;
     const prepared = prepareNewThemeFile(
       newFilePath,
-      files.map((file) => file.path),
+      [...files.map((file) => file.path), ...binaryFileByPath.keys()],
     );
     if (!prepared.ok) {
       toast.error(prepared.message);
@@ -2543,7 +2592,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       content: prepared.content,
       mimeType: prepared.mimeType,
     });
-  }, [createMutation, files, newFilePath]);
+  }, [createMutation, files, binaryFileByPath, newFilePath]);
 
   const submitNewFolder = useCallback(() => {
     if (createMutation.isPending) return;
@@ -2830,10 +2879,9 @@ const EditorCodeWorkspaceContent = forwardRef<
 
     try {
       try {
-        const formattedContent = await formatEditorCode(
-          originalContent,
-          activeFilePath,
-        );
+        const formattedContent = isThemePublicPath(activeFilePath)
+          ? originalContent
+          : await formatEditorCode(originalContent, activeFilePath);
         const latestModelContent = model?.getValue?.();
         const modelChangedWhileFormatting =
           typeof latestModelContent === "string" &&
@@ -4477,6 +4525,13 @@ const EditorCodeWorkspaceContent = forwardRef<
                 inlayHints: { enabled: "on" },
               }}
             />
+          ) : activePublicTextMetadata && isEditablePublicTextPath(activeFilePath) ? (
+            <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
+              {publicTextQuery.isError ? <>
+                Could not load this public text file.
+                <Button variant="outline" size="sm" onClick={() => void publicTextQuery.refetch()}>Retry</Button>
+              </> : <>Loading public text file…</>}
+            </div>
           ) : binaryFileByPath.has(activeFilePath) ? (
             <EditorCodeBinaryFile
               file={binaryFileByPath.get(activeFilePath)!}

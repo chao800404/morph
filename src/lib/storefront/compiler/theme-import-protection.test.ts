@@ -31,7 +31,10 @@ describe("theme import protection", () => {
   it("blocks a .client module from a reachable server route", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file("src/routes/index.tsx", 'import Widget from "../widget.client"; export const Route = Widget;'),
+        file(
+          "src/routes/index.tsx",
+          'import Widget from "../widget.client"; export const Route = Widget;',
+        ),
         file("src/widget.client.tsx", "export default () => null;"),
       ],
       { target: "server", entryPaths: ["src/routes/index.tsx"] },
@@ -52,7 +55,10 @@ describe("theme import protection", () => {
   it("honors TanStack server-only and client-only marker imports", () => {
     const clientDiagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file("src/pages/index.tsx", 'import "@tanstack/react-start/server-only"; export default () => null;'),
+        file(
+          "src/pages/index.tsx",
+          'import "@tanstack/react-start/server-only"; export default () => null;',
+        ),
       ],
       { target: "client", entryPaths: ["src/pages/index.tsx"] },
     );
@@ -67,7 +73,10 @@ describe("theme import protection", () => {
 
     const serverDiagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file("src/routes/index.tsx", 'import "@tanstack/react-start/client-only"; export const Route = {};'),
+        file(
+          "src/routes/index.tsx",
+          'import "@tanstack/react-start/client-only"; export const Route = {};',
+        ),
       ],
       { target: "server", entryPaths: ["src/routes/index.tsx"] },
     );
@@ -120,10 +129,7 @@ describe("theme import protection", () => {
   it("resolves tsconfig path aliases before checking server/client boundaries", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file(
-          "tsconfig.json",
-          JSON.stringify({ compilerOptions: { paths: { "@/*": ["src/*"] } } }),
-        ),
+        file("tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@/*": ["src/*"] } } })),
         file("src/pages/index.tsx", 'import secret from "@/secret.server"; export default secret;'),
         file("src/secret.server.ts", "export default 'secret';"),
       ],
@@ -170,6 +176,53 @@ describe("theme import protection", () => {
     expect(diagnostics).toHaveLength(0);
   });
 
+  it.each([
+    'import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/api/test")({ server: { handlers: { GET: () => helper() } } });',
+    'import { createServerFn } from "@tanstack/react-start"; export const action = createServerFn().handler(() => helper());',
+  ])(
+    "KNOWN GAP: still refuses a local .server helper exclusively inside a genuine Start server boundary",
+    (source) => {
+      const files = [
+        file("src/routes/test.tsx", 'import { helper } from "../helper.server"; ' + source),
+        file(
+          "src/helper.server.ts",
+          'import { getRequest } from "@tanstack/react-start/server"; export const helper = () => getRequest();',
+        ),
+      ];
+      expect(
+        collectThemeImportProtectionDiagnostics(files, {
+          target: "client",
+          entryPaths: ["src/routes/test.tsx"],
+        }),
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]));
+      expect(
+        collectThemeImportProtectionDiagnostics(files, {
+          target: "server",
+          entryPaths: ["src/routes/test.tsx"],
+        }),
+      ).toEqual([]);
+    },
+  );
+
+  it.each([
+    'import { helper } from "../helper.server"; import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/test")({ component: () => helper(), server: { handlers: { GET: () => helper() } } });',
+    'import "../helper.server"; import { createServerFn } from "@tanstack/react-start"; export const action = createServerFn().handler(() => 1);',
+    'import { helper } from "../helper.server"; const createServerFn = () => ({ handler: (fn: any) => fn() }); export const action = createServerFn().handler(() => helper());',
+    'export { helper } from "../helper.server";',
+  ])(
+    "still refuses local .server code used by the client, side effects, fake factories or re-exports",
+    (source) => {
+      const diagnostics = collectThemeImportProtectionDiagnostics(
+        [
+          file("src/routes/test.tsx", source),
+          file("src/helper.server.ts", "export const helper = () => 'private';"),
+        ],
+        { target: "client", entryPaths: ["src/routes/test.tsx"] },
+      );
+      expect(diagnostics.some((item) => item.code === "THEME_IMPORT_SERVER_IN_CLIENT")).toBe(true);
+    },
+  );
+
   it("still blocks the same import when it is used outside the route's server property", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [
@@ -182,9 +235,7 @@ describe("theme import protection", () => {
     );
 
     expect(diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]),
     );
   });
 
@@ -200,9 +251,7 @@ describe("theme import protection", () => {
     );
 
     expect(diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]),
     );
   });
 
@@ -232,10 +281,7 @@ describe("theme import protection", () => {
       [
         file("src/router.tsx", "export function getRouter() { return {}; }"),
         file("src/routes/__root.tsx", "export const Route = {};"),
-        file(
-          "src/server.ts",
-          'import Widget from "./widget.client"; export default Widget;',
-        ),
+        file("src/server.ts", 'import Widget from "./widget.client"; export default Widget;'),
         file("src/widget.client.tsx", "export default () => null;"),
       ],
       { entry: "src/routes/__root.tsx", hasStartRuntime: true },

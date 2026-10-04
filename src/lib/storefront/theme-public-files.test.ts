@@ -54,7 +54,7 @@ describe("checkThemePublicPath", () => {
     });
   });
 
-  it("refuses SVG, and anything that is not an image or a font", () => {
+  it("refuses gated SVG and unsupported executable formats", () => {
     expect(reason("public/logo.svg")).toBe("svg-not-allowed");
     // Answered by the platform before any client asset, so never servable.
     expect(reason("public/api/store/products/a.png")).toBe("reserved-prefix");
@@ -64,9 +64,28 @@ describe("checkThemePublicPath", () => {
     expect(reason("public/logo.SVGZ")).toBe("svg-not-allowed");
     // The picker follows the same gate.
     expect(THEME_PUBLIC_ACCEPT.split(",")).not.toContain(".svg");
-    expect(reason("public/robots.txt")).toBe("unsupported-format");
+    // Data text is now admitted; its bytes are validated by the server.
+    expect(reason("public/robots.txt")).toBeNull();
     expect(reason("public/page.html")).toBe("unsupported-format");
     expect(reason("public/noextension")).toBe("unsupported-format");
+  });
+
+  it("admits data text formats with server-owned MIME types and unchanged collisions", () => {
+    for (const [path, mimeType] of [
+      ["public/robots.txt", "text/plain; charset=utf-8"],
+      ["public/sitemap.XML", "application/xml; charset=utf-8"],
+      ["public/config.json", "application/json; charset=utf-8"],
+      ["public/site.webmanifest", "application/manifest+json; charset=utf-8"],
+    ]) {
+      expect(checkThemePublicPath(path!)).toMatchObject({ ok: true, mimeType });
+    }
+    expect(checkThemePublicPath("public/robots.txt", ["/robots.txt"])).toEqual({
+      ok: false,
+      reason: "route-collision",
+    });
+    expect(THEME_PUBLIC_ACCEPT.split(",")).toEqual(
+      expect.arrayContaining([".txt", ".xml", ".json", ".webmanifest"]),
+    );
   });
 
   it("refuses files the host treats as instructions, not content", () => {
