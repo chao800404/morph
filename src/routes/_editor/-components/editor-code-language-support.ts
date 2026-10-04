@@ -1,10 +1,9 @@
 import type { Monaco } from "@monaco-editor/react";
 import type { editor, Position } from "monaco-editor";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
-import {
-  collectThemeImportProtectionDiagnosticsForBuild,
-} from "@/lib/storefront/compiler/theme-import-protection";
+import { collectThemeImportProtectionDiagnosticsForBuild } from "@/lib/storefront/compiler/theme-import-protection";
 import { readThemePathAliases } from "@/lib/storefront/compiler/theme-path-aliases";
+import { deriveThemeSourceRuntimeContract } from "@/lib/storefront/theme-source-runtime-contract";
 import {
   suggestTailwindClasses,
   type TailwindClassSuggestion,
@@ -982,17 +981,19 @@ export function collectThemeImportProtectionEditorDiagnostics(
     files.map((file) => ({ path: file.path, content: file.content })),
   );
   const manifest = files.find((file) => file.path === "morph.theme.json");
-  let entry = "src/pages/index.tsx";
-  let hasStartRuntime = false;
+  const sourceContract = deriveThemeSourceRuntimeContract(files);
+  let entry = sourceContract.entry ?? "src/pages/index.tsx";
+  let hasStartRuntime = sourceContract.routerFramework === "tanstack-start";
   if (manifest) {
     try {
       const parsed: unknown = JSON.parse(manifest.content);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const record = parsed as Record<string, unknown>;
-        if (typeof record.entry === "string") entry = record.entry;
+        if (!sourceContract.entry && typeof record.entry === "string")
+          entry = record.entry;
         const router = record.router;
         if (router && typeof router === "object" && !Array.isArray(router)) {
-          hasStartRuntime =
+          hasStartRuntime ||=
             (router as Record<string, unknown>).framework === "tanstack-start";
         }
       }
@@ -1000,10 +1001,14 @@ export function collectThemeImportProtectionEditorDiagnostics(
       // The manifest scanner reports malformed JSON separately.
     }
   }
-  const importDiagnostics = collectThemeImportProtectionDiagnosticsForBuild(files, {
-    entry,
-    hasStartRuntime,
-  }).map((diagnostic) => ({
+  const importDiagnostics = collectThemeImportProtectionDiagnosticsForBuild(
+    files,
+    {
+      entry,
+      hasStartRuntime,
+      nativeStartCompilation: hasStartRuntime,
+    },
+  ).map((diagnostic) => ({
     id: `tanstack-import:${diagnostic.target}:${diagnostic.code}:${diagnostic.filePath}:${diagnostic.line}:${diagnostic.column}:${diagnostic.importSource}`,
     path: diagnostic.filePath,
     line: diagnostic.line,
@@ -1231,8 +1236,7 @@ export function renderGeneratedRouteTreeSource(
     emittedChildrenDeclarations.add(entry.route.sourcePath);
     const childEntries = children
       .map(
-        (child) =>
-          `  ${child.variableName}: ${renderRouteWithChildren(child)}`,
+        (child) => `  ${child.variableName}: ${renderRouteWithChildren(child)}`,
       )
       .join(",\n");
     routeWithChildrenDeclarations.push(
@@ -1263,7 +1267,9 @@ export function renderGeneratedRouteTreeSource(
     .join("\n");
   const fullPathRouteEntries = [
     ...new Map(
-      routeEntries.map((route) => [route.fullPath ?? route.path, route] as const),
+      routeEntries.map(
+        (route) => [route.fullPath ?? route.path, route] as const,
+      ),
     ).values(),
   ];
   const fileRoutesByFullPath = fullPathRouteEntries
@@ -1773,19 +1779,13 @@ export function registerTanStackRouteCompletionProvider(
   }
 
   const provider = {
-    triggerCharacters: ["\"", "'", "/", "$"],
-    provideCompletionItems(
-      model: editor.ITextModel,
-      position: Position,
-    ) {
+    triggerCharacters: ['"', "'", "/", "$"],
+    provideCompletionItems(model: editor.ITextModel, position: Position) {
       if (!/\.(?:jsx|tsx|js|ts)$/.test(model.uri.path)) {
         return { suggestions: [] };
       }
       const line = model.getLineContent(position.lineNumber);
-      const context = resolveThemeRouteCompletionContext(
-        line,
-        position.column,
-      );
+      const context = resolveThemeRouteCompletionContext(line, position.column);
       if (!context) return { suggestions: [] };
 
       const registry = buildThemeRouteRegistry(getFiles());
@@ -1901,14 +1901,15 @@ export function configureThemeTypeScript(
       content: file.content,
     })),
   );
-  const workspaceBaseUrl = workspaceScope &&
+  const workspaceBaseUrl =
+    workspaceScope &&
     pathAliasConfig.sourcePath &&
     (pathAliasConfig.baseUrl || Object.keys(pathAliasConfig.paths).length > 0)
-    ? getThemeModelUri(workspaceScope, pathAliasConfig.baseUrl).replace(
-        /^file:\/\//,
-        "",
-      )
-    : undefined;
+      ? getThemeModelUri(workspaceScope, pathAliasConfig.baseUrl).replace(
+          /^file:\/\//,
+          "",
+        )
+      : undefined;
   defaults.setCompilerOptions({
     allowJs: true,
     allowNonTsExtensions: true,

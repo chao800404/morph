@@ -4,7 +4,47 @@
  * Theme source can never install packages during a request, so every module a
  * Theme is allowed to import already lives here when the container starts.
  */
+import type { Plugin } from "vite";
+
 export const SANDBOX_TOOLCHAIN_ROOT = "/opt/morph-toolchain";
+
+/** Browser HTTP access must not expose server-only source, including Vite's
+ * inline sourcesContent maps and ?raw responses. SSR module-runner transforms
+ * do not pass through this HTTP middleware and remain available to Start.
+ * Keep this factory self-contained: the container config emits the same code.
+ */
+export function themePreviewServerSourcePlugin(): Plugin {
+  return {
+    name: "morph-preview-server-source-boundary",
+    enforce: "pre",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        let pathname: string;
+        try {
+          pathname = decodeURIComponent(
+            (request.url ?? "").split(/[?#]/, 1)[0]!,
+          );
+        } catch {
+          response.statusCode = 400;
+          response.end("Invalid request path");
+          return;
+        }
+        if (!/\.server\.[cm]?[jt]sx?(?:\.map)?$/i.test(pathname)) {
+          next();
+          return;
+        }
+        response.statusCode = 403;
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Content-Type", "text/plain; charset=utf-8");
+        response.end("Server-only source is not available over HTTP");
+      });
+    },
+  };
+}
+
+export function themePreviewServerSourcePluginSource(): string {
+  return `(${themePreviewServerSourcePlugin.toString()})()`;
+}
 
 /**
  * URL namespace owned by the Theme's Vite server.

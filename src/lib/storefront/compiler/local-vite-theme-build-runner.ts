@@ -5,7 +5,12 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
-import { build as viteBuild, createBuilder, type Plugin } from "vite";
+import {
+  build as viteBuild,
+  createBuilder,
+  type Plugin,
+  type InlineConfig,
+} from "vite";
 import {
   DEFAULT_APPROVED_DEPENDENCIES,
   type SandboxViteThemeBuildRunnerOptions,
@@ -21,6 +26,7 @@ import type {
 } from "./theme-build-runner.types";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { createThemePreviewServerStubPlugin } from "./theme-preview-server-stub";
+import { createThemeStartStaticPreviewPlugin } from "./theme-start-static-preview";
 import { collectThemeImportProtectionDiagnosticsForBuild } from "./theme-import-protection";
 import {
   createThemeViteAliases,
@@ -88,7 +94,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
   readonly version: string;
   readonly isolation = "local-in-process" as const;
 
-
   readonly compilerId = "tailwind-v4-build";
   readonly compilerVersion = "4.1.17";
 
@@ -124,7 +129,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
   }
-
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
@@ -290,10 +294,12 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       });
       routeRegistry = bootstrap.routeRegistry;
 
-      const pathAliasConfig = readThemePathAliases(input.files.map((file) => ({
-        path: file.path,
-        content: typeof file.content === "string" ? file.content : "",
-      })));
+      const pathAliasConfig = readThemePathAliases(
+        input.files.map((file) => ({
+          path: file.path,
+          content: typeof file.content === "string" ? file.content : "",
+        })),
+      );
       if (pathAliasConfig.diagnostics.length > 0) {
         const errors: ThemeBuildDiagnostic[] = pathAliasConfig.diagnostics.map(
           (diagnostic) => ({
@@ -305,7 +311,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             code: diagnostic.code,
           }),
         );
-        const firstError = errors[0]?.message ?? "Theme path alias configuration is invalid.";
+        const firstError =
+          errors[0]?.message ?? "Theme path alias configuration is invalid.";
         addLog("error", firstError);
         return {
           success: false,
@@ -323,12 +330,12 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         collectThemeImportProtectionDiagnosticsForBuild(
           input.files.map((file) => ({
             path: file.path,
-            content:
-              typeof file.content === "string" ? file.content : "",
+            content: typeof file.content === "string" ? file.content : "",
           })),
           {
             entry: input.entry,
             hasStartRuntime: Boolean(routeRegistry),
+            nativeStartCompilation: Boolean(routeRegistry),
           },
         );
       if (importProtectionDiagnostics.length > 0) {
@@ -342,7 +349,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             code: diagnostic.code,
           }),
         );
-        const firstError = errors[0]?.message ?? "Theme import protection failed.";
+        const firstError =
+          errors[0]?.message ?? "Theme import protection failed.";
         addLog("error", firstError);
         return {
           success: false,
@@ -416,16 +424,24 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       // Rollup plugin to enforce path containment & approved dependency whitelist
       const approvedSet = this.approvedDependencies;
       const workspaceRoot = path.resolve(tempDir);
-      const themeAliases = createThemeViteAliases(pathAliasConfig, workspaceRoot);
+      const themeAliases = createThemeViteAliases(
+        pathAliasConfig,
+        workspaceRoot,
+      );
       const themeBaseUrlPlugin: Plugin | null = pathAliasConfig.baseUrl
         ? {
             name: "morph-theme-base-url",
             enforce: "pre",
             resolveId(source) {
               if (source.startsWith(".") || source.startsWith("/")) return null;
-              const candidateRoot = path.resolve(workspaceRoot, pathAliasConfig.baseUrl, source);
+              const candidateRoot = path.resolve(
+                workspaceRoot,
+                pathAliasConfig.baseUrl,
+                source,
+              );
               const relative = path.relative(workspaceRoot, candidateRoot);
-              if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+              if (relative.startsWith("..") || path.isAbsolute(relative))
+                return null;
               const candidates = [
                 candidateRoot,
                 ...[".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"].map(
@@ -435,7 +451,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
                   (extension) => `${candidateRoot}/index${extension}`,
                 ),
               ];
-              return candidates.find((candidate) => existsSync(candidate)) ?? null;
+              return (
+                candidates.find((candidate) => existsSync(candidate)) ?? null
+              );
             },
           }
         : null;
@@ -451,7 +469,10 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         enforce: "pre",
         resolveId(source, importer) {
           // If importer is already inside node_modules, allow approved package internal imports
-          if (importer && importer.replace(/\\/g, "/").includes("/node_modules/")) {
+          if (
+            importer &&
+            importer.replace(/\\/g, "/").includes("/node_modules/")
+          ) {
             return null;
           }
 
@@ -469,14 +490,21 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             } else if (path.isAbsolute(source)) {
               resolved = path.resolve(source);
             } else {
-              const importerDir = importer ? path.dirname(importer) : workspaceRoot;
+              const importerDir = importer
+                ? path.dirname(importer)
+                : workspaceRoot;
               resolved = path.resolve(importerDir, source);
             }
 
             const rel = path.relative(workspaceRoot, resolved);
-            const normalizedResolved = resolved.replace(/\\/g, "/").toLowerCase();
-            const normalizedWorkspace = workspaceRoot.replace(/\\/g, "/").toLowerCase();
-            const isNodeModulesPath = normalizedResolved.includes("/node_modules");
+            const normalizedResolved = resolved
+              .replace(/\\/g, "/")
+              .toLowerCase();
+            const normalizedWorkspace = workspaceRoot
+              .replace(/\\/g, "/")
+              .toLowerCase();
+            const isNodeModulesPath =
+              normalizedResolved.includes("/node_modules");
 
             if (
               !isNodeModulesPath &&
@@ -505,9 +533,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
             return null;
           }
-
-
-
 
           if (source.startsWith("\0")) {
             return null;
@@ -552,7 +577,10 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       const outDir = path.join(tempDir, "dist");
 
       if (routeRegistry) {
-        addLog("info", "Executing platform-owned TanStack Start Cloudflare build...");
+        addLog(
+          "info",
+          "Executing platform-owned TanStack Start Cloudflare build...",
+        );
         const startOutDir = path.join(outDir, "runtime");
         const startBuildPromise = (async () => {
           const builder = await createBuilder({
@@ -602,18 +630,27 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         ? path.join(outDir, "preview")
         : outDir;
 
-      const buildPromise = viteBuild({
+      const previewConfig: InlineConfig = {
         root: tempDir,
         base: "./",
         configFile: false,
         plugins: [
-          // Preview is client-only and never runs a loader, so the Start server
-          // module is stubbed rather than resolved.
-          createThemePreviewServerStubPlugin(),
+          // Eliminate server implementations from BOTH browser artifacts.
+          ...(routeRegistry
+            ? [tanstackStart({ router: { basepath: "/" } })]
+            : [createThemePreviewServerStubPlugin()]),
           tailwindcss(),
           viteReact(),
           ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
           securityPlugin,
+          ...(routeRegistry
+            ? [
+                createThemeStartStaticPreviewPlugin({
+                  indexHtml: path.join(tempDir, "index.html"),
+                  outDir: previewOutDir,
+                }),
+              ]
+            : []),
         ],
         resolve: {
           alias: themeAliases,
@@ -633,8 +670,13 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             },
           },
         },
-        logLevel: "silent",
-      });
+        logLevel: "silent" as const,
+      };
+      const buildPromise = routeRegistry
+        ? createBuilder(previewConfig).then((builder) =>
+            builder.build(builder.environments.client!),
+          )
+        : viteBuild(previewConfig);
 
       let timeoutTimer: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise((_, reject) => {
@@ -669,9 +711,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           if (entry.isDirectory()) {
             await collectDir(full, baseDir);
           } else if (entry.isFile()) {
-            const relPath = path
-              .relative(baseDir, full)
-              .replace(/\\/g, "/");
+            const relPath = path.relative(baseDir, full).replace(/\\/g, "/");
             const stat = await fs.stat(full);
             const mimeType = getMimeType(relPath);
 
@@ -689,7 +729,8 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       await collectDir(outDir, outDir);
 
       if (fileStats.length === 0) {
-        const msg = "DIST_NOT_FOUND: Vite build did not produce any output files";
+        const msg =
+          "DIST_NOT_FOUND: Vite build did not produce any output files";
         addLog("error", msg);
         return {
           success: false,
@@ -815,7 +856,10 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           : undefined,
       };
 
-      addLog("info", `Build completed successfully with ${artifacts.length} dist files.`);
+      addLog(
+        "info",
+        `Build completed successfully with ${artifacts.length} dist files.`,
+      );
 
       return {
         success: true,

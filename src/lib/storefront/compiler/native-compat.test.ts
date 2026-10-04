@@ -11,6 +11,10 @@ import {
   NATIVE_COMPAT_FILES,
 } from "@/lib/storefront/compat/native-compat-theme";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import {
+  NATIVE_COMPAT_SERVER_HELPER_FILES,
+  SERVER_HELPER_SENTINEL,
+} from "../compat/native-compat-server-helper";
 import { NATIVE_COMPAT_PUBLIC_FILES } from "../compat/native-compat-public-files";
 import {
   assertRawResponse,
@@ -39,7 +43,10 @@ import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
 const BUILD_BUDGET_MS = 240_000;
 
-const input = (files: ThemeBuildRunnerInput["files"], buildId: string): ThemeBuildRunnerInput => ({
+const input = (
+  files: ThemeBuildRunnerInput["files"],
+  buildId: string,
+): ThemeBuildRunnerInput => ({
   buildId,
   storefrontId: "storefront-compat",
   themeId: "theme-compat",
@@ -52,7 +59,11 @@ const input = (files: ThemeBuildRunnerInput["files"], buildId: string): ThemeBui
   files,
 });
 
-const THEME_FILES = [...STARTER_THEME_FILES, ...NATIVE_COMPAT_FILES];
+const THEME_FILES = [
+  ...STARTER_THEME_FILES,
+  ...NATIVE_COMPAT_FILES,
+  ...NATIVE_COMPAT_SERVER_HELPER_FILES,
+];
 
 describe("a Theme's TanStack Start routes, as Code mode reads them", () => {
   it("accepts pages, server routes and a dotted route file without diagnostics", () => {
@@ -111,7 +122,8 @@ describe(
       const clientCode = result.artifacts
         .filter(
           (artifact) =>
-            artifact.path.startsWith("runtime/client/") && artifact.path.endsWith(".js"),
+            artifact.path.startsWith("runtime/client/") &&
+            artifact.path.endsWith(".js"),
         )
         .map((artifact) =>
           typeof artifact.content === "string"
@@ -120,11 +132,30 @@ describe(
         )
         .join("\n");
       expect(clientCode).not.toContain("compat-transport-server-only-sentinel");
+      expect(clientCode).not.toContain(SERVER_HELPER_SENTINEL);
       expect(clientCode.length).toBeGreaterThan(0);
+      const previewCode = result.artifacts
+        .filter(
+          (artifact) =>
+            artifact.path.startsWith("preview/") &&
+            artifact.path.endsWith(".js"),
+        )
+        .map((artifact) =>
+          typeof artifact.content === "string"
+            ? artifact.content
+            : new TextDecoder().decode(artifact.content),
+        )
+        .join("\n");
+      expect(previewCode.length).toBeGreaterThan(0);
+      expect(previewCode).not.toContain(SERVER_HELPER_SENTINEL);
+      expect(previewCode).not.toContain(
+        "compat-transport-server-only-sentinel",
+      );
       const serverCode = result.artifacts
         .filter(
           (artifact) =>
-            artifact.path.startsWith("runtime/server/") && artifact.path.endsWith(".js"),
+            artifact.path.startsWith("runtime/server/") &&
+            artifact.path.endsWith(".js"),
         )
         .map((artifact) =>
           typeof artifact.content === "string"
@@ -133,6 +164,7 @@ describe(
         )
         .join("\n");
       expect(serverCode).toContain("compat-transport-server-only-sentinel");
+      expect(serverCode).toContain(SERVER_HELPER_SENTINEL);
 
       dir = mkdtempSync(join(tmpdir(), "native-compat-"));
       for (const artifact of result.artifacts) {
@@ -154,9 +186,24 @@ describe(
       if (dir) rmSync(dir, { recursive: true, force: true });
     });
 
-    type WorkerInit = Parameters<Awaited<ReturnType<typeof unstable_startWorker>>["fetch"]>[1];
+    type WorkerInit = Parameters<
+      Awaited<ReturnType<typeof unstable_startWorker>>["fetch"]
+    >[1];
     const request = (path: string, init?: WorkerInit) =>
       worker!.fetch(`http://localhost${path}`, { redirect: "manual", ...init });
+    it("executes a local .server helper through the built Worker", async () => {
+      const page = await request("/server-helper");
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      const url = /data-helper-url="([^"]+)"/.exec(html)?.[1];
+      expect(url).toBeTruthy();
+      expect(html).not.toContain(SERVER_HELPER_SENTINEL);
+      const response = await request(url!.replace(/&amp;/g, "&"), {
+        headers: { "x-tsr-serverFn": "true" },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("server-helper-ran");
+    });
     // Exercise browser-facing HTTP, not Wrangler's in-process dispatch bridge.
     const transportRequest = async (path: string, init?: RequestInit) =>
       fetch(new URL(path, await worker!.url), { redirect: "manual", ...init });
@@ -171,7 +218,9 @@ describe(
       for (const file of NATIVE_COMPAT_PUBLIC_FILES) {
         const response = await request(file.path.slice("public".length));
         expect(response.status, file.path).toBe(200);
-        expect(response.headers.get("content-type"), file.path).toContain(file.mimeType);
+        expect(response.headers.get("content-type"), file.path).toContain(
+          file.mimeType,
+        );
         expect(new Uint8Array(await response.arrayBuffer()), file.path).toEqual(
           new TextEncoder().encode(file.content),
         );
@@ -249,68 +298,79 @@ describe(
     it("renders a loader error through the route's errorComponent, with Start's 500", async () => {
       const response = await request("/compat-error");
       expect(response.status).toBe(500);
-      expect(visibleText(await response.text())).toContain("caught compat-loader-error");
+      expect(visibleText(await response.text())).toContain(
+        "caught compat-loader-error",
+      );
     });
   },
 );
 
-describe("a Theme using Start's cookie helpers", { timeout: BUILD_BUDGET_MS + 60_000 }, () => {
-  let dir = "";
-  let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
+describe(
+  "a Theme using Start's cookie helpers",
+  { timeout: BUILD_BUDGET_MS + 60_000 },
+  () => {
+    let dir = "";
+    let worker: Awaited<ReturnType<typeof unstable_startWorker>> | null = null;
 
-  beforeAll(async () => {
-    // Every Theme build also runs a client-only preview build, whose stand-in
-    // for `@tanstack/react-start/server` once lacked these names and failed
-    // the whole build. The stub now exports every name the real module has.
-    const result = await new LocalViteThemeBuildRunner({
-      maxDurationMs: BUILD_BUDGET_MS,
-    }).run(
-      input(
-        [...THEME_FILES, ...NATIVE_COMPAT_COOKIE_HELPER_FILES] as never,
-        "native-compat-cookies",
-      ),
-    );
-    if (!result.success) throw new Error(result.errorMessage);
-    dir = mkdtempSync(join(tmpdir(), "native-compat-cookies-"));
-    for (const artifact of result.artifacts) {
-      const path = join(dir, artifact.path);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, artifact.content as Uint8Array | string);
-    }
-    worker = await unstable_startWorker({
-      config: join(dir, "runtime/server/wrangler.json"),
-      dev: { server: { port: 0 }, inspector: false, logLevel: "error" },
+    beforeAll(async () => {
+      // Every Theme build also runs a client-only preview build, whose stand-in
+      // for `@tanstack/react-start/server` once lacked these names and failed
+      // the whole build. The stub now exports every name the real module has.
+      const result = await new LocalViteThemeBuildRunner({
+        maxDurationMs: BUILD_BUDGET_MS,
+      }).run(
+        input(
+          [...THEME_FILES, ...NATIVE_COMPAT_COOKIE_HELPER_FILES] as never,
+          "native-compat-cookies",
+        ),
+      );
+      if (!result.success) throw new Error(result.errorMessage);
+      dir = mkdtempSync(join(tmpdir(), "native-compat-cookies-"));
+      for (const artifact of result.artifacts) {
+        const path = join(dir, artifact.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, artifact.content as Uint8Array | string);
+      }
+      worker = await unstable_startWorker({
+        config: join(dir, "runtime/server/wrangler.json"),
+        dev: { server: { port: 0 }, inspector: false, logLevel: "error" },
+      });
+      await worker.ready;
+    }, BUILD_BUDGET_MS + 60_000);
+
+    afterAll(async () => {
+      await worker?.dispose();
+      if (dir) rmSync(dir, { recursive: true, force: true });
     });
-    await worker.ready;
-  }, BUILD_BUDGET_MS + 60_000);
 
-  afterAll(async () => {
-    await worker?.dispose();
-    if (dir) rmSync(dir, { recursive: true, force: true });
-  });
+    it("builds, and getCookie, setCookie and deleteCookie work in the Worker", async () => {
+      const set = await worker!.fetch("http://localhost/api/compat-cookie");
+      expect(await set.json()).toEqual({ before: null });
+      expect(set.headers.get("set-cookie")).toMatch(
+        /compat_helper=set; Path=\/; HttpOnly/i,
+      );
 
-  it("builds, and getCookie, setCookie and deleteCookie work in the Worker", async () => {
-    const set = await worker!.fetch("http://localhost/api/compat-cookie");
-    expect(await set.json()).toEqual({ before: null });
-    expect(set.headers.get("set-cookie")).toMatch(/compat_helper=set; Path=\/; HttpOnly/i);
+      const read = await worker!.fetch("http://localhost/api/compat-cookie", {
+        headers: { cookie: "compat_helper=set" },
+      });
+      expect(await read.json()).toEqual({ before: "set" });
 
-    const read = await worker!.fetch("http://localhost/api/compat-cookie", {
-      headers: { cookie: "compat_helper=set" },
+      const cleared = await worker!.fetch(
+        "http://localhost/api/compat-cookie?clear",
+        {
+          headers: { cookie: "compat_helper=set" },
+        },
+      );
+      expect(cleared.headers.get("set-cookie")).toMatch(
+        /compat_helper=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)/i,
+      );
     });
-    expect(await read.json()).toEqual({ before: "set" });
 
-    const cleared = await worker!.fetch("http://localhost/api/compat-cookie?clear", {
-      headers: { cookie: "compat_helper=set" },
+    it("reads a cookie in a server function during SSR", async () => {
+      const response = await worker!.fetch("http://localhost/compat-cookies", {
+        headers: { cookie: "compat_helper=from-header" },
+      });
+      expect(await response.text()).toContain("from-header");
     });
-    expect(cleared.headers.get("set-cookie")).toMatch(
-      /compat_helper=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)/i,
-    );
-  });
-
-  it("reads a cookie in a server function during SSR", async () => {
-    const response = await worker!.fetch("http://localhost/compat-cookies", {
-      headers: { cookie: "compat_helper=from-header" },
-    });
-    expect(await response.text()).toContain("from-header");
-  });
-});
+  },
+);

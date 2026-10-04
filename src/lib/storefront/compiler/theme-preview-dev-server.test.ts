@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import type { Connect, ViteDevServer } from "vite";
 import {
   isPreviewDevInfrastructureSpecifier,
   previewDevInfrastructureGuardSource,
@@ -8,7 +9,75 @@ import {
   THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES,
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
+  themePreviewServerSourcePlugin,
+  themePreviewServerSourcePluginSource,
 } from "./theme-preview-dev-server";
+
+describe("server source HTTP boundary", () => {
+  it("uses the same refusal in generated configs without blocking ordinary client modules", () => {
+    for (const plugin of [
+      themePreviewServerSourcePlugin(),
+      new Function(`return ${themePreviewServerSourcePluginSource()}`)(),
+    ]) {
+      let middleware!: Connect.NextHandleFunction;
+      const configure = plugin.configureServer as (
+        server: ViteDevServer,
+      ) => void;
+      configure({
+        middlewares: {
+          use(fn: Connect.NextHandleFunction) {
+            middleware = fn;
+          },
+        },
+      } as unknown as ViteDevServer);
+      for (const url of [
+        "/src/data.server.ts",
+        "/src/data.server.ts?raw",
+        "/src/data.server.ts.map",
+        "/@fs/workspace/src/data.server.mjs",
+        "/src/data%2eserver.ts",
+        "/src/data.server.tsx?import",
+      ]) {
+        const headers: Record<string, string> = {};
+        const response = {
+          statusCode: 200,
+          setHeader(name: string, value: string) {
+            headers[name] = value;
+          },
+          end() {},
+        };
+        let passed = false;
+        middleware(
+          { url } as Parameters<Connect.NextHandleFunction>[0],
+          response as unknown as Parameters<Connect.NextHandleFunction>[1],
+          () => {
+            passed = true;
+          },
+        );
+        expect(response.statusCode).toBe(403);
+        expect(headers["Cache-Control"]).toBe("no-store");
+        expect(passed).toBe(false);
+      }
+      for (const url of [
+        "/src/routes/index.tsx",
+        "/src/server.ts",
+        "/src/data.server.ts/assets.png",
+        "/api/search",
+        "/robots.txt",
+      ]) {
+        let passed = false;
+        middleware(
+          { url } as Parameters<Connect.NextHandleFunction>[0],
+          {} as Parameters<Connect.NextHandleFunction>[1],
+          () => {
+            passed = true;
+          },
+        );
+        expect(passed).toBe(true);
+      }
+    }
+  });
+});
 
 const compileGuard = (): ((source: string) => boolean) =>
   new Function(`return (${previewDevInfrastructureGuardSource()});`)() as (
