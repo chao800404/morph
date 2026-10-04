@@ -5,9 +5,12 @@ import * as ts from "typescript";
 import { GENERATED_THEME_PACKAGE_DECLARATIONS } from "./editor-code-package-declarations.generated";
 import { preloadGeneratedThemePackageDeclarations } from "./editor-code-package-types";
 import type { Monaco } from "@monaco-editor/react";
+import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { NATIVE_COMPAT_SERVER_HELPER_FILES } from "@/lib/storefront/compat/native-compat-server-helper";
 import {
   collectJsxTagSemanticTokens,
   collectThemeRouteDiagnostics,
+  collectThemeImportProtectionEditorDiagnostics,
   createJsxTagDecorations,
   configureThemeTypeScript,
   disposeThemeWorkspaceModels,
@@ -19,6 +22,68 @@ import {
   resolveThemeRouteCompletionContext,
   resolveTailwindCompletionContext,
 } from "./editor-code-language-support";
+
+describe("Code import diagnostics use the actual native build boundary", () => {
+  const files = [...STARTER_THEME_FILES, ...NATIVE_COMPAT_SERVER_HELPER_FILES];
+  it.each([true, false])(
+    "accepts a handler-only .server import, with manifest present: %s",
+    (manifestPresent) => {
+      expect(
+        collectThemeImportProtectionEditorDiagnostics(
+          manifestPresent
+            ? files
+            : files.filter((file) => file.path !== "morph.theme.json"),
+        ),
+      ).toEqual([]);
+    },
+  );
+  it.each([
+    'import { readPrivateData } from "../private-data.server"; export default () => <p>{readPrivateData()}</p>;',
+    'import "../private-data.server"; export default () => null;',
+    'import { createServerFn } from "@tanstack/react-start"; export const read = createServerFn().handler(async () => (await import("../private-data.server")).readPrivateData());',
+  ])("still reports unsafe server use in Monaco: %s", (content) => {
+    const diagnostics = collectThemeImportProtectionEditorDiagnostics(
+      files.map((file) =>
+        file.path === "src/routes/server-helper.tsx"
+          ? { ...file, content }
+          : file,
+      ),
+    );
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "src/routes/server-helper.tsx",
+          severity: "error",
+        }),
+      ]),
+    );
+  });
+  it("still checks the server helper for forbidden client dependencies", () => {
+    const diagnostics = collectThemeImportProtectionEditorDiagnostics([
+      ...files.map((file) =>
+        file.path === "src/private-data.server.ts"
+          ? {
+              ...file,
+              content:
+                'import { value } from "./browser.client"; export const readPrivateData = () => value;',
+            }
+          : file,
+      ),
+      {
+        path: "src/browser.client.ts",
+        content: "export const value = 'client';",
+      },
+    ]);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "src/private-data.server.ts",
+          severity: "error",
+        }),
+      ]),
+    );
+  });
+});
 
 // The generated declarations are code-split and loaded on demand in the app.
 // Resolve them once here so configuration assertions see the real payload.
@@ -183,10 +248,7 @@ describe("resolveThemeRouteCompletionContext", () => {
   it("finds Link and createFileRoute route literals", () => {
     const linkLine = '<Link to="/products/">';
     expect(
-      resolveThemeRouteCompletionContext(
-        linkLine,
-        linkLine.indexOf('">') + 1,
-      ),
+      resolveThemeRouteCompletionContext(linkLine, linkLine.indexOf('">') + 1),
     ).toMatchObject({ query: "/products/" });
 
     const expressionLine = '<Link to={"/products/';
@@ -205,7 +267,9 @@ describe("resolveThemeRouteCompletionContext", () => {
 
   it("does not treat ordinary strings as route contexts", () => {
     const line = 'const value = "/about";';
-    expect(resolveThemeRouteCompletionContext(line, line.length + 1)).toBeNull();
+    expect(
+      resolveThemeRouteCompletionContext(line, line.length + 1),
+    ).toBeNull();
   });
 });
 
@@ -927,8 +991,11 @@ describe("configureThemeTypeScript", () => {
       host,
     );
     expect(
-      [...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()].map(
-        (diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+      [
+        ...program.getSyntacticDiagnostics(),
+        ...program.getSemanticDiagnostics(),
+      ].map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
       ),
     ).toEqual([]);
   }, 30_000);
@@ -1209,7 +1276,10 @@ describe("registerTailwindCompletionProvider", () => {
         content:
           '@import "tailwindcss";\n@theme {\n  --color-brand: oklch(0.7 0.1 200);\n  --radius-card: 1rem;\n}\n',
       },
-      { path: "src/routes/index.tsx", content: "export default function P() {}" },
+      {
+        path: "src/routes/index.tsx",
+        content: "export default function P() {}",
+      },
     ]);
 
     const classes = complete(provider, '<div className="bg-b').suggestions.map(
@@ -1243,7 +1313,7 @@ describe("registerTanStackRouteCompletionProvider", () => {
               insertText: string;
               detail: string;
             }>;
-          }
+          };
         }
       | undefined;
     const monaco = {
@@ -1296,7 +1366,9 @@ describe("registerTanStackRouteCompletionProvider", () => {
       ]),
     );
     expect(result.suggestions).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ label: "/products/$id" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ label: "/products/$id" }),
+      ]),
     );
   });
 });

@@ -33,6 +33,7 @@ type ThemeImportEdge = {
   source: string;
   line: number;
   column: number;
+  isStaticImport: boolean;
 };
 
 type ModuleBoundary = "server" | "client" | null;
@@ -112,7 +113,9 @@ function resolveRelativeFile(
 
   const candidates = [candidate];
   if (!SOURCE_EXTENSIONS.some((extension) => candidate.endsWith(extension))) {
-    candidates.push(...SOURCE_EXTENSIONS.map((extension) => `${candidate}${extension}`));
+    candidates.push(
+      ...SOURCE_EXTENSIONS.map((extension) => `${candidate}${extension}`),
+    );
   }
   for (const extension of SOURCE_EXTENSIONS) {
     candidates.push(`${candidate}/index${extension}`);
@@ -122,7 +125,10 @@ function resolveRelativeFile(
 
 function collectImportEdges(content: string): {
   edges: ThemeImportEdge[];
-  markerBoundaries: Array<{ boundary: Exclude<ModuleBoundary, null>; edge: ThemeImportEdge }>;
+  markerBoundaries: Array<{
+    boundary: Exclude<ModuleBoundary, null>;
+    edge: ThemeImportEdge;
+  }>;
 } {
   const edges: ThemeImportEdge[] = [];
   const markerBoundaries: Array<{
@@ -174,10 +180,14 @@ function collectImportEdges(content: string): {
         source,
         line: Number(node.loc?.start?.line ?? 1),
         column: Number(node.loc?.start?.column ?? 0) + 1,
+        isStaticImport: node.type === "ImportDeclaration",
       };
       edges.push(edge);
       const marker = bareSpecifierBoundary(source);
-      if (marker && (SERVER_MARKERS.has(source) || CLIENT_MARKERS.has(source))) {
+      if (
+        marker &&
+        (SERVER_MARKERS.has(source) || CLIENT_MARKERS.has(source))
+      ) {
         markerBoundaries.push({
           boundary: marker,
           edge,
@@ -220,15 +230,21 @@ function isSafeBoundaryFunction(
   safeBoundaryNames: ReadonlySet<string>,
 ): boolean {
   if (!call || call.type !== "CallExpression") return false;
-  if (!Array.isArray(call.arguments) || !call.arguments.includes(functionNode)) {
+  if (
+    !Array.isArray(call.arguments) ||
+    !call.arguments.includes(functionNode)
+  ) {
     return false;
   }
   const callee = call.callee;
   if (target === "client" && callee?.type === "Identifier") {
-    return callee.name === "createServerOnlyFn" && safeBoundaryNames.has(callee.name);
+    return (
+      callee.name === "createServerOnlyFn" && safeBoundaryNames.has(callee.name)
+    );
   }
   if (callee?.type !== "MemberExpression" || callee.computed) return false;
-  const property = callee.property?.type === "Identifier" ? callee.property.name : undefined;
+  const property =
+    callee.property?.type === "Identifier" ? callee.property.name : undefined;
   const rootName = getCalleeRootName(callee.object);
   if (target === "client") {
     if (property === "handler") {
@@ -236,7 +252,8 @@ function isSafeBoundaryFunction(
     }
     if (property === "server") {
       return (
-        (rootName === "createMiddleware" || rootName === "createIsomorphicFn") &&
+        (rootName === "createMiddleware" ||
+          rootName === "createIsomorphicFn") &&
         safeBoundaryNames.has(rootName)
       );
     }
@@ -279,7 +296,8 @@ function isFileRouteServerProperty(
 function isIdentifierBinding(node: any, parent: any): boolean {
   if (!parent) return false;
   if (
-    (parent.type === "MemberExpression" || parent.type === "OptionalMemberExpression") &&
+    (parent.type === "MemberExpression" ||
+      parent.type === "OptionalMemberExpression") &&
     parent.property === node &&
     !parent.computed
   ) {
@@ -293,7 +311,8 @@ function isIdentifierBinding(node: any, parent: any): boolean {
   ) {
     return true;
   }
-  if (parent.type === "ExportSpecifier" && parent.exported === node) return true;
+  if (parent.type === "ExportSpecifier" && parent.exported === node)
+    return true;
   return false;
 }
 
@@ -301,6 +320,7 @@ function packageImportUsesOnlySafeBoundary(
   content: string,
   source: string,
   target: ThemeImportProtectionTarget,
+  requireStaticImport = false,
 ): boolean {
   let ast: any;
   try {
@@ -321,7 +341,10 @@ function packageImportUsesOnlySafeBoundary(
     if (statement.type !== "ImportDeclaration") {
       continue;
     }
-    if (statement.source?.value === "@tanstack/react-start" || statement.source?.value === "@tanstack/react-router") {
+    if (
+      statement.source?.value === "@tanstack/react-start" ||
+      statement.source?.value === "@tanstack/react-router"
+    ) {
       for (const specifier of statement.specifiers) {
         const importedName =
           specifier.imported?.name ?? specifier.imported?.value;
@@ -352,7 +375,7 @@ function packageImportUsesOnlySafeBoundary(
     }
   }
   if (hasSideEffectImport || !hasRuntimeImport || importedNames.size === 0) {
-    return !hasSideEffectImport;
+    return !hasSideEffectImport && !requireStaticImport;
   }
 
   // A same-named local declaration could make a call look like a Start
@@ -372,7 +395,13 @@ function packageImportUsesOnlySafeBoundary(
       declaredNames.add(node.id.name);
     }
     for (const [key, value] of Object.entries(node)) {
-      if (key === "loc" || key === "start" || key === "end" || key === "ImportDeclaration") continue;
+      if (
+        key === "loc" ||
+        key === "start" ||
+        key === "end" ||
+        key === "ImportDeclaration"
+      )
+        continue;
       if (Array.isArray(value)) value.forEach(collectDeclaredNames);
       else collectDeclaredNames(value);
     }
@@ -466,12 +495,14 @@ function validateTargetGraph(
   target: ThemeImportProtectionTarget,
   entryPaths: readonly string[] | undefined,
   pathAliases: ThemePathAliasConfig,
+  nativeStartCompilation: boolean,
 ): ThemeImportProtectionDiagnostic[] {
   const diagnostics: ThemeImportProtectionDiagnostic[] = [];
   const seenDiagnostics = new Set<string>();
   const visited = new Set<string>();
   const queue = graphRoots(files, entryPaths);
-  const expectedBoundary: ModuleBoundary = target === "client" ? "server" : "client";
+  const expectedBoundary: ModuleBoundary =
+    target === "client" ? "server" : "client";
 
   while (queue.length > 0) {
     const filePath = queue.shift()!;
@@ -503,7 +534,9 @@ function validateTargetGraph(
       );
     }
 
-    const { edges, markerBoundaries } = collectImportEdges(String(file.content));
+    const { edges, markerBoundaries } = collectImportEdges(
+      String(file.content),
+    );
     for (const { boundary, edge } of markerBoundaries) {
       if (boundary !== expectedBoundary) continue;
       pushDiagnostic(
@@ -526,17 +559,46 @@ function validateTargetGraph(
 
     for (const edge of edges) {
       const packageBoundary = bareSpecifierBoundary(edge.source);
-      const resolved = edge.source.startsWith(".") || edge.source.startsWith("/")
-        ? resolveRelativeFile(filePath, edge.source, files)
-        : resolveThemePathAlias(edge.source, files, pathAliases) ??
-          resolveThemeBaseUrlImport(edge.source, files, pathAliases);
+      const resolved =
+        edge.source.startsWith(".") || edge.source.startsWith("/")
+          ? resolveRelativeFile(filePath, edge.source, files)
+          : (resolveThemePathAlias(edge.source, files, pathAliases) ??
+            resolveThemeBaseUrlImport(edge.source, files, pathAliases));
+      // Only native Start removes handler imports from the browser graph.
+      // Uncompiled client-only previews retain the conservative check.
+      // This exception is limited to static bindings: dynamic imports and
+      // side-effect imports cannot be proved safe by this usage analysis.
+      if (
+        nativeStartCompilation &&
+        target === "client" &&
+        edge.isStaticImport &&
+        resolved &&
+        moduleBoundary(resolved) === "server" &&
+        packageImportUsesOnlySafeBoundary(
+          String(file.content),
+          edge.source,
+          target,
+          true,
+        )
+      ) {
+        // Do not visit the eliminated import as a client dependency. The
+        // paired server pass in collectThemeImportProtectionDiagnosticsForBuild
+        // MUST still reach this module from the same route roots: it checks
+        // this module's imports (including forbidden .client dependencies).
+        // Native Start additionally enforces its transformed output graphs.
+        continue;
+      }
       const packageBoundaryIsSafe =
         packageBoundary &&
         (edge.source === "@tanstack/react-start/server" ||
           edge.source.startsWith("@tanstack/react-start/server/") ||
           edge.source === "@tanstack/react-start/client" ||
           edge.source.startsWith("@tanstack/react-start/client/"))
-          ? packageImportUsesOnlySafeBoundary(String(file.content), edge.source, target)
+          ? packageImportUsesOnlySafeBoundary(
+              String(file.content),
+              edge.source,
+              target,
+            )
           : false;
       const importedBoundary =
         packageBoundary && !packageBoundaryIsSafe
@@ -583,6 +645,8 @@ export function collectThemeImportProtectionDiagnostics(
   options: {
     target: ThemeImportProtectionTarget;
     entryPaths?: readonly string[];
+    /** True only when this output actually uses Start's native compiler. */
+    nativeStartCompilation?: boolean;
   },
 ): ThemeImportProtectionDiagnostic[] {
   const normalized = new Map<string, ThemeCompilerFile>();
@@ -594,6 +658,7 @@ export function collectThemeImportProtectionDiagnostics(
     options.target,
     options.entryPaths,
     readThemePathAliases(files),
+    options.nativeStartCompilation === true,
   );
 }
 
@@ -602,6 +667,7 @@ export function collectThemeImportProtectionDiagnosticsForBuild(
   options: {
     entry: string;
     hasStartRuntime: boolean;
+    nativeStartCompilation?: boolean;
   },
 ): ThemeImportProtectionDiagnostic[] {
   const clientEntryPaths = options.hasStartRuntime
@@ -616,11 +682,14 @@ export function collectThemeImportProtectionDiagnosticsForBuild(
   const diagnostics = collectThemeImportProtectionDiagnostics(files, {
     target: "client",
     entryPaths: clientEntryPaths,
+    nativeStartCompilation:
+      options.hasStartRuntime && options.nativeStartCompilation,
   });
   if (options.hasStartRuntime) {
     diagnostics.push(
       ...collectThemeImportProtectionDiagnostics(files, {
         target: "server",
+        nativeStartCompilation: options.nativeStartCompilation,
         entryPaths: [
           "src/router.tsx",
           "src/start.ts",

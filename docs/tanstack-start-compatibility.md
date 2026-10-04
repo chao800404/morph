@@ -5,16 +5,16 @@ Baseline: main `d16850e`, 2026-10-03. Target is installed React Start 1.168.32
 
 ## Existing acceptance
 
-| Capability | Start Live Preview | Built Worker / local published storefront |
-| --- | --- | --- |
-| SSR loader calling a GET server function | Recorded pass | Recorded pass |
-| Client GET/POST server functions, thrown errors | Recorded pass | Recorded pass |
-| Function and global request middleware | Recorded pass | Recorded pass |
-| JSON/text/redirect server routes | Recorded pass | Recorded pass |
-| HttpOnly cookie helpers | Standalone recorded pass | Recorded pass |
-| Link navigation / Code-save HMR | Recorded pass | Navigation recorded pass |
-| Public raster/SVG root URLs | Recorded pass | Recorded pass |
-| DOM-derived Design selection / props | Recorded pass | Not a production editing capability |
+| Capability                                      | Start Live Preview       | Built Worker / local published storefront |
+| ----------------------------------------------- | ------------------------ | ----------------------------------------- |
+| SSR loader calling a GET server function        | Recorded pass            | Recorded pass                             |
+| Client GET/POST server functions, thrown errors | Recorded pass            | Recorded pass                             |
+| Function and global request middleware          | Recorded pass            | Recorded pass                             |
+| JSON/text/redirect server routes                | Recorded pass            | Recorded pass                             |
+| HttpOnly cookie helpers                         | Standalone recorded pass | Recorded pass                             |
+| Link navigation / Code-save HMR                 | Recorded pass            | Navigation recorded pass                  |
+| Public raster/SVG root URLs                     | Recorded pass            | Recorded pass                             |
+| DOM-derived Design selection / props            | Recorded pass            | Not a production editing capability       |
 
 Recorded passes refer to the committed October 3 evidence and native-compat
 fixtures, not fresh tests run for this inventory. Cloud deployment remains
@@ -53,11 +53,55 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
 6. **Preview data / external APIs.** HTTP/HTTPS egress is denied. Scoped APIs,
    allowlists and diagnostics remain work; do not remove this security policy.
 7. **Default switch.** Keep runtime opt-in until roadmap opening gates pass.
-8. **Local `.server` imports in native handlers.** The existing client import
-   guard still refuses these, even when used exclusively inside a genuine
-   Start handler. Two known-gap tests preserve this fact. The guard must not
-   simply be relaxed: legacy client-only preview artifacts do not run Start's
-   server-code elimination. Their boundary handling must be addressed together.
+8. **Local `.server` imports in native handlers.** Start Live Preview, formal
+   builds and Code diagnostics permit static imports used exclusively inside genuine Start
+   server boundaries. Permanent tests reject client rendering, side effects,
+   dynamic imports (including mixed static/dynamic imports), re-exports, fake
+   factories and server files used as client roots. The paired server graph
+   still checks the helper's own dependencies. A real local Start/workerd test
+   executes the helper via a generated server-function URL and verifies its
+   implementation is absent from the transformed client route.
+   Direct browser HTTP requests for `.server` modules, raw source and source
+   maps are refused before Vite serves them. This also prevents inline maps
+   from exposing the original helper through `sourcesContent`; internal SSR
+   module-runner transforms remain available to execute server functions.
+   Formal builds now run the native Start client compiler for the static
+   preview artifact as well as the runtime client. Neither browser artifact
+   contains the helper's private sentinel, which remains in the server bundle;
+   the built Worker executes the helper through its generated function URL.
+   The generated Sandbox config is separately exercised through the real Vite
+   CLI. Uncompiled legacy Live Preview remains strict and cannot execute server
+   functions; runtime selection remains opt-in. Dynamic `.server` imports are
+   still deliberately refused by Morph's conservative usage analysis. These
+   tests are local evidence, not Cloudflare deployment acceptance.
+
+## Native server-helper acceptance (2026-10-04, local)
+
+- The five original boundary cases are permanent tests: genuine static
+  handler use is accepted only with native compilation; client rendering,
+  side-effect imports, dynamic imports and server files used as client roots
+  remain rejected. Mixed static/dynamic use and the paired server dependency
+  graph have additional regressions.
+- Both built browser artifacts exclude the helper sentinel; the built Worker
+  executes the helper. Removing the static artifact's Start compiler makes
+  the sentinel assertion fail (the mutation was restored).
+- A direct `.server` HTTP request exposed the original helper through inline
+  source-map `sourcesContent`. Platform Vite middleware now refuses module,
+  raw and map URLs before serving them. The real Start preview still executes
+  the helper, and its direct-source regression passes.
+- Full local tests: 553 files passed, 1 skipped; 4360 tests passed, 1 skipped.
+  Typecheck, data-layer typecheck and E2E assertion guard passed.
+  Production build and client-secret/sidecar/deployment-artifact guards passed.
+- A browser rerun under simultaneous validation load exceeded the transport
+  precondition's 60-second budget before the helper scenario ran. Its trace
+  remains in `/tmp/codex-start-helper-e2e-guard-results`; this is not counted
+  as browser acceptance for the HTTP-boundary change.
+- A subsequent standalone browser/local-sidecar run passed 3 tests (setup,
+  transport precondition and the hydrated-client helper scenario), recorded in
+  `/tmp/codex-start-helper-e2e-guard-idle-results`. The client button receives
+  the helper's public result through Start. Test services stopped and the
+  temporary runtime switch was restored. No real Sandbox or Cloud deployment
+  acceptance was performed for this increment; runtime remains opt-in.
 
 ## Public data-text policy for this change
 

@@ -8,6 +8,7 @@ import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-s
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
 import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
+import { themeStartStaticPreviewPluginSource } from "./theme-start-static-preview";
 import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
@@ -16,6 +17,7 @@ import {
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
   themePreviewFsAllowRoots,
+  themePreviewServerSourcePluginSource,
 } from "./theme-preview-dev-server";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "./theme-sandbox-dependencies.generated";
 import { themePackageRoot } from "./theme-dependency-policy";
@@ -458,6 +460,9 @@ export function planThemeSandboxWorkspace({
       {
         entry: entry,
         hasStartRuntime: Boolean(routeRegistry),
+        nativeStartCompilation:
+          Boolean(routeRegistry) &&
+          (mode === "build" || previewRuntime === "start"),
       },
     );
   if (importProtectionDiagnostics.length > 0) {
@@ -680,6 +685,7 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
+const isStartStaticPreview = hasStartRuntime && !isLivePreview && process.env.MORPH_THEME_BUILD_TARGET !== "runtime";
 // The Start server itself serves this preview, in workerd, at the root path;
 // see theme-preview-start-runtime.ts.
 const isStartPreview = ${startPreview ? "true" : "false"};
@@ -707,6 +713,9 @@ const previewHealthPlugin = isLivePreview && !isStartPreview ? {
 } : null;
 const previewContentPlugin = ${
     mode === "preview-server" ? themePreviewContentPluginSource() : "null"
+  };
+const previewServerSourcePlugin = ${
+    mode === "preview-server" ? themePreviewServerSourcePluginSource() : "null"
   };
 // Every SVG the dev server sends — public/ or a Theme's own source — carries
 // the platform's isolation headers; see theme-svg-isolation.ts.
@@ -981,6 +990,7 @@ export default defineConfig({
     // preview's own middleware comes first so its endpoints answer before
     // the Worker does. No debugger port, no persisted state: the Worker has
     // no bindings to persist.
+    ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewContentPlugin ? [previewContentPlugin] : []),
     ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
@@ -996,20 +1006,26 @@ export default defineConfig({
     dependencyEnforcerPlugin,
   ]
 : [
-    // Preview is client-only and has no Start plugin, so the Start server
-    // module and the Node builtin its storage context imports cannot
-    // resolve. Stubbed here as well as in the in-process runner, from one
-    // shared definition.
+    // Static Start artifacts use the native client compiler too, so local
+    // .server implementations are removed. Only the legacy live preview
+    // and non-Start Themes retain the shared server-module stubs.
+    ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewHealthPlugin ? [previewHealthPlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewRootPublicPlugin ? [previewRootPublicPlugin] : []),
-    ${themePreviewServerStubPluginSource()},
+    ...(isStartStaticPreview
+      ? [tanstackStart({ router: { basepath: "/" } })]
+      : [${themePreviewServerStubPluginSource()}]),
     ...(previewContentPlugin ? [previewContentPlugin] : []),
     ...(previewHttpHmrPlugin ? [previewHttpHmrPlugin] : []),
     tailwindcss(),
     viteReact({ exclude: previewReactExcludePatterns }),
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
     dependencyEnforcerPlugin,
+    ...(isStartStaticPreview ? [${themeStartStaticPreviewPluginSource({
+      indexHtml: `${hostWorkspaceRoot}/index.html`,
+      outDir: `${hostWorkspaceRoot}/dist/preview`,
+    })}] : []),
   ],
   resolve: {
     alias: themeAliases,

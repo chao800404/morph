@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { EDITOR_PATH, previewFrame, saveEditedSource } from "./helpers";
+import { NATIVE_COMPAT_SERVER_HELPER_FILES } from "../src/lib/storefront/compat/native-compat-server-helper";
 import {
   NATIVE_COMPAT_COOKIE_HELPER_FILES,
   NATIVE_COMPAT_FILES,
@@ -36,7 +37,11 @@ const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
  * `KNOWN GAP` test does not apply and an ordinary assertion runs instead.
  */
 const START_PREVIEW = process.env.MORPH_E2E_PREVIEW_RUNTIME === "start";
-const ALL_FILES = [...NATIVE_COMPAT_FILES, ...NATIVE_COMPAT_COOKIE_HELPER_FILES];
+const ALL_FILES = [
+  ...NATIVE_COMPAT_FILES,
+  ...NATIVE_COMPAT_COOKIE_HELPER_FILES,
+  ...(START_PREVIEW ? NATIVE_COMPAT_SERVER_HELPER_FILES : []),
+];
 const FILE_PATHS = ALL_FILES.map((file) => file.path);
 
 /** A signed-in page outside a test: hooks get no project context of their own. */
@@ -73,14 +78,19 @@ async function interactWithTheme(page: Page) {
   if (await disableSelection.isVisible().catch(() => false)) {
     await disableSelection.click();
   }
-  await expect(page.getByRole("button", { name: "Enable section selection" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Enable section selection" }),
+  ).toBeVisible();
   await expect
     .poll(
       () =>
         previewFrame(page)
           .locator("body")
           .evaluate(() =>
-            Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
+            Boolean(
+              (window as unknown as { __TSR_ROUTER__?: unknown })
+                .__TSR_ROUTER__,
+            ),
           ),
       { timeout: 60_000 },
     )
@@ -99,7 +109,9 @@ async function markFrame(page: Page) {
 async function frameMarked(page: Page) {
   return previewFrame(page)
     .locator("body")
-    .evaluate(() => (window as unknown as { __compatMark?: number }).__compatMark);
+    .evaluate(
+      () => (window as unknown as { __compatMark?: number }).__compatMark,
+    );
 }
 
 test.describe("TanStack Start in the Live Preview", () => {
@@ -124,28 +136,35 @@ test.describe("TanStack Start in the Live Preview", () => {
 
   test("runs a route loader in the browser", async ({ page }) => {
     await openRoute(page, "/compat-other");
-    await expect(previewFrame(page).locator('[data-compat="other"]')).toHaveText("other", {
+    await expect(
+      previewFrame(page).locator('[data-compat="other"]'),
+    ).toHaveText("other", {
       timeout: 90_000,
     });
   });
 
-  test("renders a loader error through the route's errorComponent", async ({ page }) => {
+  test("renders a loader error through the route's errorComponent", async ({
+    page,
+  }) => {
     await openRoute(page, "/compat-error");
-    await expect(previewFrame(page).locator('[data-compat="error"]')).toHaveText(
-      "caught compat-loader-error",
-      { timeout: 90_000 },
-    );
+    await expect(
+      previewFrame(page).locator('[data-compat="error"]'),
+    ).toHaveText("caught compat-loader-error", { timeout: 90_000 });
   });
 
   test("follows a redirect thrown from beforeLoad", async ({ page }) => {
     await openRoute(page, "/compat-redirect");
-    await expect(previewFrame(page).locator('[data-compat="other"]')).toHaveText("other", {
+    await expect(
+      previewFrame(page).locator('[data-compat="other"]'),
+    ).toHaveText("other", {
       timeout: 90_000,
     });
   });
 
   // The published Worker server-renders this page; see native-compat.test.ts.
-  test("KNOWN GAP: a loader calling a server function crashes the page", async ({ page }) => {
+  test("KNOWN GAP: a loader calling a server function crashes the page", async ({
+    page,
+  }) => {
     test.skip(START_PREVIEW, "Closed by the Start preview; asserted below.");
     await openRoute(page, "/compat");
     // The preview has no Start server, so the server function's handler runs
@@ -161,7 +180,9 @@ test.describe("TanStack Start in the Live Preview", () => {
   // Theme builds and previews (the page below is reached through the editor),
   // and the call says why it cannot run here; the published Worker runs it.
   // Until the preview runs Start's server, this is the behaviour to expect.
-  test("KNOWN GAP: a cookie helper is refused when called, saying so", async ({ page }) => {
+  test("KNOWN GAP: a cookie helper is refused when called, saying so", async ({
+    page,
+  }) => {
     test.skip(START_PREVIEW, "Closed by the Start preview; asserted below.");
     await openRoute(page, "/compat-cookies");
     await expect(
@@ -180,7 +201,9 @@ test.describe("TanStack Start in the Live Preview", () => {
       timeout: 90_000,
     });
     const answer = await frame.locator("body").evaluate(async () => {
-      const response = await fetch(new URL("api/compat?q=hi", document.baseURI).href);
+      const response = await fetch(
+        new URL("api/compat?q=hi", document.baseURI).href,
+      );
       return {
         status: response.status,
         type: response.headers.get("content-type") ?? "",
@@ -193,20 +216,29 @@ test.describe("TanStack Start in the Live Preview", () => {
 
   // --- The same behaviours once the preview runs Start's server. ---
 
-  test("native transport: raw Response and multipart upload from the browser", async ({ page }) => {
+  test("native transport: raw Response and multipart upload from the browser", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Requires the native Start preview server.");
     await openRoute(page, "/compat-transport");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-transport="result"]')).toHaveText("idle", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-transport="result"]')).toHaveText(
+      "idle",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
     const rawPath = new URL(
-      (await frame.locator('[data-transport="urls"]').getAttribute("data-raw-url"))!,
+      (await frame
+        .locator('[data-transport="urls"]')
+        .getAttribute("data-raw-url"))!,
       "http://fixture.local",
     ).pathname;
-    const rawReply = page.waitForResponse((response) =>
-      response.request().method() === "GET" && new URL(response.url()).pathname === rawPath,
+    const rawReply = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === rawPath,
     );
     await frame.locator('[data-transport="raw"]').dispatchEvent("click");
     const rawResponse = await rawReply;
@@ -221,11 +253,15 @@ test.describe("TanStack Start in the Live Preview", () => {
       }),
     );
     const formPath = new URL(
-      (await frame.locator('[data-transport="urls"]').getAttribute("data-form-url"))!,
+      (await frame
+        .locator('[data-transport="urls"]')
+        .getAttribute("data-form-url"))!,
       "http://fixture.local",
     ).pathname;
-    const formReply = page.waitForResponse((response) =>
-      response.request().method() === "POST" && new URL(response.url()).pathname === formPath,
+    const formReply = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === formPath,
     );
     await frame.locator('[data-transport="form"]').dispatchEvent("click");
     const formResponse = await formReply;
@@ -250,25 +286,39 @@ test.describe("TanStack Start in the Live Preview", () => {
       test.skip(!START_PREVIEW, "Requires the native Start preview server.");
       await openRoute(page, "/compat-transport");
       const frame = previewFrame(page);
-      await expect(frame.locator('[data-transport="result"]')).toHaveText("idle", {
-        timeout: 90_000,
-      });
+      await expect(frame.locator('[data-transport="result"]')).toHaveText(
+        "idle",
+        {
+          timeout: 90_000,
+        },
+      );
       await interactWithTheme(page);
       await frame.locator(`[data-transport="${kind}"]`).dispatchEvent("click");
       try {
         // The server cannot produce the second chunk until this assertion passes.
-        await expect(frame.locator('[data-transport="phase"]')).toHaveText("partial");
-        await expect(frame.locator('[data-transport="result"]')).toHaveText("first:中文\n");
+        await expect(frame.locator('[data-transport="phase"]')).toHaveText(
+          "partial",
+        );
+        await expect(frame.locator('[data-transport="result"]')).toHaveText(
+          "first:中文\n",
+        );
         const released = await frame.locator("body").evaluate(async () => {
-          const id = document.querySelector('[data-transport="id"]')!.textContent!;
+          const id = document.querySelector(
+            '[data-transport="id"]',
+          )!.textContent!;
           return (
-            await fetch(`/api/compat-stream-release?id=${encodeURIComponent(id)}`, {
-              method: "POST",
-            })
+            await fetch(
+              `/api/compat-stream-release?id=${encodeURIComponent(id)}`,
+              {
+                method: "POST",
+              },
+            )
           ).json();
         });
         expect(released).toEqual({ released: true });
-        await expect(frame.locator('[data-transport="phase"]')).toHaveText("done");
+        await expect(frame.locator('[data-transport="phase"]')).toHaveText(
+          "done",
+        );
         await expect(frame.locator('[data-transport="result"]')).toHaveText(
           "first:中文\nsecond:done\n",
         );
@@ -277,11 +327,16 @@ test.describe("TanStack Start in the Live Preview", () => {
         await frame
           .locator("body")
           .evaluate(async () => {
-            const id = document.querySelector('[data-transport="id"]')?.textContent;
+            const id = document.querySelector(
+              '[data-transport="id"]',
+            )?.textContent;
             if (id)
-              await fetch(`/api/compat-stream-release?id=${encodeURIComponent(id)}`, {
-                method: "POST",
-              });
+              await fetch(
+                `/api/compat-stream-release?id=${encodeURIComponent(id)}`,
+                {
+                  method: "POST",
+                },
+              );
           })
           .catch(() => {});
       }
@@ -301,9 +356,9 @@ test.describe("TanStack Start in the Live Preview", () => {
       ranOnServer: true,
       method: "GET",
     });
-    await expect(previewFrame(page).locator('[data-compat="conditional"]')).toHaveText(
-      "server-rendered-branch",
-    );
+    await expect(
+      previewFrame(page).locator('[data-compat="conditional"]'),
+    ).toHaveText("server-rendered-branch");
     // The page's own document came from the server with the loader's answer
     // in it, and global request middleware ran on it.
     const document = await previewFrame(page)
@@ -319,13 +374,35 @@ test.describe("TanStack Start in the Live Preview", () => {
     expect(document.html).toContain("hello loader");
   });
 
-  test("calls server functions from the client: GET, POST and a thrown error", async ({ page }) => {
+  test("calls a local .server helper from the hydrated preview client", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Needs the Start preview.");
+    await openRoute(page, "/server-helper");
+    await expect(previewFrame(page).locator("[data-helper-read]")).toBeVisible({
+      timeout: 90_000,
+    });
+    await interactWithTheme(page);
+    await previewFrame(page)
+      .locator("[data-helper-read]")
+      .dispatchEvent("click");
+    await expect(previewFrame(page).locator("[data-helper-result]")).toHaveText(
+      "server-helper-ran",
+    );
+  });
+
+  test("calls server functions from the client: GET, POST and a thrown error", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-compat="loader"]')).toContainText("hello loader", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
     const result = frame.locator('[data-compat="result"]');
     await frame.locator('[data-compat="get"]').dispatchEvent("click");
@@ -346,9 +423,12 @@ test.describe("TanStack Start in the Live Preview", () => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-compat="loader"]')).toContainText("hello loader", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
     const result = frame.locator('[data-compat="result"]');
     await frame.locator('[data-compat="post"]').dispatchEvent("click");
@@ -363,20 +443,26 @@ test.describe("TanStack Start in the Live Preview", () => {
   }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
-    await expect(previewFrame(page).locator('[data-compat="loader"]')).toContainText(
-      "hello loader",
-      { timeout: 90_000 },
+    await expect(
+      previewFrame(page).locator('[data-compat="loader"]'),
+    ).toContainText("hello loader", { timeout: 90_000 });
+    const framed = new URL(
+      (await page.locator("iframe").first().getAttribute("src"))!,
     );
-    const framed = new URL((await page.locator("iframe").first().getAttribute("src"))!);
     // The preview's own origin, top level, as a shopper meets the storefront.
     const own = await page.context().newPage();
     await own.goto(new URL("/compat", framed.origin).href);
-    await expect(own.locator('[data-compat="loader"]')).toContainText("hello loader");
+    await expect(own.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+    );
     await expect
       .poll(
         () =>
           own.evaluate(() =>
-            Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
+            Boolean(
+              (window as unknown as { __TSR_ROUTER__?: unknown })
+                .__TSR_ROUTER__,
+            ),
           ),
         { timeout: 60_000 },
       )
@@ -390,7 +476,9 @@ test.describe("TanStack Start in the Live Preview", () => {
 
     const answers = await own.evaluate(async () => {
       const read = async (query = "") =>
-        (await fetch("/api/compat-cookie" + query, { cache: "no-store" })).json();
+        (
+          await fetch("/api/compat-cookie" + query, { cache: "no-store" })
+        ).json();
       const cleared = await read("?clear=1");
       const first = await read();
       const second = await read();
@@ -409,7 +497,9 @@ test.describe("TanStack Start in the Live Preview", () => {
     await own.close();
   });
 
-  test("answers server routes: JSON GET and POST, a redirect, and robots.txt", async ({ page }) => {
+  test("answers server routes: JSON GET and POST, a redirect, and robots.txt", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat-other");
     const frame = previewFrame(page);
@@ -447,13 +537,18 @@ test.describe("TanStack Start in the Live Preview", () => {
     expect(answers.robots).toBe("User-agent: *\nAllow: /\n");
   });
 
-  test("navigates with a client Link, keeping the document", async ({ page }) => {
+  test("navigates with a client Link, keeping the document", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-compat="loader"]')).toContainText("hello loader", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
     await markFrame(page);
     await frame.locator('[data-compat="link"]').dispatchEvent("click");
@@ -466,13 +561,18 @@ test.describe("TanStack Start in the Live Preview", () => {
   // channel is carried; the client-only preview never changed it. The channel
   // is kept for the document (documentPreviewRuntimeChannel), so the page goes
   // on answering the editor's heartbeat instead of being reloaded as dead.
-  test("keeps answering the editor after the Theme's own navigation", async ({ page }) => {
+  test("keeps answering the editor after the Theme's own navigation", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-compat="loader"]')).toContainText("hello loader", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
     await markFrame(page);
     await frame.locator('[data-compat="link"]').dispatchEvent("click");
@@ -482,19 +582,27 @@ test.describe("TanStack Start in the Live Preview", () => {
     expect(await frameMarked(page)).toBe(1);
   });
 
-  test("applies a Code-mode save by HMR, keeping the document", async ({ page }) => {
+  test("applies a Code-mode save by HMR, keeping the document", async ({
+    page,
+  }) => {
     test.skip(!START_PREVIEW, "Needs the Start preview.");
     await openRoute(page, "/compat");
     const frame = previewFrame(page);
-    await expect(frame.locator('[data-compat="loader"]')).toContainText("hello loader", {
-      timeout: 90_000,
-    });
+    await expect(frame.locator('[data-compat="loader"]')).toContainText(
+      "hello loader",
+      {
+        timeout: 90_000,
+      },
+    );
     await interactWithTheme(page);
-    await page.getByRole("button", { name: "Open src/routes/compat-other.tsx" }).click();
+    await page
+      .getByRole("button", { name: "Open src/routes/compat-other.tsx" })
+      .click();
     await frame.locator('[data-compat="link"]').dispatchEvent("click");
     await expect(frame.locator('[data-compat="other"]')).toHaveText("other");
     await markFrame(page);
-    const before = 'component: () => <p data-compat="other">{Route.useLoaderData().at}</p>,';
+    const before =
+      'component: () => <p data-compat="other">{Route.useLoaderData().at}</p>,';
     await saveEditedSource(page, "src/routes/compat-other.tsx", (source) => {
       expect(source).toContain(before);
       return source.replace(
@@ -502,16 +610,21 @@ test.describe("TanStack Start in the Live Preview", () => {
         'component: () => <><p data-compat="other">{Route.useLoaderData().at}</p><span data-compat="hmr">hmr-applied</span></>,',
       );
     });
-    await expect(frame.locator('[data-compat="hmr"]')).toHaveText("hmr-applied", {
-      timeout: 60_000,
-    });
+    await expect(frame.locator('[data-compat="hmr"]')).toHaveText(
+      "hmr-applied",
+      {
+        timeout: 60_000,
+      },
+    );
     // Applied by HMR: the same document, still marked.
     expect(await frameMarked(page)).toBe(1);
   });
 
   // A preview hostname is the Theme's site, like a storefront's. This Theme
   // has neither file, so anything served must not be Morph's own.
-  test("does not answer a preview's root paths with Morph's own files", async ({ page }) => {
+  test("does not answer a preview's root paths with Morph's own files", async ({
+    page,
+  }) => {
     await openRoute(page, "/compat-other");
     const frame = previewFrame(page);
     await expect(frame.locator('[data-compat="other"]')).toHaveText("other", {

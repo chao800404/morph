@@ -7,6 +7,7 @@ import {
   runWithConcurrency,
 } from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
+import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 
 const CARD = `import type { ThemeContentFields } from "../morph/content-fields";
 
@@ -61,6 +62,50 @@ const prepare = async (mode: "build" | "preview-server") => {
 };
 
 describe("laying out the workspace a Theme is served from", () => {
+  it.each([
+    {
+      mode: "preview-server" as const,
+      previewRuntime: "start" as const,
+      allowed: true,
+    },
+    {
+      mode: "preview-server" as const,
+      previewRuntime: "client" as const,
+      allowed: false,
+    },
+    {
+      mode: "build" as const,
+      previewRuntime: "start" as const,
+      allowed: true,
+    },
+  ])(
+    "only relaxes server imports for Start-compiled outputs: $mode / $previewRuntime",
+    ({ mode, previewRuntime, allowed }) => {
+      const plan = planThemeSandboxWorkspace({
+        files: [
+          ...STARTER_THEME_FILES,
+          {
+            path: "src/helper.server.ts",
+            content: "export const read = () => 'server';",
+          },
+          {
+            path: "src/routes/helper.tsx",
+            content: `import { createFileRoute } from '@tanstack/react-router';
+import { createServerFn } from '@tanstack/react-start';
+import { read } from '../helper.server';
+const fn = createServerFn().handler(() => read());
+export const Route = createFileRoute('/helper')({ loader: () => fn() });`,
+          },
+        ],
+        entry: "src/routes/index.tsx",
+        buildId: "server-boundary-wiring",
+        approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+        mode,
+        previewRuntime,
+      });
+      expect(plan.ok).toBe(allowed);
+    },
+  );
   it("runs the preview's diagnostic script before either module graph", async () => {
     const { indexHtml } = await prepare("preview-server");
     const diagnostic = indexHtml.indexOf("morph:storefront-preview-diagnostic");

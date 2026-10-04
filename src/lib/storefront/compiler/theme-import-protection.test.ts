@@ -7,10 +7,129 @@ import {
 const file = (path: string, content: string) => ({ path, content });
 
 describe("theme import protection", () => {
+  describe("native Start local server boundaries", () => {
+    const routePath = "src/routes/index.tsx";
+    const helper = file(
+      "src/data.server.ts",
+      "export const data = () => 'private';",
+    );
+    const check = (source: string, nativeStartCompilation: boolean) =>
+      collectThemeImportProtectionDiagnosticsForBuild(
+        [file(routePath, source), helper],
+        { entry: routePath, hasStartRuntime: true, nativeStartCompilation },
+      );
+
+    it.each([
+      'import { createServerFn } from "@tanstack/react-start"; import { data } from "../data.server"; export const action = createServerFn().handler(() => data());',
+      'import { createFileRoute } from "@tanstack/react-router"; import { data } from "../data.server"; export const Route = createFileRoute("/")({ server: { handlers: { GET: () => new Response(data()) } } });',
+    ])(
+      "permits native handler bindings, but keeps legacy artifacts blocked: %s",
+      (source) => {
+        expect(check(source, true)).toEqual([]);
+        expect(check(source, false)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+          ]),
+        );
+      },
+    );
+
+    it.each([
+      [
+        "component leak",
+        'import { createServerFn } from "@tanstack/react-start"; import { data } from "../data.server"; export const action = createServerFn().handler(() => data()); export default () => <div>{data()}</div>;',
+      ],
+      ["side effect", 'import "../data.server"; export default () => null;'],
+      [
+        "dynamic import",
+        'import { createServerFn } from "@tanstack/react-start"; export const action = createServerFn().handler(async () => (await import("../data.server")).data());',
+      ],
+      [
+        "static plus dynamic import",
+        'import { createServerFn } from "@tanstack/react-start"; import { data } from "../data.server"; export const action = createServerFn().handler(() => data()); export const leaked = import("../data.server");',
+      ],
+      [
+        "fake factory",
+        'import { data } from "../data.server"; const createServerFn = () => ({ handler: (fn: any) => fn() }); export const action = createServerFn().handler(() => data());',
+      ],
+      [
+        "re-export",
+        'import { data } from "../data.server"; export { data } from "../data.server";',
+      ],
+    ])("still rejects %s with native compilation enabled", (_name, source) => {
+      expect(check(source, true)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "THEME_IMPORT_SERVER_IN_CLIENT",
+            filePath: routePath,
+          }),
+        ]),
+      );
+    });
+
+    it("rejects a server-only module that is itself a client root", () => {
+      const diagnostics = collectThemeImportProtectionDiagnosticsForBuild(
+        [file("src/routes/thing.server.ts", "export const data = 'private';")],
+        {
+          entry: "src/routes/thing.server.ts",
+          hasStartRuntime: true,
+          nativeStartCompilation: true,
+        },
+      );
+      expect(diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "THEME_IMPORT_SERVER_IN_CLIENT",
+            filePath: "src/routes/thing.server.ts",
+          }),
+        ]),
+      );
+    });
+
+    it("the paired server pass still inspects a helper skipped by the client pass", () => {
+      const files = [
+        file(
+          routePath,
+          'import { createServerFn } from "@tanstack/react-start"; import { data } from "../data.server"; export const action = createServerFn().handler(() => data());',
+        ),
+        file(
+          "src/data.server.ts",
+          'import { browser } from "./browser.client"; export const data = () => browser;',
+        ),
+        file("src/browser.client.ts", "export const browser = 'browser';"),
+      ];
+      expect(
+        collectThemeImportProtectionDiagnostics(files, {
+          target: "client",
+          entryPaths: [routePath],
+          nativeStartCompilation: true,
+        }),
+      ).toEqual([]);
+      expect(
+        collectThemeImportProtectionDiagnosticsForBuild(files, {
+          entry: routePath,
+          hasStartRuntime: true,
+          nativeStartCompilation: true,
+        }),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "THEME_IMPORT_CLIENT_IN_SERVER",
+            filePath: "src/data.server.ts",
+            importSource: "./browser.client",
+            target: "server",
+          }),
+        ]),
+      );
+    });
+  });
   it("blocks a .server module from a reachable client entry", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file("src/pages/index.tsx", 'import data from "../data.server"; export default data;'),
+        file(
+          "src/pages/index.tsx",
+          'import data from "../data.server"; export default data;',
+        ),
         file("src/data.server.ts", "export default 'secret';"),
       ],
       { target: "client", entryPaths: ["src/pages/index.tsx"] },
@@ -129,8 +248,14 @@ describe("theme import protection", () => {
   it("resolves tsconfig path aliases before checking server/client boundaries", () => {
     const diagnostics = collectThemeImportProtectionDiagnostics(
       [
-        file("tsconfig.json", JSON.stringify({ compilerOptions: { paths: { "@/*": ["src/*"] } } })),
-        file("src/pages/index.tsx", 'import secret from "@/secret.server"; export default secret;'),
+        file(
+          "tsconfig.json",
+          JSON.stringify({ compilerOptions: { paths: { "@/*": ["src/*"] } } }),
+        ),
+        file(
+          "src/pages/index.tsx",
+          'import secret from "@/secret.server"; export default secret;',
+        ),
         file("src/secret.server.ts", "export default 'secret';"),
       ],
       { target: "client", entryPaths: ["src/pages/index.tsx"] },
@@ -180,10 +305,13 @@ describe("theme import protection", () => {
     'import { createFileRoute } from "@tanstack/react-router"; export const Route = createFileRoute("/api/test")({ server: { handlers: { GET: () => helper() } } });',
     'import { createServerFn } from "@tanstack/react-start"; export const action = createServerFn().handler(() => helper());',
   ])(
-    "KNOWN GAP: still refuses a local .server helper exclusively inside a genuine Start server boundary",
+    "keeps uncompiled client-only preview conservative for local .server helpers",
     (source) => {
       const files = [
-        file("src/routes/test.tsx", 'import { helper } from "../helper.server"; ' + source),
+        file(
+          "src/routes/test.tsx",
+          'import { helper } from "../helper.server"; ' + source,
+        ),
         file(
           "src/helper.server.ts",
           'import { getRequest } from "@tanstack/react-start/server"; export const helper = () => getRequest();',
@@ -194,7 +322,11 @@ describe("theme import protection", () => {
           target: "client",
           entryPaths: ["src/routes/test.tsx"],
         }),
-      ).toEqual(expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]));
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+        ]),
+      );
       expect(
         collectThemeImportProtectionDiagnostics(files, {
           target: "server",
@@ -215,11 +347,18 @@ describe("theme import protection", () => {
       const diagnostics = collectThemeImportProtectionDiagnostics(
         [
           file("src/routes/test.tsx", source),
-          file("src/helper.server.ts", "export const helper = () => 'private';"),
+          file(
+            "src/helper.server.ts",
+            "export const helper = () => 'private';",
+          ),
         ],
         { target: "client", entryPaths: ["src/routes/test.tsx"] },
       );
-      expect(diagnostics.some((item) => item.code === "THEME_IMPORT_SERVER_IN_CLIENT")).toBe(true);
+      expect(
+        diagnostics.some(
+          (item) => item.code === "THEME_IMPORT_SERVER_IN_CLIENT",
+        ),
+      ).toBe(true);
     },
   );
 
@@ -235,7 +374,9 @@ describe("theme import protection", () => {
     );
 
     expect(diagnostics).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+      ]),
     );
   });
 
@@ -251,7 +392,9 @@ describe("theme import protection", () => {
     );
 
     expect(diagnostics).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ code: "THEME_IMPORT_SERVER_IN_CLIENT" }),
+      ]),
     );
   });
 
@@ -281,7 +424,10 @@ describe("theme import protection", () => {
       [
         file("src/router.tsx", "export function getRouter() { return {}; }"),
         file("src/routes/__root.tsx", "export const Route = {};"),
-        file("src/server.ts", 'import Widget from "./widget.client"; export default Widget;'),
+        file(
+          "src/server.ts",
+          'import Widget from "./widget.client"; export default Widget;',
+        ),
         file("src/widget.client.tsx", "export default () => null;"),
       ],
       { entry: "src/routes/__root.tsx", hasStartRuntime: true },
