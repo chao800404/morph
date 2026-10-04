@@ -93,7 +93,7 @@ function describeStages(stages: ReadonlyArray<[string, number]>): string {
  * elements under the editor's panels. A double click resets the transform, but
  * only while selection is off — which is also the state the editor loads in.
  */
-export async function openEditor(page: Page) {
+export async function openEditor(page: Page, editorPath = EDITOR_PATH!) {
   const server = capturePreviewServerReport(page);
   const done: [string, number][] = [];
   // Null unless MORPH_E2E_TIMELINE=1; see request-timeline.ts.
@@ -131,7 +131,7 @@ export async function openEditor(page: Page) {
   // "domcontentloaded", not the default "load": the editor holds a preview
   // iframe that keeps fetching, so the load event can arrive late or not at all.
   await stage("document", async () => {
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await page.goto(editorPath, { waitUntil: "domcontentloaded" });
   });
 
   await stage("editor chrome", async () => {

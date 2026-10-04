@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { EDITOR_PATH, openEditor } from "./helpers";
 import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
 
@@ -16,7 +19,33 @@ test("Code-only initial publish prepares content revisions before its build", as
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await openEditor(page);
-  const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+  const scope = {
+    ...themeScopeFromEditorPath(EDITOR_PATH!),
+    themeId: randomUUID(),
+  };
+  // The suite's shared Theme may already have content revisions. Insert only
+  // our own new Theme row in the runner-owned database; the ordinary editor
+  // read provisions its starter source and documents through the existing
+  // upgrade path. Never reset revisions authored by preceding tests.
+  const now = new Date().toISOString();
+  await promisify(execFile)("npx", [
+    "wrangler",
+    "d1",
+    "execute",
+    "DATABASE",
+    "--local",
+    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
+      ? ["--env", "local_preview_e2e"]
+      : []),
+    "--persist-to",
+    process.env.MORPH_E2E_STATE_DIR!,
+    "--command",
+    `INSERT INTO storefront_themes
+      (id, storefront_id, name, metadata, created_at, updated_at)
+      VALUES ('${scope.themeId}', '${scope.storefrontId}',
+        'initial-publish-${scope.themeId}', '{"starterTemplateVersion":1}',
+        '${now}', '${now}');`,
+  ]);
   const readContext = () =>
     page.evaluate(async (scope) => {
       const module = "/src/server/storefront/storefront-themes.serverFn.ts";
@@ -32,6 +61,7 @@ test("Code-only initial publish prepares content revisions before its build", as
   const layout = initial.templates.find(
     (item: { type: string }) => item.type === "layout",
   );
+  const editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home.id}`;
   expect(home.draftRevisionId).toBeNull();
   expect(layout.draftRevisionId).toBeNull();
   const source = await page.evaluate(async (scope) => {
@@ -54,7 +84,7 @@ test("Code-only initial publish prepares content revisions before its build", as
     ).success,
   ).toBe(true);
   // Reload the saved source using the normal editor readiness check.
-  await openEditor(page);
+  await openEditor(page, editorPath);
   const urls = await page.evaluate(async () => {
     const buildModule =
       "/src/server/storefront/storefront-theme-builds.serverFn.ts";

@@ -83,6 +83,14 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
 
 ## Code-only initial-publish acceptance (2026-10-04, local)
 
+CI integration correction: the initial-publish browser case now creates a
+unique Theme in the runner-owned throwaway database. Starter source and
+Documents are provisioned by the existing editor path, not copied/reset from
+the suite's shared Theme. The old case's null-revision precondition was wrong
+after preceding Design tests had created revisions. Both its standalone run
+(3 passed) and a run after the landed Design-content-write case (4 passed)
+passed locally; logs: `/tmp/codex-pr91-isolated-{e2e,order}.log`.
+
 - DAL acceptance preserves the untouched Document and its nested values,
   records the authenticated actor, and publishes through the existing
   release/publication path. Seven regressions include stale source/draft
