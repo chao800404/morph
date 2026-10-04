@@ -3,6 +3,10 @@ import {
   getActiveEditorWriter,
 } from "@/lib/auth/editor-writer";
 import type { StorefrontThemeBinaryFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
+import { fail, ok } from "@/lib/db/server-result";
+import { projectPublicTextFile } from "@/lib/storefront/editor/public-text-file";
+import { AuthFailure } from "@/lib/auth/auth-failure";
+import { refusalOfThemeBinaryWrite } from "@/lib/storefront/editor/editor-write-gate";
 
 /**
  * Where the editor writes a binary Theme file (`handleThemeBinaryUpload`),
@@ -94,4 +98,49 @@ export async function writeThemeBinaryFile(input: {
     message:
       body?.message ?? `The file could not be saved (${response.status}).`,
   };
+}
+
+/** Monaco text takes the same bytes, validation, ownership and OCC path as uploads. */
+export async function writeThemePublicTextFile(input: {
+  storefrontId: string;
+  themeId: string;
+  path: string;
+  content: string;
+  expectedSourceGeneration: number;
+  precondition: ThemeBinaryWritePrecondition;
+}) {
+  const bytes = new TextEncoder().encode(input.content);
+  // The shared text-workspace precondition includes expectMissing: false on
+  // existing files. The bytes endpoint uses a presence-discriminated union;
+  // do not pass that extra field through as though it meant "create".
+  const precondition: ThemeBinaryWritePrecondition =
+    "expectedFileId" in input.precondition
+      ? {
+          expectedFileId: input.precondition.expectedFileId,
+          expectedVersion: input.precondition.expectedVersion,
+        }
+      : { expectMissing: true };
+  const result = await writeThemeBinaryFile({
+    ...input,
+    precondition,
+    bytes: new Blob([bytes]),
+  });
+  if (!result.ok) {
+    const refusal = refusalOfThemeBinaryWrite(result);
+    if (refusal) throw new AuthFailure(refusal, result.message);
+    // An unhandled server failure is ambiguous, not proof of a refused write.
+    if (result.status >= 500 || result.status < 400)
+      throw new Error(result.message);
+    const error =
+      result.error === "CONFLICT_SOURCE_GENERATION_MISMATCH"
+        ? "SOURCE_GENERATION_CONFLICT"
+        : result.error === "CONFLICT_VERSION_MISMATCH"
+          ? "FILE_VERSION_CONFLICT"
+          : result.error;
+    return fail(result.message, { error });
+  }
+  return ok("Public text saved", {
+    ...projectPublicTextFile(result.file, bytes),
+    sourceGeneration: result.sourceGeneration,
+  });
 }

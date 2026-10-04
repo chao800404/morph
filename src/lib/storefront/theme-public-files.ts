@@ -14,7 +14,8 @@ import { themePublicSvgGate } from "./theme-public-svg-gate";
  * from the Media Library, project import, publish) checks it against this
  * one module, so the rules cannot drift between them.
  *
- * v1 holds images and fonts. SVG is refused while `themePublicSvgGate` is
+ * Holds images, fonts and validated data text (TXT/XML/JSON/webmanifest), all
+ * stored as immutable bytes. SVG is refused while `themePublicSvgGate` is
  * closed: served from the store's own origin it can run script on navigation.
  * Behind the gate it is wired all the way: its bytes are checked by
  * `validateSvg` wherever they enter (`theme-public-bytes.ts`, kept apart so the
@@ -37,6 +38,17 @@ export const THEME_PUBLIC_LIMITS = {
 } as const;
 
 const SVG_MIME_TYPE = "image/svg+xml";
+const TEXT_FORMATS: Readonly<Record<string, string>> = {
+  txt: "text/plain; charset=utf-8",
+  xml: "application/xml; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  webmanifest: "application/manifest+json; charset=utf-8",
+};
+
+/** Format classification only; path admission still goes through the contract. */
+export function themePublicTextMimeType(path: string): string | null {
+  return TEXT_FORMATS[extensionOf(path)] ?? null;
+}
 
 type ThemePublicFormat = Readonly<{
   mimeType: string;
@@ -100,6 +112,7 @@ const FORMATS: Readonly<Record<string, ThemePublicFormat>> = {
  */
 export const THEME_PUBLIC_ACCEPT = [
   ...Object.keys(FORMATS),
+  ...Object.keys(TEXT_FORMATS),
   ...(themePublicSvgGate() === "open" ? ["svg"] : []),
 ]
   .map((extension) => `.${extension}`)
@@ -227,6 +240,8 @@ export function checkThemePublicPath(
     return { ok: true, urlPath, mimeType: SVG_MIME_TYPE };
   }
   const format = FORMATS[extension];
+  const textType = themePublicTextMimeType(path);
+  if (textType) return { ok: true, urlPath, mimeType: textType };
   if (!format) return { ok: false, reason: "unsupported-format" };
   return { ok: true, urlPath, mimeType: format.mimeType };
 }
@@ -319,8 +334,8 @@ export function describeThemePublicProblem(
       return "SVG files are not supported yet; use PNG or WebP.";
     case "unsupported-format":
       return themePublicSvgGate() === "open"
-        ? "Only PNG, JPEG, WebP, GIF, AVIF, ICO, SVG, WOFF and WOFF2 are supported."
-        : "Only PNG, JPEG, WebP, GIF, AVIF, ICO, WOFF and WOFF2 are supported.";
+        ? "Only PNG, JPEG, WebP, GIF, AVIF, ICO, SVG, WOFF, WOFF2, TXT, XML, JSON and WEBMANIFEST are supported."
+        : "Only PNG, JPEG, WebP, GIF, AVIF, ICO, WOFF, WOFF2, TXT, XML, JSON and WEBMANIFEST are supported.";
     case "file-too-large":
       return `Files are limited to ${THEME_PUBLIC_LIMITS.maxFileBytes / 1024 / 1024} MB.`;
     case "svg-too-large":

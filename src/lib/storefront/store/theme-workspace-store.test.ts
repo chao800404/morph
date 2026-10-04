@@ -17,6 +17,22 @@ describe("ThemeWorkspaceStore", () => {
     });
   });
 
+  it("does not treat an unread public text blob as deleted, but still detects actual deletion", () => {
+    const scope = { storefrontId: "store", themeId: "theme" };
+    const publicText: StorefrontThemeFileDTO = {
+      id: "robots", ...scope, path: "public/robots.txt", content: "original",
+      mimeType: "text/plain", isEntry: false, version: 1, createdAt: "", updatedAt: "",
+    };
+    const store = useThemeWorkspaceStore.getState();
+    store.setActiveWorkspace(scope.storefrontId, scope.themeId);
+    store.hydrateFromQuery(scope.storefrontId, scope.themeId, [publicText], 1);
+    store.updateLocalContent(publicText.path, "my draft", scope);
+    store.hydrateFromQuery(scope.storefrontId, scope.themeId, [], 2, [publicText.path]);
+    expect(useThemeWorkspaceStore.getState().files[publicText.path]).toMatchObject({ localContent: "my draft", dirty: true, saveState: "dirty" });
+    store.hydrateFromQuery(scope.storefrontId, scope.themeId, [], 3, []);
+    expect(useThemeWorkspaceStore.getState().files[publicText.path].conflict).toMatchObject({ kind: "deleted" });
+  });
+
   it("isolates files between different workspaces (storefrontId:themeId)", () => {
     const store = useThemeWorkspaceStore.getState();
 

@@ -9,6 +9,73 @@ import {
 } from "./theme-route-registry";
 
 describe("Theme route registry", () => {
+  it("classifies proven handler-only routes without excluding mixed or uncertain pages", () => {
+    const root = {
+      path: "src/routes/__root.tsx",
+      content: "export const Route = createRootRoute({});",
+    };
+    const options = [
+      ["endpoint", "{ server: { handlers: { GET: handler } } }", true],
+      [
+        "mixed",
+        "{ server: { handlers: handlers }, component: () => <div /> }",
+        false,
+      ],
+      [
+        "method",
+        "{ server: { handlers }, component() { return null; } }",
+        false,
+      ],
+      ["duplicate", "{ server: { handlers }, server: options }", false],
+      ["computed", "{ server: { handlers }, [key]: value }", false],
+      ["spread", "{ server: { handlers }, ...pageOptions }", false],
+      ["ordinary", "{ loader: load }", false],
+      ["unknown", "options", false],
+    ] as const;
+    for (const [name, config, expected] of options) {
+      const registry = buildThemeRouteRegistry([
+        root,
+        {
+          path: `src/routes/${name}.tsx`,
+          content: `export const Route = createFileRoute('/${name}')(${config});`,
+        },
+      ]);
+      expect(registry.valid).toBe(true);
+      expect(
+        registry.routes.find((route) => route.path === `/${name}`)
+          ?.isServerOnly,
+      ).toBe(expected);
+    }
+  });
+
+  it.each(["lazy", "component"])(
+    "keeps a handler route with a %s component companion editable",
+    (piece) => {
+      const registry = buildThemeRouteRegistry([
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/mixed.tsx",
+          content:
+            "export const Route = createFileRoute('/mixed')({ server: { handlers } });",
+        },
+        {
+          path: `src/routes/mixed.${piece}.tsx`,
+          content:
+            piece === "lazy"
+              ? "export const Route = createLazyFileRoute('/mixed')({ component: Page });"
+              : "export const component = Page;",
+        },
+      ]);
+      expect(registry.valid).toBe(true);
+      expect(
+        registry.routes.find((route) => route.path === "/mixed")?.isServerOnly,
+      ).toBe(false);
+    },
+  );
+
   it("discovers static and dynamic TanStack routes without executing source", () => {
     const registry = buildThemeRouteRegistry([
       {
@@ -66,7 +133,9 @@ describe("Theme route registry", () => {
     ]);
 
     expect(registry.valid).toBe(true);
-    expect(registry.routes.find((route) => route.kind === "root")).toMatchObject({
+    expect(
+      registry.routes.find((route) => route.kind === "root"),
+    ).toMatchObject({
       componentName: "Root",
     });
   });
@@ -278,13 +347,17 @@ describe("Theme route registry", () => {
   });
 
   it("preserves escaped leading and trailing underscores like TanStack's generator", () => {
-    expect(parseThemeRouteSourcePath("src/routes/[_marketing].tsx")).toMatchObject({
+    expect(
+      parseThemeRouteSourcePath("src/routes/[_marketing].tsx"),
+    ).toMatchObject({
       path: "/_marketing",
       routeId: "/_marketing",
       isPathless: false,
       isNonNested: false,
     });
-    expect(parseThemeRouteSourcePath("src/routes/[_]marketing.tsx")).toMatchObject({
+    expect(
+      parseThemeRouteSourcePath("src/routes/[_]marketing.tsx"),
+    ).toMatchObject({
       path: "/_marketing",
       routeId: "/_marketing",
       isPathless: false,

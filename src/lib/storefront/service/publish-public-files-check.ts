@@ -7,6 +7,7 @@ import {
   isThemePublicPath,
   isThemePublicSvgPath,
   THEME_PUBLIC_LIMITS,
+  themePublicTextMimeType,
 } from "@/lib/storefront/theme-public-files";
 
 /**
@@ -24,7 +25,7 @@ import {
  * revision may be published long after it was taken — including the active
  * release's own, which a content-only publish reuses. The build judged the
  * same revision's paths against its routes; this repeats the per-file part,
- * and reads the bytes of the files whose safety is in their content (SVG).
+ * and reads the bytes whose safety is in their content (SVG and data text).
  * Raster and font bytes are not re-read: their signature was checked when
  * they were written and nothing about them is judged by rules that change.
  */
@@ -96,11 +97,15 @@ export async function findPublishPublicFileProblems(
       );
       continue;
     }
-    if (!isThemePublicSvgPath(entry.path)) continue;
+    const svg = isThemePublicSvgPath(entry.path);
+    if (!svg && !themePublicTextMimeType(entry.path)) continue;
     // Size first, from the revision: an oversized file is refused unread.
-    if (entry.sizeBytes > THEME_PUBLIC_LIMITS.maxSvgBytes) {
+    if (
+      entry.sizeBytes >
+      (svg ? THEME_PUBLIC_LIMITS.maxSvgBytes : THEME_PUBLIC_LIMITS.maxFileBytes)
+    ) {
       problems.push(
-        `${entry.path}: ${describeThemePublicProblem("svg-too-large")}`,
+        `${entry.path}: ${describeThemePublicProblem(svg ? "svg-too-large" : "file-too-large")}`,
       );
       continue;
     }
@@ -123,6 +128,11 @@ export async function findPublishPublicFileProblems(
       continue;
     }
     const bytesCheck = checkThemePublicBytes(entry.path, bytes);
+    if (bytes.byteLength !== entry.sizeBytes) {
+      problems.push(
+        `${entry.path}: The stored bytes do not match the revision's size.`,
+      );
+    }
     if (!bytesCheck.ok) problems.push(`${entry.path}: ${bytesCheck.message}`);
   }
   return problems;

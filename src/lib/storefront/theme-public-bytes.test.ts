@@ -16,6 +16,56 @@ const CLEAN = text(
 );
 
 describe("checkThemePublicBytes", () => {
+  it.each([
+    ["robots.txt", "User-agent: *\nDisallow:\n"],
+    ["data.json", '{"hello":"世界"}'],
+    ["site.webmanifest", '{"name":"My shop"}'],
+    [
+      "sitemap.xml",
+      '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://shop.example/</loc></url></urlset>',
+    ],
+  ])("accepts %s without rewriting its bytes", (name, value) => {
+    const bytes = text(value);
+    const before = new Uint8Array(bytes);
+    expect(checkThemePublicBytes(`public/${name}`, bytes)).toEqual({
+      ok: true,
+    });
+    expect(bytes).toEqual(before);
+  });
+
+  it.each([
+    ["data.json", "{"],
+    ["site.webmanifest", "[]"],
+    ["sitemap.xml", "<urlset>"],
+    ["sitemap.xml", '<?xml version="1.0" encoding="UTF-16"?><a/>'],
+    ["sitemap.xml", '<!DOCTYPE a [<!ENTITY x "evil">]><a>&x;</a>'],
+    ["sitemap.xml", '<?xml-stylesheet href="https://evil.example/x.xsl"?><a/>'],
+    [
+      "sitemap.xml",
+      '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+    ],
+    ["sitemap.xml", '<a><html xmlns="http://www.w3.org/1999/xhtml"/></a>'],
+    ["sitemap.xml", "<a>".repeat(129) + "</a>".repeat(129)],
+  ])("refuses malformed or executable %s", (name, value) => {
+    expect(checkThemePublicBytes(`public/${name}`, text(value))).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("refuses invalid UTF-8, nulls and oversized text before parsing", () => {
+    expect(
+      checkThemePublicBytes("public/robots.txt", new Uint8Array([0xff])),
+    ).toMatchObject({ ok: false });
+    expect(
+      checkThemePublicBytes("public/robots.txt", text("x\0")),
+    ).toMatchObject({ ok: false });
+    expect(
+      checkThemePublicBytes(
+        "public/data.json",
+        new Uint8Array(THEME_PUBLIC_LIMITS.maxFileBytes + 1),
+      ),
+    ).toMatchObject({ ok: false, message: "Files are limited to 5 MB." });
+  });
   it("accepts an SVG validateSvg accepts, as it is", () => {
     expect(checkThemePublicBytes("public/a.svg", CLEAN)).toEqual({ ok: true });
   });

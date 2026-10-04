@@ -6,6 +6,12 @@ import {
 } from "@/lib/storefront/compiler/theme-route-registry";
 import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
+import {
+  checkThemePublicPath,
+  describeThemePublicProblem,
+  isThemePublicPath,
+  themePublicTextMimeType,
+} from "../theme-public-files";
 
 /**
  * Extensions a Theme author may create.
@@ -30,6 +36,8 @@ function extensionOf(path: string): string {
 }
 
 export function themeFileMimeType(path: string): string {
+  if (isThemePublicPath(path))
+    return themePublicTextMimeType(path) ?? "text/plain";
   switch (extensionOf(path)) {
     case ".tsx":
     case ".ts":
@@ -131,6 +139,12 @@ function ${componentName}() {
  */
 export function scaffoldThemeFile(path: string): string {
   const extension = extensionOf(path);
+  if (isThemePublicPath(path)) {
+    if (extension === ".json" || extension === ".webmanifest") return "{}\n";
+    if (extension === ".xml")
+      return '<?xml version="1.0" encoding="UTF-8"?>\n<root />\n';
+    return "";
+  }
   if (extension === ".css") return "";
   if (extension === ".json") return "{}\n";
 
@@ -205,7 +219,16 @@ function validateThemeFilePath(
   }
 
   const extension = extensionOf(path);
-  if (!allowedExtensions.includes(extension)) {
+  if (isThemePublicPath(path)) {
+    const check = checkThemePublicPath(path);
+    if (!check.ok)
+      return { ok: false, message: describeThemePublicProblem(check.reason) };
+    if (!themePublicTextMimeType(path))
+      return {
+        ok: false,
+        message: "Upload images and fonts instead of creating them as text.",
+      };
+  } else if (!allowedExtensions.includes(extension)) {
     return {
       ok: false,
       message: `Only ${allowedExtensions.join(", ")} files can be created.`,

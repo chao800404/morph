@@ -1325,6 +1325,97 @@ describe("the check before a publish activates a revision", () => {
     expect(reads).toBe(0);
   });
 
+  it.each([
+    ["robots.txt", "User-agent: *\nDisallow:\n", "text/plain; charset=utf-8"],
+    [
+      "sitemap.xml",
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>',
+      "application/xml; charset=utf-8",
+    ],
+    ["data.json", '{"hello":"世界"}', "application/json; charset=utf-8"],
+    [
+      "site.webmanifest",
+      '{"name":"Shop"}',
+      "application/manifest+json; charset=utf-8",
+    ],
+  ])(
+    "stores, freezes and checks uploaded %s through the existing bytes path",
+    async (name, content, mimeType) => {
+      seedSource();
+      const bytes = new TextEncoder().encode(content);
+      const saved = await upload(`public/${name}`, bytes);
+      expect(saved).toMatchObject({
+        mimeType,
+        blobDigest: sha256(bytes),
+        sizeBytes: bytes.byteLength,
+      });
+      expect(r2.objects.get(`theme-source/${sha256(bytes)}`)).toEqual(bytes);
+      // Metadata-only revisions intentionally have no inline source snapshot.
+      // Exercise the same blob-backed materialization used by the build.
+      const revision = await revisions().materializeRevision(
+        STORE,
+        THEME,
+        latestRevisionId(),
+      );
+      expect(revision).not.toBeNull();
+      const input = normalizeRevisionSnapshot(revision!.snapshot, revision!.id);
+      expect(input.binaryFiles).toEqual([
+        expect.objectContaining({
+          path: `public/${name}`,
+          mimeType,
+          digest: sha256(bytes),
+        }),
+      ]);
+      expect(await findPublishPublicFileProblems(deps, revision!.id)).toEqual(
+        [],
+      );
+      expect(reads).toBe(1);
+    },
+  );
+
+  it("rejects invalid text before any blob or workspace write", async () => {
+    seedSource();
+    const before = generation();
+    await expect(
+      upload("public/site.webmanifest", new TextEncoder().encode("[]")),
+    ).rejects.toThrow("A web manifest must be a JSON object");
+    expect(generation()).toBe(before);
+    expect(fileRow("public/site.webmanifest")).toBeUndefined();
+    expect(r2.objects.size).toBe(0);
+  });
+
+  it("rechecks data text content, digest and size before publishing", async () => {
+    seedSource();
+    await upload("public/data.json", new TextEncoder().encode("{}"));
+    const revisionId = latestRevisionId();
+    const invalid = new TextEncoder().encode("{broken");
+    await blobStore().putImmutable({
+      digest: sha256(invalid),
+      content: invalid,
+      mimeType: "application/json",
+    });
+    editManifest(revisionId, (manifest) => {
+      const entry = manifest.files.find(
+        (file) => file.path === "public/data.json",
+      )!;
+      entry.digest = sha256(invalid);
+      entry.sizeBytes = invalid.byteLength;
+    });
+    await expect(assertPublishPublicFiles(deps, revisionId)).rejects.toThrow(
+      "valid JSON",
+    );
+    editManifest(revisionId, (manifest) => {
+      manifest.files.find(
+        (file) => file.path === "public/data.json",
+      )!.sizeBytes = 6 * 1024 * 1024;
+    });
+    const previousReads = reads;
+    await expect(assertPublishPublicFiles(deps, revisionId)).rejects.toThrow(
+      "Files are limited to 5 MB",
+    );
+    expect(reads).toBe(previousReads);
+  });
+
   it("reads and re-checks an SVG, under the gate and rules as they are now", async () => {
     svgGate.value = "open";
     seedSource();
