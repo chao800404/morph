@@ -14,13 +14,7 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 import { unstable_startWorker } from "wrangler";
 
 import { verifyPublishedArtifact } from "../scripts/verify-published-artifact.mjs";
-import {
-  EDITOR_PATH,
-  openContentTab,
-  openEditor,
-  previewFrame,
-  settleSelection,
-} from "./helpers";
+import { EDITOR_PATH, previewFrame } from "./helpers";
 import {
   NATIVE_COMPAT_COOKIE_HELPER_FILES,
   NATIVE_COMPAT_FILES,
@@ -207,46 +201,78 @@ test.describe("TanStack Start on the published storefront", () => {
       expect(uploaded.status(), `${path}: ${await uploaded.text()}`).toBe(200);
     }
 
-    // Opened again so the preview starts from the files just written.
-    await openEditor(page);
-
-    // KNOWN GAP (not asserted here, since earlier specs may already have made
-    // one): a store publishes only once a Design edit has created a draft
-    // revision. A plain Start app needs no such step.
-    const marker = `native-compat-${Date.now()}`;
-    await page.getByRole("button", { name: "hero", exact: true }).click();
-    await settleSelection(page);
-    await openContentTab(page);
-    const field = page
-      .locator('[data-slot="inspector-content-field"] input')
-      .first();
-    await expect(field).toBeVisible({ timeout: 30_000 });
-    await field.fill(marker);
-    await field.press("Tab");
+    // No Design edit or manual build: Publish must create this source-only
+    // route's document and await the very build it starts. The earlier case
+    // edited hero first, hiding the missing-document initial-publish gap.
+    const readContext = () =>
+      serverFn(
+        page,
+        "/src/server/storefront/storefront-themes.serverFn.ts",
+        "getStorefrontThemeEditor",
+        scope!,
+      );
+    const before = await readContext();
+    expect(before.success).toBe(true);
+    expect(before.data.storefront.activeReleaseId).toBeNull();
+    expect(
+      before.data.templates.some(
+        (item: { routePath: string | null }) =>
+          item.routePath === "/compat-other",
+      ),
+    ).toBe(false);
+    await page.goto(`${EDITOR_PATH!}&routePath=/compat-other`, {
+      waitUntil: "domcontentloaded",
+    });
     await expect(
-      previewFrame(page).getByText(marker, { exact: false }).first(),
-    ).toBeVisible({ timeout: 60_000 });
-
-    const build = page.locator("button[data-editor-build-action]");
-    await build.click();
-    await expect(build).toHaveAttribute("data-build-pending", "true", {
-      timeout: 30_000,
+      previewFrame(page).locator('[data-compat="other"]'),
+    ).toHaveText("other", { timeout: 60_000 });
+    // The existing artifact verifier requires content-publication evidence.
+    // Here the expected content is an untouched empty route document, not an
+    // invented Design edit. The source marker is checked on the storefront.
+    const marker = '"version":1';
+    const urls = await page.evaluate(async () => {
+      const buildsModule =
+        "/src/server/storefront/storefront-theme-builds.serverFn.ts";
+      const themesModule =
+        "/src/server/storefront/storefront-themes.serverFn.ts";
+      const builds = await import(/* @vite-ignore */ buildsModule);
+      const themes = await import(/* @vite-ignore */ themesModule);
+      return {
+        build: builds.createPreviewBuild.url,
+        publish: themes.publishStorefrontThemeTemplate.url,
+      };
     });
-    await expect(build).toHaveAttribute("data-build-pending", "false", {
-      timeout: 9 * 60_000,
+    const buildPath = new URL(urls.build, page.url()).pathname;
+    const publishPath = new URL(urls.publish, page.url()).pathname;
+    let buildRequests = 0;
+    let publishRequests = 0;
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return;
+      const path = new URL(request.url()).pathname;
+      if (path === buildPath) buildRequests++;
+      if (path === publishPath) publishRequests++;
     });
-    const buildPreview = page.locator('[aria-label="Build preview"]');
-    if (await buildPreview.isVisible().catch(() => false)) {
-      await page.keyboard.press("Escape");
-      await expect(buildPreview).toBeHidden({ timeout: 30_000 });
-    }
     await page.getByRole("button", { name: /^Publish$/ }).click();
     await page.locator("[data-publish-confirm]").click();
     await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
       "aria-label",
       "Published",
-      { timeout: 3 * 60_000 },
+      { timeout: 9 * 60_000 },
     );
+    expect(
+      buildRequests,
+      "Publish follows one immutable build, without rebuilding",
+    ).toBe(1);
+    expect(publishRequests, "The confirmed release is submitted once").toBe(1);
+    const after = await readContext();
+    expect(after.success).toBe(true);
+    const routeDocument = after.data.templates.find(
+      (item: { routePath: string | null }) =>
+        item.routePath === "/compat-other",
+    );
+    expect(routeDocument).toBeDefined();
+    expect(routeDocument.document).toEqual({ version: 1, sections: [] });
+    expect(routeDocument.publishedRevisionId).toEqual(expect.any(String));
 
     const history = (await serverFn(
       page,
@@ -254,6 +280,8 @@ test.describe("TanStack Start on the published storefront", () => {
       "listStorefrontReleaseHistory",
       { storefrontId: scope!.storefrontId, limit: 1 },
     )) as { success: boolean; data: { releases: { id: string }[] } };
+    expect(history.success).toBe(true);
+    expect(history.data.releases).toHaveLength(1);
     const releaseId = history.data.releases[0]!.id;
 
     const domain = (await serverFn(
@@ -301,6 +329,7 @@ test.describe("TanStack Start on the published storefront", () => {
     storefrontOrigin = `http://${HOST}:${new URL(test.info().project.use.baseURL!).port}`;
     const home = await storefrontRequest(storefrontOrigin, "/compat-other");
     expect(home.status).toBe(200);
+    expect(await home.text()).toContain('data-compat="other"');
   });
 
   const request = (
@@ -388,9 +417,21 @@ test.describe("TanStack Start on the published storefront", () => {
     await shopper.locator('[data-compat="fail"]').click();
     await expect(result).toHaveText("caught:compat-fn-error");
 
+    await shopper.evaluate(() =>
+      Reflect.set(
+        window,
+        "__compatDocumentMarker",
+        "published-client-navigation",
+      ),
+    );
     await shopper.locator('[data-compat="link"]').click();
     await expect(shopper.locator('[data-compat="other"]')).toHaveText("other");
     await expect(shopper).toHaveURL(`${storefrontOrigin}/compat-other`);
+    expect(
+      await shopper.evaluate(() =>
+        Reflect.get(window, "__compatDocumentMarker"),
+      ),
+    ).toBe("published-client-navigation");
     await context.close();
   });
 

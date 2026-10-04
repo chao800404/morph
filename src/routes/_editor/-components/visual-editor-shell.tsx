@@ -281,6 +281,7 @@ import {
   type PreviewFrameLoadWatchdog,
 } from "./preview-frame-load-watchdog";
 import {
+  editorPublishTargetKey,
   editorRoutePathsMatch,
   resolveEditorTemplate,
   routeOwnsDocument,
@@ -4140,7 +4141,14 @@ export function VisualEditorShell({
       publishMountedRef.current = false;
     };
   }, []);
-  publishTargetRef.current = `${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`;
+  // A source-only route initially borrows a template identity. Materializing
+  // its own document is not a page switch; changing to another borrowed route
+  // is. Bind the publish intent to the route when the URL names one.
+  publishTargetRef.current = editorPublishTargetKey(
+    workspaceScope,
+    activeTemplate?.id,
+    search.routePath,
+  );
 
   const handlePublish = useCallback(
     async (note?: string) => {
@@ -4264,7 +4272,48 @@ export function VisualEditorShell({
       // Code-only authoring does not create a content revision. Publishing is
       // the explicit write that materializes the existing Document; it is not
       // a fake Design edit or a bypass of the normal publish preconditions.
-      for (const template of [activeTemplate, layoutTemplate]) {
+      let publishTemplate = {
+        id: activeTemplate.id,
+        draftRevisionId: activeTemplate.draftRevisionId,
+        draftGeneration: activeTemplate.draftGeneration,
+      };
+      const routeTarget = search.routePath
+        ? contentTargetForRoutePath(search.routePath)
+        : null;
+      if (
+        routeTarget?.kind === "route" &&
+        activeTemplate.routePath !== routeTarget.routePath
+      ) {
+        // Extend the same idempotent route-document path used by Design writes.
+        // No guessed document from the borrowed homepage enters publication.
+        const ensured = await sendEditorWrite(workspaceScope, "theme", () =>
+          ensureStorefrontThemeRouteTemplate({
+            data: { ...workspaceScope, routePath: routeTarget.routePath },
+          }),
+        ).catch(() => null);
+        if (!ensured?.success) {
+          toast.error(
+            ensured?.message ??
+              "Cannot publish: could not confirm this route's content document. Review the latest state and try again.",
+          );
+          void queryClient.invalidateQueries({
+            queryKey: storefrontThemeQueries.detail(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ).queryKey,
+          });
+          return;
+        }
+        publishTemplate = ensured.data;
+        publishDraftRevisionId =
+          templateDraftRevisionIdRef.current.get(publishTemplate.id) ??
+          publishTemplate.draftRevisionId;
+        publishDraftGeneration =
+          templateDraftGenerationRef.current.get(publishTemplate.id) ??
+          publishTemplate.draftGeneration ??
+          1;
+      }
+      for (const template of [publishTemplate, layoutTemplate]) {
         if (
           !template ||
           (templateDraftRevisionIdRef.current.get(template.id) ??
@@ -4317,7 +4366,7 @@ export function VisualEditorShell({
           template.id,
           prepared.data.draftGeneration,
         );
-        if (template.id === activeTemplate.id) {
+        if (template.id === publishTemplate.id) {
           publishDraftRevisionId = prepared.data.draftRevisionId;
           publishDraftGeneration = prepared.data.draftGeneration;
         }
@@ -4405,7 +4454,7 @@ export function VisualEditorShell({
       }
 
       await publishMutation.mutateAsync({
-        templateId: activeTemplate.id,
+        templateId: publishTemplate.id,
         sourceRevisionId: publishBuild?.sourceRevisionId,
         themeBuildId: publishBuild?.id,
         note: note?.trim() || undefined,
@@ -4416,6 +4465,7 @@ export function VisualEditorShell({
     },
     [
       activeTemplate,
+      search.routePath,
       activeBuildPreview,
       activeBuildSourceGeneration,
       context.storefront.id,
