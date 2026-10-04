@@ -30,6 +30,7 @@ import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { editorShardArguments } from "./editor-e2e-shards.mjs";
 
 /** Whether an exit has already been chosen. See `exitAfterFlush` below. */
 let exiting = false;
@@ -760,6 +761,9 @@ async function verifyPublishedRelease() {
 }
 
 async function main() {
+  const passed = process.argv.slice(2);
+  const extra = passed[0] === "--" ? passed.slice(1) : passed;
+  const selection = editorShardArguments(extra);
   if (USES_SIDECAR && !existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
       `MISSING_SIDECAR_ENV: ${SIDECAR_ENV_FILE} holds MORPH_LOCAL_THEME_PREVIEW_ORIGIN and MORPH_LOCAL_THEME_PREVIEW_TOKEN, which the Worker and the sidecar must agree on.`,
@@ -918,8 +922,6 @@ async function main() {
   // and Playwright reads it as end-of-options — so `-- e2e/editor.spec.ts -g x`
   // silently ran the whole suite instead of one test, with the filter accepted
   // and ignored. Both spellings work now.
-  const passed = process.argv.slice(2);
-  const extra = passed[0] === "--" ? passed.slice(1) : passed;
   const report = process.env.MORPH_E2E_REPORT_PATH
     ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
     : path.join(stateDir, "playwright-report.json");
@@ -929,7 +931,7 @@ async function main() {
     : ["--reporter=line,json"];
   log(`running playwright${extra.length ? ` (${extra.join(" ")})` : ""}`);
   const suite = ["playwright", "test", "--project=editor"];
-  suite.push(...reporting, ...extra);
+  suite.push(...reporting, ...selection);
   await runWhileServing("playwright", "npx", suite, {
     // Asserted as a precondition, so a run that silently fell back to the
     // container transport fails instead of passing for the wrong reason.

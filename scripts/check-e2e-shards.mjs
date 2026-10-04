@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { editorShardArguments } from "./editor-e2e-shards.mjs";
 
 export function records(report) {
   const found = [];
@@ -96,7 +97,7 @@ function list(extra = []) {
           "--project=editor",
           "--list",
           "--reporter=json",
-          ...extra,
+          ...editorShardArguments(extra),
         ],
         { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
       ),

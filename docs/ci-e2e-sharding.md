@@ -11,12 +11,23 @@ The former `editor-writes-paused.spec.ts` is split into `editor-writes-auth`,
 `e2e/helpers/editor-writes-paused.ts`. Its original 16 test bodies are preserved;
 no waits, assertions, timeout values, or retry behavior are weakened.
 
-Playwright assigns whole files to shards because full parallelism is disabled.
-Therefore duration may be uneven even when test counts are similar. Measure
-each shard's CI duration before making performance claims or adding runners.
-The files are spread through the suite's ordering so the slow cases are not
-all assigned to the first shard. The initial collected plan is 32 / 31 / 27
-editor tests; intentional skips mean these counts do not predict duration.
+The runner expands `--shard=N/3` into exact whole-file filters from
+`scripts/editor-e2e-shards.mjs`. It does not also forward Playwright's native
+shard flag: doing so would divide that subset a second time and lose tests.
+Full and focused invocations without a shard flag remain unchanged.
+
+The allocation uses successful run 37217174717's per-file durations. Its native
+file sharding took 11m45s / 3m23s / 9m54s including setup; test bodies alone
+were about 569s / 67s / 493s. The reviewed new allocation projects about
+374s / 380s / 376s of test bodies. These are estimates using old measurements,
+not measured new CI results or a guaranteed runtime. Setup, teardown, machine
+variation and intentional environment-gated skips are additional factors.
+
+When adding or moving a spec, update the explicit plan. Architecture guards
+compare all three collected selections with the unfiltered suite; a missing
+file's tests or duplicated test IDs fail. Do not drop environment-gated files
+to make a shard appear faster. Rebalance from actual CI report durations when
+necessary without changing test bodies, retries, workers or timeout ceilings.
 
 `node scripts/check-e2e-shards.mjs` compares the full collected suite with all
 three shard plans. It rejects missing or duplicate editor test IDs and missing
