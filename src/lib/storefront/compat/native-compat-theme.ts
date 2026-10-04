@@ -15,6 +15,7 @@
  */
 
 import { NATIVE_COMPAT_TRANSPORT_FILES } from "./native-compat-transport";
+import { NATIVE_COMPAT_ROUTE_FILES } from "./native-compat-routes";
 
 export type NativeCompatFile = Readonly<{ path: string; content: string }>;
 
@@ -161,6 +162,7 @@ export const Route = createFileRoute("/robots.txt")({
 
 export const NATIVE_COMPAT_FILES: readonly NativeCompatFile[] = [
   ...NATIVE_COMPAT_TRANSPORT_FILES,
+  ...NATIVE_COMPAT_ROUTE_FILES,
   { path: "src/start.ts", content: START },
   { path: "src/compat/fns.ts", content: FNS },
   { path: "src/routes/compat.tsx", content: COMPAT_PAGE },

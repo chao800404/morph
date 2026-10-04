@@ -8,6 +8,7 @@ import {
   NATIVE_COMPAT_FILES,
 } from "@/lib/storefront/compat/native-compat-theme";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { assertNativeRoutes } from "../compat/assert-native-routes";
 import { NATIVE_COMPAT_SERVER_HELPER_FILES } from "../compat/native-compat-server-helper";
 import { NATIVE_COMPAT_PUBLIC_FILES } from "../compat/native-compat-public-files";
 import {
@@ -154,6 +155,9 @@ describe(
     });
     it("preserves raw Response status, headers and binary body from a server function", async () => {
       await assertRawResponse(request);
+    });
+    it("supports dynamic and splat routes with route and method middleware", async () => {
+      await assertNativeRoutes(request);
     });
     it("delivers the first server-function stream bytes before releasing the remainder", async () => {
       await assertByteStreaming(request);

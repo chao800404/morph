@@ -486,6 +486,44 @@ async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
 }
 
 export const storefrontThemeDal = {
+  /** Explicit publish preparation, never a write performed by reading context.
+   * Reuses the Document writer and its source/draft CAS. No client-supplied
+   * document, pointer replacement, or implicit rebase onto an existing draft.
+   */
+  async prepareInitialTemplateDraft(data: {
+    storefrontId: string;
+    themeId: string;
+    templateId: string;
+    expectedDraftGeneration: number;
+    expectedSourceGeneration: number;
+    createdBy: string;
+  }) {
+    const context = await this.findEditorContext(
+      data.storefrontId,
+      data.themeId,
+    );
+    const template = context?.templates.find(
+      (item) => item.id === data.templateId,
+    );
+    if (!template) return null;
+    if (
+      template.draftRevisionId ||
+      template.publishedRevisionId ||
+      template.draftGeneration !== data.expectedDraftGeneration
+    ) {
+      throw new Error(
+        `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Template was modified concurrently.`,
+      );
+    }
+    return writeTemplateDocument({
+      ...data,
+      sourceGeneration: data.expectedSourceGeneration,
+      document: template.document,
+      draftRevisionId: null,
+      publishedRevisionId: null,
+    });
+  },
+
   async findEditorContext(
     storefrontId: string,
     themeId: string,

@@ -537,6 +537,72 @@ test.describe("TanStack Start in the Live Preview", () => {
     expect(answers.robots).toBe("User-agent: *\nAllow: /\n");
   });
 
+  test("serves dynamic and splat routes with route and method middleware", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Needs the Start preview.");
+    await openRoute(page, "/compat-other");
+    const frame = previewFrame(page);
+    await expect(frame.locator('[data-compat="other"]')).toHaveText("other", {
+      timeout: 90_000,
+    });
+    const answers = await frame.locator("body").evaluate(async () => {
+      const get = await fetch("/api/compat-items/item-42?q=hello%20world");
+      const post = await fetch("/api/compat-items/item-43", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "中文" }),
+      });
+      const denied = await fetch("/api/compat-items/item-42", {
+        headers: { "x-compat-deny": "1" },
+      });
+      const unsupported = await fetch("/api/compat-items/item-42", {
+        method: "DELETE",
+      });
+      const splat = await fetch("/api/compat-files/images/icons/logo.svg");
+      return {
+        get: {
+          status: get.status,
+          global: get.headers.get("x-compat-request-mw"),
+          handler: get.headers.get("x-compat-handler"),
+          body: await get.json(),
+        },
+        post: { status: post.status, body: await post.json() },
+        denied: {
+          status: denied.status,
+          handler: denied.headers.get("x-compat-handler"),
+          body: await denied.text(),
+        },
+        unsupported: unsupported.status,
+        splat: { status: splat.status, body: await splat.json() },
+      };
+    });
+    expect(answers).toEqual({
+      get: {
+        status: 200,
+        global: "1",
+        handler: "executed",
+        body: {
+          id: "item-42",
+          route: "route",
+          handler: "route:get",
+          query: "hello world",
+        },
+      },
+      post: {
+        status: 200,
+        body: {
+          id: "item-43",
+          route: "route",
+          body: { title: "中文" },
+        },
+      },
+      denied: { status: 403, handler: null, body: "fixture-refused" },
+      unsupported: 405,
+      splat: { status: 200, body: { path: "images/icons/logo.svg" } },
+    });
+  });
+
   test("navigates with a client Link, keeping the document", async ({
     page,
   }) => {
