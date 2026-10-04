@@ -160,6 +160,7 @@ import {
 } from "@/server/storefront/storefront-theme-files.serverFn";
 import {
   publishStorefrontThemeTemplate,
+  prepareInitialStorefrontThemeTemplateDraft,
   renameStorefrontThemeSection,
   updateStorefrontThemeSectionProps,
   ensureStorefrontThemeRouteTemplate,
@@ -4189,10 +4190,10 @@ export function VisualEditorShell({
       // pending edits have to be committed in the same breath.
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
 
-      const publishDraftRevisionId =
+      let publishDraftRevisionId =
         templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
         activeTemplate.draftRevisionId;
-      const publishDraftGeneration =
+      let publishDraftGeneration =
         templateDraftGenerationRef.current.get(activeTemplate.id) ??
         activeTemplate.draftGeneration ??
         1;
@@ -4243,11 +4244,6 @@ export function VisualEditorShell({
         return;
       }
 
-      if (!activeTemplate || !publishDraftRevisionId) {
-        toast.error("Cannot publish: template draft revision is missing.");
-        return;
-      }
-
       const currentGeneration = useThemeWorkspaceStore
         .getState()
         .getBaseSourceGeneration(workspaceScope);
@@ -4262,6 +4258,72 @@ export function VisualEditorShell({
         toast.error(
           "Cannot publish: remote source changes detected. Please reload/review files before publishing.",
         );
+        return;
+      }
+
+      // Code-only authoring does not create a content revision. Publishing is
+      // the explicit write that materializes the existing Document; it is not
+      // a fake Design edit or a bypass of the normal publish preconditions.
+      for (const template of [activeTemplate, layoutTemplate]) {
+        if (
+          !template ||
+          (templateDraftRevisionIdRef.current.get(template.id) ??
+            template.draftRevisionId)
+        )
+          continue;
+        const prepared = await sendEditorWrite(workspaceScope, "theme", () =>
+          prepareInitialStorefrontThemeTemplateDraft({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              templateId: template.id,
+              expectedDraftGeneration:
+                templateDraftGenerationRef.current.get(template.id) ??
+                template.draftGeneration ??
+                1,
+              expectedSourceGeneration: currentGeneration,
+            },
+          }),
+        ).catch(() => {
+          // Preparation may have landed even if its response was lost. Do not
+          // retry it automatically or publish without the confirmed revision.
+          toast.error(
+            "Cannot publish: could not confirm the initial content draft. Review the latest state and try again.",
+          );
+          void queryClient.invalidateQueries({
+            queryKey: storefrontThemeQueries.detail(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ).queryKey,
+          });
+          return null;
+        });
+        if (!prepared) return;
+        if (!prepared.success) {
+          toast.error(prepared.message);
+          void queryClient.invalidateQueries({
+            queryKey: storefrontThemeQueries.detail(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            ).queryKey,
+          });
+          return;
+        }
+        templateDraftRevisionIdRef.current.set(
+          template.id,
+          prepared.data.draftRevisionId,
+        );
+        templateDraftGenerationRef.current.set(
+          template.id,
+          prepared.data.draftGeneration,
+        );
+        if (template.id === activeTemplate.id) {
+          publishDraftRevisionId = prepared.data.draftRevisionId;
+          publishDraftGeneration = prepared.data.draftGeneration;
+        }
+      }
+      if (!publishDraftRevisionId) {
+        toast.error("Cannot publish: template draft revision is missing.");
         return;
       }
 
@@ -4362,6 +4424,7 @@ export function VisualEditorShell({
       monacoDirtyFiles,
       layoutTemplate,
       publishMutation,
+      queryClient,
       themeFilesQuery,
       updatePropsMutation,
       workspaceScope,

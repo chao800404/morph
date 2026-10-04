@@ -9,6 +9,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeDal } from "./storefront-theme.dal";
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
+import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
+import { env as workerEnv } from "cloudflare:workers";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -2012,6 +2014,146 @@ export default function SiteHeader() { return <header />; }`;
     expect(newsProps.placeholder).toBe("Your email here...");
     expect(newsProps.actionLabel).toBe("Subscribe");
   });
+});
+
+describe("preparing an untouched template for its first publish", () => {
+  const seedUntouched = () => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('template-initial', 'theme-a', 'index', 'Home',
+        '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"heading":"Existing default","navigation":[{"label":"Keep me"}]}}]}', 'now', 'now');
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+      VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');
+    `);
+  };
+  const prepare = (overrides = {}) =>
+    storefrontThemeDal.prepareInitialTemplateDraft({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-initial",
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+      createdBy: "user-1",
+      ...overrides,
+    });
+
+  it("publishes an untouched document through the existing revision and release path", async () => {
+    seedUntouched();
+    const before = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    expect(before?.templates[0]?.draftRevisionId).toBeNull();
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+    const draft = await prepare();
+    expect(draft).not.toBeNull();
+    expect(draft?.document).toEqual(before?.templates[0]?.document);
+    const result = await storefrontThemeDal.publishTemplate({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-initial",
+      expectedDraftRevisionId: draft!.draftRevisionId,
+      expectedDraftGeneration: draft!.draftGeneration,
+      expectedReleaseGeneration: 1,
+      verifySourceRevision: acceptRevision,
+    });
+    expect(result).toMatchObject({
+      releaseCreated: true,
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+    });
+    expect(
+      sqlite
+        .prepare("SELECT created_by FROM storefront_theme_template_revisions")
+        .get(),
+    ).toEqual({ created_by: "user-1" });
+  });
+  it("refuses a stale source generation without creating a revision", async () => {
+    seedUntouched();
+    await expect(prepare({ expectedSourceGeneration: 2 })).rejects.toThrow(
+      TEMPLATE_DRAFT_GENERATION_MISMATCH,
+    );
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+  it("refuses a stale draft generation without creating a revision", async () => {
+    seedUntouched();
+    await expect(prepare({ expectedDraftGeneration: 2 })).rejects.toThrow(
+      TEMPLATE_DRAFT_GENERATION_MISMATCH,
+    );
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+  it("does not rebase an initial-preparation request onto an existing draft", async () => {
+    seedUntouched();
+    await prepare();
+    await expect(prepare()).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
+  });
+  it("does not prepare a template belonging to another store", async () => {
+    seedUntouched();
+    expect(await prepare({ storefrontId: "other-store" })).toBeNull();
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+  it.each(["source", "draft"] as const)(
+    "rolls back when %s changes after the context read",
+    async (target) => {
+      seedUntouched();
+      const originalBatch = workerEnv.DATABASE.batch.bind(workerEnv.DATABASE);
+      const batch = vi.spyOn(workerEnv.DATABASE, "batch");
+      batch.mockImplementationOnce(async (statements) => {
+        sqlite.exec(
+          target === "source"
+            ? "UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'"
+            : "UPDATE storefront_theme_templates SET draft_generation = 2 WHERE id = 'template-initial'",
+        );
+        return originalBatch(statements);
+      });
+      try {
+        await expect(prepare()).rejects.toThrow(
+          TEMPLATE_DRAFT_GENERATION_MISMATCH,
+        );
+        expect(
+          sqlite
+            .prepare(
+              "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+            )
+            .get(),
+        ).toEqual({ n: 0 });
+      } finally {
+        batch.mockRestore();
+      }
+    },
+  );
 });
 
 describe("publish build resolution", () => {

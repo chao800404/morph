@@ -13,6 +13,7 @@ import {
 import { storefrontDal } from "@/lib/storefront/dal/storefront.dal";
 import {
   publishStorefrontThemeTemplateInputSchema,
+  prepareInitialStorefrontThemeTemplateDraftInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
   storefrontThemeEditorInputSchema,
   renameStorefrontThemeSectionInputSchema,
@@ -380,6 +381,42 @@ async function queueReleasePreviewCapture(
     console.error("Failed to queue release preview capture:", error);
   }
 }
+
+/** Materialize an untouched Document through the normal CAS writer before build. */
+export const prepareInitialStorefrontThemeTemplateDraft = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(prepareInitialStorefrontThemeTemplateDraftInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    try {
+      const result = await storefrontThemeDal.prepareInitialTemplateDraft({
+        ...input.data,
+        createdBy: context.user.id,
+      });
+      return result
+        ? ok("Initial template draft ready", result)
+        : fail("Template not found", { error: "NOT_FOUND" });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)
+      ) {
+        return fail("Template draft or source was modified concurrently.", {
+          error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
+      return failure(
+        "Prepare initial template draft error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to prepare the initial content draft",
+      );
+    }
+  });
 
 export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
   .validator((data: unknown) =>

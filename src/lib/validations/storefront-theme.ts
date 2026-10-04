@@ -28,6 +28,13 @@ export const publishStorefrontThemeTemplateInputSchema =
     note: z.string().trim().max(MAX_RELEASE_NOTE_LENGTH).optional(),
   });
 
+export const prepareInitialStorefrontThemeTemplateDraftInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    expectedDraftGeneration: z.number().int().min(1),
+    expectedSourceGeneration: z.number().int().min(1),
+  });
+
 /** Renaming an existing release, for a note written after the fact. */
 export const renameStorefrontReleaseInputSchema =
   storefrontThemeEditorInputSchema.extend({

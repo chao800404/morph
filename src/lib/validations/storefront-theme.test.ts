@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  prepareInitialStorefrontThemeTemplateDraftInputSchema,
   publishStorefrontThemeTemplateInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
   storefrontThemeEditorSearchSchema,
@@ -14,6 +15,44 @@ import {
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
 } from "./storefront-theme-file";
+
+describe("initial template draft preparation", () => {
+  const input = () => ({
+    storefrontId: crypto.randomUUID(),
+    themeId: crypto.randomUUID(),
+    templateId: crypto.randomUUID(),
+    expectedDraftGeneration: 1,
+    expectedSourceGeneration: 1,
+  });
+
+  it("does not accept a client document or actor override", () => {
+    const data = input();
+    expect(
+      prepareInitialStorefrontThemeTemplateDraftInputSchema.parse({
+        ...data,
+        document: { version: 1, sections: [] },
+        createdBy: "another-user",
+      }),
+    ).toEqual(data);
+  });
+
+  it.each(["expectedDraftGeneration", "expectedSourceGeneration"] as const)(
+    "requires the %s CAS precondition",
+    (field) => {
+      const data: Record<string, unknown> = input();
+      delete data[field];
+      expect(
+        prepareInitialStorefrontThemeTemplateDraftInputSchema.safeParse(data)
+          .success,
+      ).toBe(false);
+      data[field] = 0;
+      expect(
+        prepareInitialStorefrontThemeTemplateDraftInputSchema.safeParse(data)
+          .success,
+      ).toBe(false);
+    },
+  );
+});
 
 describe("storefront theme editor search", () => {
   it("keeps legacy template type links compatible", () => {

@@ -398,7 +398,9 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 5 | `public/` 開放經格式檢查的文字檔（`.txt`、`.xml`、`.json`、`.webmanifest`；SVG 仍驗證）；新店不需先改 Design 即可發布初始 Document（仍走 revision、OCC、publication） | 功能 |
 | 6 | Design 依能力顯示：只有 server handler 的 route 標為端點；同時有頁面與 handler 的 route 仍可編輯 | 介面 |
 
-`codex/start-public-text` 這項變更已接上第 5 步經格式檢查的文字檔上傳與 Code 建立／編輯／儲存。`public/` 仍走既有 bytes、revision、build、publish 路徑，不建立文字存檔旁路；Monaco 按需讀取，沿用登入暫停、草稿保留、結果不明先讀回與 OCC。同項變更也實作第 6 步：既有 route registry 明確識別的純 server handler 路由在 Design 顯示為 Code-only 端點，混合頁面與 lazy/component 拆分路由仍可編輯。不執行 Theme 程式來解析未知選項；未知時保留既有頁面行為。實際驗收與仍缺少的能力以 `docs/tanstack-start-compatibility.md` 為準；初始發布仍待驗證。
+`codex/start-public-text` 這項變更已接上第 5 步經格式檢查的文字檔上傳與 Code 建立／編輯／儲存。`public/` 仍走既有 bytes、revision、build、publish 路徑，不建立文字存檔旁路；Monaco 按需讀取，沿用登入暫停、草稿保留、結果不明先讀回與 OCC。同項變更也實作第 6 步：既有 route registry 明確識別的純 server handler 路由在 Design 顯示為 Code-only 端點，混合頁面與 lazy/component 拆分路由仍可編輯。不執行 Theme 程式來解析未知選項；未知時保留既有頁面行為。實際驗收與仍缺少的能力以 `docs/tanstack-start-compatibility.md` 為準。
+
+初始發布的本機分層驗收已補：既有模板只用 Code 存檔後，發布動作經原本 Document writer 與 source/draft CAS 建立初始 revision，不靠假 Design 修改。DAL 已驗到既有 release/publication 路徑；瀏覽器已驗首頁與 layout 準備及建置交接（刻意攔住 build，並未部署或完成端到端發布）。原有 revision/OCC 要求不變。尚無 template row 的新 source-only 路由，以及 Cloudflare 真實部署，未包含在這份驗收中。
 
 同項變更另補 native transport 驗收：原生 server function 的 Response、FormData 與串流共用既有相容性 Theme，本機 Start 預覽、建置 Worker 的 HTTP，以及瀏覽器皆有分層證據；typed stream 目前只驗到預覽瀏覽器。建置串流測試使用 identity encoding，不代表壓縮傳輸或 Cloudflare 驗收已通過。後續 `.server` 修正已讓 native Start handler 內的靜態匯入在預覽、正式建置與 Code 診斷通過：兩份瀏覽器產物都走原生 client compiler，預覽直接讀取 server-only 原始碼與 source map 會被拒絕，五種邊界案例已有正式測試。動態 `.server` 匯入仍拒絕；未編譯的純前端 Live Preview 仍不支援 server functions，完整 Start 仍為 opt-in。這次只有本機驗收，不代表真實 Sandbox 或 Cloudflare 驗收完成。完整狀態見相容性清單。
 

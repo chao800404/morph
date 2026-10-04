@@ -40,11 +40,17 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    Spreads, computed options and unresolved option objects conservatively retain
    existing page behaviour; this does not execute Theme code to resolve them.
    No second registry or new write/delete path is introduced.
-3. **Initial publish without a Design edit.** Roadmap gap. Reproduce against
-   current baseline before calling it broken; retain content revision and OCC.
+3. **Initial publish without a Design edit (existing template rows).** Explicit
+   publication preparation materializes the existing selected and layout
+   Documents through the normal revision writer and source/draft CAS. Reads
+   remain non-mutating; an existing draft is never replaced or rebased by this
+   preparation. Layer-specific local acceptance is recorded below. Newly
+   introduced source-only routes without a template row remain outside this
+   acceptance, as does Cloudflare deployment.
 4. **Expanded transport coverage (layer-specific acceptance below).**
    Raw Response, multipart/FormData and streaming now have native fixtures.
-   Dynamic server routes and route middleware, serialization
+   Dynamic server routes and route middleware have explicit shared fixtures
+   (see the layer-specific acceptance below). Serialization
    adapters, deferred data, custom entries, aliases and rendering options need
    explicit fixtures in applicable layers. Untested does not mean unsupported.
 5. **Package/config capability.** Packages are approved/fixed; build settings
@@ -74,6 +80,60 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    functions; runtime selection remains opt-in. Dynamic `.server` imports are
    still deliberately refused by Morph's conservative usage analysis. These
    tests are local evidence, not Cloudflare deployment acceptance.
+
+## Code-only initial-publish acceptance (2026-10-04, local)
+
+- DAL acceptance preserves the untouched Document and its nested values,
+  records the authenticated actor, and publishes through the existing
+  release/publication path. Seven regressions include stale source/draft
+  generations, wrong-store ownership, an already prepared draft, and source
+  or draft changes between the context read and atomic write. Rejected writes
+  create no content revision. Focused DAL suite: 60 passed.
+- Browser/local-sidecar acceptance uses only the normal Code save API, then
+  Publish. Both selected and layout Documents acquire initial revisions;
+  their contents are unchanged. The build request is intercepted before the
+  server receives it, and no publish request or active release is created.
+  This proves initial preparation and build handoff, not a completed build,
+  deployment, or full browser publication. Run: 3 passed including setup and
+  transport; `/tmp/codex-initial-publish-e2e-3.log`.
+- Two earlier runs failed before confirmation: React's update-depth limit
+  was reached in Radix FocusScope/ref composition. A hydration-timing guess
+  was withdrawn after the second trace. Popover was updated from 1.1.15 to
+  1.1.23 with its required dependencies; React/Start/Cloudflare versions are
+  unchanged. The real Publish confirmation then passed. A permanent shared
+  Popover test checks stable refs through 20 open-content updates and Escape.
+  An old-version-only control fails that ref assertion (40 detach/attach
+  calls); the new version passes. This unit control detects ref churn, not
+  the entire browser crash by itself. The new version was restored afterward.
+  Upstream cause/fix: [Radix #3967](https://github.com/radix-ui/primitives/pull/3967).
+- Lost preparation responses stop this attempt and invalidate editor context;
+  they are not automatically replayed, and no unconfirmed revision is used
+  for publication. Existing publish requirements and post-build checks remain.
+- Repository-wide tests: 554 files passed, 1 skipped; 4,373 tests passed,
+  1 skipped. Production build passed, including client-secret,
+  sidecar-exclusion and deploy-artifact secret guards. Data-layer typecheck,
+  E2E assertion guard and `git diff --check` passed. Logs:
+  `/tmp/codex-initial-publish-{full-test,build,data,assertions}.log`.
+  Final `pnpm typecheck` was rerun after all test additions and passed:
+  `/tmp/codex-initial-publish-final-typecheck.log`.
+
+## Native dynamic-route acceptance (2026-10-04, local)
+
+- Ordinary Start fixture files define a named `$id` parameter and a `$` splat,
+  route-wide request middleware, GET-only handler middleware, and POST JSON.
+  The same files run through the actual Start dev server and built Worker.
+- Assertions check global/route/handler middleware composition and context,
+  an early 403 that never reaches the handler, HEAD's GET fallback without a
+  response body, and an explicit `ANY` handler returning 405. The installed
+  Start version falls through to page rendering for an undefined method;
+  automatic 405 is not a platform compatibility promise.
+- Browser acceptance is a separate test using the Code save API and preview
+  iframe; the local-sidecar run passed (three tests including authentication
+  and transport setup). This section does not assert parent-route middleware inheritance,
+  breakout routes, Cloudflare deployment, or arbitrary future Start APIs.
+- Full repository tests passed: 4,362 tests, one existing skip; both native
+  compatibility suites are included (14 built-Worker tests and 10 Start dev
+  server tests). Typecheck and data-layer typecheck also passed.
 
 ## Native server-helper acceptance (2026-10-04, local)
 
