@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommerceExportExecution } from "@/lib/commerce-export/storage/commerce-export-storage";
 import type { OrderExportService } from "@/lib/order/export/order-export.service";
 import {
@@ -46,6 +46,33 @@ const dependencies = (
 });
 
 describe("Admin order exports API", () => {
+  beforeEach(() => {
+    // Keep the fixture valid regardless of the calendar date; timers stay real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hides the download URL at and after the expiry deadline", async () => {
+    for (const offset of [0, 1]) {
+      vi.setSystemTime(new Date(Date.parse(execution.expiresAt!) + offset));
+      const response = await handleAdminOrderExportsRequest(
+        new Request(
+          `https://shop.test/api/admin/workflows-executions/export-orders/${transactionId}`,
+        ),
+        dependencies(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        workflow_execution: { status: "expired", result: null },
+      });
+    }
+  });
+
   it("starts an export with the order-list query and sort", async () => {
     const deps = dependencies();
     const response = await handleAdminOrderExportsRequest(
@@ -73,7 +100,9 @@ describe("Admin order exports API", () => {
       })),
     });
     const denied = await handleAdminOrderExportsRequest(
-      new Request("https://shop.test/api/admin/orders/export", { method: "POST" }),
+      new Request("https://shop.test/api/admin/orders/export", {
+        method: "POST",
+      }),
       forbidden,
     );
     expect(denied.status).toBe(403);
@@ -110,7 +139,11 @@ describe("Admin order exports API", () => {
       new Request(
         `https://shop.test/api/admin/workflows-executions/export-orders/${transactionId}`,
       ),
-      dependencies({ service: { getForOwner: vi.fn(async () => null) } as unknown as OrderExportService }),
+      dependencies({
+        service: {
+          getForOwner: vi.fn(async () => null),
+        } as unknown as OrderExportService,
+      }),
     );
     expect(hidden.status).toBe(404);
   });

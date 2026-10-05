@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommerceExportExecution } from "@/lib/commerce-export/storage/commerce-export-storage";
 import type { ProductExportService } from "@/lib/product/service/product-export.service";
 import {
@@ -58,6 +58,33 @@ const dependencies = (
 });
 
 describe("Admin product exports API", () => {
+  beforeEach(() => {
+    // Keep the fixture valid regardless of the calendar date; timers stay real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hides the download URL at and after the expiry deadline", async () => {
+    for (const offset of [0, 1]) {
+      vi.setSystemTime(new Date(Date.parse(execution.expiresAt!) + offset));
+      const response = await handleAdminProductExportsRequest(
+        new Request(
+          `https://shop.test/api/admin/workflows-executions/export-products/${transactionId}`,
+        ),
+        dependencies(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        workflow_execution: { status: "expired", result: null },
+      });
+    }
+  });
+
   it("starts an asynchronous export with validated current-list filters", async () => {
     const deps = dependencies();
     const response = await handleAdminProductExportsRequest(
