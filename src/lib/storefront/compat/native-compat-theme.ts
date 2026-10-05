@@ -16,11 +16,14 @@
 
 import { NATIVE_COMPAT_TRANSPORT_FILES } from "./native-compat-transport";
 import { NATIVE_COMPAT_ROUTE_FILES } from "./native-compat-routes";
+import { NATIVE_COMPAT_ADVANCED_FILES } from "./native-compat-advanced";
+import { NATIVE_COMPAT_ENTRY_FILES } from "./native-compat-entry";
 
 export type NativeCompatFile = Readonly<{ path: string; content: string }>;
 
 const START = String.raw`import { createMiddleware, createStart } from "@tanstack/react-start";
 import { setResponseHeader } from "@tanstack/react-start/server";
+import { amountAdapter } from '@compat/amount';
 
 // Global request middleware: runs for every request the Start handler serves.
 const compatRequestMiddleware = createMiddleware().server(async ({ next }) => {
@@ -30,6 +33,7 @@ const compatRequestMiddleware = createMiddleware().server(async ({ next }) => {
 
 export const startInstance = createStart(() => ({
   requestMiddleware: [compatRequestMiddleware],
+  serializationAdapters: [amountAdapter],
 }));
 `;
 
@@ -161,6 +165,8 @@ export const Route = createFileRoute("/robots.txt")({
 `;
 
 export const NATIVE_COMPAT_FILES: readonly NativeCompatFile[] = [
+  ...NATIVE_COMPAT_ENTRY_FILES,
+  ...NATIVE_COMPAT_ADVANCED_FILES,
   ...NATIVE_COMPAT_TRANSPORT_FILES,
   ...NATIVE_COMPAT_ROUTE_FILES,
   { path: "src/start.ts", content: START },

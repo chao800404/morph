@@ -28,9 +28,10 @@ import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 const plan = (
   previewRuntime?: ThemePreviewRuntime,
   mode: "build" | "preview-server" = "preview-server",
+  extraFiles: readonly { path: string; content: string }[] = [],
 ) => {
   const result = planThemeSandboxWorkspace({
-    files: STARTER_THEME_FILES as never,
+    files: [...STARTER_THEME_FILES, ...extraFiles] as never,
     entry: "src/routes/index.tsx",
     buildId: "start-preview-test",
     approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
@@ -47,6 +48,28 @@ const plan = (
 };
 
 describe("a Start Live Preview workspace (prototype)", () => {
+  it("wires a Theme server entry in builds but retains the preview wrapper", () => {
+    const extra = [
+      {
+        path: "src/server.ts",
+        content: "export default { fetch: () => new Response('custom') };",
+      },
+    ];
+    const build = plan("start", "build", extra).files;
+    expect(JSON.parse(build.get("/workspace/wrangler.json")!).main).toBe(
+      "./src/server.ts",
+    );
+    const preview = plan("start", "preview-server", extra).files;
+    expect(JSON.parse(preview.get("/workspace/wrangler.json")!).main).toBe(
+      `./${THEME_PREVIEW_START_WORKER_PATH}`,
+    );
+    expect(preview.get(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
+      themePreviewStartWorkerSource("start-preview-test", "./src/server.ts"),
+    );
+    expect(preview.has(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(
+      true,
+    );
+  });
   it("keeps validated edits arriving before hydration, then refreshes the existing router", async () => {
     const listeners = new Set<(event: unknown) => void>();
     const timers: (() => void)[] = [];
@@ -102,67 +125,67 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(invalidate).toHaveBeenCalledWith({ sync: true });
     expect(listeners.size).toBe(0);
   });
-  it("answers health without invoking Start or a Theme loader", async () => {
-    let calls = 0;
-    const sandbox = {
-      Request,
-      Response,
-      URL,
-      Headers,
-      fetch: globalThis.fetch,
-      startEntry: {
-        fetch: async () => {
-          calls++;
-          return new Response("theme");
+  it.each(["@tanstack/react-start/server-entry", "./src/server.ts"])(
+    "answers health without invoking the %s entry or a Theme loader",
+    async (serverEntry) => {
+      let calls = 0;
+      const sandbox = {
+        Request,
+        Response,
+        URL,
+        Headers,
+        fetch: globalThis.fetch,
+        startEntry: {
+          fetch: async () => {
+            calls++;
+            return new Response("theme");
+          },
         },
-      },
-      entry: undefined as unknown as {
-        fetch: (request: Request) => Promise<Response>;
-      },
-    };
-    runInNewContext(
-      themePreviewStartWorkerSource("instance-123")
-        .replace(
-          'import startEntry from "@tanstack/react-start/server-entry";',
-          "",
-        )
-        .replace("export default {", "entry = {"),
-      sandbox,
-    );
-    for (const method of ["GET", "HEAD"]) {
-      const response = await sandbox.entry.fetch(
-        new Request(
-          `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`,
-          { method },
-        ),
+        entry: undefined as unknown as {
+          fetch: (request: Request) => Promise<Response>;
+        },
+      };
+      runInNewContext(
+        themePreviewStartWorkerSource("instance-123", serverEntry)
+          .replace(`import startEntry from ${JSON.stringify(serverEntry)};`, "")
+          .replace("export default {", "entry = {"),
+        sandbox,
       );
-      expect(response.status).toBe(204);
-      expect(response.headers.get(START_PREVIEW_ID_HEADER)).toBe(
-        "instance-123",
-      );
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(await response.text()).toBe("");
-    }
-    expect(
-      (
-        await sandbox.entry.fetch(
+      for (const method of ["GET", "HEAD"]) {
+        const response = await sandbox.entry.fetch(
           new Request(
             `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`,
-            { method: "POST" },
+            { method },
           ),
-        )
-      ).status,
-    ).toBe(405);
-    expect(calls).toBe(0);
-    expect(
-      await (
-        await sandbox.entry.fetch(
-          new Request("https://preview.example/api/theme"),
-        )
-      ).text(),
-    ).toBe("theme");
-    expect(calls).toBe(1);
-  });
+        );
+        expect(response.status).toBe(204);
+        expect(response.headers.get(START_PREVIEW_ID_HEADER)).toBe(
+          "instance-123",
+        );
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.text()).toBe("");
+      }
+      expect(
+        (
+          await sandbox.entry.fetch(
+            new Request(
+              `https://preview.example${START_PREVIEW_ADDRESS_PROBE_PATH}`,
+              { method: "POST" },
+            ),
+          )
+        ).status,
+      ).toBe(405);
+      expect(calls).toBe(0);
+      expect(
+        await (
+          await sandbox.entry.fetch(
+            new Request("https://preview.example/api/theme"),
+          )
+        ).text(),
+      ).toBe("theme");
+      expect(calls).toBe(1);
+    },
+  );
   it("leaves today's client-only preview unchanged by default", () => {
     const { files } = plan();
     expect(files.has("/workspace/index.html")).toBe(true);

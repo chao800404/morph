@@ -9,6 +9,14 @@ import {
 } from "@/lib/storefront/compat/native-compat-theme";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { assertNativeRoutes } from "../compat/assert-native-routes";
+import {
+  assertCustomServerEntry,
+  assertSelectiveRendering,
+} from "../compat/assert-native-entry";
+import {
+  assertAdvancedLoader,
+  assertDeferredLoader,
+} from "../compat/assert-native-advanced";
 import { NATIVE_COMPAT_SERVER_HELPER_FILES } from "../compat/native-compat-server-helper";
 import { NATIVE_COMPAT_PUBLIC_FILES } from "../compat/native-compat-public-files";
 import {
@@ -155,6 +163,18 @@ describe(
     });
     it("preserves raw Response status, headers and binary body from a server function", async () => {
       await assertRawResponse(request);
+    });
+    it("resolves Theme aliases and renders a custom serialized loader value", async () => {
+      await assertAdvancedLoader(request);
+    });
+    it("executes the Theme server entry and custom stream renderer", async () => {
+      await assertCustomServerEntry(request);
+    });
+    it("honors disabled and data-only route SSR", async () => {
+      await assertSelectiveRendering(request);
+    });
+    it("streams the loader shell before its deferred value is released", async () => {
+      await assertDeferredLoader(request);
     });
     it("supports dynamic and splat routes with route and method middleware", async () => {
       await assertNativeRoutes(request);

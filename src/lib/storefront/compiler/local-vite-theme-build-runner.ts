@@ -34,6 +34,7 @@ import {
 } from "./theme-path-aliases";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
+import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
 
 function getMimeType(filePath: string): string {
   const publicTextType = themePublicTextMimeType(filePath);
@@ -388,7 +389,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
                 .slice(0, 63),
               compatibility_date: "2025-09-02",
               compatibility_flags: ["nodejs_compat"],
-              main: "@tanstack/react-start/server-entry",
+              main: resolveThemeStartServerEntry(input.files),
             },
             null,
             2,

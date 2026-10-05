@@ -148,8 +148,11 @@ function contentResolverSource(): string {
  *
  * The Worker is given no bindings: there is nothing in `env` to reach.
  */
-export function themePreviewStartWorkerSource(previewId = ""): string {
-  return `import startEntry from "@tanstack/react-start/server-entry";
+export function themePreviewStartWorkerSource(
+  previewId = "",
+  serverEntry = "@tanstack/react-start/server-entry",
+): string {
+  return `import startEntry from ${JSON.stringify(serverEntry)};
 
 const CONTENT_ORIGIN = ${JSON.stringify(THEME_PREVIEW_START_CONTENT_ORIGIN)};
 const CONTENT_PATH = ${JSON.stringify(THEME_PREVIEW_CONTENT_PATH)};
