@@ -226,6 +226,11 @@ export class LocalDirectThemeRuntime implements ThemeRuntime {
       invocation.resolved,
       incomingOrigin,
     );
+    // This hop is local HTTP, not a production service binding. Wrangler's
+    // automatic gzip can withhold a small SSR shell until its deferred stream
+    // ends. Negotiate uncompressed bytes explicitly upstream; leave the
+    // shopper's request and the returned stream untouched.
+    forwarded.headers.set("accept-encoding", "identity");
 
     try {
       const response = await this.fetchImpl(forwarded);

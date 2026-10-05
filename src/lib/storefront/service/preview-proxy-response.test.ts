@@ -42,6 +42,8 @@ describe("bounded recovery of SDK module routing failures", () => {
     "/@react-refresh",
     "/@vite/client",
     "/@vite/env",
+    "/@id/virtual:tanstack-start-dev-client-entry",
+    "/@tanstack-start/styles.css?routes=__root__,/compat-ssr-data",
     "/__morph_preview_client.ts",
     "/__morph-theme-preview__/@react-refresh",
     "/__morph-theme-preview__/src/index.tsx",
@@ -80,6 +82,11 @@ describe("bounded recovery of SDK module routing failures", () => {
     ["/src/example.ts", "POST"],
     ["/src/example.ts", "HEAD"],
     ["/src/example.svg", "GET"],
+    ["/@id/virtual:tanstack-start-validate-server-fn-id?id=example", "GET"],
+    ["/@id/virtual:unknown", "GET"],
+    ["/@tanstack-start/unknown", "GET"],
+    ["/@id/virtual:tanstack-start-dev-client-entry", "POST"],
+    ["/@tanstack-start/styles.css", "POST"],
   ])("never replays %s %s", async (path, method) => {
     const proxy = vi.fn().mockResolvedValue(interrupted());
     const pause = vi.fn();

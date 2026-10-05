@@ -329,6 +329,8 @@ test.describe("TanStack Start on the published storefront", () => {
     storefrontOrigin = `http://${HOST}:${new URL(test.info().project.use.baseURL!).port}`;
     const home = await storefrontRequest(storefrontOrigin, "/compat-other");
     expect(home.status).toBe(200);
+    expect(home.headers.get("x-compat-server-entry")).toBe("theme");
+    expect(home.headers.get("x-compat-renderer")).toBe("custom-stream");
     expect(await home.text()).toContain('data-compat="other"');
   });
 
@@ -396,6 +398,14 @@ test.describe("TanStack Start on the published storefront", () => {
     await shopper.goto(`${storefrontOrigin}/compat`, {
       waitUntil: "networkidle",
     });
+    await expect(
+      shopper.locator('html[data-compat-client-entry="ready"]'),
+    ).toBeAttached();
+    expect(
+      await shopper.evaluate(() =>
+        Reflect.get(window, "__compatClientEntryRuns"),
+      ),
+    ).toBe(1);
     const result = shopper.locator('[data-compat="result"]');
     await expect(shopper.locator('[data-compat="loader"]')).toContainText(
       "hello loader",
@@ -432,7 +442,139 @@ test.describe("TanStack Start on the published storefront", () => {
         Reflect.get(window, "__compatDocumentMarker"),
       ),
     ).toBe("published-client-navigation");
+    expect(
+      await shopper.evaluate(() =>
+        Reflect.get(window, "__compatClientEntryRuns"),
+      ),
+    ).toBe(1);
     await context.close();
+  });
+
+  test("preserves custom serialization in hydration and browser GET/POST through Core", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext();
+    try {
+      const shopper = await context.newPage();
+      const response = await shopper.goto(
+        `${storefrontOrigin}/compat-advanced`,
+      );
+      expect(response?.status()).toBe(200);
+      expect(response?.headers()["x-compat-server-entry"]).toBe("theme");
+      expect(response?.headers()["x-compat-renderer"]).toBe("custom-stream");
+      await expect(
+        shopper.locator('html[data-compat-client-entry="ready"]'),
+      ).toBeAttached();
+      await expect(shopper.locator('[data-advanced="loader"]')).toHaveText(
+        "true:amount:1234",
+      );
+      await shopper.locator('[data-advanced="get"]').click();
+      await expect(shopper.locator('[data-advanced="result"]')).toHaveText(
+        "true:amount:1234",
+      );
+      await shopper.locator('[data-advanced="post"]').click();
+      await expect(shopper.locator('[data-advanced="result"]')).toHaveText(
+        JSON.stringify({ instance: true, description: "amount:5678" }),
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("streams a deferred shell before release and hydrates its resolved value through Core", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext();
+    try {
+      const shopper = await context.newPage();
+      // DOMContentLoaded/load can wait for the SSR stream to finish. Commit
+      // lets this test observe the shell before releasing its pending promise.
+      const response = await shopper.goto(
+        `${storefrontOrigin}/compat-deferred?id=published-browser`,
+        {
+          waitUntil: "commit",
+        },
+      );
+      expect(response?.status()).toBe(200);
+      await expect(shopper.locator('[data-deferred="shell"]')).toHaveText(
+        "shell:ready",
+      );
+      await expect(shopper.locator('[data-deferred="pending"]')).toHaveText(
+        "Waiting",
+      );
+      await expect(shopper.locator('[data-deferred="result"]')).toHaveCount(0);
+      // Node's APIRequestContext does not resolve *.localhost like Chromium.
+      // Use the shopper's same-origin fetch while the SSR stream is open.
+      const release = await shopper.evaluate(async () => {
+        const response = await fetch(
+          "/api/compat-deferred-release?id=published-browser",
+          { method: "POST" },
+        );
+        return { status: response.status, body: await response.json() };
+      });
+      expect(release).toEqual({ status: 200, body: { released: true } });
+      // React keeps a hidden streamed suspense segment outside the hydrated
+      // page. Require exactly one visible result, not removal of React's own
+      // hidden transport markup and not an arbitrary first matching node.
+      await expect(
+        shopper.locator('html[data-compat-client-entry="ready"]'),
+      ).toBeAttached();
+      await expect(
+        shopper.locator('[data-deferred-hydrated="true"]'),
+      ).toBeAttached();
+      await expect(
+        shopper.locator('[data-deferred="result"]:visible'),
+      ).toHaveCount(1);
+      await expect(
+        shopper.locator('[data-deferred="result"]:visible'),
+      ).toHaveText("deferred:中文");
+      await expect(
+        shopper.locator('[data-deferred="pending"]:visible'),
+      ).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("keeps disabled and data-only SSR semantics before browser hydration through Core", async ({
+    browser,
+  }) => {
+    const off = await request("/compat-ssr-off");
+    expect(off.status).toBe(200);
+    expect(off.headers.get("x-compat-off-loader")).toBeNull();
+    const offHtml = await off.text();
+    expect(offHtml).toContain('data-selective="off-pending"');
+    expect(offHtml).not.toContain('data-selective="off"');
+    expect(offHtml).not.toContain("off-loader-ran");
+    const data = await request("/compat-ssr-data");
+    expect(data.status).toBe(200);
+    expect(data.headers.get("x-compat-data-loader")).toBe("ran");
+    const dataHtml = await data.text();
+    expect(dataHtml).toContain('data-selective="data-pending"');
+    expect(dataHtml).not.toContain('data-selective="data"');
+    expect(dataHtml).not.toContain("server-component-ran");
+    expect(dataHtml).toContain("data-loader-ran");
+    const context = await browser.newContext();
+    try {
+      const shopper = await context.newPage();
+      for (const [marker, routePath, value] of [
+        ["off", "/compat-ssr-off", "off-loader-ran"],
+        ["data", "/compat-ssr-data", "data-loader-ran"],
+      ]) {
+        await shopper.goto(`${storefrontOrigin}${routePath}`);
+        await expect(
+          shopper.locator(`[data-selective="${marker}"]`),
+        ).toHaveText(`${marker}:${value}:${routePath}`);
+        await expect(
+          shopper.locator(`[data-selective="${marker}-pending"]`),
+        ).toHaveCount(0);
+        await expect(
+          shopper.locator('html[data-compat-client-entry="ready"]'),
+        ).toBeAttached();
+      }
+    } finally {
+      await context.close();
+    }
   });
 
   // Decided by hostname: the storefront gets the Theme's files and the

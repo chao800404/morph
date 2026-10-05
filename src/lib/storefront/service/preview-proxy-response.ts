@@ -25,6 +25,11 @@ export async function proxyPreviewModuleRequest(
     (path === "/@react-refresh" ||
       path === "/@vite/client" ||
       path === "/@vite/env" ||
+      // Start serves these client assets outside the extension-based Vite
+      // paths below. Keep exact names: other virtual IDs may validate server
+      // functions and must not become eligible for replay.
+      path === "/@id/virtual:tanstack-start-dev-client-entry" ||
+      path === "/@tanstack-start/styles.css" ||
       path === "/__morph_preview_client.ts" ||
       ((path.startsWith("/src/") ||
         path.startsWith("/@fs/") ||
