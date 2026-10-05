@@ -1,5 +1,6 @@
 import { parse } from "@babel/parser";
 import type { ThemeCompilerFile } from "./theme-compiler.types";
+import { THEME_START_SERVER_ENTRY_PATHS } from "./theme-start-toolchain";
 import {
   readThemePathAliases,
   resolveThemeBaseUrlImport,
@@ -38,7 +39,15 @@ type ThemeImportEdge = {
 
 type ModuleBoundary = "server" | "client" | null;
 
-const SOURCE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"];
+const SOURCE_EXTENSIONS = [
+  ".tsx",
+  ".ts",
+  ".mts",
+  ".jsx",
+  ".js",
+  ".mjs",
+  ".cjs",
+];
 const SERVER_MARKERS = new Set([
   "server-only",
   "@tanstack/react-start/server-only",
@@ -696,10 +705,7 @@ export function collectThemeImportProtectionDiagnosticsForBuild(
           "src/start.tsx",
           "src/start.js",
           "src/start.jsx",
-          "src/server.ts",
-          "src/server.tsx",
-          "src/server.js",
-          "src/server.jsx",
+          ...THEME_START_SERVER_ENTRY_PATHS,
           ...files
             .map((file) => normalizePath(file.path))
             .filter((filePath) => filePath.startsWith("src/routes/")),

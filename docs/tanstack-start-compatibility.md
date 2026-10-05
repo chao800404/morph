@@ -53,8 +53,12 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    Raw Response, multipart/FormData and streaming now have native fixtures.
    Dynamic server routes and route middleware have explicit shared fixtures
    (see the layer-specific acceptance below). Serialization
-   adapters, deferred data, custom entries, aliases and rendering options need
-   explicit fixtures in applicable layers. Untested does not mean unsupported.
+   adapters, deferred data and tsconfig aliases have shared native fixtures
+   (see advanced acceptance below). Conventional custom server entry wiring
+   is corrected on this branch (local acceptance recorded below);
+   route-level selective SSR passes HTTP acceptance. Browser client-entry and
+   selective-SSR acceptance are recorded separately below. Untested options
+   do not automatically mean unsupported.
 5. **Package/config capability.** Packages are approved/fixed; build settings
    platform-owned. Arbitrary npm installs, custom Vite config or Cloudflare
    bindings are not a current native project-import promise.
@@ -82,6 +86,171 @@ Cross-site editor iframe Lax cookies remain different from standalone preview.
    functions; runtime selection remains opt-in. Dynamic `.server` imports are
    still deliberately refused by Morph's conservative usage analysis. These
    tests are local evidence, not Cloudflare deployment acceptance.
+
+## Advanced Start acceptance (2026-10-05, local)
+
+- Ordinary Theme files register a `createSerializationAdapter` in `src/start.ts`,
+  define a class with a prototype method, and import both values and server
+  functions through a Theme-owned `tsconfig.json` alias. The same fixtures run
+  in the actual Start dev server and the built Worker, not a mock runner.
+- SSR checks the custom type's method, its hydration adapter invocation and
+  the Start-generated GET function's serialized reply. Browser acceptance
+  additionally checks loader hydration, a GET returning the revived class,
+  and a POST sending that class back to the server, where `instanceof` and its
+  method must still work. Merely rendering the SSR text is not sufficient.
+- A loader returns an unresolved promise rendered by `Await`. HTTP acceptance
+  must read the shell/fallback before explicitly releasing the promise through
+  a fixture-only endpoint. Browser acceptance must see the fallback without
+  the result, then see the result and the hydrated component after release.
+  Timeout fails rather than automatically completing the promise.
+- HTTP streaming acceptance uses a browser User-Agent and identity encoding.
+  The first attempt used Node's User-Agent; the pinned Start renderer treats
+  that request as a bot and waits for `allReady`. Its timeout was a harness
+  mismatch, not evidence of broken deferred data. Compressed delivery and
+  crawler rendering are not claimed by these assertions.
+- A mutation removing only adapter registration initially exposed a weak
+  SSR-text assertion: rendered text survived while dehydration failed. The
+  assertion was strengthened to check hydration and function transport; the
+  same mutation then failed both the dev-server and built-Worker tests.
+  Registration has been restored.
+- Browser/local-sidecar acceptance passed four tests (authentication,
+  transport precondition, custom serialization and deferred hydration).
+  The final-source rerun also passed all four tests (1.9 minutes).
+  Output: `/tmp/morph-start-advanced-browser-final`. This is not Cloudflare,
+  real-Sandbox or published-storefront browser acceptance of these new cases.
+- Final focused dev-server/built-Worker acceptance passed all 28 tests.
+  Typecheck, data-layer typecheck, E2E assertion guard and build passed. Full-suite
+  validation did not pass: 4,378 tests passed, three failed, one skipped. The
+  three export-status tests have a fixed expiration timestamp that is now past;
+  the same three failures reproduce on untouched main (10 other tests passed
+  in that baseline run). Those files are unchanged by this increment.
+  The user requested a separate test-clock fix on `codex/export-test-clock`,
+  not mixed into this compatibility branch. Its focused 16 tests, typecheck,
+  build, and full suite (4,380 passed, one skipped) pass. Expiry-boundary assertions
+  remain enforced. This does not replace full-suite validation of a future
+  combined revision after that independent fix is integrated.
+  Logs: `/tmp/morph-start-advanced-{focused-final,full-test}.log` and
+  `/tmp/morph-start-advanced-main-export-baseline.log`.
+- The production runtime-wiring scanner's 15 tests pass, but the actual check
+  still exits 1/PENDING: production `wrangler.jsonc` has no Theme Worker service
+  binding. This is not a passed deployment gate.
+- Platform runtime selection, external API restrictions, bindings and
+  credential policy are unchanged. Custom server/client entrypoints and
+  additional rendering options remain separate work; the follow-up below
+  supersedes the earlier untested status for conventional entries/selective SSR.
+
+## Entry and rendering follow-up (2026-10-05, local; initial red gate)
+
+- Theme-owned `src/server.ts` uses the documented `createServerEntry` and
+  `createStartHandler` with a custom callback delegating to `defaultStreamHandler`.
+  It adds independent server-entry and renderer headers; SSR text alone cannot
+  establish that the custom handler ran. HTTP acceptance requires those markers
+  on the page, and the server-entry marker on an API route.
+- The first focused run has two failures and two passes (28 other cases were
+  deliberately excluded). Both entry assertions fail because the response lacks
+  the Theme header. Both selective-SSR assertions pass. Log:
+  `/tmp/morph-entry-red.log`. The platform-generated Wrangler main points to
+  `@tanstack/react-start/server-entry` for builds, and the preview wrapper imports
+  the same default handler. This does not execute the conventional Theme handler.
+  The full focused rerun is 30 passed and two failed, both entry assertions;
+  The final-source rerun has the same 30 passes/two entry failures;
+  log: `/tmp/morph-start-entry-focused-final.log`. Typecheck and the E2E assertion
+  guard pass. These failures remain visible rather than converted to green gaps.
+- `ssr: false` must not run the loader during SSR or render its component;
+  `ssr: 'data-only'` must run and serialize the loader but not render its component.
+  The disabled fixture accesses `window` inside the page component. The
+  data-only fixture emits a distinct server-render marker if wrongly rendered
+  there. HTTP assertions distinguish loader execution headers, pending markup,
+  serialized values and that forbidden component marker.
+  Mutation controls switching SSR on fail in both execution layers. An earlier
+  data-only control unexpectedly passed because throwing on `window` could
+  leave a successful pending shell; the non-throwing marker strengthens that
+  assertion. The same control then fails both tests. Logs:
+  `/tmp/morph-start-selective-control.log`,
+  `/tmp/morph-start-data-only-control.log`,
+  `/tmp/morph-start-data-only-control-fixed.log`. Both original options are restored.
+- `src/client.tsx` uses `StartClient` and `hydrateRoot`, marking readiness only
+  after hydration. Browser tests check that the entry runs exactly once and
+  client navigation preserves the document, and that both selective-SSR routes
+  eventually show their loader data in the browser.
+  The final browser/local-sidecar run passes four tests (two setup/precondition,
+  two feature scenarios): `/tmp/morph-start-entry-browser-3`.
+  Earlier results are retained: the first attempt stalled before an iframe
+  appeared and did not run the feature scenarios; the second uncovered a
+  test mistake expecting boolean `true` for the existing numeric document
+  marker `1`, after client readiness/navigation had succeeded. That assertion
+  is corrected; the initial iframe stall remains unexplained.
+  After strengthening and restoring the data-only fixture, the final-source
+  combined browser run passes all six tests (two setup/precondition, four
+  feature scenarios): custom serialization, deferred data, client entry and
+  selective SSR. Output: `/tmp/morph-start-entry-browser-final`.
+- This increment is acceptance work, not a runtime fix. Production entry
+  selection, security wrappers, egress and bindings are unchanged. No remote
+  deployment or merge has taken place. Custom Vite configuration, alternate
+  filename/configured entries, prerender/SPA mode and arbitrary render options
+  are not claimed by these conventional-entry cases.
+  No new full-suite/build pass is claimed for this follow-up: its focused
+  entry gate is demonstrably red and requires a runtime fix before delivery.
+
+Official conventions:
+[Server entry](https://tanstack.com/start/latest/docs/framework/react/guide/server-entry-point),
+[Client entry](https://tanstack.com/start/latest/docs/framework/react/guide/client-entry-point),
+[Selective SSR](https://tanstack.com/start/latest/docs/framework/react/guide/selective-ssr).
+
+### Server entry wiring fix (2026-10-05, local; not deployed)
+
+- The sandbox workspace and local build runner now select the conventional
+  Theme server entry in Start resolver order, falling back to the package entry
+  only when none exists. The preview still enters the platform-owned wrapper;
+  that wrapper delegates to the selected handler. Health, HTML bridge injection,
+  content snapshot and outbound refusal remain in the same wrapper.
+- The entry list is shared with server import-protection roots. `.mts` is now
+  traversed by that guard, rather than creating an executable unchecked entry.
+  Tests cover each conventional extension refusing a `.client` dependency;
+  alternate extensions have selection/guard coverage, not separate runtime
+  acceptance. The real runtime fixture uses `src/server.ts`.
+- The first implementation run exposed a second hard-coded default entry in
+  the local build runner and a fixture mistake: `defaultStreamHandler` can return
+  an SSR cleanup wrapper, not a plain Response. The fixture now sets the callback's
+  `responseHeaders` before delegating, preserving the stream cleanup contract.
+  No assertion was relaxed. First run: 108 passed/12 failed, retained in
+  `/tmp/morph-server-entry-fix-focused.log`.
+- After those corrections, focused tests pass: 121 tests across six files,
+  including both actual custom-entry/renderer HTTP assertions, all existing
+  native runtime cases and wrapper health for default/custom entries.
+  Log: `/tmp/morph-server-entry-fix-focused-2.log`. One additional workspace
+  wiring assertion was added after this run and will be covered by final checks.
+- Browser/local-sidecar full native compatibility spec: 23 passed, 3 skipped,
+  no failures, including actual Theme server-entry/renderer response headers,
+  custom client entry, navigation, editor heartbeat and Code-save HMR keeping
+  the document. Output: `/tmp/morph-server-entry-fix-browser`; log:
+  `/tmp/morph-server-entry-fix-browser.log`. The setup took about 43 seconds
+  to obtain its preview frame; this is retained as an observation, not a fixed
+  performance issue. Runner stopped its sidecar/dev server and removed its
+  temporary D1 state. No publish handoff occurred in this spec.
+- Final typecheck, data-layer typecheck, E2E assertion guard and diff whitespace
+  check pass. Full `pnpm test`: 4391 passed, 3 failed, 1 skipped. All six focused
+  files pass in this full run (122 tests, including the final workspace assertion).
+  The three failures remain the previously reproduced expired inventory/order/
+  product export fixtures; their clock correction is isolated in a different
+  worktree, not mixed into this change. Log: `/tmp/morph-server-entry-final-test.log`.
+  This is not a full-suite green result.
+- Delivery follow-up: the separate clock correction was committed as
+  `cdb71f2` and merged by PR #95 (`27dd260`) after all six CI checks succeeded.
+  With that correction as the base, `pnpm test` passes: 4397 passed, 1 skipped
+  across 555 passing files and one skipped file. Log:
+  `/tmp/morph-start-merge-green-test.log`. The earlier red results above remain
+  historical evidence, not the final delivery status.
+  After updating to that merged base, typecheck, data-layer typecheck, the E2E
+  assertion guard and build were also rerun successfully. Logs:
+  `/tmp/morph-start-merge-{typecheck,data,assertions,build}.log`.
+- `pnpm build` passes, including client-bundle, sidecar-exclusion and deploy
+  artifact secret guards. Log: `/tmp/morph-server-entry-final-build.log`.
+  Runtime wiring was rerun: the 15 scanner tests pass, but the actual gate
+  still exits 1/PENDING because production has no Theme Worker service binding.
+  Log: `/tmp/morph-server-entry-final-wiring.log`. This is not a live runtime.
+  No cloud deployment, commit or merge is claimed here. Scoped external APIs, arbitrary
+  configured entry locations and Cloudflare bindings remain outside this fix.
 
 ## Code-only full publish acceptance (2026-10-05, local Sandbox)
 

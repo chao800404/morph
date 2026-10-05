@@ -143,6 +143,136 @@ test.describe("TanStack Start in the Live Preview", () => {
     });
   });
 
+  test("preserves custom types in loader hydration and GET/POST server functions", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Requires the native Start serializer.");
+    await openRoute(page, "/compat-advanced");
+    const frame = previewFrame(page);
+    await expect(frame.locator('[data-advanced="loader"]')).toHaveText(
+      "true:amount:1234",
+      { timeout: 90_000 },
+    );
+    await interactWithTheme(page);
+    await frame.locator('[data-advanced="get"]').dispatchEvent("click");
+    await expect(frame.locator('[data-advanced="result"]')).toHaveText(
+      "true:amount:1234",
+    );
+    await frame.locator('[data-advanced="post"]').dispatchEvent("click");
+    await expect(frame.locator('[data-advanced="result"]')).toHaveText(
+      JSON.stringify({ instance: true, description: "amount:5678" }),
+    );
+    await expect(frame.locator('[data-advanced="loader"]')).toHaveText(
+      "true:amount:1234",
+    );
+  });
+
+  test("renders a deferred loader shell before release and hydrates the resolved value", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Requires the native Start streaming SSR.");
+    await openRoute(page, "/compat-deferred");
+    const frame = previewFrame(page);
+    await expect(frame.locator('[data-deferred="shell"]')).toHaveText(
+      "shell:ready",
+      { timeout: 90_000 },
+    );
+    await expect(frame.locator('[data-deferred="pending"]')).toHaveText(
+      "Waiting",
+    );
+    await expect(frame.locator('[data-deferred="result"]')).toHaveCount(0);
+    const released = await frame.locator("body").evaluate(async () => {
+      const response = await fetch("/api/compat-deferred-release", {
+        method: "POST",
+      });
+      return { status: response.status, body: await response.json() };
+    });
+    expect(released).toEqual({ status: 200, body: { released: true } });
+    await expect(frame.locator('[data-deferred="result"]')).toHaveText(
+      "deferred:中文",
+      { timeout: 60_000 },
+    );
+    await expect(frame.locator('[data-deferred-hydrated="true"]')).toBeAttached(
+      { timeout: 60_000 },
+    );
+    await expect(frame.locator('[data-deferred="pending"]')).toHaveCount(0);
+  });
+
+  test("uses the Theme client entry and keeps one document across navigation", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Requires the native Start client entry.");
+    await openRoute(page, "/compat");
+    const frame = previewFrame(page);
+    await expect(
+      frame.locator('html[data-compat-client-entry="ready"]'),
+    ).toBeAttached({
+      timeout: 90_000,
+    });
+    await interactWithTheme(page);
+    await markFrame(page);
+    const entryReply = await frame.locator("body").evaluate(async () => {
+      const response = await fetch("/api/compat");
+      const rendered = await fetch("/compat-advanced");
+      return {
+        status: response.status,
+        entry: response.headers.get("x-compat-server-entry"),
+        renderer: rendered.headers.get("x-compat-renderer"),
+      };
+    });
+    expect(entryReply).toEqual({
+      status: 200,
+      entry: "theme",
+      renderer: "custom-stream",
+    });
+    expect(
+      await frame
+        .locator("body")
+        .evaluate(
+          () =>
+            (window as unknown as { __compatClientEntryRuns: number })
+              .__compatClientEntryRuns,
+        ),
+    ).toBe(1);
+    await frame.locator('[data-compat="link"]').dispatchEvent("click");
+    await expect(frame.locator('[data-compat="other"]')).toBeVisible();
+    expect(await frameMarked(page)).toBe(1);
+    expect(
+      await frame
+        .locator("body")
+        .evaluate(
+          () =>
+            (window as unknown as { __compatClientEntryRuns: number })
+              .__compatClientEntryRuns,
+        ),
+    ).toBe(1);
+  });
+
+  test("hydrates disabled and data-only SSR routes in the browser", async ({
+    page,
+  }) => {
+    test.skip(!START_PREVIEW, "Requires native selective SSR.");
+    for (const [path, marker, value] of [
+      ["/compat-ssr-off", "off", "off:off-loader-ran:/compat-ssr-off"],
+      ["/compat-ssr-data", "data", "data:data-loader-ran:/compat-ssr-data"],
+    ]) {
+      await openRoute(page, path);
+      const frame = previewFrame(page);
+      await expect(frame.locator(`[data-selective="${marker}"]`)).toHaveText(
+        value,
+        {
+          timeout: 90_000,
+        },
+      );
+      await expect(
+        frame.locator('html[data-compat-client-entry="ready"]'),
+      ).toBeAttached();
+      await expect(
+        frame.locator(`[data-selective="${marker}-pending"]`),
+      ).toHaveCount(0);
+    }
+  });
+
   test("renders a loader error through the route's errorComponent", async ({
     page,
   }) => {

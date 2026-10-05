@@ -46,6 +46,7 @@ import {
   themePreviewStartClientSource,
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
+import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
 import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
@@ -519,7 +520,7 @@ export function planThemeSandboxWorkspace({
           // decides what Theme server code may reach. No bindings either way.
           main: startPreview
             ? `./${THEME_PREVIEW_START_WORKER_PATH}`
-            : "@tanstack/react-start/server-entry",
+            : resolveThemeStartServerEntry(files),
         },
         null,
         2,
@@ -530,7 +531,10 @@ export function planThemeSandboxWorkspace({
   if (startPreview) {
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_WORKER_PATH}`,
-      themePreviewStartWorkerSource(buildId),
+      themePreviewStartWorkerSource(
+        buildId,
+        resolveThemeStartServerEntry(files),
+      ),
     );
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_CLIENT_PATH}`,

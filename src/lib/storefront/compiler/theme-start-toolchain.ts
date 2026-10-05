@@ -1,3 +1,22 @@
+// Match Start's conventional entry resolver order. Keep the import-protection
+// server roots in sync so every executable entry is checked before Vite runs.
+export const THEME_START_SERVER_ENTRY_PATHS = [
+  "src/server.ts",
+  "src/server.js",
+  "src/server.mts",
+  "src/server.mjs",
+  "src/server.tsx",
+  "src/server.jsx",
+] as const;
+
+export function resolveThemeStartServerEntry(
+  files: readonly { path: string }[],
+): string {
+  const paths = new Set(files.map((file) => file.path.replace(/\\/g, "/")));
+  const entry = THEME_START_SERVER_ENTRY_PATHS.find((path) => paths.has(path));
+  return entry ? `./${entry}` : "@tanstack/react-start/server-entry";
+}
+
 export const THEME_START_TOOLCHAIN = {
   react: "19.2.1",
   reactDom: "19.2.1",
@@ -20,16 +39,15 @@ export const THEME_START_RUNTIME_DEPENDENCIES: Readonly<
   "@tanstack/react-start": THEME_START_TOOLCHAIN.reactStart,
 };
 
-export const THEME_START_BUILD_DEPENDENCIES: Readonly<
-  Record<string, string>
-> = {
-  "@tanstack/router-plugin": THEME_START_TOOLCHAIN.routerPlugin,
-  "@cloudflare/vite-plugin": THEME_START_TOOLCHAIN.cloudflareVite,
-  "@vitejs/plugin-react": THEME_START_TOOLCHAIN.viteReact,
-  "@tailwindcss/vite": THEME_START_TOOLCHAIN.tailwindVite,
-  tailwindcss: THEME_START_TOOLCHAIN.tailwind,
-  vite: THEME_START_TOOLCHAIN.vite,
-};
+export const THEME_START_BUILD_DEPENDENCIES: Readonly<Record<string, string>> =
+  {
+    "@tanstack/router-plugin": THEME_START_TOOLCHAIN.routerPlugin,
+    "@cloudflare/vite-plugin": THEME_START_TOOLCHAIN.cloudflareVite,
+    "@vitejs/plugin-react": THEME_START_TOOLCHAIN.viteReact,
+    "@tailwindcss/vite": THEME_START_TOOLCHAIN.tailwindVite,
+    tailwindcss: THEME_START_TOOLCHAIN.tailwind,
+    vite: THEME_START_TOOLCHAIN.vite,
+  };
 
 const PLATFORM_OWNED_THEME_BUILD_PATHS = new Set([
   "__entry.tsx",
