@@ -5,7 +5,7 @@ import {
   type Request,
   type Route,
 } from "@playwright/test";
-import { EDITOR_PATH, previewFrame } from "./helpers";
+import { EDITOR_PATH, openEditor, previewFrame } from "./helpers";
 
 /**
  * How long the editor waits for a Live Preview frame that is still loading.
@@ -28,13 +28,6 @@ import { EDITOR_PATH, previewFrame } from "./helpers";
 const OLD_DEADLINE_MS = 45_000;
 /** Time between the frame's requests, so progress trickles in. */
 const SPACING_MS = 800;
-/**
- * How long the bridge's own modules wait. The editor leaves the loading phase
- * as soon as the bridge answers, so holding it is what keeps the frame in the
- * phase under test for longer than the old deadline.
- */
-const BRIDGE_HELD_MS = 55_000;
-
 function isPreviewSubresource(page: Page, request: Request) {
   if (request.isNavigationRequest()) return false;
   try {
@@ -69,41 +62,59 @@ test.describe("a Live Preview frame that is slow to load", () => {
 
   test("is waited for while it keeps making progress", async ({ page }) => {
     test.setTimeout(300_000);
+    // Settle workspace/config HMR before measuring a deliberate new frame.
+    // CI previously replaced the initial frame during app reload; its old
+    // network timestamp then released the bridge before the assertion.
+    await openEditor(page);
     const documents = countFrameDocuments(page);
-    let firstAt: number | null = null;
     let queue = Promise.resolve();
+    let releaseBridge!: () => void;
+    const bridgeGate = new Promise<void>((resolve) => {
+      releaseBridge = resolve;
+    });
+    let heldBridgeRequests = 0;
 
     await page.route("**/*", async (route) => {
       const request = route.request();
       if (!isPreviewSubresource(page, request)) return route.fallback();
-      firstAt ??= Date.now();
       if (new URL(request.url()).pathname.includes("/src/morph/")) {
-        await sleep(firstAt + BRIDGE_HELD_MS - Date.now());
+        heldBridgeRequests += 1;
+        await bridgeGate;
       } else {
         const turn = queue.then(() => sleep(SPACING_MS));
         queue = turn;
-        await turn;
+        await Promise.race([turn, bridgeGate]);
       }
       await answer(route);
     });
 
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
     const loading = page
       .getByRole("status")
       .filter({ hasText: "Loading React preview…" });
-    await expect(loading).toBeVisible({ timeout: 180_000 });
-    const loadingSince = Date.now();
+    try {
+      await page
+        .getByRole("button", { name: "Refresh preview", exact: true })
+        .click();
+      await expect(loading).toBeVisible({ timeout: 180_000 });
+      await expect.poll(() => heldBridgeRequests).toBeGreaterThan(0);
+      expect(documents, "one new controlled frame").toHaveLength(1);
 
-    // Still loading, still the first frame, well past the old deadline.
-    await sleep(loadingSince + OLD_DEADLINE_MS + 5_000 - Date.now());
-    await expect(loading).toBeVisible({ timeout: 1_000 });
-    expect(documents, "the frame should not have been reloaded").toHaveLength(
-      1,
-    );
+      // The bridge cannot become ready until the assertion has run, regardless
+      // of when the main frame paints Loading or how busy the runner is.
+      await sleep(documents[0] + OLD_DEADLINE_MS + 5_000 - Date.now());
+      await expect(loading).toBeVisible({ timeout: 1_000 });
+      expect(documents, "the frame should not have been reloaded").toHaveLength(
+        1,
+      );
+      await expect(page.getByRole("alert")).toHaveCount(0);
+    } finally {
+      releaseBridge();
+    }
 
     await expect(
       previewFrame(page).locator("[data-storefront-section-id]").first(),
     ).toBeAttached({ timeout: 120_000 });
+    await expect(loading).not.toBeVisible({ timeout: 120_000 });
     expect(documents, "the frame should not have been reloaded").toHaveLength(
       1,
     );

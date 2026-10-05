@@ -539,6 +539,54 @@ Installed Start 1.168.32, Router 1.170.18, Vite 7.3.5, Wrangler 4.146.0.
   actual production wiring check exits 1/PENDING because the Theme Worker
   service binding is absent. This is not a passed opening gate.
 
+### PR #96 CI slow-frame test correction (2026-10-05)
+
+- Run `37287644059`, head `dfe5644`, failed only the slow-frame progress
+  scenario in shard 2. The retained trace shows two preview documents:
+  09:10:39.863 and 09:11:10.946 UTC. Workspace tsconfig regeneration caused
+  an app reload. The test released its bridge using the obsolete first frame's
+  timestamp, then asserted Loading at 09:12:01.116 after the current frame had
+  reached `ready` at 09:12:00.389 (zero automatic recoveries). This is a test
+  timing defect, not evidence that the watchdog reloaded a progressing frame.
+- The scenario now settles the workspace first, explicitly refreshes one frame,
+  and holds the bridge behind a promise until the past-45-second assertions
+  finish. It still requires exactly one measured document and no error alert.
+  Releasing the gate also removes the artificial resource throttle; rendering
+  and actual editor readiness are both checked afterwards. Product code and
+  timeout policy are unchanged; this does not fix the startup config reload.
+- The first local correction passed the deadline assertions but left the
+  artificial throttle running during readiness verification. That failed run
+  is retained at `/tmp/morph-pr96-frame-gate`. With the throttle released along
+  with the bridge, both slow/progress and stalled/manual-retry scenarios pass:
+  four tests including setup/transport, `/tmp/morph-pr96-frame-gate-v2` and its
+  sibling `.log`. These runs used the actual Start runtime: the local Wrangler
+  file still selected Start even though the test-process flag said client.
+  The watchdog cases are shared, but this is not client-mode acceptance.
+- Negative control: keeping `lastProgressAt` at zero reproduces the old fixed
+  deadline. The corrected scenario fails its one-document assertion, observing
+  a second document 45.664 seconds later. Two setup/transport cases pass and
+  the feature case fails as intended; trace/log are retained at
+  `/tmp/morph-pr96-frame-negative`. The watchdog file was restored and verified
+  byte-for-byte against HEAD before normal testing resumed.
+- Final local typecheck, full unit suite (4397 passed, one skipped), build and
+  E2E assertion guard pass. Logs: `/tmp/morph-pr96-ci-fix-{typecheck,test,build,assertions}.log`.
+  Full shard 2 and remote CI remain separate gates; their results are not
+  assumed from the focused run.
+- The first full shard rerun (`/tmp/morph-pr96-shard2-fixed`) had mismatched
+  settings: test assertions selected client while Wrangler selected Start.
+  It reports 21 passed, one failed, four skipped and 16 not run. The failure
+  expected the legacy `getRequest` refusal while the screenshot shows a
+  successful server-function result. The runner does not map the test-process
+  flag to Wrangler's runtime setting. The agent corrected the local-only
+  configuration for a separate aligned client run; no product change or
+  assertion relaxation was made. The original setting is restored afterwards.
+- Aligned client-mode full shard 2 passes: 25 passed, 17 skipped, zero failures
+  in 8.7 minutes. Output `/tmp/morph-pr96-shard2-client-aligned`, sibling `.log`.
+  Both the existing legacy refusal and corrected watchdog scenarios pass in
+  the same run. The runner stopped its owned processes and removed temporary
+  D1 state; the original local Start setting was restored. Skipped Start-only
+  scenarios are not counted as client acceptance.
+
 ## References
 
 - [Start server routes](https://tanstack.com/start/latest/docs/framework/react/guide/server-routes): combined handlers/pages; classify by capability, not folder.
