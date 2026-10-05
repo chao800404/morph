@@ -539,6 +539,51 @@ describe("ThemeRuntime transports", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("local runtime negotiates identity upstream without changing the shopper request or consuming the stream", async () => {
+    const original = new Request(invocation.request, {
+      headers: {
+        "accept-encoding": "gzip, deflate, br",
+        cookie: "cart=fixture",
+      },
+    });
+    const streamed = new Response(new ReadableStream());
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      expect(input).toBeInstanceOf(Request);
+      return streamed;
+    });
+    const result = await new LocalDirectThemeRuntime(
+      "http://127.0.0.1:8799",
+      fetchImpl,
+    ).handle({ ...invocation, request: original });
+    expect(result).toEqual({ success: true, response: streamed });
+    expect(streamed.bodyUsed).toBe(false);
+    expect(fetchImpl.mock.calls).toHaveLength(1);
+    const forwarded = fetchImpl.mock.calls[0]![0] as Request;
+    expect(forwarded.headers.get("accept-encoding")).toBe("identity");
+    expect(forwarded.headers.get("cookie")).toBe("cart=fixture");
+    expect(original.headers.get("accept-encoding")).toBe("gzip, deflate, br");
+  });
+
+  it("production service bindings retain the shopper compression negotiation", async () => {
+    const input = new Request(invocation.request, {
+      headers: { "accept-encoding": "gzip, deflate, br" },
+    });
+    const fetch = vi.fn(async (forwarded: Request) => {
+      expect(forwarded.headers.get("accept-encoding")).toBe(
+        "gzip, deflate, br",
+      );
+      return new Response("ok");
+    });
+    const result = await new ServiceBindingThemeRuntime(() => ({
+      fetch,
+    })).handle({
+      ...invocation,
+      request: input,
+    });
+    expect(result.success).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("local runtime tells the Theme to fetch content from Morph Core, not from itself", async () => {
     // The forwarded request's URL has already been rewritten to the local Theme
     // Worker. Deriving the callback origin from it would send the Theme to its

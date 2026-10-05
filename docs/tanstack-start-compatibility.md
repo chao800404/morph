@@ -3,6 +3,100 @@
 Baseline: main `d16850e`, 2026-10-03. Target is installed React Start 1.168.32
 / Router 1.170.18 on Workers, not every later API or arbitrary Node.js code.
 
+## 2026-10-05 real local Sandbox advanced preview acceptance
+
+- Feature branch `codex/start-sandbox-acceptance`, based on main `8001302`.
+  Runtime is explicitly Start, transport is `cloudflare-sandbox`, and each run
+  uses a disposable local database and a dedicated fixture user. No Cloudflare
+  deployment or remote resource mutation is involved.
+- First run: 6 passed, 1 failed, 19 not run. Disabled SSR hydrated, but the
+  following data-only SSR document did not hydrate. The trace records SDK
+  runtime interruptions and 500s for a TSX module, Start's extensionless client
+  entry and its stylesheet while health probes continued to return 204.
+  Log: `/tmp/morph-native-sandbox-20261005.log`; trace directory:
+  `/tmp/morph-native-sandbox-20261005`.
+- The existing bounded SDK routing-error recovery omitted the exact Start
+  client-entry and stylesheet paths. Two new unit cases fail before the fix;
+  all 31 proxy-response tests pass after it. Only GET asset reads are added;
+  body matching, two retries and delays are unchanged. Server function validator
+  IDs, unknown virtual IDs, API routes and POSTs remain ineligible.
+- Full rerun: 23 passed, 3 skipped, 0 failed (5.2 minutes), including custom
+  serialization, deferred data, custom client/server entries, selective SSR,
+  raw Response, multipart upload, streaming, middleware, cookies, navigation
+  and Code-save HMR. Log: `/tmp/morph-native-sandbox-20261005-fixed.log`;
+  output: `/tmp/morph-native-sandbox-20261005-fixed`.
+- SDK interruption diagnostics still occurred in the passing run. This is
+  acceptance of the current source, not proof that platform interruptions are
+  eliminated or that every interruption is recoverable: the first run also
+  failed a TSX request already eligible for bounded recovery. Cloudflare
+  deployment acceptance remains separate.
+
+## 2026-10-05 advanced published storefront browser acceptance
+
+- The existing published spec now also checks custom server-renderer markers,
+  the client entry running exactly once across navigation, custom serialization
+  in hydrated loader data and browser GET/POST, a deferred shell before explicit
+  release, and disabled/data-only SSR before and after browser hydration.
+- First run: 9 passed, 1 failed, 5 not run. The new deferred test observed its
+  shell but used Node's APIRequestContext for the release request, which cannot
+  resolve `native-compat.localhost`. It failed with `ENOTFOUND` before sending
+  the request. This is a test implementation error, not a product streaming
+  failure. The release now uses the shopper page's same-origin browser fetch.
+  Original output: `/tmp/morph-native-published-advanced-20261005`.
+- After correcting the browser release request, the second run still has
+  9 passes, 1 failure and 5 not run. Its trace shows the Core document first
+  responds after the fixture's 30-second timer expires; the release endpoint
+  then returns `{ released: false }`. This remains a real acceptance failure,
+  not a green result. Output:
+  `/tmp/morph-native-published-advanced-20261005-fixed`.
+- Diagnostic direct-Worker browser comparison with default encoding fails to
+  observe the pending shell; explicit identity encoding passes that direct
+  comparison. Requesting identity only in the browser still fails through
+  Core. Outputs: `/tmp/morph-native-published-deferred-compare-20261005` and
+  `/tmp/morph-native-published-deferred-identity-20261005`. The temporary
+  comparison case and browser encoding override are removed afterwards.
+- The existing local-direct transport explicitly requests identity bytes from
+  its upstream Wrangler Worker. It does not consume/buffer the body, change
+  the shopper request or modify production service-binding negotiation. The
+  new local transport assertion fails before the change; the transport and
+  proxy test files pass all 66 cases after it.
+- With ordinary browser settings, the next run observes the pending shell and
+  successfully releases the value. Its result assertion fails immediately
+  because two result elements exist at that instant (9 passed, 1 failed,
+  5 not run). The saved DOM trace identifies the second element beneath React's
+  hidden `S:0` streamed segment, while the hydrated main page has a visible
+  result. The test waits for hydration and requires exactly one visible result
+  before inspecting text and no visible pending shell; it never selects the
+  first duplicate or requires removal of React's hidden transport markup.
+  Output: `/tmp/morph-native-published-advanced-20261005-stream-fix`.
+- The subsequent whole-spec run passes all 15 tests (1.8 minutes), including
+  first publish without a Design edit, custom entries, serialization, deferred
+  streaming, browser server functions and storefront-owned assets. Output:
+  `/tmp/morph-native-published-advanced-20261005-final`. The final visible-result
+  assertion was edited during that run, so a frozen-source rerun is required
+  rather than treating this result as final-source acceptance.
+- Frozen final-source whole-spec rerun: 15 passed, 0 failed (1.8 minutes).
+  Ordinary browser encoding is unchanged. Output:
+  `/tmp/morph-native-published-advanced-20261005-final-source`; log has the
+  same basename with `.log`. The spec performs its own R2 artifact/manifest
+  verification before starting the built Worker, even though the outer runner
+  reports no separate publish handoff to verify. This is a real local Sandbox
+  build and local publish through Core, not Cloudflare deployment acceptance.
+
+## 2026-10-05 repository-wide validation of this increment
+
+- `pnpm typecheck`, `pnpm typecheck:data`, `pnpm test`, `pnpm build`,
+  `pnpm check:e2e-assertions`, `pnpm check:bundle` and
+  `pnpm check:deploy-artifact` completed successfully in one chained run
+  (exit 0). The console output was truncated; no exact full-suite test count
+  is inferred from the captured output.
+- `git diff --check` passes. Generated files are unchanged, and the main
+  checkout remained clean at validation time. Validation ran in the feature
+  worktree before submission; it did not deploy or mutate remote resources.
+- Local acceptance does not enable Start by default, grant arbitrary package
+  or binding access, implement scoped preview store APIs, or validate remote
+  Cloudflare deployment. Those product and deployment gates remain separate.
+
 ## Existing acceptance
 
 | Capability                                      | Start Live Preview       | Built Worker / local published storefront |
