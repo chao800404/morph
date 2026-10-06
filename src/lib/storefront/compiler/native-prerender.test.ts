@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { expect, it } from "vitest";
+import fs from "node:fs/promises";
+import { expect, it, vi } from "vitest";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
@@ -72,10 +73,10 @@ it(
   },
 );
 
-it(
-  "renders sealed CMS fields through the existing content endpoint without shipping the snapshot",
+it.each(["::1", "127.0.0.1"])(
+  "renders sealed CMS fields through a %s preview without shipping the snapshot",
   { timeout: 240_000 },
-  async () => {
+  async (previewHost) => {
     const input = nativeInput();
     input.contentSnapshot!.documents[0]!.document.sections = [
       {
@@ -106,20 +107,44 @@ it(
         ],
       },
     });
-    const result = await new LocalViteThemeBuildRunner({
-      maxDurationMs: 200_000,
-    }).run({
-      ...input,
-      buildId: "native-prerender-content",
-      files: input.files.map((file) =>
-        file.path === "src/routes/landing.tsx"
-          ? {
-              ...file,
-              content: `import { createFileRoute } from '@tanstack/react-router'; import { content } from '../morph/content'; export const Route = createFileRoute('/landing')({ component: () => <><h1>{String(content('prerender-field').title || 'WRONG_DEFAULT')}</h1><p>{String(content('frozen-shell').title || 'WRONG_SHELL')}</p></> });`,
-            }
-          : file,
-      ),
-    });
+    // Override only the platform-generated fixture config, not Theme source.
+    // Explicit listeners make CI/local DNS ordering irrelevant to this test.
+    const writeFile = fs.writeFile.bind(fs);
+    const fixtureConfig = vi
+      .spyOn(fs, "writeFile")
+      .mockImplementation(async (file, data, options) => {
+        if (
+          typeof file === "string" &&
+          file.endsWith("/vite.config.ts") &&
+          typeof data === "string"
+        ) {
+          expect(data).toContain("  server: {");
+          data = data.replace(
+            "  server: {",
+            `  preview: { host: ${JSON.stringify(previewHost)} },\n  server: {`,
+          );
+        }
+        return writeFile(file, data, options);
+      });
+    let result;
+    try {
+      result = await new LocalViteThemeBuildRunner({
+        maxDurationMs: 200_000,
+      }).run({
+        ...input,
+        buildId: "native-prerender-content",
+        files: input.files.map((file) =>
+          file.path === "src/routes/landing.tsx"
+            ? {
+                ...file,
+                content: `import { createFileRoute } from '@tanstack/react-router'; import { content } from '../morph/content'; export const Route = createFileRoute('/landing')({ component: () => <><h1>{String(content('prerender-field').title || 'WRONG_DEFAULT')}</h1><p>{String(content('frozen-shell').title || 'WRONG_SHELL')}</p></> });`,
+              }
+            : file,
+        ),
+      });
+    } finally {
+      fixtureConfig.mockRestore();
+    }
     if (!result.success) throw new Error(result.errorMessage);
     const html = result.artifacts.find(
       (file) => file.path === "runtime/client/landing/index.html",

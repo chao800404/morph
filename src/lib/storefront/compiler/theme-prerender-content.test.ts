@@ -58,6 +58,65 @@ function snapshot(): ThemeBuildContentSnapshot {
   };
 }
 describe("frozen prerender content", () => {
+  it.each([
+    { address: null, code: "SSG_CONTENT_SERVER_UNAVAILABLE" },
+    { address: "/tmp/preview.sock", code: "SSG_CONTENT_SERVER_UNAVAILABLE" },
+    {
+      address: { address: "192.0.2.5", port: 1234 },
+      code: "SSG_CONTENT_LOOPBACK_REQUIRED",
+    },
+    {
+      address: { address: "attacker.example", port: 1234 },
+      code: "SSG_CONTENT_LOOPBACK_REQUIRED",
+    },
+    {
+      address: { address: "127.attacker.example", port: 1234 },
+      code: "SSG_CONTENT_LOOPBACK_REQUIRED",
+    },
+    {
+      address: { address: "::1", port: 0 },
+      code: "SSG_CONTENT_LOOPBACK_REQUIRED",
+    },
+  ])(
+    "refuses an unavailable or non-loopback listener: $address",
+    ({ address, code }) => {
+      let middleware:
+        | ((req: object, res: object, next: (error?: Error) => void) => void)
+        | undefined;
+      const plugin = new Function(
+        "fs",
+        "path",
+        "process",
+        `return (${themePrerenderContentPluginSource("/workspace")});`,
+      )(
+        { readFileSync: () => "{}" },
+        { join: (...parts: string[]) => parts.join("/") },
+        { env: { TSS_PRERENDERING: "true" } },
+      );
+      plugin.configurePreviewServer({
+        httpServer: { address: () => address },
+        middlewares: {
+          use: (handler: typeof middleware) => {
+            middleware = handler;
+          },
+        },
+      });
+      let failure: Error | undefined;
+      middleware!(
+        {
+          url: "/landing",
+          headers: { host: "127.0.0.1:1234" },
+          rawHeaders: [],
+        },
+        {},
+        (error) => {
+          failure = error;
+        },
+      );
+      expect(failure?.message).toBe(code);
+    },
+  );
+
   it("merges a frozen layout with no explicit website policy and the immutable index template", async () => {
     const data = snapshot();
     data.documents[0]!.item.metadata = { templateType: "index" };
@@ -118,85 +177,93 @@ describe("frozen prerender content", () => {
       "/products/featured": { slots: {}, hiddenSlots: [] },
     });
   });
-  it("provides only selected GET content and replaces raw as well as normalized origin headers", () => {
-    type Request = {
-      url: string;
-      method: string;
-      headers: Record<string, string>;
-      rawHeaders: string[];
-    };
-    type Response = {
-      statusCode: number;
-      setHeader(name: string, value: string): void;
-      end(body?: string): void;
-    };
-    type Middleware = (req: Request, res: Response, next: () => void) => void;
-    let middleware: Middleware | undefined;
-    const plugin = new Function(
-      "fs",
-      "path",
-      "process",
-      `return (${themePrerenderContentPluginSource("/workspace")});`,
-    )(
-      {
-        readFileSync: () =>
-          JSON.stringify({
-            "/landing": {
-              slots: { hero: { title: "Frozen" } },
-              hiddenSlots: [],
-            },
-          }),
-      },
-      { join: (...parts: string[]) => parts.join("/") },
-      { env: { TSS_PRERENDERING: "true" } },
-    );
-    plugin.configurePreviewServer({
-      httpServer: { address: () => ({ port: 1234 }) },
-      middlewares: {
-        use: (handler: Middleware) => {
-          middleware = handler;
+  it.each([
+    { address: "127.0.0.1", origin: "http://127.0.0.1:1234" },
+    { address: "::1", origin: "http://[::1]:1234" },
+    { address: "::", origin: "http://[::1]:1234" },
+    { address: "0.0.0.0", origin: "http://127.0.0.1:1234" },
+  ])(
+    "provides only selected GET content and replaces origin headers for $address",
+    ({ address, origin }) => {
+      type Request = {
+        url: string;
+        method: string;
+        headers: Record<string, string>;
+        rawHeaders: string[];
+      };
+      type Response = {
+        statusCode: number;
+        setHeader(name: string, value: string): void;
+        end(body?: string): void;
+      };
+      type Middleware = (req: Request, res: Response, next: () => void) => void;
+      let middleware: Middleware | undefined;
+      const plugin = new Function(
+        "fs",
+        "path",
+        "process",
+        `return (${themePrerenderContentPluginSource("/workspace")});`,
+      )(
+        {
+          readFileSync: () =>
+            JSON.stringify({
+              "/landing": {
+                slots: { hero: { title: "Frozen" } },
+                hiddenSlots: [],
+              },
+            }),
         },
-      },
-    });
-    const req: Request = {
-      url: "/landing",
-      method: "GET",
-      headers: { "x-morph-content-origin": "https://wrong.invalid" },
-      rawHeaders: [
-        "X-Morph-Content-Origin",
-        "https://wrong.invalid",
+        { join: (...parts: string[]) => parts.join("/") },
+        { env: { TSS_PRERENDERING: "true" } },
+      );
+      plugin.configurePreviewServer({
+        httpServer: { address: () => ({ address, port: 1234 }) },
+        middlewares: {
+          use: (handler: Middleware) => {
+            middleware = handler;
+          },
+        },
+      });
+      const req: Request = {
+        url: "/landing",
+        method: "GET",
+        headers: { "x-morph-content-origin": "https://wrong.invalid" },
+        rawHeaders: [
+          "X-Morph-Content-Origin",
+          "https://wrong.invalid",
+          "Accept",
+          "text/html",
+        ],
+      };
+      let body: string | undefined;
+      const res: Response = {
+        statusCode: 200,
+        setHeader: () => {},
+        end: (value) => {
+          body = value;
+        },
+      };
+      middleware!(req, res, () => {});
+      expect(req.headers["x-morph-content-origin"]).toBe(origin);
+      expect(req.rawHeaders).toEqual([
         "Accept",
         "text/html",
-      ],
-    };
-    let body: string | undefined;
-    const res: Response = {
-      statusCode: 200,
-      setHeader: () => {},
-      end: (value) => {
-        body = value;
-      },
-    };
-    middleware!(req, res, () => {});
-    expect(req.headers["x-morph-content-origin"]).toBe("http://127.0.0.1:1234");
-    expect(req.rawHeaders).toEqual([
-      "Accept",
-      "text/html",
-      "x-morph-content-origin",
-      "http://127.0.0.1:1234",
-    ]);
-    req.url = "/_morph/content?path=/landing";
-    middleware!(req, res, () => {});
-    expect(JSON.parse(body!).slots.hero.title).toBe("Frozen");
-    req.url = "/_morph/content?path=/not-selected";
-    middleware!(req, res, () => {});
-    expect(res.statusCode).toBe(404);
-    req.url = "/_morph/content?path=/landing";
-    req.method = "POST";
-    res.statusCode = 200;
-    middleware!(req, res, () => {});
-    expect(res.statusCode).toBe(404);
-  });
+        "x-morph-content-origin",
+        origin,
+      ]);
+      req.url = "/_morph/content?path=/landing";
+      middleware!(req, res, () => {});
+      expect(JSON.parse(body!).slots.hero.title).toBe("Frozen");
+      req.url = "/_morph/content?path=/not-selected";
+      middleware!(req, res, () => {});
+      expect(res.statusCode).toBe(404);
+      req.url = "/_morph/content?path=/landing";
+      req.method = "POST";
+      res.statusCode = 200;
+      middleware!(req, res, () => {});
+      expect(res.statusCode).toBe(404);
+    },
+  );
   it("reuses the public resolver for fields, visibility and the layout", async () => {
     const data = snapshot();
     data.documents.push({

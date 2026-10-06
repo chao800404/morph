@@ -121,7 +121,17 @@ export function themePrerenderContentPluginSource(root: string): string {
       server.middlewares.use((req, res, next) => {
         const address = server.httpServer?.address();
         if (!address || typeof address === "string") return next(new Error("SSG_CONTENT_SERVER_UNAVAILABLE"));
-        const origin = "http://127.0.0.1:" + address.port;
+        // Vite binds localhost using the host's DNS order. In CI this can
+        // be IPv6-only; an IPv4 origin then silently loses sealed content.
+        // Use the actual listener, never the incoming Host or Theme headers.
+        const host = address.address === "::" || address.address === "::1"
+          ? "[::1]"
+          : address.address === "0.0.0.0" ? "127.0.0.1" : address.address;
+        if (typeof host !== "string" ||
+            (host !== "[::1]" && !/^127[.][0-9]+[.][0-9]+[.][0-9]+$/.test(host)) ||
+            !Number.isInteger(address.port) || address.port < 1 || address.port > 65535)
+          return next(new Error("SSG_CONTENT_LOOPBACK_REQUIRED"));
+        const origin = "http://" + host + ":" + address.port;
         const url = new URL(req.url || "/", origin);
         if (url.pathname === "/_morph/content") {
           const pathname = url.searchParams.get("path") || "/";

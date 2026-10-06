@@ -12,6 +12,29 @@ and published Pages) until their rendering paths are implemented; it must not
 succeed while still rendering an SSR document. This is an interim integration
 guard, not an audit of every independent Page authoring/publishing API.
 
+## IPv6 prerender-content correction (2026-10-06)
+
+- PR #98 commit 2702da4 failed CI run 37421915940: the native content test
+  generated WRONG_DEFAULT/WRONG_SHELL with empty serialized content slots.
+  Local success did not justify merging; pnpm ship stopped. The exact listener
+  address was not logged in that CI run.
+- Reproduced the same native HTML failure locally by binding the preview
+  fixture explicitly to IPv6 ::1. The old bridge always forwarded an IPv4
+  127.0.0.1 content origin. A separate real TCP-listener test passed IPv4 and
+  failed IPv6 before the correction. Red evidence:
+  /tmp/morph-native-prerender-v6-red.log and
+  /tmp/morph-prerender-address-red.log.
+- The bridge now derives the content origin from the actual bound listener,
+  uses bracketed IPv6, maps wildcard binds to the matching loopback family,
+  and refuses unavailable/non-loopback listeners or invalid ports. Incoming
+  Host and Theme origin headers cannot select the content destination.
+- Native sealed-page/layout rendering is tested on explicitly bound IPv4 and
+  IPv6 previews, not the machine's localhost DNS preference. Assertions still
+  require frozen values and forbid shipping snapshot data in server artifacts.
+- No policy, publication guard, authorization or rendering-mode scope changed.
+  This correction does not complete production SSG serving, ISR/CSR or native
+  user configuration compatibility.
+
 ## Editor preparation and sealed-build wiring (2026-10-06)
 
 - Extended the existing initial-draft preparation endpoint with an optional
