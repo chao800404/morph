@@ -95,6 +95,12 @@
         "name": "PreviewSandbox",
         "class_name": "PreviewSandbox",
       },
+      // Build Preview containers: one build's artifact per capability, with
+      // their own outbound policy (src/server/build-preview-sandbox.ts).
+      {
+        "name": "BuildPreviewSandbox",
+        "class_name": "BuildPreviewSandbox",
+      },
     ],
   },
   "migrations": [
@@ -106,6 +112,10 @@
       "tag": "v2",
       "new_sqlite_classes": ["PreviewSandbox"],
     },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["BuildPreviewSandbox"],
+    },
   ],
   "containers": [
     {
@@ -114,6 +124,10 @@
     },
     {
       "class_name": "PreviewSandbox",
+      "image": "./Dockerfile.sandbox",
+    },
+    {
+      "class_name": "BuildPreviewSandbox",
       "image": "./Dockerfile.sandbox",
     },
   ],

@@ -315,11 +315,25 @@ STRIPE_SECRET [ 新增 Secret ]
             - 發權杖的 server function `openBuildPreview`（admin，限定該商店與 Theme 的 build），回傳網址。
             - 驗證：`build-preview-chain.test.ts` 以真實的輔助程序與 workerd 跑完整鏈：瀏覽器請求 → Core 驗證
               → 啟動實例 → 回應；Theme 程式經外連政策回呼內容端點，再由 Core 驗證權杖並回應凍結內容。
+          - 容器版本（已完成，以替身測試）：
+            - 獨立的 Durable Object 類別 `BuildPreviewSandbox`（`src/server/build-preview-sandbox.ts`），與 Live
+              Preview 的 `PreviewSandbox`、建置用的 `Sandbox` 分開；同一映像，`enableInternet = false`、攔截 HTTPS。
+              `wrangler.jsonc` 新增綁定、容器與 migration `v3`（未部署）；`local_preview_e2e` 環境照舊不含容器。
+            - 每個權杖一個容器，名稱 `bp-<capability id>`。產物依發布的配置寫入，以映像內既有的 `wrangler dev`
+              執行；行程只拿到 `WRANGLER_SEND_METRICS`、`NODE_ENV`，沒有 Morph 的任何環境變數或憑證；閒置 10 分鐘
+              休眠，下一個請求經 Core 重新啟動。
+            - 容器的對外請求由 Worker 中的外連政策（`build-preview-egress.ts`）處理：只回應「自己的」
+              `/_morph/content`。主機中的權杖照常驗證，且該權杖對應的容器 id
+              （`idFromName("bp-<capability id>")`，與 `ctx.containerId` 比對）必須是發出請求的容器；
+              內容由 Core 的解析器直接回應，不經過網路。其餘一律 403 `PREVIEW_EGRESS_DENIED`，訊息不含路徑與查詢字串。
+            - 工廠：綁定 `BuildPreviewSandbox` 時用容器；有其他容器綁定但沒有此類別時以
+              `BUILD_PREVIEW_SANDBOX_UNBOUND` 拒絕（不用其他類別的政策，也不退回本機傳輸）。
+            - 注意：一般開發機有容器綁定，所以本機輔助程序傳輸只在 `local_preview_e2e` 環境使用；一般
+              `pnpm dev` 會走容器版本。
+            - 尚未以真實容器驗證：`wrangler dev` 在無網路容器中的啟動、就緒訊息、`containerFetch` 與外連攔截。
           - 待做：
-            - 編輯器 iframe 改用 `openBuildPreview`。要等容器版本：部署環境目前沒有 Build Preview 執行器，
-              現在切換會讓可用的靜態預覽變成 503。
-            - Sandbox 容器版本（不同於 Live Preview 的 session id，無部署權杖與正式秘密，外連拒絕、資源預算、
-              閒置回收），工廠目前以 `BUILD_PREVIEW_CONTAINER_PENDING` 明確拒絕。
+            - 以本機 `pnpm dev`（Docker 容器）實際驗證容器版本：啟動、回應、資產、內容回呼、外連拒絕、休眠後重啟。
+            - 驗證通過後，編輯器 iframe 改用 `openBuildPreview`。
             - 本機 E2E：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用 `*.localhost`
               或另設主機。
             - 已發布媒體（`/_morph/media/`）在 Build Preview 主機上依 build 的內容版本提供。

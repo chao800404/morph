@@ -46,6 +46,7 @@ if (import.meta.hot) {
 
 export { Sandbox } from "@cloudflare/sandbox";
 export { PreviewSandbox } from "@/server/preview-sandbox";
+export { BuildPreviewSandbox } from "@/server/build-preview-sandbox";
 // Carries a container's outbound requests to its class's outbound policy.
 // Without this export the SDK cannot intercept them at all.
 export { ContainerProxy } from "@cloudflare/sandbox";
