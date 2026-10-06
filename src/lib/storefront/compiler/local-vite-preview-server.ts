@@ -12,7 +12,11 @@ import {
   LOCAL_PREVIEW_HOST,
 } from "./local-preview-host";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
-import { planFencedStart, planFencedWrite } from "./preview-write-fence";
+import {
+  planFencedStart,
+  planFencedWrite,
+  type FenceLedgerRecord,
+} from "./preview-write-fence";
 import { themeFramework } from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
@@ -232,14 +236,12 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private readonly port: number;
   private readonly running = new Map<string, RunningPreview>();
   /**
-   * Per preview, the newest version written to each file, and the writes
-   * queued behind one another so that comparing against it and writing are
-   * one step. See `preview-write-fence.ts`.
+   * Per preview, the version last written to each file and the generation
+   * it was read at, and the writes queued behind one another so that
+   * comparing against it and writing are one step. See
+   * `preview-write-fence.ts`.
    */
-  private readonly fenceLedgers = new Map<
-    string,
-    { files: Record<string, number>; generation: number }
-  >();
+  private readonly fenceLedgers = new Map<string, FenceLedgerRecord>();
   private readonly writeQueues = new Map<string, Promise<unknown>>();
   private readonly maxStagedBytes: number;
   private readonly stagedTtlMs: number;
@@ -394,6 +396,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         // raises nothing.
         const ledgerBefore = this.fenceLedgers.get(input.previewId) ?? {
           files: {},
+          readAt: {},
           generation: 0,
         };
         const plan = planFencedStart(ledgerBefore, {
@@ -1107,9 +1110,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     );
     const ledger = this.fenceLedgers.get(previewId) ?? {
       files: {},
+      readAt: {},
       generation: 0,
     };
-    const plan = planFencedWrite(ledger.files, fenced, current);
+    const plan = planFencedWrite(ledger, fenced, current, generation);
     if (plan.refused.length > 0) {
       return { changed: [], unchanged: [], refused: plan.refused };
     }
@@ -1140,13 +1144,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       await writer.writeFile(target, file.content);
       changed.push(file.path);
     }
-    this.fenceLedgers.set(previewId, {
-      files: plan.ledger,
-      generation:
-        generation !== null && generation > ledger.generation
-          ? generation
-          : ledger.generation,
-    });
+    this.fenceLedgers.set(previewId, plan.ledger);
     return { changed, unchanged, refused: [] };
   }
 

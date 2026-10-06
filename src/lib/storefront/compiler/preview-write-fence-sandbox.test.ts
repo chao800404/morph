@@ -77,6 +77,7 @@ const HERO = "src/Hero.tsx";
 const readLedger = () =>
   JSON.parse(readFileSync(ledger, "utf8")) as {
     files: Record<string, number>;
+    readAt: Record<string, number>;
     generation: number;
   };
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
@@ -359,6 +360,7 @@ describe("the container's generation watermark", () => {
     expect(read(NEW)).toBe("new v1");
     expect(readLedger()).toEqual({
       files: { [HERO]: 1, [NEW]: 1 },
+      readAt: { [HERO]: 4, [NEW]: 5 },
       generation: 5,
     });
     expect(existsSync((older as { staging: string }).staging)).toBe(false);
@@ -387,8 +389,88 @@ describe("the container's generation watermark", () => {
     expect(read(NEW)).toBe("new again");
   });
 
+  /**
+   * A file deleted and made again under the same name starts over at
+   * version 1, so once a version above it was laid out, comparing versions
+   * alone refused every later start and sync of the file until the preview
+   * restarted (found in a local E2E run, `content-fields-sidecar.spec.ts`).
+   * What orders them is the generation each version was read at.
+   */
+  it("lays out a file made again at a lower version, by a start read after it", () => {
+    run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 4));
+    // Saved twice: version 2, laid out by its sync at generation 5.
+    sync(NEW, "new v2", 2, 5);
+
+    // Deleted (generation 6) and made again (generation 7) as version 1.
+    const result = run(
+      start(
+        { [HERO]: "hero v1", [NEW]: "new again" },
+        { [HERO]: 1, [NEW]: 1 },
+        7,
+      ),
+    );
+
+    expect(result.refused).toEqual([]);
+    expect(result.staleGeneration).toBeUndefined();
+    expect(read(NEW)).toBe("new again");
+    expect(readLedger().files[NEW]).toBe(1);
+    // ...and its next edit syncs.
+    expect(sync(NEW, "new again, edited", 1, 7).refused).toEqual([]);
+  });
+
+  it("syncs a file made again at a lower version, though another sync already reached its generation", () => {
+    run(start({ [HERO]: "hero v1" }, { [HERO]: 1 }, 4));
+    sync(NEW, "new v2", 2, 5);
+    // Deleted (6), made again as version 1 (7); then the hero was saved (8)
+    // and its sync landed first, so the preview has already seen generation 8.
+    sync(HERO, "hero v2", 2, 8);
+
+    expect(sync(NEW, "new again", 1, 8).refused).toEqual([]);
+    expect(read(NEW)).toBe("new again");
+    // A start read at that same generation agrees with what was laid out.
+    expect(
+      run(
+        start(
+          { [HERO]: "hero v2", [NEW]: "new again" },
+          { [HERO]: 2, [NEW]: 1 },
+          8,
+        ),
+      ).refused,
+    ).toEqual([]);
+  });
+
+  it("refuses a sync of the deleted file's content, read before it was made again", () => {
+    sync(NEW, "new again", 1, 7);
+    // Checked at generation 5, when the old file stood at version 2; landing
+    // now, its higher version would put the deleted content back.
+    expect(sync(NEW, "old new v2, edited", 2, 5).refused).toEqual([NEW]);
+    expect(read(NEW)).toBe("new again");
+  });
+
+  it("orders a version written with no generation by version alone", () => {
+    // Nothing says when it was read, so no generation can outrank it.
+    run({
+      op: "write",
+      root,
+      files: [{ path: NEW, content: "new v2", fence: 2 }],
+      generation: null,
+    });
+    expect(sync(NEW, "new again", 1, 9).refused).toEqual([NEW]);
+    expect(read(NEW)).toBe("new v2");
+  });
+
   it("raises nothing for a sync refused by its fence", () => {
-    sync(HERO, "hero v4", 4, 5);
+    // Version 4 written with no generation, so only versions order it. (A
+    // version 3 read at generation 9 against one read at 5 is no longer
+    // refused at all: checked against the database after version 4 was, it
+    // can only be the file made again since — see above.)
+    run({
+      op: "write",
+      root,
+      files: [{ path: HERO, content: "hero v4", fence: 4 }],
+      generation: null,
+    });
+    sync(NEW, "new v1", 1, 5);
     expect(sync(HERO, "hero v3", 3, 9).refused).toEqual([HERO]);
     expect(readLedger().generation).toBe(5);
   });
@@ -400,14 +482,19 @@ describe("the container's generation watermark", () => {
     rmSync(path.join((broken as { staging: string }).staging, HERO));
 
     expect(() => run(broken)).toThrow();
-    expect(readLedger()).toEqual({ files: { [HERO]: 1 }, generation: 5 });
+    expect(readLedger()).toEqual({
+      files: { [HERO]: 1 },
+      readAt: { [HERO]: 5 },
+      generation: 5,
+    });
   });
 
   it("reads a ledger written before generations were kept", () => {
     // What a warm container may still hold: a flat path-to-version map.
     writeFileSync(ledger, JSON.stringify({ [HERO]: 4 }));
 
-    // Its versions still hold...
+    // Its versions still hold — nothing says when they were read, so no
+    // generation outranks them...
     expect(run(start({ [HERO]: "hero v3" }, { [HERO]: 3 }, 9)).refused).toEqual(
       [HERO],
     );
@@ -416,6 +503,23 @@ describe("the container's generation watermark", () => {
     expect(run(start({ [HERO]: "hero v4" }, { [HERO]: 4 }, 9)).refused).toEqual(
       [],
     );
-    expect(readLedger()).toEqual({ files: { [HERO]: 4 }, generation: 9 });
+    expect(readLedger()).toEqual({
+      files: { [HERO]: 4 },
+      readAt: { [HERO]: 9 },
+      generation: 9,
+    });
+  });
+
+  it("reads a ledger written before each version's generation was kept", () => {
+    writeFileSync(
+      ledger,
+      JSON.stringify({ files: { [NEW]: 2 }, generation: 5 }),
+    );
+    // As above: the recorded version is not known to be older than the start.
+    expect(
+      run(
+        start({ [HERO]: "hero v1", [NEW]: "new" }, { [HERO]: 1, [NEW]: 1 }, 7),
+      ).refused,
+    ).toEqual([NEW]);
   });
 });

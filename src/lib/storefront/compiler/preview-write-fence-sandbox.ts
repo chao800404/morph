@@ -53,10 +53,11 @@ export type FencedWriteRequest =
   | Readonly<{
       /**
        * Applies a start: refused whole if any of `versions` is older than
-       * what the ledger holds; otherwise the files named in `prune` are
-       * removed, the staged `files` moved into `root`, the versions recorded,
-       * and — only if no other writer has marked the workspace since the
-       * start read it — the manifest and then the marker are committed.
+       * what the ledger holds (`planFencedStart`); otherwise the files named
+       * in `prune` are removed, the staged `files` moved into `root`, the
+       * versions recorded, and — only if no other writer has marked the
+       * workspace since the start read it — the manifest and then the marker
+       * are committed.
        */
       op: "start";
       root: string;
@@ -127,12 +128,15 @@ export function applyFencedRequest(
   request: FencedWriteRequest,
   planners: FencePlanners,
 ): FencedWriteResult {
-  // `{ files, generation }`; a ledger from before generations were kept is
-  // a flat path-to-version map, read as having seen none.
-  let ledger: { files: Record<string, number>; generation: number } = {
-    files: {},
-    generation: 0,
-  };
+  // `{ files, readAt, generation }`. A ledger from before each version's
+  // generation was kept has no `readAt`, and one from before generations
+  // were kept at all is a flat path-to-version map: both are read as not
+  // knowing when what they hold was read.
+  let ledger: {
+    files: Record<string, number>;
+    readAt: Record<string, number>;
+    generation: number;
+  } = { files: {}, readAt: {}, generation: 0 };
   const stored = io.readText(ledgerPath);
   if (stored !== null) {
     try {
@@ -144,9 +148,16 @@ export function applyFencedRequest(
         typeof parsed.files === "object" &&
         typeof parsed.generation === "number"
       ) {
-        ledger = { files: parsed.files, generation: parsed.generation };
+        ledger = {
+          files: parsed.files,
+          readAt:
+            parsed.readAt && typeof parsed.readAt === "object"
+              ? parsed.readAt
+              : {},
+          generation: parsed.generation,
+        };
       } else if (parsed && typeof parsed === "object") {
-        ledger = { files: parsed, generation: 0 };
+        ledger = { files: parsed, readAt: {}, generation: 0 };
       }
     } catch {
       // Unreadable: as if nothing had been written.
@@ -158,7 +169,12 @@ export function applyFencedRequest(
     for (const file of request.files) {
       current[file.path] = io.readText(io.within(request.root, file.path));
     }
-    const plan = planners.planFencedWrite(ledger.files, request.files, current);
+    const plan = planners.planFencedWrite(
+      ledger,
+      request.files,
+      current,
+      typeof request.generation === "number" ? request.generation : null,
+    );
     if (plan.refused.length === 0) {
       if (plan.writes.length > 0 && request.marker) {
         io.writeText(request.marker.path, request.marker.content);
@@ -168,15 +184,7 @@ export function applyFencedRequest(
       }
       // Last, and only for a write that went through: a refused or failed
       // one raises nothing.
-      const generation =
-        typeof request.generation === "number" &&
-        request.generation > ledger.generation
-          ? request.generation
-          : ledger.generation;
-      io.writeText(
-        ledgerPath,
-        JSON.stringify({ files: plan.ledger, generation }),
-      );
+      io.writeText(ledgerPath, JSON.stringify(plan.ledger));
     }
     return {
       refused: plan.refused,
