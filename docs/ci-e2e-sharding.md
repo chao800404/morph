@@ -46,8 +46,8 @@ executes 27 / 15 / 19 tests, above the runner's per-shard minimum of 7.
 
 To rebalance:
 
-1. Download every `editor-e2e-results-N` artifact of one successful run into
-   one directory.
+1. Download every `editor-e2e-results-N-attempt-M` artifact of one successful
+   run into one directory (each shard's latest attempt is the one read).
 2. `node scripts/rebalance-e2e-shards.mjs <dir> --write --source="CI run <id> (main <sha>)"`
 3. Paste the printed plan into `EDITOR_SHARDS`, update its comment with the
    run and the measured/projected numbers, and check that each shard still

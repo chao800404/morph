@@ -45,6 +45,29 @@ const passed = (check) =>
   check.conclusion === "SKIPPED" ||
   check.conclusion === "NEUTRAL";
 
+/** The workflow run a check belongs to, from its details URL; 0 if unknown. */
+const runId = (check) =>
+  Number(/\/actions\/runs\/(\d+)\//.exec(check.detailsUrl ?? "")?.[1] ?? 0);
+
+/**
+ * Each check as the newest workflow run reported it.
+ *
+ * The rollup lists every run on the head commit. A pull request closed and
+ * reopened — or otherwise given a fresh run — still carries the old run's
+ * checks next to the new ones, and the old failure refused a commit whose
+ * latest run was green. Run ids only grow, so the highest one wins; a newer
+ * run's check that is still pending counts as the current result, which
+ * waits rather than refusing on the stale one.
+ */
+export function latestChecks(checks) {
+  const latest = new Map();
+  for (const check of checks) {
+    const kept = latest.get(check.name);
+    if (!kept || runId(check) > runId(kept)) latest.set(check.name, check);
+  }
+  return [...latest.values()];
+}
+
 /**
  * Whether to merge, wait, or refuse — as a pure function of the check rollup.
  *
@@ -230,7 +253,7 @@ async function ship() {
           quiet: true,
         }),
       ).statusCheckRollup ?? [];
-    const checks = rollup.filter((check) => check.name);
+    const checks = latestChecks(rollup.filter((check) => check.name));
     // A whitelist, so a conclusion GitHub adds later is refused rather than
     // silently accepted. `FAILURE` alone was too narrow: `CANCELLED`,
     // `TIMED_OUT`, `STARTUP_FAILURE` and `ACTION_REQUIRED` all mean the check did

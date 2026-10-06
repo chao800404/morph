@@ -144,6 +144,18 @@ const config = defineConfig({
   ],
   server: {
     /**
+     * Local Live Preview workspaces are laid out under the checkout
+     * (`.morph-previews/`, see local-vite-preview-server.ts) and are served by
+     * their own Vite. This one must not watch them: a preview start rewrites
+     * its whole workspace, and a rewritten `tsconfig.json` there made this
+     * server clear its cache, full-reload the editor and reload the Worker
+     * mid-request ("Worker's code had hung" in the preview frame). The
+     * `.morph-previews-*` roots are the ones tests create.
+     */
+    watch: {
+      ignored: ["**/.morph-previews/**", "**/.morph-previews-*/**"],
+    },
+    /**
      * Storefront routing is decided by hostname, so testing it locally requires
      * reaching the dev server on something other than `localhost`. Vite blocks
      * unknown hosts by default (DNS-rebinding protection), which rejects the
