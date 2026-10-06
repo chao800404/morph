@@ -40,6 +40,7 @@ import {
   type PreviewAddressState,
 } from "@/lib/storefront/service/preview-address-probe";
 import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
+import { pickPlatformHostnameEnv } from "@/lib/storefront/service/storefront-request-routing";
 import {
   isPreviewSyncSkippedPath,
   syncPreviewFiles,
@@ -177,7 +178,11 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       fileVersions: workspace.fileVersions,
       sourceGeneration,
       loadBinary: workspace.loadBinary,
-      env: env as unknown as Record<string, unknown>,
+      // Only the host vars: on the sidecar transport this start leaves the
+      // Worker, and the env beside them holds every secret.
+      platformHostEnv: pickPlatformHostnameEnv(
+        env as unknown as Record<string, unknown>,
+      ),
       ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
         ? { previewRuntime: "start" as const }
         : {}),

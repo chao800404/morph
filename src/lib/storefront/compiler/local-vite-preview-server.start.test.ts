@@ -58,7 +58,7 @@ beforeAll(async () => {
     files: [...STARTER_THEME_FILES] as never,
     entry: "src/routes/index.tsx",
     previewHostname: "127.0.0.1",
-    env: {},
+    platformHostEnv: {},
     previewRuntime: "start",
   });
   if (!first.ok) throw new Error(`${first.stage}: ${first.errorMessage}`);
@@ -84,7 +84,7 @@ beforeAll(async () => {
     ] as never,
     entry: "src/routes/index.tsx",
     previewHostname: "127.0.0.1",
-    env: {},
+    platformHostEnv: {},
     previewRuntime: "start",
     loadBinary: async (ref) => {
       const file = NATIVE_COMPAT_PUBLIC_FILES.find(
