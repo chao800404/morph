@@ -267,6 +267,19 @@ STRIPE_SECRET [ 新增 Secret ]
      與內容環境變數提供部署環境，不注入 Vite plugin；依 `.wrangler/deploy/config.json` 找產物，
      在沙箱外整理成部署端的結構並檢查。開始前須決定是否移除編輯器標記（建議移除，列為 Morph 對原始碼
      的唯一轉換）。
+     - **1b-1（已完成，未啟用）**：TanStack Start adapter 的 `build.native.plan`／`collect`
+       （`src/lib/storefront/theme-framework/tanstack-start-native-build.ts`）。採用建議：移除編輯器標記，
+       為 Morph 對原始碼唯一的轉換（使用者可再決定）。`vite.config.ts`、`wrangler.jsonc` 原樣使用；
+       Morph 的設定副本放 `.morph/wrangler.json`，以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 指向它。
+       拒絕：沒有或多份設定檔、`cloudflare({ configPath })`、宣告了尚無法對應的綁定（D1、KV、R2 等）。
+       產物依 `.wrangler/deploy/config.json` → Worker 設定的 `main`／`assets.directory` 找到，移到
+       Morph 既有的 `runtime/server`、`runtime/client` 配置。真實建置測試（`native-start-build.test.ts`）：
+       starter 以官方寫法的設定、固定的 Vite 7 工具鏈建置，Worker 回應頁面 200、未知頁 404、靜態資源可取，
+       確認建置讀的是 Morph 的設定副本，產物中沒有編輯器標記。
+     - **1b-2（未做，需要先決定）**：原生建置沒有 `preview/index.html`，現有 Build Preview 無從開啟；
+       需改為由建置後的 Worker 提供 Build Preview。此外尚未接入：Sandbox 建置程式執行 `plan` 的指令與
+       `collect`、materializer 解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）、
+       預先渲染所需的 CMS 內容（`MORPH_CONTENT_*` 環境變數與凍結內容快照）。
    - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
    - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
 2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、
