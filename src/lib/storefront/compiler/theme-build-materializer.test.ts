@@ -621,14 +621,47 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
     ).toThrow(/MISSING_START_ROUTER/);
   });
 
-  it("rejects customer-authored platform build files", () => {
+  it("rejects customer-authored platform entry files", () => {
     expect(() =>
       normalizeRevisionSnapshot(
-        [{ path: "src/routeTree.gen.ts", content: "export {};" }],
-        "rev-generated-route-tree",
+        [
+          { path: "src/index.tsx", content: "export default () => null;" },
+          { path: "__entry.tsx", content: "export {};" },
+        ],
+        "rev-platform-entry",
       ),
     ).toThrow(/PLATFORM_OWNED_THEME_BUILD_PATH/);
   });
+
+  it("leaves a committed route tree out of the build, which regenerates it", () => {
+    const { files } = normalizeRevisionSnapshot(
+      [
+        { path: "src/index.tsx", content: "export default () => null;" },
+        { path: "src/routeTree.gen.ts", content: "export {};" },
+      ],
+      "rev-committed-route-tree",
+    );
+    expect(files.map((file) => file.path)).toEqual(["src/index.tsx"]);
+  });
+
+  it.each(["vite.config.ts", "wrangler.jsonc", "wrangler.json"])(
+    "refuses to build a Theme that carries its own %s rather than ignore it",
+    (path) => {
+      expect(() =>
+        normalizeRevisionSnapshot(
+          [
+            { path: "src/index.tsx", content: "export default () => null;" },
+            { path, content: "{}" },
+          ],
+          "rev-own-config",
+        ),
+      ).toThrow(
+        new RegExp(
+          `^NATIVE_START_BUILD_UNAVAILABLE: .*\\(${path.replace(".", "\\.")}\\)`,
+        ),
+      );
+    },
+  );
 
   it("enforces identity freeze: locked build strictly rejects conflicting compilerIdentity overrides", async () => {
     seedStorefront("storefront-1");

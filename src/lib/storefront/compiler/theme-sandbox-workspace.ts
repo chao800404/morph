@@ -6,7 +6,10 @@ import {
 import { themePreviewRootPublicPluginSource } from "./theme-preview-root-public";
 import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
 import { createThemeBuildBootstrap } from "./theme-router-build-bootstrap";
-import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
+import {
+  isPlatformOwnedThemeBuildPath,
+  isThemeSourceOnlyPath,
+} from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import { themeStartStaticPreviewPluginSource } from "./theme-start-static-preview";
 import {
@@ -305,7 +308,7 @@ function packageRoot(specifier: string): string {
 }
 
 export function planThemeSandboxWorkspace({
-  files: requestedFiles,
+  files: authoredFiles,
   entry,
   buildId,
   dependencies,
@@ -319,6 +322,12 @@ export function planThemeSandboxWorkspace({
   hostWorkspaceRoot: requestedHostWorkspaceRoot,
   toolchainRoot: requestedToolchainRoot,
 }: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
+  // The project's own build configuration and committed route tree stay in
+  // the Theme's source; this workspace uses the platform's configuration and
+  // regenerates the route tree, so they are left out rather than refused.
+  const requestedFiles = authoredFiles.filter(
+    (file) => !isThemeSourceOnlyPath(file.path),
+  );
   // A build ships none of the editor's attributes. The Theme's stored source
   // keeps them — that is where a hand-written marker is doing its job — but a
   // shopper has no use for them, and they describe the Theme's own source on

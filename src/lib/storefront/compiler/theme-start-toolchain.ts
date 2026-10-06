@@ -63,8 +63,49 @@ const PLATFORM_OWNED_THEME_BUILD_PATHS = new Set([
   "wrangler.jsonc",
 ]);
 
+/**
+ * Whether a Morph-built workspace holds the platform's own version of this
+ * path (or the build generates it). The Theme's copy, if it has one, never
+ * reaches that workspace. Authoring is a separate question: see
+ * `isThemeSourceOnlyPath`.
+ */
 export function isPlatformOwnedThemeBuildPath(path: string): boolean {
   return PLATFORM_OWNED_THEME_BUILD_PATHS.has(path.replace(/\\/g, "/"));
+}
+
+/**
+ * A native TanStack Start project's own build configuration. An imported
+ * project keeps these unchanged (docs/start-native-import-plan.md); Morph's
+ * builds do not use them yet.
+ */
+const THEME_START_CONFIG_PATHS = new Set([
+  "vite.config.ts",
+  "vite.config.js",
+  "vite.config.mjs",
+  "wrangler.json",
+  "wrangler.jsonc",
+]);
+
+export function isThemeStartConfigPath(path: string): boolean {
+  return THEME_START_CONFIG_PATHS.has(path.replace(/\\/g, "/"));
+}
+
+/**
+ * Kept in Theme source, but never written into a Morph-built workspace: the
+ * project's own build configuration, and the route tree Start regenerates
+ * (official projects commit it). An author may create, import and save
+ * these; the workspace keeps using the platform's version.
+ */
+export function isThemeSourceOnlyPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return (
+    isThemeStartConfigPath(normalized) || normalized === "src/routeTree.gen.ts"
+  );
+}
+
+/** Platform files an author cannot create, rename to, or import. */
+export function isThemeAuthoringRefusedPath(path: string): boolean {
+  return isPlatformOwnedThemeBuildPath(path) && !isThemeSourceOnlyPath(path);
 }
 
 type ThemeStartContractFile = {

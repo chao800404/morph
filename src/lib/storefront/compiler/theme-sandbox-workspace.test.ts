@@ -617,6 +617,47 @@ export const Route = createFileRoute('/helper')({ loader: () => fn() });`,
     );
   });
 
+  it("keeps a project's own build configuration and route tree out of the workspace it lays out", () => {
+    const AUTHORED_CONFIG = "export default { authored: true };";
+    const plan = planThemeSandboxWorkspace({
+      files: [
+        {
+          path: "src/router.tsx",
+          content: "export function getRouter() { return null; }",
+        },
+        {
+          path: "src/routes/__root.tsx",
+          content: "export const Route = createRootRoute({});",
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: 'export const Route = createFileRoute("/")({});',
+        },
+        { path: "vite.config.ts", content: AUTHORED_CONFIG },
+        { path: "wrangler.jsonc", content: '{ "name": "authored" }' },
+        { path: "src/routeTree.gen.ts", content: "// authored" },
+      ],
+      entry: "src/routes/index.tsx",
+      buildId: "source-only-test",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode: "preview-server",
+    });
+
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    const byPath = new Map(
+      plan.workspaceFiles.map((file) => [
+        file.path,
+        "content" in file ? file.content : "",
+      ]),
+    );
+    // The platform's own configuration, not the author's.
+    expect(byPath.get("/workspace/vite.config.ts")).not.toContain("authored");
+    expect(byPath.has("/workspace/wrangler.jsonc")).toBe(false);
+    expect(byPath.has("/workspace/src/routeTree.gen.ts")).toBe(false);
+    expect(byPath.has("/workspace/src/routes/index.tsx")).toBe(true);
+  });
+
   it("leaves a build with the Theme exactly as the author wrote it", async () => {
     const { card, result, viteConfig } = await prepare("build");
 

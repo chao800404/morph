@@ -4,6 +4,18 @@ import {
   type SavedThemeFile,
 } from "../preview-sync-guard";
 import { fenceFor } from "../compiler/preview-write-fence";
+import { isThemeSourceOnlyPath } from "../compiler/theme-start-toolchain";
+import { isWorkspaceGeneratedThemePath } from "../compiler/theme-workspace-path";
+
+/**
+ * Saved files a preview sync reports as skipped rather than writes: ones the
+ * transport generates itself, and ones that stay in the Theme's source only
+ * (its own build configuration, its committed route tree). Saving one is not
+ * an error; it never reaches the preview's workspace.
+ */
+export function isPreviewSyncSkippedPath(path: string): boolean {
+  return isWorkspaceGeneratedThemePath(path) || isThemeSourceOnlyPath(path);
+}
 
 /**
  * One sync of a tab's files into the shared preview, apart from how the

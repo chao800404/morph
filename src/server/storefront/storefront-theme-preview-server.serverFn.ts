@@ -15,7 +15,6 @@ import {
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_PATH,
 } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import {
-  isWorkspaceGeneratedThemePath,
   newDirtyWorkspaceMarker,
   refuseThemeWorkspacePath,
 } from "@/lib/storefront/compiler/theme-workspace-path";
@@ -43,6 +42,7 @@ import {
 } from "@/lib/storefront/service/preview-address-probe";
 import { readPreviewErrorCode } from "@/lib/storefront/service/preview-proxy-observation";
 import {
+  isPreviewSyncSkippedPath,
   syncPreviewFiles,
   type FencedPreviewFileWrite,
 } from "@/lib/storefront/service/preview-file-sync";
@@ -435,6 +435,9 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     const { storefrontId, themeId, files } = input.data;
 
     for (const file of files) {
+      // Saved in the Theme but never part of the preview's workspace; the
+      // sync below reports it as skipped instead of refusing the whole save.
+      if (isPreviewSyncSkippedPath(file.path)) continue;
       const refusal = refuseThemeWorkspacePath(file.path);
       if (refusal) {
         return fail(refusal, { error: "RESERVED_THEME_PATH" });
@@ -591,7 +594,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           hoistColocatedContentFieldsForPreview(
             injectPreviewBindings([...prepared]).files,
           ).files,
-        isGenerated: isWorkspaceGeneratedThemePath,
+        isGenerated: isPreviewSyncSkippedPath,
         write,
       });
     } catch (error) {

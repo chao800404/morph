@@ -54,12 +54,18 @@ describe("prepareNewThemeFile", () => {
   });
 
   it("scaffolds TanStack flat-file and pathless routes with their derived ids", () => {
-    const dynamic = prepareNewThemeFile("src/routes/posts.$postId.tsx", existing);
+    const dynamic = prepareNewThemeFile(
+      "src/routes/posts.$postId.tsx",
+      existing,
+    );
     expect(dynamic.ok).toBe(true);
     if (!dynamic.ok) return;
     expect(dynamic.content).toContain('createFileRoute("/posts/$postId")');
 
-    const pathless = prepareNewThemeFile("src/routes/_marketing.about.tsx", existing);
+    const pathless = prepareNewThemeFile(
+      "src/routes/_marketing.about.tsx",
+      existing,
+    );
     expect(pathless.ok).toBe(true);
     if (!pathless.ok) return;
     expect(pathless.content).toContain('createFileRoute("/_marketing/about")');
@@ -93,12 +99,26 @@ describe("prepareNewThemeFile", () => {
     expect(result.message).toContain("already exists");
   });
 
+  it("creates a project's own build configuration, kept in source", () => {
+    for (const [path, content] of [
+      ["vite.config.ts", "export {};\n"],
+      ["wrangler.jsonc", "{}\n"],
+      ["wrangler.json", "{}\n"],
+      ["src/routeTree.gen.ts", "export {};\n"],
+    ] as const) {
+      expect(prepareNewThemeFile(path, existing), path).toMatchObject({
+        ok: true,
+        path,
+        content,
+      });
+    }
+  });
+
   it("refuses platform-generated build files", () => {
     for (const path of [
-      "vite.config.ts",
-      "src/routeTree.gen.ts",
-      "wrangler.json",
       "__entry.tsx",
+      "__morph_preview_worker.ts",
+      "__morph_preview_client.ts",
     ]) {
       const result = prepareNewThemeFile(path, existing);
       expect(result.ok, path).toBe(false);
