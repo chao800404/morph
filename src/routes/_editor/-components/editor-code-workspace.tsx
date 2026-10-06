@@ -162,6 +162,7 @@ import {
   preloadGeneratedThemePackageDeclarations,
 } from "./editor-code-package-types";
 import { collectThemeContentFieldsDiagnostics } from "@/lib/storefront/ast/theme-content-fields-diagnostics";
+import { contentFieldsComponentPath } from "@/lib/storefront/ast/theme-content-fields-declaration";
 import { formatEditorCode } from "./editor-code-formatter";
 import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
 import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
@@ -235,6 +236,8 @@ type EditorCodeWorkspaceProps = {
   /** Applies transient Monaco buffers to the running React preview. */
   onPreviewFilesChange?: (
     files: Array<{ path: string; content: string }>,
+    /** Files to send even though this tab has not changed them. */
+    options?: { resend?: readonly string[] },
   ) => void;
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
@@ -493,8 +496,10 @@ const EditorCodeWorkspaceContent = forwardRef<
       binaryFiles.some((binary) => binary.path === file.path) &&
       !sourceFiles.some((source) => source.path === file.path)),
   ], [sourceFiles, openedPublicText, binaryFiles, storefrontId, themeId]);
-  const onPreviewFilesChange = useCallback((entries: Array<{ path: string; content: string }>) => {
-    onSourcePreviewFilesChange?.(entries.filter((file) => !isThemePublicPath(file.path)));
+  const onPreviewFilesChange = useCallback((entries: Array<{ path: string; content: string }>, options?: { resend?: readonly string[] }) => {
+    const sourceEntries = entries.filter((file) => !isThemePublicPath(file.path));
+    if (options) onSourcePreviewFilesChange?.(sourceEntries, options);
+    else onSourcePreviewFilesChange?.(sourceEntries);
   }, [onSourcePreviewFilesChange]);
   const binaryFileByPath = useMemo(
     () => new Map(binaryFiles.map((file) => [file.path, file])),
@@ -1768,7 +1773,27 @@ const EditorCodeWorkspaceContent = forwardRef<
           .queryKey,
       });
       toast.success("Deleted " + path);
-      onRestartPreview?.();
+      // A component's `.fields.ts` changes only how that component is marked
+      // for editing. Re-sending the component without it re-marks it from its
+      // own declaration or the inference rule, at once, instead of restarting
+      // the whole preview. Anything else deleted still restarts it.
+      const component = contentFieldsComponentPath(
+        path,
+        files.map((file) => file.path),
+      );
+      if (component && onPreviewFilesChange) {
+        onPreviewFilesChange(
+          files
+            .filter((file) => file.path !== path)
+            .map((file) => ({
+              path: file.path,
+              content: getCurrentEditorContent(file.path),
+            })),
+          { resend: [component] },
+        );
+      } else {
+        onRestartPreview?.();
+      }
     },
     onError: (error) =>
       toast.error(
