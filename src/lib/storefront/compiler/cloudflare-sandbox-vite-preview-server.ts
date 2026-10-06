@@ -33,6 +33,7 @@ import {
   type FenceSandbox,
 } from "./preview-write-fence-sandbox";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
+import type { PlatformHostnameEnv } from "@/lib/storefront/service/storefront-request-routing";
 import {
   diffWorkspaceFileDigests,
   enterPreviewStart,
@@ -219,8 +220,13 @@ export type StartPreviewServerInput = Readonly<{
   dependencies?: Readonly<Record<string, string>>;
   /** Host the preview URL is built on. Must not be platform surface. */
   previewHostname: string;
-  /** Worker vars, so every platform hostname can be refused, not just one. */
-  env: Record<string, unknown> | undefined;
+  /**
+   * The Worker vars that name Morph's hostnames, so every platform hostname
+   * can be refused, not just one. Only these: a start crosses to another
+   * process on the sidecar transport, and the rest of the env holds secrets.
+   * Build it with `pickPlatformHostnameEnv`, never by passing the env.
+   */
+  platformHostEnv: PlatformHostnameEnv | undefined;
   /** Authenticated draft content reduced to render-only values. */
   previewContent?: ThemePreviewContentSnapshot;
   /**
@@ -550,7 +556,7 @@ export class CloudflareSandboxVitePreviewServer {
     // preview on any platform host would put Theme code in Morph's cookie jar.
     const host = resolveThemePreviewServerHost({
       configuredPreviewHostname: input.previewHostname,
-      env: input.env,
+      env: input.platformHostEnv,
     });
     if (!host.enabled) {
       return {

@@ -407,6 +407,13 @@
       "when": 1791216476113,
       "tag": "0071_theme_build_content_publication",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1791318017277,
+      "tag": "0072_build_preview_capabilities",
+      "breakpoints": true
     }
   ]
 }

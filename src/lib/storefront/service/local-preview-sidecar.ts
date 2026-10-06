@@ -21,6 +21,17 @@ import {
   type LocalPreviewSidecarOperation,
 } from "./local-preview-sidecar.protocol";
 import { isProductionEnvironment } from "./storefront-domain-provider";
+import {
+  BUILD_PREVIEW_EXECUTOR_ANSWERED,
+  BUILD_PREVIEW_EXECUTOR_HEADER,
+  BUILD_PREVIEW_EXECUTOR_NOT_RUNNING,
+  base64ToBytes,
+  decodeBuildPreviewStart,
+  isHopHeader,
+  type BuildPreviewFetchWire,
+  type BuildPreviewStartWire,
+} from "./build-preview/build-preview-wire";
+import { LocalBuildPreviewExecutor } from "./build-preview/local-build-preview-executor";
 
 /**
  * The Node process a locally-run Live Preview is served from.
@@ -145,6 +156,34 @@ export async function startLocalPreviewSidecar(
     approvedDependencies: options.approvedDependencies,
   });
 
+  const buildPreviews = new LocalBuildPreviewExecutor();
+
+  /** The instance's response as it is, status, every header and the body. */
+  const relay = async (
+    response: ServerResponse,
+    answer: Response,
+  ): Promise<void> => {
+    const headers: string[] = [];
+    answer.headers.forEach((value, name) => {
+      if (name === "set-cookie" || isHopHeader(name)) return;
+      headers.push(name, value);
+    });
+    for (const cookie of answer.headers.getSetCookie()) {
+      headers.push("set-cookie", cookie);
+    }
+    headers.push(
+      BUILD_PREVIEW_EXECUTOR_HEADER,
+      BUILD_PREVIEW_EXECUTOR_ANSWERED,
+    );
+    response.writeHead(answer.status, headers);
+    if (answer.body) {
+      for await (const chunk of answer.body as unknown as AsyncIterable<Uint8Array>) {
+        response.write(chunk);
+      }
+    }
+    response.end();
+  };
+
   const handle = async (
     operation: LocalPreviewSidecarOperation,
     request: IncomingMessage,
@@ -221,6 +260,36 @@ export async function startLocalPreviewSidecar(
     }
 
     switch (operation) {
+      case "buildPreviewStart":
+        await buildPreviews.start(
+          decodeBuildPreviewStart(input as BuildPreviewStartWire),
+        );
+        respond(response, 200, {});
+        return;
+      case "buildPreviewFetch": {
+        const fetchInput = input as BuildPreviewFetchWire;
+        const answer = await buildPreviews.fetch(fetchInput.instanceId, {
+          method: fetchInput.method,
+          path: fetchInput.path,
+          headers: fetchInput.headers,
+          body:
+            fetchInput.body === null ? null : base64ToBytes(fetchInput.body),
+        });
+        if (!answer) {
+          response.setHeader(
+            BUILD_PREVIEW_EXECUTOR_HEADER,
+            BUILD_PREVIEW_EXECUTOR_NOT_RUNNING,
+          );
+          respond(response, 404, { error: "BUILD_PREVIEW_NOT_RUNNING" });
+          return;
+        }
+        await relay(response, answer);
+        return;
+      }
+      case "buildPreviewStop":
+        await buildPreviews.stop((input as { instanceId: string }).instanceId);
+        respond(response, 200, {});
+        return;
       case "start":
         respond(
           response,
@@ -299,6 +368,7 @@ export async function startLocalPreviewSidecar(
   return {
     origin: `http://127.0.0.1:${origin.port}`,
     async close() {
+      await buildPreviews.close();
       for (const previewId of previews.servingPreviewIds()) {
         await previews.stop(previewId).catch(() => undefined);
       }

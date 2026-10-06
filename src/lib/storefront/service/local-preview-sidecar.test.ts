@@ -114,7 +114,7 @@ const startInput = () => ({
   files: THEME,
   entry: "src/pages/index.tsx",
   previewHostname: "127.0.0.1",
-  env: {},
+  platformHostEnv: {},
 });
 
 describe("the local preview sidecar boundary", () => {
@@ -547,7 +547,7 @@ describe("the local preview workspace lifecycle", () => {
       previewId,
       entry: "src/pages/index.tsx",
       previewHostname: "127.0.0.1",
-      env: {},
+      platformHostEnv: {},
       files: [{ ...page, content: `// v${version}\n${page.content}` }],
       fileVersions: { "src/pages/index.tsx": version },
     });
@@ -587,7 +587,7 @@ describe("the local preview workspace lifecycle", () => {
       previewId,
       entry: "src/pages/index.tsx",
       previewHostname: "127.0.0.1",
-      env: {},
+      platformHostEnv: {},
     };
     try {
       expect((await server.start({ ...base, files: THEME })).ok).toBe(true);

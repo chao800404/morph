@@ -255,7 +255,7 @@ describe("the local preview sidecar client and binary files", () => {
       files: input.files,
       entry: "src/routes/index.tsx",
       previewHostname: "127.0.0.1",
-      env: {},
+      platformHostEnv: {},
       loadBinary: input.loadBinary,
     });
 
@@ -282,7 +282,7 @@ describe("the local preview sidecar client and binary files", () => {
       files: input.files,
       entry: "src/routes/index.tsx",
       previewHostname: "127.0.0.1",
-      env: {},
+      platformHostEnv: {},
       loadBinary: input.loadBinary,
     });
 
@@ -304,7 +304,7 @@ describe("the local preview sidecar client and binary files", () => {
       files: input.files,
       entry: "src/routes/index.tsx",
       previewHostname: "127.0.0.1",
-      env: {},
+      platformHostEnv: {},
     });
 
     expect(started).toMatchObject({

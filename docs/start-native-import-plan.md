@@ -276,10 +276,57 @@ STRIPE_SECRET [ 新增 Secret ]
        Morph 既有的 `runtime/server`、`runtime/client` 配置。真實建置測試（`native-start-build.test.ts`）：
        starter 以官方寫法的設定、固定的 Vite 7 工具鏈建置，Worker 回應頁面 200、未知頁 404、靜態資源可取，
        確認建置讀的是 Morph 的設定副本，產物中沒有編輯器標記。
-     - **1b-2（未做，需要先決定）**：原生建置沒有 `preview/index.html`，現有 Build Preview 無從開啟；
-       需改為由建置後的 Worker 提供 Build Preview。此外尚未接入：Sandbox 建置程式執行 `plan` 的指令與
-       `collect`、materializer 解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）、
-       預先渲染所需的 CMS 內容（`MORPH_CONTENT_*` 環境變數與凍結內容快照）。
+     - **1b-2**：原生建置沒有 `preview/index.html`，Build Preview 改為執行建置後的 Worker。已決定
+       （2026-10-07）的做法與順序：
+       1. **隔離式 Build Preview**：沿用現有容器與代理機制，但每個 build 一個獨立實例，不與 Live
+          Preview 共用（Live Preview 有可變原始碼、HMR 與開發程序）。只載入該 build 的不可變產物，不重新
+          建置、不改寫產物（也不為選取功能注入標記）。
+          - 產物讀取（已完成）：`service/build-preview/build-preview-artifact.ts` 與發布用同一個
+            `planThemeWorkerDeployment`、同一個 `wranglerDeployConfig`、同一個產物前綴，作者的 `name`、
+            `vars` 與發布一樣被丟棄，禁止的綁定一樣被拒；每個檔案比對 manifest 記錄的 sha256。
+          - 本機實例（已完成）：`service/build-preview/local-build-preview-worker.ts` 以 workerd 在
+            loopback 執行；Worker 環境為空、對外連線預設 403（只允許 Core 的內容來源）、閒置自動回收。
+            只能在本機輔助程序中使用，`check-local-preview-sidecar.mjs` 確保它不進部署產物。
+          - 存取權杖（已完成）：`service/build-preview/build-preview-capability.ts`。權杖是隨機值，
+            以預覽主機的第一個標籤呈現：`bp-<token>.<THEME_PREVIEW_HOSTNAME>`，文件與所有子資源自動帶著它，
+            不需 cookie，也不需 Morph 的 session（session 不會送到預覽主機）。用單一標籤而非路徑，因為路徑
+            會被 Theme 當成自己的路由，而預覽主機的憑證只涵蓋一層標籤。D1 只存雜湊
+            （`storefront_build_preview_capabilities`，migration 0072），記錄使用者、商店、Theme、build
+            與期限。每個請求以一次查詢重新檢查：未撤銷、未過期、使用者仍是未被停權的 admin、build 仍為成功
+            且仍屬於該 Theme、Theme 未刪除。同一使用者對同一 build 只有一個有效權杖，發新的即撤銷舊的；
+            build 刪除時權杖一併刪除。
+          - 內容端點（已完成）：`service/build-preview/build-preview-content.ts`，只回應該 build 綁定的內容
+            發布版本（不是草稿，也不是線上版本），回應為 `private, no-store`。
+          - 執行器與 Core 路由（已完成，本機）：
+            - 合約 `BuildPreviewServer`（`fetch`／`start`／`stop`，`build-preview-server.types.ts`）。Core 不保存
+              跨請求狀態：請求轉給執行器，執行器回答「沒有實例」時，Core 從 R2 讀取並驗證產物後啟動，再送一次；
+              第一個請求與閒置回收後的請求走同一條路。執行器不取得 R2 權限。
+            - 每個權杖一個實例（不是每個 build 一個）：實例只能連到它被服務的那個預覽主機，兩位使用者預覽同一
+              build 各有自己的實例；仍然只是該 build 的產物，不是 Live Preview 的程序。
+            - 本機傳輸：沿用同一個本機輔助程序、同一組 token。協定新增 `buildPreviewStart`、`buildPreviewFetch`、`buildPreviewStop`，
+              對應新合約（協定測試已更新為兩個合約）；啟動時檔案以 base64 放在 JSON 中，受輔助程序 64 MB
+              上限約束。實例的內容來源是預覽主機本身；Node 無法解析 `bp-….preview.localhost`，所以本機的
+              外連改連到 Core 的 loopback（`localhost:<port>`）並保留原本的 Host。
+            - Core 路由（`src/server.ts` → `src/server/build-preview-request.ts`）：`bp-` 主機的所有路徑
+              （包含 `/api/store/`）都先驗證權杖；`/_morph/content` 由 Core 回應，其餘轉送實例。去除瀏覽器
+              送來的平台 cookie 與 `x-morph-*`，由 Core 寫入 build 的身分標頭；回應去除平台名稱的 cookie、
+              隔離 SVG、加 `x-robots-tag: noindex`。每一跳都去除連線層標頭（hop-by-hop、長度與編碼），因為
+              `fetch` 讀取時已解碼內容。開發時 `bp-` 主機也繞過 Morph 自己的 Vite。
+            - 發權杖的 server function `openBuildPreview`（admin，限定該商店與 Theme 的 build），回傳網址。
+            - 驗證：`build-preview-chain.test.ts` 以真實的輔助程序與 workerd 跑完整鏈：瀏覽器請求 → Core 驗證
+              → 啟動實例 → 回應；Theme 程式經外連政策回呼內容端點，再由 Core 驗證權杖並回應凍結內容。
+          - 待做：
+            - 編輯器 iframe 改用 `openBuildPreview`。要等容器版本：部署環境目前沒有 Build Preview 執行器，
+              現在切換會讓可用的靜態預覽變成 503。
+            - Sandbox 容器版本（不同於 Live Preview 的 session id，無部署權杖與正式秘密，外連拒絕、資源預算、
+              閒置回收），工廠目前以 `BUILD_PREVIEW_CONTAINER_PENDING` 明確拒絕。
+            - 本機 E2E：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用 `*.localhost`
+              或另設主機。
+            - 已發布媒體（`/_morph/media/`）在 Build Preview 主機上依 build 的內容版本提供。
+       2. **Sandbox 建置程式接上原生建置與內容快照**：預先渲染只讀該次建置綁定的凍結內容快照。
+       3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
+          店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
+       4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。
    - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
    - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
 2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、

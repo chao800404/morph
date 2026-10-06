@@ -21,28 +21,45 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const sidecarPath = path.join(
-  root,
-  "src/lib/storefront/service/local-preview-sidecar.ts",
-);
 const distPath = path.join(root, "dist");
 
-const MARKERS = [
-  "LOCAL_PREVIEW_SIDECAR_REFUSED",
-  "LOCAL_PREVIEW_SIDECAR_UNAUTHORIZED",
-  "LOCAL_PREVIEW_SIDECAR_METHOD",
-  "LOCAL_PREVIEW_SIDECAR_BAD_JSON",
-  "LOCAL_PREVIEW_SIDECAR_NOT_FOUND",
-  "LOCAL_PREVIEW_SIDECAR_FAILED",
+/**
+ * Local executors and the markers that identify them. The Build Preview
+ * executor starts a Theme's Worker with Wrangler on this machine; like the
+ * sidecar, it runs Theme code and must not ship.
+ */
+const MARKER_SOURCES = [
+  {
+    file: "src/lib/storefront/service/local-preview-sidecar.ts",
+    markers: [
+      "LOCAL_PREVIEW_SIDECAR_REFUSED",
+      "LOCAL_PREVIEW_SIDECAR_UNAUTHORIZED",
+      "LOCAL_PREVIEW_SIDECAR_METHOD",
+      "LOCAL_PREVIEW_SIDECAR_BAD_JSON",
+      "LOCAL_PREVIEW_SIDECAR_NOT_FOUND",
+      "LOCAL_PREVIEW_SIDECAR_FAILED",
+    ],
+  },
+  {
+    file: "src/lib/storefront/service/build-preview/local-build-preview-worker.ts",
+    markers: ["BUILD_PREVIEW_PATH_ESCAPE"],
+  },
+  {
+    file: "src/lib/storefront/service/build-preview/local-build-preview-executor.ts",
+    markers: ["BUILD_PREVIEW_EXECUTOR_BAD_PATH"],
+  },
 ];
+const MARKERS = MARKER_SOURCES.flatMap((source) => source.markers);
 
-const source = fs.readFileSync(sidecarPath, "utf8");
-const missing = MARKERS.filter((marker) => !source.includes(marker));
-if (missing.length > 0) {
-  console.error(
-    `[check-local-preview-sidecar] FAIL — the guard can no longer see ${missing.join(", ")} in ${path.relative(root, sidecarPath)}. The sidecar's markers moved or were renamed; update this guard rather than letting it pass without checking anything.`,
-  );
-  process.exit(1);
+for (const { file, markers } of MARKER_SOURCES) {
+  const source = fs.readFileSync(path.join(root, file), "utf8");
+  const missing = markers.filter((marker) => !source.includes(marker));
+  if (missing.length > 0) {
+    console.error(
+      `[check-local-preview-sidecar] FAIL — the guard can no longer see ${missing.join(", ")} in ${file}. Its markers moved or were renamed; update this guard rather than letting it pass without checking anything.`,
+    );
+    process.exit(1);
+  }
 }
 
 /** Every file under a directory, for a scan that is not fooled by nesting. */
@@ -77,11 +94,11 @@ for (const file of walk(distPath)) {
 
 if (offenders.length > 0) {
   console.error(
-    `[check-local-preview-sidecar] FAIL — the local preview sidecar is reachable from the deploy artifact:\n  ${offenders.join("\n  ")}\nIt executes Theme code on the machine it runs on, and must not ship.`,
+    `[check-local-preview-sidecar] FAIL — a local executor is reachable from the deploy artifact:\n  ${offenders.join("\n  ")}\nIt executes Theme code on the machine it runs on, and must not ship.`,
   );
   process.exit(1);
 }
 
 console.log(
-  `[check-local-preview-sidecar] OK — scanned ${scanned} files, the sidecar is not in the deploy artifact.`,
+  `[check-local-preview-sidecar] OK — scanned ${scanned} files, no local executor is in the deploy artifact.`,
 );

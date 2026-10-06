@@ -94,7 +94,8 @@ export function sectionContentLanded(
   );
 }
 
-function sameContent(left: unknown, right: unknown): boolean {
+/** Equal as stored content: the same JSON values, in any key order. */
+export function sameContent(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     return (

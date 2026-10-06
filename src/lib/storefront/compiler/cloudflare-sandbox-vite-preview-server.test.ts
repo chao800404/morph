@@ -251,12 +251,42 @@ const startWith = (
     entry: "src/pages/index.tsx",
     previewHostname: "preview.example.com",
     // A different site from the preview host's: the same site is refused.
-    env: { PUBLIC_URL: "https://admin.example.net" },
+    platformHostEnv: { PUBLIC_URL: "https://admin.example.net" },
     ...overrides,
   });
 };
 
 describe("CloudflareSandboxVitePreviewServer", () => {
+  it("puts no Morph credential into the container, even if handed one", async () => {
+    const harness = createSession("ready");
+    const secrets = {
+      BETTER_AUTH_SECRET: "better-auth-secret-value",
+      THEME_PREVIEW_SECRET: "theme-preview-secret-value",
+    };
+    const result = await startWith(harness, {
+      // A caller that hands over the whole env rather than the host vars.
+      platformHostEnv: {
+        PUBLIC_URL: "https://admin.example.net",
+        ...secrets,
+      } as never,
+    });
+
+    expect(result.ok).toBe(true);
+    const crossed = JSON.stringify({
+      written: [...harness.written.entries()],
+      commands: harness.commands,
+      envs: harness.envs,
+    });
+    for (const [key, value] of Object.entries(secrets)) {
+      expect(crossed).not.toContain(key);
+      expect(crossed).not.toContain(value);
+    }
+    // The processes it starts get only what they are given here.
+    for (const env of harness.envs) {
+      expect(Object.keys(env ?? {}).sort()).toEqual(["NODE_ENV"]);
+    }
+  });
+
   it("checks the platform health endpoint for Start readiness", async () => {
     const harness = createSession("ready");
     expect((await startWith(harness, { previewRuntime: "start" })).ok).toBe(

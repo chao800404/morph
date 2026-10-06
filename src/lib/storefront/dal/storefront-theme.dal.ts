@@ -27,6 +27,7 @@ import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page"
 import { updateStorefrontThemeRenderPolicyInputSchema } from "@/lib/validations/storefront-theme";
 import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -1343,6 +1344,17 @@ export const storefrontThemeDal = {
       ...cleanIncomingProps,
     };
     for (const key of resetProps) delete nextProps[key];
+    // Values the client changed that the filter did not let through: fields
+    // the current source does not declare. Nothing is written to them, and
+    // the write still succeeds for the rest, so the tab is told which — it may
+    // be holding a declaration another tab has since changed or deleted, and
+    // would otherwise show the value as saved. A carried value the client did
+    // not change is not one: it is how undeclared runtime props round-trip.
+    const droppedProps = Object.keys(verifiedProps).filter(
+      (key) =>
+        !Object.prototype.hasOwnProperty.call(cleanIncomingProps, key) &&
+        !sameContent(verifiedProps[key], nextProps[key]),
+    );
 
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
@@ -1361,7 +1373,7 @@ export const storefrontThemeDal = {
       ),
     });
 
-    return writeTemplateDocument({
+    const written = await writeTemplateDocument({
       storefrontId: data.storefrontId,
       themeId: data.themeId,
       templateId: data.templateId,
@@ -1372,6 +1384,7 @@ export const storefrontThemeDal = {
       expectedDraftGeneration: data.expectedDraftGeneration,
       createdBy: data.createdBy,
     });
+    return { ...written, droppedProps };
   },
 
   async publishTemplate(data: {
