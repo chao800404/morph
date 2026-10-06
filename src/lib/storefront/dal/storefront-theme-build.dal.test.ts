@@ -82,6 +82,7 @@ beforeEach(() => {
       compiler_id text,
       compiler_version text,
       dependencies_json text,
+      content_publication_id text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,
@@ -142,6 +143,68 @@ describe("Theme Build Domain DAL (Phase 4B-1)", () => {
         new Date().toISOString(),
       );
   };
+
+  function seedContentPublication() {
+    seedStorefront();
+    seedTheme();
+    seedRevision();
+    sqlite.exec(`
+      CREATE TABLE storefront_content_publications (
+        id text PRIMARY KEY, storefront_id text, created_by text,
+        created_at text, updated_at text, deleted_at text, metadata text
+      );
+      CREATE TABLE storefront_content_publication_items (
+        id text PRIMARY KEY, publication_id text, item_type text,
+        content_id text, revision_id text, metadata text,
+        created_at text, updated_at text, deleted_at text
+      );
+      CREATE TABLE storefront_theme_templates (
+        id text PRIMARY KEY, theme_id text, type text, deleted_at text
+      );
+      CREATE TABLE storefront_theme_template_revisions (
+        id text PRIMARY KEY, template_id text, document text
+      );
+      INSERT INTO storefront_content_publications VALUES ('publication-a', 'storefront-a', NULL, 'now', 'now', NULL, NULL);
+      INSERT INTO storefront_content_publication_items VALUES ('item-a', 'publication-a', 'template', 'home', 'home-live', NULL, 'now', 'now', NULL);
+      INSERT INTO storefront_theme_templates VALUES ('home', 'theme-a', 'index', NULL);
+      INSERT INTO storefront_theme_template_revisions VALUES ('home-live', 'home', '{"version":1,"sections":[],"renderPolicy":{"mode":"ssr"}}');
+      INSERT INTO storefront_theme_template_revisions VALUES ('home-draft', 'home', '{"version":1,"sections":[],"renderPolicy":{"mode":"ssg"}}');
+    `);
+  }
+
+  describe("Build content publication binding", () => {
+    it("persists the sealed publication ID and reads its revision, not a newer draft", async () => {
+      seedContentPublication();
+      const created = await storefrontThemeBuildDal.createBuild("storefront-a", "theme-a", {
+        sourceRevisionId: "rev-100", contentPublicationId: "publication-a",
+      });
+      expect(created.contentPublicationId).toBe("publication-a");
+      const stored = await storefrontThemeBuildDal.getBuild("storefront-a", "theme-a", created.id);
+      expect(stored?.contentPublicationId).toBe("publication-a");
+      const snapshot = await storefrontThemeBuildDal.readBuildContentSnapshot({ storefrontId: "storefront-a", themeId: "theme-a", contentPublicationId: stored?.contentPublicationId });
+      expect(snapshot?.documents[0]?.item.revisionId).toBe("home-live");
+      expect(snapshot?.documents[0]?.document.renderPolicy).toEqual({ mode: "ssr" });
+    });
+
+    it.each(["missing", "deleted", "storefront", "theme", "revision"])("rejects %s content before inserting a build", async (kind) => {
+      seedContentPublication();
+      if (kind === "deleted") sqlite.exec("UPDATE storefront_content_publications SET deleted_at = 'deleted'");
+      if (kind === "storefront") sqlite.exec("UPDATE storefront_content_publications SET storefront_id = 'storefront-b'");
+      if (kind === "theme") sqlite.exec("UPDATE storefront_theme_templates SET theme_id = 'theme-b'");
+      if (kind === "revision") sqlite.exec("DELETE FROM storefront_theme_template_revisions WHERE id = 'home-live'");
+      await expect(storefrontThemeBuildDal.createBuild("storefront-a", "theme-a", {
+        sourceRevisionId: "rev-100", contentPublicationId: kind === "missing" ? "missing" : "publication-a",
+      })).rejects.toThrow("CONTENT_PUBLICATION_INVALID");
+      expect(sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_theme_builds").get()).toEqual({ count: 0 });
+    });
+
+    it("leaves legacy source-only builds unbound without querying publication tables", async () => {
+      seedStorefront(); seedTheme(); seedRevision();
+      const created = await storefrontThemeBuildDal.createBuild("storefront-a", "theme-a", { sourceRevisionId: "rev-100" });
+      expect(created.contentPublicationId).toBeNull();
+      expect(await storefrontThemeBuildDal.readBuildContentSnapshot({ storefrontId: "storefront-a", themeId: "theme-a" })).toBeUndefined();
+    });
+  });
 
   describe("Build Creation & Ownership Validation", () => {
     it("successfully creates a build permanently bound to requested sourceRevisionId in queued status", async () => {

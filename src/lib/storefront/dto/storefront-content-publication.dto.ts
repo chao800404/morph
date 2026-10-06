@@ -1,4 +1,21 @@
-import type { StorefrontContentPublicationItemType } from "@/db/storefront.schema";
+import type {
+  StorefrontContentPublicationItemType,
+  StorefrontTemplateType,
+} from "@/db/storefront.schema";
+
+const TEMPLATE_TYPES: Record<StorefrontTemplateType, true> = {
+  index: true,
+  product: true,
+  collection: true,
+  page: true,
+  blog: true,
+  layout: true,
+};
+export function isStorefrontTemplateType(
+  value: unknown,
+): value is StorefrontTemplateType {
+  return typeof value === "string" && Object.hasOwn(TEMPLATE_TYPES, value);
+}
 
 export type StorefrontContentPublicationItemDTO = {
   id: string;
@@ -6,7 +23,11 @@ export type StorefrontContentPublicationItemDTO = {
   itemType: StorefrontContentPublicationItemType;
   contentId: string;
   revisionId: string;
-  metadata?: { handle?: string; routePath?: string };
+  metadata?: {
+    handle?: string;
+    routePath?: string;
+    templateType?: StorefrontTemplateType;
+  };
 };
 
 export type StorefrontContentPublicationDTO = {

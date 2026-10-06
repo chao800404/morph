@@ -2,8 +2,129 @@ import { describe, expect, it, vi } from "vitest";
 import {
   pageHandleForPath,
   resolveStorefrontContent,
+  resolvePublishedStorefrontRenderPolicy,
   templateTypeForPath,
 } from "./storefront-content-runtime";
+
+describe("published rendering policy snapshot", () => {
+  it("uses legacy inherited SSR without touching any draft or preference", async () => {
+    const getPublishedDocument = vi.fn(async () => null);
+    expect(
+      await resolvePublishedStorefrontRenderPolicy({
+        publicationId: null,
+        pathname: "/",
+        ports: { getPublishedDocument },
+      }),
+    ).toEqual({ success: true, policy: { mode: "ssr" }, inherited: true });
+    expect(getPublishedDocument).not.toHaveBeenCalled();
+  });
+
+  it("reads website defaults and route overrides from the same publication", async () => {
+    const getPublishedDocument = vi.fn(async () => ({
+      websiteRenderPolicy: { mode: "isr", revalidateSeconds: 60 },
+    }));
+    const getPublishedRouteDocument = vi.fn(async () => ({
+      renderPolicy: { mode: "csr" },
+    }));
+    const args = {
+      publicationId: "release-snapshot",
+      pathname: "/about",
+      ports: {
+        getPublishedDocument,
+        getPublishedRouteDocument,
+      },
+    };
+    expect(await resolvePublishedStorefrontRenderPolicy(args)).toEqual({
+      success: true,
+      policy: { mode: "csr" },
+      inherited: false,
+    });
+    expect(getPublishedDocument).toHaveBeenCalledWith({
+      publicationId: "release-snapshot",
+      templateType: "layout",
+    });
+    expect(getPublishedRouteDocument).toHaveBeenCalledWith({
+      publicationId: "release-snapshot",
+      routePath: "/about",
+    });
+  });
+
+  it("uses a specific Page override rather than the generic page template", async () => {
+    const getPublishedDocument = vi.fn(
+      async ({ templateType }: { templateType: string }) =>
+        templateType === "layout"
+          ? { websiteRenderPolicy: { mode: "ssr" } }
+          : { renderPolicy: { mode: "ssg" } },
+    );
+    expect(
+      await resolvePublishedStorefrontRenderPolicy({
+        publicationId: "pub",
+        pathname: "/pages/about",
+        ports: {
+          getPublishedDocument,
+          getPublishedPageDocument: async () => ({
+            renderPolicy: { mode: "csr" },
+          }),
+        },
+      }),
+    ).toEqual({ success: true, policy: { mode: "csr" }, inherited: false });
+    expect(getPublishedDocument).not.toHaveBeenCalledWith({
+      publicationId: "pub",
+      templateType: "page",
+    });
+  });
+
+  it("applies the layout default to a route without a content document", async () => {
+    expect(
+      await resolvePublishedStorefrontRenderPolicy({
+        publicationId: "pub",
+        pathname: "/code-only",
+        ports: {
+          getPublishedDocument: async () => ({
+            websiteRenderPolicy: { mode: "isr", revalidateSeconds: 120 },
+          }),
+        },
+      }),
+    ).toEqual({
+      success: true,
+      policy: { mode: "isr", revalidateSeconds: 120 },
+      inherited: true,
+    });
+  });
+
+  it.each([
+    [
+      { renderPolicy: { mode: "isr", revalidateSeconds: 0 } },
+      {},
+      "INVALID_PAGE_RENDER_POLICY",
+    ],
+    [
+      {},
+      { websiteRenderPolicy: { mode: "auto" } },
+      "INVALID_WEBSITE_RENDER_POLICY",
+    ],
+    [
+      { websiteRenderPolicy: { mode: "ssg" } },
+      {},
+      "INVALID_PAGE_RENDER_POLICY",
+    ],
+    [{}, { renderPolicy: { mode: "ssr" } }, "INVALID_WEBSITE_RENDER_POLICY"],
+  ])(
+    "refuses malformed or wrongly scoped snapshot fields",
+    async (page, layout, code) => {
+      expect(
+        await resolvePublishedStorefrontRenderPolicy({
+          publicationId: "pub",
+          pathname: "/",
+          ports: {
+            getPublishedDocument: async ({ templateType }) =>
+              templateType === "layout" ? layout : page,
+          },
+        }),
+      ).toEqual({ success: false, code });
+    },
+  );
+});
 
 describe("templateTypeForPath", () => {
   it("maps the paths a published document can describe", () => {
@@ -40,10 +161,7 @@ describe("resolveStorefrontContent", () => {
   // Keyed by template type the way the real port is: the shell is a document
   // of its own, so a fake that answers every type with the same document
   // would merge a page's sections into itself.
-  const ports = (
-    doc: unknown = document,
-    layoutDoc: unknown = null,
-  ) => ({
+  const ports = (doc: unknown = document, layoutDoc: unknown = null) => ({
     getPublishedDocument: vi.fn(
       async ({ templateType }: { templateType: string }) =>
         (templateType === "layout" ? layoutDoc : doc) as never,
@@ -315,7 +433,9 @@ describe("pageHandleForPath (RUNTIME-02)", () => {
       ports: {
         getPublishedPageDocument: vi.fn(async () => null),
         getPublishedDocument: vi.fn(async () => ({
-          sections: [{ id: "s", enabled: true, props: { heading: "Template" } }],
+          sections: [
+            { id: "s", enabled: true, props: { heading: "Template" } },
+          ],
         })),
       } as never,
     });
@@ -326,10 +446,14 @@ describe("pageHandleForPath (RUNTIME-02)", () => {
 
 describe("a static route's own document", () => {
   const layout = {
-    sections: [{ id: "starter-header", enabled: true, props: { storeName: "Store" } }],
+    sections: [
+      { id: "starter-header", enabled: true, props: { storeName: "Store" } },
+    ],
   };
   const aboutus = {
-    sections: [{ id: "featured", enabled: true, props: { heading: "About us" } }],
+    sections: [
+      { id: "featured", enabled: true, props: { heading: "About us" } },
+    ],
   };
   const ports = () => ({
     getPublishedDocument: vi.fn(

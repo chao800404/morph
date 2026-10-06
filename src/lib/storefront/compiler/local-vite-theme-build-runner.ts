@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createRequire } from "node:module";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -35,6 +38,15 @@ import {
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
 import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
+import {
+  assertThemePrerenderArtifacts,
+  themePrerenderOptions,
+} from "./theme-prerender";
+import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import {
+  createThemePrerenderContent,
+  THEME_PRERENDER_CONTENT_FILE,
+} from "./theme-prerender-content";
 
 function getMimeType(filePath: string): string {
   const publicTextType = themePublicTextMimeType(filePath);
@@ -584,6 +596,91 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         );
         const startOutDir = path.join(outDir, "runtime");
         const startBuildPromise = (async () => {
+          const prerenderContent = await createThemePrerenderContent(
+            input.contentSnapshot,
+            routeRegistry,
+          );
+          const prerenderOptions = themePrerenderOptions(
+            input.contentSnapshot,
+            routeRegistry,
+            Boolean(prerenderContent),
+          );
+          let prerenderConfig: string | undefined;
+          if (prerenderOptions) {
+            // Native Start reopens this config in vite.preview(). Use the same
+            // platform-owned configuration as Sandbox, never customer config.
+            const plan = planThemeSandboxWorkspace({
+              files: input.files,
+              entry: input.entry,
+              buildId: input.buildId,
+              dependencies: input.dependencies,
+              approvedDependencies: this.approvedDependencies,
+              mode: "build",
+              buildTarget: "runtime",
+              contentSnapshot: input.contentSnapshot,
+              prerenderContent,
+              hostWorkspaceRoot: tempDir,
+              toolchainRoot: process.cwd(),
+            });
+            if (!plan.ok) throw new Error(plan.errorMessage);
+            const config = plan.workspaceFiles.find(
+              (file) => file.path === "/workspace/vite.config.ts",
+            );
+            if (!config || !("content" in config))
+              throw new Error("SSG_CONFIG_MISSING");
+            prerenderConfig = path.join(tempDir, "vite.config.ts");
+            await fs.writeFile(prerenderConfig, config.content);
+            const contentFile = plan.workspaceFiles.find(
+              (file) =>
+                file.path === `/workspace/${THEME_PRERENDER_CONTENT_FILE}`,
+            );
+            if (!contentFile || !("content" in contentFile))
+              throw new Error("SSG_CONTENT_MISSING");
+            await fs.writeFile(
+              path.join(tempDir, THEME_PRERENDER_CONTENT_FILE),
+              contentFile.content,
+            );
+            // Native prerender can reject a queue task after buildApp resolves.
+            // Keep that failure in a build process, not the calling server, and
+            // require its successful exit before accepting any artifacts.
+            const viteCli = path.join(
+              path.dirname(
+                createRequire(import.meta.url).resolve("vite/package.json"),
+              ),
+              "bin/vite.js",
+            );
+            await promisify(execFile)(
+              process.execPath,
+              [
+                "--unhandled-rejections=strict",
+                viteCli,
+                "build",
+                "--app",
+                "--config",
+                prerenderConfig,
+                "--logLevel",
+                "error",
+              ],
+              {
+                cwd: tempDir,
+                env: {
+                  PATH: process.env.PATH,
+                  HOME: tempDir,
+                  NODE_ENV: "production",
+                  WRANGLER_SEND_METRICS: "false",
+                  ...(process.platform === "win32"
+                    ? { SystemRoot: process.env.SystemRoot }
+                    : {}),
+                },
+                timeout: Math.max(
+                  1,
+                  this.maxDurationMs - (Date.now() - startTime),
+                ),
+                maxBuffer: 1024 * 1024,
+              },
+            );
+            return;
+          }
           const builder = await createBuilder({
             root: tempDir,
             base: "/",
@@ -825,6 +922,12 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         }
       }
 
+      if (routeRegistry)
+        assertThemePrerenderArtifacts(
+          input.contentSnapshot,
+          routeRegistry,
+          new Set(artifacts.map((artifact) => artifact.path)),
+        );
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")
         .map((a) => a.path);

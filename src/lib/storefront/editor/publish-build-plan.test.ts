@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { resolvePublishBuildPlan } from "./publish-build-plan";
 
 describe("resolvePublishBuildPlan", () => {
+  it.each([true, false])(
+    "does not reuse source-only artifacts for content builds (held: %s)",
+    (hasBuild) => {
+      expect(
+        resolvePublishBuildPlan({
+          requiresContentBuild: true,
+          hasBuild,
+          buildSourceGeneration: 7,
+          currentSourceGeneration: 7,
+          activeReleaseSourceGeneration: 7,
+        }),
+      ).toEqual({ action: "build" });
+    },
+  );
   it("reuses a build made from the source being published", () => {
     // Releasing the artifact that was already verified is what keeps what
     // ships identical to what was previewed.

@@ -641,6 +641,10 @@ type BuildAttempt = {
   sourceGeneration?: number;
 };
 
+type PublicationBuildDraft = NonNullable<
+  import("@/lib/validations/storefront-theme-build").CreateStorefrontThemeBuildInput["publicationDraft"]
+>;
+
 const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
 const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
 
@@ -2080,7 +2084,10 @@ export function VisualEditorShell({
         content: workspaceFiles[file.path]?.localContent ?? file.content,
       })),
       ...Object.values(workspaceFiles)
-        .filter((file) => !serverPaths.has(file.path) && !isThemePublicPath(file.path))
+        .filter(
+          (file) =>
+            !serverPaths.has(file.path) && !isThemePublicPath(file.path),
+        )
         .map((file) => ({
           id: `local:${file.path}`,
           storefrontId: context.storefront.id,
@@ -3570,23 +3577,25 @@ export function VisualEditorShell({
             };
             try {
               res = await sendEditorWrite(workspaceScope, "theme", () =>
-                isEditablePublicTextPath(filePath) ? writeThemePublicTextFile({
-                  storefrontId: context.storefront.id,
-                  themeId: context.theme.id,
-                  path: filePath,
-                  content: contentToSave,
-                  precondition: themeFileWritePrecondition(current),
-                  expectedSourceGeneration: acceptedGeneration,
-                }) : saveStorefrontThemeFile({
-                  data: {
-                    storefrontId: context.storefront.id,
-                    themeId: context.theme.id,
-                    path: filePath,
-                    content: contentToSave,
-                    ...themeFileWritePrecondition(current),
-                    expectedSourceGeneration: acceptedGeneration,
-                  },
-                }),
+                isEditablePublicTextPath(filePath)
+                  ? writeThemePublicTextFile({
+                      storefrontId: context.storefront.id,
+                      themeId: context.theme.id,
+                      path: filePath,
+                      content: contentToSave,
+                      precondition: themeFileWritePrecondition(current),
+                      expectedSourceGeneration: acceptedGeneration,
+                    })
+                  : saveStorefrontThemeFile({
+                      data: {
+                        storefrontId: context.storefront.id,
+                        themeId: context.theme.id,
+                        path: filePath,
+                        content: contentToSave,
+                        ...themeFileWritePrecondition(current),
+                        expectedSourceGeneration: acceptedGeneration,
+                      },
+                    }),
               );
             } catch (error) {
               if (isEditorWriteRefusedEarlier(error)) {
@@ -3747,9 +3756,9 @@ export function VisualEditorShell({
    * `handleUnifiedSaveFile`: naming the callback directly in a dependency
    * array would read it during render, before it exists.
    */
-  const handleBuildPreviewRef = useRef<(() => Promise<BuildAttempt>) | null>(
-    null,
-  );
+  const handleBuildPreviewRef = useRef<
+    ((publicationDraft?: PublicationBuildDraft) => Promise<BuildAttempt>) | null
+  >(null);
 
   const handleUnifiedSaveFileRef = useRef<
     | ((
@@ -4313,13 +4322,20 @@ export function VisualEditorShell({
           publishTemplate.draftGeneration ??
           1;
       }
+      // Source generation alone cannot prove non-SSR HTML contains this draft.
+      // SSR keeps the existing content-only publication behavior.
+      const requiresContentBuild =
+        (activeTemplate.document.renderPolicy !== undefined &&
+          activeTemplate.document.renderPolicy.mode !== "inherit" &&
+          activeTemplate.document.renderPolicy.mode !== "ssr") ||
+        (layoutTemplate?.document.websiteRenderPolicy !== undefined &&
+          layoutTemplate.document.websiteRenderPolicy.mode !== "ssr");
       for (const template of [publishTemplate, layoutTemplate]) {
-        if (
-          !template ||
-          (templateDraftRevisionIdRef.current.get(template.id) ??
+        const currentDraftId = template
+          ? (templateDraftRevisionIdRef.current.get(template.id) ??
             template.draftRevisionId)
-        )
-          continue;
+          : null;
+        if (!template || (currentDraftId && !requiresContentBuild)) continue;
         const prepared = await sendEditorWrite(workspaceScope, "theme", () =>
           prepareInitialStorefrontThemeTemplateDraft({
             data: {
@@ -4331,6 +4347,7 @@ export function VisualEditorShell({
                 template.draftGeneration ??
                 1,
               expectedSourceGeneration: currentGeneration,
+              expectedDraftRevisionId: currentDraftId ?? undefined,
             },
           }),
         ).catch(() => {
@@ -4390,6 +4407,7 @@ export function VisualEditorShell({
       // every comparable platform either builds as part of publishing or has
       // already built automatically, and none makes the person trigger it.
       const plan = resolvePublishBuildPlan({
+        requiresContentBuild,
         hasBuild: Boolean(activeBuildPreview),
         buildSourceGeneration: activeBuildSourceGeneration,
         currentSourceGeneration: currentGeneration,
@@ -4405,7 +4423,18 @@ export function VisualEditorShell({
         // go live when nothing of the sort was asked for.
         setIsPublishBuilding(true);
         try {
-          const attempt = await handleBuildPreviewRef.current?.();
+          const attempt = await handleBuildPreviewRef.current?.(
+            requiresContentBuild
+              ? {
+                  templateId: publishTemplate.id,
+                  expectedDraftRevisionId: publishDraftRevisionId,
+                  expectedDraftGeneration: publishDraftGeneration,
+                  expectedSourceGeneration: currentGeneration,
+                  expectedReleaseGeneration:
+                    context.theme.releaseGeneration ?? 1,
+                }
+              : undefined,
+          );
           if (!attempt?.ok || !attempt.build) {
             // The build reported why it failed. Saying "publish failed" on top of
             // that would name the wrong step.
@@ -4790,195 +4819,212 @@ export function VisualEditorShell({
     }
   }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
 
-  const handleBuildPreview = useCallback(async (): Promise<BuildAttempt> => {
-    if (isBuildPending || buildWaitAbortRef.current) return { ok: false };
+  const handleBuildPreview = useCallback(
+    async (publicationDraft?: PublicationBuildDraft): Promise<BuildAttempt> => {
+      if (isBuildPending || buildWaitAbortRef.current) return { ok: false };
 
-    if (themeFiles.length === 0) {
-      toast.error(
-        "Cannot build preview: initialize starter theme files in Code Workspace first.",
-      );
-      return { ok: false };
-    }
-
-    if (
-      monacoDirtyFiles.length > 0 ||
-      useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope)
-    ) {
-      toast.error(
-        `Cannot build preview: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
-      );
-      return { ok: false };
-    }
-
-    if (
-      useThemeWorkspaceStore
-        .getState()
-        .hasActiveConflictsOrErrors(workspaceScope)
-    ) {
-      toast.error(
-        "Cannot build preview: resolve source conflicts/save errors first.",
-      );
-      return { ok: false };
-    }
-
-    setIsBuildPending(true);
-    setBuildDiagnostics(null);
-    const abortController = new AbortController();
-    buildWaitAbortRef.current = abortController;
-
-    try {
-      const currentGeneration = useThemeWorkspaceStore
-        .getState()
-        .getBaseSourceGeneration(workspaceScope);
-
-      // 1. Freeze current source files into a revision snapshot
-      const freezeResult = await sendEditorWrite(
-        { storefrontId: context.storefront.id, themeId: context.theme.id },
-        "theme",
-        () =>
-          createStorefrontThemeRevision({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              expectedSourceGeneration: currentGeneration,
-              message: "Build Preview Snapshot",
-              source: "manual",
-            },
-          }),
-      );
-
-      if (abortController.signal.aborted) return { ok: false };
-      if (!freezeResult.success || !freezeResult.data?.id) {
+      if (themeFiles.length === 0) {
         toast.error(
-          freezeResult.message || "Failed to snapshot source files for build",
+          "Cannot build preview: initialize starter theme files in Code Workspace first.",
         );
-        setIsBuildPending(false);
         return { ok: false };
       }
 
-      // 2. Request compilation & immutable R2 artifact persistence
-      const buildResult = await sendEditorWrite(
-        { storefrontId: context.storefront.id, themeId: context.theme.id },
-        "theme",
-        () =>
-          createPreviewBuild({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              sourceRevisionId: freezeResult.data.id,
-            },
-          }),
-      );
-
-      if (abortController.signal.aborted) return { ok: false };
-      if (!buildResult.success || !buildResult.data) {
-        toast.error(buildResult.message || "Theme build failed");
-        setBuildDiagnostics({ error: buildResult.message });
-        setIsBuildPending(false);
+      if (
+        monacoDirtyFiles.length > 0 ||
+        useThemeWorkspaceStore.getState().hasUnsavedEdits(workspaceScope)
+      ) {
+        toast.error(
+          `Cannot build preview: save Code Editor changes first (${monacoDirtyFiles.join(", ")}).`,
+        );
         return { ok: false };
       }
 
-      let build: StorefrontThemeBuildDTO = buildResult.data;
-      buildIdRef.current = build.id;
+      if (
+        useThemeWorkspaceStore
+          .getState()
+          .hasActiveConflictsOrErrors(workspaceScope)
+      ) {
+        toast.error(
+          "Cannot build preview: resolve source conflicts/save errors first.",
+        );
+        return { ok: false };
+      }
 
-      const waitResult = await waitForThemeBuild({
-        build,
-        signal: abortController.signal,
-        poll: async (buildId) => {
-          const pollResult = await getThemeBuild({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              buildId,
-            },
-          });
-          return pollResult.success && pollResult.data ? pollResult.data : null;
-        },
-      });
-      build = waitResult.build;
+      setIsBuildPending(true);
+      setBuildDiagnostics(null);
+      const abortController = new AbortController();
+      buildWaitAbortRef.current = abortController;
 
-      // Abandoning the wait says nothing about the build, so nothing is
-      // reported about it. Unmounting must not raise UI at all.
-      if (waitResult.outcome === "aborted") {
-        if (waitResult.reason !== "unmount") {
-          toast.info(
-            `Stopped waiting. Build ${build.id.slice(0, 8)} is still running — reopen Build Preview to pick up the result.`,
+      try {
+        const currentGeneration = useThemeWorkspaceStore
+          .getState()
+          .getBaseSourceGeneration(workspaceScope);
+
+        // 1. Freeze current source files into a revision snapshot
+        if (
+          publicationDraft &&
+          publicationDraft.expectedSourceGeneration !== currentGeneration
+        ) {
+          toast.error(
+            "Cannot build: source changed after preparing the content draft.",
           );
+          return { ok: false };
         }
-        return { ok: false };
-      }
-
-      if (build.status === "succeeded") {
-        let token = (buildResult.data as StorefrontThemeBuildPreviewDTO)
-          .previewToken;
-        if (abortController.signal.aborted) return { ok: false };
-
-        if (!token) {
-          const tokenResult = await getPreviewBuildToken({
-            data: {
-              storefrontId: context.storefront.id,
-              themeId: context.theme.id,
-              buildId: build.id,
-            },
-          });
-          if (tokenResult.success && tokenResult.data) {
-            token = tokenResult.data.token;
-          }
-        }
+        const freezeResult = await sendEditorWrite(
+          { storefrontId: context.storefront.id, themeId: context.theme.id },
+          "theme",
+          () =>
+            createStorefrontThemeRevision({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                expectedSourceGeneration: currentGeneration,
+                message: "Build Preview Snapshot",
+                source: "manual",
+              },
+            }),
+        );
 
         if (abortController.signal.aborted) return { ok: false };
-        if (!token) {
-          toast.error("Build succeeded but preview capability token missing.");
-          setBuildDiagnostics({
-            error:
-              "Missing preview capability token. Ensure THEME_PREVIEW_SECRET is configured.",
-          });
-          setActiveBuildPreview(build);
-          setActivePreviewToken(null);
+        if (!freezeResult.success || !freezeResult.data?.id) {
+          toast.error(
+            freezeResult.message || "Failed to snapshot source files for build",
+          );
+          setIsBuildPending(false);
           return { ok: false };
         }
 
-        setActiveBuildPreview(build);
-        setActivePreviewToken(token);
-        setActiveBuildSourceGeneration(currentGeneration);
-        setPreviewMode("build");
-        toast.success(
-          `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
+        // 2. Request compilation & immutable R2 artifact persistence
+        const buildResult = await sendEditorWrite(
+          { storefrontId: context.storefront.id, themeId: context.theme.id },
+          "theme",
+          () =>
+            createPreviewBuild({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                sourceRevisionId: freezeResult.data.id,
+                publicationDraft,
+              },
+            }),
         );
-        return { ok: true, build, sourceGeneration: currentGeneration };
-      } else if (waitResult.outcome === "timeout") {
-        // Running out of polls is not a build failure. Saying "failed" here
-        // both misreports the build and hides that its result is still coming.
-        toast.info(
-          `Build ${build.id.slice(0, 8)} is taking longer than expected and is still running — reopen Build Preview to pick up the result.`,
-        );
-      } else {
-        toast.error(build.errorMessage || `Build status: ${build.status}`);
-        setBuildDiagnostics(build.diagnosticsJson);
+
+        if (abortController.signal.aborted) return { ok: false };
+        if (!buildResult.success || !buildResult.data) {
+          toast.error(buildResult.message || "Theme build failed");
+          setBuildDiagnostics({ error: buildResult.message });
+          setIsBuildPending(false);
+          return { ok: false };
+        }
+
+        let build: StorefrontThemeBuildDTO = buildResult.data;
+        buildIdRef.current = build.id;
+
+        const waitResult = await waitForThemeBuild({
+          build,
+          signal: abortController.signal,
+          poll: async (buildId) => {
+            const pollResult = await getThemeBuild({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                buildId,
+              },
+            });
+            return pollResult.success && pollResult.data
+              ? pollResult.data
+              : null;
+          },
+        });
+        build = waitResult.build;
+
+        // Abandoning the wait says nothing about the build, so nothing is
+        // reported about it. Unmounting must not raise UI at all.
+        if (waitResult.outcome === "aborted") {
+          if (waitResult.reason !== "unmount") {
+            toast.info(
+              `Stopped waiting. Build ${build.id.slice(0, 8)} is still running — reopen Build Preview to pick up the result.`,
+            );
+          }
+          return { ok: false };
+        }
+
+        if (build.status === "succeeded") {
+          let token = (buildResult.data as StorefrontThemeBuildPreviewDTO)
+            .previewToken;
+          if (abortController.signal.aborted) return { ok: false };
+
+          if (!token) {
+            const tokenResult = await getPreviewBuildToken({
+              data: {
+                storefrontId: context.storefront.id,
+                themeId: context.theme.id,
+                buildId: build.id,
+              },
+            });
+            if (tokenResult.success && tokenResult.data) {
+              token = tokenResult.data.token;
+            }
+          }
+
+          if (abortController.signal.aborted) return { ok: false };
+          if (!token) {
+            toast.error(
+              "Build succeeded but preview capability token missing.",
+            );
+            setBuildDiagnostics({
+              error:
+                "Missing preview capability token. Ensure THEME_PREVIEW_SECRET is configured.",
+            });
+            setActiveBuildPreview(build);
+            setActivePreviewToken(null);
+            return { ok: false };
+          }
+
+          setActiveBuildPreview(build);
+          setActivePreviewToken(token);
+          setActiveBuildSourceGeneration(currentGeneration);
+          setPreviewMode("build");
+          toast.success(
+            `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
+          );
+          return { ok: true, build, sourceGeneration: currentGeneration };
+        } else if (waitResult.outcome === "timeout") {
+          // Running out of polls is not a build failure. Saying "failed" here
+          // both misreports the build and hides that its result is still coming.
+          toast.info(
+            `Build ${build.id.slice(0, 8)} is taking longer than expected and is still running — reopen Build Preview to pick up the result.`,
+          );
+        } else {
+          toast.error(build.errorMessage || `Build status: ${build.status}`);
+          setBuildDiagnostics(build.diagnosticsJson);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        toast.error(message || "Failed to create preview build");
+        setBuildDiagnostics({
+          error: message || "Failed to create preview build",
+        });
+        return { ok: false };
+      } finally {
+        buildWaitAbortRef.current = null;
+        buildIdRef.current = null;
+        setIsBuildPending(false);
       }
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      toast.error(message || "Failed to create preview build");
-      setBuildDiagnostics({
-        error: message || "Failed to create preview build",
-      });
+      // Reached when the build failed or was still running when the wait ended.
+      // Neither produced an artifact, so neither is a usable build.
       return { ok: false };
-    } finally {
-      buildWaitAbortRef.current = null;
-      buildIdRef.current = null;
-      setIsBuildPending(false);
-    }
-    // Reached when the build failed or was still running when the wait ended.
-    // Neither produced an artifact, so neither is a usable build.
-    return { ok: false };
-  }, [
-    context.storefront.id,
-    context.theme.id,
-    isBuildPending,
-    monacoDirtyFiles,
-    themeFiles,
-    workspaceScope,
-  ]);
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      isBuildPending,
+      monacoDirtyFiles,
+      themeFiles,
+      workspaceScope,
+    ],
+  );
 
   handleBuildPreviewRef.current = handleBuildPreview;
 
@@ -8798,7 +8844,7 @@ export function VisualEditorShell({
             onClick={
               isOwnBuildPending
                 ? () => void handleCancelBuild()
-                : handleBuildPreview
+                : () => void handleBuildPreview()
             }
             title={
               themeFiles.length === 0
@@ -9068,7 +9114,7 @@ export function VisualEditorShell({
             onPreviewFilesChange={(files) =>
               postPreviewThemeFiles(files, { preserveCanvasPosition: true })
             }
-            onBuildPreview={handleBuildPreview}
+            onBuildPreview={() => handleBuildPreview()}
             externalDiagnostics={buildDiagnostics}
             dependencySourceRevisionId={dependencySourceRevisionId}
           />

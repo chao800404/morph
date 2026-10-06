@@ -1,4 +1,7 @@
 import type { Sandbox } from "@cloudflare/sandbox";
+import { assertThemePrerenderArtifacts } from "./theme-prerender";
+import { createThemePrerenderContent } from "./theme-prerender-content";
+import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { themePublicTextMimeType } from "../theme-public-files";
 import {
   DEFAULT_APPROVED_DEPENDENCIES,
@@ -445,6 +448,13 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         dependencies: input.dependencies,
         approvedDependencies: this.approvedDependencies,
         mode: "build",
+        contentSnapshot: input.contentSnapshot,
+        prerenderContent: input.contentSnapshot
+          ? await createThemePrerenderContent(
+              input.contentSnapshot,
+              buildThemeRouteRegistry(input.files),
+            )
+          : undefined,
       });
       if (!prepared.ok) {
         addLog("error", prepared.errorMessage);
@@ -474,6 +484,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             env: {
               NODE_ENV: "production",
               MORPH_THEME_BUILD_TARGET: "runtime",
+              NODE_OPTIONS: "--unhandled-rejections=strict",
             },
           },
         );
@@ -733,6 +744,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       if (routeRegistry) {
         const artifactPaths = new Set(
           artifacts.map((artifact) => artifact.path),
+        );
+        assertThemePrerenderArtifacts(
+          input.contentSnapshot,
+          routeRegistry,
+          artifactPaths,
         );
         if (!artifactPaths.has("runtime/server/index.js")) {
           throw new Error(

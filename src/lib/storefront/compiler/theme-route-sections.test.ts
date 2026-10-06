@@ -51,6 +51,26 @@ const files = [
 ];
 
 describe("route-authored Theme sections", () => {
+  it("rebuilds source-owned sections without deleting versioned policy or Page identity", () => {
+    const document = {
+      version: 1 as const,
+      handle: "about",
+      renderPolicy: { mode: "csr" as const },
+      sections: [],
+    };
+    const rebuilt = mergeDocumentWithRouteSections(
+      document,
+      deriveThemeRouteSections(files, "src/routes/index.tsx").sections,
+    );
+    expect(rebuilt.handle).toBe("about");
+    expect(rebuilt.renderPolicy).toEqual({ mode: "csr" });
+    expect(rebuilt.sections.length).toBeGreaterThan(0);
+    expect(
+      mergeDocumentWithRouteSections(document, [], {
+        routeOwnsStructure: true,
+      }),
+    ).toEqual(document);
+  });
   it("detaches a uniquely used section by changing only its route import", () => {
     const result = replaceThemeRouteSectionComponent({
       source: route,

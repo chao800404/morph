@@ -3,6 +3,44 @@
 Baseline: main `d16850e`, 2026-10-03. Target is installed React Start 1.168.32
 / Router 1.170.18 on Workers, not every later API or arbitrary Node.js code.
 
+## Per-page rendering policy work (2026-10-05, not enabled)
+
+The new policy schemas/resolver have focused tests for inherited SSR, explicit
+page overrides, ISR intervals and personalized shared-HTML refusal. Draft
+persistence now uses the existing authorized Document revision writer and
+source/draft OCC. A publication-scoped resolver reads the same snapshots as
+content. It is not connected to production dispatch, editor controls or runtime
+caching. Limited native prerender integration is described below. Non-SSR policy publication is refused
+until integration is ready. These passes are not SSG/ISR/CSR acceptance.
+See [the implementation gates](storefront-render-policy.md).
+
+The next increment adds an optional existing sealed ContentPublication binding
+to the persisted build, queue materialization, input hash/reuse and publication
+checks. Source-only SSR builds retain their original content-independent path.
+The runners now share native prerender options for selected static Code routes
+with immutable route-addressable Documents. Actual local HTML generation,
+sealed CMS field rendering and a loader-failure build refusal have passed
+focused tests. Unmapped legacy content is refused. The
+new publication snapshot also freezes template kinds: layout no longer needs an
+explicit website SSR setting to supply its fields, and index/Page identity is
+derived from sealed metadata rather than current template types or Page handles.
+Runtime lookup of new snapshots follows that same frozen identity. The
+first-draft SSG publish flow are not connected, and non-SSR publication remains
+refused. Migration 0071 is generated but has not been applied to a real database.
+
+The existing build endpoint now accepts guarded draft-sealing preconditions,
+creates a retained publication without activation, and feeds its ID into the
+existing build pipeline. Referenced draft revisions fork on subsequent edits,
+including transaction protection against sealing racing an in-place write.
+This option is not yet called by the editor; preparation of initial/unnormalized
+drafts and production static dispatch still prevent first SSG publication.
+
+- SSR document rendering remains covered by the existing acceptance below.
+- Route-level disabled/data-only SSR acceptance is not whole-site SPA mode.
+- Full template/dynamic-URL SSG, release static serving and ISR revalidation remain unimplemented.
+- Policy changes must remain draft-only until explicit publication succeeds.
+- Client Router navigation is independent of these document rendering choices.
+
 ## 2026-10-05 real local Sandbox advanced preview acceptance
 
 - Feature branch `codex/start-sandbox-acceptance`, based on main `8001302`.

@@ -1,4 +1,5 @@
 import type { StorefrontTemplateType } from "@/db/storefront.schema";
+import { resolveStorefrontRenderPolicy } from "@/lib/validations/storefront-render-policy";
 import {
   MAX_THEME_CONTENT_SLOTS,
   isValidThemeContentSlotId,
@@ -52,6 +53,9 @@ export type PublishedDocumentSection = Readonly<{
 
 export type PublishedDocument = Readonly<{
   sections?: readonly PublishedDocumentSection[];
+  /** Validate snapshot metadata rather than treating malformed data as SSR. */
+  renderPolicy?: unknown;
+  websiteRenderPolicy?: unknown;
 }>;
 
 export type ContentRuntimePorts = Readonly<{
@@ -110,12 +114,15 @@ export type StorefrontContentResult = Readonly<{
  * between. Disabled sections contribute nothing, which is what lets an editor
  * hide a section without the Theme having to know about it.
  */
-export async function resolveStorefrontContent(args: {
+async function readPublishedRouteDocuments(args: {
   publicationId: string | null;
   pathname: string;
   ports: ContentRuntimePorts;
-}): Promise<StorefrontContentResult> {
-  if (!args.publicationId) return { slots: {}, hiddenSlots: [] };
+}): Promise<{
+  document: PublishedDocument | null;
+  layoutDocument: PublishedDocument | null;
+}> {
+  if (!args.publicationId) return { document: null, layoutDocument: null };
 
   const templateType = templateTypeForPath(args.pathname);
 
@@ -155,6 +162,38 @@ export async function resolveStorefrontContent(args: {
     publicationId: args.publicationId,
     templateType: "layout",
   });
+  return { document, layoutDocument };
+}
+
+/**
+ * Policy authority is the same immutable publication as content, never a
+ * mutable template/draft or storefront preference. This resolves a policy;
+ * it does not enable caching or change the native Start renderer by itself.
+ */
+export async function resolvePublishedStorefrontRenderPolicy(args: {
+  publicationId: string | null;
+  pathname: string;
+  ports: ContentRuntimePorts;
+}): Promise<ReturnType<typeof resolveStorefrontRenderPolicy>> {
+  const { document, layoutDocument } = await readPublishedRouteDocuments(args);
+  if (document?.websiteRenderPolicy !== undefined) {
+    return { success: false, code: "INVALID_PAGE_RENDER_POLICY" };
+  }
+  if (layoutDocument?.renderPolicy !== undefined) {
+    return { success: false, code: "INVALID_WEBSITE_RENDER_POLICY" };
+  }
+  return resolveStorefrontRenderPolicy({
+    website: layoutDocument?.websiteRenderPolicy,
+    page: document?.renderPolicy,
+  });
+}
+
+export async function resolveStorefrontContent(args: {
+  publicationId: string | null;
+  pathname: string;
+  ports: ContentRuntimePorts;
+}): Promise<StorefrontContentResult> {
+  const { document, layoutDocument } = await readPublishedRouteDocuments(args);
   if (!document && !layoutDocument) return { slots: {}, hiddenSlots: [] };
 
   const slots: Record<string, Record<string, unknown>> = {};

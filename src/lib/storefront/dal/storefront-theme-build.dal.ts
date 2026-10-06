@@ -4,7 +4,11 @@ import {
   storefrontThemeRevisions,
   storefrontThemes,
 } from "@/db/storefront.schema";
-import type { StorefrontThemeBuildDTO } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type {
+  StorefrontThemeBuildDTO,
+  ThemeBuildContentSnapshot,
+} from "@/lib/storefront/dto/storefront-theme-build.dto";
+import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
   isCancellableThemeBuildStatus,
@@ -25,6 +29,7 @@ function mapBuildRowToDTO(
     compilerId: row.compilerId,
     compilerVersion: row.compilerVersion,
     dependencies: row.dependenciesJson ?? null,
+    contentPublicationId: row.contentPublicationId ?? null,
     artifactPrefix: row.artifactPrefix,
     manifestJson: row.manifestJson,
     diagnosticsJson: row.diagnosticsJson,
@@ -55,6 +60,34 @@ function mapRevisionRowToDTO(
 }
 
 export const storefrontThemeBuildDal = {
+  async readBuildContentSnapshot(data: {
+    storefrontId: string;
+    themeId: string;
+    contentPublicationId?: string | null;
+  }): Promise<ThemeBuildContentSnapshot | undefined> {
+    if (!data.contentPublicationId) return undefined;
+    await storefrontContentPublicationDal.assertValidForRelease({
+      storefrontId: data.storefrontId,
+      publicationId: data.contentPublicationId,
+    });
+    const publication = await storefrontContentPublicationDal.getById(
+      data.storefrontId,
+      data.contentPublicationId,
+    );
+    if (!publication) throw new Error("BUILD_CONTENT_PUBLICATION_NOT_FOUND");
+    const documents =
+      await storefrontContentPublicationDal.readDocumentsForDraft({
+        themeId: data.themeId,
+        publication,
+      });
+    return {
+      publicationId: publication.id,
+      storefrontId: publication.storefrontId,
+      themeId: data.themeId,
+      documents,
+    };
+  },
+
   /**
    * Validates that theme belongs to storefront and is not deleted.
    */
@@ -130,6 +163,7 @@ export const storefrontThemeBuildDal = {
       sourceRevisionId: string;
       createdBy?: string;
       dependencies?: Readonly<Record<string, string>>;
+      contentPublicationId?: string;
     },
   ): Promise<StorefrontThemeBuildDTO> {
     const isThemeOwner = await this.verifyThemeOwnership(storefrontId, themeId);
@@ -148,6 +182,13 @@ export const storefrontThemeBuildDal = {
       );
     }
 
+    // Only an existing, validated publication can bind queued content input.
+    // Source-only builds do not query content and keep their existing identity.
+    await this.readBuildContentSnapshot({
+      storefrontId,
+      themeId,
+      contentPublicationId: options.contentPublicationId,
+    });
     const db = await getDb();
     const buildId = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -159,6 +200,7 @@ export const storefrontThemeBuildDal = {
         storefrontId,
         themeId,
         sourceRevisionId: options.sourceRevisionId,
+        contentPublicationId: options.contentPublicationId ?? null,
         dependenciesJson: options.dependencies
           ? { ...options.dependencies }
           : null,

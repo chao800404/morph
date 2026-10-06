@@ -17,13 +17,41 @@ import type {
 } from "@/lib/storefront/dto/storefront-content-publication.dto";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import { isStorefrontTemplateType } from "../dto/storefront-content-publication.dto";
+import { normalizeDocumentRowIds } from "../editor/normalize-row-ids";
+
+export type ThemeContentBuildPreconditions = {
+  storefrontId: string;
+  themeId: string;
+  sourceRevisionId: string;
+  templateId: string;
+  expectedDraftRevisionId: string;
+  expectedDraftGeneration: number;
+  expectedSourceGeneration: number;
+  expectedReleaseGeneration: number;
+  createdBy?: string;
+};
 
 export type StorefrontContentPublicationDraft = StorefrontContentPublicationDTO;
 
 const mapItem = (
   row: typeof storefrontContentPublicationItems.$inferSelect,
 ): StorefrontContentPublicationItemDTO => {
+  if (row.itemType !== "template" && row.metadata?.templateType !== undefined)
+    throw new Error(
+      "CONTENT_PUBLICATION_INVALID: Template type on a non-template item.",
+    );
+  if (
+    row.metadata?.templateType !== undefined &&
+    !isStorefrontTemplateType(row.metadata.templateType)
+  )
+    throw new Error(
+      "CONTENT_PUBLICATION_INVALID: Invalid frozen template type.",
+    );
   const metadata = {
+    ...(isStorefrontTemplateType(row.metadata?.templateType)
+      ? { templateType: row.metadata.templateType }
+      : {}),
     ...(typeof row.metadata?.handle === "string"
       ? { handle: row.metadata.handle }
       : {}),
@@ -98,6 +126,244 @@ function collectAssetKeys(
 }
 
 export const storefrontContentPublicationDal = {
+  /** Seal only build input, never activate a release or change published pointers.
+   * Initial drafts must first use the existing explicit Document writer.
+   */
+  async sealForThemeBuild(
+    data: ThemeContentBuildPreconditions,
+  ): Promise<StorefrontContentPublicationDTO> {
+    const db = await getDb();
+    const [shell] = await db
+      .select({
+        id: storefrontThemeTemplates.id,
+        draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+        draftGeneration: storefrontThemeTemplates.draftGeneration,
+        publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      })
+      .from(storefrontThemeTemplates)
+      .where(
+        and(
+          eq(storefrontThemeTemplates.themeId, data.themeId),
+          eq(storefrontThemeTemplates.type, "layout"),
+          isNull(storefrontThemeTemplates.deletedAt),
+        ),
+      )
+      .limit(1);
+    const pendingShell =
+      shell?.draftRevisionId &&
+      shell.draftRevisionId !== shell.publishedRevisionId
+        ? shell
+        : null;
+    const publication = await this.resolveForTheme({
+      ...data,
+      templateRevisionId: data.expectedDraftRevisionId,
+      alsoPublish: pendingShell
+        ? [
+            {
+              templateId: pendingShell.id,
+              revisionId: pendingShell.draftRevisionId!,
+            },
+          ]
+        : undefined,
+    });
+    const documents = await this.readDocumentsForDraft({
+      themeId: data.themeId,
+      publication,
+    });
+    for (const { item, document } of documents) {
+      if (
+        item.itemType === "template" &&
+        (item.contentId === data.templateId ||
+          item.contentId === pendingShell?.id) &&
+        JSON.stringify(
+          normalizeDocumentRowIds(document, item.contentId).value,
+        ) !== JSON.stringify(document)
+      )
+        throw new Error(
+          "CONTENT_BUILD_DRAFT_NOT_NORMALIZED: Prepare the draft with the existing Document writer before sealing build content.",
+        );
+    }
+    const guard = env.DATABASE.prepare(
+      `SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM storefront_theme_templates t
+      JOIN storefront_themes th ON th.id = t.theme_id
+      JOIN storefronts s ON s.id = th.storefront_id
+      JOIN storefront_theme_revisions r ON r.id = ?7 AND r.theme_id = th.id AND r.storefront_id = s.id
+      WHERE s.id = ?1 AND th.id = ?2 AND t.id = ?3
+      AND t.draft_revision_id = ?4 AND t.draft_generation = ?5
+      AND th.source_generation = ?6 AND r.source_generation = ?6
+      AND th.release_generation = ?8
+      AND s.deleted_at IS NULL AND th.deleted_at IS NULL AND t.deleted_at IS NULL AND r.deleted_at IS NULL
+    ) THEN 1 ELSE json('') END AS ok`,
+    ).bind(
+      data.storefrontId,
+      data.themeId,
+      data.templateId,
+      data.expectedDraftRevisionId,
+      data.expectedDraftGeneration,
+      data.expectedSourceGeneration,
+      data.sourceRevisionId,
+      data.expectedReleaseGeneration,
+    );
+    const guards = [guard];
+    if (pendingShell)
+      guards.push(
+        env.DATABASE.prepare(
+          `SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM storefront_theme_templates WHERE id = ?1 AND theme_id = ?2 AND draft_revision_id = ?3 AND draft_generation = ?4 AND deleted_at IS NULL
+    ) THEN 1 ELSE json('') END AS ok`,
+        ).bind(
+          pendingShell.id,
+          data.themeId,
+          pendingShell.draftRevisionId,
+          pendingShell.draftGeneration,
+        ),
+      );
+    try {
+      await env.DATABASE.batch([
+        ...guards,
+        ...this.insertStatements(publication),
+      ]);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("malformed JSON"))
+        throw new Error(
+          "CONTENT_BUILD_PRECONDITION_FAILED: Source, draft or release changed before content was sealed.",
+        );
+      throw error;
+    }
+    return publication;
+  },
+  /**
+   * Materializes the exact revision references selected for a publication.
+   * Never substitute current draft/published pointers here. The caller must
+   * still seal the draft with the existing publish CAS before trusting it as
+   * immutable: a selected, unpublished revision can still be edited in place.
+   */
+  async readDocumentsForDraft(data: {
+    themeId: string;
+    publication: StorefrontContentPublicationDraft;
+  }) {
+    const db = await getDb();
+    const [theme] = await db
+      .select({ id: storefrontThemes.id })
+      .from(storefrontThemes)
+      .where(
+        and(
+          eq(storefrontThemes.id, data.themeId),
+          eq(storefrontThemes.storefrontId, data.publication.storefrontId),
+          isNull(storefrontThemes.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!theme)
+      throw new Error("CONTENT_PUBLICATION_INVALID: Theme ownership mismatch.");
+
+    const documents = [];
+    for (const item of data.publication.items) {
+      if (
+        item.itemType !== "template" &&
+        item.metadata?.templateType !== undefined
+      )
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Template type on a non-template item.",
+        );
+      if (item.publicationId !== data.publication.id) {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Item belongs to another publication.",
+        );
+      }
+      let document: unknown;
+      let isLayout = false;
+      if (item.itemType === "template") {
+        const [revision] = await db
+          .select({
+            document: sql<string>`cast(${storefrontThemeTemplateRevisions.document} as text)`,
+            type: storefrontThemeTemplates.type,
+          })
+          .from(storefrontThemeTemplateRevisions)
+          .innerJoin(
+            storefrontThemeTemplates,
+            eq(
+              storefrontThemeTemplateRevisions.templateId,
+              storefrontThemeTemplates.id,
+            ),
+          )
+          .where(
+            and(
+              eq(storefrontThemeTemplateRevisions.id, item.revisionId),
+              eq(storefrontThemeTemplateRevisions.templateId, item.contentId),
+              eq(storefrontThemeTemplates.themeId, data.themeId),
+              isNull(storefrontThemeTemplates.deletedAt),
+            ),
+          )
+          .limit(1);
+        document = revision?.document;
+        // New snapshots carry their immutable role. Legacy scope validation
+        // retains its old behavior, but does not enrich the snapshot from it.
+        isLayout =
+          item.metadata?.templateType !== undefined
+            ? item.metadata.templateType === "layout"
+            : revision?.type === "layout";
+        if (
+          item.metadata?.templateType !== undefined &&
+          !isStorefrontTemplateType(item.metadata.templateType)
+        )
+          throw new Error(
+            "CONTENT_PUBLICATION_INVALID: Invalid frozen template type.",
+          );
+      } else if (item.itemType === "page") {
+        const [revision] = await db
+          .select({
+            document: sql<string>`cast(${storefrontPageRevisions.document} as text)`,
+          })
+          .from(storefrontPageRevisions)
+          .innerJoin(
+            storefrontPages,
+            eq(storefrontPageRevisions.pageId, storefrontPages.id),
+          )
+          .where(
+            and(
+              eq(storefrontPageRevisions.id, item.revisionId),
+              eq(storefrontPageRevisions.pageId, item.contentId),
+              eq(storefrontPages.storefrontId, data.publication.storefrontId),
+            ),
+          )
+          .limit(1);
+        // Retained Page revisions remain valid after the mutable Page is deleted.
+        document = revision?.document;
+      } else {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Unsupported content reference.",
+        );
+      }
+      if (typeof document === "string") {
+        try {
+          document = JSON.parse(document) as unknown;
+        } catch {
+          throw new Error(
+            "CONTENT_PUBLICATION_INVALID: Malformed content snapshot.",
+          );
+        }
+      }
+      const parsed = storefrontPageDocumentSchema.safeParse(document);
+      if (!parsed.success) {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Missing or malformed content snapshot.",
+        );
+      }
+      if (
+        (isLayout && parsed.data.renderPolicy !== undefined) ||
+        (!isLayout && parsed.data.websiteRenderPolicy !== undefined)
+      ) {
+        throw new Error(
+          "CONTENT_PUBLICATION_INVALID: Rendering policy scope mismatch.",
+        );
+      }
+      documents.push({ item, document: parsed.data });
+    }
+    return documents;
+  },
+
   async isRevisionReferenced(revisionId: string): Promise<boolean> {
     const db = await getDb();
     const [reference] = await db
@@ -292,6 +558,7 @@ export const storefrontContentPublicationDal = {
         id: storefrontThemeTemplates.id,
         revisionId: storefrontThemeTemplates.publishedRevisionId,
         routePath: storefrontThemeTemplates.routePath,
+        type: storefrontThemeTemplates.type,
       })
       .from(storefrontThemeTemplates)
       .where(
@@ -388,9 +655,10 @@ export const storefrontContentPublicationDal = {
             template.id === data.templateId
               ? templateRevision.id
               : (alsoPublish.get(template.id) ?? template.revisionId),
-          ...(template.routePath
-            ? { metadata: { routePath: template.routePath } }
-            : {}),
+          metadata: {
+            templateType: template.type,
+            ...(template.routePath ? { routePath: template.routePath } : {}),
+          },
           createdAt: now,
           updatedAt: now,
         }))
@@ -737,10 +1005,19 @@ export const storefrontContentPublicationDal = {
               data.publicationId,
             ),
             eq(storefrontContentPublicationItems.itemType, "template"),
-            eq(storefrontThemeTemplates.type, data.templateType),
             // A route's own document is typed too, but it answers for one
             // path only. Returned here it would stand in for the whole type.
-            isNull(storefrontThemeTemplates.routePath),
+            or(
+              and(
+                sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.templateType') = ${data.templateType}`,
+                sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.routePath') IS NULL`,
+              ),
+              and(
+                sql`json_extract(${storefrontContentPublicationItems.metadata}, '$.templateType') IS NULL`,
+                eq(storefrontThemeTemplates.type, data.templateType),
+                isNull(storefrontThemeTemplates.routePath),
+              ),
+            ),
             isNull(storefrontContentPublicationItems.deletedAt),
             isNull(storefrontThemeTemplates.deletedAt),
           ),
@@ -785,6 +1062,7 @@ export const storefrontContentPublicationDal = {
               json_extract(${storefrontContentPublicationItems.metadata}, '$.routePath') = ${data.routePath}
               OR (
                 json_extract(${storefrontContentPublicationItems.metadata}, '$.routePath') IS NULL
+                AND json_extract(${storefrontContentPublicationItems.metadata}, '$.templateType') IS NULL
                 AND ${storefrontThemeTemplates.routePath} = ${data.routePath}
               )
             )`,

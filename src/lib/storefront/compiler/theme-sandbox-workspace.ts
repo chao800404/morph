@@ -47,6 +47,13 @@ import {
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
 import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
+import { themePrerenderOptions } from "./theme-prerender";
+import {
+  THEME_PRERENDER_CONTENT_FILE,
+  themePrerenderContentPluginSource,
+  type ThemePrerenderContent,
+} from "./theme-prerender-content";
+import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dto";
 import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
@@ -201,6 +208,10 @@ export type PrepareThemeWorkspaceInput = Readonly<{
   dependencies?: Readonly<Record<string, string>>;
   approvedDependencies: ReadonlySet<string>;
   mode: ThemeWorkspaceMode;
+  contentSnapshot?: ThemeBuildContentSnapshot;
+  prerenderContent?: ThemePrerenderContent;
+  /** Platform-only local builder target; Sandbox retains its existing env selection. */
+  buildTarget?: "runtime";
   /** Render-only draft data, available solely to a preview workspace. */
   previewContent?: ThemePreviewContentSnapshot;
   /**
@@ -300,6 +311,9 @@ export function planThemeSandboxWorkspace({
   dependencies,
   approvedDependencies,
   mode,
+  contentSnapshot,
+  prerenderContent,
+  buildTarget,
   previewContent,
   previewRuntime,
   hostWorkspaceRoot: requestedHostWorkspaceRoot,
@@ -635,6 +649,11 @@ export function planThemeSandboxWorkspace({
     pathAliasConfig,
     hostWorkspaceRoot,
   );
+  if (mode === "build" && prerenderContent)
+    queueWorkspaceFile(
+      `${workspaceRoot}/${THEME_PRERENDER_CONTENT_FILE}`,
+      JSON.stringify(prerenderContent),
+    );
   const viteConfigContent = `
 import path from "node:path";
 import fs from "node:fs";
@@ -689,7 +708,7 @@ return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   };
 const hasStartRuntime = ${routeRegistry ? "true" : "false"};
 const isLivePreview = ${mode === "preview-server" ? "true" : "false"};
-const isStartStaticPreview = hasStartRuntime && !isLivePreview && process.env.MORPH_THEME_BUILD_TARGET !== "runtime";
+const isStartStaticPreview = hasStartRuntime && !isLivePreview && ${buildTarget === "runtime" ? "false" : 'process.env.MORPH_THEME_BUILD_TARGET !== "runtime"'};
 // The Start server itself serves this preview, in workerd, at the root path;
 // see theme-preview-start-runtime.ts.
 const isStartPreview = ${startPreview ? "true" : "false"};
@@ -735,7 +754,7 @@ const previewRootPublicPlugin = ${
       : "null"
   };
 const isStartRuntimeBuild =
-  hasStartRuntime && process.env.MORPH_THEME_BUILD_TARGET === "runtime";
+  hasStartRuntime && ${buildTarget === "runtime" ? "true" : 'process.env.MORPH_THEME_BUILD_TARGET === "runtime"'};
 
 // Cloudflare's local preview-port bridge currently cannot carry Vite's HMR
 // WebSocket reliably. Keep Vite's own update calculation and browser handler,
@@ -980,9 +999,10 @@ export default defineConfig({
   : "./",
   plugins: isStartRuntimeBuild
 ? [
+    ${prerenderContent ? `${themePrerenderContentPluginSource(hostWorkspaceRoot)},` : ""}
     cloudflare({ viteEnvironment: { name: "ssr" } }),
     tailwindcss(),
-    tanstackStart(),
+    tanstackStart(${JSON.stringify(mode === "build" && routeRegistry ? (themePrerenderOptions(contentSnapshot, routeRegistry, Boolean(prerenderContent)) ?? {}) : {})}),
     viteReact(),
     ...(themeBaseUrlPlugin ? [themeBaseUrlPlugin] : []),
     dependencyEnforcerPlugin,

@@ -89,6 +89,7 @@ beforeEach(() => {
       compiler_id text,
       compiler_version text,
       dependencies_json text,
+      content_publication_id text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,
@@ -196,6 +197,55 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
         new Date().toISOString(),
       );
   };
+
+  it("keeps content binding through queue execution and reuses only the same content identity", async () => {
+    seedStorefront(); seedTheme();
+    seedRevision("storefront-1", "theme-1", "rev-content", 1, [
+      { path: "src/pages/index.tsx", content: "export default () => <h1>Home</h1>;", isEntry: true },
+    ]);
+    const read = vi.spyOn(storefrontThemeBuildDal, "readBuildContentSnapshot").mockImplementation(async ({ contentPublicationId }) =>
+      contentPublicationId ? {
+        publicationId: contentPublicationId, storefrontId: "storefront-1", themeId: "theme-1",
+        documents: [{ item: { id: "item", publicationId: contentPublicationId, itemType: "template", contentId: "home", revisionId: `home-${contentPublicationId}` }, document: { version: 1, sections: [] } }],
+      } : undefined,
+    );
+    const onRun = vi.fn();
+    const runner = new FakeThemeBuildRunner({ onRun });
+    try {
+      const queued = await service.requestPreviewBuild({ storefrontId: "storefront-1", themeId: "theme-1", sourceRevisionId: "rev-content", contentPublicationId: "publication-a", deferExecution: true, runner });
+      expect(queued.status).toBe("queued");
+      expect(onRun).not.toHaveBeenCalled();
+      const consumer = new ThemeBuildService(storefrontThemeBuildDal, runner, undefined, new FakeThemeBuildArtifactStore());
+      const executed = await consumer.executeQueuedBuild({ storefrontId: "storefront-1", themeId: "theme-1", buildId: queued.id });
+      expect(executed.status).toBe("succeeded");
+      expect(onRun.mock.calls[0]![0].contentSnapshot.publicationId).toBe("publication-a");
+      const reused = await consumer.requestPreviewBuild({ storefrontId: "storefront-1", themeId: "theme-1", sourceRevisionId: "rev-content", contentPublicationId: "publication-a", reuseExisting: true });
+      expect(reused.id).toBe(executed.id);
+      const changed = await consumer.requestPreviewBuild({ storefrontId: "storefront-1", themeId: "theme-1", sourceRevisionId: "rev-content", contentPublicationId: "publication-b", reuseExisting: true });
+      expect(changed.status).toBe("succeeded");
+      expect(changed.id).not.toBe(executed.id);
+      expect(changed.inputHash).not.toBe(executed.inputHash);
+      expect(onRun).toHaveBeenCalledTimes(2);
+    } finally { read.mockRestore(); }
+  });
+
+  it("fails a queued content-dependent build if the sealed snapshot cannot be read", async () => {
+    seedStorefront(); seedTheme();
+    seedRevision("storefront-1", "theme-1", "rev-content", 1, [
+      { path: "src/pages/index.tsx", content: "export default () => <h1>Home</h1>;", isEntry: true },
+    ]);
+    const queued = await service.requestPreviewBuild({ storefrontId: "storefront-1", themeId: "theme-1", sourceRevisionId: "rev-content" });
+    sqlite.prepare("UPDATE storefront_theme_builds SET content_publication_id = 'publication-a' WHERE id = ?").run(queued.id);
+    const read = vi.spyOn(storefrontThemeBuildDal, "readBuildContentSnapshot").mockRejectedValue(new Error("CONTENT_PUBLICATION_INVALID"));
+    const onRun = vi.fn();
+    try {
+      const consumer = new ThemeBuildService(storefrontThemeBuildDal, new FakeThemeBuildRunner({ onRun }), undefined, new FakeThemeBuildArtifactStore());
+      const failed = await consumer.executeQueuedBuild({ storefrontId: "storefront-1", themeId: "theme-1", buildId: queued.id });
+      expect(failed.status).toBe("failed");
+      expect(failed.errorMessage).toContain("CONTENT_PUBLICATION_INVALID");
+      expect(onRun).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
 
   it("creates queued build record without fake execution when no runner is injected", async () => {
     seedStorefront("storefront-1");

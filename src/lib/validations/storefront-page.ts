@@ -1,6 +1,10 @@
 import { handleSchema, typedHandleSchema } from "@/lib/validations/product";
 import { metadataInputSchema } from "@/lib/validations/product";
 import { z } from "zod";
+import {
+  storefrontConcreteRenderPolicySchema,
+  storefrontPageRenderPolicySchema,
+} from "./storefront-render-policy";
 
 export const storefrontPageStatusSchema = z.enum([
   "draft",
@@ -11,6 +15,8 @@ export const storefrontPageStatusSchema = z.enum([
 export const storefrontPageDocumentSchema = z.object({
   version: z.literal(1),
   handle: handleSchema.optional(),
+  renderPolicy: storefrontPageRenderPolicySchema.optional(),
+  websiteRenderPolicy: storefrontConcreteRenderPolicySchema.optional(),
   sections: z
     .array(
       z.object({

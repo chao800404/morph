@@ -9,6 +9,10 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { metadata, timestamps } from "./columns";
 import type { JsonValue } from "./json";
+import type {
+  StorefrontConcreteRenderPolicy,
+  StorefrontPageRenderPolicy,
+} from "@/lib/validations/storefront-render-policy";
 
 export type StorefrontStatus = "draft" | "published" | "disabled";
 export type StorefrontThemeStatus = "draft" | "published" | "archived";
@@ -35,6 +39,10 @@ export type StorefrontPageDocument = {
   version: 1;
   /** Page route captured with this revision; absent on legacy/template docs. */
   handle?: string;
+  /** Versioned route override; absence inherits the layout's website default. */
+  renderPolicy?: StorefrontPageRenderPolicy;
+  /** Website default. Only the layout template may author this field. */
+  websiteRenderPolicy?: StorefrontConcreteRenderPolicy;
   sections: Array<{
     id: string;
     type: string;
@@ -591,6 +599,11 @@ export const storefrontThemeBuilds = sqliteTable(
     dependenciesJson: text("dependencies_json", { mode: "json" }).$type<
       Record<string, string>
     >(),
+    /** Optional immutable content binding for content-dependent build output. */
+    contentPublicationId: text("content_publication_id").references(
+      () => storefrontContentPublications.id,
+      { onDelete: "restrict" },
+    ),
     artifactPrefix: text("artifact_prefix"),
     manifestJson: text("manifest_json", { mode: "json" }),
     diagnosticsJson: text("diagnostics_json", { mode: "json" }),

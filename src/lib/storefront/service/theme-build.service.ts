@@ -36,6 +36,8 @@ export type RequestPreviewBuildOptions = {
   deferExecution?: boolean;
   /** Exact package map selected for this immutable build. */
   dependencies?: Readonly<Record<string, string>>;
+  /** Existing, sealed content publication; never client-supplied documents. */
+  contentPublicationId?: string;
 };
 
 export class ThemeBuildService {
@@ -85,6 +87,7 @@ export class ThemeBuildService {
           compilerId: options.compilerIdentity?.compilerId ?? null,
           compilerVersion: options.compilerIdentity?.compilerVersion ?? null,
           dependencies: options.dependencies ?? null,
+          contentPublicationId: options.contentPublicationId ?? null,
           artifactPrefix: null,
           manifestJson: null,
           diagnosticsJson: null,
@@ -103,10 +106,18 @@ export class ThemeBuildService {
         );
 
         if (revision) {
+          const contentSnapshot = options.contentPublicationId
+            ? await this.dal.readBuildContentSnapshot({
+                storefrontId: options.storefrontId,
+                themeId: options.themeId,
+                contentPublicationId: options.contentPublicationId,
+              })
+            : undefined;
           const computed = this.materializer({
             build: dummyBuild,
             revision,
             compilerIdentity: options.compilerIdentity,
+            contentSnapshot,
           });
 
           const existingSuccess = await this.dal.findSucceededBuildByIdentity({
@@ -135,6 +146,7 @@ export class ThemeBuildService {
         sourceRevisionId: options.sourceRevisionId,
         createdBy: options.createdBy,
         dependencies: options.dependencies,
+        contentPublicationId: options.contentPublicationId,
       },
     );
 
@@ -317,10 +329,18 @@ export class ThemeBuildService {
     // Stage 2: Pure materialization from build identity + immutable revision DTO.
     let buildInput: StorefrontThemeBuildInput;
     try {
+      const contentSnapshot = build.contentPublicationId
+        ? await this.dal.readBuildContentSnapshot({
+            storefrontId: build.storefrontId,
+            themeId: build.themeId,
+            contentPublicationId: build.contentPublicationId,
+          })
+        : undefined;
       buildInput = this.materializer({
         build,
         revision,
         compilerIdentity: params.compilerIdentity,
+        contentSnapshot,
       });
     } catch (materializerError) {
       const errMessage =

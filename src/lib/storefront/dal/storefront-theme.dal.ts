@@ -21,7 +21,11 @@ import {
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
+import { storefrontThemeBuildDal } from "./storefront-theme-build.dal";
+import { serializeThemeBuildContentDocuments } from "../compiler/theme-compiler-hasher";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import { updateStorefrontThemeRenderPolicyInputSchema } from "@/lib/validations/storefront-theme";
+import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
@@ -295,6 +299,7 @@ function prepareTemplateDraftCASGuard(args: {
   expectedDraftGeneration: number;
   expectedDraftRevisionId?: string | null;
   expectedSourceGeneration?: number;
+  requireUnreferencedDraft?: boolean;
 }) {
   return env.DATABASE.prepare(
     `
@@ -309,6 +314,7 @@ function prepareTemplateDraftCASGuard(args: {
         AND t.draft_generation = ?4
         AND (t.draft_revision_id = ?5 OR (t.draft_revision_id IS NULL AND ?5 = ''))
         AND (?6 IS NULL OR th.source_generation = ?6)
+        AND (?7 = 0 OR NOT EXISTS (SELECT 1 FROM storefront_content_publication_items i WHERE i.revision_id = ?5 AND i.deleted_at IS NULL))
         AND s.deleted_at IS NULL
         AND th.deleted_at IS NULL
         AND t.deleted_at IS NULL
@@ -321,6 +327,7 @@ function prepareTemplateDraftCASGuard(args: {
     args.expectedDraftGeneration,
     args.expectedDraftRevisionId ?? "",
     args.expectedSourceGeneration ?? null,
+    args.requireUnreferencedDraft ? 1 : 0,
   );
 }
 
@@ -372,7 +379,12 @@ export async function prepareTemplateDocumentWrite(
       )
       .limit(1);
 
-    if (activeDraft) {
+    if (
+      activeDraft &&
+      !(await storefrontContentPublicationDal.isRevisionReferenced(
+        activeDraft.id,
+      ))
+    ) {
       return {
         guard: prepareTemplateDraftCASGuard({
           storefrontId: args.storefrontId,
@@ -381,6 +393,7 @@ export async function prepareTemplateDocumentWrite(
           expectedDraftGeneration: args.expectedDraftGeneration,
           expectedDraftRevisionId: activeDraft.id,
           expectedSourceGeneration: args.sourceGeneration,
+          requireUnreferencedDraft: true,
         }),
         mutations: [
           env.DATABASE.prepare(
@@ -485,7 +498,66 @@ async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
   return write.result;
 }
 
+/** Draft persistence must not produce a policy-labelled but wrongly rendered release. */
+function assertRenderingModeReady(document: StorefrontPageDocument) {
+  if (
+    (document.renderPolicy &&
+      document.renderPolicy.mode !== "inherit" &&
+      document.renderPolicy.mode !== "ssr") ||
+    (document.websiteRenderPolicy &&
+      document.websiteRenderPolicy.mode !== "ssr")
+  ) {
+    throw new Error(
+      "PUBLISH_RENDER_POLICY_NOT_READY: The selected rendering mode is not connected to the build and runtime yet.",
+    );
+  }
+}
+
 export const storefrontThemeDal = {
+  /** Reuses the content revision writer and both source/draft concurrency guards. */
+  async updateRenderPolicy(
+    data: z.infer<typeof updateStorefrontThemeRenderPolicyInputSchema> & {
+      createdBy: string;
+    },
+  ) {
+    // Validate even for internal callers; no executable options or ignored fields.
+    const input = {
+      ...data,
+      setting: updateStorefrontThemeRenderPolicyInputSchema.shape.setting.parse(
+        data.setting,
+      ),
+    };
+    const context = await this.findEditorContext(
+      input.storefrontId,
+      input.themeId,
+    );
+    const template = context?.templates.find(
+      (item) => item.id === input.templateId,
+    );
+    if (!template) return null;
+    if ((input.setting.scope === "website") !== (template.type === "layout")) {
+      throw new Error(
+        "RENDER_POLICY_SCOPE_MISMATCH: Website defaults belong to the layout document; page overrides belong to page documents.",
+      );
+    }
+    const document = storefrontPageDocumentSchema.parse({
+      ...template.document,
+      ...(input.setting.scope === "website"
+        ? { websiteRenderPolicy: input.setting.policy }
+        : { renderPolicy: input.setting.policy }),
+    });
+    return writeTemplateDocument({
+      storefrontId: input.storefrontId,
+      themeId: input.themeId,
+      templateId: input.templateId,
+      document,
+      sourceGeneration: input.expectedSourceGeneration,
+      expectedDraftGeneration: input.expectedDraftGeneration,
+      draftRevisionId: template.draftRevisionId,
+      publishedRevisionId: template.publishedRevisionId,
+      createdBy: data.createdBy,
+    });
+  },
   /** Explicit publish preparation, never a write performed by reading context.
    * Reuses the Document writer and its source/draft CAS. No client-supplied
    * document, pointer replacement, or implicit rebase onto an existing draft.
@@ -496,6 +568,7 @@ export const storefrontThemeDal = {
     templateId: string;
     expectedDraftGeneration: number;
     expectedSourceGeneration: number;
+    expectedDraftRevisionId?: string;
     createdBy: string;
   }) {
     const context = await this.findEditorContext(
@@ -506,21 +579,58 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
+    const preparingExisting = data.expectedDraftRevisionId !== undefined;
     if (
-      template.draftRevisionId ||
-      template.publishedRevisionId ||
-      template.draftGeneration !== data.expectedDraftGeneration
+      template.draftGeneration !== data.expectedDraftGeneration ||
+      (preparingExisting
+        ? template.draftRevisionId !== data.expectedDraftRevisionId
+        : Boolean(template.draftRevisionId || template.publishedRevisionId))
     ) {
       throw new Error(
         `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Template was modified concurrently.`,
       );
     }
+    let document = template.document;
+    if (preparingExisting) {
+      const db = await getDb();
+      const [revision] = await db
+        .select({ document: storefrontThemeTemplateRevisions.document })
+        .from(storefrontThemeTemplateRevisions)
+        .where(
+          and(
+            eq(
+              storefrontThemeTemplateRevisions.id,
+              data.expectedDraftRevisionId!,
+            ),
+            eq(storefrontThemeTemplateRevisions.templateId, template.id),
+          ),
+        )
+        .limit(1);
+      if (!revision) {
+        throw new Error(
+          `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Draft revision is missing.`,
+        );
+      }
+      // Prepare only the stored document, not source-derived editor structure.
+      // The caller supplies no replacement content. The normal writer below
+      // enforces source/draft CAS and forks publication-referenced revisions.
+      document = normalizeDocumentRowIds(
+        storefrontPageDocumentSchema.parse(
+          typeof revision.document === "string"
+            ? JSON.parse(revision.document)
+            : revision.document,
+        ),
+        template.id,
+      ).value;
+    }
     return writeTemplateDocument({
       ...data,
       sourceGeneration: data.expectedSourceGeneration,
-      document: template.document,
-      draftRevisionId: null,
-      publishedRevisionId: null,
+      document,
+      draftRevisionId: preparingExisting ? template.draftRevisionId : null,
+      publishedRevisionId: preparingExisting
+        ? template.publishedRevisionId
+        : null,
     });
   },
 
@@ -1422,6 +1532,7 @@ export const storefrontThemeDal = {
         status: storefrontThemeBuilds.status,
         artifactPrefix: storefrontThemeBuilds.artifactPrefix,
         manifestJson: storefrontThemeBuilds.manifestJson,
+        contentPublicationId: storefrontThemeBuilds.contentPublicationId,
       })
       .from(storefrontThemeBuilds)
       .where(
@@ -1486,6 +1597,11 @@ export const storefrontThemeDal = {
       data.templateId,
     ).value;
 
+    // Draft persistence is ahead of native build/runtime integration. Never
+    // publish a policy-labelled SSG/ISR/CSR release that still executes SSR.
+    // Remove each refusal only alongside its end-to-end implementation.
+    assertRenderingModeReady(document);
+
     // The shell wraps every page and has no URL of its own, so it can never be
     // the template a publish targets. Left behind, its edits would sit in a
     // draft forever while the dashboard reported the site as published.
@@ -1531,6 +1647,10 @@ export const storefrontThemeDal = {
           }
         : null;
 
+    // A page publish also seals the pending layout: do not let a website
+    // default bypass the same check by entering through that side of the batch.
+    if (pendingShell) assertRenderingModeReady(pendingShell.document);
+
     const now = new Date().toISOString();
     const templateUnchanged =
       template.draftRevisionId === template.publishedRevisionId &&
@@ -1574,6 +1694,37 @@ export const storefrontThemeDal = {
             : undefined,
           createdBy: data.createdBy,
         });
+
+    // Check the exact set being sealed, not just the selected page and pending
+    // layout. Published sibling templates and Page revisions also travel with
+    // this release and must not smuggle an unimplemented mode into it.
+    if (contentPublication) {
+      const publicationDocuments =
+        await storefrontContentPublicationDal.readDocumentsForDraft({
+          themeId: data.themeId,
+          publication: contentPublication,
+        });
+      for (const { document: publicationDocument } of publicationDocuments) {
+        assertRenderingModeReady(publicationDocument);
+      }
+      if (build.contentPublicationId) {
+        const boundContent =
+          await storefrontThemeBuildDal.readBuildContentSnapshot({
+            storefrontId: data.storefrontId,
+            themeId: data.themeId,
+            contentPublicationId: build.contentPublicationId,
+          });
+        if (
+          !boundContent ||
+          serializeThemeBuildContentDocuments(boundContent.documents) !==
+            serializeThemeBuildContentDocuments(publicationDocuments)
+        ) {
+          throw new Error(
+            "PUBLISH_BUILD_CONTENT_MISMATCH: Build is bound to a different content snapshot. Rebuild for the selected content before publishing.",
+          );
+        }
+      }
+    }
 
     const statements = [
       env.DATABASE.prepare(
