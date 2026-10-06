@@ -24,6 +24,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { decide, describeUnhappy, preflight, REQUIRED_CHECK } from "./ship.mjs";
+import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 
 const guard = (conclusion, status = "COMPLETED") => ({
   name: "Architecture guards",
@@ -37,14 +38,17 @@ const other = (conclusion, status = "COMPLETED") => ({
 });
 const verdict = (checks, requiredOnly = false) =>
   decide(checks, requiredOnly).verdict;
+// One successful check per shard, named the way the workflow names them.
+const shardChecks = (count = EDITOR_SHARD_COUNT) =>
+  Array.from({ length: count }, (_, index) => ({
+    name: `Editor E2E shard ${index + 1}/${count}`,
+    status: "COMPLETED",
+    conclusion: "SUCCESS",
+  }));
 
 describe("waiting for every check", () => {
   it("waits when a dependent acceptance job has not appeared yet", () => {
-    const shards = [1, 2, 3].map((index) => ({
-      name: `Editor E2E shard ${index}/3`,
-      status: "COMPLETED",
-      conclusion: "SUCCESS",
-    }));
+    const shards = shardChecks();
     for (const requiredOnly of [false, true]) {
       assert.equal(
         verdict([guard("SUCCESS"), ...shards], requiredOnly),
@@ -75,11 +79,7 @@ describe("waiting for every check", () => {
     }
   });
   it("waits for every shard and the aggregate acceptance check", () => {
-    const shards = [1, 2, 3].map((index) => ({
-      name: `Editor E2E shard ${index}/3`,
-      status: "COMPLETED",
-      conclusion: "SUCCESS",
-    }));
+    const shards = shardChecks();
     const acceptance = {
       name: "Editor end-to-end (local preview transport)",
       status: "IN_PROGRESS",
@@ -107,6 +107,28 @@ describe("waiting for every check", () => {
         guard("SUCCESS"),
         ...shards.slice(0, 2),
         { ...shards[2], conclusion: "CANCELLED" },
+        acceptance,
+      ]),
+      "refuse",
+    );
+  });
+
+  it("refuses shards named for another count than the plan", () => {
+    const acceptance = {
+      name: "Editor end-to-end (local preview transport)",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    };
+    assert.equal(
+      verdict([guard("SUCCESS"), ...shardChecks(), acceptance]),
+      "merge",
+    );
+    // A workflow left at another count would otherwise look complete.
+    assert.equal(
+      verdict([
+        guard("SUCCESS"),
+        ...shardChecks(),
+        ...shardChecks(EDITOR_SHARD_COUNT + 1),
         acceptance,
       ]),
       "refuse",

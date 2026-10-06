@@ -17,6 +17,7 @@
  * means it did not.
  */
 import { spawnSync } from "node:child_process";
+import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 
 const log = (message) => console.log(`[ship] ${message}`);
 
@@ -69,9 +70,24 @@ export function decide(checks, requiredOnly) {
 
   // Dependent jobs may not appear in the rollup until their dependencies finish.
   // A green partial rollup is not proof that sharded acceptance has completed.
-  if (checks.some((check) => /^Editor E2E shard \d+\/3$/.test(check.name))) {
+  // The count comes from the shard plan; check-e2e-shards keeps the workflow's
+  // job names in step with it. A shard named for another count is refused.
+  const shardName = /^Editor E2E shard \d+\/(\d+)$/;
+  if (checks.some((check) => shardName.test(check.name))) {
+    for (const check of checks) {
+      const match = shardName.exec(check.name);
+      if (
+        match &&
+        Number(match[1]) !== EDITOR_SHARD_COUNT &&
+        !unhappy.includes(check)
+      )
+        unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
+    }
     const names = [
-      ...[1, 2, 3].map((index) => `Editor E2E shard ${index}/3`),
+      ...Array.from(
+        { length: EDITOR_SHARD_COUNT },
+        (_, index) => `Editor E2E shard ${index + 1}/${EDITOR_SHARD_COUNT}`,
+      ),
       "Editor end-to-end (local preview transport)",
     ];
     for (const name of names) {

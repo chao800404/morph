@@ -1,0 +1,29 @@
+{
+  "source": "CI run 37322994193 (main 2e03703, 2026-10-05)",
+  "seconds": {
+    "accessibility.spec.ts": 77,
+    "auth-failure.spec.ts": 2.8,
+    "authored-content.spec.ts": 0,
+    "catalog.spec.ts": 11.1,
+    "editor-writes-auth.spec.ts": 232.6,
+    "editor.spec.ts": 73.4,
+    "initial-code-publish.spec.ts": 21.7,
+    "lost-editor-writes.spec.ts": 155.5,
+    "media-svg.spec.ts": 19.4,
+    "native-compat-preview.spec.ts": 55.4,
+    "native-compat-published.spec.ts": 0,
+    "performance.spec.ts": 0,
+    "preview-frame-load.spec.ts": 176.6,
+    "preview-health.spec.ts": 0,
+    "public-root-url.spec.ts": 22.7,
+    "public-svg.spec.ts": 29.6,
+    "public-text-code.spec.ts": 25.3,
+    "publish.spec.ts": 0,
+    "recovery-editor-writes.spec.ts": 148.3,
+    "responsive.spec.ts": 33.8,
+    "route-capabilities.spec.ts": 11.1,
+    "session-editor-writes.spec.ts": 149.6,
+    "structure-editor-writes.spec.ts": 42.1,
+    "text-promotion.spec.ts": 35
+  }
+}

@@ -3,7 +3,40 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  EDITOR_SHARDS,
+  EDITOR_SHARD_COUNT,
+  editorShardArguments,
+} from "./editor-e2e-shards.mjs";
+import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
+
+const WORKFLOW_FILE = fileURLToPath(
+  new URL("../.github/workflows/ci.yml", import.meta.url),
+);
+
+/**
+ * The workflow cannot import the plan, so its three shard-count spellings are
+ * compared with it: the matrix, the job name `pnpm ship` waits for, and the
+ * flag the runner expands. Changing the count means changing all of them in
+ * one pull request; a partial change fails here instead of losing a shard.
+ */
+export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
+  const matrix = /^\s+shard:\s*\[([^\]]*)\]/m.exec(workflow);
+  assert.ok(matrix, "The editor E2E job must declare a shard matrix");
+  assert.deepEqual(
+    matrix[1].split(",").map((value) => Number(value.trim())),
+    Array.from({ length: count }, (_, index) => index + 1),
+    `The shard matrix must list 1..${count}, as EDITOR_SHARDS has ${count} shards`,
+  );
+  assert.ok(
+    workflow.includes(`name: Editor E2E shard \${{ matrix.shard }}/${count}\n`),
+    `The shard job name must end in /${count}; pnpm ship waits for these names`,
+  );
+  assert.ok(
+    workflow.includes(`--shard=\${{ matrix.shard }}/${count}\n`),
+    `The shard job must pass --shard=N/${count} to the runner`,
+  );
+}
 
 export function records(report) {
   const found = [];
@@ -26,8 +59,13 @@ export function records(report) {
 // Dependency projects intentionally repeat; editor tests must appear exactly
 // once across all shards. Count IDs, not just totals: missing + duplicate tests
 // can otherwise cancel each other out.
-export function verifyCoverage(expected, shards, executed = false) {
-  assert.equal(shards.length, 3, "All three shard reports are required");
+export function verifyCoverage(
+  expected,
+  shards,
+  executed = false,
+  count = EDITOR_SHARD_COUNT,
+) {
+  assert.equal(shards.length, count, `All ${count} shard reports are required`);
   const wanted = expected
     .filter((r) => r.project === "editor")
     .map((r) => r.id);
@@ -116,10 +154,15 @@ if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
+  verifyWorkflowWiring(readFileSync(WORKFLOW_FILE, "utf8"));
+  const indexes = Array.from(
+    { length: EDITOR_SHARD_COUNT },
+    (_, index) => index + 1,
+  );
   const expected = list();
   const directory = process.argv[2];
   const shards = directory
-    ? [1, 2, 3].map((index) => {
+    ? indexes.map((index) => {
         const matches = reportFiles(directory).filter(
           (file) => path.basename(file) === `shard-${index}.json`,
         );
@@ -130,8 +173,19 @@ if (
         );
         return records(JSON.parse(readFileSync(matches[0], "utf8")));
       })
-    : [1, 2, 3].map((index) => list([`--shard=${index}/3`]));
+    : indexes.map((index) => list([`--shard=${index}/${EDITOR_SHARD_COUNT}`]));
   console.log(
     `E2E shard coverage verified: ${verifyCoverage(expected, shards, Boolean(directory)).join(" / ")} editor tests`,
   );
+  // Advisory only (see budgetWarnings); shown as annotations on the run.
+  if (!directory) {
+    const { seconds } = JSON.parse(readFileSync(DURATIONS_FILE, "utf8"));
+    for (const warning of budgetWarnings(EDITOR_SHARDS, seconds)) {
+      console.log(
+        process.env.GITHUB_ACTIONS
+          ? `::warning::${warning}`
+          : `warning: ${warning}`,
+      );
+    }
+  }
 }
