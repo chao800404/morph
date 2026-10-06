@@ -2,14 +2,16 @@ import { isProductionEnvironment } from "../storefront-domain-provider";
 import { previewSandboxBinding } from "../preview-sandbox-binding";
 import type { BuildPreviewServer } from "./build-preview-server.types";
 import { LocalBuildPreviewServerClient } from "./local-build-preview-client";
+import { CloudflareSandboxBuildPreviewServer } from "./cloudflare-sandbox-build-preview-server";
 
 /**
  * Which `BuildPreviewServer` this environment has, chosen the way
  * `theme-preview-server.factory` chooses the Live Preview's: by the bindings
- * present, never by a flag. A container binding means the container transport
- * — which is not written yet, so it is refused by name rather than falling
- * through to the local one. Without containers, the operator-started helper
- * process serves, outside production only.
+ * present, never by a flag. `BuildPreviewSandbox` bound means the container
+ * transport. Containers bound but not that class is refused by name rather
+ * than run under another class's policy or handed to the local transport.
+ * Without containers, the operator-started helper process serves, outside
+ * production only.
  */
 export type BuildPreviewServerSelection =
   | Readonly<{ enabled: true; server: BuildPreviewServer }>
@@ -22,12 +24,26 @@ function readString(value: unknown): string | null {
 export function createBuildPreviewServer(
   bindings: Record<string, unknown>,
 ): BuildPreviewServerSelection {
+  const binding = bindings.BuildPreviewSandbox;
+  if (binding) {
+    return {
+      enabled: true,
+      server: new CloudflareSandboxBuildPreviewServer({
+        provider: {
+          async getSandbox(name) {
+            const { getSandbox } = await import("@cloudflare/sandbox");
+            return getSandbox(binding as never, name) as never;
+          },
+        },
+      }),
+    };
+  }
   if (previewSandboxBinding(bindings) || bindings.Sandbox) {
     return {
       enabled: false,
-      reason: "BUILD_PREVIEW_CONTAINER_PENDING",
+      reason: "BUILD_PREVIEW_SANDBOX_UNBOUND",
       message:
-        "Build Preview in a container is not available yet; this deployment has no other way to run one.",
+        "Build Preview needs the BuildPreviewSandbox binding, which runs previews under their own outbound policy.",
     };
   }
   const origin = readString(bindings.MORPH_LOCAL_THEME_PREVIEW_ORIGIN);

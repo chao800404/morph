@@ -35,7 +35,7 @@ export type BuildPreviewInstanceStart = Readonly<{
 }>;
 
 export type BuildPreviewServer = Readonly<{
-  kind: "local-sidecar";
+  kind: "local-sidecar" | "cloudflare-sandbox";
   /**
    * The instance's answer to one request, or null when it has no running
    * instance. Answering counts as activity for the instance's idle period.
