@@ -605,3 +605,62 @@ export function B() { return <p>b</p>; }
     expect(out.match(/data-morph-source-file/g)).toHaveLength(2);
   });
 });
+
+describe("a component whose fields are declared in <Name>.fields.ts", () => {
+  const component = `export default function Hero({ heading, items = [] }) {
+  return (
+    <section>
+      <h1>{heading}</h1>
+      <ul>
+        {items.map((item, index) => (
+          <li key={item.id}>{item.title}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+`;
+  const withSidecar = (sidecar: string) =>
+    injectPreviewBindings([
+      { path: "src/components/Hero.tsx", content: component },
+      { path: "src/components/Hero.fields.ts", content: sidecar },
+    ]).files[0]!.content;
+
+  // Source positions differ by the declaration's lines; nothing else may.
+  const withoutPositions = (source: string) =>
+    source.replace(/ data-morph-loc="[^"]*"/g, "");
+
+  it("is marked exactly as the same declaration inside the component", () => {
+    expect(withoutPositions(withSidecar(DECLARES))).toBe(
+      withoutPositions(run(`${DECLARES}${component}`).slice(DECLARES.length)),
+    );
+  });
+
+  it("marks the fields and rows the sibling declares", () => {
+    const out = withSidecar(DECLARES);
+    expect(out).toContain('data-storefront-field="heading"');
+    expect(out).toContain(
+      "data-storefront-field-path={`items.${index}.title`}",
+    );
+  });
+
+  it("is marked as a component that declares nothing while the two declarations differ", () => {
+    const inline = `export const contentFields = { heading: { type: "textarea" } } as const;\n`;
+    const out = injectPreviewBindings([
+      { path: "src/components/Hero.tsx", content: `${inline}${component}` },
+      { path: "src/components/Hero.fields.ts", content: DECLARES },
+    ]).files[0]!.content;
+    expect(withoutPositions(out.slice(inline.length))).toBe(
+      withoutPositions(run(component)),
+    );
+    expect(out).not.toContain('data-storefront-field="heading"');
+  });
+
+  it("leaves the sibling file itself unannotated", () => {
+    const result = injectPreviewBindings([
+      { path: "src/components/Hero.tsx", content: component },
+      { path: "src/components/Hero.fields.ts", content: DECLARES },
+    ]);
+    expect(result.files[1]!.content).toBe(DECLARES);
+  });
+});

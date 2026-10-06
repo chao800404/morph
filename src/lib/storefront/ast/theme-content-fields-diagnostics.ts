@@ -5,6 +5,10 @@ import {
 } from "../theme-content-capability-resolver";
 import { parseComponentSource } from "./theme-ast-transformer";
 import {
+  contentFieldsSidecarPath,
+  readComponentContentFields,
+} from "./theme-content-fields-declaration";
+import {
   findIndexKeyedContentArrayMaps,
   findUnindexedContentArrayMaps,
 } from "./inject-preview-bindings";
@@ -239,10 +243,49 @@ export function collectThemeContentFieldsDiagnostics(
   const sourceRefs = readComponentSourcePaths(manifest);
   const capabilities = resolveThemeContentCapabilitiesFromFiles(themeFiles);
   const diagnostics: ThemeContentFieldsDiagnostic[] = [];
+  const contentByPath = new Map(
+    themeFiles.map((file) => [file.path, file.content]),
+  );
 
   for (const file of themeFiles) {
     if (!file.path.startsWith("src/") || !/\.(?:tsx|jsx)$/.test(file.path)) {
       continue;
+    }
+    const sidecarPath = contentFieldsSidecarPath(file.path);
+    const sidecar =
+      sidecarPath && contentByPath.has(sidecarPath)
+        ? (contentByPath.get(sidecarPath) ?? null)
+        : undefined;
+
+    // A declaration in the component and another in its `.fields.ts`, or a
+    // `.fields.ts` that cannot be read as one. Shown on both files, since the
+    // author may be looking at either; the Inspector already shows nothing
+    // editable for the component, and this says why.
+    if (sidecarPath && sidecar !== undefined && typeof file.content === "string") {
+      const declaration = readComponentContentFields({
+        path: file.path,
+        source: file.content,
+        sidecar,
+      });
+      const problems =
+        declaration.declaration === "invalid" || declaration.duplicate
+          ? declaration.diagnostics
+          : [];
+      for (const message of problems) {
+        for (const path of [file.path, sidecarPath]) {
+          diagnostics.push({
+            id: `content-fields-declaration:${path}:${message}`,
+            path,
+            line: 1,
+            column: 1,
+            endLine: 1,
+            endColumn: 2,
+            message,
+            source: "Morph content fields",
+            severity: "warning",
+          });
+        }
+      }
     }
     // Route files receive framework loader/search params rather than Document
     // content. Restrict the reminder to authored component locations (or a
@@ -266,6 +309,7 @@ export function collectThemeContentFieldsDiagnostics(
     for (const unindexed of findUnindexedContentArrayMaps({
       path: file.path,
       content: file.content,
+      sidecar,
     })) {
       diagnostics.push({
         id: `content-array-index:${file.path}:${unindexed.arrayPath}`,
@@ -288,6 +332,7 @@ export function collectThemeContentFieldsDiagnostics(
     for (const indexKeyed of findIndexKeyedContentArrayMaps({
       path: file.path,
       content: file.content,
+      sidecar,
     })) {
       diagnostics.push({
         id: `content-array-index-key:${file.path}:${indexKeyed.arrayPath}`,

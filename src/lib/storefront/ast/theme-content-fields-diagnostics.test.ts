@@ -190,3 +190,54 @@ export default function Nav({ navItems = [] }) {
     ).toEqual([]);
   });
 });
+
+describe("declarations in a component and its <Name>.fields.ts", () => {
+  const component = `export default function Hero({ heading }: { heading?: string }) { return <h1>{heading}</h1>; }`;
+  const sidecar = `export const contentFields = { heading: { type: "text" } } as const;`;
+  const heroPath = "src/components/Hero.tsx";
+  const sidecarPath = "src/components/Hero.fields.ts";
+  const declarationDiagnostics = (files: { path: string; content: string }[]) =>
+    collectThemeContentFieldsDiagnostics(files).filter((diagnostic) =>
+      diagnostic.id.startsWith("content-fields-declaration:"),
+    );
+
+  it("reports differing declarations on both files", () => {
+    const found = declarationDiagnostics([
+      file(
+        heroPath,
+        `export const contentFields = { heading: { type: "textarea" } } as const;\n${component}`,
+      ),
+      file(sidecarPath, sidecar),
+    ]);
+    expect(found.map((diagnostic) => diagnostic.path).sort()).toEqual([
+      sidecarPath,
+      heroPath,
+    ]);
+    expect(found[0]?.message).toContain("they differ");
+  });
+
+  it("asks for one of two equal declarations to be removed", () => {
+    const found = declarationDiagnostics([
+      file(heroPath, `${sidecar}\n${component}`),
+      file(sidecarPath, sidecar),
+    ]);
+    expect(found).toHaveLength(2);
+    expect(found[0]?.message).toContain(`remove the one in ${heroPath}`);
+  });
+
+  it("reports a sibling that does not declare contentFields", () => {
+    const found = declarationDiagnostics([
+      file(heroPath, component),
+      file(sidecarPath, "export const fields = {};"),
+    ]);
+    expect(found[0]?.message).toContain("does not declare");
+  });
+
+  it("is quiet for a sibling alone, and does not ask for its fields again", () => {
+    const all = collectThemeContentFieldsDiagnostics([
+      file(heroPath, component),
+      file(sidecarPath, sidecar),
+    ]);
+    expect(all).toEqual([]);
+  });
+});

@@ -333,6 +333,30 @@ export default function Promo({ eyebrow }: PromoProps) {
     ).toBe("no-field-capability");
   });
 
+  it("refuses a component whose fields live in its .fields.ts", () => {
+    // Promotion writes the declaration in the component; a second one there
+    // would differ from the sibling and switch Design editing off.
+    const component = `export default function Promo({ eyebrow = "New" }) {
+  return (
+    <p className="lead">hello world</p>
+  );
+}
+`;
+    expect(refusal(analyze(component))).toBeNull();
+    expect(
+      refusal(
+        analyze(component, {
+          extraFiles: [
+            {
+              path: "src/components/sections/Promo.fields.ts",
+              content: `export const contentFields = { eyebrow: { type: "text" } } as const;`,
+            },
+          ],
+        }),
+      ),
+    ).toBe("fields-in-sidecar");
+  });
+
   it("refuses text outside the default-exported component", () => {
     expect(
       refusal(
@@ -461,6 +485,7 @@ describe("describeTextPromotionRefusal", () => {
       "props-not-destructured",
       "props-type-elsewhere",
       "no-field-capability",
+      "fields-in-sidecar",
       "call-site-not-found",
       "call-site-opaque",
     ];
