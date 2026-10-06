@@ -9111,8 +9111,11 @@ export function VisualEditorShell({
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             onSaveFile={handleUnifiedSaveFile}
-            onPreviewFilesChange={(files) =>
-              postPreviewThemeFiles(files, { preserveCanvasPosition: true })
+            onPreviewFilesChange={(files, options) =>
+              postPreviewThemeFiles(files, {
+                preserveCanvasPosition: true,
+                justSavedPaths: options?.resend,
+              })
             }
             onBuildPreview={() => handleBuildPreview()}
             externalDiagnostics={buildDiagnostics}

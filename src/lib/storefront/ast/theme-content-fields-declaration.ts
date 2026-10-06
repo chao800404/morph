@@ -30,6 +30,20 @@ export function isContentFieldsSidecarPath(path: string): boolean {
   return normalized.startsWith("src/") && normalized.endsWith(SIDECAR_SUFFIX);
 }
 
+/** The component a sibling declaration belongs to, among `paths`, or `null`. */
+export function contentFieldsComponentPath(
+  sidecarPath: string,
+  paths: Iterable<string>,
+): string | null {
+  if (!isContentFieldsSidecarPath(sidecarPath)) return null;
+  for (const path of paths) {
+    if (contentFieldsSidecarPath(path) === sidecarPath.replace(/\\/g, "/")) {
+      return path;
+    }
+  }
+  return null;
+}
+
 /** Equal as declarations: the same keys and values, in any key order. */
 function sameDeclaration(left: unknown, right: unknown): boolean {
   if (left === right) return true;

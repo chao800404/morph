@@ -1432,7 +1432,67 @@ export function readThemeModelPath(
   return path.split(/[?#]/)[0] || null;
 }
 
-function getThemeModelLanguage(path: string): string {
+/**
+ * Identifies the schema association that relaxes `.jsonc` validation. Kept
+ * stable so reconfiguring replaces it rather than stacking duplicates.
+ */
+export const THEME_JSONC_SCHEMA_URI = "morph://schemas/jsonc.json";
+
+type ThemeJsonDiagnosticsOptions = {
+  readonly schemas?: ReadonlyArray<{
+    readonly uri: string;
+    readonly fileMatch?: string[];
+    readonly schema?: unknown;
+  }>;
+  readonly [option: string]: unknown;
+};
+
+type ThemeJsonDefaults = {
+  readonly diagnosticsOptions?: ThemeJsonDiagnosticsOptions;
+  setDiagnosticsOptions(options: ThemeJsonDiagnosticsOptions): void;
+};
+
+// monaco-editor 0.55 moved the JSON service to a top-level `json` namespace
+// and left `languages.json` as a deprecated alias; accept whichever exists.
+function getThemeJsonDefaults(monaco: Monaco): ThemeJsonDefaults | null {
+  const host = monaco as unknown as {
+    json?: { jsonDefaults?: ThemeJsonDefaults };
+    languages?: { json?: { jsonDefaults?: ThemeJsonDefaults } };
+  };
+  return (
+    host.json?.jsonDefaults ?? host.languages?.json?.jsonDefaults ?? null
+  );
+}
+
+/**
+ * `.jsonc` files (a Theme's own `wrangler.jsonc`) are JSON with comments and
+ * trailing commas, as wrangler reads them. Both share Monaco's "json" language
+ * so they keep formatting, folding and schema features; the difference is a
+ * schema association matched on the `.jsonc` extension whose
+ * `allowComments` / `allowTrailingCommas` relaxes only those models. The global
+ * comment and trailing-comma severities stay untouched, so `.json` is strict.
+ */
+export function configureThemeJson(monaco: Monaco): void {
+  const defaults = getThemeJsonDefaults(monaco);
+  if (!defaults) return;
+  const current = defaults.diagnosticsOptions ?? {};
+  defaults.setDiagnosticsOptions({
+    ...current,
+    validate: true,
+    schemas: [
+      ...(current.schemas ?? []).filter(
+        (schema) => schema.uri !== THEME_JSONC_SCHEMA_URI,
+      ),
+      {
+        uri: THEME_JSONC_SCHEMA_URI,
+        fileMatch: ["*.jsonc"],
+        schema: { allowComments: true, allowTrailingCommas: true },
+      },
+    ],
+  });
+}
+
+export function getThemeModelLanguage(path: string): string {
   if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
   if (path.endsWith(".jsx") || path.endsWith(".js")) return "javascript";
   if (path.endsWith(".css")) return "css";
