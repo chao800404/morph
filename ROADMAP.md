@@ -420,7 +420,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 - 控制服務授權未確認，不依賴容器內隔離作為防線；容器內快取、設定目錄與正式環境的秘密盤點仍未完成
 - ✅ 部署加固：wrangler 在平台建立、產物無法寫入的專用工作目錄執行，設定檔用絕對路徑，`--env-file` 指向空檔不載入任何 `.env`，API 位址／環境／合規區域以非空官方值寫死（代理與全域 API key 無法以空值寫死，故 `.env` 不載入才是主防線）。測試以固定版本的真實 wrangler、假 API 與假 token 驗證各目錄的 `.env`／`.env.local` 不能改變目的地，並以對照組證明未加固時會。部署 token 的實際權限範圍仍待建立正式 token 時限縮
 
-匯入前另需決定：套件白名單與本地專案任意依賴的關係、店家自己的環境變數與 secrets。
+產品方向（2026-10-06）：Morph 匯入的是原生 TanStack Start 專案，不轉換成 Morph 專案，也不新增 Morph 專用設定語言。規劃見 [`docs/start-native-import-plan.md`](docs/start-native-import-plan.md)：官方 fixture 原樣匯入為最高層級驗收；建置執行客戶自己的 `vite.config.ts`（AST 只服務 Design 與 Monaco）；每個 Theme 有依 lockfile 鎖定的依賴快照，沿用既有套件申請流程自動提出、但不自動信任；基礎設施（D1、KV、R2、Secrets）以對應方式處理；四種渲染模式由 Code 與 Design 修改同一份官方寫法；發布時由產物凍結 Render Plan。
 
 ---
 
