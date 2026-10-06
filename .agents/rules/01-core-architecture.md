@@ -325,7 +325,9 @@ Starter Theme 是建立新 Theme 時使用的 bootstrap seed，不是任何 cust
 Manifest 不得變成另一份 presentation SSOT。
 
 **Manifest 不得是唯一的能力宣告來源。** 元件可以在自己的原始碼裡宣告
-`contentFields`，那份宣告與元件在同一個檔案、不可能漂移，且優先於 manifest。
+`contentFields`，或寫在旁邊同名的 `<Name>.fields.ts`（內容相同的 `export const contentFields`，
+跨框架通用的寫法，見 `docs/multi-runtime-theme-plan.md`）；兩者都優先於 manifest。兩處都宣告且
+內容不同時，該元件不開放 Design 內容編輯，不默默選一份。
 Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服器驗證必須用**同一個解析器**，
 否則會出現「表單顯示得了、存檔卻被丟掉」的分歧。
 

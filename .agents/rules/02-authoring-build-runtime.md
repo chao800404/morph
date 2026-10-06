@@ -94,9 +94,15 @@ React / TSX / CSS / Tailwind Theme Source 是 Code Mode、Live Preview、Visual 
 ### 5.3.2 Theme content field capability
 
 Customer Theme 若要讓 code-authored component props 可由 Design Mode 編輯，必須提供 bounded
-`contentFields` capability。新的元件應在自己的 source file 宣告 `export const contentFields`；
-`morph.theme.json` 內的 `contentFields` 只作為尚未遷移元件的 compatibility fallback，不得成為
-新的唯一宣告來源。
+`contentFields` capability。新的元件應在自己的 source file，或旁邊同名的 `<Name>.fields.ts`，
+宣告 `export const contentFields`；`morph.theme.json` 內的 `contentFields` 只作為尚未遷移元件的
+compatibility fallback，不得成為新的唯一宣告來源。
+
+- 兩處宣告的合併規則只有一份：`readComponentContentFields`
+  （`src/lib/storefront/ast/theme-content-fields-declaration.ts`）。Capability resolver（編輯器與
+  server 兩條路徑）、預覽的欄位標記與 Code 模式診斷都經由它，不得各自讀其中一個檔案。
+- `.fields.ts` 只被解析，不被 import 或執行。Live Preview 同步時，元件與它的 `.fields.ts` 一起送出，
+  否則預覽只依其中一份標記欄位。
 
 - `contentFields` 只描述 content authoring capability：欄位 key、控制型別、label、長度／數值限制與有限選項；不得包含 callback、任意 validator、JS expression、HTML renderer 或 presentation implementation。
 - Theme component 的程式碼 default prop 仍是 source fallback。儲存 Theme source 不得自動把 default 寫入 D1；只有使用者首次確認 Design content 修改時，才透過既有 versioned Page／Template Document draft 與 OCC/CAS 建立 override。

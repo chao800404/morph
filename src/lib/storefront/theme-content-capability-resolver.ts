@@ -1,5 +1,8 @@
 import { parse } from "@babel/parser";
-import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
+import {
+  contentFieldsSidecarPath,
+  readComponentContentFields,
+} from "./ast/theme-content-fields-declaration";
 import { inferThemeContentFields } from "./ast/infer-theme-content-fields";
 import {
   isArrayContentField,
@@ -473,7 +476,17 @@ export function resolveThemeContentCapabilitiesFromFiles(
       sourceStatuses.set(path, "unreadable");
       continue;
     }
-    const parsed = parseColocatedContentFields(source);
+    const sidecarPath = contentFieldsSidecarPath(path);
+    const parsed = readComponentContentFields({
+      path,
+      source,
+      // `null` for a sibling that exists but was not loaded: refused, not
+      // treated as absent, or the component's own declaration would answer.
+      sidecar:
+        sidecarPath && byPath.has(sidecarPath)
+          ? (byPath.get(sidecarPath) ?? null)
+          : undefined,
+    });
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${path}: ${diagnostic}`);
     }
@@ -625,9 +638,22 @@ export async function resolveThemeContentCapabilities(args: {
   const invalidDeclarations = new Set<string>();
   const refForPath = new Map<string, string>();
   const sourceStatuses = new Map<string, ThemeContentSourceStatus>();
+  // The sibling declaration of every source read, from the same saved
+  // workspace. Its path is derived here from a server-chosen source path.
+  const readSidecar = async (sourcePath: string) => {
+    const sidecarPath = contentFieldsSidecarPath(sourcePath);
+    if (!sidecarPath) return undefined;
+    const sidecar = await args.readSource(sidecarPath);
+    return typeof sidecar === "string" ? sidecar : undefined;
+  };
+
   for (const [sourcePath, source] of sourceContents) {
     const componentRef = sourceRefByPath.get(sourcePath) ?? sourcePath;
-    const parsed = parseColocatedContentFields(source);
+    const parsed = readComponentContentFields({
+      path: sourcePath,
+      source,
+      sidecar: await readSidecar(sourcePath),
+    });
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${sourcePath}: ${diagnostic}`);
     }
@@ -670,7 +696,11 @@ export async function resolveThemeContentCapabilities(args: {
         if (declared.has(candidate)) break;
         const rowSource = await args.readSource(candidate);
         if (typeof rowSource !== "string") continue;
-        const parsedRow = parseColocatedContentFields(rowSource);
+        const parsedRow = readComponentContentFields({
+          path: candidate,
+          source: rowSource,
+          sidecar: await readSidecar(candidate),
+        });
         for (const diagnostic of parsedRow.diagnostics) {
           diagnostics.push(`${candidate}: ${diagnostic}`);
         }

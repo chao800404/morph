@@ -31,6 +31,9 @@ export const EDITOR_SHARDS = [
     "responsive.spec.ts",
     "public-root-url.spec.ts",
     "media-svg.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest tests.
+    "content-fields-sidecar.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

@@ -157,3 +157,65 @@ describe("waitForOwnSaves", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("a component and its <Name>.fields.ts are sent together", () => {
+  const COMPONENT = "src/components/Hero.tsx";
+  const SIDECAR = "src/components/Hero.fields.ts";
+  const OTHER = "src/components/Footer.tsx";
+  const workspace = {
+    [COMPONENT]: saved(COMPONENT, "hero v3", 3),
+    [SIDECAR]: saved(SIDECAR, "fields v7", 7),
+    [OTHER]: saved(OTHER, "footer v1", 1),
+  };
+  const files = (component: string, sidecar: string) => [
+    { path: COMPONENT, content: component },
+    { path: SIDECAR, content: sidecar },
+    { path: OTHER, content: "footer v1" },
+  ];
+
+  it("adds the saved declaration to a changed component, at the version this tab holds", () => {
+    expect(
+      planPreviewSync(files("hero edited", "fields v7"), workspace, new Map()),
+    ).toEqual([
+      { path: COMPONENT, content: "hero edited", baseVersion: 3 },
+      { path: SIDECAR, content: "fields v7", baseVersion: 7 },
+    ]);
+  });
+
+  it("adds the component to a changed declaration", () => {
+    expect(
+      planPreviewSync(files("hero v3", "fields edited"), workspace, new Map()),
+    ).toEqual([
+      { path: SIDECAR, content: "fields edited", baseVersion: 7 },
+      { path: COMPONENT, content: "hero v3", baseVersion: 3 },
+    ]);
+  });
+
+  it("sends each once when both changed", () => {
+    expect(
+      planPreviewSync(files("hero edited", "fields edited"), workspace, new Map()),
+    ).toEqual([
+      { path: COMPONENT, content: "hero edited", baseVersion: 3 },
+      { path: SIDECAR, content: "fields edited", baseVersion: 7 },
+    ]);
+  });
+
+  it("leaves unrelated untouched files out, as before", () => {
+    const planned = planPreviewSync(
+      files("hero edited", "fields v7"),
+      workspace,
+      new Map(),
+    );
+    expect(planned.map((file) => file.path)).not.toContain(OTHER);
+  });
+
+  it("adds nothing for a component without a declaration file", () => {
+    expect(
+      planPreviewSync(
+        [{ path: OTHER, content: "footer edited" }],
+        workspace,
+        new Map(),
+      ),
+    ).toEqual([{ path: OTHER, content: "footer edited", baseVersion: 1 }]);
+  });
+});

@@ -203,7 +203,10 @@ describe("resolveThemeContentCapabilities", () => {
       },
     });
 
+    // Plus the sibling declaration of each source that was read: its path is
+    // derived from a referenced source, never chosen by the caller.
     expect(requested.sort()).toEqual([
+      "src/components/Hero.fields.ts",
       "src/components/Hero.tsx",
       "src/components/Legacy.tsx",
       "src/components/Promo.tsx",
@@ -377,5 +380,99 @@ describe("a source declaration decides for itself (EDIT-03)", () => {
     expect(
       Object.keys(result.capabilities["promo.default"]?.fields ?? {}),
     ).toEqual([]);
+  });
+});
+
+describe("a sibling <Name>.fields.ts declares the same as the component would", () => {
+  const component = `export default function Hero({ heading }: { heading?: string }) { return <h1>{heading}</h1>; }`;
+  const sidecar = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;`;
+  const differing = `export const contentFields = { heading: { type: "textarea" } } as const;\n${component}`;
+  const heroPath = "src/components/Hero.tsx";
+  const sidecarPath = "src/components/Hero.fields.ts";
+
+  // Both entry points, from the same files: the editor's form and the server's
+  // write validation must agree, or a field shows and its save is dropped.
+  const resolveBoth = async (themeFiles: Record<string, string>) => {
+    const list = Object.entries(themeFiles).map(([path, content]) => ({
+      path,
+      content,
+    }));
+    const scanned = resolveThemeContentCapabilitiesFromFiles(list, {
+      includeManifestFallback: false,
+    });
+    const onDemand = await resolveThemeContentCapabilities({
+      manifestContent: null,
+      additionalSourcePaths: [heroPath],
+      readSource: async (path) => themeFiles[path] ?? null,
+    });
+    return {
+      scanned: scanned.capabilities[heroPath],
+      onDemand: onDemand.capabilities[heroPath],
+      diagnostics: scanned.diagnostics,
+    };
+  };
+
+  it("exposes the sibling's fields on both paths", async () => {
+    const { scanned, onDemand } = await resolveBoth({
+      [heroPath]: component,
+      [sidecarPath]: sidecar,
+    });
+    expect(scanned).toEqual({
+      fields: { heading: { type: "text", label: "Heading" } },
+    });
+    expect(onDemand).toEqual(scanned);
+  });
+
+  it("exposes nothing on both paths when the two declarations differ", async () => {
+    const { scanned, onDemand, diagnostics } = await resolveBoth({
+      [heroPath]: differing,
+      [sidecarPath]: sidecar,
+    });
+    expect(scanned).toEqual({ fields: {} });
+    expect(onDemand).toEqual({ fields: {} });
+    expect(diagnostics.join("\n")).toContain("they differ");
+  });
+
+  it("follows an edit to the sibling, as Code mode makes it", async () => {
+    const before = await resolveBoth({
+      [heroPath]: component,
+      [sidecarPath]: sidecar,
+    });
+    const after = await resolveBoth({
+      [heroPath]: component,
+      [sidecarPath]: sidecar.replace(
+        `heading: { type: "text", label: "Heading" },`,
+        `heading: { type: "text", label: "Title" },\n  body: { type: "textarea" },`,
+      ),
+    });
+    expect(Object.keys(before.scanned?.fields ?? {})).toEqual(["heading"]);
+    expect(after.scanned?.fields).toEqual({
+      heading: { type: "text", label: "Title" },
+      body: { type: "textarea" },
+    });
+    expect(after.onDemand).toEqual(after.scanned);
+  });
+
+  it("does not treat the sibling itself as a component", () => {
+    const result = resolveThemeContentCapabilitiesFromFiles(
+      [
+        { path: heroPath, content: component },
+        { path: sidecarPath, content: sidecar },
+      ],
+      { includeManifestFallback: false },
+    );
+    expect(result.capabilities[sidecarPath]).toBeUndefined();
+    expect(result.sourceScan.entries[heroPath]?.status).toBe("declared");
+  });
+
+  it("keeps a component without a sibling exactly as before", async () => {
+    const inline = `${sidecar}\n${component}`;
+    const { scanned, onDemand } = await resolveBoth({ [heroPath]: inline });
+    expect(scanned).toEqual({
+      fields: { heading: { type: "text", label: "Heading" } },
+    });
+    expect(onDemand).toEqual(scanned);
   });
 });

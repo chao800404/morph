@@ -1,3 +1,7 @@
+import {
+  contentFieldsSidecarPath,
+  isContentFieldsSidecarPath,
+} from "@/lib/storefront/ast/theme-content-fields-declaration";
 import type { PreviewSyncFile } from "@/lib/storefront/preview-sync-guard";
 import type { ThemeWorkspaceFileState } from "@/lib/storefront/store/theme-workspace-store";
 
@@ -37,13 +41,56 @@ export function planPreviewSync(
       file.content === state.serverContent &&
       (lastWritten === undefined || lastWritten === file.content);
     if (untouched && !justSavedPaths.has(file.path)) continue;
-    planned.push({
-      path: file.path,
-      content: file.content,
-      baseVersion: state?.serverExists ? state.serverVersion : null,
-    });
+    planned.push(planFile(file, state));
   }
-  return planned;
+  return withContentFieldsCompanions(planned, files, workspace);
+}
+
+function planFile(
+  file: { path: string; content: string },
+  state: ThemeWorkspaceFileState | undefined,
+): PreviewSyncFile {
+  return {
+    path: file.path,
+    content: file.content,
+    baseVersion: state?.serverExists ? state.serverVersion : null,
+  };
+}
+
+/**
+ * A component and its `<Name>.fields.ts` travel together.
+ *
+ * The preview marks a component's fields from both files, and a sync is
+ * prepared from the files it carries. Sending one alone marks it from half
+ * its declaration: a changed component loses its fields, a changed
+ * declaration leaves the component marked for the old ones. The companion
+ * goes at the version this tab holds, so the preview still refuses it if
+ * another tab has saved it since.
+ */
+function withContentFieldsCompanions(
+  planned: PreviewSyncFile[],
+  files: readonly { path: string; content: string }[],
+  workspace: Readonly<Record<string, ThemeWorkspaceFileState>>,
+): PreviewSyncFile[] {
+  const plannedPaths = new Set(planned.map((file) => file.path));
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const componentForSidecar = new Map<string, string>();
+  for (const file of files) {
+    const sidecar = contentFieldsSidecarPath(file.path);
+    if (sidecar && byPath.has(sidecar)) componentForSidecar.set(sidecar, file.path);
+  }
+  const companions: PreviewSyncFile[] = [];
+  for (const file of planned) {
+    const companionPath = isContentFieldsSidecarPath(file.path)
+      ? componentForSidecar.get(file.path)
+      : contentFieldsSidecarPath(file.path);
+    if (!companionPath || plannedPaths.has(companionPath)) continue;
+    const companion = byPath.get(companionPath);
+    if (!companion) continue;
+    plannedPaths.add(companionPath);
+    companions.push(planFile(companion, workspace[companionPath]));
+  }
+  return [...planned, ...companions];
 }
 
 /**

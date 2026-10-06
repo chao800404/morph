@@ -1,6 +1,9 @@
 import { parse } from "@babel/parser";
 import { inferBoundPropName } from "./theme-field-binding";
-import { parseColocatedContentFields } from "./theme-content-fields-source";
+import {
+  contentFieldsSidecarPath,
+  readComponentContentFields,
+} from "./theme-content-fields-declaration";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 
 /**
@@ -340,13 +343,23 @@ function hasParenthesizedParams(source: string, itemParamEnd: number) {
  * The interpreter can check the values a component actually received; a
  * compiler cannot, and guessing would put fields in the Inspector that write
  * nowhere. The declaration is the one statement of intent available before
- * anything runs, and it is already required to be a static literal.
+ * anything runs, and it is already required to be a static literal. Read with
+ * the sibling `<Name>.fields.ts` by the same rule the capability resolver uses,
+ * so the canvas marks exactly the fields the Inspector offers.
  */
-function declaredFields(source: string): {
+function declaredFields(file: {
+  path: string;
+  content: string;
+  sidecar?: string | null;
+}): {
   top: ReadonlySet<string>;
   rows: ReadonlyMap<string, ReadonlySet<string>>;
 } | null {
-  const parsed = parseColocatedContentFields(source);
+  const parsed = readComponentContentFields({
+    path: file.path,
+    source: file.content,
+    sidecar: file.sidecar,
+  });
   if (parsed.declaration !== "valid" || !parsed.fields) return null;
 
   const top = new Set(Object.keys(parsed.fields));
@@ -412,9 +425,11 @@ function escapeAttribute(value: string): string {
 export function findUnindexedContentArrayMaps(file: {
   path: string;
   content: string;
+  /** The sibling `<Name>.fields.ts`, when there is one. */
+  sidecar?: string | null;
 }): Array<{ arrayPath: string; line: number; column: number }> {
   if (!JSX_FILE.test(file.path)) return [];
-  const declared = declaredFields(file.content);
+  const declared = declaredFields(file);
   if (!declared || declared.rows.size === 0) return [];
 
   let ast: any;
@@ -489,9 +504,11 @@ export function findUnindexedContentArrayMaps(file: {
 export function findIndexKeyedContentArrayMaps(file: {
   path: string;
   content: string;
+  /** The sibling `<Name>.fields.ts`, when there is one. */
+  sidecar?: string | null;
 }): Array<{ arrayPath: string; line: number; column: number }> {
   if (!JSX_FILE.test(file.path)) return [];
-  const declared = declaredFields(file.content);
+  const declared = declaredFields(file);
   if (!declared || declared.rows.size === 0) return [];
 
   let ast: any;
@@ -559,6 +576,7 @@ export function injectPreviewBindings(
   const sections: Record<string, readonly string[]> = {};
   const skipped: Array<{ path: string; reason: string }> = [];
   const warnings: Array<{ path: string; message: string }> = [];
+  const contentByPath = new Map(files.map((file) => [file.path, file.content]));
 
   const out = files.map((file) => {
     if (!JSX_FILE.test(file.path)) return file;
@@ -576,7 +594,11 @@ export function injectPreviewBindings(
       return file;
     }
 
-    const declared = declaredFields(file.content);
+    const sidecarPath = contentFieldsSidecarPath(file.path);
+    const declared = declaredFields({
+      ...file,
+      sidecar: sidecarPath ? contentByPath.get(sidecarPath) : undefined,
+    });
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);

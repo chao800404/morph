@@ -5,6 +5,7 @@ import {
   type ThemeRouteSection,
 } from "../compiler/theme-route-sections";
 import { isThemeSectionSourcePath } from "../theme-section-convention";
+import { contentFieldsSidecarPath } from "../ast/theme-content-fields-declaration";
 import { parseColocatedContentFields } from "../ast/theme-content-fields-source";
 import { isValidThemeContentSlotId } from "../theme-content-slots";
 
@@ -46,6 +47,12 @@ export type TextPromotionRefusal =
   | "props-type-elsewhere"
   /** The component declares no fields here and none can be inferred. */
   | "no-field-capability"
+  /**
+   * The component declares its fields in a sibling `<Name>.fields.ts`.
+   * Promotion only writes declarations in the component file, and a second
+   * declaration there would differ from the sibling and stop Design editing.
+   */
+  | "fields-in-sidecar"
   /** No page or layout renders this section through `content(...)`. */
   | "call-site-not-found"
   /** The page spreads something after `content(...)` that could win. */
@@ -547,6 +554,10 @@ export function analyzeTextPromotion(
     return { status: "code-only", reason: "props-type-elsewhere", text };
   }
 
+  const sidecarPath = contentFieldsSidecarPath(input.componentSourcePath);
+  if (sidecarPath && input.files.some((candidate) => candidate.path === sidecarPath)) {
+    return { status: "code-only", reason: "fields-in-sidecar", text };
+  }
   const declared = parseColocatedContentFields(file.content);
   let fieldDeclaration: "colocated" | "inferred";
   if (declared.declaration === "valid") fieldDeclaration = "colocated";
@@ -619,6 +630,8 @@ export function describeTextPromotionRefusal(
       return "The component's props are typed in another file, so a field cannot be added here safely.";
     case "no-field-capability":
       return "The component does not declare content fields in its own file, and none can be inferred for it.";
+    case "fields-in-sidecar":
+      return "The component declares its content fields in its .fields.ts file. Add the field there in Code mode.";
     case "call-site-not-found":
       return "No page renders this section through content(), so a page value would not reach it.";
     case "call-site-opaque":

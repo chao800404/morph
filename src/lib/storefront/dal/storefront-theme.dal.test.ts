@@ -1536,6 +1536,149 @@ function Home() { return <main><Hero /></main>; }`,
     });
   });
 
+  describe("a component that declares its fields in <Name>.fields.ts", () => {
+    const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+    // The same component placed twice, each with its own content slot.
+    const index = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Hero {...content("hero-a")} /><Hero {...content("hero-b")} /></main>; }`;
+    const hero = `export default function Hero({ heading }: { heading?: string }) { return <h1>{heading}</h1>; }`;
+    const sidecar = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;`;
+
+    const seed = (files: Record<string, string>) => {
+      const insertFile = sqlite.prepare(`
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+      `);
+      for (const [path, content] of Object.entries({
+        "src/routes/__root.tsx": root,
+        "src/routes/index.tsx": index,
+        "src/morph/content.ts": "export const content = () => ({});",
+        ...files,
+      })) {
+        insertFile.run(`f-${path}`, path, content);
+      }
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, created_at, updated_at)
+          VALUES ('template-home', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+        )
+        .run(
+          JSON.stringify({
+            version: 1,
+            sections: ["hero-a", "hero-b"].map((id) => ({
+              id,
+              type: "hero",
+              componentRef: "src/components/Hero.tsx",
+              enabled: true,
+              props: { heading: `Stored ${id}` },
+            })),
+          }),
+        );
+    };
+    const write = (
+      sectionId: string,
+      props: Record<string, unknown>,
+      expectedDraftGeneration = 1,
+    ) =>
+      storefrontThemeDal.updateSectionProps({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-home",
+        sectionId,
+        props,
+        expectedDraftGeneration,
+        createdBy: "user-1",
+      });
+    const draftGeneration = () =>
+      (
+        sqlite
+          .prepare(
+            "SELECT draft_generation FROM storefront_theme_templates WHERE id = 'template-home'",
+          )
+          .get() as { draft_generation: number }
+      ).draft_generation;
+
+    it("writes one instance's declared field and leaves the other instance alone", async () => {
+      seed({
+        "src/components/Hero.tsx": hero,
+        "src/components/Hero.fields.ts": sidecar,
+      });
+      const saved = await write("hero-a", { heading: "New A" });
+      expect(saved?.document.sections).toMatchObject([
+        { id: "hero-a", props: { heading: "New A" } },
+        { id: "hero-b", props: { heading: "Stored hero-b" } },
+      ]);
+    });
+
+    // Undeclared incoming values are filtered out, as for any declaration
+    // (filterSectionContentProps): the write goes through and stores nothing
+    // the component did not offer.
+    it("drops a field the sidecar does not declare", async () => {
+      seed({
+        "src/components/Hero.tsx": hero,
+        "src/components/Hero.fields.ts": sidecar,
+      });
+      const saved = await write("hero-a", { subtitle: "Nope" });
+      expect(saved?.document.sections[0]?.props).toEqual({
+        heading: "Stored hero-a",
+      });
+    });
+
+    it("refuses a write from a stale draft generation", async () => {
+      seed({
+        "src/components/Hero.tsx": hero,
+        "src/components/Hero.fields.ts": sidecar,
+      });
+      await expect(write("hero-a", { heading: "Late" }, 2)).rejects.toThrow(
+        TEMPLATE_DRAFT_GENERATION_MISMATCH,
+      );
+      expect(draftGeneration()).toBe(1);
+    });
+
+    it("stores no content while the component and its sidecar disagree", async () => {
+      seed({
+        "src/components/Hero.tsx": `export const contentFields = {
+  heading: { type: "textarea", label: "Heading" },
+} as const;
+${hero}`,
+        "src/components/Hero.fields.ts": sidecar,
+      });
+      const saved = await write("hero-a", { heading: "New A" });
+      expect(saved?.document.sections[0]?.props).toEqual({
+        heading: "Stored hero-a",
+      });
+    });
+
+    it("uses the sidecar when the component repeats the same declaration", async () => {
+      seed({
+        "src/components/Hero.tsx": `${sidecar}\n${hero}`,
+        "src/components/Hero.fields.ts": sidecar,
+      });
+      const saved = await write("hero-b", { heading: "New B" });
+      expect(saved?.document.sections).toMatchObject([
+        { id: "hero-a", props: { heading: "Stored hero-a" } },
+        { id: "hero-b", props: { heading: "New B" } },
+      ]);
+    });
+
+    it("control: without the sidecar the same component stores nothing", async () => {
+      seed({ "src/components/Hero.tsx": hero });
+      const saved = await write("hero-a", { heading: "New A" });
+      expect(saved?.document.sections[0]?.props).toEqual({
+        heading: "Stored hero-a",
+      });
+    });
+  });
+
   describe("a static route's own document", () => {
     const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
 export const Route = createRootRoute({ component: Root });
