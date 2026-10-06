@@ -163,7 +163,10 @@ import {
 import { collectThemeContentFieldsDiagnostics } from "@/lib/storefront/ast/theme-content-fields-diagnostics";
 import { formatEditorCode } from "./editor-code-formatter";
 import { prepareDuplicateThemeFile } from "@/lib/storefront/editor/duplicate-theme-file";
-import { prepareNewThemeFile } from "@/lib/storefront/editor/new-theme-file";
+import {
+  prepareNewThemeFile,
+  type NewThemeFile,
+} from "@/lib/storefront/editor/new-theme-file";
 import { prepareNewThemeFolder } from "@/lib/storefront/editor/new-theme-folder";
 import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
 import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffers";
@@ -2483,13 +2486,38 @@ const EditorCodeWorkspaceContent = forwardRef<
       path,
       content,
       mimeType,
-    }: {
-      path: string;
-      content: string;
-      mimeType: string;
-    }) => {
+      companions = [],
+    }: NewThemeFile & { companions?: readonly NewThemeFile[] }) => {
       // `expectMissing` is the create precondition: the write is refused if the
       // path already exists, so creating can never overwrite existing work.
+      if (companions.length > 0) {
+        // A component and its `<Name>.fields.ts` land together or not at all,
+        // so neither can exist without the other's declaration.
+        const res = await sendEditorWrite(workspaceScope, "theme", () =>
+          saveStorefrontThemeFilesBatch({
+            data: {
+              storefrontId,
+              themeId,
+              files: [{ path, content, mimeType }, ...companions].map(
+                (file) => ({ ...file, expectMissing: true }),
+              ),
+              deletions: [],
+              expectedSourceGeneration: useThemeWorkspaceStore
+                .getState()
+                .getAcceptedSourceGeneration(workspaceScope),
+            },
+          }),
+        );
+        if (!res.success) throw new Error(res.message);
+        const files = res.data.files ?? [];
+        const saved = files.find((file) => file.path === path);
+        if (!saved) throw new Error(`${path} was not saved.`);
+        return {
+          saved,
+          savedCompanions: files.filter((file) => file.path !== path),
+          sourceGeneration: res.data.sourceGeneration,
+        };
+      }
       const res = await sendEditorWrite(workspaceScope, "theme", () =>
         isEditablePublicTextPath(path) ? writeThemePublicTextFile({
           storefrontId, themeId, path, content,
@@ -2510,9 +2538,13 @@ const EditorCodeWorkspaceContent = forwardRef<
         }),
       );
       if (!res.success) throw new Error(res.message);
-      return res.data;
+      return {
+        saved: res.data,
+        savedCompanions: [],
+        sourceGeneration: res.data?.sourceGeneration,
+      };
     },
-    onSuccess: async (saved) => {
+    onSuccess: async ({ saved, savedCompanions, sourceGeneration }) => {
       if (!saved) return;
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeFileQueries.all(),
@@ -2520,7 +2552,10 @@ const EditorCodeWorkspaceContent = forwardRef<
       // The old tree omits a just-created binary file. Publish its editor
       // baseline only after the refreshed tree includes the bytes reference,
       // so source-only hydration cannot classify it as remotely deleted.
-      markWorkspaceSaved(saved, workspaceScope, saved.sourceGeneration);
+      markWorkspaceSaved(saved, workspaceScope, sourceGeneration);
+      for (const companion of savedCompanions) {
+        markWorkspaceSaved(companion, workspaceScope, sourceGeneration);
+      }
       if (isEditablePublicTextPath(saved.path)) {
         setOpenedPublicText((previous) => ({ ...previous, [saved.path]: saved }));
       }
@@ -2532,7 +2567,9 @@ const EditorCodeWorkspaceContent = forwardRef<
       setOpenTabs((prev) =>
         prev.includes(saved.path) ? prev : [...prev, saved.path],
       );
-      toast.success(`Created ${saved.path}`);
+      toast.success(
+        `Created ${[saved, ...savedCompanions].map((file) => file.path).join(" and ")}`,
+      );
       onRestartPreview?.();
     },
     onError: (error) =>
@@ -2596,6 +2633,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       path: prepared.path,
       content: prepared.content,
       mimeType: prepared.mimeType,
+      companions: prepared.companions,
     });
   }, [createMutation, files, binaryFileByPath, newFilePath]);
 
@@ -2755,8 +2793,11 @@ const EditorCodeWorkspaceContent = forwardRef<
       // buffer when this is the active file, including an unsaved draft.
       const source =
         getCurrentEditorContent(path) ??
-        files.find((file) => file.path === path)?.content ??
-        prepared.content;
+        files.find((file) => file.path === path)?.content;
+      if (source === undefined) {
+        toast.error(`${path} is no longer in the workspace.`);
+        return;
+      }
       createMutation.mutate({
         path: prepared.path,
         content: source,
