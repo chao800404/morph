@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { verifyCoverage, verifyWorkflowWiring } from "./check-e2e-shards.mjs";
+import path from "node:path";
+import {
+  latestShardReports,
+  verifyCoverage,
+  verifyWorkflowWiring,
+} from "./check-e2e-shards.mjs";
 import {
   EDITOR_SHARDS,
   EDITOR_SHARD_COUNT,
@@ -159,6 +164,69 @@ test("a matrix, job name or runner flag left at another count fails", () => {
     /--shard=N/,
   );
 });
+test("shard artifacts left with one name per shard fail", () => {
+  assert.throws(
+    () =>
+      verifyWorkflowWiring(
+        workflow.replace(
+          "name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}",
+          "name: editor-e2e-results-${{ matrix.shard }}",
+        ),
+      ),
+    /per run attempt/,
+  );
+});
+
+// What download-artifact lays out for a run whose shard 1 failed and was
+// re-run: shards 2 and 3 only have their first attempt.
+const downloaded = (...dirs) =>
+  dirs.map(([shard, attempt]) =>
+    path.join(
+      "shard-artifacts",
+      `editor-e2e-results-${shard}-attempt-${attempt}`,
+      `shard-${shard}.json`,
+    ),
+  );
+test("a re-run shard's latest attempt is the one read", () => {
+  const files = downloaded([1, 1], [1, 2], [2, 1], [3, 1]);
+  assert.deepEqual(
+    latestShardReports(files, 3),
+    [files[1], files[2], files[3]],
+  );
+});
+test("the order artifacts arrive in does not change which attempt is read", () => {
+  const files = downloaded([1, 2], [1, 1], [2, 1], [3, 1]);
+  assert.equal(latestShardReports(files, 3)[0], files[0]);
+});
+test("a shard with no report fails", () =>
+  assert.throws(
+    () => latestShardReports(downloaded([1, 1], [3, 1]), 3),
+    /shard 2 is required/,
+  ));
+test("a report outside an attempt-named artifact is not read", () =>
+  assert.throws(
+    () =>
+      latestShardReports(
+        [path.join("shard-artifacts", "editor-e2e-results-1", "shard-1.json")],
+        1,
+      ),
+    /shard 1 is required/,
+  ));
+test("a report filed under another shard's artifact is not read", () =>
+  assert.throws(
+    () =>
+      latestShardReports(
+        [
+          path.join(
+            "shard-artifacts",
+            "editor-e2e-results-2-attempt-1",
+            "shard-1.json",
+          ),
+        ],
+        1,
+      ),
+    /shard 1 is required/,
+  ));
 
 const report = (file, durations, project = "editor") => ({
   suites: [

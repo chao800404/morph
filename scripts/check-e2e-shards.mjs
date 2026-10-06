@@ -7,6 +7,7 @@ import {
   EDITOR_SHARDS,
   EDITOR_SHARD_COUNT,
   editorShardArguments,
+  latestShardReportFiles,
 } from "./editor-e2e-shards.mjs";
 import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
 
@@ -36,6 +37,37 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     workflow.includes(`--shard=\${{ matrix.shard }}/${count}\n`),
     `The shard job must pass --shard=N/${count} to the runner`,
   );
+  assert.ok(
+    workflow.includes(
+      "name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}\n",
+    ),
+    "Shard artifacts must be named per run attempt, or a re-run's report is read from the failed attempt",
+  );
+}
+
+/**
+ * The report each shard last produced, in shard order.
+ *
+ * Re-running failed jobs keeps the run's earlier artifacts: the shards that
+ * passed are not re-run, and the one that failed uploads again. With one name
+ * per shard both uploads landed in the same download directory and either
+ * could win, so a shard that passed on re-run was still read as failed. Each
+ * attempt now uploads under its own name and only a shard's latest attempt
+ * counts.
+ */
+export function latestShardReports(files, count = EDITOR_SHARD_COUNT) {
+  const latest = latestShardReportFiles(files);
+  return Array.from({ length: count }, (_, offset) => {
+    const shard = offset + 1;
+    const report = latest.find((entry) => entry.shard === shard);
+    assert.ok(report, `A report for shard ${shard} is required`);
+    assert.equal(
+      report.duplicates,
+      0,
+      `Exactly one report for shard ${shard} attempt ${report.attempt} is required`,
+    );
+    return report.file;
+  });
 }
 
 export function records(report) {
@@ -162,17 +194,9 @@ if (
   const expected = list();
   const directory = process.argv[2];
   const shards = directory
-    ? indexes.map((index) => {
-        const matches = reportFiles(directory).filter(
-          (file) => path.basename(file) === `shard-${index}.json`,
-        );
-        assert.equal(
-          matches.length,
-          1,
-          `Exactly one report for shard ${index} is required`,
-        );
-        return records(JSON.parse(readFileSync(matches[0], "utf8")));
-      })
+    ? latestShardReports(reportFiles(directory)).map((file) =>
+        records(JSON.parse(readFileSync(file, "utf8"))),
+      )
     : indexes.map((index) => list([`--shard=${index}/${EDITOR_SHARD_COUNT}`]));
   console.log(
     `E2E shard coverage verified: ${verifyCoverage(expected, shards, Boolean(directory)).join(" / ")} editor tests`,

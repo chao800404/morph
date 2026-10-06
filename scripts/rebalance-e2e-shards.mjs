@@ -4,7 +4,8 @@
  *   node scripts/rebalance-e2e-shards.mjs <reports-dir> [--shards=N] [--write]
  *
  * `<reports-dir>` holds the `shard-N.json` reports a CI run uploads as
- * `editor-e2e-results-N` (download them all into one directory). The proposal
+ * `editor-e2e-results-N-attempt-M` (download them all into one directory; only
+ * each shard's latest attempt is read). The proposal
  * is printed for review; `--write` records the measured per-file durations in
  * `editor-e2e-durations.json`, which the shard check uses for its budget
  * warning. The plan itself is pasted into `editor-e2e-shards.mjs` by hand, so
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   EDITOR_SHARD_BUDGET_SECONDS,
   EDITOR_SHARD_COUNT,
+  latestShardReportFiles,
 } from "./editor-e2e-shards.mjs";
 
 export const DURATIONS_FILE = fileURLToPath(
@@ -148,8 +150,14 @@ if (
   const count = countFlag
     ? Number(countFlag.slice("--shards=".length))
     : EDITOR_SHARD_COUNT;
-  const files = reportFiles(directory);
-  if (files.length === 0) throw new Error(`No shard-N.json under ${directory}`);
+  // A re-run shard's failed first attempt would count its tests twice.
+  const files = latestShardReportFiles(reportFiles(directory)).map(
+    ({ file }) => file,
+  );
+  if (files.length === 0)
+    throw new Error(
+      `No shard-N.json under an editor-e2e-results-N-attempt-M directory in ${directory}`,
+    );
   const durations = fileDurations(
     files.map((file) => JSON.parse(readFileSync(file, "utf8"))),
   );

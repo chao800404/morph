@@ -23,7 +23,13 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { decide, describeUnhappy, preflight, REQUIRED_CHECK } from "./ship.mjs";
+import {
+  decide,
+  describeUnhappy,
+  latestChecks,
+  preflight,
+  REQUIRED_CHECK,
+} from "./ship.mjs";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 
 const guard = (conclusion, status = "COMPLETED") => ({
@@ -293,5 +299,63 @@ describe("the name of the required check", () => {
       names.includes(REQUIRED_CHECK),
       `ci.yml has no job named ${REQUIRED_CHECK}; it has ${names.join(", ")}`,
     );
+  });
+});
+
+describe("a commit with more than one workflow run", () => {
+  // What PR #103's rollup held after it was reopened: every check twice, the
+  // first run's acceptance job failed and the second run's passed.
+  const inRun = (run, check) => ({
+    ...check,
+    detailsUrl: `https://github.com/chao800404/morph/actions/runs/${run}/job/1`,
+  });
+  const acceptance = (conclusion, status = "COMPLETED") => ({
+    name: "Editor end-to-end (local preview transport)",
+    status,
+    conclusion,
+  });
+  const run = (id, acceptanceCheck) => [
+    inRun(id, guard("SUCCESS")),
+    inRun(id, other("SUCCESS")),
+    ...shardChecks().map((check) => inRun(id, check)),
+    inRun(id, acceptanceCheck),
+  ];
+
+  it("merges on the newest run when an older run failed", () => {
+    assert.equal(
+      verdict(
+        latestChecks([
+          ...run(37475243403, acceptance("FAILURE")),
+          ...run(37478782101, acceptance("SUCCESS")),
+        ]),
+      ),
+      "merge",
+    );
+  });
+  it("refuses when the newest run failed, whatever an older run said", () => {
+    assert.equal(
+      verdict(
+        latestChecks([
+          ...run(37478782101, acceptance("FAILURE")),
+          ...run(37475243403, acceptance("SUCCESS")),
+        ]),
+      ),
+      "refuse",
+    );
+  });
+  it("waits for a newer run still in progress instead of refusing on the old one", () => {
+    assert.equal(
+      verdict(
+        latestChecks([
+          ...run(37475243403, acceptance("FAILURE")),
+          ...run(37478782101, acceptance(null, "IN_PROGRESS")),
+        ]),
+      ),
+      "wait",
+    );
+  });
+  it("keeps every check when there is one run", () => {
+    const single = run(37478782101, acceptance("SUCCESS"));
+    assert.equal(latestChecks(single).length, single.length);
   });
 });
