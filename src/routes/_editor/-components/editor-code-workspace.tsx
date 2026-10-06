@@ -143,6 +143,7 @@ import {
 import { toast } from "sonner";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import {
+  configureThemeJson,
   configureThemeTypeScript,
   collectThemeImportProtectionEditorDiagnostics,
   collectThemeRouteDiagnostics,
@@ -730,6 +731,7 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const handleEditorWillMount = useCallback(
     (monaco: Monaco) => {
+      configureThemeJson(monaco);
       configureThemeTypeScript(
         monaco,
         extractThemeDependencyNames(files),

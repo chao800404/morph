@@ -12,10 +12,13 @@ import {
   collectThemeRouteDiagnostics,
   collectThemeImportProtectionEditorDiagnostics,
   createJsxTagDecorations,
+  configureThemeJson,
   configureThemeTypeScript,
   disposeThemeWorkspaceModels,
   ensureThemeWorkspaceModels,
+  getThemeModelLanguage,
   getThemeModelUri,
+  THEME_JSONC_SCHEMA_URI,
   renderGeneratedRouteTreeSource,
   registerTailwindCompletionProvider,
   registerTanStackRouteCompletionProvider,
@@ -270,6 +273,80 @@ describe("resolveThemeRouteCompletionContext", () => {
     expect(
       resolveThemeRouteCompletionContext(line, line.length + 1),
     ).toBeNull();
+  });
+});
+
+describe("configureThemeJson", () => {
+  function createJsonMonaco(
+    namespace: "json" | "languages.json",
+    initial: Record<string, unknown> = {},
+  ) {
+    const jsonDefaults = {
+      diagnosticsOptions: initial,
+      setDiagnosticsOptions: vi.fn((options: Record<string, unknown>) => {
+        jsonDefaults.diagnosticsOptions = options;
+      }),
+    };
+    const monaco = (
+      namespace === "json"
+        ? { json: { jsonDefaults } }
+        : { languages: { json: { jsonDefaults } } }
+    ) as unknown as Monaco;
+    return { monaco, jsonDefaults };
+  }
+
+  it("keeps .json and .jsonc on Monaco's json language", () => {
+    expect(getThemeModelLanguage("wrangler.jsonc")).toBe("json");
+    expect(getThemeModelLanguage("package.json")).toBe("json");
+  });
+
+  it("relaxes comments and trailing commas only for .jsonc models", () => {
+    const { monaco, jsonDefaults } = createJsonMonaco("json", {
+      validate: true,
+      allowComments: false,
+      schemaValidation: "warning",
+    });
+
+    configureThemeJson(monaco);
+
+    const options = jsonDefaults.diagnosticsOptions;
+    expect(options).toMatchObject({
+      validate: true,
+      allowComments: false,
+      schemaValidation: "warning",
+    });
+    // The global severities that govern .json must stay strict.
+    expect(options).not.toHaveProperty("comments");
+    expect(options).not.toHaveProperty("trailingCommas");
+    expect(options.schemas).toEqual([
+      {
+        uri: THEME_JSONC_SCHEMA_URI,
+        fileMatch: ["*.jsonc"],
+        schema: { allowComments: true, allowTrailingCommas: true },
+      },
+    ]);
+  });
+
+  it("replaces its own schema association and keeps unrelated ones", () => {
+    const other = { uri: "morph://schemas/other.json", fileMatch: ["x.json"] };
+    const { monaco, jsonDefaults } = createJsonMonaco("languages.json", {
+      schemas: [other],
+    });
+
+    configureThemeJson(monaco);
+    configureThemeJson(monaco);
+
+    const schemas = jsonDefaults.diagnosticsOptions.schemas as Array<{
+      uri: string;
+    }>;
+    expect(schemas.map((schema) => schema.uri)).toEqual([
+      other.uri,
+      THEME_JSONC_SCHEMA_URI,
+    ]);
+  });
+
+  it("is a no-op when Monaco has no JSON language service", () => {
+    expect(() => configureThemeJson({} as unknown as Monaco)).not.toThrow();
   });
 });
 
