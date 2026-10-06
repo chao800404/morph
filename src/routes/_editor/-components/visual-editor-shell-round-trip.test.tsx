@@ -485,7 +485,7 @@ describe("a content save that fails", () => {
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({
         success: true,
-        data: { draftGeneration: 2 },
+        data: { draftGeneration: 2, droppedProps: [] },
       } as never);
     getThemeEditor.mockResolvedValue(editorHolding({}));
     renderShell();
@@ -623,7 +623,7 @@ describe("a content save the document moved under", () => {
 
     updateSectionProps.mockResolvedValue({
       success: true,
-      data: { draftGeneration: 8 },
+      data: { draftGeneration: 8, droppedProps: [] },
     } as never);
     act(() => {
       screen.getByRole("button", { name: "Load latest, keep mine" }).click();

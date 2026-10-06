@@ -76,22 +76,87 @@ export default function SidecarCard({ title = "${DEFAULT_TITLE}" }: SidecarCardP
   },
 ];
 
+// The cross-tab cases have components of their own, one per case: each case
+// deletes its component's declaration, and re-creating a deleted file at the
+// same path is not what they measure. They live in their own folder, listed
+// below `src/components`: added there, they pushed the explorer row the
+// deletion case above right-clicks to the bottom of the window, where the
+// context menu opened over the pointer and the release chose "Duplicate".
+const CROSS_TAB_ROUTE_PATH = "/sidecar-fields-cross-tab";
+const RETURN_SLOT = "cross-tab-return";
+const RETURN_SIDECAR = "src/cross-tab/CrossTabReturn.fields.ts";
+const STALE_SLOT = "cross-tab-stale";
+const STALE_SIDECAR = "src/cross-tab/CrossTabStale.fields.ts";
+
+const crossTabComponent = (name: string) => [
+  {
+    path: `src/cross-tab/${name}.tsx`,
+    content: `type ${name}Props = { title?: string };
+
+export default function ${name}({ title = "${DEFAULT_TITLE}" }: ${name}Props) {
+  return (
+    <section className="px-6 py-10">
+      <h2 className="text-2xl font-semibold">{title}</h2>
+    </section>
+  );
+}
+`,
+  },
+  {
+    path: `src/cross-tab/${name}.fields.ts`,
+    content: `export const contentFields = {
+  title: { type: "text", label: "${name} title" },
+} as const;
+`,
+  },
+];
+
+const CROSS_TAB_FILES = [
+  {
+    path: "src/routes/sidecar-fields-cross-tab.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import CrossTabReturn from "../cross-tab/CrossTabReturn";
+import CrossTabStale from "../cross-tab/CrossTabStale";
+
+export const Route = createFileRoute("${CROSS_TAB_ROUTE_PATH}")({
+  component: CrossTabRoute,
+});
+
+function CrossTabRoute() {
+  return (
+    <main>
+      <CrossTabReturn {...content("${RETURN_SLOT}")} />
+      <CrossTabStale {...content("${STALE_SLOT}")} />
+    </main>
+  );
+}
+`,
+  },
+  ...crossTabComponent("CrossTabReturn"),
+  ...crossTabComponent("CrossTabStale"),
+];
+
 async function signedInPage(browser: Browser) {
   const { baseURL, storageState } = test.info().project.use;
   const context = await browser.newContext({ baseURL, storageState });
   return context.newPage();
 }
 
-async function openRoute(page: Page) {
+async function openRoute(
+  page: Page,
+  routePath = ROUTE_PATH,
+  slot = "sidecar-a",
+) {
   const url = new URL(EDITOR_PATH!, "http://placeholder");
-  url.searchParams.set("routePath", ROUTE_PATH);
+  url.searchParams.set("routePath", routePath);
   await page.goto(`${url.pathname}${url.search}`, {
     waitUntil: "domcontentloaded",
   });
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
     timeout: 45_000,
   });
-  await expect(cardTitle(page, "sidecar-a")).toBeVisible({ timeout: 90_000 });
+  await expect(cardTitle(page, slot)).toBeVisible({ timeout: 90_000 });
 }
 
 const cardTitle = (page: Page, slot: string) =>
@@ -133,7 +198,10 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const saved = await writeThemeFiles(page, scope!, FILES);
+    const saved = await writeThemeFiles(page, scope!, [
+      ...FILES,
+      ...CROSS_TAB_FILES,
+    ]);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     await page.context().close();
   });
@@ -144,7 +212,7 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     const removed = await removeThemeFiles(
       page,
       scope!,
-      FILES.map((file) => file.path),
+      [...FILES, ...CROSS_TAB_FILES].map((file) => file.path),
     );
     expect(removed.success, JSON.stringify(removed)).toBe(true);
     await page.context().close();
@@ -255,7 +323,9 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
         previewCalls.push("start");
       else if (isServerFunctionCall(url, "applyThemePreviewFiles"))
         previewCalls.push(
-          (request.postData() ?? "").includes(COMPONENT) ? "sync-component" : "sync",
+          (request.postData() ?? "").includes(COMPONENT)
+            ? "sync-component"
+            : "sync",
         );
     });
     await page
@@ -288,4 +358,120 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     await selectCard(page, "sidecar-a", "h2");
     await expect(titleField(page, "Card heading")).toHaveCount(0);
   });
+
+  // Another tab — or anything else that writes the source — deletes a
+  // declaration while this tab has the editor open. Measured before the fix:
+  // this tab showed the field on the canvas and in the Inspector for as long
+  // as it stayed open; an edit to it was dropped by the server (nothing
+  // written to a field that no longer exists) but shown here as saved; coming
+  // back to the tab re-read the files, which cleared the Inspector and left
+  // the canvas marked until a reload.
+  test("follows a declaration another tab deleted, once back on this tab", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    await openRoute(page, CROSS_TAB_ROUTE_PATH, RETURN_SLOT);
+    await selectCard(page, RETURN_SLOT);
+    await expect(titleField(page, "CrossTabReturn title")).toBeVisible();
+
+    const resent: string[] = [];
+    page.on("request", (request) => {
+      if (
+        isServerFunctionCall(request.url(), "applyThemePreviewFiles") &&
+        (request.postData() ?? "").includes("src/cross-tab/CrossTabReturn.tsx")
+      ) {
+        resent.push(request.url());
+      }
+    });
+    await deleteInAnotherTab(browser, RETURN_SIDECAR);
+
+    // The files are read again when the author comes back to the tab, once
+    // the copy here is older than the editor's cache window (30 s).
+    await expect(async () => {
+      await returnToTab(page);
+      await expect(cardTitle(page, RETURN_SLOT)).toHaveCount(0, {
+        timeout: 5_000,
+      });
+    }).toPass({ timeout: 120_000, intervals: [5_000] });
+    expect(resent.length).toBeGreaterThan(0);
+    await expect(titleField(page, "CrossTabReturn title")).toHaveCount(0);
+    // The other component keeps its declaration and its field.
+    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(1);
+  });
+
+  test("does not save an edit to a field another tab deleted, and says so", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    await openRoute(page, CROSS_TAB_ROUTE_PATH, STALE_SLOT);
+    await selectCard(page, STALE_SLOT);
+    const field = titleField(page, "CrossTabStale title");
+    await expect(field).toBeVisible();
+
+    await deleteInAnotherTab(browser, STALE_SIDECAR);
+
+    // Straight away: this tab has not read the files again and still offers
+    // the field.
+    const edited = `Stale edit ${Date.now()}`;
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) &&
+        (response.request().postData() ?? "").includes(edited),
+      { timeout: 30_000 },
+    );
+    await field.fill(edited);
+    await field.press("Tab");
+    expect((await saved).ok()).toBe(true);
+
+    await expect(
+      page.getByText(
+        /Not saved: "title" is not an editable field in the current Theme source/,
+      ),
+    ).toBeVisible({ timeout: 15_000 });
+    const heading = previewFrame(page).locator(
+      `[data-storefront-section-id="${STALE_SLOT}"] h2`,
+    );
+    await expect(heading).toHaveText(DEFAULT_TITLE, { timeout: 15_000 });
+    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0, {
+      timeout: 45_000,
+    });
+    await expect(field).toHaveCount(0);
+
+    // Nothing was stored for the field: a fresh load renders the default.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(heading).toBeVisible({ timeout: 90_000 });
+    await expect(heading).toHaveText(DEFAULT_TITLE);
+    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0);
+  });
 });
+
+/** Deletes `path` the way another tab would, through its own session. */
+async function deleteInAnotherTab(browser: Browser, path: string) {
+  const other = await signedInPage(browser);
+  try {
+    await other.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const removed = await removeThemeFiles(other, scope!, [path]);
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+  } finally {
+    await other.context().close();
+  }
+}
+
+/** What the browser fires when the author switches back to this tab. */
+async function returnToTab(page: Page) {
+  await page.evaluate(() => {
+    for (const state of ["hidden", "visible"]) {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => state,
+      });
+      window.dispatchEvent(new Event("visibilitychange"));
+    }
+  });
+}
