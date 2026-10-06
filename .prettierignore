@@ -1,0 +1,3 @@
+# Upstream projects copied unchanged; official-start-import.test.ts checks
+# every file against its upstream git blob hash.
+fixtures/

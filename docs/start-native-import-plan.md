@@ -23,13 +23,24 @@ Morph 匯入的是**原生 TanStack Start 專案**，不是「轉換成 Morph �
 
 1. **Theme 程式碼是唯一設定來源，使用官方寫法。** Code 直接編輯；Design 以 AST 只修改看得懂的
    官方寫法，看不懂的顯示「由程式碼控制」且唯讀。CMS 資料庫不另存一份可編輯的渲染設定。
-2. **建置執行客戶原本的 `vite.config.ts`。** AST 只服務 Design 讀寫、Monaco 提示，以及判斷
-   「這段 Design 能不能改」；不決定建置實際怎麼跑。
-3. **Morph 必要的部分以透明的平台入口設定加入，不改寫客戶檔案。** 沙箱內的
-   `.morph/vite.config.ts` import 客戶設定，以 Vite 官方 `mergeConfig` 加上 Morph plugin
-   （預覽：編輯器橋接、HMR 轉送、內容來源、SVG 隔離；正式建置：預先渲染的 CMS 內容來源），
-   以 `vite build --config .morph/vite.config.ts` 執行。客戶檔案不變，Morph 加入的內容可完整
-   列給使用者看。
+2. **正式建置執行 Theme 自己的建置流程，不注入 Morph 的 Vite plugin。**
+
+   > Production builds execute the Theme's own build pipeline without Morph Vite-plugin
+   > injection. Morph supplies only deployment-environment inputs—mapped Cloudflare
+   > configuration, approved environment values and frozen content access—and validates the
+   > resulting artifact outside the untrusted build sandbox. Live Preview remains a separate
+   > Morph-instrumented development environment.
+
+   本地 `pnpm build` 與 Morph 的 `pnpm build` 是同一份程式、同一份 `vite.config.ts`、同一個
+   build script；差異只在本來就應因部署平台而不同的東西：資源綁定、環境變數、網路政策、沙箱限制與
+   發布前驗證。AST 只服務 Design 讀寫、Monaco 提示，以及判斷「這段 Design 能不能改」，不決定建置
+   實際怎麼跑。
+
+3. **Live Preview 才注入 Morph plugin。** Morph 執行 `vite dev`，以沙箱內的平台入口設定
+   （`.morph/vite.config.ts` import 客戶設定，以 `mergeConfig` 加上編輯器橋接、HMR 轉送、內容來源、
+   SVG 隔離）啟動，客戶檔案不變，加入內容可完整列出。**能不能發布由 Build Preview 決定**
+   （與正式發布完全相同的建置路徑），不看 `vite dev` 預覽，避免「預覽靠 Morph plugin 正常、
+   正式建置其實有問題」。
 4. **建置沙箱視為完全不可信。** 允許：讀寫 Theme 工作區、執行 subprocess、Vite plugin、loader、
    預先渲染。不允許：讀取 Morph secrets、其他商店資料、主機檔案系統、直接使用正式 D1／R2 綁定、
    任意外連、直接部署。產物在沙箱外檢查（manifest、入口、大小、禁止內容），通過才能成為 release。
@@ -54,11 +65,37 @@ Morph 匯入的是**原生 TanStack Start 專案**，不是「轉換成 Morph �
 | SSG              | `vite.config.ts` 的 `tanstackStart({ pages: [{ path, prerender: { enabled: true } }] })`            | 建置時產生 HTML，由 Workers 靜態資產送出 |
 | 全站 SPA（進階） | `tanstackStart({ spa: { enabled: true } })`                                                         | `_shell.html`，平台依官方規則改寫請求    |
 
-- 共用路由也能逐頁設定：`ssr` 支援函式形式並收到 `params`，路由的 `headers` 也收到 `params`。
-  Design 在路由檔內寫一般物件記錄各頁設定，以官方函式形式讀取；不 import Morph 模組。
+- 共用路由也能逐頁設定：`ssr` 支援函式形式並收到 `params`，路由的 `headers` 也收到 `params`
+  （官方 `RouteOptions` 型別）。Design 在路由檔內寫一般物件記錄各頁設定，以官方函式形式讀取；
+  不 import Morph 模組。`ssr` 收到的 `params` 帶 `status`（`success`／`error`），標準寫法先檢查它，
+  驗證失敗時回傳 `true`，讓錯誤頁照常以 SSR 顯示：
+
+  ```ts
+  ssr: ({ params }) =>
+    params.status !== "success" ? true : pagePolicies[params.value.handle] !== "csr",
+  ```
+
 - CMS 頁面新增、刪除、改 handle 時，Design 以同一次 OCC 寫入一併更新 `pages` 與路由檔中的頁面設定。
 - 客戶的 `vite.config.ts` 是計算出來的（變數、函式、`loadEnv`），Design 的 SSG 設定為唯讀；
   建置仍照常執行。
+
+## Design 修改程式碼的流程
+
+Design 改的是真的程式碼，所以先讓人看到改了什麼，再存檔：
+
+```text
+Design 修改 → AST patch → 白話摘要 + 程式碼 diff → 確認 → 以 OCC 存成 revision → 預覽建置
+```
+
+- **看得懂才改，看不懂就唯讀。** `ssr: false`、Morph 標準寫法的 `pagePolicies` 可以改；
+  使用者自訂的函式邏輯（實驗分流、讀 `process.env` 等）顯示「由程式碼控制」，不碰。
+- patch 以**最新已存 revision** 為基準，經既有 OCC／CAS 寫入；Code 已存了新版就重新產生 diff。
+- 同一檔案在 Monaco 有**未存修改**時拒絕套用，請使用者先在 Code 處理（沿用發布等待遇到未存
+  修改即停止的規則）。
+- diff 分兩層：白話摘要（例如「『關於我們』改為發布時預先產生，需重新建置才生效」）給不寫程式
+  的人；可展開的程式碼差異（`- ssr: true` / `+ ssr: false`）給開發者。
+- 「畫面元素 → 原始碼位置」Morph 已有（預覽 DOM 的 `data-morph-loc`，文字升級即依此以 AST 改碼），
+  渲染方式延伸同一套機制到路由設定與 `vite.config.ts`。
 
 ## Cloudflare 執行要點
 
@@ -75,6 +112,48 @@ Morph 匯入的是**原生 TanStack Start 專案**，不是「轉換成 Morph �
   - `max-age` 也會被瀏覽器快取；Core 需改寫送給瀏覽器的 `Cache-Control`。
   - 開啟 Workers Cache 後 service binding 呼叫按一般請求計費，另一個只開文件 entrypoint 的理由。
 - **全站 SPA**：靜態檔優先 → `/_serverFn/*` 與 server routes 放行 → 其餘回 `_shell.html`。
+
+## 工具鏈版本：Theme 擁有版本，平台認證相容
+
+Theme-owned versions, platform-certified compatibility.
+
+- **Morph 自己的工具鏈 ≠ Theme 的工具鏈。** CMS、Editor、Main Worker 固定 Morph 自己的版本；
+  只有 Theme 建置沙箱依 Theme 的 lockfile 執行。Morph 不替換、不降級 Theme 的 Vite／Start 版本。
+  （`@tanstack/react-start` 的 peer 是 `vite >= 7`，Vite 7 與 8 可以並存於不同 Theme。）
+- **Theme Build Environment Snapshot**：Node、`packageManager`、lockfile 與依賴雜湊、Vite、
+  TanStack Start、Router、React、Cloudflare plugin、Wrangler。與 build 及 release 綁定。
+  Theme 沙箱的 Node 政策不沿用 Morph 應用的 `>=18`（最新 Start 與 Vite 8 要求 Node 22.12+）。
+- **三級相容狀態**（依相容版本矩陣）：
+
+  | 狀態                                                | Live Preview | Build Preview | Publish |
+  | --------------------------------------------------- | ------------ | ------------- | ------- |
+  | Certified                                           | ✅           | ✅            | ✅      |
+  | Unverified                                          | ✅           | ✅            | ❌      |
+  | Known incompatible／Blocked（已知會壞或有安全問題） | ❌           | ❌            | ❌      |
+
+- **認證範圍包含 Morph 的預覽 plugin**：Vite 8 改用 Rolldown／Oxc，部分 plugin API 行為不同；
+  組合要連同 Morph plugin 一起實測才算認證。Cloudflare plugin 須達支援
+  `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 的最低版本。
+- **建置來源紀錄（provenance）**：每次 build 記錄工具鏈快照雜湊、矩陣版本與當時認證狀態。
+  Unverified 時產生的 build 之後**不能直接升格**為 release；組合轉為 Certified 後須重新建置、
+  重新檢查才可發布。
+- 未驗證版本的失敗只記工具鏈版本、階段、成功／失敗與 Morph 邊界錯誤代碼，不上傳客戶原始碼、
+  CMS 資料或任意 stderr。介面標示「未經 Morph 驗證的工具鏈」，讓預覽失敗與 Morph 的錯誤可以區分。
+- 矩陣驗證：一般 PR 只跑最新的認證組合；排程 CI 跑完整矩陣；上游新 patch 先在排程中通過再加入。
+
+## 建置流程
+
+| 環境          | 執行                              | Morph 注入                                    | 用途                         |
+| ------------- | --------------------------------- | --------------------------------------------- | ---------------------------- |
+| Live Preview  | Morph 執行 `vite dev`             | 平台入口設定（橋接、HMR、內容來源、SVG 隔離） | Design 與 Code 即時編輯      |
+| Build Preview | 專案自己的 build script           | 不注入 Vite plugin                            | 判斷能否發布；與正式建置相同 |
+| Publish       | 專案自己的 build script，重新建置 | 不注入 Vite plugin                            | 產物檢查後部署               |
+
+- **專案腳本與依賴套件的安裝腳本分開。** 專案自己的 `prebuild`／`build`／`postbuild` 在沙箱中
+  允許（沙箱本來就假設 Theme 能執行任意程式，只放行 `vite.config.ts` 卻擋 build script 安全收益
+  有限）；`node_modules` 套件的 `preinstall`／`install`／`postinstall` 仍受依賴政策控制。
+- 第 0 步的 fixture 暫時由 Morph 執行 `vite build` 打通工具鏈，標為
+  `KNOWN GAP: project-defined build scripts are not executed yet`，不是長期產品規則。
 
 ## 依賴：Theme 依賴快照
 
@@ -119,10 +198,26 @@ MEDIA         [ Morph R2 storage ▼ ]
 STRIPE_SECRET [ 新增 Secret ]
 ```
 
-- 對應結果寫入**沙箱內**產生的 `wrangler.jsonc`，客戶原檔不變；客戶的 `cloudflare()` plugin 照常讀取。
+- 對應結果寫入**沙箱內**產生的 Wrangler 設定，客戶原檔不變。`@cloudflare/vite-plugin` 依序讀
+  `cloudflare({ configPath })`、`CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`、專案根目錄的
+  `wrangler.jsonc`（[API reference](https://developers.cloudflare.com/workers/vite-plugin/reference/api/)），
+  所以正式建置以該環境變數指向 Morph 產生的設定，客戶的 `cloudflare()` plugin 照常讀取，不改
+  `vite.config.ts`。
+- 客戶自己寫了 `configPath` 時優先權高於環境變數；匯入前檢查辨識這種情況，只在沙箱內那份設定
+  替換 D1／R2／KV／service binding 的實際資源 ID，不修改客戶 repository。
+- **預先渲染時的 CMS 內容**：環境變數只放 `MORPH_CONTENT_ORIGIN`、`MORPH_CONTENT_PUBLICATION`，
+  不放內容本身；實際內容從此次建置專用、唯讀、已凍結的內容快照讀取。讀取環境變數發生在 loader／
+  handler 執行時，不在 module scope（TanStack 對 Cloudflare runtime 的建議）。
 - 專案中的 `.env` 不以明文匯入；需要的值在對應步驟轉為 Morph Secrets，其餘忽略並告知。
-- 建置時不能外連：預先渲染期間呼叫外部 API 的 loader 會失敗。與預覽外連允許清單一起設計，
-  匯入檢查需偵測並說明原因。
+
+## 外連政策
+
+正常的 TanStack Start 專案常在 loader 或 server function 呼叫外部 API，長期不能一律拒絕。
+
+- 預設拒絕；使用者宣告目的地（例如 `api.stripe.com`），經 Morph 政策核准後只允許 HTTPS 與
+  hostname 允許清單。
+- **建置（含預先渲染）與執行期各一份允許清單。**
+- 匯入檢查偵測建置期外連需求並說明原因；在允許清單完成前記為 `KNOWN GAP`。
 
 ## 程式碼裡何時會出現 Morph 的寫法
 
@@ -149,25 +244,77 @@ STRIPE_SECRET [ 新增 Secret ]
 
 每一步各自一個 PR，各自有本機驗收；任何一步都不宣稱 Cloudflare 驗收完成。
 
-0. **官方 fixture 原樣匯入驗收（最高層級驗收）。** 固定保存未修改的官方 fixture：
-   `official-basic`、`official-cloudflare`、`official-prerender`、`official-selective-ssr`、
-   `official-spa`。同一份 source 分別以本地 `vite build` 與 Morph 匯入建置，比較行為：SSR、CSR、
-   data-only、SSG、SPA、server functions、routes、自訂 Vite plugin、loader、middleware。
-   尚未支援的部分寫成 `KNOWN GAP` 斷言，缺口修好斷言就會失敗。
-1. **建置執行客戶設定**：`vite.config.ts`、`wrangler.jsonc` 改為作者擁有；平台入口設定以
-   `mergeConfig` 加入 Morph 必要部分；沙箱外檢查產物。
-2. **Theme 依賴快照**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策；先支援 pnpm。
-3. **基礎設施對應**：綁定、Secrets、`.env` 與建置外連偵測。
+0. **官方 fixture 原樣匯入驗收（最高層級驗收）。** 固定保存未修改的官方範例：
+   `fixtures/tanstack/<example>/` 放上游原始碼（不改）、`LICENSE`、`SOURCE.json`（repo、commit、
+   範例路徑、lockfile 產生日期、Node 與 package manager），以及由 fixture 框架產生的
+   `pnpm-lock.yaml`（官方範例在 monorepo 中沒有自己的 lockfile；fixture 證明的是「這份官方原始碼
+   不經改寫可被 Morph 接受」）。最優先的目標是目前官方 Cloudflare starter
+   `start-basic-cloudflare`；之後補 `start-basic-static`（預先渲染 + SPA），selective SSR 與 SPA
+   官方沒有範例專案，依官方文件補。同一份原始碼以本地建置與 Morph 匯入建置比較行為；尚未支援的
+   部分寫成 `KNOWN GAP` 斷言（例如需要未認證的 Vite 8 工具鏈、專案 build script 尚未執行、
+   `vite.config.ts`／`wrangler.jsonc` 仍為平台擁有、套件不在白名單、建置期外連被拒、安裝腳本政策），
+   缺口修好斷言就會失敗。
+1. **建置執行客戶設定**：`vite.config.ts`、`wrangler.jsonc` 改為作者擁有；正式建置執行專案
+   build script、以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 與內容環境變數提供部署環境，不注入
+   Vite plugin；Live Preview 以平台入口設定注入；沙箱外檢查產物。
+2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、
+   三級相容狀態與建置來源紀錄；先支援 pnpm。
+3. **基礎設施對應與外連政策**：綁定、Secrets、`.env`、建置與執行期兩份允許清單。
 4. **Render Plan 由產物取得並凍結**，接著 SSG、全站 SPA、ISR 的正式供應。
 5. **Design 寫入官方寫法**，含渲染方式選擇器；每個選項都要正式網站能送出才開放。
 
 移除 #98 在 CMS 資料中可編輯的渲染設定，須先確認沒有呼叫者，於步驟 4 或 5 處理。
 
+## 第 0 步結果（2026-10-06，本機）
+
+Fixture：`fixtures/tanstack/start-basic-cloudflare/`，TanStack/router `9595b97` 的
+`examples/react/start-basic-cloudflare`，47 個檔案逐一以 git blob 雜湊核對與上游相同；另加由
+pnpm 10.34.5 產生的 `pnpm-lock.yaml`（vite 8.3.3、`@tanstack/react-start` 1.168.60、
+`@cloudflare/vite-plugin` 1.62.5、wrangler 4.147.0、react 19.3.0）。來源與每檔雜湊記在
+`fixtures/tanstack/SOURCES.json`，授權在 `fixtures/tanstack/LICENSE`。
+
+**本地基準**（`node scripts/official-fixture-baseline.mjs`，不在 CI）：以 fixture 自己的 lockfile
+安裝（`--frozen-lockfile --ignore-scripts`，7.9 秒）、自己的 Vite 8.3.3 建置（4.2 秒）、
+`vite preview` 於 workerd 執行，四項全部通過：`/` 200（server function 於 SSR 讀到 wrangler var）、
+`/customScript.js` 200（server route、JavaScript content type）、`/redirect` 307 → `/posts`、
+`/api/users` 200（呼叫外部 API；Morph 沙箱目前會拒絕）。
+
+**Morph 匯入前檢查**（`src/lib/storefront/compat/official-start-import.test.ts`，CI）：
+
+- 已相容：檔案與上游逐位元相同（改一個字元即失敗，已做反向對照）；所有路徑符合 Morph 的檔案路徑規則；
+  Code 模式的路由表能讀懂官方路由樹，**沒有任何診斷錯誤**（含 `customScript[.]js.ts`、pathless layout）。
+- `KNOWN GAP`：
+  - `package.json` 必須等於 Morph 固定版本，官方的版本範圍被拒絕；
+  - 需要未認證的 Vite 8 工具鏈（Morph 固定 Vite 7.3.5、Start 1.168.32）；
+  - `vite.config.ts`、`wrangler.jsonc` 為平台擁有路徑，專案自己的無法匯入；
+  - 宣告的套件超出核准的 Theme 依賴（例如 `@tanstack/react-router-devtools`）。
+- 尚無 Morph 元件可對照、先記為 `it.todo`：專案 build script 尚未執行；生命週期腳本政策
+  （本專案 `postinstall` 執行 `wrangler types`）；建置與執行期外連允許清單；`wrangler.jsonc`
+  的 vars 與綁定對應。
+
+Morph 匯入後的實際建置尚未比較：目前在匯入前檢查就被擋下，待步驟 1 打通後再以同一組請求對照基準。
+
 ## 會改動的既有假設
 
 - `vite.config.ts`、`wrangler.json(c)` 不再是平台擁有路徑。
 - 依賴白名單從「平台 Vite 設定中的白名單 plugin」改為「每個 Theme 的依賴快照」。
-- 預裝 toolchain image 改為「平台工具鏈 + 依快照從平台快取安裝」。
+- 容器內固定的 `/opt/morph-toolchain` 從單一版本改為依相容版本矩陣選擇；Theme 沙箱的 Node
+  版本與 Morph 應用分開。
+- 正式建置不再使用平台產生的 `vite.config.ts`。
+
+## 定位與先例
+
+| 產品                 | 做法                                                      | 與 Morph 的差異                                                |
+| -------------------- | --------------------------------------------------------- | -------------------------------------------------------------- |
+| Onlook               | 既有 React／Next 專案，視覺修改寫回 JSX，程式碼為唯一來源 | 最接近 Code ↔ Design 共用一份程式碼；不處理 CMS 內容與渲染設定 |
+| TinaCMS／CloudCannon | 既有專案上的編輯層，內容存 repo，視覺編輯寫回檔案         | 需要自己的 schema／client／`data-tina-field` 接線              |
+| Plasmic              | 註冊既有 React 元件，視覺模型 + 產生的程式碼              | 程式碼加上 Plasmic 視覺模型，不是單一來源                      |
+
+Morph 的組合是：原生框架專案直接匯入、原始碼是唯一來源、Design 直接改真實程式碼、CMS 內容與
+渲染策略也能視覺控制。以 Design 視覺修改框架層設定（`ssr`、`pages`、`headers`）並寫回官方語法，
+目前沒有查到主流 CMS 這樣做；但尚未完整調查，對外宣稱前須再確認 Nuxt Studio、Builder.io、Vercel
+等的最新功能。要避免的方向是 `TanStack source → Morph schema → Morph config → 再轉回 TanStack`，
+那會逐漸變成另一個 framework。
 
 ## 未決事項
 
@@ -177,3 +324,6 @@ STRIPE_SECRET [ 新增 Secret ]
 - 送給瀏覽器的 `Cache-Control` 改寫規則。
 - 套件安全掃描的資料來源與更新頻率。
 - 控制服務授權仍未確認（既有開放前條件），建置沙箱同樣適用。
+- 專案 build script 政策的細節（逾時、輸出位置、允許的指令）。
+- 相容版本矩陣的資料來源、Known incompatible／Blocked 清單與安全公告的來源。
+- 支援 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 的 Cloudflare plugin 最低版本（1.62.4 已確認支援）。
