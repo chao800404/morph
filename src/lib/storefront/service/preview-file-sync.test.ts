@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { SavedThemeFile } from "../preview-sync-guard";
-import { planFencedWrite } from "../compiler/preview-write-fence";
+import {
+  planFencedWrite,
+  type FenceLedgerRecord,
+} from "../compiler/preview-write-fence";
 import {
   isPreviewSyncSkippedPath,
   syncPreviewFiles,
@@ -19,10 +22,14 @@ const HERO = "src/components/Hero.tsx";
 function world(initial: { version: number; content: string }) {
   const database = new Map<string, SavedThemeFile>([[HERO, initial]]);
   const disk = new Map<string, string>([[HERO, initial.content]]);
-  let ledger: Record<string, number> = { [HERO]: initial.version };
-  // The theme's source generation, which every save advances, and what each
-  // write was stamped with.
+  // The theme's source generation, which every save and deletion advances,
+  // and what each write was stamped with.
   let generation = 10;
+  let ledger: FenceLedgerRecord = {
+    files: { [HERO]: initial.version },
+    readAt: { [HERO]: generation },
+    generation,
+  };
   const stamped: Array<number | null> = [];
 
   const sync = (
@@ -54,6 +61,7 @@ function world(initial: { version: number; content: string }) {
           Object.fromEntries(
             files.map((file) => [file.path, disk.get(file.path) ?? null]),
           ),
+          checkedAt,
         );
         if (plan.refused.length > 0) {
           return { changed: [], unchanged: [], refused: plan.refused };
@@ -73,7 +81,17 @@ function world(initial: { version: number; content: string }) {
     generation += 1;
   };
 
-  return { database, disk, sync, save, stamped };
+  // Deleted, then made again under the same name: a new file, at version 1.
+  const remove = () => {
+    database.delete(HERO);
+    generation += 1;
+  };
+  const create = (content: string) => {
+    database.set(HERO, { version: 1, content });
+    generation += 1;
+  };
+
+  return { database, disk, sync, save, remove, create, stamped };
 }
 
 function gate() {
@@ -102,6 +120,22 @@ describe("syncPreviewFiles", () => {
       stalePaths: [HERO],
     });
     expect(w.disk.get(HERO)).toBe("hero v4 by A");
+  });
+
+  // Found in a local E2E run: made again, the file starts over at version 1,
+  // and the preview — which had laid out version 2 — refused it from then on.
+  it("writes a file deleted and made again at a lower version", async () => {
+    const w = world({ version: 1, content: "hero v1" });
+    w.save("hero v2");
+    expect(await w.sync("hero v2", 2)).toMatchObject({ ok: true });
+    w.remove();
+    w.create("hero again");
+
+    expect(await w.sync("hero again + edit", 1)).toMatchObject({
+      ok: true,
+      changed: [HERO],
+    });
+    expect(w.disk.get(HERO)).toBe("hero again + edit");
   });
 });
 
@@ -136,6 +170,26 @@ describe("syncPreviewFiles interleaved", () => {
       content: "hero v4 by A",
     });
     expect(w.disk.get(HERO)).toBe("hero v4 by A");
+  });
+
+  // The same window across a deletion: checked while the old file stood at
+  // version 2, the request lands after the file was made again as version 1.
+  // Its higher number is of a file that no longer exists.
+  it("does not let a request checked before a deletion rewind the file made again", async () => {
+    const w = world({ version: 2, content: "hero v2" });
+    const hold = gate();
+
+    const old = w.sync("hero v2 edited", 2, hold.opened);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    w.remove();
+    w.create("hero again");
+    expect(await w.sync("hero again", 1)).toMatchObject({ ok: true });
+
+    hold.open();
+    expect(await old).toEqual({ ok: false, stalePaths: [HERO] });
+    expect(w.disk.get(HERO)).toBe("hero again");
   });
 
   it("still lets two edits of the same version through, the later winning", async () => {

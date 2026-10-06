@@ -545,6 +545,79 @@ describe("the local preview's generation watermark", () => {
     );
   });
 
+  // Found in a local E2E run (`content-fields-sidecar.spec.ts`): a file
+  // deleted and made again starts over at version 1, and with version 2
+  // already laid out every later start was refused as stale — the editor
+  // never showed the restored file's fields until the sidecar restarted.
+  it("lays out a file deleted and made again at a lower version, once read after it", async () => {
+    const server = newServer({ workspacesRoot });
+    expectStarted(
+      await start(server, {
+        fileVersions: { "src/pages/index.tsx": 1 },
+        sourceGeneration: 4,
+      }),
+    );
+    // Saved twice: version 2, laid out by its sync at generation 5.
+    await server.writeFiles(
+      PREVIEW,
+      [{ path: NEW, content: "export default () => 'v2';\n", fence: 2 }],
+      5,
+    );
+
+    // Deleted (generation 6), then made again (generation 7) as version 1.
+    const again = await start(server, {
+      files: [
+        { path: "src/pages/index.tsx", content: PAGE },
+        { path: NEW, content: "export default () => 'again';\n" },
+      ],
+      fileVersions: { "src/pages/index.tsx": 1, [NEW]: 1 },
+      sourceGeneration: 7,
+    });
+
+    expectStarted(again);
+    await expect(onDisk(server, NEW)).resolves.toBe(
+      "export default () => 'again';\n",
+    );
+    // ...and its next edit syncs.
+    await expect(
+      server.writeFiles(
+        PREVIEW,
+        [{ path: NEW, content: "export default () => 'edited';\n", fence: 1 }],
+        7,
+      ),
+    ).resolves.toMatchObject({ refused: [], changed: [NEW] });
+  });
+
+  it("syncs a file made again at a lower version, though another sync already reached its generation", async () => {
+    const server = newServer({ workspacesRoot });
+    expectStarted(
+      await start(server, {
+        fileVersions: { "src/pages/index.tsx": 1 },
+        sourceGeneration: 4,
+      }),
+    );
+    await server.writeFiles(
+      PREVIEW,
+      [{ path: NEW, content: "export default () => 'v2';\n", fence: 2 }],
+      5,
+    );
+    // Deleted (6), made again as version 1 (7); the page was then saved (8)
+    // and its sync landed first.
+    await server.writeFiles(
+      PREVIEW,
+      [{ path: "src/pages/index.tsx", content: `// v2\n${PAGE}`, fence: 2 }],
+      8,
+    );
+
+    await expect(
+      server.writeFiles(
+        PREVIEW,
+        [{ path: NEW, content: "export default () => 'again';\n", fence: 1 }],
+        8,
+      ),
+    ).resolves.toMatchObject({ refused: [], changed: [NEW] });
+  });
+
   it("raises nothing for a start that fails to lay its files out", async () => {
     const server = newServer({ workspacesRoot });
     expectStarted(await start(server, { sourceGeneration: 4 }));

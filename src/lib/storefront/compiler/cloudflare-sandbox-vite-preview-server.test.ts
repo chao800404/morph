@@ -1438,6 +1438,7 @@ describe("a start read before a save that created a file", () => {
   const ledger = (harness: Harness) =>
     JSON.parse(harness.written.get(PREVIEW_FENCE_LEDGER_PATH)!) as {
       files: Record<string, number>;
+      readAt: Record<string, number>;
       generation: number;
     };
 
@@ -1524,6 +1525,40 @@ describe("a start read before a save that created a file", () => {
     expect(ledger(harness).generation).toBe(5);
   });
 
+  // A file deleted and made again starts over at version 1. With version 2
+  // laid out, comparing versions alone refused every later start until the
+  // container restarted; the start was read after the file was made again.
+  it("lays out a file deleted and made again at a lower version, once read after it", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, {
+      fileVersions: { [HERO]: 1 },
+      sourceGeneration: 4,
+    });
+    await runFencedWriteInSandbox(harness.session as unknown as FenceSandbox, {
+      op: "write",
+      root: "/workspace",
+      files: [{ path: NEW, content: "export default () => 'v2';\n", fence: 2 }],
+      generation: 5,
+    });
+
+    // Deleted (generation 6), then made again (generation 7) as version 1.
+    const result = await startWith(harness, {
+      files: [
+        ...THEME,
+        { path: NEW, content: "export default () => 'again';\n" },
+      ],
+      fileVersions: { [HERO]: 1, [NEW]: 1 },
+      sourceGeneration: 7,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(harness.written.get(NEW_PATH)).toBe(
+      "export default () => 'again';\n",
+    );
+    expect(ledger(harness).files[NEW]).toBe(1);
+    expect(ledger(harness).generation).toBe(7);
+  });
+
   it("raises nothing when its staging fails", async () => {
     const harness = createSession("ready");
     await startWith(harness, {
@@ -1547,6 +1582,10 @@ describe("a start read before a save that created a file", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(ledger(harness)).toEqual({ files: { [HERO]: 1 }, generation: 4 });
+    expect(ledger(harness)).toEqual({
+      files: { [HERO]: 1 },
+      readAt: { [HERO]: 4 },
+      generation: 4,
+    });
   });
 });

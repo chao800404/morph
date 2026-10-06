@@ -286,7 +286,7 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     await expect(titleField(page, "Card title")).toHaveCount(0);
   });
 
-  // Last: it removes the declaration the tests above rely on.
+  // After the tests that rely on the declaration: it removes it.
   test("drops the fields when only the declaration file is deleted", async ({
     page,
   }) => {
@@ -357,6 +357,39 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     // And the panel agrees with the canvas: the title offers no field.
     await selectCard(page, "sidecar-a", "h2");
     await expect(titleField(page, "Card heading")).toHaveCount(0);
+  });
+
+  // After the deletion above. Made again under the same name, the declaration
+  // starts over at version 1 — below the version the Code save laid out —
+  // and the preview refused every start from then on as stale, so the fields
+  // never came back until the dev server restarted.
+  test("brings the fields back when the declaration file is made again", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const saved = await writeThemeFiles(
+      page,
+      scope!,
+      FILES.filter((file) => file.path === SIDECAR),
+    );
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+
+    const starts: string[] = [];
+    page.on("response", (response) => {
+      if (isServerFunctionCall(response.url(), "startThemePreviewServer")) {
+        void response.text().then(
+          (body) => starts.push(body),
+          () => undefined,
+        );
+      }
+    });
+    await openRoute(page);
+    expect(starts.join("\n")).not.toContain("PREVIEW_START_STALE");
+    await expect(cardTitle(page, "sidecar-b")).toBeVisible();
+
+    await selectCard(page, "sidecar-b");
+    await expect(titleField(page, "Card title")).toBeVisible();
   });
 
   // Another tab — or anything else that writes the source — deletes a

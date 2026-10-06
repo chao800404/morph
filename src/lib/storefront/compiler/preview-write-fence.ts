@@ -18,6 +18,20 @@
  * tabs editing the same saved version still behave as they always have, the
  * later write winning.
  *
+ * A version only orders writes of one file, though, and a path can name more
+ * than one: a file deleted and made again under the same name starts over at
+ * version 1. So the ledger also keeps the source generation each version was
+ * read at — every save and every deletion advances it — and a write read at
+ * a newer generation than the version recorded for its path is not compared
+ * by version at all: it was checked against the database after that version
+ * was, so it is the newer of the two, whatever its number. Without this,
+ * once version 2 of a file was laid out, the same file made again as version
+ * 1 was refused by every later start and sync until the preview restarted.
+ * Read at an older generation than what is recorded, a write must be of
+ * exactly the recorded version: an equal one is the same saved version, and
+ * a higher one can only be of a file since deleted. Where either side's
+ * generation is unknown, versions alone order them, as they always have.
+ *
  * `planFencedWrite` is the whole rule. It is plain and self-contained on
  * purpose: the container runs its source as-is (see
  * `fencedWriteScriptSource`), so it must not reach for anything outside
@@ -31,8 +45,30 @@ export type FencedFile = Readonly<{
   fence: number;
 }>;
 
-/** Highest version written to each path. */
+/** The version last written to each path. */
 export type FenceLedger = Readonly<Record<string, number>>;
+
+/**
+ * Everything a preview's writes are ordered by: the version last written to
+ * each path and the source generation it was read at, and the Theme's source
+ * generation — the highest any write was read at.
+ */
+export type FenceLedgerState = Readonly<{
+  files: FenceLedger;
+  /**
+   * The generation each path's version was read at. Absent for a version
+   * written with no generation, or recorded before these were kept: nothing
+   * says when it was read, so only its version orders it.
+   */
+  readAt?: Readonly<Record<string, number>>;
+  generation: number;
+}>;
+
+export type FenceLedgerRecord = {
+  files: Record<string, number>;
+  readAt: Record<string, number>;
+  generation: number;
+};
 
 export type FencedWritePlan = Readonly<{
   /** Paths the ledger has already seen a newer version of; nothing written. */
@@ -40,50 +76,65 @@ export type FencedWritePlan = Readonly<{
   /** Files whose content differs from what is there, to be written. */
   writes: FencedFile[];
   unchanged: string[];
-  ledger: Record<string, number>;
+  ledger: FenceLedgerRecord;
 }>;
 
+/**
+ * `generation` is the source generation the files were checked against,
+ * read together with them; null orders them by version alone.
+ */
 export function planFencedWrite(
-  ledger: FenceLedger,
+  ledger: FenceLedgerState,
   files: readonly FencedFile[],
   current: Readonly<Record<string, string | null>>,
+  generation: number | null,
 ): FencedWritePlan {
+  const readAt = ledger.readAt ?? {};
+  // The rule for one path, as in `planFencedStart`: repeated there rather
+  // than shared, because each planner runs in the container as its own source.
+  const refuses = (path: string, version: number) => {
+    const recorded = ledger.files[path];
+    if (typeof recorded !== "number") return false;
+    const recordedAt = readAt[path];
+    if (typeof generation === "number" && typeof recordedAt === "number") {
+      if (generation > recordedAt) return false;
+      if (generation < recordedAt) return recorded !== version;
+    }
+    return recorded > version;
+  };
+
   const refused: string[] = [];
   for (const file of files) {
-    const recorded = ledger[file.path];
-    if (typeof recorded === "number" && recorded > file.fence) {
-      refused.push(file.path);
-    }
+    if (refuses(file.path, file.fence)) refused.push(file.path);
   }
+  const next = {
+    files: { ...ledger.files },
+    readAt: { ...readAt },
+    generation: ledger.generation,
+  };
   // All or nothing, as the check before it is.
   if (refused.length > 0) {
-    return { refused, writes: [], unchanged: [], ledger: { ...ledger } };
+    return { refused, writes: [], unchanged: [], ledger: next };
   }
 
-  const next: Record<string, number> = { ...ledger };
   const writes: FencedFile[] = [];
   const unchanged: string[] = [];
   for (const file of files) {
     if (current[file.path] === file.content) unchanged.push(file.path);
     else writes.push(file);
-    const recorded = next[file.path];
-    next[file.path] =
-      typeof recorded === "number" && recorded > file.fence
-        ? recorded
-        : file.fence;
+    // Not refused, so this version is the one to order the path by now.
+    next.files[file.path] = file.fence;
+    const recordedAt = next.readAt[file.path];
+    if (typeof generation !== "number") delete next.readAt[file.path];
+    else if (typeof recordedAt !== "number" || recordedAt < generation) {
+      next.readAt[file.path] = generation;
+    }
+  }
+  if (typeof generation === "number" && generation > next.generation) {
+    next.generation = generation;
   }
   return { refused: [], writes, unchanged, ledger: next };
 }
-
-/**
- * Everything a preview's writes are ordered by: the newest version written
- * to each path, and the Theme's source generation — the highest any write
- * was read at.
- */
-export type FenceLedgerState = Readonly<{
-  files: FenceLedger;
-  generation: number;
-}>;
 
 export type FencedStartPlan = Readonly<{
   /** Paths the ledger has already seen a newer version of. */
@@ -95,7 +146,7 @@ export type FencedStartPlan = Readonly<{
    * go on to delete it as a file the plan dropped.
    */
   staleGeneration: boolean;
-  ledger: { files: Record<string, number>; generation: number };
+  ledger: FenceLedgerRecord;
 }>;
 
 /**
@@ -105,9 +156,11 @@ export type FencedStartPlan = Readonly<{
  * any file already holds a newer version, or the workspace was already laid
  * out from a newer generation, the start was read before it and must not
  * lay the older files back, so it is refused whole and the ledger is left
- * as it was. Otherwise its versions and generation are recorded, raised and
- * never lowered. Equal versions and an equal generation pass, as they do
- * for a sync. A start that names no generation is not ordered by one.
+ * as it was. Otherwise its versions are recorded with the generation it was
+ * read at, and that generation raises the ledger's, never lowering it. Equal
+ * versions and an equal generation pass, as they do for a sync, and a file
+ * whose version was read at an older generation is the start's to replace,
+ * as it is a sync's. A start that names no generation is not ordered by one.
  *
  * Self-contained for the same reason as `planFencedWrite`.
  */
@@ -118,41 +171,47 @@ export function planFencedStart(
     generation: number | null;
   }>,
 ): FencedStartPlan {
+  const generation = start.generation;
+  const readAt = ledger.readAt ?? {};
+  // The rule for one path, as in `planFencedWrite`.
+  const refuses = (path: string, version: number) => {
+    const recorded = ledger.files[path];
+    if (typeof recorded !== "number") return false;
+    const recordedAt = readAt[path];
+    if (typeof generation === "number" && typeof recordedAt === "number") {
+      if (generation > recordedAt) return false;
+      if (generation < recordedAt) return recorded !== version;
+    }
+    return recorded > version;
+  };
+
   const stale: string[] = [];
   for (const [file, version] of Object.entries(start.versions)) {
-    const recorded = ledger.files[file];
-    if (typeof recorded === "number" && recorded > version) stale.push(file);
+    if (refuses(file, version)) stale.push(file);
   }
   const staleGeneration =
-    typeof start.generation === "number" &&
-    start.generation < ledger.generation;
+    typeof generation === "number" && generation < ledger.generation;
+  const next = {
+    files: { ...ledger.files },
+    readAt: { ...readAt },
+    generation: ledger.generation,
+  };
   if (stale.length > 0 || staleGeneration) {
-    return {
-      stale,
-      staleGeneration,
-      ledger: { files: { ...ledger.files }, generation: ledger.generation },
-    };
+    return { stale, staleGeneration, ledger: next };
   }
 
-  const files: Record<string, number> = { ...ledger.files };
   for (const [file, version] of Object.entries(start.versions)) {
-    const recorded = files[file];
-    if (typeof recorded !== "number" || recorded < version) {
-      files[file] = version;
+    next.files[file] = version;
+    const recordedAt = next.readAt[file];
+    if (typeof generation !== "number") delete next.readAt[file];
+    else if (typeof recordedAt !== "number" || recordedAt < generation) {
+      next.readAt[file] = generation;
     }
   }
-  return {
-    stale: [],
-    staleGeneration: false,
-    ledger: {
-      files,
-      generation:
-        typeof start.generation === "number" &&
-        start.generation > ledger.generation
-          ? start.generation
-          : ledger.generation,
-    },
-  };
+  if (typeof generation === "number" && generation > next.generation) {
+    next.generation = generation;
+  }
+  return { stale: [], staleGeneration: false, ledger: next };
 }
 
 /**
