@@ -18,8 +18,7 @@ import {
   newDirtyWorkspaceMarker,
   refuseThemeWorkspacePath,
 } from "@/lib/storefront/compiler/theme-workspace-path";
-import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
-import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
+import { prepareSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
 import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
 import {
@@ -587,13 +586,10 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           );
           return { files: value, generation };
         },
-        // The same two passes the workspace was laid out with. A file written
+        // The same passes the workspace was laid out with. A file written
         // without them would lose its editor identity the moment it was saved,
         // and the preview would quietly stop being selectable.
-        prepare: (prepared) =>
-          hoistColocatedContentFieldsForPreview(
-            injectPreviewBindings([...prepared]).files,
-          ).files,
+        prepare: (prepared) => prepareSourcesForLivePreview(prepared).files,
         isGenerated: isPreviewSyncSkippedPath,
         write,
       });

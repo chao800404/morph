@@ -65,13 +65,31 @@ Morph CMS 本體維持 TanStack Start。網站前端（Theme）可以用不同�
 
 每種框架提供：
 
-| 能力         | 說明                                                                                       |
-| ------------ | ------------------------------------------------------------------------------------------ |
-| 偵測         | 由 `package.json` 依賴判斷框架與版本（`@tanstack/react-start`、`astro`、`vinext`……）       |
-| Live Preview | 在預覽容器啟動該框架的開發伺服器，並注入預覽橋接與來源位置                                 |
-| 建置         | 執行專案自己的建置流程，提供部署環境輸入（Wrangler 設定路徑、內容環境變數），不注入 plugin |
-| 產物         | 找到並整理產物（Astro 與 Start 都經 `.wrangler/deploy/config.json`），在沙箱外檢查         |
-| 路由與渲染   | 讀取路由清單與各頁渲染方式，產生 Render Plan                                               |
+| 能力         | 說明                                                                                                           |
+| ------------ | -------------------------------------------------------------------------------------------------------------- |
+| 偵測         | 由 `package.json` 依賴判斷框架與版本（`@tanstack/react-start`、`astro`、`vinext`……）                           |
+| Live Preview | 在預覽容器啟動該框架的開發伺服器，並注入預覽橋接與來源位置                                                     |
+| 建置         | 執行專案自己的建置流程，提供部署環境輸入（Wrangler 設定路徑、內容環境變數），不注入 plugin                     |
+| 產物         | 找到並整理產物，在沙箱外檢查，並描述給產物儲存與發布（目標：原生建置經 `.wrangler/deploy/config.json` 找產物） |
+| 路由與渲染   | 讀取路由清單與各頁渲染方式，產生 Render Plan                                                                   |
+
+### 第 2 步現況（`src/lib/storefront/theme-framework/`）
+
+介面 `ThemeFrameworkAdapter` 目前只有：`id`、`detect`、`planWorkspace`（預覽與建置的工作區）、
+`preview.framePath`、`build.artifactEntry`／`verifyArtifact`／`manifestMetadata`。介面上沒有任何
+權限、OCC、內容文件、發布或回滾的方法；`theme-framework.test.ts` 鎖住介面的欄位，並在框架層或檔案語言層
+匯入共用核心模組時失敗。檔案語言層的 TSX 部分在 `src/lib/storefront/source-language/tsx-source-language.ts`
+（預覽的身分標記與 `contentFields` 提升、建置的標記移除），工作區規劃與 Live Preview 同步共用它。
+
+盤點時確認、與本文件先前假設不同的現況：
+
+- 產物目前是 Morph 自己的配置：`dist/runtime/{server,client}` 與 `dist/preview`，發布讀
+  `runtime/server/wrangler.json`；原始碼中沒有任何地方讀 `.wrangler/deploy/config.json`。「經
+  `.wrangler/deploy/config.json` 找產物」是原生建置（第 3 步）的目標，不是現況。
+- 本機建置程式（`local-vite-theme-build-runner.ts`）只在測試中使用；正式建置只走 Cloudflare Sandbox。
+- 產生的 `vite.config.ts` 文字與入口檔仍由 `theme-sandbox-workspace.ts` 產生，屬於 TanStack Start
+  adapter 的內部實作；第 3 步原生建置時改為執行專案自己的設定。
+- 目前只有一個框架，`themeFramework()` 對所有 Theme 回傳它，包括沒有路由的舊單一入口 Theme。
 
 ## 檔案語言接入層（Source adapter）
 
@@ -133,7 +151,7 @@ export const contentFields = {
 | Live Preview（真實 React）畫布欄位標記                      | ✅ 新增、修改：#105；只刪 `.fields.ts`：立即重新標記，不重啟預覽 |
 | Code 模式診斷（兩處宣告、無效宣告）                         | ✅ #105                                                          |
 | 文字升級寫入 `.fields.ts`                                   | ❌ 目前顯示 Code only（`fields-in-sidecar`），之後另開 PR        |
-| 新建元件預設產生 `.fields.ts`                               | ❌ 之後另開 PR                                                   |
+| 新建元件預設產生 `.fields.ts`                               | ✅ #109：與元件同批建立，已存在則拒絕；路由與其他檔案不變        |
 | 舊解譯器預覽（`safe-theme-component-renderer`）的列欄位名稱 | ⚠️ 限制：讀不到 `.fields.ts`，退回依列資料本身的欄位判斷         |
 | 另一個分頁刪除 `.fields.ts`                                 | ✅ 見下方「另一個分頁刪除」                                      |
 | `.astro`、`.vue`、`.html` 元件                              | ❌ 尚未接入（見交付順序第 4 步）                                 |
@@ -223,7 +241,9 @@ TanStack Start 專屬的部分（selective SSR、`pages`、`spa`、步驟 1b–1
    - 欄位檔只被解析、不被執行，動態寫法判為無效；
    - 儲存仍走原本的權限、文件版本與 OCC。
      「欄位即 prop」診斷可在同一 PR 或下一個 PR。
-2. **抽出框架接入層，現有 TanStack Start 路線移到介面後面，行為不變。**
+2. **抽出框架接入層，現有 TanStack Start 路線移到介面後面，行為不變。** 第一個 PR 完成兩種預覽傳輸、
+   兩個建置程式與 Live Preview 同步的接入（見「第 2 步現況」）；路由清單與 Render Plan 仍由共用的
+   路由模組提供，等第二個框架需要時再移入 adapter。
 3. **TanStack Start 原生建置**：start-native-import-plan 的 1b–1d，作為第一個接入。
 4. **Astro 接入**：預覽容器中的 Live Preview、`.astro` 的來源位置／實例識別／props／內容傳入／改寫、
    建置與產物、官方 Astro Cloudflare 範例原樣匯入驗收；Design 以整條鏈驗收，ISR／SSG 以經 Core 的

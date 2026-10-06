@@ -12,11 +12,10 @@ import {
   LOCAL_PREVIEW_HOST,
 } from "./local-preview-host";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
-import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
 import { planFencedStart, planFencedWrite } from "./preview-write-fence";
+import { themeFramework } from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
-  planThemeSandboxWorkspace,
   type ThemePreviewRuntime,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
@@ -145,7 +144,7 @@ function withPreviewServerBase(
   runtime?: ThemePreviewRuntime,
 ): string {
   return new URL(
-    runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH,
+    themeFramework().preview.framePath(runtime),
     `${origin}/`,
   ).toString();
 }
@@ -357,7 +356,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const hostWorkspaceRoot = root.split(path.sep).join("/");
 
     const workspacePlanStartedAt = Date.now();
-    const prepared = planThemeSandboxWorkspace({
+    const prepared = themeFramework().planWorkspace({
       files: input.files,
       entry: input.entry,
       buildId: input.previewId,

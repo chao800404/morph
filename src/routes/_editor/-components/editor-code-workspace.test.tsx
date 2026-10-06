@@ -796,7 +796,7 @@ describe("EditorCodeWorkspace file creation", () => {
     },
   ];
 
-  function renderTree() {
+  function renderTree(files = [file]) {
     const client = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -808,7 +808,7 @@ describe("EditorCodeWorkspace file creation", () => {
         <EditorCodeWorkspace
           storefrontId="store-1"
           themeId="theme-1"
-          files={[file]}
+          files={files}
           tree={folderTree as never}
         />
       </QueryClientProvider>,
@@ -822,34 +822,55 @@ describe("EditorCodeWorkspace file creation", () => {
     useThemeWorkspaceStore.setState({ files: {} });
   });
 
-  it("creates a file from the explorer with the create precondition", async () => {
-    vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+  const promoPath = "src/components/Promo.tsx";
+  const promoFieldsPath = "src/components/Promo.fields.ts";
+
+  function mockBatchCreate(sourceGeneration?: number) {
+    vi.mocked(saveStorefrontThemeFilesBatch).mockResolvedValue({
       success: true,
       message: "ok",
-      data: { ...file, id: "file-2", path: "src/components/Promo.tsx", sourceGeneration: 7 },
+      data: {
+        files: [
+          { ...file, id: "file-2", path: promoPath },
+          { ...file, id: "file-3", path: promoFieldsPath },
+        ],
+        sourceGeneration,
+      },
     } as never);
+  }
+
+  it("creates a component and its fields file in one batch with the create precondition", async () => {
+    mockBatchCreate(7);
 
     renderTree();
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
     const input = screen.getByPlaceholderText("Filename.tsx");
-    fireEvent.change(input, {
-      target: { value: "src/components/Promo.tsx" },
-    });
+    fireEvent.change(input, { target: { value: promoPath } });
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
-      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1);
     });
+    expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
 
-    const payload = vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0] as {
-      data: Record<string, unknown>;
+    const payload = vi.mocked(saveStorefrontThemeFilesBatch).mock
+      .calls[0]![0] as {
+      data: {
+        files: Array<{ path: string; content: string; expectMissing?: boolean }>;
+        deletions: unknown[];
+      };
     };
-    expect(payload.data.path).toBe("src/components/Promo.tsx");
+    expect(payload.data.files.map((entry) => entry.path)).toEqual([
+      promoPath,
+      promoFieldsPath,
+    ]);
     // Without this precondition a create could silently overwrite a file.
-    expect(payload.data.expectMissing).toBe(true);
-    // Scaffolded so the new component is editable in the Inspector at once.
-    expect(String(payload.data.content)).toContain(
+    expect(payload.data.files.every((entry) => entry.expectMissing)).toBe(true);
+    expect(payload.data.deletions).toEqual([]);
+    // Only the fields file declares the fields, so the two cannot differ.
+    expect(payload.data.files[0]!.content).not.toContain("contentFields");
+    expect(payload.data.files[1]!.content).toContain(
       "export const contentFields",
     );
     await waitFor(() => {
@@ -859,16 +880,38 @@ describe("EditorCodeWorkspace file creation", () => {
     });
   });
 
-  it("keeps the parent folder prefix out of the inline file name input", async () => {
+  it("creates a route with a single-file save and no fields file", async () => {
     vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
       success: true,
       message: "ok",
-      data: {
-        ...file,
-        id: "file-2",
-        path: "src/components/Promo.tsx",
-      },
+      data: { ...file, id: "file-2", path: "src/routes/about.tsx", sourceGeneration: 8 },
     } as never);
+
+    renderTree();
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("Filename.tsx");
+    fireEvent.change(input, { target: { value: "src/routes/about.tsx" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+    });
+    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+    const payload = vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0] as {
+      data: Record<string, unknown>;
+    };
+    expect(payload.data.path).toBe("src/routes/about.tsx");
+    expect(payload.data.expectMissing).toBe(true);
+    await waitFor(() => {
+      expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration({
+        storefrontId: "store-1", themeId: "theme-1",
+      })).toBe(8);
+    });
+  });
+
+  it("keeps the parent folder prefix out of the inline file name input", async () => {
+    mockBatchCreate();
 
     renderTree();
     fireEvent.contextMenu(screen.getByText("components"));
@@ -880,11 +923,14 @@ describe("EditorCodeWorkspace file creation", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
-      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+      expect(saveStorefrontThemeFilesBatch).toHaveBeenCalledTimes(1);
     });
-    expect(vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+    expect(vi.mocked(saveStorefrontThemeFilesBatch).mock.calls[0]![0]).toEqual({
       data: expect.objectContaining({
-        path: "src/components/Promo.tsx",
+        files: [
+          expect.objectContaining({ path: promoPath }),
+          expect.objectContaining({ path: promoFieldsPath }),
+        ],
       }),
     });
   });
@@ -900,6 +946,7 @@ describe("EditorCodeWorkspace file creation", () => {
     await waitFor(() => {
       expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
     });
+    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
   });
 
   it("refuses creating a path that already exists", async () => {
@@ -913,6 +960,31 @@ describe("EditorCodeWorkspace file creation", () => {
     await waitFor(() => {
       expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
     });
+    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+  });
+
+  it("refuses creating a component whose fields file already exists", async () => {
+    const toastError = vi
+      .spyOn(toast, "error")
+      .mockImplementation(() => "toast");
+    renderTree([
+      file,
+      { ...file, id: "file-9", path: promoFieldsPath, content: "export {};\n" },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    const input = screen.getByPlaceholderText("Filename.tsx");
+    fireEvent.change(input, { target: { value: promoPath } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        expect.stringContaining(`"${promoFieldsPath}" already exists`),
+      );
+    });
+    expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+    expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+    toastError.mockRestore();
   });
 
   it("closes the input on Escape without creating anything", async () => {

@@ -1,5 +1,4 @@
 import type { Sandbox } from "@cloudflare/sandbox";
-import { assertThemePrerenderArtifacts } from "./theme-prerender";
 import { createThemePrerenderContent } from "./theme-prerender-content";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { themePublicTextMimeType } from "../theme-public-files";
@@ -18,9 +17,11 @@ import type {
 } from "./theme-build-runner.types";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePackageRoot } from "./theme-dependency-policy";
+import { themeFramework } from "../theme-framework";
 import {
-  prepareThemeSandboxWorkspace,
+  materializeThemeSandboxWorkspace,
   PINNED_SANDBOX_DEPENDENCIES,
+  type ThemeWorkspaceBinaryLoader,
 } from "./theme-sandbox-workspace";
 import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
 
@@ -424,14 +425,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
 
       const sandboxSession = sandbox;
-      const prepared = await prepareThemeSandboxWorkspace({
-        session: {
-          writeFile: (filePath, content) =>
-            writeSandboxWorkspaceFile(sandboxSession, filePath, content),
-          mkdir: async (dirPath, options) => {
-            await sandboxSession.mkdir(dirPath, options);
-          },
-        },
+      // Each read as it is written, a bounded number at a time.
+      const loadBinary: ThemeWorkspaceBinaryLoader | undefined = readBinaryFile
+        ? (ref) => readBinaryFile(ref.digest)
+        : undefined;
+      const prepared = themeFramework().planWorkspace({
         files: [
           ...input.files,
           ...binaryFiles.map((file) => ({
@@ -439,10 +437,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             binary: { digest: file.digest, sizeBytes: file.sizeBytes },
           })),
         ],
-        // Each read as it is written, a bounded number at a time.
-        loadBinary: readBinaryFile
-          ? (ref) => readBinaryFile(ref.digest)
-          : undefined,
+        loadBinary,
         entry: input.entry,
         buildId: input.buildId,
         dependencies: input.dependencies,
@@ -469,6 +464,17 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           durationMs: Date.now() - startTime,
         };
       }
+      await materializeThemeSandboxWorkspace(
+        {
+          writeFile: (filePath, content) =>
+            writeSandboxWorkspaceFile(sandboxSession, filePath, content),
+          mkdir: async (dirPath, options) => {
+            await sandboxSession.mkdir(dirPath, options);
+          },
+        },
+        prepared.workspaceFiles,
+        { loadBinary },
+      );
       const { workspaceRoot, routeRegistry } = prepared;
 
       if (routeRegistry) {
@@ -741,35 +747,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         });
       }
 
-      if (routeRegistry) {
-        const artifactPaths = new Set(
-          artifacts.map((artifact) => artifact.path),
-        );
-        assertThemePrerenderArtifacts(
-          input.contentSnapshot,
-          routeRegistry,
-          artifactPaths,
-        );
-        if (!artifactPaths.has("runtime/server/index.js")) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime/server/index.js.",
-          );
-        }
-        if (!artifactPaths.has("preview/index.html")) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce preview/index.html.",
-          );
-        }
-        if (
-          !artifacts.some((artifact) =>
-            artifact.path.startsWith("runtime/client/"),
-          )
-        ) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime client assets.",
-          );
-        }
-      }
+      themeFramework().build.verifyArtifact({
+        artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
+        routeRegistry: routeRegistry ?? null,
+        contentSnapshot: input.contentSnapshot,
+      });
 
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")
@@ -780,7 +762,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
       const manifest: ThemeBuildArtifactManifest = {
         entry: input.entry,
-        artifactEntry: routeRegistry ? "preview/index.html" : "index.html",
+        artifactEntry: themeFramework().build.artifactEntry(
+          routeRegistry ?? null,
+        ),
         filesCount: input.files.length,
         inputHash: input.inputHash,
         bundleFiles: artifacts.map((a) => ({
@@ -790,17 +774,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         })),
         cssChunks,
         jsChunks,
-        metadata: routeRegistry
-          ? {
-              router: "tanstack-start",
-              runtime: "cloudflare-worker",
-              workerEntry: "runtime/server/index.js",
-              clientAssetsDirectory: "runtime/client",
-              previewRuntime: "tanstack-router-client",
-              previewEntry: "preview/index.html",
-              routes: routeRegistry.routes,
-            }
-          : undefined,
+        metadata: themeFramework().build.manifestMetadata(
+          routeRegistry ?? null,
+        ),
       };
 
       addLog(

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
 import {
   prepareNewThemeFile,
   scaffoldThemeFile,
@@ -14,9 +15,9 @@ describe("prepareNewThemeFile", () => {
     if (!result.ok) return;
     expect(result.path).toBe("src/components/Promo.tsx");
     expect(result.mimeType).toBe("text/typescript");
-    // Scaffolded with its own declaration so the Inspector can edit it right
-    // away, with nothing to register anywhere.
-    expect(result.content).toContain("export const contentFields");
+    // The fields live in the sibling created with it, so only one file
+    // declares them and the two can never differ.
+    expect(result.content).not.toContain("contentFields");
     expect(result.content).toContain("export default function Promo");
     // Live Preview supplies source-location identity and infers the heading
     // field from the component props, so new files stay free of hand-written
@@ -24,6 +25,48 @@ describe("prepareNewThemeFile", () => {
     expect(result.content).not.toContain("data-morph-section");
     expect(result.content).not.toContain("data-morph-node");
     expect(result.content).not.toContain("data-morph-element");
+  });
+
+  it("creates a component and its <Name>.fields.ts together", () => {
+    const result = prepareNewThemeFile("src/components/Promo.tsx", existing);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.companions).toEqual([
+      {
+        path: "src/components/Promo.fields.ts",
+        content: expect.stringContaining("export const contentFields"),
+        mimeType: "text/typescript",
+      },
+    ]);
+  });
+
+  it("refuses rather than overwrites an existing <Name>.fields.ts", () => {
+    const result = prepareNewThemeFile("src/components/Promo.tsx", [
+      ...existing,
+      "src/components/Promo.fields.ts",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("src/components/Promo.fields.ts");
+    expect(result.message).toContain("already exists");
+  });
+
+  it("exposes the scaffolded field through the sibling declaration", () => {
+    const result = prepareNewThemeFile("src/components/Promo.tsx", existing);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const { capabilities, diagnostics } =
+      resolveThemeContentCapabilitiesFromFiles(
+        [result, ...result.companions].map(({ path, content }) => ({
+          path,
+          content,
+        })),
+        { includeManifestFallback: false },
+      );
+    expect(capabilities["src/components/Promo.tsx"]).toEqual({
+      fields: { heading: { type: "text", label: "Heading" } },
+    });
+    expect(diagnostics).toEqual([]);
   });
 
   it("scaffolds TanStack file routes instead of generic components", () => {
@@ -36,6 +79,32 @@ describe("prepareNewThemeFile", () => {
     expect(result.content).toContain('createFileRoute("/about")');
     expect(result.content).toContain("function AboutRoute");
     expect(result.content).not.toContain("contentFields");
+    expect(result.companions).toEqual([]);
+  });
+
+  it("creates routes and non-component files without a sibling", () => {
+    for (const path of [
+      "src/routes/about.tsx",
+      "src/routes/blog/index.tsx",
+      "src/routes/__root.tsx",
+      "src/routes/api/health.ts",
+      "src/util.ts",
+      "src/styles/extra.css",
+      "data.json",
+    ]) {
+      const result = prepareNewThemeFile(path, existing);
+      expect(result.ok, path).toBe(true);
+      if (!result.ok) return;
+      expect(result.companions, path).toEqual([]);
+      expect(result.content, path).toBe(scaffoldThemeFile(path));
+    }
+    // A route is never refused because of a same-named file beside it.
+    expect(
+      prepareNewThemeFile("src/routes/about.tsx", [
+        ...existing,
+        "src/routes/about.fields.ts",
+      ]).ok,
+    ).toBe(true);
   });
 
   it("uses the file-route index convention for nested and root routes", () => {
@@ -178,6 +247,12 @@ describe("scaffoldThemeFile", () => {
       expect(content).not.toContain("data-morph-node");
       expect(content).not.toContain("data-morph-element");
     }
+  });
+
+  it("keeps the declaration in a component no sibling would be read for", () => {
+    expect(scaffoldThemeFile("Widget.tsx")).toContain(
+      "export const contentFields",
+    );
   });
 
   it("produces empty or minimal seeds for non-component files", () => {
