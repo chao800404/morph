@@ -104,6 +104,12 @@ compatibility fallback，不得成為新的唯一宣告來源。
 - `.fields.ts` 只被解析，不被 import 或執行。Live Preview 同步時，元件與它的 `.fields.ts` 一起送出，
   否則預覽只依其中一份標記欄位。
 
+**框架與檔案語言的邊界（`docs/multi-runtime-theme-plan.md`）。** 預覽工作區、建置工作區、預覽的框架路徑、
+產物完整性檢查與產物描述，一律經 `src/lib/storefront/theme-framework/` 的 adapter 取得，不得在傳輸
+或建置程式中另寫一份。對原始碼檔的處理（身分標記、`contentFields` 提升、標記移除）經
+`src/lib/storefront/source-language/`。權限、OCC、內容文件、發布、回滾與預覽寫入 fence 留在共用核心，
+不得放進 adapter。
+
 - `contentFields` 只描述 content authoring capability：欄位 key、控制型別、label、長度／數值限制與有限選項；不得包含 callback、任意 validator、JS expression、HTML renderer 或 presentation implementation。
 - Theme component 的程式碼 default prop 仍是 source fallback。儲存 Theme source 不得自動把 default 寫入 D1；只有使用者首次確認 Design content 修改時，才透過既有 versioned Page／Template Document draft 與 OCC/CAS 建立 override。
 - Client 解析只負責呈現 Inspector。Server mutation 必須從該 storefront／theme 的已保存 Theme Workspace 或對應 immutable source revision 重新讀取，使用與 client 相同的 resolver 驗證 source-colocated capability；若沒有 source declaration 才可使用 manifest fallback，不得相信 client 傳入的 field definition。

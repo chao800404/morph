@@ -34,9 +34,10 @@ import {
   readThemePathAliases,
   renderThemeViteAliases,
 } from "./theme-path-aliases";
-import { hoistColocatedContentFieldsForPreview } from "@/lib/storefront/ast/hoist-colocated-content-fields";
-import { injectPreviewBindings } from "@/lib/storefront/ast/inject-preview-bindings";
-import { stripEditorMarkers } from "@/lib/storefront/ast/strip-editor-markers";
+import {
+  prepareSourcesForBuild,
+  prepareSourcesForLivePreview,
+} from "@/lib/storefront/source-language/tsx-source-language";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
 import {
   themePreviewBridgeEntrySource,
@@ -338,7 +339,7 @@ export function planThemeSandboxWorkspace({
     path: file.path,
     content: textOf(file),
   }));
-  const strip = mode === "build" ? stripEditorMarkers(textFiles) : null;
+  const strip = mode === "build" ? prepareSourcesForBuild(textFiles) : null;
   const strippedByPath = new Map(
     (strip?.files ?? []).map((file) => [file.path, file.content]),
   );
@@ -349,20 +350,18 @@ export function planThemeSandboxWorkspace({
         : file,
   );
 
-  // Identity is written before the declaration is lifted, and the lift moves
-  // no byte: injection reads `contentFields` to know which names are really
-  // fields, and that reading only works while the module still exports it.
-  // Run the other way round, every row field would be judged undeclared and
-  // nothing repeated would be editable.
-  const bindings =
+  // The file-language passes, in the order they must run (identity first,
+  // then the lift; see prepareSourcesForLivePreview).
+  const livePreview =
     mode === "preview-server"
-      ? injectPreviewBindings(
+      ? prepareSourcesForLivePreview(
           sourceFiles.map((file) => ({
             path: file.path,
             content: textOf(file),
           })),
         )
       : null;
+  const bindings = livePreview?.bindings ?? null;
   const boundFiles: readonly ThemeWorkspaceFile[] = sourceFiles.map(
     (file, index) =>
       !isBinaryWorkspaceFile(file) && bindings
@@ -370,15 +369,7 @@ export function planThemeSandboxWorkspace({
         : file,
   );
 
-  const hoist =
-    mode === "preview-server"
-      ? hoistColocatedContentFieldsForPreview(
-          boundFiles.map((file) => ({
-            path: file.path,
-            content: textOf(file),
-          })),
-        )
-      : null;
+  const hoist = livePreview?.hoist ?? null;
   const hoistedByPath = new Map(
     (hoist?.hoisted ?? []).map((path) => [
       path,
