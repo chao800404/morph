@@ -1,4 +1,26 @@
 import type { ThemeCompilerInput } from "./theme-compiler.types";
+import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dto";
+
+/** Publication/item row IDs are incidental; retained content references are not. */
+export function serializeThemeBuildContentDocuments(
+  documents: ThemeBuildContentSnapshot["documents"],
+): string {
+  return JSON.stringify(
+    [...documents]
+      .sort((a, b) =>
+        `${a.item.itemType}:${a.item.contentId}`.localeCompare(
+          `${b.item.itemType}:${b.item.contentId}`,
+        ),
+      )
+      .map(({ item, document }) => ({
+        itemType: item.itemType,
+        contentId: item.contentId,
+        revisionId: item.revisionId,
+        metadata: item.metadata,
+        document,
+      })),
+  );
+}
 
 /**
  * Computes a deterministic string representation of theme virtual filesystem.
@@ -24,6 +46,18 @@ export function serializeCompilerInput(
       compilerIdentity?.version ?? input.compilerVersion ?? "4.1.17",
     entry: input.entry ?? "src/pages/index.tsx",
     ...(sortedDependencies ? { dependencies: sortedDependencies } : {}),
+    ...(input.contentSnapshot
+      ? {
+          contentSnapshot: {
+            publicationId: input.contentSnapshot.publicationId,
+            storefrontId: input.contentSnapshot.storefrontId,
+            themeId: input.contentSnapshot.themeId,
+            documents: serializeThemeBuildContentDocuments(
+              input.contentSnapshot.documents,
+            ),
+          },
+        }
+      : {}),
     files: sortedFiles.map((f) => ({
       path: f.path,
       content: f.content,

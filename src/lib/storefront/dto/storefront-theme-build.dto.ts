@@ -1,4 +1,8 @@
-import type { StorefrontThemeBuildStatus } from "@/db/storefront.schema";
+import type {
+  StorefrontThemeBuildStatus,
+  StorefrontPageDocument,
+} from "@/db/storefront.schema";
+import type { StorefrontContentPublicationItemDTO } from "./storefront-content-publication.dto";
 import type { ThemeCompilerFile } from "@/lib/storefront/compiler/theme-compiler.types";
 import type { ThemeDependencyMap } from "@/lib/storefront/compiler/theme-dependency-policy";
 
@@ -13,6 +17,8 @@ export type StorefrontThemeBuildDTO = {
   compilerVersion: string | null;
   /** Exact package versions frozen into this immutable build request. */
   dependencies?: ThemeDependencyMap | null;
+  /** Null/absent keeps legacy source-only builds content-independent. */
+  contentPublicationId?: string | null;
   artifactPrefix: string | null;
   manifestJson: any | null;
   diagnosticsJson: any | null;
@@ -54,4 +60,16 @@ export type StorefrontThemeBuildInput = {
   compilerId: string;
   compilerVersion: string;
   dependencies?: ThemeDependencyMap;
+  contentSnapshot?: ThemeBuildContentSnapshot;
+};
+
+/** Only sealed publication references are accepted; never current drafts. */
+export type ThemeBuildContentSnapshot = {
+  publicationId: string;
+  storefrontId: string;
+  themeId: string;
+  documents: Array<{
+    item: StorefrontContentPublicationItemDTO;
+    document: StorefrontPageDocument;
+  }>;
 };

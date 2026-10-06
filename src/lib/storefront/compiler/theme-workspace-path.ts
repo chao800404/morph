@@ -21,6 +21,8 @@ export const THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH =
  */
 export const THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH =
   ".morph-preview-content.json";
+export const THEME_PRERENDER_CONTENT_DATA_RELATIVE_PATH =
+  ".morph-prerender-content.json";
 
 /**
  * A workspace marker that says "nothing about the disk is known".
@@ -57,7 +59,8 @@ export function refuseThemeWorkspacePath(path: string): string | null {
   if (
     normalized === THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH ||
     normalized === THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH ||
-    normalized === THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH
+    normalized === THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH ||
+    normalized === THEME_PRERENDER_CONTENT_DATA_RELATIVE_PATH
   ) {
     return `RESERVED_THEME_PREVIEW_PATH: Theme source cannot replace platform-owned preview file "${path}"`;
   }

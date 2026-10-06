@@ -14,6 +14,8 @@ export type PublishBuildPlan =
   | { action: "build" };
 
 export type PublishBuildPlanInput = {
+  /** Non-SSR HTML depends on content as well as source; seal and build anew. */
+  requiresContentBuild?: boolean;
   /** A build the editor is currently holding, if any. */
   hasBuild: boolean;
   /** Source generation that build was made from. */
@@ -40,11 +42,15 @@ export type PublishBuildPlanInput = {
  * and rebuilding for its own sake reintroduces the difference.
  */
 export function resolvePublishBuildPlan({
+  requiresContentBuild,
   hasBuild,
   buildSourceGeneration,
   currentSourceGeneration,
   activeReleaseSourceGeneration,
 }: PublishBuildPlanInput): PublishBuildPlan {
+  // Source alone cannot prove an artifact contains the current content.
+  // Server-side publication comparison remains the final authority.
+  if (requiresContentBuild) return { action: "build" };
   if (hasBuild) {
     // A build made from different source describes a store that no longer
     // exists, so it cannot stand in for the one being published.

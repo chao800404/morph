@@ -100,6 +100,7 @@ export type ThemeBuildRunnerInput = Readonly<{
   compilerId: string;
   compilerVersion: string;
   dependencies?: Readonly<Record<string, string>>;
+  contentSnapshot?: StorefrontThemeBuildInput["contentSnapshot"];
   files: ReadonlyArray<Readonly<StorefrontThemeBuildInput["files"][number]>>;
   binaryFiles?: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
   /**

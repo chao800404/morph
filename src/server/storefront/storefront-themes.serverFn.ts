@@ -20,6 +20,7 @@ import {
   updateStorefrontThemeSectionPropsInputSchema,
   ensureStorefrontThemeRouteTemplateInputSchema,
   promoteStorefrontThemeTextInputSchema,
+  updateStorefrontThemeRenderPolicyInputSchema,
 } from "@/lib/validations/storefront-theme";
 import { promoteTextToField } from "@/lib/storefront/service/text-promotion-write";
 import { createServerFn } from "@tanstack/react-start";
@@ -214,6 +215,45 @@ export const renameStorefrontThemeSection = createServerFn({ method: "POST" })
     }
   });
 
+/** Saves a versioned draft only; production settings remain release-scoped. */
+export const updateStorefrontThemeRenderPolicy = createServerFn({
+  method: "POST",
+})
+  .validator((data: unknown) =>
+    parseInput(updateStorefrontThemeRenderPolicyInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    try {
+      const result = await storefrontThemeDal.updateRenderPolicy({
+        ...input.data,
+        createdBy: context.user.id,
+      });
+      return result
+        ? ok("Rendering policy draft saved", result)
+        : fail("Theme template not found", { error: "NOT_FOUND" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
+        return fail("Template draft was modified concurrently.", {
+          error: TEMPLATE_DRAFT_CONFLICT,
+        });
+      }
+      if (message.startsWith("RENDER_POLICY_SCOPE_MISMATCH:")) {
+        return fail("The rendering policy does not belong to this document.", {
+          error: "RENDER_POLICY_SCOPE_MISMATCH",
+        });
+      }
+      return failure(
+        "Update rendering policy error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to save rendering policy draft",
+      );
+    }
+  });
+
 /**
  * The document a static source route owns, created the first time the editor
  * writes to it. Idempotent, so a retry or a second editor gets the same one.
@@ -382,7 +422,7 @@ async function queueReleasePreviewCapture(
   }
 }
 
-/** Materialize an untouched Document through the normal CAS writer before build. */
+/** Prepare initial or explicitly identified existing drafts through the CAS writer. */
 export const prepareInitialStorefrontThemeTemplateDraft = createServerFn({
   method: "POST",
 })
@@ -618,6 +658,18 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
         return fail(
           `These public/ files cannot be published: ${message.slice(message.indexOf("PUBLISH_PUBLIC_FILE_REFUSED:") + "PUBLISH_PUBLIC_FILE_REFUSED:".length).trim()}`,
           { error: "PUBLISH_PUBLIC_FILE_REFUSED" },
+        );
+      }
+      if (message.includes("PUBLISH_BUILD_CONTENT_MISMATCH")) {
+        return fail(
+          "The build uses a different content version. Rebuild for the selected content before publishing; the existing release is unchanged.",
+          { error: "PUBLISH_BUILD_CONTENT_MISMATCH" },
+        );
+      }
+      if (message.includes("PUBLISH_RENDER_POLICY_NOT_READY")) {
+        return fail(
+          "This rendering mode is not ready for publication. The existing release is unchanged.",
+          { error: "PUBLISH_RENDER_POLICY_NOT_READY" },
         );
       }
       if (

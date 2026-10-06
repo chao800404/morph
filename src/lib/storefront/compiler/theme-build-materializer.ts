@@ -2,6 +2,7 @@ import type {
   StorefrontThemeBuildDTO,
   StorefrontThemeBuildInput,
   ThemeBuildBinaryFile,
+  ThemeBuildContentSnapshot,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
@@ -24,6 +25,7 @@ import {
 export type MaterializeThemeBuildInputParams = {
   build: StorefrontThemeBuildDTO;
   revision: StorefrontThemeRevisionDTO;
+  contentSnapshot?: ThemeBuildContentSnapshot;
   compilerIdentity?: {
     compilerId?: string;
     compilerVersion?: string;
@@ -293,7 +295,16 @@ export function materializeThemeBuildInput({
   build,
   revision,
   compilerIdentity,
+  contentSnapshot,
 }: MaterializeThemeBuildInputParams): StorefrontThemeBuildInput {
+  if (
+    (build.contentPublicationId ?? null) !== (contentSnapshot?.publicationId ?? null) ||
+    (contentSnapshot &&
+      (contentSnapshot.storefrontId !== build.storefrontId || contentSnapshot.themeId !== build.themeId ||
+        contentSnapshot.documents.some(({ item }) => item.publicationId !== contentSnapshot.publicationId)))
+  ) {
+    throw new Error("BUILD_CONTENT_SNAPSHOT_MISMATCH: Content snapshot does not match the immutable build binding.");
+  }
   // Validate ownership match between Build and Revision
   if (
     build.sourceRevisionId !== revision.id ||
@@ -355,6 +366,7 @@ export function materializeThemeBuildInput({
       ...(build.dependencies
         ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
         : {}),
+      ...(contentSnapshot ? { contentSnapshot } : {}),
     },
     { id: compilerId, version: compilerVersion },
   );
@@ -373,6 +385,7 @@ export function materializeThemeBuildInput({
     sourceRevisionId: build.sourceRevisionId,
     revisionNumber: revision.revisionNumber,
     files,
+    ...(contentSnapshot ? { contentSnapshot } : {}),
     ...(binaryFiles.length > 0 ? { binaryFiles } : {}),
     entry,
     inputHash,

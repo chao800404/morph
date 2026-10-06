@@ -2,11 +2,37 @@ import { z } from "zod";
 import { MAX_RELEASE_NOTE_LENGTH } from "@/lib/storefront/release-note";
 import { idSchema } from "./commerce";
 import { safeThemeFilePathSchema } from "./storefront-theme-file";
+import {
+  storefrontConcreteRenderPolicySchema,
+  storefrontPageRenderPolicySchema,
+} from "./storefront-render-policy";
 
 export const storefrontThemeEditorInputSchema = z.object({
   storefrontId: idSchema("storefront"),
   themeId: idSchema("storefront theme"),
 });
+
+/** Draft-only. Does not publish, build, or activate a rendering mode. */
+export const updateStorefrontThemeRenderPolicyInputSchema =
+  storefrontThemeEditorInputSchema.extend({
+    templateId: idSchema("storefront theme template"),
+    expectedDraftGeneration: z.number().int().min(1),
+    expectedSourceGeneration: z.number().int().min(1),
+    setting: z.discriminatedUnion("scope", [
+      z
+        .object({
+          scope: z.literal("website"),
+          policy: storefrontConcreteRenderPolicySchema,
+        })
+        .strict(),
+      z
+        .object({
+          scope: z.literal("page"),
+          policy: storefrontPageRenderPolicySchema,
+        })
+        .strict(),
+    ]),
+  });
 
 export const reorderStorefrontThemeSectionsInputSchema =
   storefrontThemeEditorInputSchema.extend({
@@ -33,6 +59,9 @@ export const prepareInitialStorefrontThemeTemplateDraftInputSchema =
     templateId: idSchema("storefront theme template"),
     expectedDraftGeneration: z.number().int().min(1),
     expectedSourceGeneration: z.number().int().min(1),
+    // Omitted retains first-publish behavior. Existing drafts require their
+    // exact identity before explicit preparation for a frozen content build.
+    expectedDraftRevisionId: z.uuid().optional(),
   });
 
 /** Renaming an existing release, for a note written after the fact. */

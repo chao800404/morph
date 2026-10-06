@@ -307,6 +307,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
         env: {
           NODE_ENV: "production",
           MORPH_THEME_BUILD_TARGET: "runtime",
+          NODE_OPTIONS: "--unhandled-rejections=strict",
         },
       }),
     );

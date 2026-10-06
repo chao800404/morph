@@ -400,6 +400,13 @@
       "when": 1790947651291,
       "tag": "0070_gift_cards",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1791216476113,
+      "tag": "0071_theme_build_content_publication",
+      "breakpoints": true
     }
   ]
 }

@@ -7,7 +7,10 @@ import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { storefrontThemeDal } from "./storefront-theme.dal";
+import {
+  storefrontThemeDal,
+  prepareTemplateDocumentWrite,
+} from "./storefront-theme.dal";
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
 import { env as workerEnv } from "cloudflare:workers";
@@ -153,6 +156,7 @@ beforeEach(() => {
       status text NOT NULL,
       artifact_prefix text,
       manifest_json text,
+      content_publication_id text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -233,6 +237,804 @@ afterEach(() => {
 const acceptRevision = async () => {};
 
 describe("storefront theme DAL", () => {
+  it("refuses to seal content that the publish step would still normalize", async () => {
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssg" } },
+    });
+    sqlite.exec(
+      `INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at) VALUES ('freeze-source', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`,
+    );
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?",
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          renderPolicy: { mode: "ssg" },
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { rows: [{ title: "Unprepared" }] },
+            },
+          ],
+        }),
+        saved!.draftRevisionId,
+      );
+    await expect(
+      storefrontContentPublicationDal.sealForThemeBuild({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "freeze-source",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        expectedReleaseGeneration: 1,
+      }),
+    ).rejects.toThrow("CONTENT_BUILD_DRAFT_NOT_NORMALIZED");
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM storefront_content_publications",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    const prepared = await storefrontThemeDal.prepareInitialTemplateDraft({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      expectedDraftRevisionId: saved!.draftRevisionId,
+      expectedDraftGeneration: 2,
+      expectedSourceGeneration: 1,
+      createdBy: "user-1",
+    });
+    expect(prepared?.document.sections[0]?.props).toMatchObject({
+      rows: [{ title: "Unprepared" }],
+    });
+    const sealed = await storefrontContentPublicationDal.sealForThemeBuild({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      sourceRevisionId: "freeze-source",
+      expectedDraftRevisionId: prepared!.draftRevisionId,
+      expectedDraftGeneration: prepared!.draftGeneration,
+      expectedSourceGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+    expect(
+      sealed.items.some(
+        (item) => item.revisionId === prepared!.draftRevisionId,
+      ),
+    ).toBe(true);
+  });
+  it("prepares a referenced draft by forking without modifying the frozen revision", async () => {
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssg" } },
+    });
+    sqlite.exec(`INSERT INTO storefront_theme_revisions
+      (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+      VALUES ('freeze-source', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+    await storefrontContentPublicationDal.sealForThemeBuild({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      sourceRevisionId: "freeze-source",
+      expectedDraftRevisionId: saved!.draftRevisionId,
+      expectedDraftGeneration: 2,
+      expectedSourceGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+    const readFrozen = () =>
+      sqlite
+        .prepare(
+          "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+        )
+        .get(saved!.draftRevisionId);
+    const before = readFrozen();
+    const prepared = await storefrontThemeDal.prepareInitialTemplateDraft({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      expectedDraftRevisionId: saved!.draftRevisionId,
+      expectedDraftGeneration: 2,
+      expectedSourceGeneration: 1,
+      createdBy: "user-1",
+    });
+    expect(prepared?.draftRevisionId).not.toBe(saved!.draftRevisionId);
+    expect(prepared?.draftGeneration).toBe(3);
+    expect(readFrozen()).toEqual(before);
+  });
+
+  it.each(["identity", "source", "draft", "ownership"] as const)(
+    "refuses existing draft preparation with stale or foreign %s",
+    async (target) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssg" } },
+      });
+      const before = sqlite
+        .prepare(
+          "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+        )
+        .get(saved!.draftRevisionId);
+      const request = storefrontThemeDal.prepareInitialTemplateDraft({
+        storefrontId: target === "ownership" ? "other-store" : "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        expectedDraftRevisionId:
+          target === "identity" ? crypto.randomUUID() : saved!.draftRevisionId,
+        expectedDraftGeneration: target === "draft" ? 1 : 2,
+        expectedSourceGeneration: target === "source" ? 2 : 1,
+        createdBy: "user-1",
+      });
+      if (target === "ownership") expect(await request).toBeNull();
+      else
+        await expect(request).rejects.toThrow(
+          TEMPLATE_DRAFT_GENERATION_MISMATCH,
+        );
+      expect(
+        sqlite
+          .prepare(
+            "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+          )
+          .get(saved!.draftRevisionId),
+      ).toEqual(before);
+    },
+  );
+
+  it.each(["source", "draft", "revision"] as const)(
+    "rolls back existing draft preparation when %s changes after reading",
+    async (target) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssg" } },
+      });
+      const before = sqlite
+        .prepare(
+          "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+        )
+        .get(saved!.draftRevisionId);
+      const originalBatch = workerEnv.DATABASE.batch.bind(workerEnv.DATABASE);
+      const race = vi
+        .spyOn(workerEnv.DATABASE, "batch")
+        .mockImplementationOnce(async (statements) => {
+          sqlite.exec(
+            target === "source"
+              ? "UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'"
+              : target === "draft"
+                ? "UPDATE storefront_theme_templates SET draft_generation = 3 WHERE id = 'policy-template'"
+                : "UPDATE storefront_theme_templates SET draft_revision_id = 'changed' WHERE id = 'policy-template'",
+          );
+          return originalBatch(statements);
+        });
+      try {
+        await expect(
+          storefrontThemeDal.prepareInitialTemplateDraft({
+            storefrontId: "storefront-a",
+            themeId: "theme-a",
+            templateId: "policy-template",
+            expectedDraftRevisionId: saved!.draftRevisionId,
+            expectedDraftGeneration: 2,
+            expectedSourceGeneration: 1,
+            createdBy: "user-1",
+          }),
+        ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+        expect(
+          sqlite
+            .prepare(
+              "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+            )
+            .get(saved!.draftRevisionId),
+        ).toEqual(before);
+        expect(
+          sqlite
+            .prepare(
+              "SELECT COUNT(*) AS n FROM storefront_theme_template_revisions",
+            )
+            .get(),
+        ).toEqual({ n: 1 });
+      } finally {
+        race.mockRestore();
+      }
+    },
+  );
+
+  it("rolls back sealing when the pending layout changes after it was read", async () => {
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssg" } },
+    });
+    sqlite.exec(
+      `INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at) VALUES ('freeze-source', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now'); INSERT INTO storefront_theme_templates (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at) VALUES ('freeze-layout', 'theme-a', 'layout', 'Layout', '{}', 'layout-rev', 'now', 'now'); INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at) VALUES ('layout-rev', 'freeze-layout', 1, '{"version":1,"sections":[]}', 'now');`,
+    );
+    const batch = workerEnv.DATABASE.batch.bind(workerEnv.DATABASE);
+    const race = vi
+      .spyOn(workerEnv.DATABASE, "batch")
+      .mockImplementationOnce(async (statements) => {
+        sqlite.exec(
+          "UPDATE storefront_theme_templates SET draft_generation = draft_generation + 1 WHERE id = 'freeze-layout'",
+        );
+        return batch(statements);
+      });
+    try {
+      await expect(
+        storefrontContentPublicationDal.sealForThemeBuild({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "policy-template",
+          sourceRevisionId: "freeze-source",
+          expectedDraftRevisionId: saved!.draftRevisionId,
+          expectedDraftGeneration: 2,
+          expectedSourceGeneration: 1,
+          expectedReleaseGeneration: 1,
+        }),
+      ).rejects.toThrow("CONTENT_BUILD_PRECONDITION_FAILED");
+      expect(
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM storefront_content_publications",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+    } finally {
+      race.mockRestore();
+    }
+  });
+  it("rejects an in-place write prepared before a concurrent seal, retaining the sealed values", async () => {
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssg" } },
+    });
+    sqlite.exec(
+      `INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at) VALUES ('freeze-source', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`,
+    );
+    const pending = await prepareTemplateDocumentWrite({
+      createdBy: "author",
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      document: { version: 1, sections: [], renderPolicy: { mode: "ssr" } },
+      sourceGeneration: 1,
+      draftRevisionId: saved!.draftRevisionId,
+      publishedRevisionId: null,
+      expectedDraftGeneration: 2,
+    });
+    const publication = await storefrontContentPublicationDal.sealForThemeBuild(
+      {
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "freeze-source",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedSourceGeneration: 1,
+        expectedReleaseGeneration: 1,
+      },
+    );
+    await expect(
+      workerEnv.DATABASE.batch([pending.guard, ...pending.mutations]),
+    ).rejects.toThrow();
+    expect(
+      (
+        await storefrontContentPublicationDal.readDocumentsForDraft({
+          themeId: "theme-a",
+          publication,
+        })
+      )[0]?.document.renderPolicy,
+    ).toEqual({ mode: "ssg" });
+  });
+  it.each(["success", "draft", "source", "release", "ownership"])(
+    "seals build content without activation (%s)",
+    async (condition) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssg" } },
+      });
+      sqlite.exec(
+        `INSERT INTO storefront_theme_revisions (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at) VALUES ('freeze-source', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`,
+      );
+      const request = {
+        storefrontId:
+          condition === "ownership" ? "other-store" : "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "freeze-source",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: condition === "draft" ? 1 : 2,
+        expectedSourceGeneration: condition === "source" ? 2 : 1,
+        expectedReleaseGeneration: condition === "release" ? 2 : 1,
+        createdBy: "author",
+      };
+      if (condition === "success") {
+        const publication =
+          await storefrontContentPublicationDal.sealForThemeBuild(request);
+        expect(publication.items[0]?.revisionId).toBe(saved!.draftRevisionId);
+        expect(publication.items[0]?.metadata?.templateType).toBe("index");
+        expect(
+          await storefrontContentPublicationDal.isRevisionReferenced(
+            saved!.draftRevisionId,
+          ),
+        ).toBe(true);
+        const edited = await storefrontThemeDal.updateRenderPolicy({
+          ...policyWrite(),
+          expectedDraftGeneration: 2,
+          setting: { scope: "page", policy: { mode: "ssr" } },
+        });
+        expect(edited!.draftRevisionId).not.toBe(saved!.draftRevisionId);
+        const frozen =
+          await storefrontContentPublicationDal.readDocumentsForDraft({
+            themeId: "theme-a",
+            publication,
+          });
+        expect(frozen[0]?.document.renderPolicy).toEqual({ mode: "ssg" });
+      } else {
+        await expect(
+          storefrontContentPublicationDal.sealForThemeBuild(request),
+        ).rejects.toThrow("CONTENT_");
+        expect(
+          sqlite
+            .prepare(
+              "SELECT COUNT(*) AS count FROM storefront_content_publications",
+            )
+            .get(),
+        ).toEqual({ count: 0 });
+      }
+      expect(
+        sqlite
+          .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(
+            "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+          )
+          .get(),
+      ).toEqual({ id: null });
+    },
+  );
+  function insertPolicyTemplate(type = "index") {
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+      (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('policy-template', 'theme-a', ?, 'Policy', ?, 'now', 'now')`,
+      )
+      .run(
+        type,
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { heading: "Keep me" },
+            },
+          ],
+        }),
+      );
+  }
+
+  const policyWrite = () => ({
+    storefrontId: "storefront-a",
+    themeId: "theme-a",
+    templateId: "policy-template",
+    expectedDraftGeneration: 1,
+    expectedSourceGeneration: 1,
+    createdBy: "user-1",
+    setting: { scope: "page" as const, policy: { mode: "ssg" as const } },
+  });
+
+  it("saves a rendering draft through the existing revision writer without publishing", async () => {
+    insertPolicyTemplate();
+    const result = await storefrontThemeDal.updateRenderPolicy(policyWrite());
+    expect(result?.document.renderPolicy).toEqual({ mode: "ssg" });
+    expect(result?.document.sections[0]?.props).toEqual({ heading: "Keep me" });
+    expect(result?.draftGeneration).toBe(2);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT published_revision_id FROM storefront_theme_templates WHERE id = 'policy-template'",
+        )
+        .get(),
+    ).toEqual({ published_revision_id: null });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+        )
+        .get(),
+    ).toEqual({ active_release_id: null });
+  });
+
+  it.each(["ssg", "isr", "csr"] as const)(
+    "refuses publication of unconnected %s without moving the release",
+    async (mode) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: {
+          scope: "page",
+          policy: mode === "isr" ? { mode, revalidateSeconds: 60 } : { mode },
+        },
+      });
+      expect(saved).not.toBeNull();
+      await expect(
+        storefrontThemeDal.publishTemplate({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "policy-template",
+          sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+          themeBuildId: "33333333-3333-4333-8333-333333333333",
+          expectedDraftRevisionId: saved!.draftRevisionId,
+          expectedDraftGeneration: 2,
+          expectedReleaseGeneration: 1,
+          verifySourceRevision: acceptRevision,
+        }),
+      ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
+      expect(
+        sqlite
+          .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM storefront_content_publications",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(
+            "SELECT published_revision_id, draft_generation FROM storefront_theme_templates WHERE id = 'policy-template'",
+          )
+          .get(),
+      ).toEqual({ published_revision_id: null, draft_generation: 2 });
+    },
+  );
+
+  it.each([
+    { mode: "ssg", owner: "template" },
+    { mode: "isr", owner: "template" },
+    { mode: "csr", owner: "template" },
+    { mode: "ssg", owner: "layout" },
+    { mode: "isr", owner: "layout" },
+    { mode: "csr", owner: "layout" },
+    { mode: "ssg", owner: "page" },
+    { mode: "isr", owner: "page" },
+    { mode: "csr", owner: "page" },
+  ] as const)(
+    "refuses a published $owner's $mode policy even when publishing an SSR page",
+    async ({ mode, owner }) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssr" } },
+      });
+      const document = JSON.stringify({
+        version: 1,
+        sections: [],
+        ...(owner === "page" ? { handle: "sibling" } : {}),
+        [owner === "layout" ? "websiteRenderPolicy" : "renderPolicy"]:
+          mode === "isr" ? { mode, revalidateSeconds: 60 } : { mode },
+      });
+      if (owner === "page") {
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_pages
+          (id, storefront_id, title, handle, status, published_revision_id, created_by, created_at, updated_at)
+          VALUES ('sibling', 'storefront-a', 'Sibling', 'sibling', 'published', 'sibling-live', 'user-1', 'now', 'now')`,
+          )
+          .run();
+        sqlite
+          .prepare(
+            "INSERT INTO storefront_page_revisions VALUES ('sibling-live', 'sibling', ?)",
+          )
+          .run(document);
+      } else {
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, route_path, document, draft_revision_id, published_revision_id, created_at, updated_at)
+        VALUES ('sibling', 'theme-a', ?, 'Sibling', NULL, ?, 'sibling-live', 'sibling-live', 'now', 'now')`,
+          )
+          .run(owner === "layout" ? "layout" : "page", document);
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+        VALUES ('sibling-live', 'sibling', 1, ?, 'now')`,
+          )
+          .run(document);
+      }
+      await expect(
+        storefrontThemeDal.publishTemplate({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "policy-template",
+          sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+          themeBuildId: "33333333-3333-4333-8333-333333333333",
+          expectedDraftRevisionId: saved!.draftRevisionId,
+          expectedDraftGeneration: 2,
+          expectedReleaseGeneration: 1,
+          verifySourceRevision: acceptRevision,
+        }),
+      ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
+      expect(
+        sqlite
+          .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM storefront_content_publications",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+    },
+  );
+
+  it.each([false, true])(
+    "checks a content-bound build before activation (mismatch: %s)",
+    async (mismatch) => {
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssr" } },
+      });
+      const oldRevisionId = mismatch
+        ? "old-policy-revision"
+        : saved!.draftRevisionId;
+      if (mismatch) {
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+        VALUES ('old-policy-revision', 'policy-template', 0, ?, 'now')`,
+          )
+          .run(JSON.stringify({ version: 1, sections: [] }));
+      }
+      sqlite.exec(
+        "INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at) VALUES ('build-content', 'storefront-a', 'now', 'now')",
+      );
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_content_publication_items
+      (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+      VALUES ('build-item', 'build-content', 'template', 'policy-template', ?, '{"templateType":"index"}', 'now', 'now')`,
+        )
+        .run(oldRevisionId);
+      sqlite.exec(
+        "UPDATE storefront_theme_builds SET content_publication_id = 'build-content'",
+      );
+      sqlite.exec(`INSERT INTO storefront_theme_revisions
+      (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+      VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+      const publish = storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: acceptRevision,
+      });
+      if (mismatch) {
+        await expect(publish).rejects.toThrow("PUBLISH_BUILD_CONTENT_MISMATCH");
+        expect(
+          sqlite
+            .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+            .get(),
+        ).toEqual({ count: 0 });
+        expect(
+          sqlite
+            .prepare(
+              "SELECT COUNT(*) AS count FROM storefront_content_publications",
+            )
+            .get(),
+        ).toEqual({ count: 1 });
+        expect(
+          sqlite
+            .prepare(
+              "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+            )
+            .get(),
+        ).toEqual({ active_release_id: null });
+      } else {
+        const result = await publish;
+        expect(result?.releaseId).toBeTruthy();
+      }
+    },
+  );
+
+  it("preserves policy through section renaming and reordering", async () => {
+    insertPolicyTemplate();
+    await storefrontThemeDal.updateRenderPolicy(policyWrite());
+    const renamed = await storefrontThemeDal.renameSection({
+      ...policyWrite(),
+      sectionId: "hero",
+      name: "Renamed",
+      expectedDraftGeneration: 2,
+    });
+    expect(renamed?.document.renderPolicy).toEqual({ mode: "ssg" });
+    const reordered = await storefrontThemeDal.reorderSections({
+      ...policyWrite(),
+      sectionIds: ["hero"],
+      expectedDraftGeneration: 3,
+    });
+    expect(reordered?.document.renderPolicy).toEqual({ mode: "ssg" });
+  });
+
+  it("also refuses an unconnected website default sealed by a page publish", async () => {
+    insertPolicyTemplate("layout");
+    await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: {
+        scope: "website",
+        policy: { mode: "isr", revalidateSeconds: 60 },
+      },
+    });
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+      (id, theme_id, type, name, document, draft_revision_id, created_at, updated_at)
+      VALUES ('home', 'theme-a', 'index', 'Home', ?, 'home-revision', 'now', 'now')`,
+      )
+      .run(JSON.stringify({ version: 1, sections: [] }));
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+      (id, template_id, version, document, created_at)
+      VALUES ('home-revision', 'home', 1, ?, 'now')`,
+      )
+      .run(JSON.stringify({ version: 1, sections: [] }));
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "home",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: "home-revision",
+        expectedDraftGeneration: 1,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: acceptRevision,
+      }),
+    ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM storefront_content_publications",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT published_revision_id FROM storefront_theme_templates WHERE id = 'policy-template'",
+        )
+        .get(),
+    ).toEqual({ published_revision_id: null });
+  });
+
+  it.each(["draft", "source"])(
+    "rejects a stale %s generation without writing",
+    async (kind) => {
+      insertPolicyTemplate();
+      await storefrontThemeDal.updateRenderPolicy(policyWrite());
+      if (kind === "source")
+        sqlite.exec("UPDATE storefront_themes SET source_generation = 2");
+      await expect(
+        storefrontThemeDal.updateRenderPolicy({
+          ...policyWrite(),
+          expectedDraftGeneration: kind === "source" ? 2 : 1,
+        }),
+      ).rejects.toThrow(TEMPLATE_DRAFT_GENERATION_MISMATCH);
+      expect(
+        sqlite
+          .prepare(
+            "SELECT draft_generation FROM storefront_theme_templates WHERE id = 'policy-template'",
+          )
+          .get(),
+      ).toEqual({ draft_generation: 2 });
+    },
+  );
+
+  it("requires storefront and Theme ownership", async () => {
+    insertPolicyTemplate();
+    expect(
+      await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        storefrontId: "other-store",
+      }),
+    ).toBeNull();
+    expect(
+      await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        themeId: "other-theme",
+      }),
+    ).toBeNull();
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM storefront_theme_template_revisions",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("only writes website defaults to layout and page overrides to a page", async () => {
+    insertPolicyTemplate("layout");
+    await expect(
+      storefrontThemeDal.updateRenderPolicy(policyWrite()),
+    ).rejects.toThrow("RENDER_POLICY_SCOPE_MISMATCH");
+    const result = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: {
+        scope: "website",
+        policy: { mode: "isr", revalidateSeconds: 120 },
+      },
+    });
+    expect(result?.document.websiteRenderPolicy).toEqual({
+      mode: "isr",
+      revalidateSeconds: 120,
+    });
+    expect(result?.document.renderPolicy).toBeUndefined();
+  });
+
+  it("keeps a published policy snapshot unchanged after a new policy draft", async () => {
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy(policyWrite());
+    expect(saved).not.toBeNull();
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_templates SET published_revision_id = ? WHERE id = 'policy-template'",
+      )
+      .run(saved!.draftRevisionId);
+    const publication = await storefrontContentPublicationDal.createForTheme({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "policy-template",
+      templateRevisionId: saved!.draftRevisionId,
+    });
+    const changed = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      expectedDraftGeneration: 2,
+      setting: { scope: "page", policy: { mode: "csr" } },
+    });
+    expect(changed?.draftRevisionId).not.toBe(saved!.draftRevisionId);
+    const published =
+      await storefrontContentPublicationDal.getPublishedTemplateDocument({
+        publicationId: publication.id,
+        templateType: "index",
+      });
+    expect(published).toMatchObject({ renderPolicy: { mode: "ssg" } });
+    expect(
+      (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+        ?.templates[0]?.document.renderPolicy,
+    ).toEqual({ mode: "csr" });
+  });
+
   it("persists a Page handle snapshot and preserves it after a draft rename", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates (id,theme_id,type,name,document,created_at,updated_at)
@@ -985,7 +1787,7 @@ export default function Hero() { return <h1 />; }`;
       expect(
         publication.items.find((item) => item.contentId === about.template.id)
           ?.metadata,
-      ).toEqual({ routePath: "/aboutus" });
+      ).toEqual({ routePath: "/aboutus", templateType: "page" });
 
       const byRoute =
         (await storefrontContentPublicationDal.getPublishedRouteDocument({

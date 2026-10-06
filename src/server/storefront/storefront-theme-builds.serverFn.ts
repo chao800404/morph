@@ -26,9 +26,12 @@ import {
 } from "@/lib/validations/storefront-theme-build";
 import { createServerFn } from "@tanstack/react-start";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
+import { storefrontContentPublicationDal } from "@/lib/storefront/dal/storefront-content-publication.dal";
 
 export const createPreviewBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(createStorefrontThemeBuildInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(createStorefrontThemeBuildInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
@@ -54,12 +57,24 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
           "The requested theme dependency is not approved by the platform",
         );
       }
+      const contentPublicationId = data.publicationDraft
+        ? (
+            await storefrontContentPublicationDal.sealForThemeBuild({
+              ...data.publicationDraft,
+              storefrontId: data.storefrontId,
+              themeId: data.themeId,
+              sourceRevisionId: data.sourceRevisionId,
+              createdBy: context.session?.user?.id,
+            })
+          ).id
+        : data.contentPublicationId;
       const build = await service.requestPreviewBuild({
         storefrontId: data.storefrontId,
         themeId: data.themeId,
         sourceRevisionId: data.sourceRevisionId,
         createdBy: context.session?.user?.id,
         dependencies: data.dependencies,
+        contentPublicationId,
         deferExecution: Boolean(queue),
       });
 
@@ -117,7 +132,9 @@ export const createPreviewBuild = createServerFn({ method: "POST" })
  * submit an arbitrary npm version.
  */
 export const listThemeDependencies = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(listStorefrontThemeDependenciesInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(listStorefrontThemeDependenciesInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -148,7 +165,9 @@ export const listThemeDependencies = createServerFn({ method: "POST" })
 
 /** Enable one approved package and queue a build that proves it is usable. */
 export const requestThemeDependency = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(requestStorefrontThemeDependencyInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(requestStorefrontThemeDependencyInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input, context }) => {
     // A rejected precondition is a client error the caller already
@@ -285,7 +304,9 @@ export const requestThemeDependency = createServerFn({ method: "POST" })
   });
 
 export const getPreviewBuildToken = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(getStorefrontThemeBuildInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -331,7 +352,9 @@ export const getPreviewBuildToken = createServerFn({ method: "POST" })
   });
 
 export const getThemeBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(getStorefrontThemeBuildInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -375,7 +398,9 @@ export const getThemeBuild = createServerFn({ method: "POST" })
  * cancellable by id.
  */
 export const cancelThemeBuild = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(getStorefrontThemeBuildInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(getStorefrontThemeBuildInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already
@@ -410,7 +435,9 @@ export const cancelThemeBuild = createServerFn({ method: "POST" })
   });
 
 export const listThemeBuilds = createServerFn({ method: "POST" })
-  .validator((data: unknown) => parseInput(listStorefrontThemeBuildsInputSchema, data))
+  .validator((data: unknown) =>
+    parseInput(listStorefrontThemeBuildsInputSchema, data),
+  )
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     // A rejected precondition is a client error the caller already

@@ -1,12 +1,27 @@
 import { z } from "zod";
 import { idSchema } from "./commerce";
 
-export const createStorefrontThemeBuildInputSchema = z.object({
-  storefrontId: idSchema("storefront"),
-  themeId: idSchema("storefront theme"),
-  sourceRevisionId: z.string().uuid("Invalid source revision ID"),
-  dependencies: z.record(z.string(), z.string()).optional(),
-});
+export const createStorefrontThemeBuildInputSchema = z
+  .object({
+    storefrontId: idSchema("storefront"),
+    themeId: idSchema("storefront theme"),
+    sourceRevisionId: z.string().uuid("Invalid source revision ID"),
+    dependencies: z.record(z.string(), z.string()).optional(),
+    contentPublicationId: z.uuid().optional(),
+    publicationDraft: z
+      .object({
+        templateId: idSchema("storefront theme template"),
+        expectedDraftRevisionId: z.uuid(),
+        expectedDraftGeneration: z.number().int().min(1),
+        expectedSourceGeneration: z.number().int().min(1),
+        expectedReleaseGeneration: z.number().int().min(1),
+      })
+      .strict()
+      .optional(),
+  })
+  .refine((data) => !(data.contentPublicationId && data.publicationDraft), {
+    message: "Choose an existing publication or seal a draft, not both.",
+  });
 
 export type CreateStorefrontThemeBuildInput = z.infer<
   typeof createStorefrontThemeBuildInputSchema

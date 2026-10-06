@@ -6,6 +6,7 @@ import {
   storefrontThemeEditorSearchSchema,
   storefrontThemePreviewSearchSchema,
   updateStorefrontThemeSectionPropsInputSchema,
+  updateStorefrontThemeRenderPolicyInputSchema,
 } from "./storefront-theme";
 import {
   createThemeRevisionInputSchema,
@@ -15,6 +16,78 @@ import {
   saveThemeFileInputSchema,
   saveThemeFilesBatchInputSchema,
 } from "./storefront-theme-file";
+import { storefrontPageDocumentSchema } from "./storefront-page";
+
+describe("versioned rendering draft input", () => {
+  const input = () => ({
+    storefrontId: crypto.randomUUID(),
+    themeId: crypto.randomUUID(),
+    templateId: crypto.randomUUID(),
+    expectedDraftGeneration: 1,
+    expectedSourceGeneration: 1,
+    setting: { scope: "page", policy: { mode: "inherit" } },
+  });
+
+  it("preserves declared policy fields in the stored document instead of stripping them", () => {
+    const document = {
+      version: 1,
+      renderPolicy: { mode: "isr", revalidateSeconds: 60 },
+      sections: [],
+    };
+    expect(storefrontPageDocumentSchema.parse(document)).toEqual(document);
+    const layout = {
+      version: 1,
+      websiteRenderPolicy: { mode: "ssr" },
+      sections: [],
+    };
+    expect(storefrontPageDocumentSchema.parse(layout)).toEqual(layout);
+  });
+
+  it.each(["expectedDraftGeneration", "expectedSourceGeneration"])(
+    "requires the %s concurrency guard",
+    (field) => {
+      const data: Record<string, unknown> = input();
+      delete data[field];
+      expect(
+        updateStorefrontThemeRenderPolicyInputSchema.safeParse(data).success,
+      ).toBe(false);
+      data[field] = 0;
+      expect(
+        updateStorefrontThemeRenderPolicyInputSchema.safeParse(data).success,
+      ).toBe(false);
+    },
+  );
+
+  it("does not accept inherit as a website policy or arbitrary native plugin options", () => {
+    expect(
+      updateStorefrontThemeRenderPolicyInputSchema.safeParse({
+        ...input(),
+        setting: { scope: "website", policy: { mode: "inherit" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      updateStorefrontThemeRenderPolicyInputSchema.safeParse({
+        ...input(),
+        setting: {
+          scope: "page",
+          policy: { mode: "ssg", prerender: { enabled: true } },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps actor, publication and executable config out of the request contract", () => {
+    const data = input();
+    expect(
+      updateStorefrontThemeRenderPolicyInputSchema.parse({
+        ...data,
+        createdBy: "someone-else",
+        publish: true,
+        vite: "execute-me",
+      }),
+    ).toEqual(data);
+  });
+});
 
 describe("initial template draft preparation", () => {
   const input = () => ({
@@ -23,6 +96,24 @@ describe("initial template draft preparation", () => {
     templateId: crypto.randomUUID(),
     expectedDraftGeneration: 1,
     expectedSourceGeneration: 1,
+  });
+
+  it("accepts only an explicit UUID when preparing an existing draft", () => {
+    const expectedDraftRevisionId = crypto.randomUUID();
+    expect(
+      prepareInitialStorefrontThemeTemplateDraftInputSchema.parse({
+        ...input(),
+        expectedDraftRevisionId,
+      }).expectedDraftRevisionId,
+    ).toBe(expectedDraftRevisionId);
+    for (const value of [null, "", "not-a-revision"]) {
+      expect(
+        prepareInitialStorefrontThemeTemplateDraftInputSchema.safeParse({
+          ...input(),
+          expectedDraftRevisionId: value,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("does not accept a client document or actor override", () => {

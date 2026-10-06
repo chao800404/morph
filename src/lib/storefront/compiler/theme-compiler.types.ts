@@ -22,6 +22,7 @@ export type ThemeCompilerInput = {
   }>;
   entry?: string;
   dependencies?: Readonly<Record<string, string>>;
+  contentSnapshot?: import("../dto/storefront-theme-build.dto").ThemeBuildContentSnapshot;
   sourceGeneration?: number;
   compilerId?: string;
   compilerVersion?: string;

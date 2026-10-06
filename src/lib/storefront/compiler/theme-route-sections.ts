@@ -92,7 +92,8 @@ export function mergeDocumentWithRouteSections(
     document.sections.map((section) => [section.id, section] as const),
   );
   return {
-    version: 1,
+    // Source owns the section structure, not revisioned document metadata.
+    ...document,
     sections: routeSections.map((routeSection) => {
       const stored = storedById.get(routeSection.slotId);
       return {
