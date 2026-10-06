@@ -1,7 +1,11 @@
 # Morph Native TanStack Start Hosting + Visual CMS 規劃（2026-10-06）
 
-狀態：規劃，尚未實作。接續 [`ROADMAP.md`](../ROADMAP.md)「TanStack Start 原生相容」。
+狀態：規劃，1a 已完成（#102），1b–1d 依多框架規劃的交付順序進行。接續 [`ROADMAP.md`](../ROADMAP.md)「TanStack Start 原生相容」。
 各層實際驗收仍以 [`docs/tanstack-start-compatibility.md`](tanstack-start-compatibility.md) 為準。
+
+> 2026-10-06 起，TanStack Start 是 Morph 多種 Theme 框架之一，總體規劃見
+> [`docs/multi-runtime-theme-plan.md`](multi-runtime-theme-plan.md)。本文件中的建置沙箱、工具鏈三級相容、
+> Theme 依賴快照、基礎設施對應、外連政策、Design 修改流程與匯出適用所有框架；其餘為 TanStack Start 專屬。
 
 ## 產品目標
 

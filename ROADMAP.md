@@ -422,6 +422,8 @@ Starter bootstrap 與 workspace upgrade 契約：
 
 產品方向（2026-10-06）：Morph 匯入的是原生 TanStack Start 專案，不轉換成 Morph 專案，也不新增 Morph 專用設定語言。規劃見 [`docs/start-native-import-plan.md`](docs/start-native-import-plan.md)：官方 fixture 原樣匯入為最高層級驗收；建置執行客戶自己的 `vite.config.ts`（AST 只服務 Design 與 Monaco）；每個 Theme 有依 lockfile 鎖定的依賴快照，沿用既有套件申請流程自動提出、但不自動信任；基礎設施（D1、KV、R2、Secrets）以對應方式處理；四種渲染模式由 Code 與 Design 修改同一份官方寫法；發布時由產物凍結 Render Plan。
 
+產品方向更新（2026-10-06）：Theme 可用多種框架撰寫，建立網站時選擇（第一版 TanStack Start 與 Astro），CMS 本體維持 TanStack Start。框架無關的契約、元件旁的 `.fields.ts` 欄位規則、依檔案語言的 Design 接入與交付順序見 [`docs/multi-runtime-theme-plan.md`](docs/multi-runtime-theme-plan.md)；TanStack Start 的原生匯入成為其中一種框架接入。
+
 ---
 
 # Phase 0 — Architecture Alignment
