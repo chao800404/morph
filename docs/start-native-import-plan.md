@@ -287,10 +287,28 @@ STRIPE_SECRET [ 新增 Secret ]
           - 本機實例（已完成）：`service/build-preview/local-build-preview-worker.ts` 以 workerd 在
             loopback 執行；Worker 環境為空、對外連線預設 403（只允許 Core 的內容來源）、閒置自動回收。
             只能在本機輔助程序中使用，`check-local-preview-sidecar.mjs` 確保它不進部署產物。
-          - 待做：Core 路由與存取權杖（綁定使用者、商店、Theme、build 與期限，每個請求都驗證，包含子資源；
-            現有 Build Preview 權杖未綁定使用者）；預覽來源與 Live Preview 相同的主機規則；
-            `/_morph/content` 只回應該 build 綁定的內容發布版本；編輯器 iframe 改為跨來源；
-            Sandbox 容器版本（不同於 Live Preview 的 session id，無部署權杖與正式秘密，外連拒絕、資源預算、閒置回收）。
+          - 存取權杖（已完成）：`service/build-preview/build-preview-capability.ts`。權杖是隨機值，
+            以預覽主機的第一個標籤呈現：`bp-<token>.<THEME_PREVIEW_HOSTNAME>`，文件與所有子資源自動帶著它，
+            不需 cookie，也不需 Morph 的 session（session 不會送到預覽主機）。用單一標籤而非路徑，因為路徑
+            會被 Theme 當成自己的路由，而預覽主機的憑證只涵蓋一層標籤。D1 只存雜湊
+            （`storefront_build_preview_capabilities`，migration 0072），記錄使用者、商店、Theme、build
+            與期限。每個請求以一次查詢重新檢查：未撤銷、未過期、使用者仍是未被停權的 admin、build 仍為成功
+            且仍屬於該 Theme、Theme 未刪除。同一使用者對同一 build 只有一個有效權杖，發新的即撤銷舊的；
+            build 刪除時權杖一併刪除。
+          - 內容端點（已完成）：`service/build-preview/build-preview-content.ts`，只回應該 build 綁定的內容
+            發布版本（不是草稿，也不是線上版本），回應為 `private, no-store`。
+          - 待做（下一個 PR）：
+            - 執行器合約 `BuildPreviewServer`（start／touch／stop），比照 `ThemePreviewServer` 有兩種傳輸：
+              本機輔助程序與 Sandbox 容器。本機輔助程序的協定註明新增端點前要先有合約，因此不直接在
+              sidecar 加端點。產物由 Core 讀取並驗證後交給執行器，檔案以 sha256 傳送（沿用 `stageBinary`
+              的作法），執行器不取得 R2 權限。
+            - Core 路由：預覽主機上的 `bp-` 標籤 → 驗證權杖 → `/_morph/content` 由 Core 回應，其餘轉送到
+              該 build 的實例；沿用 `previewRequestFor`／`withoutPlatformCookies` 清除平台 cookie 與
+              `x-morph-*` 標頭；每次轉送呼叫 `touch()`。
+            - 發權杖的 server function 與編輯器 iframe 改為跨來源。
+            - 本機 E2E：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用
+              `*.localhost` 或另設主機。
+            - Sandbox 容器版本（不同於 Live Preview 的 session id，無部署權杖與正式秘密，外連拒絕、資源預算、閒置回收）。
        2. **Sandbox 建置程式接上原生建置與內容快照**：預先渲染只讀該次建置綁定的凍結內容快照。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
           店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。

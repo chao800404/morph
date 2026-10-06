@@ -630,6 +630,45 @@ export const storefrontThemeBuilds = sqliteTable(
 );
 
 /**
+ * Access to one build's isolated Build Preview, held by one user.
+ *
+ * The browser presents the capability as the first label of the preview host,
+ * so every sub-resource carries it without a cookie. Only its SHA-256 is
+ * stored; each request is checked against the row, the build and the user
+ * again, so expiry, revocation, a failed build or a removed admin all take
+ * effect on the next request.
+ */
+export const storefrontBuildPreviewCapabilities = sqliteTable(
+  "storefront_build_preview_capabilities",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    buildId: text("build_id")
+      .notNull()
+      .references(() => storefrontThemeBuilds.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_build_preview_capabilities_token_idx").on(
+      table.tokenHash,
+    ),
+    index("storefront_build_preview_capabilities_build_user_idx").on(
+      table.buildId,
+      table.userId,
+    ),
+  ],
+);
+
+/**
  * Per-theme package enablement state.  The package/version itself is always
  * checked against the platform allowlist from cms.config before this table is
  * written; the table only records tenant intent and build lifecycle state.
