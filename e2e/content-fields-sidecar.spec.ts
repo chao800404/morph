@@ -3,6 +3,7 @@ import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  isServerFunctionCall,
   openContentTab,
   previewFrame,
   saveEditedSource,
@@ -104,7 +105,12 @@ const titleField = (page: Page, label: string) =>
     .filter({ hasText: label })
     .locator("input");
 
-async function selectCard(page: Page, slot: string) {
+async function selectCard(page: Page, slot: string, element?: string) {
+  const target = element
+    ? previewFrame(page).locator(
+        `[data-storefront-section-id="${slot}"] ${element}`,
+      )
+    : cardTitle(page, slot);
   if (
     await page
       .getByRole("button", { name: "Enable section selection" })
@@ -113,9 +119,9 @@ async function selectCard(page: Page, slot: string) {
   ) {
     await enableSelection(page);
   }
-  await cardTitle(page, slot).scrollIntoViewIfNeeded();
+  await target.scrollIntoViewIfNeeded();
   expect(
-    await clickExposedElement(page, cardTitle(page, slot)),
+    await clickExposedElement(page, target),
     `the ${slot} title was not exposed on the canvas`,
   ).not.toBeNull();
   await openContentTab(page);
@@ -210,5 +216,76 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
       timeout: 30_000,
     });
     await expect(titleField(page, "Card title")).toHaveCount(0);
+  });
+
+  // Last: it removes the declaration the tests above rely on.
+  test("drops the fields when only the declaration file is deleted", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await openRoute(page);
+    await expect(cardTitle(page, "sidecar-a")).toBeVisible();
+
+    await page.getByRole("button", { name: /^Code$/ }).click();
+    await expect(page.locator(".monaco-editor").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.keyboard.press("Control+p");
+    const quickOpen = page.getByPlaceholder("Search files by name or path…");
+    await quickOpen.fill("SidecarCard.fields.ts");
+    await quickOpen.press("Enter");
+    // The explorer row, as an author would reach it; the component is untouched.
+    await page
+      .locator("span.truncate", { hasText: /^SidecarCard\.fields\.ts$/ })
+      .first()
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    const deleted = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        (response.request().postData() ?? "").includes(SIDECAR),
+      { timeout: 30_000 },
+    );
+    // From here on: the preview is re-marked by a file sync carrying the
+    // component, not by starting the preview again.
+    const previewCalls: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (isServerFunctionCall(url, "startThemePreviewServer"))
+        previewCalls.push("start");
+      else if (isServerFunctionCall(url, "applyThemePreviewFiles"))
+        previewCalls.push(
+          (request.postData() ?? "").includes(COMPONENT) ? "sync-component" : "sync",
+        );
+    });
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    expect((await deleted).ok()).toBe(true);
+
+    await page.mouse.move(0, 0);
+    await page.getByRole("button", { name: /^Design$/ }).focus();
+    await page.keyboard.press("Enter");
+
+    // The component declares nothing itself and is not a section folder, so
+    // nothing of it is editable any more: not on the canvas, not in the panel.
+    const section = (slot: string) =>
+      previewFrame(page).locator(`[data-storefront-section-id="${slot}"]`);
+    await expect(section("sidecar-a").locator("h2")).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(
+      section("sidecar-a").locator('[data-storefront-field="title"]'),
+    ).toHaveCount(0, { timeout: 45_000 });
+    await expect(
+      section("sidecar-b").locator('[data-storefront-field="title"]'),
+    ).toHaveCount(0);
+    expect(previewCalls).toContain("sync-component");
+    expect(previewCalls).not.toContain("start");
+
+    // And the panel agrees with the canvas: the title offers no field.
+    await selectCard(page, "sidecar-a", "h2");
+    await expect(titleField(page, "Card heading")).toHaveCount(0);
   });
 });
