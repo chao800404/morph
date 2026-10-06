@@ -44,6 +44,10 @@ const MARKER_SOURCES = [
     file: "src/lib/storefront/service/build-preview/local-build-preview-worker.ts",
     markers: ["BUILD_PREVIEW_PATH_ESCAPE"],
   },
+  {
+    file: "src/lib/storefront/service/build-preview/local-build-preview-executor.ts",
+    markers: ["BUILD_PREVIEW_EXECUTOR_BAD_PATH"],
+  },
 ];
 const MARKERS = MARKER_SOURCES.flatMap((source) => source.markers);
 

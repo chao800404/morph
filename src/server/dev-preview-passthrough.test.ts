@@ -15,6 +15,8 @@ describe("isDevPreviewHost", () => {
     // The Sandbox SDK's tokens are [a-z0-9_]; this one was left to Morph's
     // Vite, which answered with Morph's own modules and broke hydration.
     "5173-d71a98ea08efb7c153cfb496c699d0dd-_fkpsl7llmqaatv1.preview.localhost:3100",
+    // A Build Preview host: the build's instance answers every path there.
+    "bp-0123456789abcdef0123456789abcdef01234567.preview.localhost:3100",
   ])("parks the preview host %s", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(true);
   });
@@ -33,6 +35,9 @@ describe("isDevPreviewHost", () => {
     "a5173-abc.preview.localhost",
     "5173-abc_def.preview.localhost.evil.test",
     "5173-abc_def.evilpreview.localhost",
+    "bp-0123.preview.localhost",
+    "bp-0123456789abcdef0123456789abcdef01234567.sub.preview.localhost",
+    "bp-0123456789abcdef0123456789abcdef01234567.preview.localhost.evil.test",
     undefined,
   ])("leaves %s to Morph's own dev server", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(false);

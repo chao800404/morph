@@ -224,6 +224,9 @@ const loadPreviewResponse = keepImport(
 const loadDevPreviewPassthrough = keepImport(
   () => import("@/server/dev-preview-passthrough"),
 );
+const loadBuildPreviewRequest = keepImport(
+  () => import("@/server/build-preview-request"),
+);
 
 async function isStorefrontHost(request: Request): Promise<boolean> {
   const { shouldRouteToStorefront } = await loadStorefrontRouting();
@@ -315,6 +318,14 @@ export default {
       }
     }
     const url = new URL(request.url);
+
+    // A Build Preview host is the build's instance for every path, Store
+    // APIs included; it decides for itself (null) when the host is not one.
+    if (url.hostname.startsWith("bp-")) {
+      const { serveBuildPreviewRequest } = await loadBuildPreviewRequest();
+      const buildPreviewResponse = await serveBuildPreviewRequest(request);
+      if (buildPreviewResponse) return buildPreviewResponse;
+    }
 
     // Store APIs are Morph-owned and bypass the Vite container. Preview
     // content is different: the container receives an authenticated,

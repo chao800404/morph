@@ -1,8 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { unstable_startWorker } from "wrangler";
 import type { BuildPreviewArtifact } from "./build-preview-artifact";
+import { isHopHeader } from "./build-preview-wire";
 
 /**
  * Runs one build's Worker for Build Preview, on this machine.
@@ -49,6 +52,14 @@ type OutboundService = (
 ) => Response | Promise<Response>;
 
 /**
+ * An origin the Worker may reach. With `upstream`, the connection goes there
+ * instead, keeping the origin's `Host`: a preview host such as
+ * `bp-<token>.preview.localhost` names Core but does not resolve from Node.
+ */
+export type BuildPreviewAllowedOrigin =
+  string | Readonly<{ origin: string; upstream: string }>;
+
+/**
  * Forwards an allowed request. The runtime hands over its own Request class,
  * which this process's `fetch` does not accept, so it is rebuilt from its parts.
  */
@@ -62,11 +73,76 @@ function forward(request: OutboundRequest): Promise<Response> {
   } as RequestInit);
 }
 
+/**
+ * Forwards to `upstream` with the original `Host`. Over `node:http`, because
+ * `fetch` does not let a caller set `Host`.
+ */
+async function forwardVia(
+  request: OutboundRequest,
+  upstream: URL,
+): Promise<Response> {
+  const target = new URL(request.url);
+  const headers: Record<string, string> = {};
+  for (const [name, value] of request.headers) {
+    if (!isHopHeader(name)) headers[name] = value;
+  }
+  headers.host = target.host;
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  const body =
+    hasBody && request.body
+      ? Buffer.from(await new Response(request.body).arrayBuffer())
+      : null;
+  return new Promise<Response>((resolve, reject) => {
+    const outgoing = httpRequest(
+      {
+        host: upstream.hostname,
+        port: upstream.port || 80,
+        method: request.method,
+        path: `${target.pathname}${target.search}`,
+        headers,
+      },
+      (incoming) => {
+        const responseHeaders = new Headers();
+        for (let i = 0; i < incoming.rawHeaders.length; i += 2) {
+          const name = incoming.rawHeaders[i] as string;
+          // `node:http` hands the body over undecoded, so its encoding and
+          // length still describe it; only the framing is this hop's.
+          const lower = name.toLowerCase();
+          if (
+            isHopHeader(lower) &&
+            lower !== "content-encoding" &&
+            lower !== "content-length"
+          ) {
+            continue;
+          }
+          responseHeaders.append(name, incoming.rawHeaders[i + 1] as string);
+        }
+        const status = incoming.statusCode ?? 502;
+        const nullBody = status === 204 || status === 304;
+        resolve(
+          new Response(
+            nullBody
+              ? null
+              : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>),
+            { status, headers: responseHeaders },
+          ),
+        );
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.end(body ?? undefined);
+  });
+}
+
 export function buildPreviewOutboundService(
-  allowedOrigins: readonly string[],
+  allowedOrigins: readonly BuildPreviewAllowedOrigin[],
 ): OutboundService {
-  const allowed = new Set(
-    allowedOrigins.map((origin) => new URL(origin).origin),
+  const allowed = new Map<string, URL | null>(
+    allowedOrigins.map((entry) =>
+      typeof entry === "string"
+        ? [new URL(entry).origin, null]
+        : [new URL(entry.origin).origin, new URL(entry.upstream)],
+    ),
   );
   return (request) => {
     let origin: string;
@@ -75,7 +151,10 @@ export function buildPreviewOutboundService(
     } catch {
       origin = "";
     }
-    if (allowed.has(origin)) return forward(request);
+    if (allowed.has(origin)) {
+      const upstream = allowed.get(origin);
+      return upstream ? forwardVia(request, upstream) : forward(request);
+    }
     return new Response(
       `${BUILD_PREVIEW_EGRESS_DENIED}: Build Preview does not allow requests to ${origin || "this address"}.`,
       { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } },
@@ -101,7 +180,7 @@ export async function startLocalBuildPreviewWorker(
   artifact: BuildPreviewArtifact,
   options: {
     /** Origins the Worker may reach, e.g. Core's, for `/_morph/content`. */
-    allowedOrigins?: readonly string[];
+    allowedOrigins?: readonly BuildPreviewAllowedOrigin[];
     idleMs?: number;
   } = {},
 ): Promise<LocalBuildPreviewWorker> {

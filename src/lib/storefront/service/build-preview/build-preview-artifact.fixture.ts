@@ -11,6 +11,24 @@ export const FIXTURE_WORKER = `export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/env") return Response.json(Object.keys(env).sort());
+    if (url.pathname === "/headers") {
+      return Response.json(Object.fromEntries(request.headers));
+    }
+    if (url.pathname === "/cookies") {
+      const headers = new Headers();
+      headers.append("set-cookie", "theme_a=1; Path=/");
+      headers.append("set-cookie", "better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "theme_b=2; Path=/");
+      return new Response("cookies", { headers });
+    }
+    if (url.pathname === "/content") {
+      const origin = request.headers.get("x-morph-content-origin");
+      const response = await fetch(origin + "/_morph/content?path=/");
+      return new Response(response.status + ":" + (await response.text()));
+    }
+    if (url.pathname === "/echo") {
+      return new Response(request.method + ":" + (await request.text()));
+    }
     if (url.pathname === "/egress") {
       const target = url.searchParams.get("to");
       try {
