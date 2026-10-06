@@ -209,11 +209,14 @@ jobs:
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
         run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/3
 
+      # One name per attempt: re-running a failed shard keeps the run's earlier
+      # artifacts, and the acceptance job reads each shard's latest attempt
+      # (latestShardReports in scripts/check-e2e-shards.mjs).
       - name: Upload shard results and failure traces
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: editor-e2e-results-${{ matrix.shard }}
+          name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: test-results/
           retention-days: 7
           if-no-files-found: error
