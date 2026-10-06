@@ -16,17 +16,20 @@
  */
 
 /** Path a preview-host request is parked on while it crosses Morph's Vite. */
-export const DEV_PREVIEW_PASSTHROUGH_PATH = "/__morph_dev_preview_passthrough__";
+export const DEV_PREVIEW_PASSTHROUGH_PATH =
+  "/__morph_dev_preview_passthrough__";
 
 /** Header carrying the parked request's original path and query. */
-export const DEV_PREVIEW_PASSTHROUGH_HEADER = "x-morph-dev-preview-original-url";
+export const DEV_PREVIEW_PASSTHROUGH_HEADER =
+  "x-morph-dev-preview-original-url";
 
 /**
- * Whether a Host header names a Live Preview host.
+ * Whether a Host header names a Live Preview or Build Preview host.
  *
  * Only the Sandbox's exposed-port shape under the configured preview
- * hostname (`<port>-<id>-<token>.<previewHostname>`), so Morph's own
- * hostnames — the editor and dashboard — are never parked.
+ * hostname (`<port>-<id>-<token>.<previewHostname>`) and a Build Preview's
+ * `bp-<token>` label, so Morph's own hostnames — the editor and dashboard —
+ * are never parked.
  */
 export function isDevPreviewHost(
   hostHeader: string | undefined,
@@ -40,7 +43,10 @@ export function isDevPreviewHost(
   // Underscores included: the SDK's preview tokens are [a-z0-9_]. A token
   // with one was left to Morph's Vite, which served Morph's own modules to
   // the preview, and the page never hydrated.
-  return /^\d{2,5}-[a-z0-9_-]+$/.test(label);
+  if (/^\d{2,5}-[a-z0-9_-]+$/.test(label)) return true;
+  // A Build Preview host (`bp-<token>`): the build's instance answers every
+  // path there, so none of them may be Morph's own Vite modules either.
+  return /^bp-[0-9a-f]{40}$/.test(label);
 }
 
 /**

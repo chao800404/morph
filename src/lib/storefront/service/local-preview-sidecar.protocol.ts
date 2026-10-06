@@ -3,6 +3,10 @@ import type {
   StartPreviewServerInput,
   StartPreviewServerResult,
 } from "@/lib/storefront/compiler/theme-preview-server.types";
+import type {
+  BuildPreviewFetchWire,
+  BuildPreviewStartWire,
+} from "./build-preview/build-preview-wire";
 
 /**
  * The wire between the Worker and the local preview sidecar.
@@ -44,6 +48,14 @@ export const LOCAL_PREVIEW_SIDECAR_PATHS = {
    * and only the start commits that workspace.
    */
   stageBinary: "/stageBinary",
+  /**
+   * `BuildPreviewServer`, the second contract this process serves: one
+   * build's isolated instance (`build-preview-server.types.ts`), never a
+   * Live Preview's. Bodies are `build-preview-wire.ts`'s.
+   */
+  buildPreviewStart: "/buildPreviewStart",
+  buildPreviewFetch: "/buildPreviewFetch",
+  buildPreviewStop: "/buildPreviewStop",
 } as const;
 
 /** Which preview a staged file is for. */
@@ -120,6 +132,19 @@ export type LocalPreviewSidecarOperations = Readonly<{
   stageBinary: Readonly<{
     request: Uint8Array;
     response: { staged: true };
+  }>;
+  buildPreviewStart: Readonly<{
+    request: BuildPreviewStartWire;
+    response: Record<string, never>;
+  }>;
+  /** Answered with the instance's own response, not JSON. */
+  buildPreviewFetch: Readonly<{
+    request: BuildPreviewFetchWire;
+    response: Response;
+  }>;
+  buildPreviewStop: Readonly<{
+    request: { instanceId: string };
+    response: Record<string, never>;
   }>;
 }>;
 
