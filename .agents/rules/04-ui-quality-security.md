@@ -9,6 +9,8 @@
 3. **環境造成的測試失敗要當成問題處理，不是背景雜訊。** 一批長期紅燈的檔案會遮蔽真實
    失敗：`better-sqlite3` 原生模組未編譯讓 16 個檔案一律報錯，蓋住了 4 個真的壞掉的測試。（§24）
 4. **優先延伸 shared primitive**，不在單一頁面複製 Dialog、Table、field 等既有元件。（§19）
+5. **讓 CI 變快只能靠重新分配或增加 shard，不能靠削弱測試。** 加 retry、跳過受環境限制的檔案、
+   在 shard 內平行、縮短等待或逾時、拿掉斷言，都不是加速。（§25.1）
 
 ---
 
@@ -345,6 +347,24 @@ pnpm build
 
 GitHub CI / local validation 若尚未實際執行或無法取得結果，必須明確說「未驗證」，不可推測通過。
 
+### 25.1 Editor E2E 的 shard 分配
+
+細節與操作步驟在 `docs/ci-e2e-sharding.md`；這裡是不能違反的部分。
+
+1. **新增或搬動 spec 要寫進 `scripts/editor-e2e-shards.mjs` 的 `EDITOR_SHARDS`。** 沒寫進去，
+   `check-e2e-shards` 會因為涵蓋不完整而失敗。新檔放進目前預估時間最少的 shard。
+2. **分配依據實際 CI 報告，不憑感覺。** 用 `scripts/rebalance-e2e-shards.mjs` 從某次成功 run 的
+   shard 報告算出分配，並把那次 run 記進 `editor-e2e-durations.json`。
+3. **每個 shard 的測試時間上限是 `EDITOR_SHARD_BUDGET_SECONDS`。** Architecture guards 在
+   超過上限或有檔案未量測時發警告；看到警告就用最近一次成功 run 重新分配。總時間除以
+   shard 數仍超過上限時，才增加 shard。
+4. **增加 shard 要在同一個 PR 改完所有地方**：`EDITOR_SHARDS` 多一組、workflow 的 matrix、
+   job 名稱的 `/N` 與 `--shard=N/M`。`check-e2e-shards` 比對 workflow，`pnpm ship` 依同一個
+   數字等待 check；漏改任何一處都會失敗，而不是少跑一個 shard。
+5. **太重的 spec 拆成多個檔案**（如 `editor-writes-paused` 拆成五個），不要在檔案內改成平行。
+6. **不得用削弱測試換速度**：retry、跳過受環境限制的檔案、shard 內平行、縮短等待或逾時、
+   拿掉斷言，都不是加速。每個 shard 仍是 `workers: 1`、`retries: 0`。
+
 ---
 
 ## 26. Migration 原則
@@ -361,10 +381,10 @@ GitHub CI / local validation 若尚未實際執行或無法取得結果，必須
 
 這個 schema 有兩種時間戳慣例，而且**兩種都是對的**：
 
-| 慣例 | 欄位宣告 | 使用者 |
-| --- | --- | --- |
-| epoch 毫秒 | `integer(..., { mode: "timestamp_ms" })` | `auth.schema.ts`（better-auth 要求） |
-| ISO-8601 字串 | `text("created_at")`（多數經由 `columns.ts` 的 `timestamps`） | 其餘全部 |
+| 慣例          | 欄位宣告                                                      | 使用者                               |
+| ------------- | ------------------------------------------------------------- | ------------------------------------ |
+| epoch 毫秒    | `integer(..., { mode: "timestamp_ms" })`                      | `auth.schema.ts`（better-auth 要求） |
+| ISO-8601 字串 | `text("created_at")`（多數經由 `columns.ts` 的 `timestamps`） | 其餘全部                             |
 
 不需要再包一層 `nowIso()` / `nowMs()` helper 去「保護」TypeScript 寫入端 —— **drizzle 的
 insert 型別已經是那道邊界**，而且比 helper 強：
@@ -391,6 +411,7 @@ ISO 字串 → integer(mode: "timestamp_ms")        TS2322 Type 'string' is not 
   `CURRENT_TIMESTAMP` 產生的是 `2026-09-18 07:39:52`：瞬間是對的（SQLite 用 UTC），
   但 `new Date()` 會把空白分隔的字串當**本地時間**解讀，讀回來依讀取者的時區偏移；它也
   排在同一天所有 ISO 值之前，因為空白小於 `T`。
+
 - **已套用的 migration 是歷史，不要改。** 改了既不會重跑，也修不了任何一列資料，只會讓
   紀錄與事實不符。要修就另寫一支修復 migration（實例：`0054`），並在守衛裡具名豁免舊檔
   且指向修復。
@@ -407,10 +428,9 @@ ISO 字串 → integer(mode: "timestamp_ms")        TS2322 Type 'string' is not 
 `drizzle/*.sql` 掃全檔（掃描前先遮掉 `--` 註解，否則修復 migration 自己的說明會被誤報）；
 `src/**/*.ts` **只掃 `sql` 模板字面值的內容**。兩件事要一起理解：
 
-- schema 裡的 `.default(sql\`…\`)` 是安全的，理由不是巧合 —— drizzle-kit 會把它物化進
-  `drizzle/*.sql`，守衛在那裡看得到。但 DAL 裡的 `sql\`…\`` 永遠不會變成 migration 檔，
-  所以那條路徑必須單獨掃。`sql` 是 src 裡唯一的原始 SQL 入口（`db.batch` 吃 query builder，
-  沒有任何地方用字串呼叫 `.prepare`）。
+- schema 裡的 `.default(sql\`…\`)`是安全的，理由不是巧合 —— drizzle-kit 會把它物化進`drizzle/*.sql`，守衛在那裡看得到。但 DAL 裡的 `sql\`…\`` 永遠不會變成 migration 檔，
+所以那條路徑必須單獨掃。`sql` 是 src 裡唯一的原始 SQL 入口（`db.batch`吃 query builder，
+沒有任何地方用字串呼叫`.prepare`）。
 - 只掃模板內容不是潔癖，是必要的。整檔掃描會把 `editor-code-package-declarations.generated.ts`
   裡打包的 Zod `.datetime()` 型別宣告報兩次，而 `date(` / `time(` 在 TypeScript 裡到處都是。
   **會誤報的守衛會被關掉，代價比守衛本身還大。**
