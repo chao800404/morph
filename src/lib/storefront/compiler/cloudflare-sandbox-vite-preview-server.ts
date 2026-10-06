@@ -1,6 +1,6 @@
+import { themeFramework } from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
-  planThemeSandboxWorkspace,
   unplannedWorkspaceFiles,
   type ThemeWorkspaceFile,
   type ThemeWorkspaceWriter,
@@ -254,7 +254,7 @@ export type StartPreviewServerInput = Readonly<{
 export function previewServerPath(
   runtime: ThemePreviewRuntime | undefined,
 ): string {
-  return runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH;
+  return themeFramework().preview.framePath(runtime);
 }
 
 export type StartPreviewServerResult =
@@ -640,7 +640,7 @@ export class CloudflareSandboxVitePreviewServer {
 
       const workspaceStartedAt = Date.now();
       const workspacePlanStartedAt = Date.now();
-      const prepared = planThemeSandboxWorkspace({
+      const prepared = themeFramework().planWorkspace({
         files: input.files,
         entry: input.entry,
         buildId: input.previewId,

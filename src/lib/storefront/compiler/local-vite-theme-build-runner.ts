@@ -38,11 +38,8 @@ import {
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
 import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
-import {
-  assertThemePrerenderArtifacts,
-  themePrerenderOptions,
-} from "./theme-prerender";
-import { planThemeSandboxWorkspace } from "./theme-sandbox-workspace";
+import { themePrerenderOptions } from "./theme-prerender";
+import { themeFramework } from "../theme-framework";
 import {
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
@@ -609,7 +606,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           if (prerenderOptions) {
             // Native Start reopens this config in vite.preview(). Use the same
             // platform-owned configuration as Sandbox, never customer config.
-            const plan = planThemeSandboxWorkspace({
+            const plan = themeFramework().planWorkspace({
               files: input.files,
               entry: input.entry,
               buildId: input.buildId,
@@ -897,37 +894,14 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         });
       }
 
-      if (routeRegistry) {
-        const artifactPaths = new Set(
-          artifacts.map((artifact) => artifact.path),
-        );
-        if (!artifactPaths.has("runtime/server/index.js")) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime/server/index.js.",
-          );
-        }
-        if (!artifactPaths.has("preview/index.html")) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce preview/index.html.",
-          );
-        }
-        if (
-          !artifacts.some((artifact) =>
-            artifact.path.startsWith("runtime/client/"),
-          )
-        ) {
-          throw new Error(
-            "INCOMPLETE_START_ARTIFACT: TanStack Start build did not produce runtime client assets.",
-          );
-        }
-      }
-
-      if (routeRegistry)
-        assertThemePrerenderArtifacts(
-          input.contentSnapshot,
-          routeRegistry,
-          new Set(artifacts.map((artifact) => artifact.path)),
-        );
+      // One rule with the sandbox runner. That runner checks prerendered pages
+      // first; this test-only runner used to check them last, so a build
+      // missing both now reports the pages, as production always did.
+      themeFramework().build.verifyArtifact({
+        artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
+        routeRegistry: routeRegistry ?? null,
+        contentSnapshot: input.contentSnapshot,
+      });
       const cssChunks = artifacts
         .filter((a) => a.mimeType === "text/css")
         .map((a) => a.path);
@@ -937,7 +911,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
       const manifest: ThemeBuildArtifactManifest = {
         entry: input.entry,
-        artifactEntry: routeRegistry ? "preview/index.html" : "index.html",
+        artifactEntry: themeFramework().build.artifactEntry(
+          routeRegistry ?? null,
+        ),
         filesCount: input.files.length,
         inputHash: input.inputHash,
         bundleFiles: artifacts.map((a) => ({
@@ -947,17 +923,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         })),
         cssChunks,
         jsChunks,
-        metadata: routeRegistry
-          ? {
-              router: "tanstack-start",
-              runtime: "cloudflare-worker",
-              workerEntry: "runtime/server/index.js",
-              clientAssetsDirectory: "runtime/client",
-              previewRuntime: "tanstack-router-client",
-              previewEntry: "preview/index.html",
-              routes: routeRegistry.routes,
-            }
-          : undefined,
+        metadata: themeFramework().build.manifestMetadata(
+          routeRegistry ?? null,
+        ),
       };
 
       addLog(
