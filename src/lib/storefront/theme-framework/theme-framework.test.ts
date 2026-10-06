@@ -20,7 +20,12 @@ describe("the framework adapter boundary", () => {
       );
       expect(Object.keys(framework.preview)).toEqual(["framePath"]);
       expect(Object.keys(framework.build).sort()).toEqual(
-        ["artifactEntry", "manifestMetadata", "verifyArtifact"].sort(),
+        [
+          "artifactEntry",
+          "manifestMetadata",
+          "native",
+          "verifyArtifact",
+        ].sort(),
       );
     }
   });

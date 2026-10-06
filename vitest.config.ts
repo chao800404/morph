@@ -77,6 +77,7 @@ const THEME_BUILD_TESTS = [
   "src/lib/storefront/compiler/local-vite-theme-build-runner.test.ts",
   "src/lib/storefront/compiler/native-compat.test.ts",
   "src/lib/storefront/compiler/native-prerender.test.ts",
+  "src/lib/storefront/theme-framework/native-start-build.test.ts",
 ];
 
 /** What every project shares; stated once so the two cannot drift apart. */

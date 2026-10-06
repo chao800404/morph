@@ -1,6 +1,10 @@
 import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dto";
 import type { ThemeRouteRegistry } from "../compiler/theme-route-registry";
 import type {
+  NativeStartArtifact,
+  NativeStartBuildPlan,
+} from "./tanstack-start-native-build";
+import type {
   PlanThemeWorkspaceInput,
   PrepareThemeWorkspaceResult,
   ThemePreviewRuntime,
@@ -59,5 +63,18 @@ export type ThemeFrameworkAdapter = Readonly<{
     manifestMetadata(
       routeRegistry: ThemeRouteRegistry | null,
     ): Record<string, unknown> | undefined;
+    /**
+     * Building the project with its own configuration (start-native-import-plan
+     * step 1b): the workspace and environment, then the output moved into the
+     * artifact layout above. Not yet used by the build runners.
+     */
+    native: Readonly<{
+      plan(
+        files: readonly Readonly<{ path: string; content: string }>[],
+      ): NativeStartBuildPlan;
+      collect(
+        outputs: ReadonlyMap<string, Uint8Array | string>,
+      ): NativeStartArtifact;
+    }>;
   }>;
 }>;

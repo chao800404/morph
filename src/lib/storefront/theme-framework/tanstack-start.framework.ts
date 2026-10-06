@@ -3,6 +3,10 @@ import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-se
 import { planThemeSandboxWorkspace } from "../compiler/theme-sandbox-workspace";
 import { deriveThemeSourceRouterFramework } from "../theme-source-runtime-contract";
 import type { ThemeFrameworkAdapter } from "./theme-framework.types";
+import {
+  collectNativeStartArtifact,
+  planNativeStartBuild,
+} from "./tanstack-start-native-build";
 
 const WORKER_ENTRY = "runtime/server/index.js";
 const CLIENT_ASSETS_DIRECTORY = "runtime/client";
@@ -70,5 +74,9 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
             routes: routeRegistry.routes,
           }
         : undefined,
+    native: {
+      plan: planNativeStartBuild,
+      collect: collectNativeStartArtifact,
+    },
   },
 };
