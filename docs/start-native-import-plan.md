@@ -254,14 +254,27 @@ STRIPE_SECRET [ 新增 Secret ]
    部分寫成 `KNOWN GAP` 斷言（例如需要未認證的 Vite 8 工具鏈、專案 build script 尚未執行、
    `vite.config.ts`／`wrangler.jsonc` 仍為平台擁有、套件不在白名單、建置期外連被拒、安裝腳本政策），
    缺口修好斷言就會失敗。
-1. **建置執行客戶設定**：`vite.config.ts`、`wrangler.jsonc` 改為作者擁有；正式建置執行專案
-   build script、以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 與內容環境變數提供部署環境，不注入
-   Vite plugin；Live Preview 以平台入口設定注入；沙箱外檢查產物。
+1. **建置執行客戶設定**，分四個 PR，新舊兩條建置路線並存（沒有自己 `vite.config.ts` 的 Theme
+   繼續走平台設定）：
+   - 1a：`vite.config.ts`、`wrangler.json(c)`、`src/routeTree.gen.ts` 可留在原始碼、可由作者建立；
+     Morph 建置的工作區仍用平台的版本。帶有自己建置設定的 Theme 明確拒絕建置
+     （`NATIVE_START_BUILD_UNAVAILABLE`），不以不同的設定默默建置。
+   - 1b：原生建置（先用 Vite 7 工具鏈）：工作區放客戶原檔，以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`
+     與內容環境變數提供部署環境，不注入 Vite plugin；依 `.wrangler/deploy/config.json` 找產物，
+     在沙箱外整理成部署端的結構並檢查。開始前須決定是否移除編輯器標記（建議移除，列為 Morph 對原始碼
+     的唯一轉換）。
+   - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
+   - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
 2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、
    三級相容狀態與建置來源紀錄；先支援 pnpm。
 3. **基礎設施對應與外連政策**：綁定、Secrets、`.env`、建置與執行期兩份允許清單。
 4. **Render Plan 由產物取得並凍結**，接著 SSG、全站 SPA、ISR 的正式供應。
 5. **Design 寫入官方寫法**，含渲染方式選擇器；每個選項都要正式網站能送出才開放。
+6. **Starter Theme 轉為原生專案，移除舊建置路線。** 原生路線穩定後，starter 本身改為帶有自己
+   `vite.config.ts`、`wrangler.jsonc` 與 lockfile 的原生 TanStack Start 專案，現有頁面與測試一併
+   搬過去成為原生路線的回歸測試；再移除平台產生的 `vite.config.ts`、覆寫 `package.json` 與單一固定
+   版本等舊路線。在那之前保留現有頁面：它們是 Design／CMS 功能唯一的回歸保障。尚未部署，轉換時
+   不需顧慮既有客戶資料。
 
 移除 #98 在 CMS 資料中可編輯的渲染設定，須先確認沒有呼叫者，於步驟 4 或 5 處理。
 
@@ -286,7 +299,10 @@ pnpm 10.34.5 產生的 `pnpm-lock.yaml`（vite 8.3.3、`@tanstack/react-start` 1
 - `KNOWN GAP`：
   - `package.json` 必須等於 Morph 固定版本，官方的版本範圍被拒絕；
   - 需要未認證的 Vite 8 工具鏈（Morph 固定 Vite 7.3.5、Start 1.168.32）；
-  - `vite.config.ts`、`wrangler.jsonc` 為平台擁有路徑，專案自己的無法匯入；
+  - ~~`vite.config.ts`、`wrangler.jsonc` 為平台擁有路徑，專案自己的無法匯入~~：1a 已關閉，連同當時
+    漏掉的 `src/routeTree.gen.ts`（官方專案會提交它）。原本的斷言檢查的是「工作區由平台擁有」這個
+    意思沒變的函式，缺口關閉時不會失敗；1a 改為檢查作者能否保留這些檔案，並新增下一項；
+  - Morph 建置讀到帶有自己建置設定的專案時明確拒絕（`NATIVE_START_BUILD_UNAVAILABLE`），1b 關閉；
   - 宣告的套件超出核准的 Theme 依賴（例如 `@tanstack/react-router-devtools`）。
 - 尚無 Morph 元件可對照、先記為 `it.todo`：專案 build script 尚未執行；生命週期腳本政策
   （本專案 `postinstall` 執行 `wrangler types`）；建置與執行期外連允許清單；`wrangler.jsonc`

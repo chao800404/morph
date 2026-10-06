@@ -2,7 +2,10 @@
 import { describe, expect, it } from "vitest";
 import type { SavedThemeFile } from "../preview-sync-guard";
 import { planFencedWrite } from "../compiler/preview-write-fence";
-import { syncPreviewFiles } from "./preview-file-sync";
+import {
+  isPreviewSyncSkippedPath,
+  syncPreviewFiles,
+} from "./preview-file-sync";
 
 const HERO = "src/components/Hero.tsx";
 
@@ -163,5 +166,56 @@ describe("syncPreviewFiles interleaved", () => {
     // Its files are what generation 10 held: stamping them 11 would let them
     // outrank a start that has read generation 11 and is in fact current.
     expect(w.stamped).toEqual([10]);
+  });
+});
+
+describe("saving a file that stays in the Theme's source only", () => {
+  it("is skipped by the sync, not refused, and the rest of the save still arrives", async () => {
+    const written: string[] = [];
+    const result = await syncPreviewFiles({
+      files: [
+        { path: HERO, content: "edited", baseVersion: 1 },
+        {
+          path: "vite.config.ts",
+          content: "export default {};",
+          baseVersion: 1,
+        },
+        { path: "wrangler.jsonc", content: "{}", baseVersion: 1 },
+        {
+          path: "src/routeTree.gen.ts",
+          content: "// generated",
+          baseVersion: 1,
+        },
+      ],
+      readSaved: async (paths) => ({
+        files: new Map(
+          paths.map(
+            (path) => [path, { version: 1, content: "saved" }] as const,
+          ),
+        ),
+        generation: 1,
+      }),
+      prepare: (files) => files,
+      isGenerated: isPreviewSyncSkippedPath,
+      write: async (files) => {
+        written.push(...files.map((file) => file.path));
+        return { changed: files.map((file) => file.path), unchanged: [] };
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      changed: [HERO],
+      unchanged: [],
+      skipped: ["vite.config.ts", "wrangler.jsonc", "src/routeTree.gen.ts"],
+    });
+    expect(written).toEqual([HERO]);
+  });
+
+  it("still skips what the transport generates, and nothing an author owns", () => {
+    expect(isPreviewSyncSkippedPath("package.json")).toBe(true);
+    expect(isPreviewSyncSkippedPath("vite.config.ts")).toBe(true);
+    expect(isPreviewSyncSkippedPath(HERO)).toBe(false);
+    expect(isPreviewSyncSkippedPath("src/routes/index.tsx")).toBe(false);
   });
 });

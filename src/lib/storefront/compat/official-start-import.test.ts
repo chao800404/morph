@@ -11,12 +11,13 @@ import {
 } from "@/lib/validations/storefront-theme-file";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "../compiler/sandbox-vite-theme-build-runner.types";
 import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
+import { normalizeRevisionSnapshot } from "../compiler/theme-build-materializer";
 import {
-  isPlatformOwnedThemeBuildPath,
+  isThemeAuthoringRefusedPath,
+  isThemeSourceOnlyPath,
   THEME_START_TOOLCHAIN,
   validateThemeStartPackageContract,
 } from "../compiler/theme-start-toolchain";
-import { refuseThemeWorkspacePath } from "../compiler/theme-workspace-path";
 
 /**
  * Step 0 of docs/start-native-import-plan.md: an official TanStack Start
@@ -120,6 +121,18 @@ describe(`official fixture ${NAME}, imported unchanged`, () => {
     }
   });
 
+  it("keeps the project's own build configuration and route tree in its source", () => {
+    for (const path of [
+      "vite.config.ts",
+      "wrangler.jsonc",
+      "src/routeTree.gen.ts",
+    ]) {
+      expect(files.map((file) => file.path)).toContain(path);
+      expect(isThemeAuthoringRefusedPath(path)).toBe(false);
+      expect(isThemeSourceOnlyPath(path)).toBe(true);
+    }
+  });
+
   describe("KNOWN GAP", () => {
     it("package.json must pin Morph's toolchain versions instead of the official ranges", () => {
       const diagnostics = validateThemeStartPackageContract(textFiles);
@@ -140,14 +153,24 @@ describe(`official fixture ${NAME}, imported unchanged`, () => {
       );
     });
 
-    it("vite.config.ts and wrangler.jsonc are platform-owned, so the project's own cannot be imported", () => {
-      for (const path of ["vite.config.ts", "wrangler.jsonc"]) {
-        expect(files.map((file) => file.path)).toContain(path);
-        expect(isPlatformOwnedThemeBuildPath(path)).toBe(true);
-        expect(refuseThemeWorkspacePath(path)).toMatch(
-          /^RESERVED_THEME_BUILD_PATH/,
-        );
-      }
+    it("a Morph build refuses the project because it carries its own build configuration", () => {
+      // The project as a stored source revision would hold it: public/ files
+      // by digest (text ones too), everything else as text.
+      const snapshot = files.map((file) =>
+        file.path.startsWith("public/")
+          ? {
+              path: file.path,
+              encoding: "binary",
+              blobDigest: createHash("sha256").update(file.bytes).digest("hex"),
+              sizeBytes: file.bytes.byteLength,
+            }
+          : { path: file.path, content: file.bytes.toString("utf8") },
+      );
+      expect(() =>
+        normalizeRevisionSnapshot(snapshot, "official-fixture"),
+      ).toThrow(
+        /^NATIVE_START_BUILD_UNAVAILABLE: .*vite\.config\.ts, wrangler\.jsonc/,
+      );
     });
 
     it("packages the project declares are outside the approved Theme dependencies", () => {
