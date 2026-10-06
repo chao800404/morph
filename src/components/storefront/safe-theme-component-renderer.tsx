@@ -16,6 +16,10 @@ import * as LucideIcons from "lucide-react";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import { inferBoundPropName } from "@/lib/storefront/ast/theme-field-binding";
 import {
+  contentFieldsSidecarPath,
+  readComponentContentFields,
+} from "@/lib/storefront/ast/theme-content-fields-declaration";
+import {
   THEME_CONTENT_CONTEXT_KEY,
   THEME_CONTENT_MODULE_PATH,
   THEME_CONTENT_SLOT_HELPER,
@@ -969,19 +973,51 @@ function applyArrayItemContext(
 }
 
 /**
+ * The declaration a module's rows are judged by, when it has a sibling
+ * `<Name>.fields.ts`.
+ *
+ * Resolved by the same rule the capability resolver applies, so the preview
+ * cannot offer a field the editor refuses: equal declarations are used, and
+ * different or invalid ones offer nothing. The sibling is only parsed — it is
+ * never interpreted, so its exports cannot run here.
+ *
+ * `undefined` means there is no sibling, and the component's own evaluated
+ * `contentFields` answers as it always has.
+ */
+function readSidecarContentFields(
+  files: Map<string, ThemeSourceFile>,
+  sourcePath: string,
+  source: string,
+): Record<string, unknown> | null | undefined {
+  const sidecarPath = contentFieldsSidecarPath(sourcePath);
+  const sidecar = sidecarPath ? files.get(sidecarPath) : undefined;
+  if (!sidecar) return undefined;
+  const resolved = readComponentContentFields({
+    path: sourcePath,
+    source,
+    sidecar: sidecar.content,
+  });
+  return resolved.declaration === "valid" ? (resolved.fields ?? null) : null;
+}
+
+/**
  * The field names a component declares for the rows of one array field.
  *
- * Read from the component's own `contentFields`, which the interpreter has
- * already evaluated as an ordinary module value. Without it a row is judged
- * only by the keys it happens to carry, so a field added to the declaration is
- * unreachable in every row written before it existed.
+ * Read from the sibling declaration when there is one, otherwise from the
+ * component's own `contentFields`, which the interpreter has already evaluated
+ * as an ordinary module value. Without either a row is judged only by the keys
+ * it happens to carry, so a field added to the declaration is unreachable in
+ * every row written before it existed.
  */
 function readDeclaredRowFieldNames(
   env: Record<string, unknown>,
   arrayPath: string | null,
 ): ReadonlySet<string> | null {
   if (!arrayPath) return null;
-  const declaration = env.contentFields;
+  const declaration =
+    env.__morphSidecarContentFields !== undefined
+      ? env.__morphSidecarContentFields
+      : env.contentFields;
   if (!declaration || typeof declaration !== "object") return null;
   const field = (declaration as Record<string, unknown>)[arrayPath];
   if (!field || typeof field !== "object") return null;
@@ -1679,7 +1715,14 @@ function renderModuleComponent(
   context.componentStack.push(cycleKey);
   try {
     const module = parseModule(sourcePath, file.content);
-    const env: Record<string, unknown> = { __sourcePath: sourcePath };
+    const env: Record<string, unknown> = {
+      __sourcePath: sourcePath,
+      __morphSidecarContentFields: readSidecarContentFields(
+        context.files,
+        sourcePath,
+        file.content,
+      ),
+    };
     // A row extracted into its own file is still a row. Without this the child
     // renders with no repeated-item identity and every row claims the same
     // field, so editing one would edit all of them.
