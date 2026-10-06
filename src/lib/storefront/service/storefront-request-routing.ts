@@ -9,6 +9,34 @@ import {
 } from "./theme-runtimes";
 import type { ThemeRuntime } from "./theme-runtime.types";
 
+/** The Worker vars `collectPlatformHostnames` reads, and no others. */
+const PLATFORM_HOSTNAME_ENV_KEYS = [
+  "PUBLIC_URL",
+  "MORPH_PLATFORM_HOSTNAMES",
+  "MORPH_CMS_HOSTNAME",
+] as const;
+
+export type PlatformHostnameEnv = Readonly<
+  Partial<Record<(typeof PLATFORM_HOSTNAME_ENV_KEYS)[number], string>>
+>;
+
+/**
+ * The part of a Worker env that names Morph's own hostnames, copied out by
+ * key. Anything that must decide platform hostnames somewhere the env should
+ * not go — another process, a container — is handed this instead, so secrets
+ * and bindings never travel with it.
+ */
+export function pickPlatformHostnameEnv(
+  env: Record<string, unknown> | undefined,
+): PlatformHostnameEnv {
+  const picked: Partial<Record<keyof PlatformHostnameEnv, string>> = {};
+  for (const key of PLATFORM_HOSTNAME_ENV_KEYS) {
+    const value = env?.[key];
+    if (typeof value === "string") picked[key] = value;
+  }
+  return picked;
+}
+
 /**
  * Hostnames that always belong to Morph Core (dashboard, editor, server
  * functions) and must never be resolved as a customer storefront.

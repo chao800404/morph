@@ -95,7 +95,7 @@ const start = (server: LocalVitePreviewServer) =>
     files: [{ path: "src/pages/index.tsx", content: PAGE }],
     entry: "src/pages/index.tsx",
     previewHostname: "127.0.0.1",
-    env: {},
+    platformHostEnv: {},
   });
 
 beforeAll(async () => {

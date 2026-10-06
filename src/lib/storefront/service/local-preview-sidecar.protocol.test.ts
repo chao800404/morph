@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   LOCAL_PREVIEW_SIDECAR_PATHS,
   LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER,
@@ -8,7 +8,12 @@ import {
   localPreviewTokenMatches,
   readLocalPreviewSidecarToken,
   type LocalPreviewSidecarOperation,
+  type LocalPreviewSidecarOperations,
 } from "./local-preview-sidecar.protocol";
+import {
+  pickPlatformHostnameEnv,
+  type PlatformHostnameEnv,
+} from "./storefront-request-routing";
 import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-host";
 
 describe("the local preview sidecar protocol", () => {
@@ -76,6 +81,30 @@ describe("the local preview sidecar protocol", () => {
     expect(first).toMatch(/^[0-9a-f]{64}$/);
     expect(first).not.toBe(second);
     expect(readLocalPreviewSidecarToken(first).ok).toBe(true);
+  });
+
+  it("carries the platform host vars in a start, never the Worker env", () => {
+    // A start crosses to another process. Its one piece of Worker config is
+    // the allowlist of hostname vars; a wider type here would let the env,
+    // and every secret in it, back onto the wire.
+    expectTypeOf<
+      LocalPreviewSidecarOperations["start"]["request"]["platformHostEnv"]
+    >().toEqualTypeOf<PlatformHostnameEnv | undefined>();
+    expect(
+      Object.keys(
+        pickPlatformHostnameEnv({
+          PUBLIC_URL: "https://admin.example.net",
+          MORPH_PLATFORM_HOSTNAMES: "cms.example.net",
+          MORPH_CMS_HOSTNAME: "cms.example.net",
+          BETTER_AUTH_SECRET: "secret",
+          THEME_PREVIEW_SECRET: "secret",
+          DB: {},
+        }),
+      ).sort(),
+    ).toEqual(["MORPH_CMS_HOSTNAME", "MORPH_PLATFORM_HOSTNAMES", "PUBLIC_URL"]);
+    // A var that is not a string names no hostname, as the collector reads it.
+    expect(pickPlatformHostnameEnv({ PUBLIC_URL: 1 })).toEqual({});
+    expect(pickPlatformHostnameEnv(undefined)).toEqual({});
   });
 
   it("names the header the token travels in, and it is not a cookie", () => {

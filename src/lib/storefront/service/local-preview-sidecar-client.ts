@@ -14,6 +14,7 @@ import {
   type LocalPreviewSidecarOperation,
   type LocalPreviewSidecarOperations,
 } from "./local-preview-sidecar.protocol";
+import { pickPlatformHostnameEnv } from "./storefront-request-routing";
 
 /**
  * The Worker's half of the local preview sidecar.
@@ -152,8 +153,13 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
         };
       }
     }
-    const { loadBinary: _loadBinary, ...serialisable } = input;
-    const call = await this.call("start", serialisable);
+    // The start leaves the Worker here. Its host vars are picked again by
+    // key, so a caller that handed over the whole env still sends no secret.
+    const { loadBinary: _loadBinary, platformHostEnv, ...serialisable } = input;
+    const call = await this.call("start", {
+      ...serialisable,
+      platformHostEnv: pickPlatformHostnameEnv(platformHostEnv),
+    });
     if (call.ok) return call.result;
     return {
       ok: false,
