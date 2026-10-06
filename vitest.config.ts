@@ -78,6 +78,7 @@ const THEME_BUILD_TESTS = [
   "src/lib/storefront/compiler/native-compat.test.ts",
   "src/lib/storefront/compiler/native-prerender.test.ts",
   "src/lib/storefront/theme-framework/native-start-build.test.ts",
+  "src/lib/storefront/service/build-preview/local-build-preview-worker.test.ts",
 ];
 
 /** What every project shares; stated once so the two cannot drift apart. */

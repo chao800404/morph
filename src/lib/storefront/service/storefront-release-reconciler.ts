@@ -8,7 +8,7 @@ import type { ThemeWorkerDeployer } from "./theme-worker-deployer.types";
  * It is read from the immutable artifact rather than regenerated, so what is
  * deployed always matches what was actually built.
  */
-const GENERATED_WORKER_CONFIG_PATH = "runtime/server/wrangler.json";
+export const GENERATED_WORKER_CONFIG_PATH = "runtime/server/wrangler.json";
 
 /** Both activation callers restore their own CAS claim after deployment failure. */
 export async function deployWithRecovery<
@@ -118,7 +118,7 @@ export type ReleaseReconcilerPorts = Readonly<{
   }): Promise<unknown>;
 }>;
 
-async function readGeneratedWorkerConfig(
+export async function readGeneratedWorkerConfig(
   r2Bucket: R2BucketLike | undefined,
   artifactPrefix: string,
 ): Promise<unknown | null> {
