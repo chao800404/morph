@@ -276,10 +276,25 @@ STRIPE_SECRET [ 新增 Secret ]
        Morph 既有的 `runtime/server`、`runtime/client` 配置。真實建置測試（`native-start-build.test.ts`）：
        starter 以官方寫法的設定、固定的 Vite 7 工具鏈建置，Worker 回應頁面 200、未知頁 404、靜態資源可取，
        確認建置讀的是 Morph 的設定副本，產物中沒有編輯器標記。
-     - **1b-2（未做，需要先決定）**：原生建置沒有 `preview/index.html`，現有 Build Preview 無從開啟；
-       需改為由建置後的 Worker 提供 Build Preview。此外尚未接入：Sandbox 建置程式執行 `plan` 的指令與
-       `collect`、materializer 解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）、
-       預先渲染所需的 CMS 內容（`MORPH_CONTENT_*` 環境變數與凍結內容快照）。
+     - **1b-2**：原生建置沒有 `preview/index.html`，Build Preview 改為執行建置後的 Worker。已決定
+       （2026-10-07）的做法與順序：
+       1. **隔離式 Build Preview**：沿用現有容器與代理機制，但每個 build 一個獨立實例，不與 Live
+          Preview 共用（Live Preview 有可變原始碼、HMR 與開發程序）。只載入該 build 的不可變產物，不重新
+          建置、不改寫產物（也不為選取功能注入標記）。
+          - 產物讀取（已完成）：`service/build-preview/build-preview-artifact.ts` 與發布用同一個
+            `planThemeWorkerDeployment`、同一個 `wranglerDeployConfig`、同一個產物前綴，作者的 `name`、
+            `vars` 與發布一樣被丟棄，禁止的綁定一樣被拒；每個檔案比對 manifest 記錄的 sha256。
+          - 本機實例（已完成）：`service/build-preview/local-build-preview-worker.ts` 以 workerd 在
+            loopback 執行；Worker 環境為空、對外連線預設 403（只允許 Core 的內容來源）、閒置自動回收。
+            只能在本機輔助程序中使用，`check-local-preview-sidecar.mjs` 確保它不進部署產物。
+          - 待做：Core 路由與存取權杖（綁定使用者、商店、Theme、build 與期限，每個請求都驗證，包含子資源；
+            現有 Build Preview 權杖未綁定使用者）；預覽來源與 Live Preview 相同的主機規則；
+            `/_morph/content` 只回應該 build 綁定的內容發布版本；編輯器 iframe 改為跨來源；
+            Sandbox 容器版本（不同於 Live Preview 的 session id，無部署權杖與正式秘密，外連拒絕、資源預算、閒置回收）。
+       2. **Sandbox 建置程式接上原生建置與內容快照**：預先渲染只讀該次建置綁定的凍結內容快照。
+       3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
+          店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
+       4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。
    - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
    - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
 2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、
