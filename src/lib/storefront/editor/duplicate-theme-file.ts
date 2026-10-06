@@ -1,4 +1,7 @@
-import { prepareNewThemeFile, type NewThemeFileResult } from "./new-theme-file";
+import {
+  prepareNewThemeFilePath,
+  type CopiedThemeFileResult,
+} from "./new-theme-file";
 
 const MAX_DUPLICATE_ATTEMPTS = 1000;
 
@@ -26,7 +29,7 @@ function duplicateCandidate(path: string, copyNumber: number): string {
 export function prepareDuplicateThemeFile(
   originalPath: string,
   existingPaths: readonly string[],
-): NewThemeFileResult {
+): CopiedThemeFileResult {
   const normalizedOriginal = normalizePath(originalPath);
   const existing = new Set(existingPaths.map(normalizePath));
 
@@ -40,7 +43,7 @@ export function prepareDuplicateThemeFile(
 
     // Reuse the create validator so duplicate names have the same path,
     // extension, generated-file, and platform-owned checks as new files.
-    return prepareNewThemeFile(candidate, existingPaths);
+    return prepareNewThemeFilePath(candidate, existingPaths);
   }
 
   return {

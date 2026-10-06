@@ -4,6 +4,7 @@ import {
   themeRouteIdFromSourcePath,
   themeRoutePathFromSourcePath,
 } from "@/lib/storefront/compiler/theme-route-registry";
+import { contentFieldsSidecarPath } from "@/lib/storefront/ast/theme-content-fields-declaration";
 import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import {
@@ -29,8 +30,15 @@ const CREATABLE_EXTENSIONS = [
 ] as const;
 const COPYABLE_EXTENSIONS = [...CREATABLE_EXTENSIONS, ".jsx", ".js"] as const;
 
+export type NewThemeFile = { path: string; content: string; mimeType: string };
+
+/**
+ * A create the author asked for. `companions` are files the same create
+ * writes alongside `path` — a new component's `<Name>.fields.ts` — and must be
+ * saved in the same batch, each refused if it already exists.
+ */
 export type NewThemeFileResult =
-  | { ok: true; path: string; content: string; mimeType: string }
+  | ({ ok: true; companions: readonly NewThemeFile[] } & NewThemeFile)
   | { ok: false; message: string };
 
 export type CopiedThemeFileResult =
@@ -136,13 +144,33 @@ function ${componentName}() {
 `;
 }
 
+function scaffoldContentFieldsDeclaration(): string {
+  return `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+`;
+}
+
+/**
+ * Where a new component at `path` declares its fields: its sibling
+ * `<Name>.fields.ts`, or `null` for routes, non-component files and components
+ * the sidecar rule does not cover.
+ */
+function newComponentSidecarPath(path: string): string | null {
+  if (isThemePublicPath(path) || extensionOf(path) !== ".tsx") return null;
+  if (themeRoutePathFromSourcePath(path)) return null;
+  return contentFieldsSidecarPath(path);
+}
+
 /**
  * Seed content for a newly created file.
  *
  * Files under `src/routes/` are scaffolded as TanStack file routes. Other TSX
- * files are scaffolded as standalone components with their own `contentFields`
- * declaration so they are editable in the Inspector immediately, without
- * registering them anywhere.
+ * files are scaffolded as standalone components. A component whose fields can
+ * live in a sibling `<Name>.fields.ts` gets them there (see
+ * `scaffoldThemeFileCompanions`), so it is editable in the Inspector
+ * immediately and only one file declares them; any other component keeps the
+ * declaration in its own source.
  */
 export function scaffoldThemeFile(path: string): string {
   const extension = extensionOf(path);
@@ -169,14 +197,13 @@ export function scaffoldThemeFile(path: string): string {
   if (extension === ".ts") return "export {};\n";
 
   const name = componentNameFrom(path);
+  const declaration = newComponentSidecarPath(path)
+    ? ""
+    : `${scaffoldContentFieldsDeclaration()}\n`;
   // Live Preview injects source locations for selection, while content fields
   // are inferred from the component props. New Theme files therefore do not
   // need hand-written data-morph identity markers.
-  return `export const contentFields = {
-  heading: { type: "text", label: "Heading" },
-} as const;
-
-export type ${name}Props = {
+  return `${declaration}export type ${name}Props = {
   heading?: string;
 };
 
@@ -190,6 +217,19 @@ export default function ${name}({ heading = "${name}" }: ${name}Props) {
   );
 }
 `;
+}
+
+/** Files created together with a new file at `path`: a component's sidecar. */
+export function scaffoldThemeFileCompanions(path: string): NewThemeFile[] {
+  const sidecarPath = newComponentSidecarPath(path);
+  if (!sidecarPath) return [];
+  return [
+    {
+      path: sidecarPath,
+      content: scaffoldContentFieldsDeclaration(),
+      mimeType: themeFileMimeType(sidecarPath),
+    },
+  ];
 }
 
 /**
@@ -265,18 +305,42 @@ function validateThemeFilePath(
   return { ok: true, path, mimeType: themeFileMimeType(path) };
 }
 
+/** Validates a path for a new file without choosing its content. */
+export function prepareNewThemeFilePath(
+  rawPath: string,
+  existingPaths: readonly string[],
+): CopiedThemeFileResult {
+  return validateThemeFilePath(rawPath, existingPaths, CREATABLE_EXTENSIONS);
+}
+
+/**
+ * Validates and seeds a new file and the files created with it.
+ *
+ * A companion that already exists refuses the whole create: overwriting it
+ * would replace the author's declaration, and keeping it would leave the new
+ * component bound to fields it was not created with.
+ */
 export function prepareNewThemeFile(
   rawPath: string,
   existingPaths: readonly string[],
 ): NewThemeFileResult {
-  const validated = validateThemeFilePath(
-    rawPath,
-    existingPaths,
-    CREATABLE_EXTENSIONS,
-  );
-  return validated.ok
-    ? { ...validated, content: scaffoldThemeFile(validated.path) }
-    : validated;
+  const validated = prepareNewThemeFilePath(rawPath, existingPaths);
+  if (!validated.ok) return validated;
+  const companions = scaffoldThemeFileCompanions(validated.path);
+  for (const companion of companions) {
+    const checked = prepareNewThemeFilePath(companion.path, existingPaths);
+    if (!checked.ok) {
+      return {
+        ok: false,
+        message: `Cannot create ${validated.path}: ${checked.message}`,
+      };
+    }
+  }
+  return {
+    ...validated,
+    content: scaffoldThemeFile(validated.path),
+    companions,
+  };
 }
 
 /** Validates a copy destination while preserving the source's supported format. */
