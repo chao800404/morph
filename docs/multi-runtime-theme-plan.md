@@ -133,7 +133,7 @@ export const contentFields = {
 | Live Preview（真實 React）畫布欄位標記                      | ✅ 新增、修改：#105；只刪 `.fields.ts`：立即重新標記，不重啟預覽 |
 | Code 模式診斷（兩處宣告、無效宣告）                         | ✅ #105                                                          |
 | 文字升級寫入 `.fields.ts`                                   | ❌ 目前顯示 Code only（`fields-in-sidecar`），之後另開 PR        |
-| 新建元件預設產生 `.fields.ts`                               | ❌ 之後另開 PR                                                   |
+| 新建元件預設產生 `.fields.ts`                               | ✅ #109：與元件同批建立，已存在則拒絕；路由與其他檔案不變        |
 | 舊解譯器預覽（`safe-theme-component-renderer`）的列欄位名稱 | ⚠️ 限制：讀不到 `.fields.ts`，退回依列資料本身的欄位判斷         |
 | 另一個分頁刪除 `.fields.ts`                                 | ⚠️ 未驗證：本分頁預覽何時重新標記                                |
 | `.astro`、`.vue`、`.html` 元件                              | ❌ 尚未接入（見交付順序第 4 步）                                 |
