@@ -2665,6 +2665,52 @@ export default function SiteHeader() { return <header />; }`;
     expect(heroProps.padding).toBeUndefined();
     expect(heroProps.backgroundColor).toBeUndefined();
     expect(heroProps.className).toBeUndefined();
+    // And the caller is told which of its values went nowhere.
+    expect(result?.droppedProps).toEqual([
+      "fontSize",
+      "padding",
+      "backgroundColor",
+      "className",
+    ]);
+  });
+
+  it("reports a changed undeclared value as dropped, not one carried unchanged", async () => {
+    // What a tab sends after another tab deleted the declaration it edits
+    // from: the whole section, its runtime data unchanged, and a new value
+    // for a field the source no longer declares.
+    const stored =
+      '{"version":1,"sections":[{"id":"hero-1","type":"hero","enabled":true,"props":{"heading":"Welcome","runtimeLinks":[{"id":"row-1","href":"/a"}],"retiredField":"Old"}}]}';
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-dropped', 'theme-a', 'index', 'Home', '${stored}',
+         '55555555-5555-4555-8555-555555555555', '55555555-5555-4555-8555-555555555555', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('55555555-5555-4555-8555-555555555555', 'template-dropped', 1, '${stored}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-dropped",
+      sectionId: "hero-1",
+      props: {
+        heading: "Welcome back",
+        runtimeLinks: [{ id: "row-1", href: "/a" }],
+        retiredField: "Stale edit",
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    const props = result?.document.sections[0].props as Record<string, unknown>;
+    expect(props.heading).toBe("Welcome back");
+    expect(props.runtimeLinks).toEqual([{ id: "row-1", href: "/a" }]);
+    expect(props.retiredField).toBe("Old");
+    expect(result?.droppedProps).toEqual(["retiredField"]);
   });
 
   it("supports componentRef manifest (e.g. hero.video) and allows variant-specific content fields", async () => {

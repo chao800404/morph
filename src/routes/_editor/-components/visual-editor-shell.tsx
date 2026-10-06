@@ -193,6 +193,10 @@ import {
 } from "@/lib/storefront/editor/unpublished-changes";
 import { sourceLocationKey } from "@/lib/storefront/ast/element-target";
 import {
+  contentFieldsComponentPath,
+  isContentFieldsSidecarPath,
+} from "@/lib/storefront/ast/theme-content-fields-declaration";
+import {
   hasInlineTextDocumentTarget,
   isInlineTextEditCandidate,
 } from "@/lib/storefront/editor/inline-text-edit";
@@ -1088,6 +1092,10 @@ export function VisualEditorShell({
     [],
   );
 
+  /** Set below, beside the preview it reloads. */
+  const droppedContentHandlerRef = useRef<
+    (droppedProps: readonly string[]) => void
+  >(() => {});
   const updatePropsMutation = useMutation({
     mutationFn: (variables: {
       sectionId: string;
@@ -1135,6 +1143,9 @@ export function VisualEditorShell({
         return;
       }
       setDraftSaveState("idle");
+      if (result.data.droppedProps.length > 0) {
+        droppedContentHandlerRef.current(result.data.droppedProps);
+      }
       await queryClient.invalidateQueries({
         queryKey: storefrontThemeQueries.detail(
           context.storefront.id,
@@ -2075,6 +2086,46 @@ export function VisualEditorShell({
     themeFilesQuery.data?.binaryFiles,
     hydrateWorkspace,
   ]);
+
+  // A component's `.fields.ts` that a fresh read of the Theme no longer has —
+  // deleted by another tab, or by anything else that writes the source. The
+  // Inspector follows the files on its own; the canvas is marked by the
+  // preview, which nobody re-marked. So the component is sent again the way
+  // a deletion in this tab's Code mode sends it, re-marked from what remains.
+  // Deleted in this tab, it is sent twice; the second write changes nothing.
+  const previousThemeFilePathsRef = useRef<{
+    themeKey: string;
+    paths: ReadonlySet<string>;
+  } | null>(null);
+  useEffect(() => {
+    const files = themeFilesQuery.data?.files;
+    if (!files) return;
+    const themeKey = `${context.storefront.id}:${context.theme.id}`;
+    const paths = new Set(files.map((file) => file.path));
+    const previous = previousThemeFilePathsRef.current;
+    previousThemeFilePathsRef.current = { themeKey, paths };
+    if (!previous || previous.themeKey !== themeKey) return;
+    const components = new Set<string>();
+    for (const path of previous.paths) {
+      if (paths.has(path) || !isContentFieldsSidecarPath(path)) continue;
+      const component = contentFieldsComponentPath(path, paths);
+      if (component) components.add(component);
+    }
+    if (components.size === 0) return;
+    const workspace = useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(context.storefront.id, context.theme.id);
+    const resend = files
+      .filter((file) => components.has(file.path))
+      .map((file) => ({
+        path: file.path,
+        content: workspace[file.path]?.localContent ?? file.content,
+      }));
+    postPreviewThemeFilesRef.current?.(resend, {
+      preserveCanvasPosition: true,
+      justSavedPaths: [...components],
+    });
+  }, [context.storefront.id, context.theme.id, themeFilesQuery.data?.files]);
 
   const effectiveThemeFiles = useMemo<StorefrontThemeFileDTO[]>(() => {
     const serverPaths = new Set(themeFiles.map((file) => file.path));
@@ -6648,6 +6699,29 @@ export function VisualEditorShell({
     },
     [previewMediaCache],
   );
+
+  // A content write the server took only in part: the source it checked no
+  // longer declares the fields named, so their values went nowhere — the way
+  // this tab finds out that another tab or session changed the declaration it
+  // has been editing from. The Theme's files are read again, which updates
+  // the Inspector and re-marks the canvas (see the deleted-declaration resend
+  // above), and the canvas is loaded again: the Inspector typed the value
+  // straight into its DOM, which no re-render with the stored props undoes.
+  droppedContentHandlerRef.current = (droppedProps) => {
+    const names = droppedProps.map((key) => `"${key}"`).join(", ");
+    toast.warning(
+      `Not saved: ${names} ${droppedProps.length === 1 ? "is not an editable field" : "are not editable fields"} in the current Theme source, which may have changed in another tab. This tab has read it again.`,
+      { duration: 20_000 },
+    );
+    void queryClient
+      .invalidateQueries({
+        queryKey: storefrontThemeFileQueries.tree(
+          context.storefront.id,
+          context.theme.id,
+        ).queryKey,
+      })
+      .finally(() => setPreviewRevision((revision) => revision + 1));
+  };
 
   /**
    * Makes fixed text in a component a field, storing this page's value.
