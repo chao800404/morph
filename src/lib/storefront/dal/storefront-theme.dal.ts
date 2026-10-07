@@ -55,7 +55,7 @@ import {
   collectMediaAssetIds,
   verifyMediaReferences,
 } from "@/lib/storefront/theme-media-verification";
-import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
+import { and, asc, eq, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1475,57 +1475,16 @@ export const storefrontThemeDal = {
           )
           .limit(1)
       : [];
-    // Resolve the build server-side when the caller did not name one.
-    //
-    // The editor only knows about a Build Preview while it is showing one, so a
-    // reload would otherwise make an existing, valid build unpublishable and
-    // force a rebuild. Falling back to the active release's build instead is
-    // wrong in the opposite direction: it would publish stale bytes under a
-    // newer source. The authoritative answer is the newest succeeded build
-    // whose revision matches the theme's current source generation.
-    const [resolvedBuild] =
-      data.themeBuildId || data.sourceRevisionId
-        ? []
-        : await db
-            .select({
-              id: storefrontThemeBuilds.id,
-              sourceRevisionId: storefrontThemeBuilds.sourceRevisionId,
-            })
-            .from(storefrontThemeBuilds)
-            .innerJoin(
-              storefrontThemeRevisions,
-              eq(
-                storefrontThemeBuilds.sourceRevisionId,
-                storefrontThemeRevisions.id,
-              ),
-            )
-            .where(
-              and(
-                eq(storefrontThemeBuilds.storefrontId, data.storefrontId),
-                eq(storefrontThemeBuilds.themeId, data.themeId),
-                eq(storefrontThemeBuilds.status, "succeeded"),
-                isNotNull(storefrontThemeBuilds.artifactPrefix),
-                isNotNull(storefrontThemeBuilds.manifestJson),
-                isNull(storefrontThemeBuilds.deletedAt),
-                isNull(storefrontThemeRevisions.deletedAt),
-                eq(
-                  storefrontThemeRevisions.sourceGeneration,
-                  template.sourceGeneration,
-                ),
-              ),
-            )
-            .orderBy(desc(storefrontThemeBuilds.createdAt))
-            .limit(1);
-
+    // A publish that names no build republishes the active release's own
+    // build, and only while the Theme's source is the one that build was made
+    // from; otherwise it must build. No other build is picked on its behalf:
+    // "the newest succeeded build for this source" is an artifact nobody chose
+    // for this publish, sealed with content nobody checked against it.
     const sourceRevisionId =
-      data.sourceRevisionId ??
-      resolvedBuild?.sourceRevisionId ??
-      activeRelease?.sourceRevisionId;
-    const themeBuildId =
-      data.themeBuildId ?? resolvedBuild?.id ?? activeRelease?.themeBuildId;
+      data.sourceRevisionId ?? activeRelease?.sourceRevisionId;
+    const themeBuildId = data.themeBuildId ?? activeRelease?.themeBuildId;
     if (
       !data.sourceRevisionId &&
-      !resolvedBuild &&
       (activeRelease?.sourceGeneration == null ||
         activeRelease.sourceGeneration !== template.sourceGeneration)
     ) {

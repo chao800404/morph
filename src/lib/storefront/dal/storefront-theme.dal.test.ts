@@ -1820,6 +1820,9 @@ export default function Hero() { return <h1 />; }`;
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: ensured.template.id,
+        // A first publish names the build it made, as the editor does.
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: draft!.draftRevisionId,
         expectedDraftGeneration: draft!.draftGeneration,
         expectedReleaseGeneration: 1,
@@ -3121,6 +3124,9 @@ describe("preparing an untouched template for its first publish", () => {
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-initial",
+      // A first publish names the build it made, as the editor does.
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
       expectedDraftRevisionId: draft!.draftRevisionId,
       expectedDraftGeneration: draft!.draftGeneration,
       expectedReleaseGeneration: 1,
@@ -3254,21 +3260,18 @@ describe("publish build resolution", () => {
       expectedReleaseGeneration: 1,
     });
 
-  it("resolves the build for the current source when the caller names none", async () => {
-    // The editor only knows a Build Preview while it is showing one, so a
-    // reload must not make an existing valid build unpublishable.
+  it("does not pick a build for a caller that names none and has no release to republish", async () => {
+    // A succeeded build for this very source exists; it is still not chosen
+    // on the caller's behalf. Publishing without a release must build.
     seedTemplateAndRevision();
 
-    const result = await publish();
-
-    expect(result).toMatchObject({
-      themeBuildId: "33333333-3333-4333-8333-333333333333",
-      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
-      releaseCreated: true,
-    });
+    await expect(publish()).rejects.toThrow(/PUBLISH_BUILD_NOT_READY/);
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 0 });
   });
 
-  it("prefers the newest succeeded build for the current source generation", async () => {
+  it("republishes the active release's own build, never a newer one for the same source", async () => {
     seedTemplateAndRevision(`
       INSERT INTO storefront_theme_builds
         (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
@@ -3276,10 +3279,23 @@ describe("publish build resolution", () => {
         ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
          '22222222-2222-4222-8222-222222222222', 'succeeded',
          'themes/theme-a/builds/build-b', '{}', 'zzz-later', 'zzz-later');
+      INSERT INTO storefront_releases
+        (id, storefront_id, theme_id, source_revision_id, theme_build_id, status,
+         metadata, created_at, updated_at)
+      VALUES
+        ('55555555-5555-4555-8555-555555555555', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333',
+         'available', '{"deployedThemeBuildId":"33333333-3333-4333-8333-333333333333"}',
+         'now', 'now');
+      UPDATE storefronts SET active_release_id = '55555555-5555-4555-8555-555555555555'
+        WHERE id = 'storefront-a';
     `);
 
     const result = await publish();
-    expect(result!.themeBuildId).toBe("44444444-4444-4444-8444-444444444444");
+    expect(result).toMatchObject({
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   it("never selects a build bound to a different source generation", async () => {
