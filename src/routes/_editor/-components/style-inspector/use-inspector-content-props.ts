@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   rebaseContentProps,
   sameContentValue,
@@ -35,12 +35,19 @@ export function useInspectorContentProps(args: {
   props: InspectorContentProps;
 } {
   const { resourceKey, sectionId, sectionProps } = args;
-  const incomingProps =
-    sectionProps &&
-    typeof sectionProps === "object" &&
-    !Array.isArray(sectionProps)
-      ? (sectionProps as InspectorContentProps)
-      : {};
+  // Kept by identity across renders. The rebase effect below depends on it and
+  // sets state, so a fresh `{}` per render for a section without props made
+  // every render schedule the next one, until React stopped it with "Maximum
+  // update depth exceeded" and tore the editor down.
+  const incomingProps = useMemo(
+    () =>
+      sectionProps &&
+      typeof sectionProps === "object" &&
+      !Array.isArray(sectionProps)
+        ? (sectionProps as InspectorContentProps)
+        : {},
+    [sectionProps],
+  );
   const [localProps, setLocalProps] =
     useState<InspectorContentProps>(incomingProps);
   const localPropsRef = useRef(localProps);

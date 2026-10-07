@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
@@ -28,8 +29,7 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * messages are real ones on `window`, so they still pass the transport's origin,
  * source and session checks.
  *
- * The Inspector panel is replaced with a passthrough; see the mock below for
- * why, and for the browser check that says the reason is jsdom's.
+ * The Inspector panel is the real one; see the mock below for what it adds.
  */
 
 const EDITOR_ORIGIN = "http://localhost:3000";
@@ -39,47 +39,45 @@ const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 const posted: Array<Record<string, unknown>> = [];
 
 /**
- * The Inspector panel is replaced with a passthrough, and it is a jsdom
- * workaround rather than a claim about the panel.
+ * The Inspector panel is the real one, with one button beside it.
  *
- * With it rendered, a content write that fails sends the shell through React's
- * nested-update limit — "Maximum update depth exceeded" out of Radix's
- * `useComposedRefs` — and React tears the tree down: `[data-editor-save-status]`
- * goes from one element to none, which is why the failure marker could not be
- * asserted at all. The same failure was produced in a real browser against the
- * running editor: the marker stayed, showed "Save failed", and the tree kept its
- * rows. So the cascade is jsdom's, and answering it here hides nothing.
+ * It used to be stubbed out as a jsdom workaround: with it rendered, a failed
+ * content write tore the tree down through "Maximum update depth exceeded".
+ * That was not jsdom's. The fixture's hero has no `props`, and the Inspector's
+ * content hook made a fresh `{}` for it on every render — an effect dependency
+ * that set state — so it re-rendered until React gave up. The hook takes
+ * `props` as `unknown` and has to survive any of them, so rendering the panel
+ * here keeps that path under test.
  *
- * The row the tests click lives in the sections panel, which stays rendered, and
- * the marker they assert lives in the shell's own header.
+ * The button reaches `onUpdateThemeFileStyle`, which the real panel hands to
+ * `EditorStyleInspector`: the style path is otherwise only reachable through
+ * Radix controls jsdom cannot drive.
  */
-vi.mock("./editor-assistant-panel", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  EditorAssistantPanel: (props: {
-    onUpdateThemeFileStyle?: (
-      filePath: string,
-      elementName: string,
-      updater: (prevClasses: string) => string,
-    ) => void;
-  }) => (
-    // Still not the real panel — the workaround above is unchanged. What it
-    // adds is a way to reach `onUpdateThemeFileStyle`, which the real panel
-    // hands to `EditorStyleInspector`: the style path is otherwise only
-    // reachable through Radix controls jsdom cannot drive.
-    <button
-      type="button"
-      onClick={() =>
-        props.onUpdateThemeFileStyle?.(
-          stylePatchTarget.filePath,
-          stylePatchTarget.elementName,
-          (prevClasses) => `${prevClasses} p-8`,
-        )
-      }
-    >
-      Apply a style patch
-    </button>
-  ),
-}));
+vi.mock("./editor-assistant-panel", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./editor-assistant-panel")>();
+  const RealPanel = actual.EditorAssistantPanel;
+  return {
+    ...actual,
+    EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => (
+      <>
+        <RealPanel {...props} />
+        <button
+          type="button"
+          onClick={() =>
+            props.onUpdateThemeFileStyle?.(
+              stylePatchTarget.filePath,
+              stylePatchTarget.elementName,
+              (prevClasses) => `${prevClasses} p-8`,
+            )
+          }
+        >
+          Apply a style patch
+        </button>
+      </>
+    ),
+  };
+});
 
 /**
  * The content write an inline-text commit reaches.

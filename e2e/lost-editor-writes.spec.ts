@@ -5,6 +5,7 @@ import { EDITOR_PATH, openEditor } from "./helpers";
 
 import {
   restoreHero,
+  restoreHeroAfterFailure,
   heroContentField,
   unconfirmedNotice,
   pausedNotice,
@@ -22,6 +23,7 @@ import {
 
 test.describe("unsaved work when the signed-in account changes", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+  restoreHeroAfterFailure();
 
   test("connection lost before the save arrived: not resent on its own, checked, then sent once", async ({
     browser,
@@ -86,7 +88,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -182,7 +184,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
     } finally {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 

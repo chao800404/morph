@@ -63,13 +63,27 @@ export async function signOut(context: BrowserContext) {
   expect(response.ok(), "sign-out").toBe(true);
 }
 
+/**
+ * Contexts the helpers below opened and nothing has closed yet, so that
+ * {@link restoreHeroAfterFailure} can close what a failed test left behind.
+ */
+const openContexts = new Set<BrowserContext>();
+
+function tracked(context: BrowserContext) {
+  openContexts.add(context);
+  context.on("close", () => openContexts.delete(context));
+  return context;
+}
+
 /** An editor on a session of its own, for a case that signs out. */
 export async function signedInEditor(browser: Browser, address = email()) {
   const { baseURL } = test.info().project.use;
-  const context = await browser.newContext({
-    baseURL,
-    viewport: { width: 1600, height: 950 },
-  });
+  const context = tracked(
+    await browser.newContext({
+      baseURL,
+      viewport: { width: 1600, height: 950 },
+    }),
+  );
   await signIn(context, address);
   const page = await context.newPage();
   await openEditor(page);
@@ -79,11 +93,13 @@ export async function signedInEditor(browser: Browser, address = email()) {
 /** An editor on the shared session, for a case that never signs out. */
 export async function sharedEditor(browser: Browser) {
   const { baseURL } = test.info().project.use;
-  const context = await browser.newContext({
-    baseURL,
-    viewport: { width: 1600, height: 950 },
-    storageState: STORAGE_STATE,
-  });
+  const context = tracked(
+    await browser.newContext({
+      baseURL,
+      viewport: { width: 1600, height: 950 },
+      storageState: STORAGE_STATE,
+    }),
+  );
   const page = await context.newPage();
   await openEditor(page);
   return { context, page };
@@ -314,11 +330,26 @@ export const withoutMarkers = (source: string) =>
     .filter((line) => !line.includes(MARKER))
     .join("\n");
 
-/** Puts the hero back as it was, from a session of its own. */
-export async function restoreHero(browser: Browser, hero: string) {
+let restoring: Promise<void> | null = null;
+
+/**
+ * Puts the hero back as it was, from a session of its own.
+ *
+ * A call made while one is running joins it: after a timeout the test's own
+ * `finally` and {@link restoreHeroAfterFailure} can both get here, and two
+ * saves of the same file would race each other.
+ */
+export function restoreHero(browser: Browser) {
+  restoring ??= restoreHeroOnce(browser).finally(() => {
+    restoring = null;
+  });
+  return restoring;
+}
+
+async function restoreHeroOnce(browser: Browser) {
   const { context, page } = await sharedEditor(browser);
   try {
-    await openHeroInCode(page);
+    const hero = await openHeroInCode(page);
     const source = await readSource(page, hero);
     if (withoutMarkers(source) === source) return;
     const landed = nextFileSave(page, hero);
@@ -327,6 +358,28 @@ export async function restoreHero(browser: Browser, hero: string) {
   } finally {
     await context.close();
   }
+}
+
+/**
+ * Puts the hero back after any test of the calling file that did not pass.
+ *
+ * The tests restore it in their own `finally`, which is not enough when a test
+ * times out: the step it is stuck on fails only when the worker closes the
+ * browser, so that `finally` runs against a closed browser and the hero keeps
+ * its marker. In CI run 37509904859 that failed the next test too, on a
+ * marker it had not written. `afterEach` runs in a time slot of its own while
+ * the browser is still open. It closes what the test left open first, so a
+ * step still waiting on one of those pages fails now instead of running
+ * alongside the restore.
+ */
+export function restoreHeroAfterFailure() {
+  test.afterEach(async ({ browser }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    await Promise.all(
+      [...openContexts].map((context) => context.close().catch(() => {})),
+    );
+    await restoreHero(browser);
+  });
 }
 
 /** The run's own database, as `scripts/seed-e2e.mjs` reaches it. */

@@ -46,6 +46,24 @@ describe("useInspectorContentProps", () => {
     expect(result.current.props).toEqual({ title: "Typing", color: "white" });
   });
 
+  it("settles for a section that has no props", () => {
+    // Bounded on purpose: the loop this guards against never ends by itself,
+    // so an unbounded count would hang the test instead of failing it.
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      if (renders > 20) throw new Error("render loop: 20 renders and counting");
+      return useInspectorContentProps({
+        resourceKey: "store:theme",
+        sectionId: "hero",
+        sectionProps: undefined,
+      });
+    });
+
+    expect(result.current.props).toEqual({});
+    expect(renders).toBeLessThanOrEqual(3);
+  });
+
   it("replaces the snapshot when the section changes", () => {
     const { result, rerender } = renderHook(
       ({ sectionId, props }) =>

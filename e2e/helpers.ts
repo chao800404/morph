@@ -86,6 +86,44 @@ function describeStages(stages: ReadonlyArray<[string, number]>): string {
     : "none";
 }
 
+const reportingCrashes = new WeakSet<Page>();
+
+/**
+ * Says so in the test output when the editor itself crashes.
+ *
+ * A crashed editor shows its error page, and the test then waits on a control
+ * that is no longer there until its timeout — reported as a timeout, which
+ * names neither the crash nor the page. That is how a render loop in one of
+ * the Inspector's Selects (CI runs 37505554126 and 37509904859) first read as
+ * a hang in the test.
+ * Only uncaught errors and React's own crash reports, and at most five per
+ * page, so a healthy run stays quiet and a broken one cannot flood the log.
+ */
+function reportEditorCrashes(page: Page) {
+  if (reportingCrashes.has(page)) return;
+  reportingCrashes.add(page);
+  const title = test.info().title;
+  let left = 5;
+  const report = (text: string) => {
+    if (left <= 0) return;
+    left -= 1;
+    console.log(
+      `[editor crash] ${title}: ${text.split("\n")[0].slice(0, 300)}`,
+    );
+  };
+  page.on("pageerror", (error) => report(error.message));
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (
+      /Maximum update depth exceeded|The above error occurred in/.test(text)
+    ) {
+      // React puts the error itself in an argument after a format string.
+      report(text.replace(/^(%[os]\s*)+/, "").trim());
+    }
+  });
+}
+
 /**
  * Opens the editor and puts the canvas back to its default pan and zoom.
  *
@@ -94,6 +132,7 @@ function describeStages(stages: ReadonlyArray<[string, number]>): string {
  * only while selection is off — which is also the state the editor loads in.
  */
 export async function openEditor(page: Page, editorPath = EDITOR_PATH!) {
+  reportEditorCrashes(page);
   const server = capturePreviewServerReport(page);
   const done: [string, number][] = [];
   // Null unless MORPH_E2E_TIMELINE=1; see request-timeline.ts.
