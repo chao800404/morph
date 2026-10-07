@@ -1505,6 +1505,7 @@ export const storefrontThemeDal = {
         artifactPrefix: storefrontThemeBuilds.artifactPrefix,
         manifestJson: storefrontThemeBuilds.manifestJson,
         contentPublicationId: storefrontThemeBuilds.contentPublicationId,
+        contentDependency: storefrontThemeBuilds.contentDependency,
       })
       .from(storefrontThemeBuilds)
       .where(
@@ -1679,7 +1680,15 @@ export const storefrontThemeDal = {
       for (const { document: publicationDocument } of publicationDocuments) {
         assertRenderingModeReady(publicationDocument);
       }
-      if (build.contentPublicationId) {
+      // A build sealed with content must be published with that content,
+      // unless the build proved its artifact holds none of it: then the
+      // release's own content is what runtime reads, and any content may go
+      // with it. Unknown is held to the seal like dependent. A build sealed
+      // with nothing was never given any content to hold.
+      if (
+        build.contentPublicationId &&
+        build.contentDependency !== "independent"
+      ) {
         const boundContent =
           await storefrontThemeBuildDal.readBuildContentSnapshot({
             storefrontId: data.storefrontId,

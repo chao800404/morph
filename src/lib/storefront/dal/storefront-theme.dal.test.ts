@@ -157,6 +157,7 @@ beforeEach(() => {
       artifact_prefix text,
       manifest_json text,
       content_publication_id text,
+      content_dependency text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -861,6 +862,94 @@ describe("storefront theme DAL", () => {
         const result = await publish;
         expect(result?.releaseId).toBeTruthy();
       }
+    },
+  );
+
+  it.each([
+    [null, "refused"],
+    ["dependent", "refused"],
+    ["independent", "published"],
+  ] as const)(
+    "holds a build sealed with other content to its seal unless it proved itself independent (%s)",
+    async (dependency, outcome) => {
+      // The build was sealed with an older draft; the draft being published
+      // is a newer one. Only an artifact proven to hold no content may go out
+      // with content other than its seal; unknown counts as dependent.
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssr" } },
+      });
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+        VALUES ('old-policy-revision', 'policy-template', 0, ?, 'now')`,
+        )
+        .run(JSON.stringify({ version: 1, sections: [] }));
+      sqlite.exec(
+        "INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at) VALUES ('build-content', 'storefront-a', 'now', 'now')",
+      );
+      sqlite.exec(`INSERT INTO storefront_content_publication_items
+        (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+        VALUES ('build-item', 'build-content', 'template', 'policy-template', 'old-policy-revision', '{"templateType":"index"}', 'now', 'now')`);
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_builds SET content_publication_id = 'build-content', content_dependency = ?",
+        )
+        .run(dependency);
+      sqlite.exec(`INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+        VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+
+      const publish = storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: acceptRevision,
+      });
+
+      if (outcome === "refused") {
+        await expect(publish).rejects.toThrow("PUBLISH_BUILD_CONTENT_MISMATCH");
+        expect(
+          sqlite
+            .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+            .get(),
+        ).toEqual({ count: 0 });
+        expect(
+          sqlite
+            .prepare(
+              "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+            )
+            .get(),
+        ).toEqual({ active_release_id: null });
+        return;
+      }
+      const result = await publish;
+      expect(result?.releaseCreated).toBe(true);
+      // The release carries the content being published, not the build's
+      // seal: that is what its runtime reads.
+      const release = sqlite
+        .prepare(
+          "SELECT theme_build_id, content_publication_id FROM storefront_releases",
+        )
+        .get() as { theme_build_id: string; content_publication_id: string };
+      expect(release.theme_build_id).toBe(
+        "33333333-3333-4333-8333-333333333333",
+      );
+      expect(release.content_publication_id).not.toBe("build-content");
+      expect(
+        sqlite
+          .prepare(
+            "SELECT revision_id FROM storefront_content_publication_items WHERE publication_id = ? AND content_id = 'policy-template'",
+          )
+          .get(release.content_publication_id),
+      ).toEqual({ revision_id: saved!.draftRevisionId });
     },
   );
 
