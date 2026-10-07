@@ -5,7 +5,7 @@ import {
   type StorefrontContentResult,
 } from "../service/storefront-content-runtime";
 import type { ThemeRouteRegistry } from "./theme-route-registry";
-import { themePrerenderOptions } from "./theme-prerender";
+import { isStaticPageRoute, themePrerenderOptions } from "./theme-prerender";
 import { THEME_PRERENDER_CONTENT_DATA_RELATIVE_PATH } from "./theme-workspace-path";
 import { frozenContentRoute } from "./theme-build-content-route";
 import { isStorefrontTemplateType } from "../dto/storefront-content-publication.dto";
@@ -17,13 +17,50 @@ export type ThemePrerenderContent = Readonly<
   Record<string, StorefrontContentResult>
 >;
 
-/** Reuse the public content resolver, with ports restricted to sealed input.
- * Legacy unmapped content is refused, never assigned using current draft rows.
+/**
+ * Where a native build's prerender records each content read it could not
+ * answer, one JSON line per read. Read back by `nativeBuildResult`, which
+ * fails the build if it exists.
  */
-export async function createThemePrerenderContent(
+export const NATIVE_PRERENDER_REFUSED_READS_PATH =
+  ".morph/prerender-refused-reads.ndjson";
+
+/**
+ * What a native build's prerender may read from Morph's content endpoint.
+ *
+ * Whether to prerender is the project's own config's to say, not the CMS
+ * render policy's, so every static route's content is sealed here rather
+ * than only the pages the CMS marks SSG. A read this cannot answer is
+ * refused and recorded, never answered with nothing: the Theme falls back to
+ * component defaults on a failed read, and static HTML built that way would
+ * publish defaults in place of the author's content.
+ */
+export type NativePrerenderContent = Readonly<{
+  /** Each static route's content, from the build's sealed snapshot only. */
+  content: Readonly<Record<string, StorefrontContentResult>>;
+  /** Why a static route has no content here. */
+  unavailable: Readonly<Record<string, string>>;
+  /** Why no route has content: no snapshot, or one Core alone can read. */
+  refusedAll?: string;
+}>;
+
+/** A native build with no sealed content: every content read is refused. */
+export const NATIVE_PRERENDER_WITHOUT_SNAPSHOT: NativePrerenderContent = {
+  content: {},
+  unavailable: {},
+  refusedAll:
+    "NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT: this build has no sealed content",
+};
+
+/**
+ * Resolves a path's content from the sealed snapshot only, with the public
+ * content resolver. Legacy unmapped content is refused, never assigned using
+ * current draft rows; so is a path whose document's role the snapshot cannot
+ * prove. Throws for the first while being built and for the second per path.
+ */
+function assertSnapshotTemplateTypes(
   snapshot: ThemeBuildContentSnapshot | undefined,
-  registry: ThemeRouteRegistry,
-): Promise<ThemePrerenderContent | undefined> {
+) {
   for (const { item } of snapshot?.documents ?? []) {
     if (
       item.metadata?.templateType !== undefined &&
@@ -32,8 +69,10 @@ export async function createThemePrerenderContent(
     )
       throw new Error("SSG_INVALID_TEMPLATE_TYPE");
   }
-  const options = themePrerenderOptions(snapshot, registry, true);
-  if (!snapshot || !options) return undefined;
+}
+
+function sealedContentResolver(snapshot: ThemeBuildContentSnapshot) {
+  assertSnapshotTemplateTypes(snapshot);
   const layout =
     snapshot.documents.find(
       ({ item, document }) =>
@@ -69,8 +108,7 @@ export async function createThemePrerenderContent(
     if (byType.has(type)) throw new Error("SSG_DUPLICATE_TEMPLATE_TYPE");
     byType.set(type, document);
   }
-  const result: Record<string, StorefrontContentResult> = {};
-  for (const { path } of options.pages) {
+  return async (path: string): Promise<StorefrontContentResult> => {
     // A concrete route reference alone does not prove the role of a generic
     // product/page/blog template. Do not render a different document than Core.
     const type = templateTypeForPath(path);
@@ -87,7 +125,7 @@ export async function createThemePrerenderContent(
           owner.metadata.templateType !== "index"))
     )
       throw new Error("SSG_CONTENT_TEMPLATE_IDENTITY_REQUIRED");
-    result[path] = await resolveStorefrontContent({
+    return resolveStorefrontContent({
       publicationId: snapshot.publicationId,
       pathname: path,
       ports: {
@@ -104,20 +142,95 @@ export async function createThemePrerenderContent(
         getPublishedPageDocument: async () => byPath.get(path) ?? null,
       },
     });
+  };
+}
+
+/** The content of the pages the CMS marks SSG, for a platform build. */
+export async function createThemePrerenderContent(
+  snapshot: ThemeBuildContentSnapshot | undefined,
+  registry: ThemeRouteRegistry,
+): Promise<ThemePrerenderContent | undefined> {
+  assertSnapshotTemplateTypes(snapshot);
+  const options = themePrerenderOptions(snapshot, registry, true);
+  if (!snapshot || !options) return undefined;
+  const resolve = sealedContentResolver(snapshot);
+  const result: Record<string, StorefrontContentResult> = {};
+  for (const { path } of options.pages) {
+    result[path] = await resolve(path);
   }
   return result;
 }
 
+/** The content a native build's prerender may read (`NativePrerenderContent`). */
+export async function createNativePrerenderContent(
+  snapshot: ThemeBuildContentSnapshot | undefined,
+  registry: ThemeRouteRegistry | null,
+): Promise<NativePrerenderContent> {
+  if (!snapshot) return NATIVE_PRERENDER_WITHOUT_SNAPSHOT;
+  if (!registry) {
+    return {
+      content: {},
+      unavailable: {},
+      refusedAll:
+        "NATIVE_PRERENDER_NO_ROUTES: the Theme's routes could not be read",
+    };
+  }
+  let resolve: ReturnType<typeof sealedContentResolver>;
+  try {
+    resolve = sealedContentResolver(snapshot);
+  } catch (error) {
+    return {
+      content: {},
+      unavailable: {},
+      refusedAll: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const content: Record<string, StorefrontContentResult> = {};
+  const unavailable: Record<string, string> = {};
+  for (const route of registry.routes) {
+    if (!isStaticPageRoute(route)) continue;
+    try {
+      content[route.path] = await resolve(route.path);
+    } catch (error) {
+      unavailable[route.path] =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
+  return { content, unavailable };
+}
+
 /** Node preview middleware only: neither the snapshot nor this plugin belongs
  * to the compiled Worker. The same endpoint/header contract is used in Core.
+ *
+ * With `refusedReadsPath` (a native build), the content file is a
+ * `NativePrerenderContent` and each read it cannot answer is appended there;
+ * without it (a platform build), the file maps paths to content and a read it
+ * cannot answer is a plain 404.
  */
-export function themePrerenderContentPluginSource(root: string): string {
+export function themePrerenderContentPluginSource(
+  root: string,
+  options: Readonly<{ refusedReadsPath?: string }> = {},
+): string {
+  const contentFile = `path.join(${JSON.stringify(root)}, ${JSON.stringify(THEME_PRERENDER_CONTENT_FILE)})`;
+  const load = options.refusedReadsPath
+    ? `const sealed = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
+      const content = sealed.content;
+      const refusedReads = path.join(${JSON.stringify(root)}, ${JSON.stringify(options.refusedReadsPath)});`
+    : `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));`;
+  const refuse = options.refusedReadsPath
+    ? `if (req.method === "GET") {
+              const reason = sealed.refusedAll || (Object.hasOwn(sealed.unavailable, pathname) ? sealed.unavailable[pathname] : "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path");
+              fs.mkdirSync(path.dirname(refusedReads), { recursive: true });
+              fs.appendFileSync(refusedReads, JSON.stringify({ path: pathname, reason }) + "\\n");
+            }
+            res.statusCode = 404; res.end(); return;`
+    : `res.statusCode = 404; res.end(); return;`;
   return `{
     name: "morph:frozen-prerender-content",
     enforce: "pre",
     configurePreviewServer(server) {
       if (process.env.TSS_PRERENDERING !== "true") return;
-      const content = JSON.parse(fs.readFileSync(path.join(${JSON.stringify(root)}, ${JSON.stringify(THEME_PRERENDER_CONTENT_FILE)}), "utf8"));
+      ${load}
       server.middlewares.use((req, res, next) => {
         const address = server.httpServer?.address();
         if (!address || typeof address === "string") return next(new Error("SSG_CONTENT_SERVER_UNAVAILABLE"));
@@ -135,7 +248,9 @@ export function themePrerenderContentPluginSource(root: string): string {
         const url = new URL(req.url || "/", origin);
         if (url.pathname === "/_morph/content") {
           const pathname = url.searchParams.get("path") || "/";
-          if (req.method !== "GET" || !Object.hasOwn(content, pathname)) { res.statusCode = 404; res.end(); return; }
+          if (req.method !== "GET" || !Object.hasOwn(content, pathname)) {
+            ${refuse}
+          }
           res.setHeader("Content-Type", "application/json; charset=utf-8");
           res.setHeader("Cache-Control", "no-store");
           res.end(JSON.stringify(content[pathname]));

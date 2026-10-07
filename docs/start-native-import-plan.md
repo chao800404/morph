@@ -373,9 +373,17 @@ STRIPE_SECRET [ 新增 Secret ]
               （固定工具鏈實際安裝的套件，`GENERATED_SANDBOX_DEPENDENCY_VERSIONS`，加上核准的依賴）；其他一律拒絕
               （`UNAPPROVED_DEPENDENCY`、`WORKSPACE_PATH_ESCAPE`）。平台建置的防護是依匯入文字與 Morph 產生的別名判斷，
               原生專案帶自己的別名，文字無法判斷實際落點，所以沒有沿用；平台建置改用同一規則是之後的工作。
-            - **凍結內容**（有內容快照時）：Morph 現有的 `themePrerenderContentPluginSource`，只在 Node 預覽伺服器、
+            - **凍結內容**：Morph 現有的 `themePrerenderContentPluginSource`，只在 Node 預覽伺服器、
               `TSS_PRERENDERING` 時作用，不進 Worker 產物。要預先渲染哪些頁由專案自己的設定決定；內容快照要求的
               頁面若沒有產生，建置以產物驗證失敗。
+              2026-10-07 修正：原本只有 CMS 標為 SSG 的頁面拿得到凍結內容，專案自己預先渲染、CMS 為 SSR 的頁面
+              讀內容失敗後，Theme 退回元件預設值，建置照樣成功（真實建置重現過），發布後店面會送出預設值的靜態頁。
+              現在原生建置一律帶此外掛：有快照時封存每個靜態路由的內容（`createNativePrerenderContent`，與 Core 用同一個
+              內容解析器，只讀快照）；沒有快照、或快照無法代表的路徑（例如需要 Core 才能判斷的舊資料），讀取一律拒絕並
+              記錄到 `.morph/prerender-refused-reads.ndjson`，由兩個建置程式共用的 `nativeBuildResult` 以
+              `NATIVE_PRERENDER_CONTENT_UNAVAILABLE` 讓建置失敗。判定依據是「預先渲染時讀了拿不到的內容」，不是看 HTML：
+              不讀內容的靜態頁照常建置；快照存在但欄位沒有值時，照既有的欄位預設規則。CMS 指定 SSG 的發布限制
+              （`PUBLISH_RENDER_POLICY_NOT_READY`）不變；能發布的靜態頁目前只有「專案自己預先渲染、CMS 為 SSR」這一種。
           - **產物**：沿用 1b-1 的 `collectNativeStartArtifact` 轉成 `runtime/server`、`runtime/client`。原生產物沒有
             `preview/index.html`，所以 adapter 有自己的 `native.artifactEntry`（Worker 入口）、`native.verifyArtifact`
             （Worker 入口、client 資產、內容要求的預先渲染頁）與 `native.manifestMetadata`（`build: "native"`、

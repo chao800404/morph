@@ -61,7 +61,11 @@ const BUILT: Record<string, string> = {
 };
 
 function fakeSandbox(
-  options: { buildFails?: boolean; extraBytes?: number } = {},
+  options: {
+    buildFails?: boolean;
+    extraBytes?: number;
+    refusedReads?: string;
+  } = {},
 ) {
   const files = new Map<string, string>();
   const commands: Array<{
@@ -93,6 +97,12 @@ function fakeSandbox(
           }
           for (const [path, content] of Object.entries(BUILT)) {
             files.set(`/workspace/${path}`, content);
+          }
+          if (options.refusedReads !== undefined) {
+            files.set(
+              "/workspace/.morph/prerender-refused-reads.ndjson",
+              options.refusedReads,
+            );
           }
           return { exitCode: 0, stdout: "", stderr: "" };
         }
@@ -169,6 +179,26 @@ describe("the Sandbox runner's native build", () => {
       success: false,
       errorMessage: expect.stringContaining(
         'NATIVE_BUILD_FAILED: ✘ [ERROR] Could not resolve "./missing"',
+      ),
+    });
+  });
+
+  it("fails a build whose prerender read content it could not answer", async () => {
+    // What the wrapper's content plugin leaves when a prerendered page read
+    // Morph content the build has not sealed: Start itself reports success.
+    const { runner } = fakeSandbox({
+      refusedReads: [
+        '{"path":"/landing","reason":"NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT: this build has no sealed content"}',
+        '{"path":"/landing","reason":"NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT: this build has no sealed content"}',
+        "",
+      ].join("\n"),
+    });
+    const result = await runner.run(input());
+    expect(result).toMatchObject({
+      success: false,
+      diagnosticsJson: { stage: "prerender-content" },
+      errorMessage: expect.stringContaining(
+        "NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: /landing (NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT",
       ),
     });
   });
