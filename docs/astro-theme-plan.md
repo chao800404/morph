@@ -7,6 +7,9 @@ Astro 與它不同的地方。
 
 更新（2026-10-07）：記錄 R1、R2 的結果與使用者對其待決事項的決定（0.4）。
 
+更新（2026-10-08）：記錄 M1 的結果：解析器放不進 Morph 主 Worker 的 isolate，M1 不通過，A1 之前停下，
+等使用者在 0.3 的選項中決定（3.1、8.2）。
+
 **本文件合併不代表核准實作，也不解除 G0**（第 8 節）。文中的解法很多仍是待驗假設，各自以閘門驗證後才定稿。
 文中以三種標記區分：
 
@@ -26,8 +29,10 @@ Astro 與它不同的地方。
   中的可行性與位置精度。
 - `~/projects/astro-spike/r2-prerender/R2-REPORT.md`（2026-10-07，以下稱「R2 報告」）：Astro 預先渲染讀封存內容，
   以及 `session: false`、`imageService` 的產物。
+- `~/projects/astro-spike/m1-morph-memory/M1-REPORT.md`（2026-10-08，以下稱「M1 報告」）：解析器與 Morph 主
+  Worker 在同一個 isolate 中的記憶體、bundle 大小與啟動時間。Morph 為 `main` @ `6ea0886` 未修改的 `pnpm build`。
 - R1、R2 的原始結果（腳本、log、產物）留在 `~/projects/astro-spike`，直到本文件已記錄結論，**而且** A2 的
-  Sandbox 驗證完成（第 8 節）；在那之前不刪除、不搬移。
+  Sandbox 驗證完成（第 8 節）；在那之前不刪除、不搬移。M1 的原始結果同樣保留。
 - 2026-10-07 使用者對 R2 待決事項的決定（第 0.4 節）。
 - Morph `main` @ `0f832bd`：`src/lib/storefront/theme-framework/`、`compiler/theme-prerender-content.ts`、
   `compiler/theme-preview-start-runtime.ts`、`compiler/theme-preview-bridge-entry.ts`、
@@ -54,6 +59,11 @@ Astro 與它不同的地方。
 | Theme 設定 `session: false` 加上 adapter 的 `imageService: "passthrough"` 或 `"compile"` 時，產物 Worker 設定的 `kv_namespaces` 為 `[]`、沒有 `images`、`previews` 為 `{}`，建置成功。兩項都不設時，頂層與 `previews` 欄位**都**有 `SESSION` 與 `IMAGES`。建置期的圖片處理（`compile`）沒有被執行到：測試 Theme 沒有使用圖片                                                                                                                                                                                                                | R2 報告 §2.4（`normal`、`img-compile`、`baseline-default` 三個情境的 `dist/server/wrangler.json`）；`dist/wrangler.js:21-42`               |
 | `@astrojs/compiler-rs` 0.5.1 在 Node 中經 `@astrojs/compiler-binding-<平台>` 載入原生 binding；官方另有 `@astrojs/compiler-binding-wasm32-wasi`（`binding/browser.js` 就是匯出它）                                                                                                                                                                                                                                                                                                                                                          | spike 的 `node_modules`；R1 報告 §1                                                                                                        |
 | `@astrojs/compiler-rs` 0.5.1 加官方 `wasm32-wasi` binding 能在本機 workerd 中載入並解析；9 個樣本（含 369 KB 大檔）的 AST 與 Node 原生 binding 逐位元組相同，位置檢查 0 失敗，解析錯誤回傳診斷而不丟例外。Wasm 模組宣告最少 981 頁（約 61 MiB）的 shared 線性記憶體，只增不減                                                                                                                                                                                                                                                               | R1 報告 §2                                                                                                                                 |
+| Morph 主 Worker 本身（`main` @ `6ea0886` 的 build，本機 workerd，GC 後的 V8 heap 加 ArrayBuffer）：剛載入、尚無請求 52.4 MiB；處理過公開 SSR 請求後 72.8 MiB；680 個伺服器 chunk 全部 evaluate 後 84.5 MiB。SSR 請求後、GC 之前的 heap total 為 101–109 MiB | M1 報告 §2.1（各 3–5 次，次數之間差距 < 0.1 MiB） |
+| 解析器與 Morph 主 Worker 在同一個 isolate 中**超過 128 MB**：SSR 請求後實例化解析器即 135.2 MiB；100 KB 檔案的 AST 存活時 147.7 MiB；369 KB 檔案 181.7 MiB（GC 後的 V8 heap ＋ ArrayBuffer ＋ Wasm `byteLength`）。128 MB 減去 Morph 的 72.8 MiB 只剩約 49 MiB，少於 61.3 MiB 的 Wasm 底線。本機 workerd 不強制上限 | M1 報告「結論」、§2.2（3 次；`full` 序列另 5 次） |
+| 同一個 100 KB 檔案連續解析 200 次，GC 後的 isolate 與 Wasm 不再成長；但一個請求中連續解析 20 次時，GC 前累積約 40 MiB 垃圾。Wasm 線性記憶體隨解析過的最大檔案成長（369 KB 後 79.9 MiB），不縮回 | M1 報告 §2.3、§2.4（5 次） |
+| 丟棄解析器實例（`reset`）並強制完整 GC 後，workerd 程序的位址空間不減少：每建立一個實例 +4 GiB，5 次重建 +20 GiB。舊實例的記憶體是否釋放沒有得到確認 | M1 報告 §2.5（`parser-only` 3 次、`morph-parser` 5 次） |
+| 加入解析器後 bundle 為 27.9 MiB（Morph 21.3 MiB ＋ 解析器 6.5 MiB，wrangler dry-run 的 Total Upload），在 64 MiB 未壓縮上限內；本機 `wrangler check startup` 的 global scope CPU，Morph 155–259 ms、加上解析器 128–262 ms，差異小於次數之間的變動 | M1 報告 §2.6（大小 1 次，啟動各 5 次） |
 | Astro 7.3.5 本身依賴 `@astrojs/compiler-rs ^0.5.0`；`@astrojs/compiler`（Go → Wasm）是 Astro 6 以前的編譯器                                                                                                                                                                                                                                                                                                                                                                                                                                 | `node_modules/astro/package.json`；R1 報告「結論」、§3.3                                                                                   |
 | `.astro` 修改會整頁重新載入；`.tsx` island 修改是局部 HMR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 預覽報告 Run A／B                                                                                                                          |
 | `.astro` 頁面沒有實例識別，`request-structure` 回報 `nodes: []`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 預覽報告 B5                                                                                                                                |
@@ -71,8 +81,8 @@ Astro 與它不同的地方。
 | 內容鍵對應：依 Astro 的路由、`trailingSlash`、`build.format` 產生，與 Core 執行期用同一個正規化函式（0.4 第 3 項）                                                                                             | 4.3 | A3、A4 |
 | adapter 相容性檢查：入口存在、包裝恰好命中一次，否則 `ASTRO_ADAPTER_INCOMPATIBLE`（0.4 第 4 項）                                                                                                               | 4.3 | A3、A4 |
 | 建置期 inspector port：找官方停用方式，或證明殘餘風險可接受（0.4 第 2 項）                                                                                                                                     | 7.2 | A2、A4 |
-| `.astro` 解析器（compiler-rs + 官方 `wasm32-wasi` binding）放得進 Morph 主 Worker 的 128 MB isolate。解析器本身在 workerd 中的可行性與位置精度已由 R1 確認（0.1）；**與 Morph 主 Worker 合併後的記憶體沒有量** | 3.1 | M1     |
-| 實例識別在工作區規劃時改寫文字（解析器這一側由 R1 確認，仍依賴 M1）                                                                                                                                            | 3.3 | M1、A7 |
+| ~~`.astro` 解析器（compiler-rs + 官方 `wasm32-wasi` binding）放得進 Morph 主 Worker 的 128 MB isolate~~ **M1 已量：放不進**（0.1）。解析器在哪裡執行，改由 0.3 的選項決定 | 3.1 | M1（不通過） |
+| 實例識別在工作區規劃時改寫文字（解析器這一側由 R1 確認；解析器的執行位置依 0.3 的決定）                                                                                                                       | 3.3 | 0.3、A7 |
 | Live Preview 沿用 Start 的預覽 Worker entry，包住 Astro 入口，而且不改變 Astro 的回應行為                                                                                                                      | 2.5 | R3、A6 |
 | `imageService: "compile"` 的建置期圖片處理在 Morph 建置中實際執行（產物不含 `SESSION`、`IMAGES` 已是事實）                                                                                                     | 5.2 | A4     |
 | 整頁重新載入後恢復選取與捲動                                                                                                                                                                                   | 6.1 | A6     |
@@ -82,9 +92,13 @@ Astro 與它不同的地方。
 
 - 第一版不提供 Sessions：要求作者設定 `session: false`，還是等基礎設施對應提供每個商店自己的 KV（9.2）。
 - 圖片：第一版要求 `imageService: "passthrough"` 或 `"compile"`，還是對應 Cloudflare Images。
-- M1 量出解析器放不進 Morph 主 Worker 時：以 service binding 把解析放到另一個 Worker（新的部署單位，需要使用者
-  核准），或自行重建不含執行緒的 compiler-rs（3.1）。兩者都不行時，`.astro` 的 Design 是否延後，只開放 Code 與
-  Live Preview。
+- **（M1 已量出放不進，現在需要決定；2026-10-08）** 解析器在哪裡執行（3.1）：
+  1. 以 service binding 把解析放到另一個 Worker 的 isolate（新的部署單位，需要使用者核准）。解析器單獨一個
+     isolate 實測 63.8 MiB（實例化）、75.2 MiB（100 KB 的 AST 存活時）、106.8 MiB（369 KB）；AST 傳回 Morph 的
+     序列化與傳輸成本沒有量；
+  2. 自行重建不含執行緒的 compiler-rs WASI，去掉 shared memory 與 61 MiB 的初始記憶體。Morph 處理過 SSR 請求後
+     剩下約 49 MiB，重建後的需求沒有量，放不放得下未知；
+  3. 兩者都不行時，`.astro` 的 Design 延後，只開放 Code 與 Live Preview。
 - 是否向 Astro 上游提出「預先渲染請求可以帶標頭」的選項。
 - `output: "static"` 的網站要不要支援。
 - 預先渲染頁看到的多餘標頭（`content-length`、`content-type: application/json`、`user-agent: node`）要不要由包裝
@@ -137,7 +151,8 @@ Astro 與它不同的地方。
    以及 `.prerender/`。
 6. **`.astro` 解析器選定 `@astrojs/compiler-rs` 加官方 `wasm32-wasi` binding，實例識別比照 TSX 在工作區規劃時
    改寫文字**（理由見 3.3）。R1 證明這個解析器能在 workerd 中執行且位置精準，`@astrojs/compiler`（Go）被否決。
-   但它放不放得進 Morph 主 Worker 的 128 MB isolate **沒有量**，A1、A2 之前先由 M1 量測（8.2）。
+   **M1（2026-10-08）量出它放不進 Morph 主 Worker 的 128 MB isolate**：Morph 處理過 SSR 請求後本身就有
+   72.8 MiB，加上解析器實例化即 135.2 MiB。解析器在哪裡執行由使用者在 0.3 的選項中決定，A1 之前停下（8.2）。
 7. **Live Preview 中的 `.astro` 修改與內容更新一律重新載入整頁**（第一版）。bridge 的路由能力改由
    adapter 宣告，不再自己探測 `window.__morphPreviewRouter`。
 8. **預覽橋接注入與外連隔離是兩件事。** 安全邊界是容器的網路政策；Worker entry 中的外連檢查只負責提供
@@ -378,9 +393,14 @@ OCC）→ 該實例更新、其他實例不變**。
   2. **記憶體底線、檔案大小上限、trap 後重建實例。** Wasm 模組最少約 61 MiB 線性記憶體（981 頁），只增不減；
      官方載入器要求的 `initial: 4000` 頁（250 MiB）本身就超過 128 MB，必須改用模組自己的最小值。一般檔案
      （≤ 37 KB）實測約 64 MiB 加 AST 約 3 MiB；369 KB 檔案為 85 MiB 加 26 MiB。因此：
-     - 設定檔案大小上限，超過的檔案在 Design 中唯讀（「由程式碼控制」）。從 100 KB 開始，M1 量測後調整；
+     - 設定檔案大小上限，超過的檔案在 Design 中唯讀（「由程式碼控制」）。從 100 KB 開始；M1 量出 100 KB 的檔案
+       讓 Wasm 成長到約 66 MiB、AST 在 JS 端約 6.6 MiB，369 KB 的檔案為 79.9 MiB 與約 24 MiB（M1 報告 §2.2）。
+       上限的最終值要在 0.3 決定解析器的執行位置之後，依那個 isolate 的預算訂；
      - 解析發生 trap（stack overflow），或 `memory.buffer.byteLength` 超過門檻時，丟棄實例重新建立（實例化約
        20–50 ms）。連續 50 次 stack overflow 後線性記憶體從 61.4 MiB 增加到 77.3 MiB，不會縮回。
+       **【待驗】丟棄的實例是否真的釋放記憶體**：M1 中丟棄實例並強制完整 GC 後，workerd 程序的位址空間沒有減少
+       （每建立一個實例 +4 GiB），舊實例可能仍然存活（M1 報告 §2.5）。在確認之前，「重建實例」不能當成回收
+       記憶體的手段；要確認釋放，或改成讓 isolate 本身被回收。
   3. **輸入先 `toWellFormed()`。** 含孤立 surrogate 的字串在 Wasm 版與原生版結果不同；先轉換後一致。
      從 UTF-8 檔案解碼的字串不會有孤立 surrogate，所以這是低成本的防禦。
   4. **巢狀深度上限。** 約 3000 層以上的巢狀會丟出可捕捉的 `RangeError: Maximum call stack size exceeded`
@@ -388,13 +408,30 @@ OCC）→ 該實例更新、其他實例不變**。
   5. **安裝。** `@astrojs/compiler-binding-wasm32-wasi` 宣告 `"cpu": ["wasm32"]`，在 x64 上 npm 以
      `EBADPLATFORM` 拒絕。Morph 要在 pnpm 設定 `supportedArchitectures`（cpu 加入 `wasm32`），不能靠強制安裝。
      R1 只確認了 npm 會拒絕，沒有在 Morph 的 pnpm workspace 中試。
-- **【待驗】Morph 主 Worker 的記憶體預算（閘門 M1）。** R1 只在獨立的 Worker 中量測。解析器與 Morph 主 Worker
-  共用一個 isolate 時，61 MiB 底線加 AST，再加上 Morph Worker 本身的記憶體，是否放得進 128 MB（每個 isolate 的
-  上限，包含 Wasm），**沒有量**；6.7 MB bundle（gzip 約 1.7 MB）對啟動時間（1 秒上限）的影響也沒有量。
-  **這要在 A1、A2 之前量測**（8.2）。放不下時的選項，屬於 0.3 的待決事項：
+- **【事實】Morph 主 Worker 的記憶體預算（閘門 M1，2026-10-08）：放不進。** M1 把 compiler-rs、`wasm32-wasi`
+  binding 與 R1 的載入器加進 Morph `main` @ `6ea0886` 未修改的 build，在本機 `wrangler dev`（workerd）中以 CDP
+  量 isolate（GC 後的 V8 heap ＋ ArrayBuffer ＋ Wasm `memory.buffer.byteLength`），每個條件 3–5 次，次數之間差距
+  小於 0.1 MiB（M1 報告）：
+
+  | 狀態                                     | isolate   |
+  | ---------------------------------------- | --------- |
+  | Morph，剛載入，尚無請求                  | 52.4 MiB  |
+  | Morph，處理過公開 SSR 請求               | 72.8 MiB  |
+  | Morph，680 個伺服器 chunk 全部 evaluate  | 84.5 MiB  |
+  | Morph（SSR 後）＋ 解析器實例化           | 135.2 MiB |
+  | 同上，100 KB 檔案的 AST 存活時           | 147.7 MiB |
+  | 同上，369 KB 檔案的 AST 存活時           | 181.7 MiB |
+
+  128 MB 是 122.1 MiB；減去 Morph 處理過請求後的 72.8 MiB，只剩約 49 MiB，少於 Wasm 的 61.3 MiB 底線，還沒有解析
+  任何檔案。bundle 從 21.3 MiB 增加到 27.9 MiB（64 MiB 上限內）；本機啟動時間看不出差異（global scope CPU
+  128–262 ms 對 155–259 ms，各 5 次），解析器不在 global scope 實例化。
+  沒有量的部分（M1 報告 §4）：正式 Cloudflare 環境如何計算與強制 128 MB（本機 workerd 不強制）；登入後的編輯器
+  與 Design 請求（Theme 工作區也在同一個 isolate 中，只會更高）；並行請求；真實的大型 `.astro` 語料（大檔是合成的）。
+  放不下時的選項，屬於 0.3 的待決事項，**現在需要使用者決定**：
   - 以 service binding 把解析放到另一個 Worker 的 isolate：這是新的部署單位，需要使用者核准；
-  - 自行從原始碼重建不含執行緒的 compiler-rs WASI，去掉 shared memory 與 61 MiB 的初始記憶體。
-- R1 沒有驗證的項目：正式 Cloudflare 環境（128 MB 上限、CPU 時間、Wasm 編譯快取）、同一個 isolate 中的並行解析、
+  - 自行從原始碼重建不含執行緒的 compiler-rs WASI，去掉 shared memory 與 61 MiB 的初始記憶體；
+  - 兩者都不行時，`.astro` 的 Design 延後（下面的第 3 個候選）。
+- R1、M1 都沒有驗證的項目：正式 Cloudflare 環境（128 MB 上限、CPU 時間、Wasm 編譯快取）、同一個 isolate 中的並行解析、
   以這些位置產生 patch 再解析的往返（3.5）、props 型別推斷（3.4）。詳見 R1 報告 §6。
 - Morph 解析失敗、超過大小或深度上限的檔案，在 Design 中只能唯讀（「由程式碼控制」），Code 照常可以編輯；
   建置不受影響。
@@ -415,15 +452,15 @@ OCC）→ 該實例更新、其他實例不變**。
   宣告過的 prop 時，就是欄位；迴圈中依 key 表達式決定 item；section 的邊界放在元件的呼叫處。
   被呼叫的 `.astro` 元件不知道自己是哪一個實例，所以由呼叫處以 TSX 現有的同一套 wrapper 規則
   （`display: contents` 及該檔案註解列出的間距注意事項）標記。
-- 【待驗，依賴 M1】**注入時機：工作區規劃時改寫文字，與 TSX 相同；不採用預覽報告第 5 節第 2 點的
-  Vite `load` plugin。** R1 已證明解析器這一側成立（3.1），不需要退回容器內的 Vite plugin；剩下的前提是
-  M1 的記憶體預算。理由：
+- 【待驗，依賴 0.3 的決定】**注入時機：工作區規劃時改寫文字，與 TSX 相同；不採用預覽報告第 5 節第 2 點的
+  Vite `load` plugin。** R1 已證明解析器這一側成立（3.1），不需要退回容器內的 Vite plugin。M1 量出解析器放不進
+  Morph 主 Worker（3.1），所以剩下的前提是 0.3 選定的執行位置。理由：
   1. 實例識別必須與 Design 儲存時的分析完全一致。在 Morph 中執行，保證程式碼與解析器版本相同；
      在容器內執行的 plugin 做不到這點。
   2. Live Preview 的檔案同步本來就在 Morph 端呼叫 `prepareSourcesForLivePreview`，`.astro` 走同一處，
      不必額外處理 Astro 編譯器 `enforce: "pre"` 的排序問題。
   3. 預覽報告也指出兩套 TSX 注入不能並存。TSX 繼續使用規劃時改寫，spike 中的 TSX transform 不帶進產品。
-- 代價：前提是 3.1 的解析器能在 Morph Worker 中執行。M1 放不下時，若改用另一個 Worker（service binding），
+- 代價：前提是 3.1 的解析器能在 Morph 控制的 Worker 中執行。M1 已量出放不進主 Worker；若改用另一個 Worker（service binding），
   解析與改寫仍由 Morph 的程式碼與同一版解析器執行，上面的理由 1 仍然成立；只有退回第 3 個候選方案時，
   這一節才要重新設計。
 - 3.5 的改寫可以直接使用 compiler-rs 給的屬性值範圍（`Literal`、`JSXExpressionContainer`），不必自己掃描原始文字
@@ -835,23 +872,25 @@ R1–R3 有任一項的結論是「不可行」，就先更新本文件，再談
 - **R2：完成。** 4.3 的三項前提在本機 miniflare 成立，`session: false` 加 `imageService` 的產物不含 `SESSION`、
   `IMAGES`。本文件依 R2 報告 §5 修正了九處，並記錄了 0.4 的決定。未涵蓋：Sandbox 容器，由 A2 驗證。
 - **R3：尚未進行。**
+- **M1（8.2 的閘門，以 8.1 的研究條件在 G0 之前先量，2026-10-08）：不通過。** 解析器放不進 Morph 主 Worker 的
+  isolate（3.1）。量測工具在 Morph repo 之外，沒有接進 `main`，也沒有改變產品行為。
 
-R1、R2 的證據（`~/projects/astro-spike/r1-parser/`、`~/projects/astro-spike/r2-prerender/`）保留到本文件已記錄結論，
-**而且** A2 的 Sandbox 驗證完成為止。
+R1、R2、M1 的證據（`~/projects/astro-spike/r1-parser/`、`~/projects/astro-spike/r2-prerender/`、
+`~/projects/astro-spike/m1-morph-memory/`）保留到本文件已記錄結論，**而且** A2 的 Sandbox 驗證完成為止。
 
 ### 8.2 接入步驟
 
 | 步驟   | 內容                                                                                                                                                                                    | 閘門（通過才能進入下一步）                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **G0** | 原生 Start 內容配對驗收（不屬於 Astro，但是 Astro 接入 `main` 與開放的前提；不阻擋 8.1 的研究）                                                                                         | 真實容器中：（1）Build Preview 顯示封存的草稿；（2）發布重用預覽過的 build，產物雜湊相同；（3）build 之後草稿又被修改，發布時重新建置，或被 `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕；（4）兩個並行的建置或發布不會配錯內容，OCC 拒絕落後的一方；（5）回滾後店面的 build 與內容一起回到舊版。本文件撰寫時（`0f832bd`），`e2e/native-publish-acceptance.spec.ts` 只涵蓋了不讀內容的路由的發布與回滾；（1）、（3）、（4）在 `e2e/` 中找不到對應的真實容器驗收                                         |
-| M1     | Morph 主 Worker 的解析器記憶體預算（3.1）：把 compiler-rs 加 `wasm32-wasi` binding 與 Morph 自己的載入器放進 Morph 主 Worker 的 bundle，量測                                            | 量到並記錄：合併後的 bundle 大小與啟動時間（1 秒上限內）；Morph Worker 本身的記憶體加上 61 MiB 底線與檔案大小上限內的 AST，是否在 128 MB isolate 內；trap 後重建實例的行為。放得下才進入 A1、A2；放不下時停下，由使用者在 0.3 的選項中決定（另一個 Worker 是新的部署單位，需要核准）                                                                                                                                                                                                             |
+| M1     | Morph 主 Worker 的解析器記憶體預算（3.1）：把 compiler-rs 加 `wasm32-wasi` binding 與 Morph 自己的載入器放進 Morph 主 Worker 的 bundle，量測                                            | 量到並記錄：合併後的 bundle 大小與啟動時間（1 秒上限內）；Morph Worker 本身的記憶體加上 61 MiB 底線與檔案大小上限內的 AST，是否在 128 MB isolate 內；trap 後重建實例的行為。放得下才進入 A1、A2；放不下時停下，由使用者在 0.3 的選項中決定（另一個 Worker 是新的部署單位，需要核准）。**結果（2026-10-08）：不通過**，Morph 處理過 SSR 請求後 72.8 MiB，加上解析器即 135.2 MiB（3.1、M1 報告）；停在這裡，等 0.3 的決定 |
 | A1     | 框架身分：`ThemeFrameworkId` 加入 `astro`、build 輸入記錄框架、`nativeBuildResult` 與預覽 runtime 依記錄選 adapter、Start 原生建置的共用部分搬到共用模組。只有 Start 一個實作，行為不變 | 既有測試、Start 的 E2E 不變；新增測試：build 輸入的框架被改動時 `inputHash` 也會改變；`theme-framework.test.ts` 的介面規則仍然成立                                                                                                                                                                                                                                                                                                                                                               |
 | A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間；Morph 鎖定的 compiler-rs 與工具鏈中 `astro` 依賴的版本相容。**真實 Sandbox 中**：預先渲染 Worker 連得到建置程序的 loopback（4.3 前提 3）；R2 的失敗情境（無快照、500、連線被拒、拿掉標頭送達，各自在 fail-fast 與只靠建置後檢查下）結果與本機相同；7.2 的監聽 socket 清單                                                                                                          |
 | A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`）                                                                            | R2 已在本機證明可行，A2 已在 Sandbox 確認 loopback；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值，fail-fast 與建置後檢查各自有效；記錄以每次建置的 nonce 綁定；`ASTRO_ADAPTER_INCOMPATIBLE` 與「stamp 數不等於預先渲染頁數」各有會觸發它的測試；4.3 的路徑測試清單全部通過；失敗的建置沒有產物，成功的產物中沒有包裝標記、`.prerender/`、`.morph/` 診斷檔。**任一項不成立就停止**，回到設計層 |
 | A4     | Astro 原生建置（本機建置程式，再到 Sandbox 建置程式）：包裝設定檔、匯入防護、產物整理、5.2 的規則、manifest、compiler 身分                                                              | 官方 Astro Cloudflare 範例以 fixture 原樣保存（`fixtures/astro/<example>/`，附 `SOURCE.json` 與逐檔雜湊，作法同 tanstack fixture），能建置的部分建置成功，不能的以 `KNOWN GAP` 斷言（例如 `SESSION`）；最簡單的 Astro Theme 加上 `session: false` 與 `imageService` 後建置成功，5.2 每一條拒絕規則各有一個會觸發它的測試；匯入防護放行專案別名與 Astro 虛擬模組，拒絕未核准的套件與工作區外的檔案                                                                                                |
 | A5     | Astro 的 Build Preview、發布、回滾，跑 G0 同一組驗收                                                                                                                                    | 真實容器中 G0 的五項對 Astro 全部通過；`SESSION` 的處理方式已決定並實作（基礎設施對應，或明確的替代方案）                                                                                                                                                                                                                                                                                                                                                                                        |
 | A6     | Astro Live Preview（本機 sidecar，再到容器）：啟動程式、預覽包裝設定、Worker entry、無 router 的 client module、整頁重新載入的內容更新與選取恢復                                        | 經過真實的 `preview.tsx` 與 `/applyFiles`：`.astro` 修改的 `applied` → 重新 `ready` 流程正確，選取能恢復；2.5 表中的回應行為（串流、重新導向、Cookie、錯誤頁、HMR）在真實路徑上不變；第 7 節的安全探測（沒有 `.wrangler/state`；列出預覽容器實際的監聽 socket，每一個都有已知用途，標準同 7.2；容器政策記錄顯示外連被拒）；冷啟動時間與 Start 比較                                                                                                                                               |
-| A7     | `.astro` 檔案語言：能在 Morph Worker 中執行的解析器、來源位置、實例識別、props、改寫                                                                                                    | R1 已選定解析器，M1 確認記憶體預算；3.1 的五項採用條件都已實作並各有測試；`request-structure` 的 `nodes` 不為空；完整 Design 鏈（選取實例 → 欄位 → 文件儲存（權限、文件版本、OCC）→ 該實例更新、其他實例不變），同一元件出現兩次各自編輯                                                                                                                                                                                                                                                         |
+| A7     | `.astro` 檔案語言：能在 Morph Worker 中執行的解析器、來源位置、實例識別、props、改寫                                                                                                    | R1 已選定解析器；解析器的執行位置已依 0.3 決定，而且該 isolate 的記憶體預算已量測；3.1 的五項採用條件都已實作並各有測試；`request-structure` 的 `nodes` 不為空；完整 Design 鏈（選取實例 → 欄位 → 文件儲存（權限、文件版本、OCC）→ 該實例更新、其他實例不變），同一元件出現兩次各自編輯                                                                                                                                                                                                                                                         |
 | A8     | 認證                                                                                                                                                                                    | A4–A7 通過，ISR／SSG 經 Core 的快取行為驗收（multi-runtime 計畫的規則），該「Astro × 版本」才轉為 Certified；在那之前是 Unverified，可以 Live Preview 與 Build Preview，不能發布                                                                                                                                                                                                                                                                                                                 |
 
 順序的理由：先處理資料完整性（內容配對、發布、回滾，A3–A5），再處理編輯體驗（A6–A7）。在 A3 之前就做
@@ -859,7 +898,7 @@ Live Preview，可能做完才發現 Astro 的預先渲染沒辦法安全地讀�
 
 **G0 之後的順序（2026-10-07 決定）：G0 → M1 → A1 → A2。**
 
-1. M1：量測 Morph Worker 給解析器的記憶體預算；
+1. M1：量測 Morph Worker 給解析器的記憶體預算。**已量（2026-10-08）：不通過**，A1 之前先由使用者在 0.3 的選項中決定；
 2. A1：框架身分改由 build 記錄（上表），仍在 A2 之前；
 3. A2，包括在真實 Sandbox 中驗證建置容器的 loopback 可達性，以及 R2 的同一組失敗情境；
 4. R1、R2 的證據留在 `~/projects/astro-spike`，直到本文件記錄了結論，而且第 3 步的 Sandbox 驗證完成。
@@ -887,18 +926,19 @@ Live Preview，可能做完才發現 Astro 的預先渲染沒辦法安全地讀�
 - 包裝看不見的外連（`connect()` 等）；「回應無法解析」（`unparseable`）的分支沒有對應情境。
 - `imageService: "compile"` 的建置期圖片處理（R2 的 Theme 沒有使用圖片，A4）。
 - 2.5 的前提：Astro dev 的請求是否經過 wrangler `main`；包裝後串流、重新導向、Cookie、錯誤頁、HMR 是否不變（R3）。
-- 解析器與 Morph 主 Worker 合併後的記憶體、bundle 大小與啟動時間（M1）；正式 Cloudflare 環境中的 128 MB 上限、
-  CPU 時間與 Wasm 編譯快取；同一個 isolate 中的並行解析；以解析位置產生 patch 再解析的往返；pnpm
-  `supportedArchitectures` 在 Morph workspace 中的實際效果（R1 報告 §6）。
+- 正式 Cloudflare 環境中的 128 MB 如何計算與強制（M1 只在本機 workerd 量，本機不強制）、CPU 時間與 Wasm 編譯快取；
+  登入後的編輯器與 Design 請求時 Morph isolate 的記憶體（M1 只量了公開的 SSR 請求）；同一個 isolate 中的並行解析；
+  丟棄的解析器實例是否釋放記憶體（M1 報告 §2.5）；以解析位置產生 patch 再解析的往返；pnpm
+  `supportedArchitectures` 在 Morph workspace 中的實際效果（R1 報告 §6、M1 報告 §4）。
 - 不改作者設定、又能停用建置期 inspector port 的官方方式（7.2）。
 - Morph 的 dependency enforcer、`themePreviewContentPlugin`、SVG 隔離、root-public plugin 在 Astro 下的行為。
 - `loadWranglerEnv` 讀取的檔案；Astro 遙測在無網路環境中的行為。
 - `assertThemePrerenderArtifacts` 的路徑規則與 Astro `build.format` 的對應（與 4.3 的內容鍵對應合併處理）。
 - Astro Worker（`no_bundle`、`rules`、`nodejs_als`）在 Morph 部署規劃與 Build Preview 執行器下能否正常執行。
 
-已由 R1、R2 回答、移到【事實】的項目：`session: false` 與 `imageService` 後產物不含 `SESSION`、`IMAGES`；
+已由 R1、R2、M1 回答、移到【事實】的項目：`session: false` 與 `imageService` 後產物不含 `SESSION`、`IMAGES`；
 `@astrojs/compiler-rs` 有能在 workerd 中執行的 Wasm binding（官方 `wasm32-wasi`）；`@astrojs/compiler`（Go）的
-位置精準度（有偏差，已否決）。
+位置精準度（有偏差，已否決）；解析器與 Morph 主 Worker 合併後的記憶體（放不進）、bundle 大小與本機啟動時間。
 
 ### 9.2 未決事項（需要決定）
 
@@ -908,8 +948,9 @@ Live Preview，可能做完才發現 Astro 的預先渲染沒辦法安全地讀�
 - Theme 程式自行使用的快取（Cache API 等）在回滾後的行為：要不要在執行期以 release 隔離 Theme Worker 的快取
   範圍。這不是 Astro 特有的問題，Start 也一樣。
 - 映像策略：一個映像多個工具鏈根目錄，或每個框架一個映像（A2 量測後決定）。
-- 解析器已選定（3.1）。M1 量出放不進 Morph 主 Worker 時：另一個 Worker（service binding，新的部署單位，需要
-  使用者核准）或自行重建不含執行緒的 compiler-rs；兩者都不行時 `.astro` Design 是否延後。
+- 解析器已選定（3.1）。**M1 已量出放不進 Morph 主 Worker（2026-10-08），需要決定**：另一個 Worker（service
+  binding，新的部署單位，需要使用者核准）或自行重建不含執行緒的 compiler-rs；兩者都不行時 `.astro` Design 是否
+  延後（0.3）。
 - 預先渲染頁看到的多餘標頭要不要由包裝清掉；`ORIGIN_MISSING` 是否要區分「伺服器不在」與「標頭沒送到」（0.3）。
 - 是否向 Astro 上游提出「預先渲染請求可以帶標頭」的選項。如果上游接受，4.3 的包裝可以移除。
 - 6.2 的「applied 帶寫入路徑」是否要做，以及 Vite payload 能不能提供觸發檔。
