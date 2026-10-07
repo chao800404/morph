@@ -65,9 +65,19 @@ describe("planNativeStartBuild", () => {
     const wrapper = byPath.get(NATIVE_WRAPPER_CONFIG_PATH)!;
     expect(wrapper).toContain('import themeConfig from "../vite.config.ts";');
     expect(wrapper).toContain("morph:native-import-guard");
-    // No content snapshot, so no frozen-content plugin and no content file.
-    expect(wrapper).not.toContain("morph:frozen-prerender-content");
-    expect(byPath.has(".morph-prerender-content.json")).toBe(false);
+    // No content snapshot: the content plugin is there all the same, and
+    // refuses — and records — every read, so a prerendered page cannot
+    // quietly fall back to component defaults.
+    expect(wrapper).toContain("morph:frozen-prerender-content");
+    expect(wrapper).toContain(".morph/prerender-refused-reads.ndjson");
+    expect(
+      JSON.parse(byPath.get(".morph-prerender-content.json")!),
+    ).toMatchObject({
+      content: {},
+      refusedAll: expect.stringContaining(
+        "NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT",
+      ),
+    });
     expect(byPath.get("wrangler.jsonc")).toBe(WRANGLER);
     expect(JSON.parse(byPath.get(NATIVE_WRANGLER_CONFIG_PATH)!)).toEqual({
       name: "shop",
@@ -86,17 +96,19 @@ describe("planNativeStartBuild", () => {
     ]);
   });
 
-  it("adds the frozen content, and only then, for a build that has it", () => {
-    const plan = planNativeStartBuild(project(), {
-      prerenderContent: '{"/":{"slots":{},"hiddenSlots":[]}}',
-    });
+  it("writes the build's sealed content for the prerender to read", () => {
+    const sealed = {
+      content: { "/": { slots: { hero: { title: "Sealed" } }, hiddenSlots: [] } },
+      unavailable: { "/blog": "SSG_CONTENT_TEMPLATE_IDENTITY_REQUIRED" },
+    };
+    const plan = planNativeStartBuild(project(), { prerenderContent: sealed });
     if (!plan.ok) throw new Error(plan.message);
     const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
     expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
       "morph:frozen-prerender-content",
     );
-    expect(byPath.get(".morph-prerender-content.json")).toBe(
-      '{"/":{"slots":{},"hiddenSlots":[]}}',
+    expect(JSON.parse(byPath.get(".morph-prerender-content.json")!)).toEqual(
+      sealed,
     );
   });
 
@@ -105,6 +117,8 @@ describe("planNativeStartBuild", () => {
       project({
         ".morph/vite.config.ts": "export default { plugins: [] };",
         ".morph-prerender-content.json": '{"forged":true}',
+        // Pre-seeding the record cannot decide a build either way.
+        ".morph/prerender-refused-reads.ndjson": "",
       }),
     );
     if (!plan.ok) throw new Error(plan.message);
@@ -112,7 +126,10 @@ describe("planNativeStartBuild", () => {
     expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
       "morph:native-import-guard",
     );
-    expect(byPath.has(".morph-prerender-content.json")).toBe(false);
+    expect(byPath.get(".morph-prerender-content.json")).not.toContain(
+      "forged",
+    );
+    expect(byPath.has(".morph/prerender-refused-reads.ndjson")).toBe(false);
   });
 
   it("removes editor markers from the built source, as Morph's own builds do", () => {

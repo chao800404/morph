@@ -1,5 +1,8 @@
 import type { Sandbox } from "@cloudflare/sandbox";
-import { createThemePrerenderContent } from "./theme-prerender-content";
+import {
+  createNativePrerenderContent,
+  createThemePrerenderContent,
+} from "./theme-prerender-content";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { themePublicTextMimeType } from "../theme-public-files";
 import {
@@ -887,14 +890,12 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
     const registry = buildThemeRouteRegistry(input.files);
     const routeRegistry = registry.valid ? registry : null;
-    const prerenderContent = routeRegistry
-      ? await createThemePrerenderContent(input.contentSnapshot, routeRegistry)
-      : undefined;
     const plan = themeFramework().build.native.plan(input.files, {
       allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-      ...(prerenderContent
-        ? { prerenderContent: JSON.stringify(prerenderContent) }
-        : {}),
+      prerenderContent: await createNativePrerenderContent(
+        input.contentSnapshot,
+        routeRegistry,
+      ),
     });
     if (!plan.ok) return fail("native-plan", plan.message);
     const [command, ...args] = plan.command;

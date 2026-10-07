@@ -48,6 +48,7 @@ import { nativeBuildResult } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
 import { themeFramework } from "../theme-framework";
 import {
+  createNativePrerenderContent,
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
 } from "./theme-prerender-content";
@@ -1038,15 +1039,13 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
     const registry = buildThemeRouteRegistry(input.files);
     const routeRegistry = registry.valid ? registry : null;
-    const prerenderContent = routeRegistry
-      ? await createThemePrerenderContent(input.contentSnapshot, routeRegistry)
-      : undefined;
     const native = themeFramework().build.native;
     const plan = native.plan(input.files, {
       allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-      ...(prerenderContent
-        ? { prerenderContent: JSON.stringify(prerenderContent) }
-        : {}),
+      prerenderContent: await createNativePrerenderContent(
+        input.contentSnapshot,
+        routeRegistry,
+      ),
     });
     if (!plan.ok) return fail("native-plan", plan.message);
 

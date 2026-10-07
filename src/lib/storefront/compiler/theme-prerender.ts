@@ -3,6 +3,19 @@ import { resolveStorefrontRenderPolicy } from "../../validations/storefront-rend
 import type { ThemeRouteRegistry } from "./theme-route-registry";
 import { frozenContentRoute } from "./theme-build-content-route";
 
+/** A route with one concrete URL that renders a page: what can be prerendered. */
+export function isStaticPageRoute(
+  route: ThemeRouteRegistry["routes"][number],
+): boolean {
+  return (
+    route.kind === "route" &&
+    !route.dynamic &&
+    !route.isServerOnly &&
+    !route.isPathless &&
+    route.routeType !== "layout"
+  );
+}
+
 export function assertThemePrerenderArtifacts(
   snapshot: ThemeBuildContentSnapshot | undefined,
   registry: ThemeRouteRegistry,
@@ -78,14 +91,7 @@ export function themePrerenderOptions(
   }
   const paths: string[] = [];
   for (const route of registry.routes) {
-    if (
-      route.kind !== "route" ||
-      route.dynamic ||
-      route.isServerOnly ||
-      route.isPathless ||
-      route.routeType === "layout"
-    )
-      continue;
+    if (!isStaticPageRoute(route)) continue;
     const resolved = resolveStorefrontRenderPolicy({
       website,
       page: overrides.get(route.path),

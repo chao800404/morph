@@ -1,4 +1,7 @@
-import { themePrerenderContentPluginSource } from "../compiler/theme-prerender-content";
+import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  themePrerenderContentPluginSource,
+} from "../compiler/theme-prerender-content";
 
 /**
  * The Vite config a native Start build runs with: the project's own, imported
@@ -11,10 +14,12 @@ import { themePrerenderContentPluginSource } from "../compiler/theme-prerender-c
  *   Morph generated; a native project brings its own aliases, so the text
  *   says nothing reliable about where an import lands. Bringing the platform
  *   build onto this rule is a later step.
- * - **The frozen-content plugin**, when the build has a content snapshot: the
- *   same one the platform build uses, active only in the Node preview server
- *   Start prerenders through, so prerendered pages read the build's content
- *   and nothing of it reaches the Worker.
+ * - **The frozen-content plugin**, the one the platform build uses, active
+ *   only in the Node preview server Start prerenders through, so prerendered
+ *   pages read the build's sealed content and nothing of it reaches the
+ *   Worker. Always present: a read it cannot answer — no snapshot, or a path
+ *   the snapshot cannot speak for — is recorded and fails the build
+ *   (theme-prerender-content.ts, `NativePrerenderContent`).
  *
  * Nothing here rewrites the project's files; the wrapper sits beside them in
  * `.morph/`, which is Morph's.
@@ -63,14 +68,13 @@ export function nativeImportGuardPluginSource(): string {
 export function nativeWrapperConfigSource(options: {
   themeConfigPath: string;
   allowedPackages: readonly string[];
-  withFrozenContent: boolean;
 }): string {
   const plugins = [
     nativeImportGuardPluginSource(),
     // Relative to the build's working directory, the workspace root.
-    ...(options.withFrozenContent
-      ? [themePrerenderContentPluginSource(".")]
-      : []),
+    themePrerenderContentPluginSource(".", {
+      refusedReadsPath: NATIVE_PRERENDER_REFUSED_READS_PATH,
+    }),
   ];
   const allowed = [...new Set(options.allowedPackages)].sort();
   return `// Written by Morph for this build. The project's own config is imported

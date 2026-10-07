@@ -1,4 +1,9 @@
-import { THEME_PRERENDER_CONTENT_FILE } from "../compiler/theme-prerender-content";
+import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
+  THEME_PRERENDER_CONTENT_FILE,
+  type NativePrerenderContent,
+} from "../compiler/theme-prerender-content";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox-dependencies.generated";
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
 import { parseJsonc } from "./jsonc";
@@ -15,8 +20,8 @@ import {
  * what differs by deployment target — the Wrangler config the Cloudflare
  * plugin reads, through `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` — builds
  * through a wrapper config that imports the project's own and adds only an
- * import guard and, for a build with content, the frozen-content prerender
- * plugin (tanstack-start-native-wrapper.ts), and normalises the output into
+ * import guard and the frozen-content prerender plugin
+ * (tanstack-start-native-wrapper.ts), and normalises the output into
  * the artifact layout the artifact store and release already read.
  *
  * Behind a server switch (theme-build-service.factory): a native build has no
@@ -101,8 +106,11 @@ export function planNativeStartBuild(
   options: Readonly<{
     /** Packages the build may import; the pinned toolchain when absent. */
     allowedPackages?: readonly string[];
-    /** The build's frozen content by route, serialized (theme-prerender-content). */
-    prerenderContent?: string;
+    /**
+     * What the prerender may read (theme-prerender-content); absent, every
+     * content read is refused, as for a build with no sealed content.
+     */
+    prerenderContent?: NativePrerenderContent;
   }> = {},
 ): NativeStartBuildPlan {
   const byPath = new Map(files.map((file) => [file.path, file.content]));
@@ -169,6 +177,7 @@ export function planNativeStartBuild(
     NATIVE_WRANGLER_CONFIG_PATH,
     NATIVE_WRAPPER_CONFIG_PATH,
     THEME_PRERENDER_CONTENT_FILE,
+    NATIVE_PRERENDER_REFUSED_READS_PATH,
   ]);
   const workspaceFiles: SourceFile[] = stripped.files.filter(
     (file) => !morphOwned.has(file.path),
@@ -182,15 +191,14 @@ export function planNativeStartBuild(
     content: nativeWrapperConfigSource({
       themeConfigPath: viteConfigs[0]!,
       allowedPackages: options.allowedPackages ?? nativeAllowedPackages(),
-      withFrozenContent: options.prerenderContent !== undefined,
     }),
   });
-  if (options.prerenderContent !== undefined) {
-    workspaceFiles.push({
-      path: THEME_PRERENDER_CONTENT_FILE,
-      content: options.prerenderContent,
-    });
-  }
+  workspaceFiles.push({
+    path: THEME_PRERENDER_CONTENT_FILE,
+    content: JSON.stringify(
+      options.prerenderContent ?? NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
+    ),
+  });
 
   return {
     ok: true,

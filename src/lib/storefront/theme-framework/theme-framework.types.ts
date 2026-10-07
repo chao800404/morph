@@ -1,4 +1,5 @@
 import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dto";
+import type { NativePrerenderContent } from "../compiler/theme-prerender-content";
 import type { ThemeRouteRegistry } from "../compiler/theme-route-registry";
 import type {
   NativeStartArtifact,
@@ -75,7 +76,7 @@ export type ThemeFrameworkAdapter = Readonly<{
         files: readonly Readonly<{ path: string; content: string }>[],
         options?: Readonly<{
           allowedPackages?: readonly string[];
-          prerenderContent?: string;
+          prerenderContent?: NativePrerenderContent;
         }>,
       ): NativeStartBuildPlan;
       collect(
