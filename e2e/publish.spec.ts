@@ -451,11 +451,32 @@ test.describe("publish loop", () => {
       // The form opens over the Assets list, which has its own Create
       // menu and drop zone: everything below is looked for inside it.
       const createForm = assets.getByLabel("Create Asset");
-      await createForm.locator('input[type="file"]').setInputFiles({
+      const fileInput = createForm.locator('input[type="file"]');
+      // The input is server-rendered, so it is there before the form's
+      // chunks have loaded; a file chosen then has no change handler to
+      // receive it, and Create submits nothing. React claiming the input is
+      // the signal that its handler is attached.
+      await expect
+        .poll(
+          () =>
+            fileInput.evaluate((input) =>
+              Object.keys(input).some((key) =>
+                key.startsWith("__reactProps$"),
+              ),
+            ),
+          { timeout: 45_000 },
+        )
+        .toBe(true);
+      await fileInput.setInputFiles({
         name: `${libraryName}.png`,
         mimeType: "image/png",
         buffer: libraryPng,
       });
+      // The form lists the chosen file before it is sent, and only that one.
+      await expect(
+        createForm.getByRole("img", { name: `${libraryName}.png` }),
+      ).toHaveCount(1);
+      await expect(createForm.getByRole("img")).toHaveCount(1);
       // By keyboard: the dev server's TanStack Devtools button sits over the
       // form's bottom-right corner, where Create is, and takes the click.
       await createForm
