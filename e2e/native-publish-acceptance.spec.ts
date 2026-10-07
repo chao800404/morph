@@ -15,6 +15,8 @@ import {
   latestRelease,
   openEditor,
   openPublish,
+  liveSiteHost,
+  primaryDomain,
   publishShowingRelease,
   savedField,
   serverFn,
@@ -288,7 +290,9 @@ test.describe("a native Start build, from Code to a rolled-back storefront", () 
     await expect(frame).toBeHidden({ timeout: 30_000 });
 
     // 3. Published, reusing that build. The release it shows, and the
-    //    storefront, carry v1 and A. No domain yet, so no live address.
+    //    storefront, carry v1 and A. The live address offered is the
+    //    store's primary domain, or none without one; this spec has not
+    //    connected its own yet.
     const shown1 = await publishShowingRelease(page);
     expect(posts.build, "publish reuses the previewed build").toBe(1);
     await expectServed(shown1.fetch, {
@@ -296,7 +300,7 @@ test.describe("a native Start build, from Code to a rolled-back storefront", () 
       content: contentA,
       absent: [],
     });
-    expect(shown1.liveSite).toBeNull();
+    expect(liveSiteHost(shown1)).toBe(await primaryDomain(page));
     await shown1.close();
     const release1 = await latestRelease(page, scope!);
     // Its static page read the content while prerendering, so the build was
@@ -415,7 +419,11 @@ test.describe("a native Start build, from Code to a rolled-back storefront", () 
       content: contentB,
       absent: [contentA],
     });
-    expect(new URL(shown2.liveSite!).hostname).toBe(HOST);
+    //    A domain is connected by now, so a live address is offered, at
+    //    the primary one.
+    const primary2 = await primaryDomain(page);
+    expect(primary2).not.toBeNull();
+    expect(liveSiteHost(shown2)).toBe(primary2);
     await shown2.close();
     const release2 = await latestRelease(page, scope!);
     expect(release2).not.toBe(release1);
