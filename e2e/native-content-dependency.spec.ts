@@ -13,6 +13,7 @@ import {
   latestRelease,
   openEditor,
   publish,
+  publishShowingRelease,
   savedField,
   serverFn,
   serverFnPaths,
@@ -39,7 +40,8 @@ import {
  * here, in real containers, against D1:
  *
  * 1. after a reload, an SSR-only content edit is published without a build,
- *    and the storefront shows it;
+ *    and the storefront shows it, as does the release preview the publish
+ *    opens: the release's content, not the content build 1 was sealed with;
  * 2. rolling that content-only release back restores the earlier content;
  * 3. a build whose dependency is unknown (an older build) is held to its
  *    seal: a publish naming it with other content is refused, and the
@@ -103,7 +105,11 @@ export const Route = createFileRoute(${JSON.stringify(ROUTE)})({
   },
 });
 `;
-const OWN_PATHS = ["vite.config.ts", "wrangler.jsonc", `src/routes${ROUTE}.tsx`];
+const OWN_PATHS = [
+  "vite.config.ts",
+  "wrangler.jsonc",
+  `src/routes${ROUTE}.tsx`,
+];
 
 /** The route and the content endpoint carry `content`, and nothing in `absent`. */
 async function expectServed(
@@ -196,17 +202,29 @@ test.describe("content-only publishing on a build proven independent of content"
     await openEditor(page);
     await editHero(page, contentB);
     const buildsBeforeB = posts.build;
-    await publish(page);
+    //    The preview it opens is the release's: B, though build 1 was sealed
+    //    with A.
+    const shown = await publishShowingRelease(page);
     expect(posts.build, "a content-only publish does not build").toBe(
       buildsBeforeB,
     );
+    await expectServed(shown.fetch, {
+      code,
+      content: contentB,
+      absent: [contentA],
+    });
+    await shown.close();
     const release2 = await latestRelease(page, scope!);
     expect(release2).not.toBe(release1);
     const build2 = await releaseBuild(release2);
     expect(build2.buildId).toBe(build1.buildId);
     expect(build2.releaseContent).not.toBe(build1.releaseContent);
     await serveActiveRelease(contentB, release2, origin);
-    await expectServed(storefront, { code, content: contentB, absent: [contentA] });
+    await expectServed(storefront, {
+      code,
+      content: contentB,
+      absent: [contentA],
+    });
 
     // 2. Rolled back to release 1: the same build, and A's content again.
     const rolledBack = (await serverFn(
@@ -221,7 +239,11 @@ test.describe("content-only publishing on a build proven independent of content"
     )) as { success: boolean; message?: string };
     expect(rolledBack.success, rolledBack.message).toBe(true);
     await serveActiveRelease(contentA, release1, origin);
-    await expectServed(storefront, { code, content: contentA, absent: [contentB] });
+    await expectServed(storefront, {
+      code,
+      content: contentA,
+      absent: [contentB],
+    });
 
     // 3. Build 1 as an older build would be: its dependency unknown. The
     //    draft (B) differs from its seal (A).

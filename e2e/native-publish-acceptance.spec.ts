@@ -15,7 +15,7 @@ import {
   latestRelease,
   openEditor,
   openPublish,
-  publish,
+  publishShowingRelease,
   savedField,
   serverFn,
   serverFnPaths,
@@ -276,17 +276,28 @@ test.describe("a native Start build, from Code to a rolled-back storefront", () 
     const isolated = () =>
       page.frame({ url: (url) => url.hostname === previewHost });
     await expect.poll(isolated, { timeout: 120_000 }).toBeTruthy();
-    await expectServed(previewFetcher(() => isolated()!), {
+    await expectServed(
+      previewFetcher(() => isolated()!),
+      {
+        code: v1,
+        content: contentA,
+        absent: [],
+      },
+    );
+    await page.keyboard.press("Escape");
+    await expect(frame).toBeHidden({ timeout: 30_000 });
+
+    // 3. Published, reusing that build. The release it shows, and the
+    //    storefront, carry v1 and A. No domain yet, so no live address.
+    const shown1 = await publishShowingRelease(page);
+    expect(posts.build, "publish reuses the previewed build").toBe(1);
+    await expectServed(shown1.fetch, {
       code: v1,
       content: contentA,
       absent: [],
     });
-    await page.keyboard.press("Escape");
-    await expect(frame).toBeHidden({ timeout: 30_000 });
-
-    // 3. Published, reusing that build. The storefront shows v1 and A.
-    await publish(page);
-    expect(posts.build, "publish reuses the previewed build").toBe(1);
+    expect(shown1.liveSite).toBeNull();
+    await shown1.close();
     const release1 = await latestRelease(page, scope!);
     // Its static page read the content while prerendering, so the build was
     // given it: the artifact depends on it.
@@ -393,10 +404,19 @@ test.describe("a native Start build, from Code to a rolled-back storefront", () 
     expect(saved2.success, JSON.stringify(saved2)).toBe(true);
     await openEditor(page);
     const buildsBeforeB = posts.build;
-    await publish(page);
+    //    Shown once published, not when its build finished: the release, v2
+    //    and B, with the store's live address.
+    const shown2 = await publishShowingRelease(page);
     expect(posts.build, "draft B is built, not published on build A").toBe(
       buildsBeforeB + 1,
     );
+    await expectServed(shown2.fetch, {
+      code: v2,
+      content: contentB,
+      absent: [contentA],
+    });
+    expect(new URL(shown2.liveSite!).hostname).toBe(HOST);
+    await shown2.close();
     const release2 = await latestRelease(page, scope!);
     expect(release2).not.toBe(release1);
     expect((await releaseBuild(release2)).dependency).toBe("dependent");

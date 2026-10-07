@@ -433,8 +433,13 @@ STRIPE_SECRET [ 新增 Secret ]
           **回滾後重新發布**：「已上線」改為以生效 release 的內容發布是否含這一版草稿判斷。原本以 template 的已發布紀錄
           判斷，回滾後重新發布被回滾掉的草稿會回「已發布」而什麼都沒寫。
           **已知、另行處理**：Live Preview 在原始碼變更後被平台「更新 sandbox runtime」打斷時，有時不會重新啟動
-          （調查中）；`publish.spec.ts` 中 Release history 對話框一次 Escape 未關閉（調查中）。發布觸發的建置成功後
-          自動開啟 Build Preview 的行為之後改為「發布成功」才開啟、並顯示該 release 的內容。
+          （#139 已修）；`publish.spec.ts` 中 Release history 對話框一次 Escape 未關閉（#136 加了診斷，原因未明）。
+          **發布後的預覽**：發布觸發的建置成功時不再開啟 Build Preview（發布仍可能被拒，建置結果不能被當成已上線）；
+          發布成功後才開啟該 release 的預覽，標示「Published」，店面有網域時附「Open live site」。預覽的權限
+          （`storefront_build_preview_capabilities.release_id`，migration 0074）綁定 release：同一個 build 的產物，
+          以 release 自己的內容發布回答 `/_morph/content`，每次請求都重新確認 release 仍存在、屬於同一個商店與 Theme，
+          而且就是這個 build 的 release。因此只發布內容、重用 `independent` build 時，預覽顯示新 release 的內容，
+          不是該 build 封存的舊內容。Build Preview 照舊只代表建置驗收的結果（封存內容）。沒有隔離式預覽的環境不開啟。
        4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。啟用是獨立的 PR：
           限定已認證的工具鏈組合、確認「有設定檔」不會誤判既有 Theme、未認證版本有清楚診斷；Cloudflare 部署環境的
           內容配對驗收仍未完成。
