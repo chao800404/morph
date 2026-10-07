@@ -1,20 +1,27 @@
+import { THEME_PRERENDER_CONTENT_FILE } from "../compiler/theme-prerender-content";
+import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox-dependencies.generated";
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
 import { parseJsonc } from "./jsonc";
+import {
+  NATIVE_WRAPPER_CONFIG_PATH,
+  nativeWrapperConfigSource,
+} from "./tanstack-start-native-wrapper";
 
 /**
  * Building a TanStack Start project with its own configuration.
  *
  * docs/start-native-import-plan.md, step 1b. The project's `vite.config.ts`
- * and `wrangler.jsonc` are used as written: no Morph Vite plugin is added and
- * the config files are not rewritten. Morph supplies only what differs by
- * deployment target — here, the Wrangler config the Cloudflare plugin reads,
- * through `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` — and normalises the output
- * into the artifact layout the artifact store and release already read.
+ * and `wrangler.jsonc` are used as written and never rewritten. Morph supplies
+ * what differs by deployment target — the Wrangler config the Cloudflare
+ * plugin reads, through `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` — builds
+ * through a wrapper config that imports the project's own and adds only an
+ * import guard and, for a build with content, the frozen-content prerender
+ * plugin (tanstack-start-native-wrapper.ts), and normalises the output into
+ * the artifact layout the artifact store and release already read.
  *
- * Not yet enabled for real builds (the materializer still refuses a Theme
- * carrying its own build configuration): a native build has no client-only
- * `preview/index.html`, so Build Preview has nothing to open until it can run
- * the built Worker. See the plan's step 1b notes.
+ * Behind a server switch (theme-build-service.factory): a native build has no
+ * client-only `preview/index.html`, so it is previewed only by running the
+ * built Worker (isolated Build Preview).
  */
 
 /** Where Morph's copy of the project's Wrangler config goes in the workspace. */
@@ -73,8 +80,30 @@ const refuse = (code: string, message: string): NativeStartBuildPlan => ({
   message: `${code}: ${message}`,
 });
 
+/**
+ * Packages a native build may import: the packages installed in the pinned
+ * Sandbox toolchain — the only ones a build in the container can resolve at
+ * all — plus `extra`.
+ */
+export function nativeAllowedPackages(
+  extra: Iterable<string> = [],
+): readonly string[] {
+  return [
+    ...new Set([
+      ...Object.keys(GENERATED_SANDBOX_DEPENDENCY_VERSIONS),
+      ...extra,
+    ]),
+  ].sort();
+}
+
 export function planNativeStartBuild(
   files: readonly SourceFile[],
+  options: Readonly<{
+    /** Packages the build may import; the pinned toolchain when absent. */
+    allowedPackages?: readonly string[];
+    /** The build's frozen content by route, serialized (theme-prerender-content). */
+    prerenderContent?: string;
+  }> = {},
 ): NativeStartBuildPlan {
   const byPath = new Map(files.map((file) => [file.path, file.content]));
 
@@ -135,19 +164,39 @@ export function planNativeStartBuild(
   }
 
   const stripped = prepareSourcesForBuild(files);
+  // Morph's paths: whatever the project has there is replaced, never used.
+  const morphOwned = new Set<string>([
+    NATIVE_WRANGLER_CONFIG_PATH,
+    NATIVE_WRAPPER_CONFIG_PATH,
+    THEME_PRERENDER_CONTENT_FILE,
+  ]);
   const workspaceFiles: SourceFile[] = stripped.files.filter(
-    (file) => file.path !== NATIVE_WRANGLER_CONFIG_PATH,
+    (file) => !morphOwned.has(file.path),
   );
   workspaceFiles.push({
     path: NATIVE_WRANGLER_CONFIG_PATH,
     content: `${JSON.stringify(wrangler, null, 2)}\n`,
   });
+  workspaceFiles.push({
+    path: NATIVE_WRAPPER_CONFIG_PATH,
+    content: nativeWrapperConfigSource({
+      themeConfigPath: viteConfigs[0]!,
+      allowedPackages: options.allowedPackages ?? nativeAllowedPackages(),
+      withFrozenContent: options.prerenderContent !== undefined,
+    }),
+  });
+  if (options.prerenderContent !== undefined) {
+    workspaceFiles.push({
+      path: THEME_PRERENDER_CONTENT_FILE,
+      content: options.prerenderContent,
+    });
+  }
 
   return {
     ok: true,
     workspaceFiles,
     env: { CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH },
-    command: ["vite", "build"],
+    command: ["vite", "build", "--config", NATIVE_WRAPPER_CONFIG_PATH],
   };
 }
 

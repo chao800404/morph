@@ -1,4 +1,7 @@
-import { isPlatformOwnedThemeBuildPath } from "./theme-start-toolchain";
+import {
+  isPlatformOwnedThemeBuildPath,
+  isThemeStartConfigPath,
+} from "./theme-start-toolchain";
 
 export const THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH =
   ".morph-preview-workspace.sha256";
@@ -53,7 +56,17 @@ export function isDirtyWorkspaceMarker(marker: string | null): boolean {
  * rather than a boolean so the caller can tell the author which rule they
  * met, which for a path they typed themselves is the whole of the answer.
  */
-export function refuseThemeWorkspacePath(path: string): string | null {
+export function refuseThemeWorkspacePath(
+  path: string,
+  options: Readonly<{
+    /**
+     * A native build runs with the project's own `vite.config.*` and
+     * `wrangler.json(c)`, so those are the project's to write there; every
+     * other rule still applies.
+     */
+    ownStartConfig?: boolean;
+  }> = {},
+): string | null {
   const normalized = path.replace(/\\/g, "/");
 
   if (
@@ -73,7 +86,10 @@ export function refuseThemeWorkspacePath(path: string): string | null {
     return `RESERVED_THEME_PATH: Theme files cannot be created inside node_modules: "${path}"`;
   }
 
-  if (isPlatformOwnedThemeBuildPath(normalized)) {
+  if (
+    isPlatformOwnedThemeBuildPath(normalized) &&
+    !(options.ownStartConfig === true && isThemeStartConfigPath(normalized))
+  ) {
     return `RESERVED_THEME_BUILD_PATH: Theme source cannot replace platform-owned build file "${path}"`;
   }
 

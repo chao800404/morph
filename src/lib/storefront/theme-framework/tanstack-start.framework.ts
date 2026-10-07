@@ -77,6 +77,41 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
     native: {
       plan: planNativeStartBuild,
       collect: collectNativeStartArtifact,
+      artifactEntry: WORKER_ENTRY,
+      verifyArtifact({ artifactPaths, routeRegistry, contentSnapshot }) {
+        // The pages the build's content says are prerendered, by the same
+        // rule as a platform build; whether to prerender is the project's
+        // own config's to say, and a build that does not is refused here.
+        if (routeRegistry) {
+          assertThemePrerenderArtifacts(
+            contentSnapshot,
+            routeRegistry,
+            artifactPaths,
+          );
+        }
+        if (!artifactPaths.has(WORKER_ENTRY)) {
+          throw new Error(
+            `INCOMPLETE_START_ARTIFACT: The native build did not produce ${WORKER_ENTRY}.`,
+          );
+        }
+        if (
+          ![...artifactPaths].some((path) =>
+            path.startsWith(`${CLIENT_ASSETS_DIRECTORY}/`),
+          )
+        ) {
+          throw new Error(
+            "INCOMPLETE_START_ARTIFACT: The native build did not produce runtime client assets.",
+          );
+        }
+      },
+      manifestMetadata: (routeRegistry) => ({
+        router: "tanstack-start",
+        runtime: "cloudflare-worker",
+        build: "native",
+        workerEntry: WORKER_ENTRY,
+        clientAssetsDirectory: CLIENT_ASSETS_DIRECTORY,
+        ...(routeRegistry ? { routes: routeRegistry.routes } : {}),
+      }),
     },
   },
 };

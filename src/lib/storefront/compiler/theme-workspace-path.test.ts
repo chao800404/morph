@@ -59,6 +59,26 @@ describe("what may be written into a container workspace", () => {
       "RESERVED_THEME_PATH",
     );
   });
+
+  it("lets a native build write the project's own build configuration, and nothing else of the platform's", () => {
+    const native = { ownStartConfig: true };
+    for (const path of [
+      "vite.config.ts",
+      "vite.config.mjs",
+      "wrangler.jsonc",
+    ]) {
+      expect(refuseThemeWorkspacePath(path, native)).toBeNull();
+    }
+    expect(refuseThemeWorkspacePath("__entry.tsx", native)).toContain(
+      "RESERVED_THEME_BUILD_PATH",
+    );
+    expect(
+      refuseThemeWorkspacePath(".morph-prerender-content.json", native),
+    ).toContain("RESERVED_THEME_PREVIEW_PATH");
+    expect(refuseThemeWorkspacePath("../vite.config.ts", native)).toContain(
+      "WORKSPACE_PATH_ESCAPE",
+    );
+  });
 });
 
 describe("what a running preview may write over", () => {

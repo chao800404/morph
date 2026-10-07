@@ -37,7 +37,13 @@ import {
 } from "./theme-path-aliases";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
-import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
+import {
+  THEME_START_TOOLCHAIN,
+  resolveThemeStartServerEntry,
+} from "./theme-start-toolchain";
+import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
+import { buildThemeRouteRegistry } from "./theme-route-registry";
+import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
 import { themePrerenderOptions } from "./theme-prerender";
 import { themeFramework } from "../theme-framework";
 import {
@@ -142,18 +148,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
-    // Built with the platform's configuration, a native project would be a
-    // different program from the one its author wrote. Refused by name until
-    // this runner builds it with its own.
-    if (input.buildMode === "native") {
-      return {
-        success: false,
-        errorMessage:
-          "NATIVE_START_BUILD_RUNNER_PENDING: This build runner cannot build a Theme with its own configuration yet.",
-        diagnosticsJson: { stage: "native-build" },
-        durationMs: 0,
-      };
-    }
     const logs: ThemeBuildRunnerLog[] = [];
 
     const addLog = (level: "info" | "warn" | "error", message: string) => {
@@ -169,11 +163,19 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
     addLog("info", `Starting local theme build for buildId: ${input.buildId}`);
 
     // Guard 0: Verify Compiler Identity
+    // A native build is the project's own toolchain run at the pinned Start
+    // version; a platform build is this runner's.
+    const expectedCompilerId =
+      input.buildMode === "native" ? NATIVE_START_COMPILER_ID : this.compilerId;
+    const expectedCompilerVersion =
+      input.buildMode === "native"
+        ? THEME_START_TOOLCHAIN.reactStart
+        : this.compilerVersion;
     if (
-      input.compilerId !== this.compilerId ||
-      input.compilerVersion !== this.compilerVersion
+      input.compilerId !== expectedCompilerId ||
+      input.compilerVersion !== expectedCompilerVersion
     ) {
-      const msg = `COMPILER_IDENTITY_MISMATCH: Runner toolchain is ${this.compilerId}@${this.compilerVersion}, but input requested ${input.compilerId}@${input.compilerVersion}`;
+      const msg = `COMPILER_IDENTITY_MISMATCH: Runner toolchain is ${expectedCompilerId}@${expectedCompilerVersion}, but input requested ${input.compilerId}@${input.compilerVersion}`;
       addLog("error", msg);
       return {
         success: false,
@@ -226,7 +228,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
     // Guard 3: Validate Path Containment and Reserved Paths on all virtual files
     for (const file of input.files) {
-      const refusal = refuseThemeWorkspacePath(file.path);
+      const refusal = refuseThemeWorkspacePath(file.path, {
+        ownStartConfig: input.buildMode === "native",
+      });
       if (refusal) {
         const msg = refusal.replace("sandbox workspace root", "workspace root");
         addLog("error", msg);
@@ -307,6 +311,15 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         await fs.mkdir(path.dirname(fullPath), { recursive: true });
         await fs.writeFile(fullPath, bytes);
         bytes = null;
+      }
+
+      if (input.buildMode === "native") {
+        return await this.runNativeBuild(input, {
+          tempDir,
+          addLog,
+          logs,
+          startTime,
+        });
       }
 
       const bootstrap = createThemeBuildBootstrap({
@@ -985,5 +998,222 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       // Securely delete isolated temp workspace directory
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  /**
+   * A native Start build: the project's own configuration, through Morph's
+   * wrapper (import guard, and the frozen content for prerendering), with the
+   * pinned toolchain's packages and nothing of this process's environment
+   * but what Vite needs to run. The output is then held to the same limits
+   * as a platform build and verified by the native artifact rule.
+   *
+   * It runs the project's `vite.config.*` in Node on this machine, as the
+   * local Live Preview sidecar runs a Theme's dev server: a development and
+   * test path only, behind the native-build switch.
+   */
+  private async runNativeBuild(
+    input: ThemeBuildRunnerInput,
+    context: {
+      tempDir: string;
+      addLog: (level: "info" | "warn" | "error", message: string) => void;
+      logs: ThemeBuildRunnerLog[];
+      startTime: number;
+    },
+  ): Promise<ThemeBuildRunnerResult> {
+    const { tempDir, addLog, logs, startTime } = context;
+    const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage,
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    };
+
+    const registry = buildThemeRouteRegistry(input.files);
+    const routeRegistry = registry.valid ? registry : null;
+    const prerenderContent = routeRegistry
+      ? await createThemePrerenderContent(input.contentSnapshot, routeRegistry)
+      : undefined;
+    const native = themeFramework().build.native;
+    const plan = native.plan(input.files, {
+      allowedPackages: nativeAllowedPackages(this.approvedDependencies),
+      ...(prerenderContent
+        ? { prerenderContent: JSON.stringify(prerenderContent) }
+        : {}),
+    });
+    if (!plan.ok) return fail("native-plan", plan.message);
+
+    // Over what the shared loop wrote: the plan's files are the sources with
+    // the editor's markers removed, plus Morph's config copy and wrapper.
+    for (const file of plan.workspaceFiles) {
+      const fullPath = path.resolve(tempDir, file.path);
+      const rel = path.relative(tempDir, fullPath);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        return fail(
+          "security-containment",
+          `WORKSPACE_PATH_ESCAPE: File path "${file.path}" escapes workspace root`,
+        );
+      }
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, file.content);
+    }
+    // The pinned toolchain, as the native build test and the container use.
+    await fs.symlink(
+      path.join(process.cwd(), "node_modules"),
+      path.join(tempDir, "node_modules"),
+    );
+
+    const [command, ...args] = plan.command;
+    if (command !== "vite") {
+      return fail("native-plan", `NATIVE_COMMAND: unexpected "${command}".`);
+    }
+    addLog("info", `Executing native Start build: vite ${args.join(" ")}`);
+    const viteCli = path.join(
+      path.dirname(createRequire(import.meta.url).resolve("vite/package.json")),
+      "bin/vite.js",
+    );
+    try {
+      await promisify(execFile)(
+        process.execPath,
+        [
+          "--unhandled-rejections=strict",
+          viteCli,
+          ...args,
+          "--logLevel",
+          "error",
+        ],
+        {
+          cwd: tempDir,
+          env: {
+            PATH: process.env.PATH,
+            HOME: tempDir,
+            NODE_ENV: "production",
+            WRANGLER_SEND_METRICS: "false",
+            ...plan.env,
+            ...(process.platform === "win32"
+              ? { SystemRoot: process.env.SystemRoot }
+              : {}),
+          },
+          timeout: Math.max(1, this.maxDurationMs - (Date.now() - startTime)),
+          maxBuffer: 1024 * 1024,
+        },
+      );
+    } catch (error) {
+      const detail = error as { stderr?: string; message?: string };
+      return fail(
+        "compiler",
+        `NATIVE_BUILD_FAILED: ${(detail.stderr || detail.message || String(error)).slice(-2_000)}`,
+      );
+    }
+
+    const outputs = new Map<string, Uint8Array>();
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules") continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile()) {
+          outputs.set(
+            path.relative(tempDir, full).split(path.sep).join("/"),
+            new Uint8Array(await fs.readFile(full)),
+          );
+        }
+      }
+    };
+    await walk(tempDir);
+    let collected: ReturnType<typeof native.collect>;
+    try {
+      collected = native.collect(outputs);
+    } catch (error) {
+      return fail(
+        "output-collection",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    const files = [...collected.files];
+    if (files.length > this.maxOutputFiles) {
+      return fail(
+        "output-limits",
+        `LIMIT_EXCEEDED: Theme dist output file count (${files.length}) exceeds limit of ${this.maxOutputFiles}`,
+      );
+    }
+    const artifacts: ThemeBuildArtifactFile[] = files.map(
+      ([relPath, content]) => {
+        const bytes =
+          typeof content === "string"
+            ? new TextEncoder().encode(content)
+            : content;
+        const mimeType = getMimeType(relPath);
+        return {
+          path: relPath,
+          content: isTextMimeType(mimeType)
+            ? new TextDecoder().decode(bytes)
+            : bytes,
+          mimeType,
+          sizeBytes: bytes.byteLength,
+        };
+      },
+    );
+    const totalBytes = artifacts.reduce(
+      (sum, artifact) => sum + (artifact.sizeBytes ?? 0),
+      0,
+    );
+    if (totalBytes > this.maxOutputSizeBytes) {
+      return fail(
+        "output-limits",
+        `LIMIT_EXCEEDED: Theme dist output (${totalBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`,
+      );
+    }
+
+    try {
+      native.verifyArtifact({
+        artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
+        routeRegistry,
+        contentSnapshot: input.contentSnapshot,
+      });
+    } catch (error) {
+      return fail(
+        "artifact-verification",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    const manifest: ThemeBuildArtifactManifest = {
+      entry: input.entry,
+      artifactEntry: native.artifactEntry,
+      filesCount: input.files.length,
+      inputHash: input.inputHash,
+      bundleFiles: artifacts.map((artifact) => ({
+        path: artifact.path,
+        sizeBytes: artifact.sizeBytes ?? 0,
+        mimeType: artifact.mimeType,
+      })),
+      cssChunks: artifacts
+        .filter((artifact) => artifact.mimeType === "text/css")
+        .map((artifact) => artifact.path),
+      jsChunks: artifacts
+        .filter((artifact) => artifact.mimeType === "application/javascript")
+        .map((artifact) => artifact.path),
+      metadata: native.manifestMetadata(routeRegistry),
+    };
+    addLog(
+      "info",
+      `Native build completed with ${artifacts.length} artifact files.`,
+    );
+    return {
+      success: true,
+      artifacts,
+      manifestJson: manifest,
+      diagnosticsJson: { warnings: [] },
+      logs,
+      durationMs: Date.now() - startTime,
+    };
   }
 }
