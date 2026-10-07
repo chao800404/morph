@@ -9,6 +9,18 @@
  */
 export declare function containedPath(root: string, relative: string): string;
 
+export declare function queryRunD1(
+  options: { persistTo: string; workDir: string },
+  sql: string,
+  ...params: unknown[]
+): Promise<Record<string, unknown>[]>;
+
+export declare function writeRunD1(
+  options: { persistTo: string; workDir: string },
+  sql: string,
+  ...params: unknown[]
+): Promise<number>;
+
 export declare function verifyPublishedArtifact(options: {
   handoffPath: string;
   persistTo: string;

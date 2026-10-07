@@ -28,6 +28,7 @@ export const EDITOR_SHARDS = [
     "build-preview-isolated.spec.ts",
     // Container transport only, like the two above: skipped on every CI shard.
     "native-publish-acceptance.spec.ts",
+    "native-content-dependency.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",

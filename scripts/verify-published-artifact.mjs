@@ -194,6 +194,59 @@ async function writeWorkerConfig(root, manifest, scriptName) {
   return configPath;
 }
 
+/**
+ * Reads this run's local D1 with one query, the way the verifier below does:
+ * through the same bindings, the same `v3` store and no remote bindings. For
+ * a spec that has to state what a refused write left behind.
+ */
+export async function queryRunD1({ persistTo, workDir }, sql, ...params) {
+  const { getPlatformProxy } = await import("wrangler");
+  await mkdir(workDir, { recursive: true });
+  const configPath = path.join(workDir, "d1-reader.wrangler.json");
+  await writeFile(configPath, JSON.stringify(verifierConfig()));
+  const platform = await getPlatformProxy({
+    configPath,
+    persist: { path: path.join(persistTo, "v3") },
+    remoteBindings: false,
+  });
+  try {
+    const { results } = await platform.env.DATABASE.prepare(sql)
+      .bind(...params)
+      .all();
+    return results;
+  } finally {
+    await platform.dispose();
+    await rm(configPath, { force: true });
+  }
+}
+
+/**
+ * Writes one statement to this run's local D1, the same way. Only for a spec
+ * that has to put a row into a state the product no longer produces (a build
+ * from before a column existed); the run's D1 is thrown away afterwards.
+ * Returns the number of rows changed.
+ */
+export async function writeRunD1({ persistTo, workDir }, sql, ...params) {
+  const { getPlatformProxy } = await import("wrangler");
+  await mkdir(workDir, { recursive: true });
+  const configPath = path.join(workDir, "d1-writer.wrangler.json");
+  await writeFile(configPath, JSON.stringify(verifierConfig()));
+  const platform = await getPlatformProxy({
+    configPath,
+    persist: { path: path.join(persistTo, "v3") },
+    remoteBindings: false,
+  });
+  try {
+    const result = await platform.env.DATABASE.prepare(sql)
+      .bind(...params)
+      .run();
+    return result.meta.changes;
+  } finally {
+    await platform.dispose();
+    await rm(configPath, { force: true });
+  }
+}
+
 export async function verifyPublishedArtifact({ handoffPath, persistTo, outDir }) {
   const handoff = JSON.parse(await readFile(handoffPath, "utf8"));
   if (handoff.schemaVersion !== HANDOFF_SCHEMA_VERSION) {

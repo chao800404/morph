@@ -953,6 +953,88 @@ describe("storefront theme DAL", () => {
     },
   );
 
+  it("refuses a publish whose draft changed after it was read, at the final draft check", async () => {
+    // The build is sealed with the draft the request names, so the content
+    // check passes; the draft then changes while the publish is in progress
+    // (here, from inside the publish, after it has read the revision and
+    // before it writes). Only the batch's own draft guard can stop it.
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssr" } },
+    });
+    sqlite.exec(
+      "INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at) VALUES ('build-content', 'storefront-a', 'now', 'now')",
+    );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_content_publication_items
+      (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+      VALUES ('build-item', 'build-content', 'template', 'policy-template', ?, '{"templateType":"index"}', 'now', 'now')`,
+      )
+      .run(saved!.draftRevisionId);
+    sqlite.exec(
+      "UPDATE storefront_theme_builds SET content_publication_id = 'build-content'",
+    );
+    sqlite.exec(`INSERT INTO storefront_theme_revisions
+      (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+      VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+    let changedDraftRevisionId: string | undefined;
+
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: async () => {
+          const changed = await storefrontThemeDal.updateRenderPolicy({
+            ...policyWrite(),
+            expectedDraftGeneration: 2,
+            setting: { scope: "page", policy: { mode: "inherit" } },
+          });
+          changedDraftRevisionId = changed!.draftRevisionId;
+        },
+      }),
+    ).rejects.toThrow("TEMPLATE_DRAFT_CONFLICT");
+
+    expect(changedDraftRevisionId).toBeTruthy();
+    expect(changedDraftRevisionId).not.toBe(saved!.draftRevisionId);
+    // Nothing of the publish was written: no release, no pointer move, no
+    // content publication besides the build's, and the newer draft stands.
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM storefront_content_publications",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+        )
+        .get(),
+    ).toEqual({ active_release_id: null });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT draft_revision_id, published_revision_id FROM storefront_theme_templates WHERE id = 'policy-template'",
+        )
+        .get(),
+    ).toEqual({
+      draft_revision_id: changedDraftRevisionId,
+      published_revision_id: null,
+    });
+  });
+
   it("preserves policy through section renaming and reordering", async () => {
     insertPolicyTemplate();
     await storefrontThemeDal.updateRenderPolicy(policyWrite());
