@@ -66,15 +66,30 @@ export type ThemeFrameworkAdapter = Readonly<{
     /**
      * Building the project with its own configuration (start-native-import-plan
      * step 1b): the workspace and environment, then the output moved into the
-     * artifact layout above. Not yet used by the build runners.
+     * artifact layout above, and that artifact's own entry, completeness rule
+     * and description. A native artifact has no client-only preview page; it
+     * is previewed by running its Worker.
      */
     native: Readonly<{
       plan(
         files: readonly Readonly<{ path: string; content: string }>[],
+        options?: Readonly<{
+          allowedPackages?: readonly string[];
+          prerenderContent?: string;
+        }>,
       ): NativeStartBuildPlan;
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
       ): NativeStartArtifact;
+      artifactEntry: string;
+      verifyArtifact(input: {
+        artifactPaths: ReadonlySet<string>;
+        routeRegistry: ThemeRouteRegistry | null;
+        contentSnapshot: ThemeBuildContentSnapshot | undefined;
+      }): void;
+      manifestMetadata(
+        routeRegistry: ThemeRouteRegistry | null,
+      ): Record<string, unknown>;
     }>;
   }>;
 }>;

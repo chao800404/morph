@@ -27,6 +27,15 @@ describe("the framework adapter boundary", () => {
           "verifyArtifact",
         ].sort(),
       );
+      expect(Object.keys(framework.build.native).sort()).toEqual(
+        [
+          "artifactEntry",
+          "collect",
+          "manifestMetadata",
+          "plan",
+          "verifyArtifact",
+        ].sort(),
+      );
     }
   });
 

@@ -7,6 +7,7 @@ import {
   collectNativeStartArtifact,
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
+import { NATIVE_WRAPPER_CONFIG_PATH } from "./tanstack-start-native-wrapper";
 
 describe("parseJsonc", () => {
   it("reads comments and trailing commas the way Wrangler accepts them", () => {
@@ -58,8 +59,15 @@ describe("planNativeStartBuild", () => {
     const plan = planNativeStartBuild(project());
     if (!plan.ok) throw new Error(plan.message);
     const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
-    // Used as written: not rewritten, no Morph plugin added.
+    // Used as written: never rewritten. Morph's plugins live in its wrapper,
+    // which imports the project's config.
     expect(byPath.get("vite.config.ts")).toBe(VITE_CONFIG);
+    const wrapper = byPath.get(NATIVE_WRAPPER_CONFIG_PATH)!;
+    expect(wrapper).toContain('import themeConfig from "../vite.config.ts";');
+    expect(wrapper).toContain("morph:native-import-guard");
+    // No content snapshot, so no frozen-content plugin and no content file.
+    expect(wrapper).not.toContain("morph:frozen-prerender-content");
+    expect(byPath.has(".morph-prerender-content.json")).toBe(false);
     expect(byPath.get("wrangler.jsonc")).toBe(WRANGLER);
     expect(JSON.parse(byPath.get(NATIVE_WRANGLER_CONFIG_PATH)!)).toEqual({
       name: "shop",
@@ -70,7 +78,41 @@ describe("planNativeStartBuild", () => {
     expect(plan.env).toEqual({
       CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH,
     });
-    expect(plan.command).toEqual(["vite", "build"]);
+    expect(plan.command).toEqual([
+      "vite",
+      "build",
+      "--config",
+      NATIVE_WRAPPER_CONFIG_PATH,
+    ]);
+  });
+
+  it("adds the frozen content, and only then, for a build that has it", () => {
+    const plan = planNativeStartBuild(project(), {
+      prerenderContent: '{"/":{"slots":{},"hiddenSlots":[]}}',
+    });
+    if (!plan.ok) throw new Error(plan.message);
+    const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
+    expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
+      "morph:frozen-prerender-content",
+    );
+    expect(byPath.get(".morph-prerender-content.json")).toBe(
+      '{"/":{"slots":{},"hiddenSlots":[]}}',
+    );
+  });
+
+  it("replaces whatever the project keeps at Morph's own paths", () => {
+    const plan = planNativeStartBuild(
+      project({
+        ".morph/vite.config.ts": "export default { plugins: [] };",
+        ".morph-prerender-content.json": '{"forged":true}',
+      }),
+    );
+    if (!plan.ok) throw new Error(plan.message);
+    const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
+    expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
+      "morph:native-import-guard",
+    );
+    expect(byPath.has(".morph-prerender-content.json")).toBe(false);
   });
 
   it("removes editor markers from the built source, as Morph's own builds do", () => {

@@ -4,13 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 
 import { CloudflareSandboxViteThemeBuildRunner } from "./cloudflare-sandbox-vite-theme-build-runner";
-import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 
 /**
  * Until a runner builds a native project with its own configuration, it
  * refuses one by name. Building it with the platform's configuration instead
- * would produce a different program from the one its author wrote.
+ * would produce a different program from the one its author wrote. The local
+ * runner builds it (native-start-runner.test.ts); the Sandbox runner is next.
  */
 const nativeInput = {
   buildId: "build-native",
@@ -27,17 +27,10 @@ const nativeInput = {
 } as unknown as ThemeBuildRunnerInput;
 
 describe("a build runner given a native project", () => {
-  it.each([
-    ["the local runner", () => new LocalViteThemeBuildRunner()],
-    [
-      "the Sandbox runner",
-      () =>
-        new CloudflareSandboxViteThemeBuildRunner({
-          sandboxBinding: {} as never,
-        }),
-    ],
-  ])("is refused by %s, before anything runs", async (_name, create) => {
-    const result = await create().run(nativeInput);
+  it("is refused by the Sandbox runner, before anything runs", async () => {
+    const result = await new CloudflareSandboxViteThemeBuildRunner({
+      sandboxBinding: {} as never,
+    }).run(nativeInput);
     expect(result).toMatchObject({
       success: false,
       errorMessage: expect.stringMatching(

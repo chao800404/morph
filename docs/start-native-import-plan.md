@@ -360,20 +360,32 @@ STRIPE_SECRET [ 新增 Secret ]
             第 3 步驗收通過、第 4 步解除。關閉時行為與現在完全相同（`NATIVE_START_BUILD_UNAVAILABLE`）。
           - **工具鏈相容**：容器內不安裝套件，`node_modules` 一律來自固定工具鏈。沿用現有的
             `validateThemeStartPackageContract`（`package.json` 的 Start、React、Vite、Cloudflare 外掛等必須等於
-            固定版本），不另寫一套版本規則；不符時以 `NATIVE_TOOLCHAIN_MISMATCH` 拒絕並列出它的診斷。工具鏈沒有的
-            其他套件沿用現有的依賴核准機制。接受 `^`／`~` 範圍屬於「Theme 依賴快照與工具鏈矩陣」那一步。
-          - **預先渲染讀凍結內容**：產生 `.morph/vite.config.ts`，以 `import` 載入 Theme 原本的
-            `vite.config.ts`（不修改），只加上 Morph 現有的凍結內容外掛
-            （`themePrerenderContentPluginSource`：只在 Node 預覽伺服器、`TSS_PRERENDERING` 時作用，
-            不進 Worker 產物），以 `vite build --config .morph/vite.config.ts` 建置。沒有內容快照的建置不產生
-            包裝檔，直接用 Theme 的設定。
-          - **產物**：沿用 1b-1 的 `collectNativeStartArtifact` 轉成 `runtime/server`、`runtime/client`，之後的
-            `verifyArtifact`、manifest、發布、Build Preview 與平台建置共用同一條路徑。
+            固定版本），不另寫一套版本規則；materializer 對 Start Theme 本來就會檢查，不符時以現有的
+            `INVALID_START_PACKAGE` 拒絕並列出診斷。工具鏈沒有的其他套件沿用現有的依賴核准機制。接受 `^`／`~` 範圍屬於「Theme 依賴快照與工具鏈矩陣」那一步。
+          - **包裝設定檔**（`theme-framework/tanstack-start-native-wrapper.ts`）：一律產生 `.morph/vite.config.ts`，
+            以 `import` 載入 Theme 原本的 `vite.config.*`（不修改），以 `vite build --config .morph/vite.config.ts`
+            建置。包裝檔只加兩個外掛：
+            - **匯入防護**：依匯入「解析後的位置」判斷（先經過專案自己的別名）：在工作區內，或在允許的套件內
+              （固定工具鏈實際安裝的套件，`GENERATED_SANDBOX_DEPENDENCY_VERSIONS`，加上核准的依賴）；其他一律拒絕
+              （`UNAPPROVED_DEPENDENCY`、`WORKSPACE_PATH_ESCAPE`）。平台建置的防護是依匯入文字與 Morph 產生的別名判斷，
+              原生專案帶自己的別名，文字無法判斷實際落點，所以沒有沿用；平台建置改用同一規則是之後的工作。
+            - **凍結內容**（有內容快照時）：Morph 現有的 `themePrerenderContentPluginSource`，只在 Node 預覽伺服器、
+              `TSS_PRERENDERING` 時作用，不進 Worker 產物。要預先渲染哪些頁由專案自己的設定決定；內容快照要求的
+              頁面若沒有產生，建置以產物驗證失敗。
+          - **產物**：沿用 1b-1 的 `collectNativeStartArtifact` 轉成 `runtime/server`、`runtime/client`。原生產物沒有
+            `preview/index.html`，所以 adapter 有自己的 `native.artifactEntry`（Worker 入口）、`native.verifyArtifact`
+            （Worker 入口、client 資產、內容要求的預先渲染頁）與 `native.manifestMetadata`（`build: "native"`、
+            無 `previewEntry`），只以隔離式 Build Preview 預覽；之後的發布路徑與平台建置相同。
+          - **本機建置程式會在本機以 Node 執行專案的 `vite.config.*`**：與本機 Live Preview sidecar 在本機執行 Theme
+            的開發伺服器同一等級，只在開關開啟的開發與測試環境；程序只拿到 PATH、HOME（暫存目錄）、NODE_ENV 等
+            執行所需的變數。真正的隔離由 Sandbox 建置程式提供。
           - **拆分**：N1 materializer／輸入／開關（已完成：開關開啟時保留 Theme 的設定檔、在排入建置前以
             `native.plan` 拒絕無法建置的設定、compiler 身分 `tanstack-start-native`；兩個建置程式收到原生輸入時以
-            `NATIVE_START_BUILD_RUNNER_PENDING` 明確拒絕，不會改用平台設定建置）→ N2 本機建置程式（包裝檔產生、
-            真實建置測試，含內容快照的預先渲染）→ N3 Sandbox 建置程式（替身測試，再以本機 Docker 實跑）→
-            第 3 步驗收。
+            `NATIVE_START_BUILD_RUNNER_PENDING` 明確拒絕，不會改用平台設定建置）→ N2 本機建置程式（已完成：
+            包裝檔與匯入防護、原生產物規則、真實建置測試——專案自己的設定預先渲染 `/landing`，HTML 含凍結內容、
+            不含預設值；快照、包裝檔與 `.morph/` 不進產物；Worker 不含內容；設定沒有預先渲染內容要求的頁面時被拒；
+            防護在真實建置中放行專案別名與核准套件，拒絕已安裝但未核准的套件與工作區外的檔案）→ N3 Sandbox 建置程式
+            （替身測試，再以本機 Docker 實跑；在那之前 Sandbox 建置程式仍明確拒絕原生輸入）→ 第 3 步驗收。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
           店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
        4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。
