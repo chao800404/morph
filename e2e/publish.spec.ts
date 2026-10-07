@@ -267,7 +267,7 @@ test.describe("publish loop", () => {
     // The uploaded image is listed in the Code workspace's Explorer and opens
     // read-only: its details, from metadata, in place of an editor.
     if (image) {
-      await page.keyboard.press("Escape");
+      await closeReleaseHistoryWithEscape(page);
       await page.getByRole("button", { name: /^Code$/ }).click();
       const row = page.locator(`[data-file-tree-file="${image.path}"]`);
       await expect(row).toBeVisible({ timeout: 30_000 });
@@ -601,6 +601,109 @@ async function expectHydrated(target: import("@playwright/test").Locator) {
       { timeout: 45_000 },
     )
     .toBe(true);
+}
+
+/**
+ * Closes Release history with Escape, and fails here with evidence if it
+ * stays open.
+ *
+ * Without this, the next click retried against the still-open surface for the
+ * rest of the test timeout and reported ten minutes of "waiting for Code".
+ * That happened once in a container run on 2026-10-07, and the cause is not
+ * known: the trace cannot say where focus was or whether the key reached the
+ * editor. So this waits for the real closed state and, when it does not come,
+ * reports which of three things happened: the key never reached the editor's
+ * window, it reached it and the surface stayed, or the surface closed and was
+ * opened again. This improves the diagnosis; it does not fix that failure.
+ *
+ * Kept small on purpose: two listeners and one observer, installed just
+ * before the key and removed after, so the record does not move the timing it
+ * is recording.
+ */
+async function closeReleaseHistoryWithEscape(
+  page: import("@playwright/test").Page,
+) {
+  const dialog = page.getByRole("dialog", { name: "Release history" });
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => {
+    const describe = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return String(target);
+      const label = target.getAttribute("aria-label");
+      return label
+        ? `${target.tagName.toLowerCase()}[aria-label="${label}"]`
+        : target.tagName.toLowerCase();
+    };
+    const selector = '[role="dialog"][aria-label="Release history"]';
+    const record = {
+      beforeKey: {
+        activeElement: describe(document.activeElement),
+        hasFocus: document.hasFocus(),
+      },
+      keydown: [] as Record<string, unknown>[],
+      dialog: [] as string[],
+    };
+    // Capture runs before any of the editor's handlers. The bubble listener is
+    // added after the editor's, but the editor re-adds its own on render, so
+    // its order relative to them is not guaranteed.
+    const onCapture = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      record.keydown.push({
+        phase: "window-capture",
+        target: describe(event.target),
+        activeElement: describe(document.activeElement),
+      });
+    };
+    const onBubble = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      record.keydown.push({
+        phase: "window-bubble",
+        defaultPrevented: event.defaultPrevented,
+      });
+    };
+    // The surface unmounts when its close callback runs, so its removal is
+    // that callback's observable effect.
+    let open = document.querySelector(selector) !== null;
+    const observer = new MutationObserver(() => {
+      const now = document.querySelector(selector) !== null;
+      if (now === open) return;
+      open = now;
+      record.dialog.push(now ? "opened-again" : "closed");
+    });
+    window.addEventListener("keydown", onCapture, true);
+    window.addEventListener("keydown", onBubble);
+    observer.observe(document.body, { childList: true, subtree: true });
+    (window as unknown as Record<string, unknown>).__morphEscapeProbe = {
+      record,
+      stop: () => {
+        window.removeEventListener("keydown", onCapture, true);
+        window.removeEventListener("keydown", onBubble);
+        observer.disconnect();
+      },
+    };
+  });
+
+  await page.keyboard.press("Escape");
+  const failure = await expect(dialog)
+    .toBeHidden({ timeout: 15_000 })
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  const record = await page.evaluate(() => {
+    const probe = (window as unknown as Record<string, unknown>)
+      .__morphEscapeProbe as { record: unknown; stop: () => void };
+    probe.stop();
+    return JSON.stringify(probe.record);
+  });
+  if (failure) {
+    throw new Error(
+      `Escape did not close Release history. Recorded: ${record}. ` +
+        "No window-capture entry: the key never reached the editor's window. " +
+        'An entry but no "closed": it arrived and the surface stayed open. ' +
+        '"closed" then "opened-again": it closed and something reopened it.',
+      { cause: failure },
+    );
+  }
 }
 
 /** Release ids as the history panel lists them, newest first. */
