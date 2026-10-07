@@ -424,6 +424,15 @@ Starter bootstrap 與 workspace upgrade 契約：
 
 產品方向更新（2026-10-06）：Theme 可用多種框架撰寫，建立網站時選擇（第一版 TanStack Start 與 Astro），CMS 本體維持 TanStack Start。框架無關的契約、元件旁的 `.fields.ts` 欄位規則、依檔案語言的 Design 接入與交付順序見 [`docs/multi-runtime-theme-plan.md`](docs/multi-runtime-theme-plan.md)；TanStack Start 的原生匯入成為其中一種框架接入。
 
+產品方向更新（2026-10-08）：目標是盡量支援 Vite 能建置的框架，以支援層級區分能力：L1 託管（建置、預覽、發布、回滾、CMS 內容，通用路線）、L1.5 點選定位（點選元素跳到原始碼，參考 `code-inspector-plugin` 的注入做法）、L2 視覺改寫（依檔案語言逐一接入）、L3 認證（框架 × 版本）。接入順序：TanStack Start 原生 → Astro → React Router（原 Remix）→ 通用 Vite 託管（SvelteKit、SolidStart、Vue 等）→ Next.js（vinext）。Astro 的 Design 先做 L1.5；`.astro` 的解析器放不進 Morph 主 Worker（M1，#141），L2 改寫走專用解析 Worker（需另外核准新的部署單位），備選是 Sandbox 中的官方 Node 解析器，不自行維護 compiler fork。本機實驗 M1c 已完成（#145）：先取得名額再讀 body、串流位元組上限、trap 後停用實例等機制都運作，GC 後的記憶體在限內，但 GC 前的取樣在多個條件下超過 128 MB；部署後的雲端驗證（M1c-C）是正式閘門，也決定這條路是否可行。L2 改寫引擎寫成獨立 package，目前不開源。細節見多框架計畫與 [`docs/astro-theme-plan.md`](docs/astro-theme-plan.md)。
+
+進度（2026-10-07～08，原生 Start 的內容配對與發布，皆為本機驗收，Cloudflare 部署環境未驗）：
+- 預先渲染只讀封存的內容（#130），預先渲染伺服器綁 127.0.0.1（#134），發布後送出正確的草稿 generation（#135）。
+- build 記錄內容依賴（`content_dependency`，平台實測、不採信 Theme 宣告），無指名 build 的發布只重用生效 release 自己的 build，回滾後重新發布正確判斷是否已上線（#137）；G0 內容配對在本機真實容器驗收（#137，記錄於 #138）。
+- 發布成功後才顯示該 release 的預覽，內容取自 release 本身（#142，migration 0074）。
+- Live Preview 在 Sandbox 中斷後自動重連（#139、#143）；原生預先渲染不再開 inspector port，修正偶發的 EADDRINUSE 500（#146）。
+- 原生建置開關仍關閉；開啟是另一個 PR，限已認證的工具鏈組合，且須先完成 Cloudflare 部署環境的驗收。
+
 ---
 
 # Phase 0 — Architecture Alignment
