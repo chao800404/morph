@@ -5,6 +5,8 @@
 [`docs/start-native-import-plan.md`](start-native-import-plan.md) 的原生 TanStack Start 路線，本文件只寫
 Astro 與它不同的地方。
 
+更新（2026-10-07）：記錄 R1、R2 的結果與使用者對其待決事項的決定（0.4）。
+
 **本文件合併不代表核准實作，也不解除 G0**（第 8 節）。文中的解法很多仍是待驗假設，各自以閘門驗證後才定稿。
 文中以三種標記區分：
 
@@ -20,6 +22,13 @@ Astro 與它不同的地方。
   阻礙編號 B1–B11 沿用該報告）與同目錄的建置原型（2026-10-06）。
 - 本文件撰寫時另外讀了 spike 中 `@astrojs/cloudflare` 14.3.3 的原始碼與建置產物，結果列在各節的「證據」中。
   這些都是讀程式碼得到的結論，沒有另外執行。
+- `~/projects/astro-spike/r1-parser/R1-REPORT.md`（2026-10-07，以下稱「R1 報告」）：`.astro` 解析器在 workerd
+  中的可行性與位置精度。
+- `~/projects/astro-spike/r2-prerender/R2-REPORT.md`（2026-10-07，以下稱「R2 報告」）：Astro 預先渲染讀封存內容，
+  以及 `session: false`、`imageService` 的產物。
+- R1、R2 的原始結果（腳本、log、產物）留在 `~/projects/astro-spike`，直到本文件已記錄結論，**而且** A2 的
+  Sandbox 驗證完成（第 8 節）；在那之前不刪除、不搬移。
+- 2026-10-07 使用者對 R2 待決事項的決定（第 0.4 節）。
 - Morph `main` @ `0f832bd`：`src/lib/storefront/theme-framework/`、`compiler/theme-prerender-content.ts`、
   `compiler/theme-preview-start-runtime.ts`、`compiler/theme-preview-bridge-entry.ts`、
   `service/theme-worker-deployment-plan.ts`、`compiler/native-build-result.ts`。
@@ -31,40 +40,81 @@ Astro 與它不同的地方。
 
 ### 0.1 【事實】
 
-| 事實                                                                                                                                                                                    | 證據                                                                                                                                               |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Astro 7.3.5 與 `@astrojs/cloudflare` 14.3.3 要求 Vite `^8.0.13`；Morph 唯一的工具鏈固定 Vite 7.3.5                                                                                      | 預覽報告 B1                                                                                                                                        |
-| Astro 的 Cloudflare 預先渲染另起 `vite.preview({ configFile: false })`，每頁的請求只帶 URL，頁面看到的請求沒有 `x-morph-content-origin`；Start 的 `configurePreviewServer` 外掛不會生效 | 讀 `@astrojs/cloudflare` 的 `dist/prerenderer.js`、`dist/utils/prerender.js`                                                                       |
-| 預設建置產物的 Worker 設定含 `kv_namespaces: SESSION`、`images: IMAGES`；設定 `cacheCloudflare()` 時含 `cache.enabled`                                                                  | 讀 spike 的 `dist/server/wrangler.json`                                                                                                            |
-| 現有部署規則以 `FORBIDDEN_BINDING` 拒絕 KV；`images`、`cache` 不在禁止清單中，部署時被丟掉                                                                                              | `theme-worker-deployment-plan.ts`                                                                                                                  |
-| Astro 的設定 schema 接受 `session: false`，adapter 在這時不加 `SESSION`；adapter 的 `imageService` 為 `"passthrough"` 或 `"compile"` 時，正式環境不需要 `IMAGES`                        | 讀 `astro/dist/core/session/config.js`、`@astrojs/cloudflare` 的 `dist/index.js`、`dist/utils/image-config.js`；**只讀了程式碼，沒有建置確認產物** |
-| `@astrojs/compiler-rs` 0.5.1 經 `@astrojs/compiler-binding-<平台>` 載入原生 binding                                                                                                     | spike 的 `node_modules`                                                                                                                            |
-| `.astro` 修改會整頁重新載入；`.tsx` island 修改是局部 HMR                                                                                                                               | 預覽報告 Run A／B                                                                                                                                  |
-| `.astro` 頁面沒有實例識別，`request-structure` 回報 `nodes: []`                                                                                                                         | 預覽報告 B5                                                                                                                                        |
-| bridge 的內容更新與導覽在沒有 TanStack Router 時不做任何事                                                                                                                              | `theme-preview-bridge-entry.ts`                                                                                                                    |
-| relay 的 `applied` 不代表「這次寫入造成的更新已顯示」                                                                                                                                   | 預覽報告第 2 節                                                                                                                                    |
-| adapter 預設會寫 `.wrangler/state`、開 inspector port；以 Morph 的 adapter 設定覆寫後這兩項消失                                                                                         | 預覽報告 Run A／B                                                                                                                                  |
-| Live Preview 與 Build Preview 容器本來就是 `enableInternet = false`，對外請求一律交給拒絕政策                                                                                           | `src/server/preview-sandbox.ts`、`build-preview-sandbox.ts`                                                                                        |
+| 事實                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 證據                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Astro 7.3.5 與 `@astrojs/cloudflare` 14.3.3 要求 Vite `^8.0.13`；Morph 唯一的工具鏈固定 Vite 7.3.5                                                                                                                                                                                                                                                                                                                                                                                                                                          | 預覽報告 B1                                                                                                                                |
+| Astro 的 Cloudflare 預先渲染另起 `vite.preview({ configFile: false })`，Start 的 `configurePreviewServer` 外掛不會生效。adapter 對 preview server 的 POST 只指定 `Content-Type`；Worker 端把這個 POST 的全部標頭原樣複製給頁面的 `Request`（method 改成 GET），所以頁面另外還會看到 Node `fetch` 與 miniflare 加上的標頭（`accept*`、`user-agent: node`、`host`、`x-forwarded-host`、`cf-connecting-ip`），以及 POST 本身的 `content-length` 與 `content-type: application/json`。不加包裝時頁面看到的請求**沒有** `x-morph-content-origin` | 讀 `@astrojs/cloudflare` 的 `dist/prerenderer.js:158-163`、`dist/utils/prerender.js:49-59`；R2 報告 §2.1（`probe`、`noshim` 兩個情境實測） |
+| 只套用在 Vite `prerender` 環境的 plugin 能以 `resolveId` 攔截 adapter 寫死的入口 `@astrojs/cloudflare/entrypoints/server`（`dist/index.js:149`），包住它，設定 `x-morph-content-origin`；頁面能讀到這個標頭，可部署的 bundle 中沒有包裝。入口以裸模組名、`importer: null` 進來，每次建置只命中一次                                                                                                                                                                                                                                          | R2 報告 §2.1、§2.2（本機 miniflare）                                                                                                       |
+| 預先渲染 Worker（本機 miniflare／workerd）連得到建置程序在 `127.0.0.1` 上開的 HTTP server；連不到時 workerd 回報 `Network connection lost.`                                                                                                                                                                                                                                                                                                                                                                                                 | R2 報告 §2.3。**Sandbox 容器未驗**                                                                                                         |
+| Theme 的讀取函式吞掉錯誤時，無快照、內容伺服器回 500、連線被拒、拿掉標頭送達四種失敗，`astro build` **全部以 exit 0 結束**，並產出含元件預設值的 HTML；只有讀取記錄判得出失敗                                                                                                                                                                                                                                                                                                                                                               | R2 報告 §3                                                                                                                                 |
+| 預先渲染成功後，Astro core 自己刪除 `dist/server/.prerender/`；預先渲染失敗時這個目錄會留下，內含包裝與完整的 prerender bundle（`prerender-entry.*.mjs`、`entry.mjs`、`wrangler.json`）                                                                                                                                                                                                                                                                                                                                                     | `astro/dist/core/build/static-build.js:109-120`；R2 報告 §2.2                                                                              |
+| 預先渲染的 preview server 預設開 inspector port（9229，被占用時改用下一個）；只有 Theme 自己在 `cloudflare({...})` 設定 `inspectorPort: false` 時才消失                                                                                                                                                                                                                                                                                                                                                                                     | `prerenderer.js:106-122`、`index.js:171`；R2 報告 §4                                                                                       |
+| 預設建置產物的 Worker 設定含 `kv_namespaces: SESSION`、`images: IMAGES`；設定 `cacheCloudflare()` 時含 `cache.enabled`                                                                                                                                                                                                                                                                                                                                                                                                                      | 讀 spike 的 `dist/server/wrangler.json`                                                                                                    |
+| 現有部署規則以 `FORBIDDEN_BINDING` 拒絕 KV；`images`、`cache` 不在禁止清單中，部署時被丟掉                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `theme-worker-deployment-plan.ts`                                                                                                          |
+| Theme 設定 `session: false` 加上 adapter 的 `imageService: "passthrough"` 或 `"compile"` 時，產物 Worker 設定的 `kv_namespaces` 為 `[]`、沒有 `images`、`previews` 為 `{}`，建置成功。兩項都不設時，頂層與 `previews` 欄位**都**有 `SESSION` 與 `IMAGES`。建置期的圖片處理（`compile`）沒有被執行到：測試 Theme 沒有使用圖片                                                                                                                                                                                                                | R2 報告 §2.4（`normal`、`img-compile`、`baseline-default` 三個情境的 `dist/server/wrangler.json`）；`dist/wrangler.js:21-42`               |
+| `@astrojs/compiler-rs` 0.5.1 在 Node 中經 `@astrojs/compiler-binding-<平台>` 載入原生 binding；官方另有 `@astrojs/compiler-binding-wasm32-wasi`（`binding/browser.js` 就是匯出它）                                                                                                                                                                                                                                                                                                                                                          | spike 的 `node_modules`；R1 報告 §1                                                                                                        |
+| `@astrojs/compiler-rs` 0.5.1 加官方 `wasm32-wasi` binding 能在本機 workerd 中載入並解析；9 個樣本（含 369 KB 大檔）的 AST 與 Node 原生 binding 逐位元組相同，位置檢查 0 失敗，解析錯誤回傳診斷而不丟例外。Wasm 模組宣告最少 981 頁（約 61 MiB）的 shared 線性記憶體，只增不減                                                                                                                                                                                                                                                               | R1 報告 §2                                                                                                                                 |
+| Astro 7.3.5 本身依賴 `@astrojs/compiler-rs ^0.5.0`；`@astrojs/compiler`（Go → Wasm）是 Astro 6 以前的編譯器                                                                                                                                                                                                                                                                                                                                                                                                                                 | `node_modules/astro/package.json`；R1 報告「結論」、§3.3                                                                                   |
+| `.astro` 修改會整頁重新載入；`.tsx` island 修改是局部 HMR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 預覽報告 Run A／B                                                                                                                          |
+| `.astro` 頁面沒有實例識別，`request-structure` 回報 `nodes: []`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 預覽報告 B5                                                                                                                                |
+| bridge 的內容更新與導覽在沒有 TanStack Router 時不做任何事                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `theme-preview-bridge-entry.ts`                                                                                                            |
+| relay 的 `applied` 不代表「這次寫入造成的更新已顯示」                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 預覽報告第 2 節                                                                                                                            |
+| Live Preview 中 adapter 預設會寫 `.wrangler/state`、開 inspector port；以 Morph 的 adapter 設定覆寫後這兩項消失（建置期的 inspector port 見上方 R2 那一列）                                                                                                                                                                                                                                                                                                                                                                                 | 預覽報告 Run A／B                                                                                                                          |
+| Live Preview 與 Build Preview 容器本來就是 `enableInternet = false`，對外請求一律交給拒絕政策                                                                                                                                                                                                                                                                                                                                                                                                                                               | `src/server/preview-sandbox.ts`、`build-preview-sandbox.ts`                                                                                |
 
 ### 0.2 【待驗】解法與對應閘門
 
-| 解法                                                                                      | 節  | 閘門   |
-| ----------------------------------------------------------------------------------------- | --- | ------ |
-| 預先渲染：封存內容伺服器，加上只在 `prerender` 環境補標頭                                 | 4.3 | R2、A3 |
-| `.astro` 解析器能在 Morph Worker 中執行，位置精準                                         | 3.1 | R1     |
-| 實例識別在工作區規劃時改寫文字（依賴 R1）                                                 | 3.3 | R1、A7 |
-| Live Preview 沿用 Start 的預覽 Worker entry，包住 Astro 入口，而且不改變 Astro 的回應行為 | 2.5 | R3、A6 |
-| 以 `session: false`、`imageService` 讓產物不含 `SESSION`、`IMAGES`                        | 5.2 | R2、A4 |
-| 整頁重新載入後恢復選取與捲動                                                              | 6.1 | A6     |
-| 一個映像放多個工具鏈根目錄                                                                | 2.2 | A2     |
+| 解法                                                                                                                                                                                                           | 節  | 閘門   |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ------ |
+| 預先渲染：封存內容伺服器，加上只在 `prerender` 環境補標頭。三項前提在本機 miniflare 已由 R2 實測成立（0.1）；**Sandbox 容器中 workerd 連到建置程序 loopback 未驗**                                             | 4.3 | A2、A3 |
+| fail-fast 加建置後檢查、每次建置的 nonce、stamp 數等於預先渲染頁數（0.4 第 1、4 項）                                                                                                                           | 4.3 | A3     |
+| 內容鍵對應：依 Astro 的路由、`trailingSlash`、`build.format` 產生，與 Core 執行期用同一個正規化函式（0.4 第 3 項）                                                                                             | 4.3 | A3、A4 |
+| adapter 相容性檢查：入口存在、包裝恰好命中一次，否則 `ASTRO_ADAPTER_INCOMPATIBLE`（0.4 第 4 項）                                                                                                               | 4.3 | A3、A4 |
+| 建置期 inspector port：找官方停用方式，或證明殘餘風險可接受（0.4 第 2 項）                                                                                                                                     | 7.2 | A2、A4 |
+| `.astro` 解析器（compiler-rs + 官方 `wasm32-wasi` binding）放得進 Morph 主 Worker 的 128 MB isolate。解析器本身在 workerd 中的可行性與位置精度已由 R1 確認（0.1）；**與 Morph 主 Worker 合併後的記憶體沒有量** | 3.1 | M1     |
+| 實例識別在工作區規劃時改寫文字（解析器這一側由 R1 確認，仍依賴 M1）                                                                                                                                            | 3.3 | M1、A7 |
+| Live Preview 沿用 Start 的預覽 Worker entry，包住 Astro 入口，而且不改變 Astro 的回應行為                                                                                                                      | 2.5 | R3、A6 |
+| `imageService: "compile"` 的建置期圖片處理在 Morph 建置中實際執行（產物不含 `SESSION`、`IMAGES` 已是事實）                                                                                                     | 5.2 | A4     |
+| 整頁重新載入後恢復選取與捲動                                                                                                                                                                                   | 6.1 | A6     |
+| 一個映像放多個工具鏈根目錄                                                                                                                                                                                     | 2.2 | A2     |
 
 ### 0.3 【待決】產品選擇
 
 - 第一版不提供 Sessions：要求作者設定 `session: false`，還是等基礎設施對應提供每個商店自己的 KV（9.2）。
 - 圖片：第一版要求 `imageService: "passthrough"` 或 `"compile"`，還是對應 Cloudflare Images。
-- 解析器全部不可行時，`.astro` 的 Design 是否延後，只開放 Code 與 Live Preview。
+- M1 量出解析器放不進 Morph 主 Worker 時：以 service binding 把解析放到另一個 Worker（新的部署單位，需要使用者
+  核准），或自行重建不含執行緒的 compiler-rs（3.1）。兩者都不行時，`.astro` 的 Design 是否延後，只開放 Code 與
+  Live Preview。
 - 是否向 Astro 上游提出「預先渲染請求可以帶標頭」的選項。
 - `output: "static"` 的網站要不要支援。
+- 預先渲染頁看到的多餘標頭（`content-length`、`content-type: application/json`、`user-agent: node`）要不要由包裝
+  清掉（R2 報告 §6）。
+- `NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING` 是否要區分「封存內容伺服器不在」與「標頭沒送到」（4.3）。
+
+### 0.4 已決定（2026-10-07，使用者）
+
+1. **fail-fast 與建置後檢查兩者都保留。**
+   - 內容讀取被拒或失敗時，該頁的預先渲染當場失敗，並帶明確原因。作法是 adapter 既有的
+     `x-astro-prerender-error` 錯誤路徑（`prerenderer.js:164-167`），不是新的管道。
+   - `nativeBuildResult` 的建置後檢查仍然要求：每一次內容讀取都成功，每一個預先渲染頁都有 stamp。
+   - 記錄以 Morph 為每次建置產生的 nonce 綁定到這次建置；缺少記錄一律不通過。
+   - 不讀 CMS 內容的預先渲染頁不要求有讀取，只要求有 stamp。
+   - Start 使用的共用 request handler 之後也要套用同樣的 nonce 綁定。
+2. **inspector port。** 「外部連不到」不是安全理由，因為容器內的其他程序連得到 localhost。依序：
+   1. 找官方的停用方式，而且不改作者的產品設定。只影響建置工具、不改變產物的設定可能可以接受，要先驗證才下結論；
+   2. 必須保留時，確認監聽位址、這個 port 絕不被對應或轉發、容器中沒有任何祕密、建置後容器即銷毀；
+   3. 記錄殘餘風險。
+
+   驗收標準是「列出實際的監聽 socket，每一個都有已知用途」，不是「沒有其他 port 在聽」。
+
+3. **路徑。** 不一律去掉結尾斜線。依 Astro 的路由、`trailingSlash` 與 `build.format` 建立一致的內容鍵對應；封存的
+   鍵必須使用 Core 執行期使用的同一個正規化函式。測試至少包含：首頁、有無結尾斜線、`trailingSlash` 三種設定、
+   動態路由、中文與百分比編碼的路徑，以及兩個不同的路徑絕不會對應到同一個鍵。
+4. **建置前的 adapter 相容性檢查。**
+   - 預期的 adapter 入口不存在，或包裝沒有恰好命中一次：以 `ASTRO_ADAPTER_INCOMPATIBLE` 失敗。
+   - stamp 數不等於預先渲染頁數：建置失敗。
+   - 失敗的建置一律不整理成產物。
+   - 成功的產物主動檢查 `.prerender/`、包裝標記與 `.morph/` 診斷檔，不依賴 Astro 自己的清理。
 
 ## 摘要：關鍵決定
 
@@ -78,22 +128,24 @@ Astro 與它不同的地方。
    `GET /_morph/content?path=`。預先渲染只回答 build 封存的快照，回答不了的讀取讓建置失敗。
    **Start 的作法不能直接搬到 Astro**（見第 4.3 節）：Astro 的 Cloudflare 預先渲染另起一個不載入專案設定的
    preview server，請求也不帶任何標頭。如果什麼都不做，頁面會讀不到內容、默默使用元件預設值，建置照樣成功。
-   這正是 #130 為 Start 修掉的那一類錯誤。補救方案是【待驗】，驗收標準是「HTML 中是封存的內容」，
-   不只是「標頭有送到」。
+   這正是 #130 為 Start 修掉的那一類錯誤。補救方案在本機 miniflare 已由 R2 證明可行（Sandbox 容器未驗），
+   驗收標準是「HTML 中是封存的內容」，不只是「標頭有送到」。內容讀取失敗時預先渲染當場失敗（fail-fast），
+   建置後的檢查仍然保留（0.4 第 1 項）。
 5. **建置、Build Preview、發布、回滾走同一條原生路線**：同一個產物整理、同一個部署規則、同一個隔離式
    Build Preview、同一個 `PUBLISH_BUILD_CONTENT_MISMATCH` 最終把關。Astro 只多了幾條產物拒絕規則，
    每一條都寫明拒絕的是哪個設定、怎麼偵測：adapter 加入的 `SESSION`、`IMAGES`，Workers Cache 設定，
    以及 `.prerender/`。
-6. **`.astro` 實例識別的注入位置，取決於解析器的可行性閘門（R1）。** 首選是比照 TSX，由 Morph 在工作區
-   規劃時改寫文字（理由見 3.3），但這要求解析器能在 Morph Worker 中執行，而 spike 用的
-   `@astrojs/compiler-rs` 是原生 binding，不能。R1 通過之前，這個方案不算可行。
+6. **`.astro` 解析器選定 `@astrojs/compiler-rs` 加官方 `wasm32-wasi` binding，實例識別比照 TSX 在工作區規劃時
+   改寫文字**（理由見 3.3）。R1 證明這個解析器能在 workerd 中執行且位置精準，`@astrojs/compiler`（Go）被否決。
+   但它放不放得進 Morph 主 Worker 的 128 MB isolate **沒有量**，A1、A2 之前先由 M1 量測（8.2）。
 7. **Live Preview 中的 `.astro` 修改與內容更新一律重新載入整頁**（第一版）。bridge 的路由能力改由
    adapter 宣告，不再自己探測 `window.__morphPreviewRouter`。
 8. **預覽橋接注入與外連隔離是兩件事。** 安全邊界是容器的網路政策；Worker entry 中的外連檢查只負責提供
    明確的錯誤訊息，不是安全邊界（2.5、7.1）。
 9. **G0 阻擋的是接入與開放，不阻擋研究。** 原生 Start 的內容配對驗收（Build Preview、發布、過期發布拒絕、
    並行、回滾，真實容器）必須先通過，Astro 才能接進 `main`。解析器與預先渲染機制的小型實驗
-   （R1–R3）可以先做：這些實驗不接 `main`，也不宣稱 Astro 已支援（第 8 節）。
+   （R1–R3）可以先做：這些實驗不接 `main`，也不宣稱 Astro 已支援（第 8 節）。R1、R2 已完成（2026-10-07），
+   R3 尚未進行。
 
 ## 1. 範圍
 
@@ -145,8 +197,10 @@ React 與 Vue 混用維持 multi-runtime 計畫的判定（Unverified，vite-plu
   Durable Object 類別與容器綁定不必加倍，代價是映像變大。實際大小與冷啟動時間要在 A2 量測後才定。
 - Node：`@astrojs/compiler-rs` 要求 `>=22.12.0`，Vite 8 也有同樣等級的要求。映像中的 Node 版本須經 A2 確認；
   Theme 沙箱的 Node 版本與 Morph 應用分開（沿用 start-native-import-plan 的規則）。
-- `@astrojs/compiler-rs` 透過 `@astrojs/compiler-binding-linux-<arch>-<libc>` 載入原生 binding，所以映像的
-  架構與 libc 必須在認證組合中寫明。
+- 工具鏈中 Astro 自己使用的 `@astrojs/compiler-rs` 透過 `@astrojs/compiler-binding-linux-<arch>-<libc>` 載入原生
+  binding，所以映像的架構與 libc 必須在認證組合中寫明。這與 Morph Worker 中用的 `wasm32-wasi` binding（3.1）
+  是同一個套件的兩種 binding。A2 加一項檢查：Morph 鎖定的 compiler-rs 版本與 Astro 工具鏈中 `astro` 依賴的
+  版本一致或相容（R1 報告 §5）。
 
 ### 2.3 工作區規劃：保留哪些 Theme 設定檔
 
@@ -301,25 +355,49 @@ OCC）→ 該實例更新、其他實例不變**。
 ### 3.1 解析
 
 - 解析結果是 JSX 形式的 ESTree，位置為 UTF-16 offset。spike 以 `@astrojs/compiler-rs` 0.5.1 驗證過，
-  插入中文與 emoji 後位置仍然精準。frontmatter 取出範圍後交給 Babel（TypeScript）解析，用來讀 props 型別。
-- **阻礙：`@astrojs/compiler-rs` 透過 `@astrojs/compiler-binding` 載入平台原生 binding**（spike 中為
-  `compiler-binding-linux-x64-gnu`）。Design 的讀取與改寫，以及工作區規劃（3.3），都在 Morph 的 Worker
-  中執行，原生 binding 在那裡不能載入。候選方案，依偏好排序：
-  1. compiler-rs 若有 WASM 版 binding，而且能在 workerd 中執行，就使用它（未驗證是否有這個套件）；
-  2. 改用 `@astrojs/compiler`（WASM）。它與 compiler-rs 的 AST 形狀不同，位置與錯誤行為要重新驗證；
-  3. 都不行時，`.astro` 的 Design 不開放，Live Preview 只提供來源位置。這時改用預覽容器內的 Vite plugin，
-     也就是預覽報告的作法，但這條路線產生的結果不能作為儲存的依據。
-- 【待驗】**可行性閘門 R1（獨立實驗，不接 `main`）**：候選解析器放進實際的 Worker（`wrangler dev` 的 workerd，
-  不是 Node）執行，以同一組樣本比對 compiler-rs 在 Node 中的結果：
-  - 中文、emoji（含 surrogate pair 與組合字元）前後元素的位置，換算成行列後與原始檔一致；
-  - frontmatter：範圍正確，含 `---` 內的 TypeScript、`import`、`export const prerender`；
-  - 動態屬性：`class:list`、`{...spread}`、`attr={expr}`、`set:html`、`client:*` 指令；
-  - 運算式中的 JSX（`{items.map(item => <li>…</li>)}`、條件式）、`<slot>`、`<Fragment>`、`<style>`、`<script>`；
-  - 解析錯誤時的行為（不得丟出未捕捉的例外，也不得卡住 Worker）；
-  - bundle 大小、冷啟動與單檔解析時間，在 Worker 的 CPU 與記憶體限制內。
-    R1 通過之前，3.3 的「工作區規劃時改寫」只是首選方案，不視為可行。
-- Morph 用來解析的版本與 Theme 工具鏈中的 Astro 編譯器版本可能不同。Morph 解析失敗的檔案，在 Design 中
-  只能唯讀（「由程式碼控制」），Code 照常可以編輯；建置不受影響。
+  插入中文與 emoji 後位置仍然精準。compiler-rs 直接把 frontmatter 解析成 TypeScript ESTree
+  （`AstroFrontmatter.program`），不必再交給 Babel；props 型別從這裡讀（R1 報告 §2.4）。
+- Design 的讀取與改寫，以及工作區規劃（3.3），都在 Morph 的 Worker 中執行，Node 原生 binding 在那裡不能載入。
+  R1 對三類候選的結論（R1 報告「結論」）：
+  1. **選定：`@astrojs/compiler-rs` 0.5.1 加官方 `@astrojs/compiler-binding-wasm32-wasi` 0.5.1。** 【事實】在本機
+     workerd 中載入並解析成功；所有樣本的 AST 與 Node 原生 binding 逐位元組相同，位置檢查 0 失敗（中文、emoji、
+     ZWJ、組合字元、CRLF、BOM、frontmatter、動態屬性、運算式中的 JSX、`<slot>`、`<Fragment>`、`<style>`、
+     `<script>`）；17 個錯誤樣本與 581 個不完整輸入都回傳診斷，沒有例外，Worker 不失效。它也是 Astro 7.3.5
+     自己使用的編譯器，所以「Morph 與工具鏈的編譯器不同」縮小成「同一套件的版本差」（2.2 的版本檢查）。
+  2. **否決：`@astrojs/compiler` 4.0.0（Go → Wasm）。** 記憶體隨檔案大小超線性成長（74 KB 檔案 266 MiB、
+     147 KB 超過 1.8 GiB，369 KB 的檔案 out of memory），不完整的輸入會讓 Go runtime panic；位置是 UTF-8 byte offset，運算式、註解、`<>` 的起點
+     有誤，屬性沒有結束位置；而且它不是 Astro 7 使用的編譯器。
+  3. 備案（不採用，除非 M1 失敗後的選項也都不行）：`.astro` 的 Design 不開放，Live Preview 只提供來源位置，
+     改用預覽容器內的 Vite plugin。這條路線的結果不能作為儲存的依據。
+- **採用條件**（R1 的結果，不是可選的最佳化）：
+  1. **自己寫 binding 載入器。** 官方瀏覽器載入器（`astro.wasi-browser.js`）在 workerd 中不能原樣使用：它從 bytes
+     編譯 `.wasm`（workerd 禁止：`Wasm code generation disallowed by embedder`），並準備 Web Worker 執行緒池
+     （workerd 沒有）。Morph 的載入器以 wrangler 的 CompiledWasm 規則匯入預先編譯的模組，其餘
+     （`@napi-rs/wasm-runtime`、WASI preview1、shared memory）與官方載入器相同，再以 bundler alias 讓
+     compiler-rs 的公開入口使用它。只用同步 API（`parse`）；非同步 API 需要執行緒。
+  2. **記憶體底線、檔案大小上限、trap 後重建實例。** Wasm 模組最少約 61 MiB 線性記憶體（981 頁），只增不減；
+     官方載入器要求的 `initial: 4000` 頁（250 MiB）本身就超過 128 MB，必須改用模組自己的最小值。一般檔案
+     （≤ 37 KB）實測約 64 MiB 加 AST 約 3 MiB；369 KB 檔案為 85 MiB 加 26 MiB。因此：
+     - 設定檔案大小上限，超過的檔案在 Design 中唯讀（「由程式碼控制」）。從 100 KB 開始，M1 量測後調整；
+     - 解析發生 trap（stack overflow），或 `memory.buffer.byteLength` 超過門檻時，丟棄實例重新建立（實例化約
+       20–50 ms）。連續 50 次 stack overflow 後線性記憶體從 61.4 MiB 增加到 77.3 MiB，不會縮回。
+  3. **輸入先 `toWellFormed()`。** 含孤立 surrogate 的字串在 Wasm 版與原生版結果不同；先轉換後一致。
+     從 UTF-8 檔案解碼的字串不會有孤立 surrogate，所以這是低成本的防禦。
+  4. **巢狀深度上限。** 約 3000 層以上的巢狀會丟出可捕捉的 `RangeError: Maximum call stack size exceeded`
+     （2000 層成功）。這時 Design 唯讀，並依第 2 點重建實例。同樣的輸入在 Node 原生 binding 中會 `SIGSEGV`。
+  5. **安裝。** `@astrojs/compiler-binding-wasm32-wasi` 宣告 `"cpu": ["wasm32"]`，在 x64 上 npm 以
+     `EBADPLATFORM` 拒絕。Morph 要在 pnpm 設定 `supportedArchitectures`（cpu 加入 `wasm32`），不能靠強制安裝。
+     R1 只確認了 npm 會拒絕，沒有在 Morph 的 pnpm workspace 中試。
+- **【待驗】Morph 主 Worker 的記憶體預算（閘門 M1）。** R1 只在獨立的 Worker 中量測。解析器與 Morph 主 Worker
+  共用一個 isolate 時，61 MiB 底線加 AST，再加上 Morph Worker 本身的記憶體，是否放得進 128 MB（每個 isolate 的
+  上限，包含 Wasm），**沒有量**；6.7 MB bundle（gzip 約 1.7 MB）對啟動時間（1 秒上限）的影響也沒有量。
+  **這要在 A1、A2 之前量測**（8.2）。放不下時的選項，屬於 0.3 的待決事項：
+  - 以 service binding 把解析放到另一個 Worker 的 isolate：這是新的部署單位，需要使用者核准；
+  - 自行從原始碼重建不含執行緒的 compiler-rs WASI，去掉 shared memory 與 61 MiB 的初始記憶體。
+- R1 沒有驗證的項目：正式 Cloudflare 環境（128 MB 上限、CPU 時間、Wasm 編譯快取）、同一個 isolate 中的並行解析、
+  以這些位置產生 patch 再解析的往返（3.5）、props 型別推斷（3.4）。詳見 R1 報告 §6。
+- Morph 解析失敗、超過大小或深度上限的檔案，在 Design 中只能唯讀（「由程式碼控制」），Code 照常可以編輯；
+  建置不受影響。
 
 ### 3.2 來源位置
 
@@ -337,14 +415,19 @@ OCC）→ 該實例更新、其他實例不變**。
   宣告過的 prop 時，就是欄位；迴圈中依 key 表達式決定 item；section 的邊界放在元件的呼叫處。
   被呼叫的 `.astro` 元件不知道自己是哪一個實例，所以由呼叫處以 TSX 現有的同一套 wrapper 規則
   （`display: contents` 及該檔案註解列出的間距注意事項）標記。
-- 【待驗，依賴 R1】**注入時機的首選：工作區規劃時改寫文字，與 TSX 相同；不採用預覽報告第 5 節第 2 點的
-  Vite `load` plugin。** 理由：
+- 【待驗，依賴 M1】**注入時機：工作區規劃時改寫文字，與 TSX 相同；不採用預覽報告第 5 節第 2 點的
+  Vite `load` plugin。** R1 已證明解析器這一側成立（3.1），不需要退回容器內的 Vite plugin；剩下的前提是
+  M1 的記憶體預算。理由：
   1. 實例識別必須與 Design 儲存時的分析完全一致。在 Morph 中執行，保證程式碼與解析器版本相同；
      在容器內執行的 plugin 做不到這點。
   2. Live Preview 的檔案同步本來就在 Morph 端呼叫 `prepareSourcesForLivePreview`，`.astro` 走同一處，
      不必額外處理 Astro 編譯器 `enforce: "pre"` 的排序問題。
   3. 預覽報告也指出兩套 TSX 注入不能並存。TSX 繼續使用規劃時改寫，spike 中的 TSX transform 不帶進產品。
-- 代價：前提是 3.1 的解析器能在 Morph Worker 中執行。如果最後只能退回第 3 個候選方案，這一節要重新設計。
+- 代價：前提是 3.1 的解析器能在 Morph Worker 中執行。M1 放不下時，若改用另一個 Worker（service binding），
+  解析與改寫仍由 Morph 的程式碼與同一版解析器執行，上面的理由 1 仍然成立；只有退回第 3 個候選方案時，
+  這一節才要重新設計。
+- 3.5 的改寫可以直接使用 compiler-rs 給的屬性值範圍（`Literal`、`JSXExpressionContainer`），不必自己掃描原始文字
+  （R1 報告 §5）。
 - 建置：`.astro` 的標記只存在於預覽工作區，不寫回 Theme 原始碼，所以建置不必移除任何東西。
   TSX 照舊經過 `prepareSourcesForBuild`。
 - island 內的 React 元件由現有 TSX 注入處理。Vue 元件第一版沒有實例識別：可以在樹上選取並定位原始碼，
@@ -406,15 +489,17 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
    Astro 的預先渲染器，自己呼叫 `vite.preview({ configFile: false, plugins: [cfVitePlugin(...)] })`。
    `configFile: false` 表示專案與包裝檔的 Vite plugin（包括 `configurePreviewServer`）都不會進入這個 server。
 2. 每一頁的渲染是對這個 server 發出 `POST /__astro_prerender`，body 只有 `url` 與 `routeData`，
-   請求只帶 `Content-Type`。在 Worker 中，頁面的 `Request` 是以這個 POST 的標頭重建的，所以頁面看到的
-   請求**沒有 `x-morph-content-origin`**。
+   adapter 只指定 `Content-Type`。在 Worker 中，頁面的 `Request` 是把這個 POST 的全部標頭原樣複製過來重建的
+   （`utils/prerender.js:49-59`），所以頁面另外還會看到 Node `fetch` 與 miniflare 加上的標頭，以及 POST 的
+   `content-length`，但**沒有 `x-morph-content-origin`**（R2 的 `noshim` 情境實測確認）。`Astro.url` 來自 POST
+   body 的 `url`，與 `host` 標頭（preview server 的隨機 port）不同。
 3. adapter 的 `experimental.prerenderWorker.config` 把 `main` 寫死為
    `@astrojs/cloudflare/entrypoints/server`，所以 Morph 也不能透過 wrangler 設定換掉預先渲染 Worker 的入口。
 
 如果什麼都不做，頁面讀不到 origin，Theme 退回元件預設值，建置成功，發布出去的就是預設值的靜態頁。
 而且因為根本沒有發出讀取，refused-reads 也不會有任何記錄。
 
-**設計**（【待驗】，閘門 R2、A3）：
+**設計**（本機 miniflare 已由 R2 證明可行；【待驗】Sandbox 容器與 Morph 程式碼，閘門 A2、A3）：
 
 - **封存內容伺服器**：Morph 的建置 integration（5.1 的包裝設定檔加入）在 `astro:build:start` 時於建置
   程序中啟動一個只聽 loopback 的 HTTP server，`astro:build:done` 時關閉。
@@ -423,45 +508,85 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
   - 回答不了的讀取追加到同一個 `.morph/prerender-refused-reads.ndjson`，由同一個 `nativeBuildResult` 讓建置失敗。
   - 回答與拒絕的邏輯從 `themePrerenderContentPluginSource` 抽成共用的 request handler，Start 的 preview
     middleware 與 Astro 的 server 共用它，不寫第二份。
+- **每次建置的 nonce**（0.4 第 1 項）：Morph 為每一次建置產生一個 nonce，交給封存內容伺服器與包裝。
+  refused-reads 與 stamped 記錄都帶這個 nonce，`nativeBuildResult` 只接受 nonce 等於這次建置的記錄；
+  缺少記錄、nonce 不符或格式不對，一律不通過。這讓工作區中殘留的舊記錄、或其他程序寫入的記錄不會被算進來。
+  Start 使用的共用 request handler 之後也要套用同樣的 nonce 綁定（另一個 PR，不在 Astro 接入中順便改）。
 - **標頭送達**：在 Vite 的 `prerender` 環境中（且只在這個環境），包住 `@astrojs/cloudflare/entrypoints/server`：
+  - 鉤點：`applyToEnvironment` 只對 `prerender` 回傳 true，`resolveId` 攔截 adapter 寫死在
+    `experimental.prerenderWorker.config` 的 `main`（裸模組名 `@astrojs/cloudflare/entrypoints/server`，
+    `dist/index.js:149`）。adapter 換版時這個值或解析方式可能改變，包裝會默默不生效，所以需要下面的相容性檢查；
   - 為進入的頁面請求設定 `x-morph-content-origin`，值為上面那個 server 的 origin；
   - 在這一頁渲染期間，記錄每一次對內容 origin 的讀取結果：成功、被拒（404）、連線失敗、非 2xx、
     回應無法解析；
-  - 其他外連一律拒絕，只為了讓錯誤訊息明確；建置期的外連隔離由 Sandbox 的網路政策負責（7.1）。
-  - 頁面渲染完成後，把「pathname、讀取次數、失敗次數」送回封存內容伺服器
+  - 其他外連一律拒絕，只為了讓錯誤訊息明確；建置期的外連隔離由 Sandbox 的網路政策負責（7.1）。包裝攔截的是
+    `globalThis.fetch`，Theme 以其他方式（例如 `connect()`）發出的請求不在記錄範圍內；
+  - 頁面渲染完成後，把「nonce、pathname、讀取次數、失敗次數」送回封存內容伺服器
     （loopback 上的另一個路徑），由伺服器寫入 `.morph/prerender-stamped.ndjson`。workerd 不能寫檔，
     所以記錄一律經由這個伺服器。
-- **建置失敗條件**（`nativeBuildResult`，判斷依據是讀取記錄，不是 HTML）：
+- **adapter 相容性檢查**（0.4 第 4 項）：
+  - 建置開始前：預期的 adapter 入口不存在（解析不到 `@astrojs/cloudflare/entrypoints/server`）時，以
+    `ASTRO_ADAPTER_INCOMPATIBLE` 失敗，不執行預先渲染；
+  - 建置中：包裝在 `prerender` 環境的 `resolveId` 沒有命中，或命中不只一次，同樣以 `ASTRO_ADAPTER_INCOMPATIBLE`
+    失敗。這讓「adapter 升級後包裝不再生效」有明確的錯誤訊息，而不是只表現為 `ORIGIN_MISSING`（R2 報告 §4）；
+  - 建置後：stamp 數不等於預先渲染頁數時，建置失敗（見下方的建置失敗條件）。
+- **fail-fast**（0.4 第 1 項）：內容讀取被拒、失敗，或 stamp 送不回去時，包裝讓這一頁的預先渲染當場失敗：回傳帶
+  `x-astro-prerender-error` 的 500。adapter 既有的錯誤路徑（`prerenderer.js:164-167`）會丟出
+  `Failed to prerender <url>: <原因>`，`astro build` 以非 0 結束，不產出這一頁的 HTML。錯誤訊息要寫出原因
+  （`refused`、`non-2xx` 與狀態碼、`connect-failed`、`unparseable`），R2 的 fail-fast 情境中這些都出現在 log 裡。
+  這只是把錯誤原因經由 adapter 既有的錯誤標頭帶回建置程序，不傳內容，不是內容管道。
+- **建置失敗條件**（fail-fast 之外，`nativeBuildResult` 在建置後檢查；判斷依據是讀取記錄，不是 HTML）：
   - 有被拒的讀取：`NATIVE_PRERENDER_CONTENT_UNAVAILABLE`（與 Start 相同）；
   - 有任何一頁的內容讀取失敗（連線失敗、非 2xx、無法解析）：`NATIVE_PRERENDER_CONTENT_READ_FAILED`。
     Theme 的讀取函式通常會 `catch` 錯誤並退回預設值，所以「頁面照常產生」不能當作讀取成功的證據；
-  - 產物中任何一個預先渲染的 HTML 沒有對應的 stamped 記錄：`NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING`。
-    封存內容伺服器停掉或連不到時，記錄也送不回來，所以這種情況一樣會失敗，不會因為「沒有讀取」而通過。
-    不讀內容的靜態頁本來就允許，所以「沒有讀取」本身不能當作錯誤；能證明標頭有送到的，只有這份記錄。
+  - 產物中任何一個預先渲染的 HTML 沒有這次建置的 stamped 記錄，或 stamp 數不等於預先渲染頁數：
+    `NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING`。封存內容伺服器停掉或連不到時，記錄也送不回來，所以這種情況
+    一樣會失敗，不會因為「沒有讀取」而通過。不讀 CMS 內容的預先渲染頁不要求有讀取，只要求有 stamp；
+    能證明標頭有送到的，只有這份記錄。
+  - **這個錯誤碼同時涵蓋「封存內容伺服器不在」與「標頭沒送到」**，記錄上無法區分：讀取失敗的細節與 stamp
+    走同一個伺服器，伺服器不在時一起遺失（R2 報告 §3 觀察 3）。fail-fast 的錯誤訊息中仍看得到 `connect-failed`。
+    是否要在記錄上區分兩者，列在 0.3。
+- **為什麼兩者都要。** R2 實測：在只看記錄的設計下，四種失敗情境的 `astro build` 都以 exit 0 結束，並產出含預設值
+  的 HTML。所以 **Astro 原生建置的成功判定不能只看 `astro build` 的 exit code**；fail-fast 讓失敗發生在當下並帶
+  原因，建置後的檢查則不依賴包裝一定有執行（例如包裝根本沒有命中時，fail-fast 也不會發生）。
 - **標頭有送到，不等於頁面讀到正確內容。** 驗收以 HTML 的實際內容為準（見下方 A3 的三值測試）。
-- **不進產物**：上面的包裝只存在於 `prerender` 環境的 bundle 裡。Astro 的 `verifyArtifact` 以字串標記掃描
-  `runtime/server/**`，找到就以 `NATIVE_PRERENDER_SHIM_LEAKED` 拒絕。`.prerender/` 目錄也不得進入產物（5.2）。
+- **不進產物**：上面的包裝只存在於 `prerender` 環境的 bundle 裡。R2 中可部署的 bundle 沒有包裝標記；`.prerender/`
+  在預先渲染成功後由 Astro core 自行刪除，**但預先渲染失敗時會留下**，內含包裝與完整的 prerender bundle。因此：
+  - 失敗的建置一律不執行產物整理，不產生產物；
+  - 成功的產物，Astro 的 `verifyArtifact` 主動檢查，不依賴 Astro 自己的清理：`runtime/server/**` 中出現包裝標記
+    （`NATIVE_PRERENDER_SHIM_LEAKED`）、任何 `.prerender/` 路徑、任何 `.morph/` 診斷檔（refused-reads、stamped
+    等記錄），都拒絕（5.2）。
 
-**必須先驗證的前提**（R2 為獨立實驗，可以在 G0 之前做；A3 是接入 `main` 前的真實建置測試）：
+**前提的驗證狀態**（R2 為獨立實驗；A3 是接入 `main` 前的真實建置測試）：
 
-1. Astro core 在 workerd 預先渲染時，會把請求標頭原樣交給頁面，而不是另外清空或警告；
-2. 只套用在 `prerender` 環境的 plugin 能夠包住那個入口；
-3. workerd 中的預先渲染 Worker 連得到建置程序的 loopback（本機 miniflare 與 Sandbox 容器都要驗）。
+1. Astro core 在 workerd 預先渲染時，會把請求標頭原樣交給頁面，而不是另外清空或警告：**R2 成立**。Astro 的
+   「`Astro.request.headers` is not available on prerendered pages」只出現在 Node 端的 `createRequest`，那個請求
+   不進入 workerd；R2 的建置 log 沒有這類警告。
+2. 只套用在 `prerender` 環境的 plugin 能夠包住那個入口：**R2 成立**。
+3. workerd 中的預先渲染 Worker 連得到建置程序的 loopback：**本機 miniflare 由 R2 成立；Sandbox 容器未驗**，
+   在 A2 驗證（8.2）。容器中建置程序與 workerd 是否在同一個網路命名空間、容器的外連政策會不會攔截 loopback，
+   都還不知道。
 
-**任何一項不成立，Astro 接入就停在這裡**，回到設計層決定，不悄悄改成新的資料管道。
+**任何一項在 Sandbox 中不成立，Astro 接入就停在這裡**，回到設計層決定，不悄悄改成新的資料管道。
 
 **A3 的三值測試**（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`，真實建置）：同一個欄位準備三個不同的值，
-元件預設值 D、封存快照中的 A、建置後才改的目前草稿 B。
+元件預設值 D、封存快照中的 A、建置後才改的目前草稿 B。R2 以簡化的 harness 跑過同一組情境（R2 報告 §3）；
+A3 改用 Morph 自己的 `createNativePrerenderContent`、共用 request handler 與 `nativeBuildResult`。
 
-| 情境                               | 預期                                                                   |
-| ---------------------------------- | ---------------------------------------------------------------------- |
-| 正常建置                           | 預先渲染的 HTML 含 A，不含 D、不含 B                                   |
-| 沒有快照                           | 建置失敗（`NATIVE_PRERENDER_CONTENT_UNAVAILABLE`），沒有產物           |
-| 封存內容伺服器回 500               | 建置失敗（`NATIVE_PRERENDER_CONTENT_READ_FAILED`）                     |
-| 封存內容伺服器沒有啟動（連線被拒） | 建置失敗（`NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING` 或 `READ_FAILED`） |
-| 拿掉標頭送達                       | 建置失敗（`NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING`）                  |
-| 不讀內容的靜態頁                   | 建置成功                                                               |
-| 部署的 Worker 產物                 | 不含包裝的標記，也沒有 `.prerender/`                                   |
+fail-fast 與建置後檢查**各自**要被證明有效：每一個失敗情境跑兩次，一次是正常的建置（fail-fast 生效），一次在
+測試中關閉 fail-fast，只靠建置後檢查。兩道防線任一道單獨存在時，都必須擋得住每一個失敗情境（0.4 第 1 項）。
+
+| 情境                               | fail-fast 生效                                           | 只靠建置後檢查                                      |
+| ---------------------------------- | -------------------------------------------------------- | --------------------------------------------------- |
+| 正常建置                           | 預先渲染的 HTML 含 A，不含 D、不含 B                     | 同左                                                |
+| 沒有快照                           | 預先渲染失敗，訊息含 `refused`；沒有產物                 | `NATIVE_PRERENDER_CONTENT_UNAVAILABLE`，沒有產物    |
+| 封存內容伺服器回 500               | 預先渲染失敗，訊息含 `non-2xx` 與 500；沒有產物          | `NATIVE_PRERENDER_CONTENT_READ_FAILED`，沒有產物    |
+| 封存內容伺服器沒有啟動（連線被拒） | 預先渲染失敗，訊息含 `connect-failed`；沒有產物          | `NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING`，沒有產物 |
+| 拿掉標頭送達（包裝沒有命中）       | `ASTRO_ADAPTER_INCOMPATIBLE`；沒有產物                   | `NATIVE_PRERENDER_CONTENT_ORIGIN_MISSING`，沒有產物 |
+| 記錄的 nonce 與這次建置不符        | —                                                        | 建置失敗，沒有產物                                  |
+| 不讀內容的預先渲染頁               | 建置成功，該頁有 stamp、0 次讀取                         | 同左                                                |
+| 失敗的建置                         | `dist/server/.prerender/` 留在工作區，但沒有產生任何產物 | 同左                                                |
+| 成功建置的 Worker 產物             | 不含包裝的標記、`.prerender/`、`.morph/` 診斷檔          | 同左                                                |
 
 任何一種失敗情境下，如果建置成功並產生含 D 的 HTML，A3 就不通過。
 
@@ -476,6 +601,19 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
 
 - `createNativePrerenderContent` 需要 `ThemeRouteRegistry`。Astro adapter 的 `routes` 從 `src/pages/**`
   的檔名產生：`[param]`、`[...rest]` 是動態路由，其餘是靜態路由。
+- **路徑與內容鍵的對應**（0.4 第 3 項）。【事實】R2：預設 `build.format: "directory"`、`trailingSlash: "ignore"`
+  時，預先渲染中 `Astro.url.pathname` 是 `/about/` 形式，首頁是 `/`；快照鍵寫成 `/about` 時 `/about/` 被拒，
+  建置由 `UNAVAILABLE` 擋下（R2 報告 §3 觀察 4，`path-noslash` 情境）。判定機制是對的，但鍵不一致時每個非首頁
+  的頁面都會建置失敗。規則：
+  - **不一律去掉結尾斜線。** 依 Astro 的路由、`trailingSlash`（`"always"`、`"never"`、`"ignore"`）與
+    `build.format` 建立一份一致的內容鍵對應：`ThemeRouteRegistry` 的路徑、`createNativePrerenderContent` 的鍵、
+    Theme 讀取時送出的 `path`、預先渲染 HTML 的輸出路徑，都經過同一個對應。
+  - 封存的鍵必須使用 **Core 執行期使用的同一個正規化函式**，也就是店面與 Build Preview 回答
+    `/_morph/content?path=` 時，`resolveStorefrontContent`（`storefront-content-runtime.ts`）解析 path 所用的
+    那一個。函式要抽出來共用，不在建置端另寫一份；否則預先渲染讀到的內容可能與同一路徑在 SSR 時讀到的不同。
+  - 測試（A3、A4）至少包含：首頁；同一頁有無結尾斜線；`trailingSlash` 三種設定；動態路由；中文與百分比編碼的
+    路徑；以及**兩個不同的路徑絕不會對應到同一個鍵**。
+  - 這一項與 A4 的「`assertThemePrerenderArtifacts` 的路徑對應」（5.2）合併處理。R2 只測了預設值。
 - 動態路由經 `getStaticPaths` 產生的頁面，路徑在建置前無法得知，讀內容時會被拒絕
   （`NATIVE_PRERENDER_PATH_NOT_SEALED`），規則與 Start 相同。這列為已知缺口：第一版中讀 Morph 內容的動態
   頁面不能預先渲染，要改用 SSR。
@@ -485,14 +623,14 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
 
 與原生 Start 同一條路線。下表只列 Astro 不同或需要確認的地方：
 
-| 環節          | 共用（不改）                                                                                       | Astro 專屬                                                                                |
-| ------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 輸入          | materializer、`buildMode: "native"`、`inputHash`、開關預設關閉、正式環境拒絕                       | 輸入記錄 `framework: "astro"` 與工具鏈 id；compiler 身分為 `astro-native`                 |
-| 執行          | 兩個建置程式、只拿到必要環境變數、Sandbox 不外連                                                   | 命令為 `astro build --config .morph/astro.build.config.mjs`；`ASTRO_TELEMETRY_DISABLED=1` |
-| 產物          | `.wrangler/deploy/config.json` → Worker 設定 → `runtime/server`、`runtime/client`；manifest 與雜湊 | 排除 `prerenderWorkerConfigPath` 指向的目錄；adapter 自動加入的綁定（5.2）                |
-| Build Preview | 每個權杖一個隔離實例、只載入該 build 的產物、外連政策只回答自己的 `/_morph/content`                | 無                                                                                        |
-| 發布          | 重用預覽過的 build、`buildContentCurrent`、`PUBLISH_BUILD_CONTENT_MISMATCH`、只有 Certified 能發布 | 無                                                                                        |
-| 回滾          | release 指回舊 build，部署該 build 的產物                                                          | 拒絕產物 Worker 設定中的 `cache.enabled`（5.2）；Theme 程式自行使用的快取不在偵測範圍內   |
+| 環節          | 共用（不改）                                                                                       | Astro 專屬                                                                                                                               |
+| ------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 輸入          | materializer、`buildMode: "native"`、`inputHash`、開關預設關閉、正式環境拒絕                       | 輸入記錄 `framework: "astro"` 與工具鏈 id；compiler 身分為 `astro-native`                                                                |
+| 執行          | 兩個建置程式、只拿到必要環境變數、Sandbox 不外連                                                   | 命令為 `astro build --config .morph/astro.build.config.mjs`；`ASTRO_TELEMETRY_DISABLED=1`                                                |
+| 產物          | `.wrangler/deploy/config.json` → Worker 設定 → `runtime/server`、`runtime/client`；manifest 與雜湊 | 只整理成功的建置；排除 `prerenderWorkerConfigPath` 指向的目錄；adapter 自動加入的綁定（5.2）；不能只看 `astro build` 的 exit code（4.3） |
+| Build Preview | 每個權杖一個隔離實例、只載入該 build 的產物、外連政策只回答自己的 `/_morph/content`                | 無                                                                                                                                       |
+| 發布          | 重用預覽過的 build、`buildContentCurrent`、`PUBLISH_BUILD_CONTENT_MISMATCH`、只有 Certified 能發布 | 無                                                                                                                                       |
+| 回滾          | release 指回舊 build，部署該 build 的產物                                                          | 拒絕產物 Worker 設定中的 `cache.enabled`（5.2）；Theme 程式自行使用的快取不在偵測範圍內                                                  |
 
 ### 5.1 包裝設定檔
 
@@ -505,6 +643,9 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
 2. **封存內容伺服器**與 **`prerender` 環境的標頭送達**（4.3）。
 3. 沒有其他事。不覆寫 adapter，不改 `output`，不加任何進入 Worker 的程式。
 
+不覆寫 adapter 的後果：adapter 起的預先渲染 preview server 預設開 inspector port（R2 報告 §4），而 Theme 的
+`cloudflare({ inspectorPort: false })` 是作者的產品設定，包裝檔替作者改它違反第 3 點。處理方式見 7.2。
+
 Wrangler 設定副本與 Start 相同，以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=.morph/wrangler.json` 提供。
 adapter 在 `astro:config:setup` 中會呼叫 `loadWranglerEnv(config.root, configPath)`，它讀哪些檔案、會不會讀到
 工作區中的 `.dev.vars`／`.env` 要在 A4 確認。工作區本來就不放這些檔案（2.3），所以確認的目的是讓規則有依據。
@@ -512,20 +653,25 @@ adapter 在 `astro:config:setup` 中會呼叫 `loadWranglerEnv(config.root, conf
 ### 5.2 Astro 的產物規則
 
 【事實】spike 建置後，`dist/server/wrangler.json` 中有以下內容（證據：spike 的 `dist/server/wrangler.json`
-與 `.wrangler/deploy/config.json`）。
+與 `.wrangler/deploy/config.json`；R2 報告 §2.4）。
+
+**`previews` 欄位也要檢查。** 預設設定下，adapter 除了頂層的 `kv_namespaces`、`images`，還在 `previews` 欄位
+寫入同樣的 `SESSION` 與 `IMAGES`（`dist/wrangler.js:42`）。Morph 不使用 Cloudflare 的 preview 部署，但下表的
+`SESSION`、`IMAGES` 規則**同時讀頂層與 `previews`**，任一處出現就拒絕：理由是這兩處都來自同一個作者設定，
+只看頂層的話，規則的正確性就依賴「adapter 永遠同時寫兩處」這個沒有保證的實作細節，而多讀一個欄位的成本很低。
 
 原則：Morph 不支援的項目，**在建置時明確拒絕，並說明拒絕的是哪個設定、作者可以怎麼改**；不在部署時才拒絕，
 也不默默丟掉。每一條規則只檢查「產物 Worker 設定中的某個欄位」，所以寫得出確切的偵測方法；
 Theme 程式碼中的行為不在這個範圍內。
 
-| 產物 Worker 設定中的欄位                                            | 來源                                                                        | 現有部署規則的結果                                                                         | 設計（偵測方式：讀 `.wrangler/deploy/config.json` 指向的 Worker 設定）                                                                                                           |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kv_namespaces` 含 `SESSION`（或 `sessionKVBindingName`）           | Theme 沒有設定 `session: false`，也沒有指定其他 driver 時，adapter 自動加入 | `planThemeWorkerDeployment` 以 `FORBIDDEN_BINDING` 拒絕，但要到 Build Preview 或發布才發現 | 建置時以 `ASTRO_SESSION_BINDING_UNSUPPORTED` 拒絕，訊息說明可在 `astro.config` 設定 `session: false`                                                                             |
-| `images`（Images 綁定）                                             | adapter 的 `imageService` 為預設的 `"cloudflare-binding"`                   | 不在禁止清單中，部署時被默默丟掉；之後執行期的圖片端點會失敗                               | 建置時以 `ASTRO_IMAGES_BINDING_UNSUPPORTED` 拒絕，訊息說明可改用 `imageService: "passthrough"` 或 `"compile"`。另外建議把 `images` 加入部署的禁止清單（部署規則的修改，另開 PR） |
-| `cache.enabled === true`                                            | Astro 設定 `cache.provider: cacheCloudflare()`                              | 部署時被丟掉，`Astro.cache` 的實際效果未知                                                 | 建置時以 `ASTRO_WORKER_CACHE_UNSUPPORTED` 拒絕。ISR 快取由 Core 以 storefront 與 release 為鍵；這個設定開啟的是 Theme Worker 自己的 Workers Cache，鍵中沒有 release              |
-| `prerenderWorkerConfigPath` 指向的目錄（`dist/server/.prerender/`） | adapter 的 workerd 預先渲染                                                 | 共用的產物整理會把 server 目錄下的所有檔案都帶入                                           | 整理時排除；若仍有任何檔案出現在 `runtime/server/.prerender/`，驗證失敗                                                                                                          |
-| `main: "entry.mjs"`、`no_bundle: true`、`rules`                     | adapter                                                                     | 部署規劃把 server 目錄的每個檔案當作 module 上傳                                           | 預期可用，未驗證：在 A5 以 Build Preview 與店面實際執行確認                                                                                                                      |
-| `_headers`（client 資產）                                           | Astro                                                                       | 在 `ASSET_EXCLUSIONS` 中，不會送出                                                         | 不拒絕；Theme 寫的回應標頭不生效。與 Start 相同，但 Astro 專案較常使用，所以在 Code 模式顯示診斷                                                                                 |
+| 產物 Worker 設定中的欄位                                                              | 來源                                                                                                                                                                     | 現有部署規則的結果                                                                         | 設計（偵測方式：讀 `.wrangler/deploy/config.json` 指向的 Worker 設定）                                                                                                                                    |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kv_namespaces` 或 `previews.kv_namespaces` 含 `SESSION`（或 `sessionKVBindingName`） | Theme 沒有設定 `session: false`，也沒有指定其他 driver 時，adapter 自動加入                                                                                              | `planThemeWorkerDeployment` 以 `FORBIDDEN_BINDING` 拒絕，但要到 Build Preview 或發布才發現 | 建置時以 `ASTRO_SESSION_BINDING_UNSUPPORTED` 拒絕，訊息說明可在 `astro.config` 設定 `session: false`                                                                                                      |
+| `images` 或 `previews.images`（Images 綁定）                                          | adapter 的 `imageService` 為預設的 `"cloudflare-binding"`                                                                                                                | 不在禁止清單中，部署時被默默丟掉；之後執行期的圖片端點會失敗                               | 建置時以 `ASTRO_IMAGES_BINDING_UNSUPPORTED` 拒絕，訊息說明可改用 `imageService: "passthrough"` 或 `"compile"`。另外建議把 `images` 加入部署的禁止清單（部署規則的修改，另開 PR）                          |
+| `cache.enabled === true`                                                              | Astro 設定 `cache.provider: cacheCloudflare()`                                                                                                                           | 部署時被丟掉，`Astro.cache` 的實際效果未知                                                 | 建置時以 `ASTRO_WORKER_CACHE_UNSUPPORTED` 拒絕。ISR 快取由 Core 以 storefront 與 release 為鍵；這個設定開啟的是 Theme Worker 自己的 Workers Cache，鍵中沒有 release                                       |
+| `prerenderWorkerConfigPath` 指向的目錄（`dist/server/.prerender/`）                   | adapter 的 workerd 預先渲染。Astro core 在預先渲染成功後自行刪除（`astro/dist/core/build/static-build.js:120`）；預先渲染失敗時會留下，內含包裝與完整的 prerender bundle | 共用的產物整理會把 server 目錄下的所有檔案都帶入                                           | 產物整理**不在失敗的建置上執行**。成功的建置在整理時仍然排除這個目錄，並主動驗證：任何檔案出現在 `runtime/server/.prerender/`、任何包裝標記、任何 `.morph/` 診斷檔，都讓驗證失敗；不依賴 Astro 自己的清理 |
+| `main: "entry.mjs"`、`no_bundle: true`、`rules`                                       | adapter                                                                                                                                                                  | 部署規劃把 server 目錄的每個檔案當作 module 上傳                                           | 預期可用，未驗證：在 A5 以 Build Preview 與店面實際執行確認                                                                                                                                               |
+| `_headers`（client 資產）                                                             | Astro                                                                                                                                                                    | 在 `ASSET_EXCLUSIONS` 中，不會送出                                                         | 不拒絕；Theme 寫的回應標頭不生效。與 Start 相同，但 Astro 專案較常使用，所以在 Code 模式顯示診斷                                                                                                          |
 
 **快取規則的範圍。** `ASTRO_WORKER_CACHE_UNSUPPORTED` 只拒絕上表那一個設定欄位，**不代表 Morph 能找出 Theme
 所有自行使用快取的程式碼**。例如 Theme 程式直接呼叫 Cache API（`caches.default`、`caches.open`），或其他
@@ -533,17 +679,19 @@ Astro 快取 provider，都不會被這條規則發現。這些情況下，回�
 （例如 Theme Worker 的快取範圍是否以 release 區分）來保證，列為 9.2 的待決事項。Start 也有同樣的問題，
 不是 Astro 特有的。
 
-**官方停用方式（【事實】只讀了程式碼；【待驗】產物）**：Astro 的設定 schema 接受 `session: false`，
-adapter 這時不加入 `SESSION`；`imageService` 為 `"passthrough"` 或 `"compile"` 時，adapter 不要求正式環境的
-`IMAGES`（`"compile"` 在 dev 時仍會加入）。R2 與 A4 要以真實建置確認：最簡單的 Astro Theme（一頁、沒有
-Sessions、沒有圖片處理），只加上這兩項設定，就能通過上表全部規則並建置成功。如果做不到，第一版連最簡單的
-Theme 都無法建置，接入不往下進行，回到 9.2 決定是否提供 `SESSION` 的對應。
+**官方停用方式（【事實】R2 報告 §2.4）**：Astro 的設定 schema 接受 `session: false`，adapter 這時不加入
+`SESSION`；`imageService` 為 `"passthrough"` 或 `"compile"` 時，adapter 不要求正式環境的 `IMAGES`（`"compile"`
+在 dev 時仍會加入，它的 runtime 是 `passthrough`）。R2 以真實建置確認：最簡單的 Astro Theme 只加上這兩項設定，
+產物的 `kv_namespaces` 為 `[]`、沒有 `images`、`previews` 為 `{}`，建置成功；兩項都不設時，上表的兩條規則正確觸發。
+仍然【待驗】的是 `"compile"` 的建置期圖片處理：R2 的 Theme 沒有使用 `<Image>` 或 `astro:assets`，這段沒有被執行到，
+A4 要用一個實際使用圖片的 fixture 確認。
 
 這兩項設定是作者要寫進自己 `astro.config` 的官方寫法，Morph 不在包裝檔中替作者覆寫。因此官方範例**原樣**
 匯入時會被拒絕，fixture 驗收（A4）把它記為 `KNOWN GAP`，直到 Sessions 有對應。
 
 `native.verifyArtifact`：Worker 入口、client 資產、內容要求的預先渲染頁（沿用 `assertThemePrerenderArtifacts`；
-Astro 的輸出格式是 `about/index.html`，與 Start 的路徑對應要在 A4 確認），加上上表的拒絕與 4.3 的兩項檢查。
+Astro 的輸出格式是 `about/index.html`，路徑對應依 4.3「路徑與內容鍵的對應」，在 A4 確認），加上上表的拒絕與
+4.3 的檢查（包裝標記、`.prerender/`、`.morph/` 診斷檔）。
 `manifestMetadata` 為 `{ framework: "astro", runtime: "cloudflare-worker", build: "native", workerEntry,
 clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 
@@ -605,18 +753,18 @@ relay 的 `applied` 表示「游標之後有 payload，而且都已套用」，�
 
 `@astrojs/cloudflare` 與 Cloudflare Vite plugin 的預設，是為作者自己的電腦設計的。在 Morph 的預覽與建置中：
 
-| 項目                                | adapter 預設                                                            | Morph 的處理                                                             | 驗證狀態                                                                     |
-| ----------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| miniflare 狀態持久化                | 寫入工作區 `.wrangler/state`（Run A 寫了 6.2 MB 的 kv/d1/r2/do/images） | 預覽：`persistState: false`；工作區不同步、不算指紋、不讀回 `.wrangler/` | Run B 通過（沒有寫入）                                                       |
-| inspector（除錯 port）              | 開啟（Run A 為 9230）                                                   | 預覽：`inspectorPort: false`                                             | Run B 通過（沒有警告）；容器中是否仍有其他 port 在聽，未驗證                 |
-| 遠端綁定                            | 綁定設定 `remote: true` 時連到 Cloudflare                               | 預覽：`remoteBindings: false`；建置：沙箱沒有網路，也沒有憑證            | **未驗證**實際效果                                                           |
-| `SESSION` KV、`IMAGES` 綁定自動加入 | 預設啟用，log 印出「Enabling … binding」                                | 預覽：Worker 不給任何綁定（與 Start 相同）；建置：產物規則拒絕（5.2）    | 預覽中綁定是否仍出現在 `env`，**未驗證**；建置產物中確實存在（已讀產物確認） |
-| Workers Cache（`cache.enabled`）    | `cacheCloudflare()` 時開啟                                              | 建置拒絕這個設定欄位（5.2）；Theme 程式自行使用的快取不在範圍內          | 只讀了產物，沒有執行                                                         |
-| 開發工具列                          | dev 預設開啟                                                            | 預覽：`devToolbar: { enabled: false }`                                   | spike 設定為關閉；開啟時的網路行為未調查                                     |
-| 遙測                                | Astro CLI 會傳送匿名遙測                                                | 預覽與建置設定 `ASTRO_TELEMETRY_DISABLED=1`                              | 沒有網路時是否會拖慢啟動，未驗證                                             |
-| `.env`／`.dev.vars`                 | `loadWranglerEnv` 從專案根目錄讀取                                      | 工作區不放這些檔案（2.3）                                                | 讀取的確切檔案清單**未驗證**                                                 |
-| 伺服器端外連（預覽、建置）          | 不限制                                                                  | 見 7.1：安全邊界是容器的網路政策                                         | 見 7.1                                                                       |
-| `/@fs/` 讀取工作區外的檔案          | Vite `server.fs.strict`                                                 | 沿用 `fs.allow`                                                          | Run A：`/@fs/etc/passwd` 回 403；Run B 未測                                  |
+| 項目                                | adapter 預設                                                              | Morph 的處理                                                             | 驗證狀態                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| miniflare 狀態持久化                | 寫入工作區 `.wrangler/state`（Run A 寫了 6.2 MB 的 kv/d1/r2/do/images）   | 預覽：`persistState: false`；工作區不同步、不算指紋、不讀回 `.wrangler/` | Run B 通過（沒有寫入）                                                       |
+| inspector（除錯 port）              | 開啟（Run A 為 9230）；建置時預先渲染的 preview server 也開（R2 報告 §4） | 預覽：`inspectorPort: false`；建置：不覆寫作者設定，依 7.2 處理          | 預覽 Run B 通過（沒有警告）；容器中實際的監聽 socket 未列出；建置見 7.2      |
+| 遠端綁定                            | 綁定設定 `remote: true` 時連到 Cloudflare                                 | 預覽：`remoteBindings: false`；建置：沙箱沒有網路，也沒有憑證            | **未驗證**實際效果                                                           |
+| `SESSION` KV、`IMAGES` 綁定自動加入 | 預設啟用，log 印出「Enabling … binding」                                  | 預覽：Worker 不給任何綁定（與 Start 相同）；建置：產物規則拒絕（5.2）    | 預覽中綁定是否仍出現在 `env`，**未驗證**；建置產物中確實存在（已讀產物確認） |
+| Workers Cache（`cache.enabled`）    | `cacheCloudflare()` 時開啟                                                | 建置拒絕這個設定欄位（5.2）；Theme 程式自行使用的快取不在範圍內          | 只讀了產物，沒有執行                                                         |
+| 開發工具列                          | dev 預設開啟                                                              | 預覽：`devToolbar: { enabled: false }`                                   | spike 設定為關閉；開啟時的網路行為未調查                                     |
+| 遙測                                | Astro CLI 會傳送匿名遙測                                                  | 預覽與建置設定 `ASTRO_TELEMETRY_DISABLED=1`                              | 沒有網路時是否會拖慢啟動，未驗證                                             |
+| `.env`／`.dev.vars`                 | `loadWranglerEnv` 從專案根目錄讀取                                        | 工作區不放這些檔案（2.3）                                                | 讀取的確切檔案清單**未驗證**                                                 |
+| 伺服器端外連（預覽、建置）          | 不限制                                                                    | 見 7.1：安全邊界是容器的網路政策                                         | 見 7.1                                                                       |
+| `/@fs/` 讀取工作區外的檔案          | Vite `server.fs.strict`                                                   | 沿用 `fs.allow`                                                          | Run A：`/@fs/etc/passwd` 回 403；Run B 未測                                  |
 
 ### 7.1 外連隔離：與橋接注入分開
 
@@ -636,6 +784,27 @@ relay 的 `applied` 表示「游標之後有 payload，而且都已套用」，�
   只是讓開發者看到與容器中相同的錯誤。
 - 【待驗】Astro 預覽與建置在容器中，各會發出哪些對外請求（Astro 遙測、wrangler、套件解析等），要在 A2、A4、A6
   中從政策記錄確認都被拒絕，而且被拒不會讓啟動卡住。
+
+### 7.2 建置期的監聽 socket（inspector port）
+
+【事實】adapter 為預先渲染起的 preview server 預設開 inspector port（9229，被占用時改用下一個）；只有 Theme 在
+`cloudflare({...})` 設定 `inspectorPort: false` 時才不開（R2 報告 §4）。Morph 不替作者改這個設定（5.1 第 3 點）。
+
+「容器外部連不到」**不是**安全理由：容器內的其他程序（包括 Theme 自己的建置期程式）連得到 localhost。依序處理
+（0.4 第 2 項）：
+
+1. 【待驗】找官方的停用方式，而且不改作者的產品設定。只影響建置工具、不改變產物的設定（例如建置程序層級的
+   設定或環境變數）可能可以接受，但要先驗證它確實停用了這個 port，**而且產物逐檔雜湊與不設時相同**，才能下結論。
+   目前還沒有找到這樣的方式。
+2. 找不到、必須保留時，逐項確認並記錄：
+   - 監聽位址（只在 loopback，不在 `0.0.0.0`）；
+   - 這個 port 絕不被 Sandbox 對應或轉發到容器外；
+   - 建置容器中沒有任何祕密（憑證、權杖、其他商店的資料）；
+   - 建置結束後容器即銷毀，不重用於其他建置。
+3. 記錄殘餘風險：容器內的程序在建置期間可以連到 inspector，取得預先渲染 Worker 的除錯能力。
+
+**驗收**（A2、A4，真實 Sandbox 建置中）：列出建置期間實際的監聽 socket（位址、port、程序），**每一個都有已知用途**
+（例如封存內容伺服器、preview server、inspector）。驗收標準不是「沒有其他 port 在聽」。
 
 ## 8. 交付順序與閘門
 
@@ -659,22 +828,41 @@ G0 阻擋的是「接入 `main`」與「對使用者開放」，不阻擋研究�
 
 R1–R3 有任一項的結論是「不可行」，就先更新本文件，再談接入。
 
+結果（2026-10-07）：
+
+- **R1：完成。** compiler-rs 加官方 `wasm32-wasi` binding 可行並選定，`@astrojs/compiler`（Go）否決（3.1）。
+  未涵蓋：與 Morph 主 Worker 合併後的記憶體，由 M1 量測。
+- **R2：完成。** 4.3 的三項前提在本機 miniflare 成立，`session: false` 加 `imageService` 的產物不含 `SESSION`、
+  `IMAGES`。本文件依 R2 報告 §5 修正了九處，並記錄了 0.4 的決定。未涵蓋：Sandbox 容器，由 A2 驗證。
+- **R3：尚未進行。**
+
+R1、R2 的證據（`~/projects/astro-spike/r1-parser/`、`~/projects/astro-spike/r2-prerender/`）保留到本文件已記錄結論，
+**而且** A2 的 Sandbox 驗證完成為止。
+
 ### 8.2 接入步驟
 
-| 步驟   | 內容                                                                                                                                                                                    | 閘門（通過才能進入下一步）                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **G0** | 原生 Start 內容配對驗收（不屬於 Astro，但是 Astro 接入 `main` 與開放的前提；不阻擋 8.1 的研究）                                                                                         | 真實容器中：（1）Build Preview 顯示封存的草稿；（2）發布重用預覽過的 build，產物雜湊相同；（3）build 之後草稿又被修改，發布時重新建置，或被 `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕；（4）兩個並行的建置或發布不會配錯內容，OCC 拒絕落後的一方；（5）回滾後店面的 build 與內容一起回到舊版。本文件撰寫時（`0f832bd`），`e2e/native-publish-acceptance.spec.ts` 只涵蓋了不讀內容的路由的發布與回滾；（1）、（3）、（4）在 `e2e/` 中找不到對應的真實容器驗收 |
-| A1     | 框架身分：`ThemeFrameworkId` 加入 `astro`、build 輸入記錄框架、`nativeBuildResult` 與預覽 runtime 依記錄選 adapter、Start 原生建置的共用部分搬到共用模組。只有 Start 一個實作，行為不變 | 既有測試、Start 的 E2E 不變；新增測試：build 輸入的框架被改動時 `inputHash` 也會改變；`theme-framework.test.ts` 的介面規則仍然成立                                                                                                                                                                                                                                                                                                                       |
-| A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間                                                                                                                                                                                                                                                                                                                                             |
-| A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`）                                                                            | R2 已證明可行；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值；部署的 Worker 中沒有包裝標記。**任一項不成立就停止**，回到設計層                                                                                                                                                                                                                         |
-| A4     | Astro 原生建置（本機建置程式，再到 Sandbox 建置程式）：包裝設定檔、匯入防護、產物整理、5.2 的規則、manifest、compiler 身分                                                              | 官方 Astro Cloudflare 範例以 fixture 原樣保存（`fixtures/astro/<example>/`，附 `SOURCE.json` 與逐檔雜湊，作法同 tanstack fixture），能建置的部分建置成功，不能的以 `KNOWN GAP` 斷言（例如 `SESSION`）；最簡單的 Astro Theme 加上 `session: false` 與 `imageService` 後建置成功，5.2 每一條拒絕規則各有一個會觸發它的測試；匯入防護放行專案別名與 Astro 虛擬模組，拒絕未核准的套件與工作區外的檔案                                                        |
-| A5     | Astro 的 Build Preview、發布、回滾，跑 G0 同一組驗收                                                                                                                                    | 真實容器中 G0 的五項對 Astro 全部通過；`SESSION` 的處理方式已決定並實作（基礎設施對應，或明確的替代方案）                                                                                                                                                                                                                                                                                                                                                |
-| A6     | Astro Live Preview（本機 sidecar，再到容器）：啟動程式、預覽包裝設定、Worker entry、無 router 的 client module、整頁重新載入的內容更新與選取恢復                                        | 經過真實的 `preview.tsx` 與 `/applyFiles`：`.astro` 修改的 `applied` → 重新 `ready` 流程正確，選取能恢復；2.5 表中的回應行為（串流、重新導向、Cookie、錯誤頁、HMR）在真實路徑上不變；第 7 節的安全探測（沒有 `.wrangler/state`、沒有 inspector、容器政策記錄顯示外連被拒）；冷啟動時間與 Start 比較                                                                                                                                                      |
-| A7     | `.astro` 檔案語言：能在 Morph Worker 中執行的解析器、來源位置、實例識別、props、改寫                                                                                                    | R1 已選定解析器；`request-structure` 的 `nodes` 不為空；完整 Design 鏈（選取實例 → 欄位 → 文件儲存（權限、文件版本、OCC）→ 該實例更新、其他實例不變），同一元件出現兩次各自編輯                                                                                                                                                                                                                                                                          |
-| A8     | 認證                                                                                                                                                                                    | A4–A7 通過，ISR／SSG 經 Core 的快取行為驗收（multi-runtime 計畫的規則），該「Astro × 版本」才轉為 Certified；在那之前是 Unverified，可以 Live Preview 與 Build Preview，不能發布                                                                                                                                                                                                                                                                         |
+| 步驟   | 內容                                                                                                                                                                                    | 閘門（通過才能進入下一步）                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **G0** | 原生 Start 內容配對驗收（不屬於 Astro，但是 Astro 接入 `main` 與開放的前提；不阻擋 8.1 的研究）                                                                                         | 真實容器中：（1）Build Preview 顯示封存的草稿；（2）發布重用預覽過的 build，產物雜湊相同；（3）build 之後草稿又被修改，發布時重新建置，或被 `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕；（4）兩個並行的建置或發布不會配錯內容，OCC 拒絕落後的一方；（5）回滾後店面的 build 與內容一起回到舊版。本文件撰寫時（`0f832bd`），`e2e/native-publish-acceptance.spec.ts` 只涵蓋了不讀內容的路由的發布與回滾；（1）、（3）、（4）在 `e2e/` 中找不到對應的真實容器驗收                                         |
+| M1     | Morph 主 Worker 的解析器記憶體預算（3.1）：把 compiler-rs 加 `wasm32-wasi` binding 與 Morph 自己的載入器放進 Morph 主 Worker 的 bundle，量測                                            | 量到並記錄：合併後的 bundle 大小與啟動時間（1 秒上限內）；Morph Worker 本身的記憶體加上 61 MiB 底線與檔案大小上限內的 AST，是否在 128 MB isolate 內；trap 後重建實例的行為。放得下才進入 A1、A2；放不下時停下，由使用者在 0.3 的選項中決定（另一個 Worker 是新的部署單位，需要核准）                                                                                                                                                                                                             |
+| A1     | 框架身分：`ThemeFrameworkId` 加入 `astro`、build 輸入記錄框架、`nativeBuildResult` 與預覽 runtime 依記錄選 adapter、Start 原生建置的共用部分搬到共用模組。只有 Start 一個實作，行為不變 | 既有測試、Start 的 E2E 不變；新增測試：build 輸入的框架被改動時 `inputHash` 也會改變；`theme-framework.test.ts` 的介面規則仍然成立                                                                                                                                                                                                                                                                                                                                                               |
+| A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間；Morph 鎖定的 compiler-rs 與工具鏈中 `astro` 依賴的版本相容。**真實 Sandbox 中**：預先渲染 Worker 連得到建置程序的 loopback（4.3 前提 3）；R2 的失敗情境（無快照、500、連線被拒、拿掉標頭送達，各自在 fail-fast 與只靠建置後檢查下）結果與本機相同；7.2 的監聽 socket 清單                                                                                                          |
+| A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`）                                                                            | R2 已在本機證明可行，A2 已在 Sandbox 確認 loopback；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值，fail-fast 與建置後檢查各自有效；記錄以每次建置的 nonce 綁定；`ASTRO_ADAPTER_INCOMPATIBLE` 與「stamp 數不等於預先渲染頁數」各有會觸發它的測試；4.3 的路徑測試清單全部通過；失敗的建置沒有產物，成功的產物中沒有包裝標記、`.prerender/`、`.morph/` 診斷檔。**任一項不成立就停止**，回到設計層 |
+| A4     | Astro 原生建置（本機建置程式，再到 Sandbox 建置程式）：包裝設定檔、匯入防護、產物整理、5.2 的規則、manifest、compiler 身分                                                              | 官方 Astro Cloudflare 範例以 fixture 原樣保存（`fixtures/astro/<example>/`，附 `SOURCE.json` 與逐檔雜湊，作法同 tanstack fixture），能建置的部分建置成功，不能的以 `KNOWN GAP` 斷言（例如 `SESSION`）；最簡單的 Astro Theme 加上 `session: false` 與 `imageService` 後建置成功，5.2 每一條拒絕規則各有一個會觸發它的測試；匯入防護放行專案別名與 Astro 虛擬模組，拒絕未核准的套件與工作區外的檔案                                                                                                |
+| A5     | Astro 的 Build Preview、發布、回滾，跑 G0 同一組驗收                                                                                                                                    | 真實容器中 G0 的五項對 Astro 全部通過；`SESSION` 的處理方式已決定並實作（基礎設施對應，或明確的替代方案）                                                                                                                                                                                                                                                                                                                                                                                        |
+| A6     | Astro Live Preview（本機 sidecar，再到容器）：啟動程式、預覽包裝設定、Worker entry、無 router 的 client module、整頁重新載入的內容更新與選取恢復                                        | 經過真實的 `preview.tsx` 與 `/applyFiles`：`.astro` 修改的 `applied` → 重新 `ready` 流程正確，選取能恢復；2.5 表中的回應行為（串流、重新導向、Cookie、錯誤頁、HMR）在真實路徑上不變；第 7 節的安全探測（沒有 `.wrangler/state`；列出預覽容器實際的監聽 socket，每一個都有已知用途，標準同 7.2；容器政策記錄顯示外連被拒）；冷啟動時間與 Start 比較                                                                                                                                               |
+| A7     | `.astro` 檔案語言：能在 Morph Worker 中執行的解析器、來源位置、實例識別、props、改寫                                                                                                    | R1 已選定解析器，M1 確認記憶體預算；3.1 的五項採用條件都已實作並各有測試；`request-structure` 的 `nodes` 不為空；完整 Design 鏈（選取實例 → 欄位 → 文件儲存（權限、文件版本、OCC）→ 該實例更新、其他實例不變），同一元件出現兩次各自編輯                                                                                                                                                                                                                                                         |
+| A8     | 認證                                                                                                                                                                                    | A4–A7 通過，ISR／SSG 經 Core 的快取行為驗收（multi-runtime 計畫的規則），該「Astro × 版本」才轉為 Certified；在那之前是 Unverified，可以 Live Preview 與 Build Preview，不能發布                                                                                                                                                                                                                                                                                                                 |
 
 順序的理由：先處理資料完整性（內容配對、發布、回滾，A3–A5），再處理編輯體驗（A6–A7）。在 A3 之前就做
 Live Preview，可能做完才發現 Astro 的預先渲染沒辦法安全地讀封存內容。
+
+**G0 之後的順序（2026-10-07 決定）：G0 → M1 → A1 → A2。**
+
+1. M1：量測 Morph Worker 給解析器的記憶體預算；
+2. A1：框架身分改由 build 記錄（上表），仍在 A2 之前；
+3. A2，包括在真實 Sandbox 中驗證建置容器的 loopback 可達性，以及 R2 的同一組失敗情境；
+4. R1、R2 的證據留在 `~/projects/astro-spike`，直到本文件記錄了結論，而且第 3 步的 Sandbox 驗證完成。
 
 ## 9. 未決事項與未驗證項目
 
@@ -690,25 +878,39 @@ Live Preview，可能做完才發現 Astro 的預先渲染沒辦法安全地讀�
   元件，不能據此判定問題已消失）。
 - **啟動時間與 Start 的比較**：Astro 冷啟動約 15–16 秒，Start 在同一台機器、同一形態下的數字沒有量。
 - 預覽中 adapter 覆寫後，`SESSION`、`IMAGES` 綁定是否仍然存在；`remoteBindings: false` 的實際效果。
-- 4.3 的三項前提（標頭送達頁面、只套用在 `prerender` 環境的包裝、workerd 連到 loopback），以及頁面實際使用
-  封存快照（R2、A3）。
+- 4.3 的前提 3 在 **Sandbox 容器**中是否成立：建置程序與 workerd 是否在同一個網路命名空間、外連政策是否攔截
+  loopback（A2）。前提 1、2 與本機 miniflare 上的前提 3 已由 R2 實測成立（0.1）。
+- 4.3 的設計以 Morph 自己的程式碼實作後的行為：`createNativePrerenderContent`、共用 request handler、
+  `nativeBuildResult`、`ThemeRouteRegistry`（R2 用的是重寫的簡化版本，A3）。
+- `build.concurrency > 1` 時，包裝以 `AsyncLocalStorage` 區分每一頁讀取的歸屬；`getStaticPaths` 動態路由；
+  `trailingSlash`、`build.format` 的非預設設定（R2 只測了預設值）。
+- 包裝看不見的外連（`connect()` 等）；「回應無法解析」（`unparseable`）的分支沒有對應情境。
+- `imageService: "compile"` 的建置期圖片處理（R2 的 Theme 沒有使用圖片，A4）。
 - 2.5 的前提：Astro dev 的請求是否經過 wrangler `main`；包裝後串流、重新導向、Cookie、錯誤頁、HMR 是否不變（R3）。
-- `session: false` 與 `imageService` 設定後，產物是否確實不含 `SESSION`、`IMAGES`（只讀了程式碼）。
-- `@astrojs/compiler-rs` 有沒有能在 workerd 中執行的 WASM binding；`@astrojs/compiler`（WASM）的位置精準度。
+- 解析器與 Morph 主 Worker 合併後的記憶體、bundle 大小與啟動時間（M1）；正式 Cloudflare 環境中的 128 MB 上限、
+  CPU 時間與 Wasm 編譯快取；同一個 isolate 中的並行解析；以解析位置產生 patch 再解析的往返；pnpm
+  `supportedArchitectures` 在 Morph workspace 中的實際效果（R1 報告 §6）。
+- 不改作者設定、又能停用建置期 inspector port 的官方方式（7.2）。
 - Morph 的 dependency enforcer、`themePreviewContentPlugin`、SVG 隔離、root-public plugin 在 Astro 下的行為。
 - `loadWranglerEnv` 讀取的檔案；Astro 遙測在無網路環境中的行為。
-- `assertThemePrerenderArtifacts` 的路徑規則與 Astro `build.format` 的對應。
+- `assertThemePrerenderArtifacts` 的路徑規則與 Astro `build.format` 的對應（與 4.3 的內容鍵對應合併處理）。
 - Astro Worker（`no_bundle`、`rules`、`nodejs_als`）在 Morph 部署規劃與 Build Preview 執行器下能否正常執行。
+
+已由 R1、R2 回答、移到【事實】的項目：`session: false` 與 `imageService` 後產物不含 `SESSION`、`IMAGES`；
+`@astrojs/compiler-rs` 有能在 workerd 中執行的 Wasm binding（官方 `wasm32-wasi`）；`@astrojs/compiler`（Go）的
+位置精準度（有偏差，已否決）。
 
 ### 9.2 未決事項（需要決定）
 
-- 第一版的 Sessions：不提供，要求作者設定 `session: false`（R2 確認可行時）；或等基礎設施對應，或先為每個商店
+- 第一版的 Sessions：不提供，要求作者設定 `session: false`（R2 已確認這樣能建置）；或等基礎設施對應，或先為每個商店
   提供一個 Morph 擁有的 KV namespace。在提供之前，官方範例原樣匯入無法建置。
 - 第一版的圖片：要求 `imageService: "passthrough"` 或 `"compile"`，或對應 Cloudflare Images。
 - Theme 程式自行使用的快取（Cache API 等）在回滾後的行為：要不要在執行期以 release 隔離 Theme Worker 的快取
   範圍。這不是 Astro 特有的問題，Start 也一樣。
 - 映像策略：一個映像多個工具鏈根目錄，或每個框架一個映像（A2 量測後決定）。
-- `.astro` 解析器的選擇（3.1），以及全部不可行時 `.astro` Design 是否延後。
+- 解析器已選定（3.1）。M1 量出放不進 Morph 主 Worker 時：另一個 Worker（service binding，新的部署單位，需要
+  使用者核准）或自行重建不含執行緒的 compiler-rs；兩者都不行時 `.astro` Design 是否延後。
+- 預先渲染頁看到的多餘標頭要不要由包裝清掉；`ORIGIN_MISSING` 是否要區分「伺服器不在」與「標頭沒送到」（0.3）。
 - 是否向 Astro 上游提出「預先渲染請求可以帶標頭」的選項。如果上游接受，4.3 的包裝可以移除。
 - 6.2 的「applied 帶寫入路徑」是否要做，以及 Vite payload 能不能提供觸發檔。
 - 建立網站時的框架選擇介面（multi-runtime 計畫第 5 步），以及 Astro starter Theme 的內容讀取函式放在哪裡、
