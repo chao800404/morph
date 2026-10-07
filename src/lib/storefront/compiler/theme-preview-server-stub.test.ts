@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  START_FN_STUBS_SPECIFIER,
+  THEME_PREVIEW_STUB_MODULE_PATHS,
   THEME_START_SERVER_SPECIFIER,
   createThemePreviewServerStubPlugin,
   themePreviewServerStubPluginSource,
@@ -15,6 +17,20 @@ async function loadStub(source: string): Promise<string> {
 }
 
 describe("createThemePreviewServerStubPlugin", () => {
+  it("names the dev server path of every stub it resolves to, for the preview proxy", () => {
+    const plugin = createThemePreviewServerStubPlugin();
+    const paths = [
+      THEME_START_SERVER_SPECIFIER,
+      "node:async_hooks",
+      START_FN_STUBS_SPECIFIER,
+    ].map((source) => {
+      const id = plugin.resolveId(source);
+      expect(id?.startsWith("\0")).toBe(true);
+      return `/@id/__x00__${id!.slice(1)}`;
+    });
+    expect([...THEME_PREVIEW_STUB_MODULE_PATHS].sort()).toEqual(paths.sort());
+  });
+
   it("stubs the Start server module so a client-only preview build resolves", async () => {
     const code = await loadStub(THEME_START_SERVER_SPECIFIER);
 

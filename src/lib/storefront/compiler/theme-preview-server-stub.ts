@@ -27,6 +27,18 @@ export const START_FN_STUBS_SPECIFIER = "@tanstack/start-fn-stubs";
 const START_FN_STUBS_VIRTUAL_ID = "\0morph-theme-start-fn-stubs";
 
 /**
+ * Where a preview page asks Vite's dev server for each stub. Vite addresses a
+ * `\0` ID as `/@id/__x00__<id>`, with no file extension, so the preview proxy
+ * cannot recognise these as module reads by their path alone and has to be
+ * told their names (preview-proxy-response.ts).
+ */
+export const THEME_PREVIEW_STUB_MODULE_PATHS: readonly string[] = [
+  VIRTUAL_ID,
+  ASYNC_HOOKS_VIRTUAL_ID,
+  START_FN_STUBS_VIRTUAL_ID,
+].map((id) => `/@id/__x00__${id.slice(1)}`);
+
+/**
  * Single-threaded stand-in for `AsyncLocalStorage`.
  *
  * Correct for synchronous `run` calls, which is all the preview could ever
