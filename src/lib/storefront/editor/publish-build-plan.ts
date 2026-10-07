@@ -20,6 +20,15 @@ export type PublishBuildPlanInput = {
   hasBuild: boolean;
   /** Source generation that build was made from. */
   buildSourceGeneration: number | null;
+  /**
+   * False when that build carries a content snapshot that is not the content
+   * being published — a Build Preview sealed the drafts, and they have been
+   * edited since. Such a build shows a store that is not the one being
+   * published, so it is rebuilt rather than reused (the server would refuse
+   * it anyway, `PUBLISH_BUILD_CONTENT_MISMATCH`). True, or absent, when the
+   * build carries no content or the same content.
+   */
+  buildContentCurrent?: boolean;
   /** Source generation being published. */
   currentSourceGeneration: number;
   /**
@@ -45,6 +54,7 @@ export function resolvePublishBuildPlan({
   requiresContentBuild,
   hasBuild,
   buildSourceGeneration,
+  buildContentCurrent,
   currentSourceGeneration,
   activeReleaseSourceGeneration,
 }: PublishBuildPlanInput): PublishBuildPlan {
@@ -52,9 +62,11 @@ export function resolvePublishBuildPlan({
   // Server-side publication comparison remains the final authority.
   if (requiresContentBuild) return { action: "build" };
   if (hasBuild) {
-    // A build made from different source describes a store that no longer
-    // exists, so it cannot stand in for the one being published.
-    return buildSourceGeneration === currentSourceGeneration
+    // A build made from different source, or sealed with different content,
+    // describes a store that no longer exists, so it cannot stand in for the
+    // one being published.
+    return buildSourceGeneration === currentSourceGeneration &&
+      buildContentCurrent !== false
       ? { action: "reuse-build" }
       : { action: "build" };
   }

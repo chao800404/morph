@@ -29,6 +29,32 @@ describe("resolvePublishBuildPlan", () => {
     ).toEqual({ action: "reuse-build" });
   });
 
+  it("reuses a build sealed with the content being published", () => {
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: true,
+        buildSourceGeneration: 7,
+        buildContentCurrent: true,
+        currentSourceGeneration: 7,
+        activeReleaseSourceGeneration: 7,
+      }),
+    ).toEqual({ action: "reuse-build" });
+  });
+
+  it("builds again when the content was edited after a Build Preview sealed it", () => {
+    // The previewed build shows content that is no longer the content being
+    // published; the server would refuse it as a content mismatch.
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: true,
+        buildSourceGeneration: 7,
+        buildContentCurrent: false,
+        currentSourceGeneration: 7,
+        activeReleaseSourceGeneration: 7,
+      }),
+    ).toEqual({ action: "build" });
+  });
+
   it("builds again when the source moved on after the build", () => {
     expect(
       resolvePublishBuildPlan({

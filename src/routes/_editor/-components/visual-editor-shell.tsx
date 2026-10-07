@@ -3833,6 +3833,17 @@ export function VisualEditorShell({
   const handleBuildPreviewRef = useRef<
     ((publicationDraft?: PublicationBuildDraft) => Promise<BuildAttempt>) | null
   >(null);
+  /**
+   * The drafts a toolbar build sealed into its content snapshot, by build.
+   * Publishing reuses that build only while they are still the drafts being
+   * published (`buildContentCurrent`).
+   */
+  const buildContentSealRef = useRef<{
+    buildId: string;
+    templateId: string;
+    draftRevisionId: string;
+    layoutDraftRevisionId: string | null;
+  } | null>(null);
 
   const handleUnifiedSaveFileRef = useRef<
     | ((
@@ -4233,6 +4244,138 @@ export function VisualEditorShell({
     search.routePath,
   );
 
+  /**
+   * The page's own content Document and the shell's, as drafts a build can
+   * seal: the route's Document confirmed (a source-only route borrows the
+   * homepage until it has one) and each draft prepared by the Document writer
+   * when it has none yet, or always when `alwaysPrepare`. What publishing this
+   * page seals, and what a Build Preview of it shows. Null when it refused
+   * and said why.
+   */
+  const prepareContentDraftForBuild = useCallback(
+    async ({
+      currentGeneration,
+      verb,
+      alwaysPrepare,
+    }: {
+      currentGeneration: number;
+      verb: "publish" | "build";
+      alwaysPrepare: boolean;
+    }): Promise<{
+      templateId: string;
+      draftRevisionId: string | null;
+      draftGeneration: number;
+    } | null> => {
+      if (!activeTemplate) return null;
+      const refreshTheme = () =>
+        void queryClient.invalidateQueries({
+          queryKey: storefrontThemeQueries.detail(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ).queryKey,
+        });
+      let template = {
+        id: activeTemplate.id,
+        draftRevisionId: activeTemplate.draftRevisionId,
+        draftGeneration: activeTemplate.draftGeneration,
+      };
+      let draftRevisionId =
+        templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
+        activeTemplate.draftRevisionId;
+      let draftGeneration =
+        templateDraftGenerationRef.current.get(activeTemplate.id) ??
+        activeTemplate.draftGeneration ??
+        1;
+      const routeTarget = search.routePath
+        ? contentTargetForRoutePath(search.routePath)
+        : null;
+      if (
+        routeTarget?.kind === "route" &&
+        activeTemplate.routePath !== routeTarget.routePath
+      ) {
+        // Extend the same idempotent route-document path used by Design writes.
+        // No guessed document from the borrowed homepage enters publication.
+        const ensured = await sendEditorWrite(workspaceScope, "theme", () =>
+          ensureStorefrontThemeRouteTemplate({
+            data: { ...workspaceScope, routePath: routeTarget.routePath },
+          }),
+        ).catch(() => null);
+        if (!ensured?.success) {
+          toast.error(
+            ensured?.message ??
+              `Cannot ${verb}: could not confirm this route's content document. Review the latest state and try again.`,
+          );
+          refreshTheme();
+          return null;
+        }
+        template = ensured.data;
+        draftRevisionId =
+          templateDraftRevisionIdRef.current.get(template.id) ??
+          template.draftRevisionId;
+        draftGeneration =
+          templateDraftGenerationRef.current.get(template.id) ??
+          template.draftGeneration ??
+          1;
+      }
+      for (const each of [template, layoutTemplate]) {
+        const currentDraftId = each
+          ? (templateDraftRevisionIdRef.current.get(each.id) ??
+            each.draftRevisionId)
+          : null;
+        if (!each || (currentDraftId && !alwaysPrepare)) continue;
+        const prepared = await sendEditorWrite(workspaceScope, "theme", () =>
+          prepareInitialStorefrontThemeTemplateDraft({
+            data: {
+              storefrontId: workspaceScope.storefrontId,
+              themeId: workspaceScope.themeId,
+              templateId: each.id,
+              expectedDraftGeneration:
+                templateDraftGenerationRef.current.get(each.id) ??
+                each.draftGeneration ??
+                1,
+              expectedSourceGeneration: currentGeneration,
+              expectedDraftRevisionId: currentDraftId ?? undefined,
+            },
+          }),
+        ).catch(() => {
+          // Preparation may have landed even if its response was lost. Do not
+          // retry it automatically or go on without the confirmed revision.
+          toast.error(
+            `Cannot ${verb}: could not confirm the initial content draft. Review the latest state and try again.`,
+          );
+          refreshTheme();
+          return null;
+        });
+        if (!prepared) return null;
+        if (!prepared.success) {
+          toast.error(prepared.message);
+          refreshTheme();
+          return null;
+        }
+        templateDraftRevisionIdRef.current.set(
+          each.id,
+          prepared.data.draftRevisionId,
+        );
+        templateDraftGenerationRef.current.set(
+          each.id,
+          prepared.data.draftGeneration,
+        );
+        if (each.id === template.id) {
+          draftRevisionId = prepared.data.draftRevisionId;
+          draftGeneration = prepared.data.draftGeneration;
+        }
+      }
+      return { templateId: template.id, draftRevisionId, draftGeneration };
+    },
+    [
+      activeTemplate,
+      layoutTemplate,
+      queryClient,
+      search.routePath,
+      workspaceScope,
+    ],
+  );
+
   const handlePublish = useCallback(
     async (note?: string) => {
       const publishTarget = publishTargetRef.current;
@@ -4280,14 +4423,6 @@ export function VisualEditorShell({
       // The shell is published with whatever page is being published, so its
       // pending edits have to be committed in the same breath.
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
-
-      let publishDraftRevisionId =
-        templateDraftRevisionIdRef.current.get(activeTemplate.id) ??
-        activeTemplate.draftRevisionId;
-      let publishDraftGeneration =
-        templateDraftGenerationRef.current.get(activeTemplate.id) ??
-        activeTemplate.draftGeneration ??
-        1;
 
       const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
       for (const [opKey, timer] of Array.from(
@@ -4355,47 +4490,6 @@ export function VisualEditorShell({
       // Code-only authoring does not create a content revision. Publishing is
       // the explicit write that materializes the existing Document; it is not
       // a fake Design edit or a bypass of the normal publish preconditions.
-      let publishTemplate = {
-        id: activeTemplate.id,
-        draftRevisionId: activeTemplate.draftRevisionId,
-        draftGeneration: activeTemplate.draftGeneration,
-      };
-      const routeTarget = search.routePath
-        ? contentTargetForRoutePath(search.routePath)
-        : null;
-      if (
-        routeTarget?.kind === "route" &&
-        activeTemplate.routePath !== routeTarget.routePath
-      ) {
-        // Extend the same idempotent route-document path used by Design writes.
-        // No guessed document from the borrowed homepage enters publication.
-        const ensured = await sendEditorWrite(workspaceScope, "theme", () =>
-          ensureStorefrontThemeRouteTemplate({
-            data: { ...workspaceScope, routePath: routeTarget.routePath },
-          }),
-        ).catch(() => null);
-        if (!ensured?.success) {
-          toast.error(
-            ensured?.message ??
-              "Cannot publish: could not confirm this route's content document. Review the latest state and try again.",
-          );
-          void queryClient.invalidateQueries({
-            queryKey: storefrontThemeQueries.detail(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            ).queryKey,
-          });
-          return;
-        }
-        publishTemplate = ensured.data;
-        publishDraftRevisionId =
-          templateDraftRevisionIdRef.current.get(publishTemplate.id) ??
-          publishTemplate.draftRevisionId;
-        publishDraftGeneration =
-          templateDraftGenerationRef.current.get(publishTemplate.id) ??
-          publishTemplate.draftGeneration ??
-          1;
-      }
       // Source generation alone cannot prove non-SSR HTML contains this draft.
       // SSR keeps the existing content-only publication behavior.
       const requiresContentBuild =
@@ -4404,64 +4498,15 @@ export function VisualEditorShell({
           activeTemplate.document.renderPolicy.mode !== "ssr") ||
         (layoutTemplate?.document.websiteRenderPolicy !== undefined &&
           layoutTemplate.document.websiteRenderPolicy.mode !== "ssr");
-      for (const template of [publishTemplate, layoutTemplate]) {
-        const currentDraftId = template
-          ? (templateDraftRevisionIdRef.current.get(template.id) ??
-            template.draftRevisionId)
-          : null;
-        if (!template || (currentDraftId && !requiresContentBuild)) continue;
-        const prepared = await sendEditorWrite(workspaceScope, "theme", () =>
-          prepareInitialStorefrontThemeTemplateDraft({
-            data: {
-              storefrontId: workspaceScope.storefrontId,
-              themeId: workspaceScope.themeId,
-              templateId: template.id,
-              expectedDraftGeneration:
-                templateDraftGenerationRef.current.get(template.id) ??
-                template.draftGeneration ??
-                1,
-              expectedSourceGeneration: currentGeneration,
-              expectedDraftRevisionId: currentDraftId ?? undefined,
-            },
-          }),
-        ).catch(() => {
-          // Preparation may have landed even if its response was lost. Do not
-          // retry it automatically or publish without the confirmed revision.
-          toast.error(
-            "Cannot publish: could not confirm the initial content draft. Review the latest state and try again.",
-          );
-          void queryClient.invalidateQueries({
-            queryKey: storefrontThemeQueries.detail(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            ).queryKey,
-          });
-          return null;
-        });
-        if (!prepared) return;
-        if (!prepared.success) {
-          toast.error(prepared.message);
-          void queryClient.invalidateQueries({
-            queryKey: storefrontThemeQueries.detail(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            ).queryKey,
-          });
-          return;
-        }
-        templateDraftRevisionIdRef.current.set(
-          template.id,
-          prepared.data.draftRevisionId,
-        );
-        templateDraftGenerationRef.current.set(
-          template.id,
-          prepared.data.draftGeneration,
-        );
-        if (template.id === publishTemplate.id) {
-          publishDraftRevisionId = prepared.data.draftRevisionId;
-          publishDraftGeneration = prepared.data.draftGeneration;
-        }
-      }
+      const prepared = await prepareContentDraftForBuild({
+        currentGeneration,
+        verb: "publish",
+        alwaysPrepare: requiresContentBuild,
+      });
+      if (!prepared) return;
+      const publishTemplate = { id: prepared.templateId };
+      const publishDraftRevisionId = prepared.draftRevisionId;
+      const publishDraftGeneration = prepared.draftGeneration;
       if (!publishDraftRevisionId) {
         toast.error("Cannot publish: template draft revision is missing.");
         return;
@@ -4480,10 +4525,26 @@ export function VisualEditorShell({
       // Building is a step of publishing, not a thing to remember to do first:
       // every comparable platform either builds as part of publishing or has
       // already built automatically, and none makes the person trigger it.
+      // A build carrying a content snapshot is the store as it was sealed;
+      // it stands in for this publish only while that is the content now.
+      const seal = buildContentSealRef.current;
+      const buildContentCurrent =
+        !activeBuildPreview?.contentPublicationId ||
+        (seal !== null &&
+          seal.buildId === activeBuildPreview.id &&
+          seal.templateId === publishTemplate.id &&
+          seal.draftRevisionId === publishDraftRevisionId &&
+          seal.layoutDraftRevisionId ===
+            (layoutTemplate
+              ? (templateDraftRevisionIdRef.current.get(layoutTemplate.id) ??
+                layoutTemplate.draftRevisionId ??
+                null)
+              : null));
       const plan = resolvePublishBuildPlan({
         requiresContentBuild,
         hasBuild: Boolean(activeBuildPreview),
         buildSourceGeneration: activeBuildSourceGeneration,
+        buildContentCurrent,
         currentSourceGeneration: currentGeneration,
         activeReleaseSourceGeneration:
           context.theme.activeRelease?.sourceGeneration ?? null,
@@ -4576,6 +4637,7 @@ export function VisualEditorShell({
       handleUnifiedSaveFile,
       monacoDirtyFiles,
       layoutTemplate,
+      prepareContentDraftForBuild,
       publishMutation,
       queryClient,
       themeFilesQuery,
@@ -5118,6 +5180,75 @@ export function VisualEditorShell({
   );
 
   handleBuildPreviewRef.current = handleBuildPreview;
+
+  /**
+   * Build, from the toolbar or the command palette: the page's content is
+   * sealed with the build, the way publishing this page seals it, so the
+   * Build Preview shows the store publishing it would ship rather than the
+   * Theme's defaults. Without a page there is no content to seal, and the
+   * build is source only, as before.
+   */
+  const handleToolbarBuildPreview = useCallback(async () => {
+    if (isBuildPending || buildWaitAbortRef.current) return;
+    const workspace = useThemeWorkspaceStore.getState();
+    if (
+      !activeTemplate ||
+      themeFiles.length === 0 ||
+      monacoDirtyFiles.length > 0 ||
+      workspace.hasUnsavedEdits(workspaceScope) ||
+      workspace.hasActiveConflictsOrErrors(workspaceScope)
+    ) {
+      // Nothing to seal, or the build refuses and says why on its own.
+      await handleBuildPreview();
+      return;
+    }
+    // Pending field edits are part of the content being sealed.
+    await flushTemplatePendingProps();
+    if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
+    const currentGeneration = workspace.getBaseSourceGeneration(workspaceScope);
+    const prepared = await prepareContentDraftForBuild({
+      currentGeneration,
+      verb: "build",
+      // A sealed draft must already be in the Document writer's form.
+      alwaysPrepare: true,
+    });
+    if (!prepared) return;
+    if (!prepared.draftRevisionId) {
+      toast.error("Cannot build: template draft revision is missing.");
+      return;
+    }
+    const layoutDraftRevisionId = layoutTemplate
+      ? (templateDraftRevisionIdRef.current.get(layoutTemplate.id) ??
+        layoutTemplate.draftRevisionId ??
+        null)
+      : null;
+    const attempt = await handleBuildPreview({
+      templateId: prepared.templateId,
+      expectedDraftRevisionId: prepared.draftRevisionId,
+      expectedDraftGeneration: prepared.draftGeneration,
+      expectedSourceGeneration: currentGeneration,
+      expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
+    });
+    if (attempt.ok && attempt.build) {
+      buildContentSealRef.current = {
+        buildId: attempt.build.id,
+        templateId: prepared.templateId,
+        draftRevisionId: prepared.draftRevisionId,
+        layoutDraftRevisionId,
+      };
+    }
+  }, [
+    activeTemplate,
+    context.theme.releaseGeneration,
+    flushTemplatePendingProps,
+    handleBuildPreview,
+    isBuildPending,
+    layoutTemplate,
+    monacoDirtyFiles,
+    prepareContentDraftForBuild,
+    themeFiles,
+    workspaceScope,
+  ]);
 
   const handleCodeComponentPropsChange = useCallback(
     (filePath: string, nextProps: Record<string, unknown>) => {
@@ -8958,7 +9089,7 @@ export function VisualEditorShell({
             onClick={
               isOwnBuildPending
                 ? () => void handleCancelBuild()
-                : () => void handleBuildPreview()
+                : () => void handleToolbarBuildPreview()
             }
             title={
               themeFiles.length === 0
@@ -9244,7 +9375,7 @@ export function VisualEditorShell({
                 justSavedPaths: options?.resend,
               })
             }
-            onBuildPreview={() => handleBuildPreview()}
+            onBuildPreview={() => void handleToolbarBuildPreview()}
             externalDiagnostics={buildDiagnostics}
             dependencySourceRevisionId={dependencySourceRevisionId}
           />
