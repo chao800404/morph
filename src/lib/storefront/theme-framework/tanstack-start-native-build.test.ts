@@ -7,7 +7,12 @@ import {
   collectNativeStartArtifact,
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
-import { NATIVE_WRAPPER_CONFIG_PATH } from "./tanstack-start-native-wrapper";
+import {
+  NATIVE_BUILD_HOOKS_PATH,
+  NATIVE_BUILD_LOADER_PATH,
+  NATIVE_BUILD_NODE_OPTIONS,
+  NATIVE_WRAPPER_CONFIG_PATH,
+} from "./tanstack-start-native-wrapper";
 
 describe("parseJsonc", () => {
   it("reads comments and trailing commas the way Wrangler accepts them", () => {
@@ -88,9 +93,16 @@ describe("planNativeStartBuild", () => {
       compatibility_flags: ["nodejs_compat"],
       main: "@tanstack/react-start/server-entry",
     });
+    // The build's Node process loads Morph's module hook first: the plugin's
+    // debugger port goes off without the project's config being rewritten.
     expect(plan.env).toEqual({
       CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH,
+      NODE_OPTIONS: NATIVE_BUILD_NODE_OPTIONS,
     });
+    expect(byPath.get(NATIVE_BUILD_HOOKS_PATH)).toContain("register(");
+    expect(byPath.get(NATIVE_BUILD_LOADER_PATH)).toContain(
+      "inspectorPort: false",
+    );
     expect(plan.command).toEqual([
       "vite",
       "build",
@@ -122,12 +134,20 @@ describe("planNativeStartBuild", () => {
         ".morph-prerender-content.json": '{"forged":true}',
         // Pre-seeding the record cannot decide a build either way.
         ".morph/prerender-refused-reads.ndjson": "",
+        ".morph/native-build-hooks.mjs": "// the project's own",
+        ".morph/native-build-loader.mjs": "// the project's own",
       }),
     );
     if (!plan.ok) throw new Error(plan.message);
     const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
     expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
       "morph:native-import-guard",
+    );
+    expect(byPath.get(NATIVE_BUILD_HOOKS_PATH)).not.toContain(
+      "the project's own",
+    );
+    expect(byPath.get(NATIVE_BUILD_LOADER_PATH)).not.toContain(
+      "the project's own",
     );
     expect(byPath.get(".morph-prerender-content.json")).not.toContain(
       "forged",

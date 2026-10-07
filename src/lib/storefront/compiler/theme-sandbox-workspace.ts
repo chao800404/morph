@@ -1000,7 +1000,11 @@ export default defineConfig({
   plugins: isStartRuntimeBuild
 ? [
     ${prerenderContent ? `${themePrerenderContentPluginSource(hostWorkspaceRoot)},` : ""}
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    // No debugger port for the server Start prerenders through. The plugin
+    // picks the first free port from 9229 and Miniflare binds it later; a
+    // build or dev server taking it in between fails every prerendered page
+    // with EADDRINUSE.
+    cloudflare({ viteEnvironment: { name: "ssr" }, inspectorPort: false }),
     tailwindcss(),
     tanstackStart(${JSON.stringify(mode === "build" && routeRegistry ? (themePrerenderOptions(contentSnapshot, routeRegistry, Boolean(prerenderContent)) ?? {}) : {})}),
     viteReact(),

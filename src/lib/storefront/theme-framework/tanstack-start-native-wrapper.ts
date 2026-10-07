@@ -21,11 +21,73 @@ import {
  *   the snapshot cannot speak for — is recorded and fails the build
  *   (theme-prerender-content.ts, `NativePrerenderContent`).
  *
+ * Beside the config, a module hook the build's Node process loads first turns
+ * the Cloudflare plugin's debugger port off (`NATIVE_BUILD_HOOKS_PATH`).
+ *
  * Nothing here rewrites the project's files; the wrapper sits beside them in
  * `.morph/`, which is Morph's.
  */
 
 export const NATIVE_WRAPPER_CONFIG_PATH = ".morph/vite.config.ts";
+
+/**
+ * The module the build's Node process imports first (`--import`), and the
+ * module hook it registers.
+ *
+ * The hook gives the project's `cloudflare(...)` call `inspectorPort: false`,
+ * for this build only: the project's config is not rewritten, and the
+ * plugin's options are not otherwise reachable — they are closed over where
+ * the project calls it, and the plugin reads its inspector port from nothing
+ * else. Without it, the server Start prerenders through opens a debugger
+ * port: the plugin picks the first free one from 9229 and Miniflare binds it
+ * later, so a concurrent build or dev server taking it in between fails every
+ * prerendered page with EADDRINUSE.
+ */
+export const NATIVE_BUILD_HOOKS_PATH = ".morph/native-build-hooks.mjs";
+export const NATIVE_BUILD_LOADER_PATH = ".morph/native-build-loader.mjs";
+
+/** `NODE_OPTIONS` for the build: relative to its working directory, the workspace root. */
+export const NATIVE_BUILD_NODE_OPTIONS = `--import=./${NATIVE_BUILD_HOOKS_PATH}`;
+
+export function nativeBuildHooksSource(): string {
+  return `// Written by Morph for this build (tanstack-start-native-wrapper.ts).
+import { register } from "node:module";
+
+register(${JSON.stringify(`./${NATIVE_BUILD_LOADER_PATH.split("/").pop()}`)}, import.meta.url);
+`;
+}
+
+export function nativeBuildLoaderSource(): string {
+  return `// Written by Morph for this build (tanstack-start-native-wrapper.ts).
+// An import of the Cloudflare Vite plugin from outside it gets the plugin
+// with \`cloudflare(options)\` given \`inspectorPort: false\`; everything else
+// it exports is its own. The plugin's own imports, and the shim's import of
+// the plugin, resolve as they always do.
+const PLUGIN = "/node_modules/@cloudflare/vite-plugin/";
+const isPlugin = (url) =>
+  typeof url === "string" && url.startsWith("file:") && url.includes(PLUGIN);
+
+export async function resolve(specifier, context, nextResolve) {
+  const resolved = await nextResolve(specifier, context);
+  const parent = context.parentURL;
+  if (!isPlugin(resolved.url) || isPlugin(parent) || parent?.startsWith("data:")) {
+    return resolved;
+  }
+  const plugin = JSON.stringify(resolved.url);
+  const shim = [
+    "import { cloudflare as projectCloudflare } from " + plugin + ";",
+    "export * from " + plugin + ";",
+    "export function cloudflare(options) {",
+    "  return projectCloudflare({ ...options, inspectorPort: false });",
+    "}",
+  ].join("\\n");
+  return {
+    shortCircuit: true,
+    url: "data:text/javascript," + encodeURIComponent(shim),
+  };
+}
+`;
+}
 
 /**
  * Resolved-path import guard, as plugin source. Reads `allowedPackages`,

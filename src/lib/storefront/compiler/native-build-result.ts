@@ -82,6 +82,23 @@ function refusedReadsMessage(record: Uint8Array | string): string {
   return `NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed${detail ? `: ${detail}` : ""}. Build from the editor so the content is sealed with the build, or stop prerendering pages that read content.`;
 }
 
+const FAILURE_HEAD_CHARS = 6_000;
+const FAILURE_TAIL_CHARS = 2_000;
+
+/**
+ * A failed native build's message, from what the build printed. The first
+ * error printed is usually the cause and the last its consequence — the
+ * prerender server's stack, then the Response Start threw on seeing a 500 —
+ * so a long output keeps both ends, not just the tail.
+ */
+export function nativeBuildFailureMessage(output: string): string {
+  if (output.length <= FAILURE_HEAD_CHARS + FAILURE_TAIL_CHARS) {
+    return `NATIVE_BUILD_FAILED: ${output}`;
+  }
+  const omitted = output.length - FAILURE_HEAD_CHARS - FAILURE_TAIL_CHARS;
+  return `NATIVE_BUILD_FAILED: ${output.slice(0, FAILURE_HEAD_CHARS)}\n… ${omitted} characters omitted …\n${output.slice(-FAILURE_TAIL_CHARS)}`;
+}
+
 /**
  * A native build's result from the files it wrote, the same for every
  * runner: collected into Morph's artifact layout, held to the runner's

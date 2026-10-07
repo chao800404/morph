@@ -265,6 +265,20 @@ export function themePrerenderContentPluginSource(
         req.rawHeaders = [...raw, "x-morph-content-origin", origin];
         next();
       });
+      // After every plugin's own middleware, the Worker's among them: a
+      // request that fails on this server says why, in the build's output and
+      // in the response, rather than as the default handler's bare 500 page,
+      // which Start reports without reading.
+      return () => {
+        server.middlewares.use((error, req, res, next) => {
+          const detail = (error && (error.stack || String(error))) || "unknown error";
+          process.stderr.write("PRERENDER_SERVER_ERROR: " + req.method + " " + req.url + ": " + detail + "\\n");
+          if (res.headersSent) return next(error);
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("PRERENDER_SERVER_ERROR: " + detail);
+        });
+      };
     }
   }`;
 }

@@ -31,7 +31,11 @@ import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
-import { nativeBuildResult, runNativeBuildPasses } from "./native-build-result";
+import {
+  nativeBuildFailureMessage,
+  nativeBuildResult,
+  runNativeBuildPasses,
+} from "./native-build-result";
 
 /** The image's pinned Vite, the same binary the platform build runs. */
 const NATIVE_VITE_BIN = "/opt/morph-toolchain/node_modules/.bin/vite";
@@ -984,8 +988,14 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         // Zero Morph server secrets: only what the build itself needs.
         env: {
           NODE_ENV: "production",
-          NODE_OPTIONS: "--unhandled-rejections=strict",
           ...plan.env,
+          // The plan's options (its module hook) and this runner's own.
+          NODE_OPTIONS: [
+            "--unhandled-rejections=strict",
+            plan.env.NODE_OPTIONS,
+          ]
+            .filter(Boolean)
+            .join(" "),
         },
       },
     );
@@ -993,7 +1003,11 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     if (!(built.success ?? built.exitCode === 0)) {
       return fail(
         "sandbox-native-compiler",
-        `NATIVE_BUILD_FAILED: ${(built.stderr || built.stdout || "vite build exited with a non-zero status").slice(-2_000)}`,
+        nativeBuildFailureMessage(
+          built.stderr ||
+            built.stdout ||
+            "vite build exited with a non-zero status",
+        ),
       );
     }
 
