@@ -137,6 +137,26 @@ describe("syncPreviewFiles", () => {
     });
     expect(w.disk.get(HERO)).toBe("hero again + edit");
   });
+
+  // The tab still holds an edit of the deleted file's version 2. Checked
+  // after the file was made again, it is not a write the fence can order: it
+  // was read at the newest generation, so the fence takes it whatever its
+  // number. The database refuses its save (the file id has changed); the
+  // preview must refuse it too.
+  it("refuses an edit of the deleted file once it is made again at a lower version", async () => {
+    const w = world({ version: 1, content: "hero v1" });
+    w.save("hero v2");
+    expect(await w.sync("hero v2", 2)).toMatchObject({ ok: true });
+    w.remove();
+    w.create("hero again");
+    expect(await w.sync("hero again", 1)).toMatchObject({ ok: true });
+
+    expect(await w.sync("hero v2 + old edit", 2)).toEqual({
+      ok: false,
+      stalePaths: [HERO],
+    });
+    expect(w.disk.get(HERO)).toBe("hero again");
+  });
 });
 
 /**
