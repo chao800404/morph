@@ -224,7 +224,10 @@ import {
 } from "@/lib/storefront/editor/preview-protocol";
 import { splitPageRoots } from "@/lib/storefront/editor/page-structure";
 import { resolveEditorSectionModel } from "@/lib/storefront/editor/editor-section-model";
-import { resolveTemplateDraftGeneration } from "@/lib/storefront/editor/template-draft-generation";
+import {
+  observeGenerationsAfterPublish,
+  resolveTemplateDraftGeneration,
+} from "@/lib/storefront/editor/template-draft-generation";
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
@@ -1035,7 +1038,7 @@ export function VisualEditorShell({
           }),
       );
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, variables) => {
       if (!result.success) {
         toast.error(result.message);
         await queryClient.invalidateQueries({
@@ -1046,6 +1049,13 @@ export function VisualEditorShell({
         });
         return;
       }
+      // The publish moved the sealed drafts' generations on; the next edit
+      // must be sent at those, not at this session's last write's.
+      observeGenerationsAfterPublish(templateDraftGenerationRef.current, {
+        templateId: variables.templateId,
+        draftGeneration: result.data?.draftGeneration,
+        alsoSealed: layoutTemplate ? [layoutTemplate.id] : [],
+      });
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: storefrontThemeQueries.detail(

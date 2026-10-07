@@ -25,3 +25,36 @@ export function resolveTemplateDraftGeneration(args: {
   )?.draftGeneration;
   return typeof stored === "number" ? stored : 1;
 }
+
+/**
+ * Brings this session's observed generations up to date after a publish.
+ *
+ * Publishing seals the page's draft and moves its draft generation on, and
+ * also the shell's when the shell had unpublished edits. The observed value
+ * from this session's last write would otherwise outrank the refreshed
+ * context in `resolveTemplateDraftGeneration`, so the first edit after a
+ * publish was sent at the old generation and refused as out of date.
+ *
+ * The page takes the generation the publish returned. Every other template
+ * the publish may have sealed is forgotten here, so the refreshed context
+ * answers for it.
+ */
+export function observeGenerationsAfterPublish(
+  observed: Map<string, number>,
+  publish: {
+    templateId: string;
+    /** The page's draft generation as the publish left it. */
+    draftGeneration: number | undefined;
+    /** Other templates the publish may have sealed (the shell). */
+    alsoSealed: readonly string[];
+  },
+): void {
+  if (typeof publish.draftGeneration === "number") {
+    observed.set(publish.templateId, publish.draftGeneration);
+  } else {
+    observed.delete(publish.templateId);
+  }
+  for (const templateId of publish.alsoSealed) {
+    if (templateId !== publish.templateId) observed.delete(templateId);
+  }
+}
