@@ -397,6 +397,15 @@ STRIPE_SECRET [ 新增 Secret ]
             第 3 步驗收（同時是 Sandbox 原生建置的真實容器驗證）。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
           店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
+          已通過（2026-10-07，本機 Docker，`MORPH_NATIVE_START_BUILD=1`）：`e2e/native-publish-acceptance.spec.ts`。
+          以 Code 存入專案自己的 `vite.config.ts`、`wrangler.jsonc` 與一個 loader 呼叫 server function 的路由 →
+          工具列建置在 Sandbox 容器以專案設定建置（Sandbox 原生建置的第一次真實容器執行）→ 隔離式 Build Preview
+          中該路由回 200 並含標記 → 發布只送出一次建置請求（重用預覽過的 build），build 的 compiler 為
+          `tanstack-start-native`、manifest 入口為 Worker 且沒有 `previewEntry` → 店面（第一次發布）：SSR 頁面含標記、
+          建置後的資產 200、不存在的頁面為 Theme 自己的 404 → 改為第二版並發布，店面顯示第二版 → 回滾到第一版，
+          生效 release 的 build 回到第一次那個，店面回到第一版。產物皆由驗證程式從該次執行的 R2 依 manifest 重建後執行。
+          已知的本機限制（原有，非本步驟造成）：本機店面的 Theme Worker 回呼店面主機名稱取內容時，workerd 無法解析
+          `*.localhost`（`DNS lookup failed`），需要內容的頁面在本機店面拿不到內容；驗收的路由不讀內容。
        4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。
    - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
    - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
