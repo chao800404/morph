@@ -450,7 +450,7 @@ Start 透過 Vite preview server 預先渲染（`TSS_PRERENDERING`），這個 m
 
 **任何一項不成立，Astro 接入就停在這裡**，回到設計層決定，不悄悄改成新的資料管道。
 
-**A3 的三值測試**（形式同 `native-start-build.test.ts`，真實建置）：同一個欄位準備三個不同的值，
+**A3 的三值測試**（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`，真實建置）：同一個欄位準備三個不同的值，
 元件預設值 D、封存快照中的 A、建置後才改的目前草稿 B。
 
 | 情境                               | 預期                                                                   |
@@ -551,8 +551,9 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 
 - Build Preview 執行器以 `wrangler dev` 執行產物，與框架無關。Astro 只需要確認一件事：Astro 的 Worker
   在無網路容器中能啟動（就緒判定沿用 `waitForPort`）。
-- 發布：工具列建置封存目前的草稿；發布重用 build 的條件（`resolvePublishBuildPlan` 的 `buildContentCurrent`）
-  與伺服器端的 `PUBLISH_BUILD_CONTENT_MISMATCH` 都不改。Astro 不會有另一條發布路徑。
+- 發布：工具列建置，以及發布時必須先建置所觸發的建置，都封存它所服務的那份草稿；發布重用 build 的條件
+  （`resolvePublishBuildPlan` 的 `buildContentCurrent`）與伺服器端的 `PUBLISH_BUILD_CONTENT_MISMATCH` 都不改。
+  Astro 不會有另一條發布路徑。
 - 回滾不改。拒絕 `cache.enabled`（5.2）是為了讓回滾仍然只等於「換 build」；Theme 程式自行使用的快取不在
   這條規則的範圍內（見 5.2「快取規則的範圍」）。
 - 建置來源紀錄包含工具鏈快照與當時的認證狀態。Unverified 組合產生的 build 不能升格為 release。
@@ -665,7 +666,7 @@ R1–R3 有任一項的結論是「不可行」，就先更新本文件，再談
 | **G0** | 原生 Start 內容配對驗收（不屬於 Astro，但是 Astro 接入 `main` 與開放的前提；不阻擋 8.1 的研究）                                                                                         | 真實容器中：（1）Build Preview 顯示封存的草稿；（2）發布重用預覽過的 build，產物雜湊相同；（3）build 之後草稿又被修改，發布時重新建置，或被 `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕；（4）兩個並行的建置或發布不會配錯內容，OCC 拒絕落後的一方；（5）回滾後店面的 build 與內容一起回到舊版。本文件撰寫時（`0f832bd`），`e2e/native-publish-acceptance.spec.ts` 只涵蓋了不讀內容的路由的發布與回滾；（1）、（3）、（4）在 `e2e/` 中找不到對應的真實容器驗收 |
 | A1     | 框架身分：`ThemeFrameworkId` 加入 `astro`、build 輸入記錄框架、`nativeBuildResult` 與預覽 runtime 依記錄選 adapter、Start 原生建置的共用部分搬到共用模組。只有 Start 一個實作，行為不變 | 既有測試、Start 的 E2E 不變；新增測試：build 輸入的框架被改動時 `inputHash` 也會改變；`theme-framework.test.ts` 的介面規則仍然成立                                                                                                                                                                                                                                                                                                                       |
 | A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間                                                                                                                                                                                                                                                                                                                                             |
-| A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `native-start-build.test.ts`）                                                                                                         | R2 已證明可行；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值；部署的 Worker 中沒有包裝標記。**任一項不成立就停止**，回到設計層                                                                                                                                                                                                                         |
+| A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`）                                                                            | R2 已證明可行；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值；部署的 Worker 中沒有包裝標記。**任一項不成立就停止**，回到設計層                                                                                                                                                                                                                         |
 | A4     | Astro 原生建置（本機建置程式，再到 Sandbox 建置程式）：包裝設定檔、匯入防護、產物整理、5.2 的規則、manifest、compiler 身分                                                              | 官方 Astro Cloudflare 範例以 fixture 原樣保存（`fixtures/astro/<example>/`，附 `SOURCE.json` 與逐檔雜湊，作法同 tanstack fixture），能建置的部分建置成功，不能的以 `KNOWN GAP` 斷言（例如 `SESSION`）；最簡單的 Astro Theme 加上 `session: false` 與 `imageService` 後建置成功，5.2 每一條拒絕規則各有一個會觸發它的測試；匯入防護放行專案別名與 Astro 虛擬模組，拒絕未核准的套件與工作區外的檔案                                                        |
 | A5     | Astro 的 Build Preview、發布、回滾，跑 G0 同一組驗收                                                                                                                                    | 真實容器中 G0 的五項對 Astro 全部通過；`SESSION` 的處理方式已決定並實作（基礎設施對應，或明確的替代方案）                                                                                                                                                                                                                                                                                                                                                |
 | A6     | Astro Live Preview（本機 sidecar，再到容器）：啟動程式、預覽包裝設定、Worker entry、無 router 的 client module、整頁重新載入的內容更新與選取恢復                                        | 經過真實的 `preview.tsx` 與 `/applyFiles`：`.astro` 修改的 `applied` → 重新 `ready` 流程正確，選取能恢復；2.5 表中的回應行為（串流、重新導向、Cookie、錯誤頁、HMR）在真實路徑上不變；第 7 節的安全探測（沒有 `.wrangler/state`、沒有 inspector、容器政策記錄顯示外連被拒）；冷啟動時間與 Start 比較                                                                                                                                                      |
