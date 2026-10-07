@@ -152,7 +152,17 @@ export class DispatchNamespaceThemeRuntime implements ThemeRuntime {
 
     try {
       const stub = this.binding.get(scriptName);
-      const response = await stub.fetch(invocation.request);
+      // Same storefront context as every other transport: without it the Theme
+      // has no content origin and renders component defaults, and a client could
+      // supply its own x-morph-content-origin and have the Theme render content
+      // fetched from an origin of their choosing.
+      const response = await stub.fetch(
+        applyStorefrontContext(
+          invocation.request,
+          invocation.resolved,
+          new URL(invocation.request.url).origin,
+        ),
+      );
       return { success: true, response };
     } catch (error) {
       if (isScriptNotFound(error)) {

@@ -731,6 +731,93 @@ describe("ServiceBindingThemeRuntime", () => {
   });
 });
 
+describe("DispatchNamespaceThemeRuntime storefront context", () => {
+  const resolved = {
+    hostname: HOST,
+    storefrontId: "sf_1",
+    releaseId: "rel_1",
+    themeBuildId: "bld_1",
+    contentPublicationId: "pub_1",
+  } as any;
+
+  function dispatchRuntime() {
+    const fetch = vi.fn(async (_request: Request) => new Response("themed"));
+    const runtime = new DispatchNamespaceThemeRuntime({
+      get: () => ({ fetch }),
+    });
+    return { runtime, fetch };
+  }
+
+  function dispatched(fetch: ReturnType<typeof dispatchRuntime>["fetch"]) {
+    expect(fetch).toHaveBeenCalledOnce();
+    return fetch.mock.calls[0]![0];
+  }
+
+  it("forwards the resolved storefront context to the dispatched Theme Worker", async () => {
+    const { runtime, fetch } = dispatchRuntime();
+
+    const result = await runtime.handle({
+      request: new Request(`https://${HOST}/about?x=1`),
+      resolved,
+    });
+
+    expect(result.success).toBe(true);
+    const seen = dispatched(fetch);
+    expect(new URL(seen.url).pathname).toBe("/about");
+    expect(seen.headers.get("x-morph-storefront-host")).toBe(HOST);
+    expect(seen.headers.get("x-morph-content-origin")).toBe(`https://${HOST}`);
+    expect(seen.headers.get("x-morph-storefront-id")).toBe("sf_1");
+    expect(seen.headers.get("x-morph-release-id")).toBe("rel_1");
+    expect(seen.headers.get("x-morph-theme-build-id")).toBe("bld_1");
+    expect(seen.headers.get("x-morph-content-publication-id")).toBe("pub_1");
+  });
+
+  it("overwrites every client-supplied storefront context header", async () => {
+    // A visitor-supplied content origin would make the Theme render "published
+    // content" fetched from an origin the visitor controls.
+    const { runtime, fetch } = dispatchRuntime();
+
+    const result = await runtime.handle({
+      request: new Request(`https://${HOST}/about`, {
+        headers: {
+          "x-morph-storefront-host": "attacker.example",
+          "x-morph-content-origin": "https://attacker.example",
+          "x-morph-storefront-id": "sf_ATTACKER",
+          "x-morph-release-id": "rel_ATTACKER",
+          "x-morph-theme-build-id": "bld_ATTACKER",
+          "x-morph-content-publication-id": "pub_ATTACKER",
+        },
+      }),
+      resolved,
+    });
+
+    expect(result.success).toBe(true);
+    const seen = dispatched(fetch);
+    expect(seen.headers.get("x-morph-storefront-host")).toBe(HOST);
+    expect(seen.headers.get("x-morph-content-origin")).toBe(`https://${HOST}`);
+    expect(seen.headers.get("x-morph-storefront-id")).toBe("sf_1");
+    expect(seen.headers.get("x-morph-release-id")).toBe("rel_1");
+    expect(seen.headers.get("x-morph-theme-build-id")).toBe("bld_1");
+    expect(seen.headers.get("x-morph-content-publication-id")).toBe("pub_1");
+  });
+
+  it("strips a spoofed content publication header when the release has none", async () => {
+    const { runtime, fetch } = dispatchRuntime();
+
+    const result = await runtime.handle({
+      request: new Request(`https://${HOST}/about`, {
+        headers: { "x-morph-content-publication-id": "pub_ATTACKER" },
+      }),
+      resolved: { ...resolved, contentPublicationId: null },
+    });
+
+    expect(result.success).toBe(true);
+    expect(
+      dispatched(fetch).headers.get("x-morph-content-publication-id"),
+    ).toBeNull();
+  });
+});
+
 describe("LocalDirectThemeRuntime global binding", () => {
   it("calls the runtime fetch with the global receiver, not the instance", async () => {
     // Workers reject a `fetch` invoked with any other receiver:
