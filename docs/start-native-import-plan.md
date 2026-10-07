@@ -430,6 +430,20 @@ STRIPE_SECRET [ 新增 Secret ]
 
 移除 #98 在 CMS 資料中可編輯的渲染設定，須先確認沒有呼叫者，於步驟 4 或 5 處理。
 
+## 啟用原生建置前的阻擋項
+
+- **已修正（#131）：Workers for Platforms 派送路線未帶店面情境標頭。** `DispatchNamespaceThemeRuntime`
+  直接把訪客的原始請求交給 Theme Worker，沒有經過 service binding 與本機路線共用的
+  `applyStorefrontContext`，因此缺少 `x-morph-storefront-host`、`x-morph-content-origin`、
+  `x-morph-storefront-id`、`x-morph-release-id`、`x-morph-theme-build-id`、
+  `x-morph-content-publication-id` 六個標頭。影響的是內容與授權鏈：Theme 沒有內容來源，SSR 頁面
+  全部顯示元件預設值而非已發布內容；更嚴重的是訪客自帶的標頭會原樣送達 Theme，自訂的
+  `x-morph-content-origin` 會讓內容載入改向攻擊者的來源取得「已發布內容」並渲染（內容注入），
+  店面、release、build 與 publication 識別也可被偽造。當時尚無法觸及（`wrangler.jsonc` 未綁定
+  `THEME_DISPATCHER`，正式環境走 service binding），但派送路線一啟用就會生效。現在派送與其他路線
+  共用同一個 `applyStorefrontContext`（設定而非合併，release 沒有 publication 時刪除該標頭），
+  內容來源取自 Morph Core 被呼叫的 origin，並有單元測試覆蓋這三點。
+
 ## 第 0 步結果（2026-10-06，本機）
 
 Fixture：`fixtures/tanstack/start-basic-cloudflare/`，TanStack/router `9595b97` 的
