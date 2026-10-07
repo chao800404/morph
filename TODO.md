@@ -15,6 +15,13 @@
   - v1 關閉，因為 SVG 可以夾帶腳本。
   - 需決定：上傳時清理（sanitize）並拒絕 script／外部參照、以 `Content-Security-Policy` 與 `Content-Disposition` 限制執行，或只允許以 `<img>` 引用。
 
+- [ ] 專用 `.astro` 解析 Worker 的部署（2026-10-08）
+  - M1（#141）量出解析器放不進 Morph 主 Worker；候選是專用解析 Worker 加 service binding，備選是 Sandbox 中的官方 Node 解析器。
+  - 新增部署單位需要使用者核准。本機實驗 M1c 已完成（#145）：機制運作，但 GC 前的取樣在多個條件下超過 128 MB。部署後的雲端驗證（M1c-C）是 L2 使用它之前的正式閘門，也決定這條路是否可行（Astro 計畫 8.2）。
+
+- [ ] 通用 Vite 託管（L1）的依賴與工具鏈政策（2026-10-08）
+  - 要支援任意 Vite 框架，需決定建置 plugin 與工具鏈套件的放行方式、供應鏈風險、建置容器外連與建置時間（多框架計畫「未決事項」）。
+
 - [ ] R2 未引用 blob 的清理與保留期（第 7 項）
   - `theme-source/{sha256}` 被 workspace、revision manifest、build 與 release 共用；只看 workspace 判定「未使用」會刪掉可回滾版本的檔案。
   - 需決定保留期、哪些 revision／release 受保護，以及清理的執行位置與稽核方式。

@@ -6,11 +6,11 @@
 
 | 項目         | 內容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 最後更新 | 2026-09-26 |
+| 最後更新 | 2026-10-08 |
 | 目前狀態 | **Live Preview 已是真實 React，而且是編輯器唯一的引擎** —— `useState`／`useEffect`／Fast Refresh 與合法 npm 套件都在容器內的 Vite dev server 真實執行。相容性直譯器已在型別層退出編輯器路徑（`LivePreviewSource` 收斂為單成員），原始碼暫留觀察但走不到。預覽生命週期收斂為單一狀態機，並補上 sandbox 續期與存活偵測。**頁面生命週期已完整**：Pages 面板可新增與刪除頁面，兩者都以編輯器持有的 generation 做 OCC，並在寫入前重建整張路由表。Production Runtime、Domain 與遠端 Publish 仍未閉環。**Theme `public/` 靜態檔已閉環（2026-09-25～26，#37～#44）**：圖片與字型可在 Code 模式上傳、替換、刪除，隨 revision／build／release 發布，正式店面回應與上傳時逐位元組相同；尚未發布與回滾預覽以 digest 比對；Sandbox Live Preview 的 start 與即時同步改在容器內同一把鎖下判定並寫入，較舊的 start 整批拒絕 |
 | 整體完成度   | **94%**（第 7 階段由 80% → 95%：最大的架構斷層已關閉；本輪補齊 Code／Design 草稿同步與自動儲存，尚未閉環的是 production runtime、domain 與遠端 publish）                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 目前重點 | 依 [ROADMAP](../ROADMAP.md)「Theme `public/` 與 Assets 後續」的順序：① 預覽版本帳本記錄刪除（唯一已知會遺失使用者內容的缺口）；② 二進位檔的重新命名／搬移／複製與資料夾操作；③ Assets 頁面顯示「網站 `public/`」；④ 媒體庫複製到 `public/`。匯入放在最後。production 面仍未閉環：真實 Cloudflare Theme Worker、custom domain、remote migration 與遠端 Publish |
-| 最近完整驗證 | 2026-09-26 於 WSL（Linux）原生執行：`pnpm typecheck`（0 錯誤）、`pnpm test`（**408 檔、3229 passed、1 skipped、0 failed**）、`pnpm build` 通過。GitHub CI（#44）三項 check 全過：Architecture guards、Typecheck／test／build、Editor end-to-end（local preview transport）。真實 Cloudflare Sandbox 的 `publish.spec` 以 `MORPH_E2E_TRANSPORT=cloudflare-sandbox` 通過：上傳 PNG → Code 模式看得到並經 UI「Replace…」替換 → 容器建置 → 發布 → 正式店面回應 `image/png` 與上傳 digest 相同 → 替換後狀態回到「Edited …」；2026-09-25 另跑 text-promotion 與樣式／undo 的 editor spec（10 次同步經過容器）通過。**先前 9-22 的 7 個 Windows 路徑失敗在 Linux 原生環境不出現。** 本輪未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、完整的本機 `pnpm test:e2e` 全套、`MORPH_THEME_PARITY` |
+| 目前重點 | **2026-10-08**：原生 TanStack Start 的內容配對、發布與預覽已在本機真實容器驗收（見下方 10-07～08 紀錄）；原生建置開關仍關閉，待 Cloudflare 部署環境驗收與開啟的 PR。多框架依 [ROADMAP](../ROADMAP.md) 2026-10-08 的支援層級與接入順序（Astro → React Router → 通用 Vite → Next.js）；Astro 下一步是本機實驗 M1c（專用解析 Worker）與 A1、A2、L1.5。2026-09-26 列的「Theme `public/` 與 Assets 後續」①–④ 已在 ROADMAP 標為完成。production 面仍未閉環：真實 Cloudflare Theme Worker、custom domain、remote migration 與遠端 Publish |
+| 最近完整驗證 | 2026-10-08 於 WSL（Linux）原生執行（#142 的 worktree）：`pnpm typecheck`、`pnpm typecheck:data`、`pnpm test`（**588 檔中 587 通過、1 略過；4842 passed、1 skipped、4 todo**）、`pnpm build` 通過；GitHub CI 的 6 項 check 在 #141、#142、#143 全過。真實 Sandbox 容器（`MORPH_NATIVE_START_BUILD=1`）的 `native-publish-acceptance`、`native-content-dependency`、`publish.spec` 通過（`native-content-dependency` 前兩次分別因建置容器啟動失敗與 Live Preview 的 stub 500 失敗，後者已由 #143 修正）。未執行：Cloudflare 部署、遠端 migration、完整的本機 `pnpm test:e2e` 全套。以下為 2026-09-26 的紀錄：於 WSL（Linux）原生執行：`pnpm typecheck`（0 錯誤）、`pnpm test`（**408 檔、3229 passed、1 skipped、0 failed**）、`pnpm build` 通過。GitHub CI（#44）三項 check 全過：Architecture guards、Typecheck／test／build、Editor end-to-end（local preview transport）。真實 Cloudflare Sandbox 的 `publish.spec` 以 `MORPH_E2E_TRANSPORT=cloudflare-sandbox` 通過：上傳 PNG → Code 模式看得到並經 UI「Replace…」替換 → 容器建置 → 發布 → 正式店面回應 `image/png` 與上傳 digest 相同 → 替換後狀態回到「Edited …」；2026-09-25 另跑 text-promotion 與樣式／undo 的 editor spec（10 次同步經過容器）通過。**先前 9-22 的 7 個 Windows 路徑失敗在 Linux 原生環境不出現。** 本輪未執行：遠端 Publish、Cloudflare deploy、`pnpm db:migrate:prod`、完整的本機 `pnpm test:e2e` 全套、`MORPH_THEME_PARITY` |
 
 `█████████▍ 94%`
 
@@ -70,6 +70,26 @@
   編譯期身分注入都以真實 React 驗證過；相容性直譯器已無法從編輯器抵達。剩下的是刪除該路徑，
   以及公開 runtime 邊界與 production Worker，因此為 95%。
 - 階段 1、2 各 5：已完成的一致性修正，範圍小。
+
+### 2026-10-07～08：原生 Start 的內容配對、發布預覽與 Live Preview 恢復
+
+完成度百分比本輪不調整：本表的權重沒有對應這些項目的階段，重算要先改權重表。
+
+- **內容配對**：預先渲染只讀封存的內容（#130）；build 記錄 `content_dependency`，由平台實測證明，
+  NULL 為未知；內容比對依依賴狀態判斷，只有證明為 `independent` 的 build 可以帶不同內容（#137）。
+  本機真實容器驗收：Build Preview 顯示封存的草稿、舊 build 的預覽不會讀到新草稿、過期發布被
+  `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕、發布前草稿被改由最後的 OCC 拒絕、回滾時程式與內容一起回去。
+- **發布與預覽**：無指名 build 的發布只重用生效 release 自己的 build；回滾後重新發布正確判斷是否已上線（#137）；
+  發布後送出正確的草稿 generation（#135）；發布成功後才顯示該 release 的預覽，內容取自 release 本身，
+  標示 Published 並提供 Open live site（#142）。
+- **Live Preview**：Sandbox 連線中斷時，模組請求重試後回 `503 PREVIEW_RUNTIME_INTERRUPTED`，編輯器自動重連一次
+  （#139）；Morph 自己的 stub 模組與 `/__entry.tsx` 納入同一套恢復（#143）。
+- **建置**：原生預先渲染伺服器綁 127.0.0.1（#134），不再開 inspector port，修正偶發的 EADDRINUSE 500（#146）；
+  建置失敗訊息保留輸出的開頭與結尾。
+- **測試的證據力**：Release history 的 Escape 失敗會在當下附上證據（#136，原因仍未明）；檔案建立測試之間的
+  workspace 狀態殘留造成的偶發失敗已修（#140）；原生驗收的 Open live site 斷言改為依商店的主要網域判斷，不再依賴 spec 的執行順序（#144）。
+- **仍未完成**：Cloudflare 部署環境的驗收；建置容器偶爾啟動失敗時發布直接失敗、沒有重試（2026-10-08 本機
+  觀察到一次，尚未處理）；發布後的 release 截圖仍拍 build 的靜態預覽。
 
 ### 2026-08-31 實碼審核與降評依據
 

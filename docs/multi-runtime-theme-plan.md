@@ -3,6 +3,11 @@
 狀態：規劃，尚未實作。取代「Theme 只能是 TanStack Start」的前提；TanStack Start 的細節改為本文件
 下的其中一種框架，見 [`docs/start-native-import-plan.md`](start-native-import-plan.md)。
 
+更新（2026-10-08）：使用者的目標改為「盡量支援 Vite 能建置的框架」。加入支援層級（L1 託管、L1.5 點選定位、
+L2 視覺改寫、L3 認證）、新的接入順序（Astro 之後是 React Router，再來是通用 Vite 託管與 Next.js），以及
+點選定位的參考做法與 L2 改寫引擎的套件邊界。各層級的能力不互相代表：L1 通過不代表 Design 可用，
+L1.5 的定位也不是儲存授權或改寫安全的證據。
+
 ## 產品目標
 
 Morph CMS 本體維持 TanStack Start。網站前端（Theme）可以用不同框架撰寫：
@@ -22,8 +27,10 @@ Morph CMS 本體維持 TanStack Start。網站前端（Theme）可以用不同�
 
 1. **框架在建立網站時決定，不提供一鍵轉換。** 一個網站一份原始碼（單一網站工作區）。要換框架就
    建立新的原始碼，預覽通過後發布；不做 Astro ↔ TanStack Start 之類的自動轉換。
-2. **支援的是「多框架元件」，不是「任意原生專案」。** 完整的 Next.js、Nuxt、SolidStart 專案各自有
-   路由、server functions 與執行環境，每一種都是一個新的框架接入，須逐一驗證才開放。
+2. **能建置、預覽、發布的範圍盡量放寬；能在 Design 中改寫的範圍逐一接入。**（2026-10-08 修訂）
+   以 Vite 加上 Cloudflare 建置成 Worker（或純靜態輸出）的專案，目標是走同一條通用路線託管（L1，見下節）。
+   完整的 Next.js、Nuxt、SolidStart 等專案各自有路由、server functions 與執行環境，要轉為 Certified
+   仍須逐一驗證（L3）；Design 的改寫依檔案語言逐一接入（L2）。
 3. **Morph 的契約與框架無關，框架只是可替換的接入層。** 契約見下節；任何框架都不得另建一套內容、
    商務、身分或發布路徑。
 4. **Design 的改寫能力依「檔案語言」區分，不依「框架」區分。** 同一個 TSX 改寫器服務 TanStack
@@ -36,14 +43,30 @@ Morph CMS 本體維持 TanStack Start。網站前端（Theme）可以用不同�
 7. **限制綁定實測組合，不寫成永久規則。** 已知問題（例如 React 與 Vue 混用）以實測的套件版本組合
    列為 Unverified，上游修正並通過驗證後即可轉為 Certified。
 
+## 支援層級（2026-10-08）
+
+| 層級              | 涵蓋範圍                                                                 | 使用者能做的事                                                                                                                   | 每多一種的成本                         |
+| ----------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| **L1 託管**       | 以 Vite 加 `@cloudflare/vite-plugin` 建置成 Worker 的專案，或純靜態輸出  | Code、Live Preview（內容變動時整頁重新載入）、Build Preview、發布、回滾；以 SDK 讀 CMS 內容；`.fields.ts` 右側欄位；預先渲染讀封存內容 | 接近零，走同一條通用路線               |
+| **L1.5 點選定位** | 任何已接入 L1、而且檔案語言有來源位置注入的專案                          | 在畫面上點選元素，跳到 Code 中對應的那一行；內容仍以 `.fields.ts` 欄位編輯；**不在畫面上改寫原始碼**                                     | 每種檔案語言一個來源位置注入           |
+| **L2 視覺改寫**   | 依檔案語言逐一接入：`.tsx`（已完成）、`.astro`、之後 `.vue`、`.svelte`…  | 選取實例、改樣式與文字、把字面值升級成欄位，經 Core 的權限、來源版本與 OCC 寫入                                                       | 每種檔案語言一個解析器與改寫器         |
+| **L3 認證**       | 特定「框架 × 版本」                                                      | 通過整套驗收、工具鏈固定，標為 Certified；只有 Certified 能發布（原則 5）                                                            | 每個版本一次驗收                       |
+
+L1 能通用，是因為內容配對、內容依賴的證明、Build Preview、release 預覽、發布與回滾處理的都是「產物加上
+內容」，不依賴框架（start-native-import-plan 第 3 步）。框架之間的差別在產物位置、預先渲染的觸發方式與
+開發伺服器的啟動方式，由接入層描述。只能在 Cloudflare Workers 執行的限制不變：依賴完整 Node 環境的功能
+必須明確回報不支援，不能靜默失敗。
+
 ## 支援範圍
 
 | 階段   | 框架                                   | 狀態目標      | 說明                                                                                    |
 | ------ | -------------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
 | 第一版 | TanStack Start（React）                | Certified     | 現有實作；原生匯入依 start-native-import-plan 進行                                      |
 | 第一版 | Astro（`.astro` + React／Vue 元件）    | Certified     | 2026-10-06 驗證通過（見下）。靜態 HTML 模板以 `src/pages/*.html` 放進 Astro，不另設框架 |
-| 之後   | Next.js（經 vinext）                   | 先 Unverified | vinext 1.0（2026-09-28）以 Vite 重新實作 Next.js API；官方仍提醒非所有專案都能直接替換  |
-| 之後   | Nuxt、SolidStart、TanStack Start Solid | 先 Unverified | 依需求逐一接入                                                                          |
+| 第二個接入 | React Router（原 Remix）         | 先 Unverified | 2026-10-08 排在 Astro 之後。官方 Cloudflare Vite plugin 支援，建置路線同 Start；檔案語言是 TSX，L2 沿用現有改寫器。輪到時再選定版本（Cloudflare 文件已從 v7 改寫為 v8） |
+| 之後   | 通用 Vite 託管（L1）：SvelteKit、SolidStart、Vue 等 | 先 Unverified | 先求能建置、預覽、發布；SvelteKit 用自己的 `adapter-cloudflare`，SolidStart 在 Cloudflare 文件標為 Beta |
+| 之後   | Next.js（經 vinext）                   | 先 Unverified | vinext 1.0（2026-09-28）以 Vite 重新實作 Next.js API；官方仍提醒非所有專案都能直接替換，npm 上仍為 beta  |
+| 之後   | Nuxt、TanStack Start Solid             | 先 Unverified | 依需求逐一接入                                                                          |
 
 ## 框架無關的 Morph 契約
 
@@ -101,6 +124,22 @@ Design 需要的能力，依檔案語言實作。「實例與內容識別」與�
 | `.astro`       | 以 `@astrojs/compiler-rs` 解析，在 Vite `load` 注入 | 待實作（未驗證）                  | frontmatter 的 `interface Props` | `Astro.props`         | compiler-rs 位置 + 現有樣式引擎  |
 | `.vue`         | Vue 編譯器的 template node transform                | 待實作（未驗證）                  | `vue/compiler-sfc` 的 bindings   | `defineProps`         | 之後；先只編輯 `.fields.ts` 欄位 |
 | `.html`        | HTML parser 的行列位置                              | 待實作                            | 不適用                           | 不適用                | 文字、屬性                       |
+
+**L1.5 的來源位置注入（2026-10-08）。** 在預覽容器的 Vite 流程中，編譯時替元素注入來源位置，參考
+[`code-inspector-plugin`](https://github.com/zh-lx/code-inspector)（MIT，已處理 Vue、React、Svelte、Solid、
+Astro 等編譯器各自的注入時機）。只參考做法；若日後直接取用其程式碼，保留 MIT 授權聲明，並掃描整串相依的
+授權。它的本機開啟編輯器伺服器與自動尋找空 port 不帶進 Morph。注入只在預覽，正式建置不帶。注入仍可能需要
+容器內的解析器，這和 L2 用的可信解析不是同一件事：預覽容器執行 Theme 程式碼，它回傳的位置只決定「點到哪裡」，
+不能作為儲存授權或改寫安全的證據。
+
+**L2 的可信解析與改寫。** 改寫與儲存時的分析由 Morph 自己的程式碼執行，不採信預覽容器的結果。`.astro` 的
+解析器放不進 Morph 主 Worker（Astro 計畫 M1），使用者已決定走專用解析 Worker 加 service binding，備選是 Sandbox 中
+的官方 Node 解析器（Astro 計畫 0.3）；本機實驗 M1c 已完成，部署後的雲端驗證（M1c-C）是使用前的閘門。Core 套用修改建議前，核對來源版本（OCC）、來源雜湊、修改範圍
+合法而且不重疊；解析被拒時只讓該檔案的 Design 改寫降級為唯讀，Code 編輯與原本的存檔防護不變。
+
+**L2 改寫引擎的邊界。** 各檔案語言的「來源位置 → 精準改寫」寫成介面不依賴 Morph 的獨立 package：輸入原始碼
+字串，輸出位置與修改內容，不 import Morph 的其他模組。改寫引擎是 Morph 的付費差異，目前不開源；獨立 package
+只是保留日後授權方式的彈性。
 
 一種檔案語言的 Design 支援，必須驗到整條鏈才算完成：**選取實例 → 顯示欄位 → 文件儲存（權限、
 文件版本、OCC）→ 該實例更新、其他實例不變**。只完成宣告讀取或來源位置，不算支援。
@@ -247,9 +286,15 @@ TanStack Start 專屬的部分（selective SSR、`pages`、`spa`、步驟 1b–1
 3. **TanStack Start 原生建置**：start-native-import-plan 的 1b–1d，作為第一個接入。
 4. **Astro 接入**：預覽容器中的 Live Preview、`.astro` 的來源位置／實例識別／props／內容傳入／改寫、
    建置與產物、官方 Astro Cloudflare 範例原樣匯入驗收；Design 以整條鏈驗收，ISR／SSG 以經 Core 的
-   快取行為驗收。
-5. **建立網站時選擇框架**，以及模板宣告所需框架。
-6. 依需求加入其他框架，從 Unverified 開始。
+   快取行為驗收。（2026-10-08）Design 先做 L1.5；`.astro` 的 L2 改寫等專用解析 Worker 通過雲端驗證之後
+   （Astro 計畫 8.2）。
+5. **React Router（原 Remix）接入**（2026-10-08 決定排在 Astro 之後）：建置路線同 Start，L2 沿用 TSX。
+   做 Astro 的 A1、A2 時，以「第三個框架也能套用」檢查共用介面，不把 Astro 特有的處理寫進共用層。
+6. **建立網站時選擇框架**，以及模板宣告所需框架。
+7. **通用 Vite 託管（L1）**：以兩三個官方 Cloudflare 範例（例如 Vue、Svelte、Solid）驗收；之後依需求替
+   各檔案語言加上 L1.5。
+8. **Next.js（經 vinext）**：等 vinext 穩定後接入，從 Unverified 開始。
+9. 依需求加入其他框架，從 Unverified 開始。
 
 ## 未決事項
 
@@ -259,3 +304,7 @@ TanStack Start 專屬的部分（selective SSR、`pages`、`spa`、步驟 1b–1
 - 介面如何分別顯示「框架認證」與各元件的 Design 能力。
 - vinext 的認證範圍（`use cache` 等快取功能支援有限）。
 - Astro island 傳入內容須可序列化；複合欄位（連結、清單）的傳遞方式待確認。
+- 通用 Vite 託管（L1）的依賴與工具鏈：沿用 Theme 依賴快照（依 lockfile 鎖定，經既有套件申請流程提出、
+  不自動信任，start-native-import-plan），但要支援任意框架，必須決定建置 plugin 與工具鏈套件的放行政策、
+  供應鏈風險、建置容器的外連權限與建置時間。這是安全模型的擴大，由使用者決定；決定前不實作。
+- 介面如何顯示專案的支援層級（L1／L1.5／L2／L3），讓使用者知道哪些功能可用。
