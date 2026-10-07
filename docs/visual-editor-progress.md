@@ -1282,6 +1282,8 @@ Theme 的路由從檔案集合推導，所以一個頁面就是一個原始碼�
 
 **該觀察已於同日判定並結案**：那個級聯（`Maximum update depth exceeded`，Radix `useComposedRefs`）是 **jsdom 專屬**。在真實瀏覽器對執行中的編輯器製造同一次存檔失敗（攔截 serverFn POST）：`[data-editor-save-status]` 從 1 個仍是 1 個、顯示 `Save failed`、樹保有 15 列；jsdom 則是 1 → 0。二分法定位兇手為 `editor-assistant-panel` 的重繪，sections panel 不是。
 
+**更正（2026-10-07）：那個判定是錯的。** jsdom 的級聯來自 `useInspectorContentProps`：fixture 的 hero 沒有 `props`，hook 每次 render 產生新的 `{}` 當 effect 依賴、effect 又 `setLocalProps`，於是無止境重繪；已修，round-trip 與 route-switch 測試改回渲染真正的 panel（撤回修法時 8 個測試紅）。另外，CI 上 `session-editor-writes` 的逾時（runs 37505554126、37509904859）是**另一條**同訊息的迴圈：Radix Select（Inspector 的 `Object position`）在 React 19 下 composed ref 不穩定（radix-ui/primitives#3963），編輯器落到 `Theme editor unavailable`，測試卡在下一個點擊直到 300s。`@radix-ui/react-select` 升至 2.3.7 修正。
+
 因此 round-trip 測試把 assistant panel passthrough 掉，並一併補回三件事：**置中接線**（先前因這個級聯退回）、以及**存檔失敗的兩種形態**（伺服器拒絕走 `success: false`、請求未送達走 `onError`，兩者都必須送達作者）。三個都以「撤回對應分支後必須失敗」反向驗證，且各自只紅自己那一個。連續六次完整測試全綠 —— 刻意跑多次，因為置中測試先前 4 次中會紅 3 次。
 
 EDIT-02 剩下的是**重試／衝突處置入口**：payload 與 baseline 都保留，作者可以再編輯或按發布，但沒有明確引導。那是產品決策，不是缺陷。

@@ -24,14 +24,6 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * test says the load finished.
  */
 
-vi.mock("./editor-assistant-panel", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  // The real panel sends jsdom through React's nested-update limit; see
-  // visual-editor-shell-round-trip.test.tsx. The rows clicked here are in the
-  // sections panel.
-  EditorAssistantPanel: () => null,
-}));
-
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   postEditorToPreviewMessage: vi.fn(),

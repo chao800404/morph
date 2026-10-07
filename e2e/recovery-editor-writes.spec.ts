@@ -3,6 +3,7 @@ import { EDITOR_PATH, openEditor } from "./helpers";
 
 import {
   restoreHero,
+  restoreHeroAfterFailure,
   writeSectionField,
   writeHeroField,
   sectionContentField,
@@ -22,6 +23,7 @@ import {
 
 test.describe("unsaved work when the signed-in account changes", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+  restoreHeroAfterFailure();
 
   /**
    * A content write lands and its answer is cut off; meanwhile another tab
@@ -286,7 +288,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
     } finally {
       await other.context.close();
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 });

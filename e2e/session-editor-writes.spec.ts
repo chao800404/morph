@@ -3,6 +3,7 @@ import { EDITOR_PATH } from "./helpers";
 
 import {
   restoreHero,
+  restoreHeroAfterFailure,
   pausedNotice,
   countFileSaves,
   nextFileSave,
@@ -16,6 +17,7 @@ import {
 
 test.describe("a refusal that arrives after the sign-in was verified", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+  restoreHeroAfterFailure();
 
   /**
    * Holds the next save of `path`. `sendSignedOut` sends it to the server
@@ -148,7 +150,7 @@ test.describe("a refusal that arrives after the sign-in was verified", () => {
     } finally {
       await run.page.unrouteAll({ behavior: "ignoreErrors" });
       await run.context.close();
-      await restoreHero(browser, run.hero);
+      await restoreHero(browser);
     }
   });
 
@@ -203,7 +205,7 @@ test.describe("a refusal that arrives after the sign-in was verified", () => {
     } finally {
       await run.page.unrouteAll({ behavior: "ignoreErrors" });
       await run.context.close();
-      await restoreHero(browser, run.hero);
+      await restoreHero(browser);
     }
   });
 
@@ -232,7 +234,7 @@ test.describe("a refusal that arrives after the sign-in was verified", () => {
       await run.page.unrouteAll({ behavior: "ignoreErrors" });
       await run.context.addCookies(run.session);
       await run.context.close();
-      await restoreHero(browser, run.hero);
+      await restoreHero(browser);
     }
   });
 });

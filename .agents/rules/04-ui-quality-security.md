@@ -45,14 +45,22 @@ shell 現有的測試接縫（2026-09-17 起）：`visual-editor-shell.test.tsx`
 存檔路徑的**失敗分支**有覆蓋了；**成功的寫入與 debounce／flush 的順序仍沒有**，動到那兩者的
 搬移依然沒有安全網。
 
-置中（reveal）與存檔失敗原本都無法在 jsdom 斷言，而且是同一個原因：Inspector 面板在場時，
-一次失敗的重繪會讓 shell 撞上 React 的 nested-update 上限（Radix `useComposedRefs`），樹被拆掉，
-`[data-editor-save-status]` 從 1 個變 0 個。用二分法定位到兇手是 `editor-assistant-panel`，
-sections panel 不是，所以測試把前者 passthrough 掉、後者留著。
+置中（reveal）與存檔失敗原本都無法在 jsdom 斷言：Inspector 面板在場時 shell 撞上 React 的
+nested-update 上限，樹被拆掉。當時把 `editor-assistant-panel` passthrough 掉，並判定那是 jsdom 專屬。
 
-**那條級聯已判定為 jsdom 專屬。** 在真實瀏覽器對同一次存檔失敗做對照（攔截 serverFn POST）：
-標記存活、顯示 `Save failed`、樹保有列數。所以繞過它不隱藏任何產品問題 —— 這個判定寫在測試檔的
-mock docblock 裡，改動那個 mock 前先讀它。
+**那個判定是錯的（2026-10-07 更正），而且同一個錯誤訊息底下有兩個不同的迴圈：**
+
+- **jsdom 那條**是產品碼：`useInspectorContentProps` 對沒有 `props` 的 section 每次 render 都產生
+  新的 `{}`，它是一個會 `setState` 的 effect 的依賴。測試 fixture 的 hero 剛好沒有 props。已修，
+  兩個 shell 測試改回渲染真正的 panel。
+- **真實瀏覽器那條**（CI 上 `Theme editor unavailable`、測試卡到 300s 逾時）是 Radix 在 React 19
+  下的已知問題：`@radix-ui/react-select` 2.2.6 與 `react-slot` 1.2.x 的 composed ref 每次 render 都是
+  新函式，state-setter ref 每輪 null → node，自我維持到上限（radix-ui/primitives#3963）。
+  探針顯示瀏覽器裡 Inspector 拿到的 props 一直是同一個物件，所以不是上一條。修法是升到 2.3.7。
+  只在機器有負載時出現：本機需把執行限制在 4 核並加上忙碌迴圈才重現得到。
+
+教訓：**「只在 jsdom 發生」要先找出兩邊的輸入差在哪**；同一個錯誤訊息也不代表同一個原因 ——
+要在發生的那個環境裡量到觸發的元件與狀態，才算找到原因。
 
 **判準：一段程式碼值得抽出，當它同時滿足兩件事** —— 界線清楚（少數幾個輸入、不共用可變 ref），
 以及**抽出後驗證得了**（能寫成單元測試，或能在編輯器裡實際操作確認）。

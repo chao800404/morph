@@ -4,6 +4,7 @@ import { EDITOR_PATH, openEditor } from "./helpers";
 import {
   runSql,
   restoreHero,
+  restoreHeroAfterFailure,
   pausedNotice,
   countSaves,
   editAndSave,
@@ -20,6 +21,7 @@ import {
 
 test.describe("unsaved work when the signed-in account changes", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+  restoreHeroAfterFailure();
 
   test("signed out: the draft stays, nothing is sent, and the newest draft is saved on confirmation", async ({
     browser,
@@ -66,7 +68,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(await readSource(page, hero)).toContain(`${MARKER} first`);
     } finally {
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -92,7 +94,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(await readSource(page, hero)).toContain(`${MARKER} lost again`);
     } finally {
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -144,7 +146,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
         `UPDATE users SET role = 'admin' WHERE email = '${email().replace(/'/g, "''")}';`,
       );
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -180,7 +182,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(saves.sent).toBe(0);
     } finally {
       await context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -211,7 +213,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(await readSource(check.page, hero)).not.toContain(MARKER);
     } finally {
       await check.context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 
@@ -253,7 +255,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       expect(await readSource(check.page, hero)).not.toContain(MARKER);
     } finally {
       await check.context.close();
-      await restoreHero(browser, hero);
+      await restoreHero(browser);
     }
   });
 });
