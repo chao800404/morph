@@ -618,9 +618,8 @@ export const storefrontThemeBuilds = sqliteTable(
       { onDelete: "restrict" },
     ),
     /** Recorded with success; NULL is unknown (StorefrontThemeBuildContentDependency). */
-    contentDependency: text(
-      "content_dependency",
-    ).$type<StorefrontThemeBuildContentDependency>(),
+    contentDependency:
+      text("content_dependency").$type<StorefrontThemeBuildContentDependency>(),
     artifactPrefix: text("artifact_prefix"),
     manifestJson: text("manifest_json", { mode: "json" }),
     diagnosticsJson: text("diagnostics_json", { mode: "json" }),
@@ -654,6 +653,10 @@ export const storefrontThemeBuilds = sqliteTable(
  * stored; each request is checked against the row, the build and the user
  * again, so expiry, revocation, a failed build or a removed admin all take
  * effect on the next request.
+ *
+ * With a release, the capability previews that release rather than the bare
+ * build: the release's build, answered with the release's content. Null is the
+ * build alone, answered with the content it was sealed with.
  */
 export const storefrontBuildPreviewCapabilities = sqliteTable(
   "storefront_build_preview_capabilities",
@@ -669,6 +672,9 @@ export const storefrontBuildPreviewCapabilities = sqliteTable(
     buildId: text("build_id")
       .notNull()
       .references(() => storefrontThemeBuilds.id, { onDelete: "cascade" }),
+    releaseId: text("release_id").references(() => storefrontReleases.id, {
+      onDelete: "cascade",
+    }),
     userId: text("user_id").notNull(),
     expiresAt: text("expires_at").notNull(),
     revokedAt: text("revoked_at"),

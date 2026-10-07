@@ -21,6 +21,12 @@ import type {
  * Only the token's SHA-256 is stored. Every request is verified again against
  * the stored row, the build, its Theme and the user (`verifyBuildPreviewCapability`),
  * so nothing that was true when the capability was issued is assumed later.
+ *
+ * A capability may also name a release of the build. It then previews what
+ * that release serves: the same artifact, answered with the release's content
+ * rather than the content the build was sealed with. The two differ only for a
+ * build proven independent of content, which a release may reuse with other
+ * content; showing the seal there would show a store that never went live.
  */
 
 export const BUILD_PREVIEW_HOST_PREFIX = "bp-";
@@ -33,6 +39,7 @@ export type BuildPreviewCapabilityRefusal =
   | "CAPABILITY_REVOKED"
   | "CAPABILITY_EXPIRED"
   | "BUILD_NOT_PREVIEWABLE"
+  | "RELEASE_NOT_PREVIEWABLE"
   | "USER_NOT_AUTHORIZED";
 
 export type VerifiedBuildPreviewCapability = Readonly<{
@@ -40,9 +47,14 @@ export type VerifiedBuildPreviewCapability = Readonly<{
   storefrontId: string;
   themeId: string;
   buildId: string;
+  /** The release previewed, or null for the build alone. */
+  releaseId: string | null;
   userId: string;
   expiresAt: string;
-  /** The content snapshot the build was made with; the only one it is shown. */
+  /**
+   * The only content shown: the release's when one is named, otherwise the
+   * snapshot the build was made with.
+   */
   contentPublicationId: string | null;
 }>;
 
@@ -116,6 +128,22 @@ function isPreviewableBuild(record: BuildPreviewCapabilityRecord): boolean {
 }
 
 /**
+ * A named release must still exist, belong to the same store and Theme, and
+ * be a release of this very build; otherwise its content would be shown on an
+ * artifact it was never published with.
+ */
+function isPreviewableRelease(record: BuildPreviewCapabilityRecord): boolean {
+  if (!record.releaseId) return true;
+  const release = record.release;
+  return Boolean(
+    release &&
+    release.storefrontId === record.storefrontId &&
+    release.themeId === record.themeId &&
+    release.themeBuildId === record.buildId,
+  );
+}
+
+/**
  * Issues a capability for a build the caller has already authorised the user
  * for. Checked again here all the same, with the same rules every request is
  * verified with, so that an address is never handed out that the first
@@ -126,6 +154,7 @@ export async function issueBuildPreviewCapability(input: {
   storefrontId: string;
   themeId: string;
   buildId: string;
+  releaseId?: string | null;
   userId: string;
   now?: Date;
   ttlMs?: number;
@@ -145,6 +174,7 @@ export async function issueBuildPreviewCapability(input: {
     storefrontId: input.storefrontId,
     themeId: input.themeId,
     buildId: input.buildId,
+    releaseId: input.releaseId ?? null,
     userId: input.userId,
     expiresAt,
     now: now.toISOString(),
@@ -189,6 +219,9 @@ export async function verifyBuildPreviewCapability(input: {
   if (!isPreviewableBuild(record)) {
     return { ok: false, reason: "BUILD_NOT_PREVIEWABLE" };
   }
+  if (!isPreviewableRelease(record)) {
+    return { ok: false, reason: "RELEASE_NOT_PREVIEWABLE" };
+  }
   return {
     ok: true,
     capability: {
@@ -196,9 +229,12 @@ export async function verifyBuildPreviewCapability(input: {
       storefrontId: record.storefrontId,
       themeId: record.themeId,
       buildId: record.buildId,
+      releaseId: record.releaseId,
       userId: record.userId,
       expiresAt: record.expiresAt,
-      contentPublicationId: record.build?.contentPublicationId ?? null,
+      contentPublicationId: record.releaseId
+        ? (record.release?.contentPublicationId ?? null)
+        : (record.build?.contentPublicationId ?? null),
     },
   };
 }

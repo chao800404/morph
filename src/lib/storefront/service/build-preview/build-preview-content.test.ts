@@ -7,6 +7,7 @@ const capability: VerifiedBuildPreviewCapability = {
   storefrontId: "store-a",
   themeId: "theme-a",
   buildId: "build-ok",
+  releaseId: null,
   userId: "admin-1",
   expiresAt: "2026-10-07T01:00:00.000Z",
   contentPublicationId: "pub-of-build",
