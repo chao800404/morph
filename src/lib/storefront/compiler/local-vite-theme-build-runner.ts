@@ -44,7 +44,11 @@ import {
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
-import { nativeBuildResult, runNativeBuildPasses } from "./native-build-result";
+import {
+  nativeBuildFailureMessage,
+  nativeBuildResult,
+  runNativeBuildPasses,
+} from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
 import { themeFramework } from "../theme-framework";
 import {
@@ -1144,7 +1148,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       const detail = error as { stderr?: string; message?: string };
       return fail(
         "compiler",
-        `NATIVE_BUILD_FAILED: ${(detail.stderr || detail.message || String(error)).slice(-2_000)}`,
+        nativeBuildFailureMessage(
+          detail.stderr || detail.message || String(error),
+        ),
       );
     }
 

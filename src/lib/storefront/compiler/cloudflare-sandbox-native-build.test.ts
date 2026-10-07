@@ -213,6 +213,11 @@ describe("the Sandbox runner's native build", () => {
       "NODE_ENV",
       "NODE_OPTIONS",
     ]);
+    // The runner's own option and the plan's module hook, neither replacing
+    // the other.
+    expect(build?.env?.NODE_OPTIONS).toBe(
+      "--unhandled-rejections=strict --import=./.morph/native-build-hooks.mjs",
+    );
   });
 
   it("returns the native artifact and manifest from what the build left", async () => {

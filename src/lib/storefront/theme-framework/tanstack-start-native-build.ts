@@ -8,7 +8,12 @@ import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
 import { parseJsonc } from "./jsonc";
 import {
+  NATIVE_BUILD_HOOKS_PATH,
+  NATIVE_BUILD_LOADER_PATH,
+  NATIVE_BUILD_NODE_OPTIONS,
   NATIVE_WRAPPER_CONFIG_PATH,
+  nativeBuildHooksSource,
+  nativeBuildLoaderSource,
   nativeWrapperConfigSource,
 } from "./tanstack-start-native-wrapper";
 
@@ -20,7 +25,8 @@ import {
  * what differs by deployment target — the Wrangler config the Cloudflare
  * plugin reads, through `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` — builds
  * through a wrapper config that imports the project's own and adds only an
- * import guard and the frozen-content prerender plugin
+ * import guard and the frozen-content prerender plugin, with a module hook
+ * that turns the Cloudflare plugin's debugger port off for the build
  * (tanstack-start-native-wrapper.ts), and normalises the output into
  * the artifact layout the artifact store and release already read.
  *
@@ -176,6 +182,8 @@ export function planNativeStartBuild(
   const morphOwned = new Set<string>([
     NATIVE_WRANGLER_CONFIG_PATH,
     NATIVE_WRAPPER_CONFIG_PATH,
+    NATIVE_BUILD_HOOKS_PATH,
+    NATIVE_BUILD_LOADER_PATH,
     THEME_PRERENDER_CONTENT_FILE,
     NATIVE_PRERENDER_REFUSED_READS_PATH,
   ]);
@@ -194,6 +202,14 @@ export function planNativeStartBuild(
     }),
   });
   workspaceFiles.push({
+    path: NATIVE_BUILD_HOOKS_PATH,
+    content: nativeBuildHooksSource(),
+  });
+  workspaceFiles.push({
+    path: NATIVE_BUILD_LOADER_PATH,
+    content: nativeBuildLoaderSource(),
+  });
+  workspaceFiles.push({
     path: THEME_PRERENDER_CONTENT_FILE,
     content: JSON.stringify(
       options.prerenderContent ?? NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
@@ -203,7 +219,10 @@ export function planNativeStartBuild(
   return {
     ok: true,
     workspaceFiles,
-    env: { CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH },
+    env: {
+      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH,
+      NODE_OPTIONS: NATIVE_BUILD_NODE_OPTIONS,
+    },
     command: ["vite", "build", "--config", NATIVE_WRAPPER_CONFIG_PATH],
   };
 }

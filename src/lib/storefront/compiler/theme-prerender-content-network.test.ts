@@ -88,3 +88,81 @@ it.each(["127.0.0.1", "::1"])(
     }
   },
 );
+
+// Start reports a failed prerender fetch without reading its body, and Vite's
+// default handler answers a failure with a bare "Internal Server Error". The
+// plugin's handler, installed after every plugin's own middleware, says what
+// failed in the build's output and in the response.
+it("reports a request that fails on the prerender server, with its cause", async () => {
+  type Handler = (...args: never[]) => void;
+  const stack: Handler[] = [];
+  const written: string[] = [];
+  const server = createServer((req, res) => {
+    let index = 0;
+    const next = (error?: Error): void => {
+      const handler = stack[index++] as
+        | ((...args: unknown[]) => void)
+        | undefined;
+      if (!handler) {
+        res.statusCode = error ? 500 : 404;
+        res.end("Internal Server Error");
+      } else if (error && handler.length === 4) handler(error, req, res, next);
+      else if (!error && handler.length < 4) handler(req, res, next);
+      else next(error);
+    };
+    next();
+  });
+  const plugin = new Function(
+    "fs",
+    "path",
+    "process",
+    `return (${themePrerenderContentPluginSource("/workspace")});`,
+  )(
+    { readFileSync: () => "{}" },
+    { join: (...parts: string[]) => parts.join("/") },
+    {
+      env: { TSS_PRERENDERING: "true" },
+      stderr: { write: (text: string) => written.push(text) },
+    },
+  );
+  const middlewares = { use: (handler: Handler) => stack.push(handler) };
+  const postHook = plugin.configurePreviewServer({
+    httpServer: server,
+    middlewares,
+  });
+  // Another plugin's middleware — the Worker's, in a real build — fails the
+  // way a Miniflare that could not start does.
+  middlewares.use(((
+    _req: IncomingMessage,
+    _res: ServerResponse,
+    next: (error?: Error) => void,
+  ) => {
+    next(new Error("listen EADDRINUSE: address already in use 127.0.0.1:9233"));
+  }) as Handler);
+  postHook();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen({ host: "127.0.0.1", port: 0 }, resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Expected TCP listener");
+    const page = await fetch(`http://127.0.0.1:${address.port}/landing/`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    expect(page.status).toBe(500);
+    const body = await page.text();
+    expect(body).toContain("PRERENDER_SERVER_ERROR");
+    expect(body).toContain("EADDRINUSE");
+    expect(written.join("")).toContain(
+      "PRERENDER_SERVER_ERROR: GET /landing/: Error: listen EADDRINUSE",
+    );
+  } finally {
+    server.closeAllConnections();
+    if (server.listening)
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+  }
+});
