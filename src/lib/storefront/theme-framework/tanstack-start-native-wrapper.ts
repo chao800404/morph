@@ -78,7 +78,8 @@ export function nativeWrapperConfigSource(options: {
   ];
   const allowed = [...new Set(options.allowedPackages)].sort();
   return `// Written by Morph for this build. The project's own config is imported
-// unchanged; Morph adds only the plugins below.
+// unchanged; Morph adds only the plugins below and the prerender server's
+// address.
 import fs from "node:fs";
 import path from "node:path";
 import { mergeConfig } from "vite";
@@ -93,6 +94,12 @@ export default async (env) => {
     plugins: [
 ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     ],
+    // Start prerenders by fetching a Vite preview server it starts on
+    // "localhost". In the build container that name binds one loopback
+    // family while the fetch connects to the other (ECONNREFUSED), so the
+    // server is put on one address both sides agree on. Only the build's
+    // own prerender server listens here.
+    preview: { host: "127.0.0.1" },
   });
 };
 `;

@@ -65,6 +65,9 @@ describe("planNativeStartBuild", () => {
     const wrapper = byPath.get(NATIVE_WRAPPER_CONFIG_PATH)!;
     expect(wrapper).toContain('import themeConfig from "../vite.config.ts";');
     expect(wrapper).toContain("morph:native-import-guard");
+    // Start's prerender fetches its preview server; in the build image
+    // "localhost" binds IPv6 only, so the server gets one address.
+    expect(wrapper).toContain('preview: { host: "127.0.0.1" }');
     // No content snapshot: the content plugin is there all the same, and
     // refuses — and records — every read, so a prerendered page cannot
     // quietly fall back to component defaults.
