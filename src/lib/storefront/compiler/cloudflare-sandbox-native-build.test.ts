@@ -45,6 +45,52 @@ const input = (): ThemeBuildRunnerInput =>
     ],
   }) as ThemeBuildRunnerInput;
 
+/** A root and a home route, enough for the route registry. */
+const ROUTES = [
+  {
+    path: "src/routes/__root.tsx",
+    content: `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: () => <Outlet /> });
+`,
+  },
+  {
+    path: "src/routes/index.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/")({ component: () => <h1>Home</h1> });
+`,
+  },
+];
+
+/** A sealed snapshot whose home page carries `sealed-sentinel`. */
+const SNAPSHOT = {
+  publicationId: "pub",
+  storefrontId: "store",
+  themeId: "theme",
+  documents: [
+    {
+      item: {
+        id: "item",
+        publicationId: "pub",
+        itemType: "template",
+        contentId: "home",
+        revisionId: "revision",
+        metadata: { templateType: "index" },
+      },
+      document: {
+        version: 1,
+        sections: [
+          {
+            id: "hero",
+            type: "hero",
+            enabled: true,
+            props: { title: "sealed-sentinel" },
+          },
+        ],
+      },
+    },
+  ],
+} as unknown as ThemeBuildRunnerInput["contentSnapshot"];
+
 /** What the Cloudflare plugin leaves after a build, by workspace path. */
 const BUILT: Record<string, string> = {
   ".wrangler/deploy/config.json": JSON.stringify({
@@ -65,8 +111,11 @@ function fakeSandbox(
     buildFails?: boolean;
     extraBytes?: number;
     refusedReads?: string;
+    /** Only the first build leaves `refusedReads`, as one given content would not. */
+    refusedOnFirstBuildOnly?: boolean;
   } = {},
 ) {
+  let builds = 0;
   const files = new Map<string, string>();
   const commands: Array<{
     command: string;
@@ -98,11 +147,22 @@ function fakeSandbox(
           for (const [path, content] of Object.entries(BUILT)) {
             files.set(`/workspace/${path}`, content);
           }
-          if (options.refusedReads !== undefined) {
+          builds += 1;
+          if (
+            options.refusedReads !== undefined &&
+            (!options.refusedOnFirstBuildOnly || builds === 1)
+          ) {
             files.set(
               "/workspace/.morph/prerender-refused-reads.ndjson",
               options.refusedReads,
             );
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (command.startsWith("find /workspace -mindepth 1 -maxdepth 1")) {
+          // Clearing the workspace between passes: all but the toolchain link.
+          for (const path of [...files.keys()]) {
+            if (!path.startsWith("/workspace/node_modules/")) files.delete(path);
           }
           return { exitCode: 0, stdout: "", stderr: "" };
         }
@@ -201,6 +261,58 @@ describe("the Sandbox runner's native build", () => {
         "NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: /landing (NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT",
       ),
     });
+  });
+
+  it("records an artifact independent when its build, given no content, succeeds", async () => {
+    const { runner, files } = fakeSandbox();
+    const result = await runner.run({
+      ...input(),
+      contentSnapshot: SNAPSHOT,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      contentDependency: "independent",
+    });
+    // The one pass it took held none of the sealed content.
+    expect(files.get("/workspace/.morph-prerender-content.json")).not.toContain(
+      "sealed-sentinel",
+    );
+  });
+
+  it("builds again, from a cleared workspace, with the content its prerender read", async () => {
+    const { runner, files, commands } = fakeSandbox({
+      refusedReads:
+        '{"path":"/","reason":"NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT: this build has no sealed content"}\n',
+      refusedOnFirstBuildOnly: true,
+    });
+    const result = await runner.run({
+      ...input(),
+      // Routes, so the sealed content is resolved per page.
+      files: [...input().files, ...ROUTES],
+      contentSnapshot: SNAPSHOT,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      contentDependency: "dependent",
+    });
+    const builds = commands.filter((entry) => entry.command.includes(" build"));
+    expect(builds).toHaveLength(2);
+    // Cleared between the passes, keeping only the toolchain link, and the
+    // first pass's record did not survive into the second.
+    const clear = commands.findIndex((entry) =>
+      entry.command.startsWith("find /workspace -mindepth 1 -maxdepth 1"),
+    );
+    expect(clear).toBeGreaterThan(
+      commands.findIndex((entry) => entry.command.includes(" build")),
+    );
+    expect(commands[clear]!.command).toContain("! -name node_modules");
+    expect(files.has("/workspace/.morph/prerender-refused-reads.ndjson")).toBe(
+      false,
+    );
+    // The second pass was the one given the sealed content.
+    expect(files.get("/workspace/.morph-prerender-content.json")).toContain(
+      "sealed-sentinel",
+    );
   });
 
   it("refuses a workspace it would have to read past its limits", async () => {

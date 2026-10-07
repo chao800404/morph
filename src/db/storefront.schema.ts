@@ -572,6 +572,19 @@ export const storefrontThemeRevisions = sqliteTable(
 export type StorefrontThemeBuildStatus =
   "queued" | "building" | "succeeded" | "failed" | "cancelled";
 
+/**
+ * Whether a build's artifact carries CMS content in it, as the platform's
+ * build proved it — never as a Theme declares it.
+ *
+ * - `dependent`: the build was given the sealed content (prerendering read
+ *   it), so the artifact holds that content and only that content.
+ * - `independent`: the content was never in the build's process, so nothing
+ *   of it can be in the artifact; runtime reads the release's content.
+ * - absent (NULL): unknown — a build from before this was recorded, or one
+ *   whose evidence is incomplete. Treated as `dependent` wherever it matters.
+ */
+export type StorefrontThemeBuildContentDependency = "dependent" | "independent";
+
 export type StorefrontThemeDependencyStatus =
   "requested" | "building" | "ready" | "failed" | "rejected";
 
@@ -604,6 +617,10 @@ export const storefrontThemeBuilds = sqliteTable(
       () => storefrontContentPublications.id,
       { onDelete: "restrict" },
     ),
+    /** Recorded with success; NULL is unknown (StorefrontThemeBuildContentDependency). */
+    contentDependency: text(
+      "content_dependency",
+    ).$type<StorefrontThemeBuildContentDependency>(),
     artifactPrefix: text("artifact_prefix"),
     manifestJson: text("manifest_json", { mode: "json" }),
     diagnosticsJson: text("diagnostics_json", { mode: "json" }),

@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_theme_builds` ADD `content_dependency` text;

@@ -1,3 +1,4 @@
+import type { StorefrontThemeBuildContentDependency } from "@/db/storefront.schema";
 import type {
   StorefrontThemeBuildInput,
   ThemeBuildBinaryFile,
@@ -59,6 +60,13 @@ export type ThemeBuildRunnerSuccessResult = {
   };
   logs?: ThemeBuildRunnerLog[];
   durationMs: number;
+  /**
+   * Whether the artifact carries CMS content, as this run proved it: the
+   * content never entered the build (`independent`), or it was given to the
+   * build (`dependent`). Omitted when the runner cannot prove either, which
+   * is recorded as unknown.
+   */
+  contentDependency?: StorefrontThemeBuildContentDependency;
 };
 
 export type ThemeBuildRunnerFailureResult = {

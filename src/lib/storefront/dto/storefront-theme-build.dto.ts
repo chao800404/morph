@@ -1,4 +1,5 @@
 import type {
+  StorefrontThemeBuildContentDependency,
   StorefrontThemeBuildStatus,
   StorefrontPageDocument,
 } from "@/db/storefront.schema";
@@ -19,6 +20,11 @@ export type StorefrontThemeBuildDTO = {
   dependencies?: ThemeDependencyMap | null;
   /** Null/absent keeps legacy source-only builds content-independent. */
   contentPublicationId?: string | null;
+  /**
+   * Whether the artifact carries CMS content, as this build proved it; null
+   * is unknown and counts as dependent (StorefrontThemeBuildContentDependency).
+   */
+  contentDependency?: StorefrontThemeBuildContentDependency | null;
   artifactPrefix: string | null;
   manifestJson: any | null;
   diagnosticsJson: any | null;

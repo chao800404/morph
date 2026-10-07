@@ -90,6 +90,7 @@ beforeEach(() => {
       compiler_version text,
       dependencies_json text,
       content_publication_id text,
+      content_dependency text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,
@@ -320,7 +321,42 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(build.manifestJson.filesCount).toBeGreaterThan(0);
     expect(build.startedAt).toBeDefined();
     expect(build.completedAt).toBeDefined();
+    // The fake runner proves nothing about content: recorded as unknown.
+    expect(build.contentDependency).toBeNull();
   });
+
+  it.each(["dependent", "independent"] as const)(
+    "records the content dependency the runner proved (%s)",
+    async (dependency) => {
+      seedStorefront("storefront-1");
+      seedTheme("storefront-1", "theme-1");
+      seedRevision("storefront-1", "theme-1", `rev-${dependency}`, 1, [
+        { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+      ]);
+      const fake = new FakeThemeBuildRunner({ shouldSucceed: true });
+      const runner = {
+        id: fake.id,
+        isolation: fake.isolation,
+        run: async (input: Parameters<typeof fake.run>[0]) => {
+          const result = await fake.run(input);
+          return result.success
+            ? { ...result, contentDependency: dependency }
+            : result;
+        },
+      };
+
+      const build = await service.requestPreviewBuild({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: `rev-${dependency}`,
+        createdBy: "user-test",
+        runner: runner as never,
+      });
+
+      expect(build.status).toBe("succeeded");
+      expect(build.contentDependency).toBe(dependency);
+    },
+  );
 
   it("transitions to failed when artifact store throws an exception during file upload", async () => {
     seedStorefront("storefront-1");
