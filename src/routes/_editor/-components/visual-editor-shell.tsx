@@ -187,6 +187,7 @@ import {
 import { waitForThemeBuild } from "@/lib/storefront/editor/theme-build-wait";
 import { resolveBuildRunOwnership } from "@/lib/storefront/editor/build-run-ownership";
 import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-plan";
+import { previewLoadWasInterrupted } from "@/lib/storefront/service/preview-runtime-interruption";
 import {
   describeThemeSourceChanges,
   describeUnpublishedChanges,
@@ -621,6 +622,8 @@ const PREVIEW_FRAME_LOAD_FAILURE_MESSAGES: Record<
   "too-slow":
     "Live Preview loading timed out: it was still loading after one automatic reconnect. Retry Preview to reconnect.",
 };
+const PREVIEW_INTERRUPTED_MESSAGE =
+  "Live Preview was interrupted while loading, again after one automatic reconnect. Retry Preview to reconnect.";
 const PREVIEW_ADDRESS_STALE_MESSAGE =
   "Live Preview's address stopped answering after one automatic reconnect. Retry Preview to reconnect.";
 const PREVIEW_SOURCE_TIMEOUT_MS = 15_000;
@@ -5871,9 +5874,16 @@ export function VisualEditorShell({
   // What the frame reports about its own loading, before any bridge exists to
   // report it — which module scripts failed and which requests were refused.
   // Logged, and taken as a reason to ask the server now rather than at the
-  // next scheduled check. Never acted on by itself: the frame runs Theme
-  // JavaScript, so this message can be forged, and a failure it reports can
-  // be the Theme's own.
+  // next scheduled check.
+  //
+  // One report is acted on: a module graph broken by the proxy's interruption
+  // status. The server cannot see that failure — the runtime is serving again
+  // by the time it is asked — and the document never recovers by itself, so
+  // the frame is reconnected now instead of after the load watchdog's minute
+  // of silence. The frame runs Theme JavaScript and can forge the report, but
+  // all it buys is what stalling already buys: the same one bounded reconnect
+  // of its own preview, then the failure and Retry. A Theme's own failure —
+  // a compile error is Vite's 500 — is not this status and is left alone.
   useEffect(() => {
     if (!previewKey) return;
     const handlePreviewDiagnostic = (event: MessageEvent<unknown>) => {
@@ -5895,6 +5905,15 @@ export function VisualEditorShell({
             : "") +
           (failures ? ` | failed requests: ${failures}` : ""),
       );
+      if (previewLoadWasInterrupted(message)) {
+        dispatchPreviewLifecycle({
+          type: "frame-interrupted",
+          key: previewKey,
+          message: PREVIEW_INTERRUPTED_MESSAGE,
+          at: Date.now(),
+        });
+        return;
+      }
       previewStaleProbeRef.current?.hint();
     };
     window.addEventListener("message", handlePreviewDiagnostic);
