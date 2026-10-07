@@ -5,12 +5,14 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 import {
+  NATIVE_START_COMPILER_ID,
   materializeThemeBuildInput,
   normalizeRevisionSnapshot,
 } from "./theme-build-materializer";
 import {
   THEME_START_BUILD_DEPENDENCIES,
   THEME_START_RUNTIME_DEPENDENCIES,
+  THEME_START_TOOLCHAIN,
 } from "./theme-start-toolchain";
 
 vi.mock("@/db", () => ({ getDb: vi.fn() }));
@@ -662,6 +664,86 @@ describe("Theme Build Input Materializer (Phase 4B-2)", () => {
       );
     },
   );
+
+  describe("with native Start builds enabled", () => {
+    const NATIVE_VITE = `import { defineConfig } from "vite";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default defineConfig({ plugins: [cloudflare({ viteEnvironment: { name: "ssr" } })] });
+`;
+    const NATIVE_WRANGLER = `{ "name": "native", "compatibility_date": "2025-09-02" }`;
+    const page = {
+      path: "src/index.tsx",
+      content: "export default () => null;",
+    };
+
+    it("keeps the project's own configuration in the build and marks it native", () => {
+      const result = normalizeRevisionSnapshot(
+        [
+          page,
+          { path: "vite.config.ts", content: NATIVE_VITE },
+          { path: "wrangler.jsonc", content: NATIVE_WRANGLER },
+        ],
+        "rev-native",
+        { nativeStartBuild: true },
+      );
+      expect(result.buildMode).toBe("native");
+      expect(result.files.map((file) => file.path)).toEqual([
+        "src/index.tsx",
+        "vite.config.ts",
+        "wrangler.jsonc",
+      ]);
+    });
+
+    it("refuses a configuration it cannot build, with the plan's own reason", () => {
+      expect(() =>
+        normalizeRevisionSnapshot(
+          [page, { path: "vite.config.ts", content: NATIVE_VITE }],
+          "rev-native-incomplete",
+          { nativeStartBuild: true },
+        ),
+      ).toThrow(/^NATIVE_WRANGLER_CONFIG: .*rev-native-incomplete/);
+    });
+
+    it("leaves a Theme without its own configuration exactly as before", () => {
+      const enabled = normalizeRevisionSnapshot([page], "rev-platform", {
+        nativeStartBuild: true,
+      });
+      const disabled = normalizeRevisionSnapshot([page], "rev-platform");
+      expect(enabled).toEqual(disabled);
+      expect(enabled.buildMode).toBeUndefined();
+    });
+
+    it("gives a native build a compiler identity of its own", () => {
+      const input = materializeThemeBuildInput({
+        build: {
+          id: "build-native",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          sourceRevisionId: "rev-native",
+          status: "queued",
+          compilerId: null,
+          compilerVersion: null,
+          inputHash: null,
+          contentPublicationId: null,
+        } as never,
+        revision: {
+          id: "rev-native",
+          storefrontId: "storefront-1",
+          themeId: "theme-1",
+          revisionNumber: 1,
+          snapshot: [
+            page,
+            { path: "vite.config.ts", content: NATIVE_VITE },
+            { path: "wrangler.jsonc", content: NATIVE_WRANGLER },
+          ],
+        } as never,
+        nativeStartBuild: true,
+      });
+      expect(input.buildMode).toBe("native");
+      expect(input.compilerId).toBe(NATIVE_START_COMPILER_ID);
+      expect(input.compilerVersion).toBe(THEME_START_TOOLCHAIN.reactStart);
+    });
+  });
 
   it("enforces identity freeze: locked build strictly rejects conflicting compilerIdentity overrides", async () => {
     seedStorefront("storefront-1");

@@ -108,6 +108,8 @@ export type ThemeBuildRunnerInput = Readonly<{
    * writes the file. Required whenever `binaryFiles` is not empty.
    */
   readBinaryFile?: (digest: string) => Promise<Uint8Array>;
+  /** See `StorefrontThemeBuildInput.buildMode`. */
+  buildMode?: StorefrontThemeBuildInput["buildMode"];
 }>;
 
 /**

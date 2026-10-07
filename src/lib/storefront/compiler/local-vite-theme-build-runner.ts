@@ -142,6 +142,18 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
+    // Built with the platform's configuration, a native project would be a
+    // different program from the one its author wrote. Refused by name until
+    // this runner builds it with its own.
+    if (input.buildMode === "native") {
+      return {
+        success: false,
+        errorMessage:
+          "NATIVE_START_BUILD_RUNNER_PENDING: This build runner cannot build a Theme with its own configuration yet.",
+        diagnosticsJson: { stage: "native-build" },
+        durationMs: 0,
+      };
+    }
     const logs: ThemeBuildRunnerLog[] = [];
 
     const addLog = (level: "info" | "warn" | "error", message: string) => {

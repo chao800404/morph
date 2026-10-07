@@ -61,6 +61,12 @@ export type StorefrontThemeBuildInput = {
   compilerVersion: string;
   dependencies?: ThemeDependencyMap;
   contentSnapshot?: ThemeBuildContentSnapshot;
+  /**
+   * Present only for a build of a native TanStack Start project, built with
+   * its own `vite.config.*` and `wrangler.json(c)`, which are then part of
+   * `files`. Absent for every platform build, whose input is unchanged.
+   */
+  buildMode?: "native";
 };
 
 /** Only sealed publication references are accepted; never current drafts. */
