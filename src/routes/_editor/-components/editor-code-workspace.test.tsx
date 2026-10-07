@@ -797,6 +797,12 @@ describe("EditorCodeWorkspace file creation", () => {
   ];
 
   function renderTree(files = [file]) {
+    // The editor route hydrates the workspace from the files it passes in.
+    // Without this a folder delete finds no server copy of its files, and
+    // passed only because an earlier describe had left Hero.tsx behind.
+    useThemeWorkspaceStore
+      .getState()
+      .hydrateFromQuery("store-1", "theme-1", files);
     const client = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -819,7 +825,19 @@ describe("EditorCodeWorkspace file creation", () => {
     vi.mocked(saveStorefrontThemeFile).mockReset();
     vi.mocked(saveStorefrontThemeFilesBatch).mockReset();
     window.localStorage.clear();
-    useThemeWorkspaceStore.setState({ files: {} });
+    // Every workspace, not just the active one's files. A test that types
+    // into Hero.tsx leaves its 700ms autosave pending; on a loaded machine
+    // the test outlives it and the draft lands in `workspaces`. A later
+    // rename then plans its move from that draft, which does not parse, so
+    // the move is refused before anything is sent.
+    useThemeWorkspaceStore.setState({
+      activeWorkspaceKey: null,
+      workspaces: {},
+      files: {},
+      acceptedGenerations: {},
+      observedGenerations: {},
+      generations: {},
+    });
   });
 
   const promoPath = "src/components/Promo.tsx";
