@@ -3,7 +3,13 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Browser,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 import { unstable_startWorker } from "wrangler";
 
 import {
@@ -30,8 +36,10 @@ import {
 
 export type ThemeScope = { storefrontId: string; themeId: string };
 
-export const RELEASES = "/src/server/storefront/storefront-releases.serverFn.ts";
-export const BUILDS = "/src/server/storefront/storefront-theme-builds.serverFn.ts";
+export const RELEASES =
+  "/src/server/storefront/storefront-releases.serverFn.ts";
+export const BUILDS =
+  "/src/server/storefront/storefront-theme-builds.serverFn.ts";
 export const DOMAINS = "/src/server/storefront/storefront-domains.serverFn.ts";
 export const THEMES = "/src/server/storefront/storefront-themes.serverFn.ts";
 export const BUILD_PREVIEW = "/src/server/storefront/build-preview.serverFn.ts";
@@ -178,20 +186,74 @@ export async function openPublish(page: Page) {
   await page.locator("[data-publish-confirm]").click();
 }
 
-export async function publish(page: Page) {
+/** What a successful publish opens: the release it made, as served. */
+export type ReleasePreview = {
+  /** Requests made from inside the release preview's page. */
+  fetch: Fetcher;
+  /** Where "Open live site" goes, or null when it is not offered. */
+  liveSite: string | null;
+  close: () => Promise<void>;
+};
+
+/**
+ * Publishes from the toolbar and returns the release preview the publish
+ * opened. Asserts that no Build Preview was shown on the way: a build that
+ * publishing makes may still be refused, so it is not presented as the store.
+ */
+export async function publishShowingRelease(
+  page: Page,
+): Promise<ReleasePreview> {
+  // Recorded in the page, so a Build Preview shown and closed again between
+  // two polls is still seen.
+  await page.evaluate(() => {
+    const flags = window as unknown as { __buildPreviewShown?: boolean };
+    flags.__buildPreviewShown = false;
+    const seen = () =>
+      document.querySelector('iframe[data-build-preview="isolated"]') !== null;
+    new MutationObserver(() => {
+      if (seen()) flags.__buildPreviewShown = true;
+    }).observe(document.body, { childList: true, subtree: true });
+  });
   await openPublish(page);
   await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
     "aria-label",
     "Published",
     { timeout: 9 * 60_000 },
   );
-  // A publish that had to build first opens that build's preview, as every
-  // successful build does; it covers the canvas until it is closed.
-  const preview = page.locator('iframe[data-build-preview="isolated"]');
-  if (await preview.isVisible().catch(() => false)) {
-    await page.keyboard.press("Escape");
-    await expect(preview).toBeHidden({ timeout: 30_000 });
-  }
+  const frame = page.locator('iframe[data-build-preview="release"]');
+  await expect(frame, "a successful publish shows its release").toBeVisible({
+    timeout: 60_000,
+  });
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __buildPreviewShown?: boolean })
+          .__buildPreviewShown,
+    ),
+    "no Build Preview is shown while publishing",
+  ).toBe(false);
+  const host = new URL((await frame.getAttribute("src"))!).hostname;
+  const inFrame = () => page.frame({ url: (url) => url.hostname === host });
+  await expect.poll(inFrame, { timeout: 120_000 }).toBeTruthy();
+  const liveSite = page.locator("[data-release-preview-live-site]");
+  return {
+    fetch: (path) =>
+      inFrame()!.evaluate(async (path) => {
+        const response = await fetch(path, { cache: "no-store" });
+        return { status: response.status, body: await response.text() };
+      }, path),
+    liveSite: (await liveSite.count())
+      ? await liveSite.getAttribute("href")
+      : null,
+    close: async () => {
+      await page.keyboard.press("Escape");
+      await expect(frame).toBeHidden({ timeout: 30_000 });
+    },
+  };
+}
+
+export async function publish(page: Page) {
+  await (await publishShowingRelease(page)).close();
 }
 
 /** Opens the editor and waits for the Publish control to be live. */
@@ -394,7 +456,11 @@ export function storefrontHarness(options: {
 
     /** Puts a row into a state the product no longer produces. */
     async writeD1(sql: string, ...params: unknown[]) {
-      return writeRunD1({ persistTo: stateDir, workDir: tempDir() }, sql, ...params);
+      return writeRunD1(
+        { persistTo: stateDir, workDir: tempDir() },
+        sql,
+        ...params,
+      );
     },
 
     /**

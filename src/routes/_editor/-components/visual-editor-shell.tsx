@@ -149,7 +149,10 @@ import {
   cancelThemeBuild,
   getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
-import { openBuildPreview } from "@/server/storefront/build-preview.serverFn";
+import {
+  openBuildPreview,
+  openReleasePreview,
+} from "@/server/storefront/build-preview.serverFn";
 import {
   createStorefrontThemePage,
   createStorefrontThemeRevision,
@@ -1011,6 +1014,36 @@ export function VisualEditorShell({
     enabled: Boolean(activeTemplate?.id),
   });
   const commentThreads = commentsQuery.data?.data ?? [];
+  /**
+   * The release a publish just made live, shown full-screen the way a visitor
+   * gets it: its build, with its own content. Opened when a publish succeeds
+   * and never before, so nothing that might still be refused is presented as
+   * the store.
+   */
+  const [releasePreview, setReleasePreview] = useState<{
+    releaseId: string;
+    buildId: string;
+    url: string;
+    live: boolean;
+    liveUrl: string | null;
+  } | null>(null);
+  /** Opens the preview of a release; quiet where none can be shown here. */
+  const showReleasePreview = useCallback(
+    async (releaseId: string) => {
+      const opened = await openReleasePreview({
+        data: {
+          storefrontId: context.storefront.id,
+          themeId: context.theme.id,
+          releaseId,
+        },
+      }).catch(() => null);
+      // The publish has landed whatever happens here, and says so on its own;
+      // an environment without an isolated preview just shows none.
+      if (!opened?.success || !opened.data) return;
+      setReleasePreview(opened.data);
+    },
+    [context.storefront.id, context.theme.id],
+  );
   const publishMutation = useMutation({
     mutationFn: (variables: {
       templateId: string;
@@ -1074,6 +1107,11 @@ export function VisualEditorShell({
         }),
       ]);
       toast.success(result.message);
+      // What went live, as a visitor gets it. Opened on the publish's own
+      // success, and for the release it names, which a content-only publish
+      // made from a build sealed with other content.
+      const releaseId = result.data?.releaseId;
+      if (releaseId) await showReleasePreview(releaseId);
     },
     onError: () => toast.error("Failed to publish theme"),
   });
@@ -1785,6 +1823,7 @@ export function VisualEditorShell({
    */
   const returnToLivePreview = useCallback(() => {
     setPreviewMode((mode) => (mode === "build" ? "live" : mode));
+    setReleasePreview(null);
   }, []);
 
   // Esc closes the full-screen build the same way it closes every other
@@ -1817,6 +1856,13 @@ export function VisualEditorShell({
     ? resolveLivePreviewSecurity({
         editorOrigin: context.previewChannel?.editorOrigin ?? "",
         configuredPreviewOrigin: activeIsolatedPreviewUrl,
+        executionMode: "user-code",
+      })
+    : null;
+  const releasePreviewSecurity = releasePreview
+    ? resolveLivePreviewSecurity({
+        editorOrigin: context.previewChannel?.editorOrigin ?? "",
+        configuredPreviewOrigin: releasePreview.url,
         executionMode: "user-code",
       })
     : null;
@@ -3844,7 +3890,11 @@ export function VisualEditorShell({
    * array would read it during render, before it exists.
    */
   const handleBuildPreviewRef = useRef<
-    ((publicationDraft?: PublicationBuildDraft) => Promise<BuildAttempt>) | null
+    | ((
+        publicationDraft?: PublicationBuildDraft,
+        options?: { show?: boolean },
+      ) => Promise<BuildAttempt>)
+    | null
   >(null);
   /**
    * The drafts a toolbar build sealed into its content snapshot, by build.
@@ -4613,13 +4663,16 @@ export function VisualEditorShell({
               layoutTemplate.draftRevisionId ??
               null)
             : null;
-          const attempt = await handleBuildPreviewRef.current?.({
-            templateId: publishTemplate.id,
-            expectedDraftRevisionId: publishDraftRevisionId,
-            expectedDraftGeneration: publishDraftGeneration,
-            expectedSourceGeneration: currentGeneration,
-            expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
-          });
+          const attempt = await handleBuildPreviewRef.current?.(
+            {
+              templateId: publishTemplate.id,
+              expectedDraftRevisionId: publishDraftRevisionId,
+              expectedDraftGeneration: publishDraftGeneration,
+              expectedSourceGeneration: currentGeneration,
+              expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
+            },
+            { show: false },
+          );
           if (!attempt?.ok || !attempt.build) {
             // The build reported why it failed. Saying "publish failed" on top of
             // that would name the wrong step.
@@ -5012,7 +5065,18 @@ export function VisualEditorShell({
   }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
 
   const handleBuildPreview = useCallback(
-    async (publicationDraft?: PublicationBuildDraft): Promise<BuildAttempt> => {
+    async (
+      publicationDraft?: PublicationBuildDraft,
+      options?: {
+        /**
+         * Shows the build when it succeeds. Off for a build publishing makes:
+         * the publish may still be refused, and a build shown then reads as
+         * the store having gone live. The release is shown once it has.
+         */
+        show?: boolean;
+      },
+    ): Promise<BuildAttempt> => {
+      const show = options?.show ?? true;
       if (isBuildPending || buildWaitAbortRef.current) return { ok: false };
 
       if (themeFiles.length === 0) {
@@ -5194,10 +5258,12 @@ export function VisualEditorShell({
           setActiveBuildPreview(build);
           setActivePreviewToken(token ?? null);
           setActiveBuildSourceGeneration(currentGeneration);
-          setPreviewMode("build");
-          toast.success(
-            `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
-          );
+          if (show) {
+            setPreviewMode("build");
+            toast.success(
+              `Build ${build.id.slice(0, 8)} succeeded! Showing immutable preview.`,
+            );
+          }
           return { ok: true, build, sourceGeneration: currentGeneration };
         } else if (waitResult.outcome === "timeout") {
           // Running out of polls is not a build failure. Saying "failed" here
@@ -9330,7 +9396,53 @@ export function VisualEditorShell({
         as one more panel inside the editor, and so the artifact is seen at
         the size a visitor gets instead of inside a scaled canvas.
       */}
-      {previewMode === "build" && activeBuildPreview ? (
+      {releasePreview ? (
+        <RouteFullscreenSurface
+          label="Published release"
+          onClose={returnToLivePreview}
+          bodyClassName="flex min-h-0 flex-col p-0"
+          headerLeading={
+            <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="size-3" />
+                {releasePreview.live ? "Published" : "Published, not live"}
+              </span>
+              <span className="font-mono text-[11px]">
+                {releasePreview.releaseId.slice(0, 8)}
+              </span>
+              {releasePreview.liveUrl ? (
+                <Button variant="outline" size="xs" asChild>
+                  <a
+                    href={releasePreview.liveUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-release-preview-live-site
+                  >
+                    Open live site
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              ) : null}
+            </div>
+          }
+        >
+          {/*
+            The release's build, answered with the release's own content. Its
+            own origin, granted on the same rule as the Build Preview's.
+          */}
+          {releasePreviewSecurity?.enabled ? (
+            <iframe
+              key={`release-preview-${releasePreview.releaseId}`}
+              src={releasePreview.url}
+              title={`${context.theme.name} published release`}
+              sandbox={releasePreviewSecurity.sandbox}
+              referrerPolicy="no-referrer"
+              data-build-preview="release"
+              className="block size-full flex-1 border-0 bg-stone-50"
+            />
+          ) : null}
+        </RouteFullscreenSurface>
+      ) : previewMode === "build" && activeBuildPreview ? (
         <RouteFullscreenSurface
           label="Build preview"
           onClose={returnToLivePreview}

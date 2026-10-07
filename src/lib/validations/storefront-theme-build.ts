@@ -112,3 +112,13 @@ export const markBuildFailedInputSchema = z.object({
 });
 
 export type MarkBuildFailedInput = z.infer<typeof markBuildFailedInputSchema>;
+
+export const openReleasePreviewInputSchema = z.object({
+  storefrontId: idSchema("storefront"),
+  themeId: idSchema("storefront theme"),
+  releaseId: idSchema("storefront release"),
+});
+
+export type OpenReleasePreviewInput = z.infer<
+  typeof openReleasePreviewInputSchema
+>;

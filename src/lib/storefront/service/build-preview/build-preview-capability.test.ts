@@ -36,24 +36,43 @@ beforeEach(() => {
       status text NOT NULL, artifact_prefix text, content_publication_id text,
       deleted_at text
     );
+    CREATE TABLE storefront_releases (
+      id text PRIMARY KEY, storefront_id text NOT NULL, theme_id text NOT NULL,
+      theme_build_id text NOT NULL, content_publication_id text, deleted_at text
+    );
     INSERT INTO users VALUES ('admin-1', 'admin', 0), ('guest-1', 'guest', 0);
     INSERT INTO storefronts VALUES ('store-a');
     INSERT INTO storefront_themes VALUES ('theme-a', 'store-a', NULL);
     INSERT INTO storefront_theme_builds VALUES
       ('build-ok', 'store-a', 'theme-a', 'succeeded', 'builds/ok/', 'pub-1', NULL),
-      ('build-running', 'store-a', 'theme-a', 'building', NULL, NULL, NULL);
+      ('build-running', 'store-a', 'theme-a', 'building', NULL, NULL, NULL),
+      ('build-other', 'store-a', 'theme-a', 'succeeded', 'builds/other/', NULL, NULL);
+    INSERT INTO storefront_releases VALUES
+      ('release-1', 'store-a', 'theme-a', 'build-ok', 'pub-of-release', NULL),
+      ('release-other-build', 'store-a', 'theme-a', 'build-other', 'pub-x', NULL);
   `);
-  sqlite.exec(
-    readFileSync(resolve("drizzle/0072_build_preview_capabilities.sql"), "utf8")
-      .split("--> statement-breakpoint")
-      .join("\n"),
-  );
+  for (const migration of [
+    "drizzle/0072_build_preview_capabilities.sql",
+    "drizzle/0074_build_preview_release.sql",
+  ]) {
+    sqlite.exec(
+      readFileSync(resolve(migration), "utf8")
+        .split("--> statement-breakpoint")
+        .join("\n"),
+    );
+  }
   vi.mocked(getDb).mockResolvedValue(drizzle(sqlite, { schema }) as never);
 });
 
 afterEach(() => sqlite.close());
 
-const issue = (overrides: Partial<{ buildId: string; userId: string }> = {}) =>
+const issue = (
+  overrides: Partial<{
+    buildId: string;
+    releaseId: string;
+    userId: string;
+  }> = {},
+) =>
   issueBuildPreviewCapability({
     dal,
     storefrontId: "store-a",
@@ -64,8 +83,8 @@ const issue = (overrides: Partial<{ buildId: string; userId: string }> = {}) =>
     ...overrides,
   });
 
-async function issuedToken() {
-  const issued = await issue();
+async function issuedToken(overrides: Parameters<typeof issue>[0] = {}) {
+  const issued = await issue(overrides);
   if (!issued.ok) throw new Error(issued.reason);
   return issued.token;
 }
@@ -222,6 +241,96 @@ describe("a Build Preview capability", () => {
   it("goes with its build", async () => {
     await issuedToken();
     sqlite.exec("DELETE FROM storefront_theme_builds WHERE id = 'build-ok'");
+    const left = sqlite
+      .prepare(
+        "SELECT count(*) AS n FROM storefront_build_preview_capabilities",
+      )
+      .get() as { n: number };
+    expect(left.n).toBe(0);
+  });
+});
+
+describe("a release preview capability", () => {
+  const forRelease = () => issuedToken({ releaseId: "release-1" });
+
+  it("answers with the release's content, not the build's seal", async () => {
+    expect(await verify(await forRelease())).toEqual({
+      ok: true,
+      capability: expect.objectContaining({
+        buildId: "build-ok",
+        releaseId: "release-1",
+        contentPublicationId: "pub-of-release",
+      }),
+    });
+  });
+
+  it("answers with no content when the release has none, never the seal", async () => {
+    const token = await forRelease();
+    sqlite.exec(
+      "UPDATE storefront_releases SET content_publication_id = NULL WHERE id = 'release-1'",
+    );
+    expect(await verify(token)).toEqual({
+      ok: true,
+      capability: expect.objectContaining({ contentPublicationId: null }),
+    });
+  });
+
+  it("is never issued for a release of another build", async () => {
+    expect(
+      await issue({ buildId: "build-ok", releaseId: "release-other-build" }),
+    ).toEqual({ ok: false, reason: "RELEASE_NOT_PREVIEWABLE" });
+  });
+
+  it("stops working when its release is removed or moved to another store or Theme", async () => {
+    const token = await forRelease();
+    sqlite.exec(
+      "UPDATE storefront_releases SET theme_id = 'theme-b' WHERE id = 'release-1'",
+    );
+    expect(await verify(token)).toEqual({
+      ok: false,
+      reason: "RELEASE_NOT_PREVIEWABLE",
+    });
+    sqlite.exec(
+      "UPDATE storefront_releases SET theme_id = 'theme-a', storefront_id = 'store-b' WHERE id = 'release-1'",
+    );
+    expect((await verify(token)).ok).toBe(false);
+    sqlite.exec(
+      "UPDATE storefront_releases SET storefront_id = 'store-a', deleted_at = 'x' WHERE id = 'release-1'",
+    );
+    expect(await verify(token)).toEqual({
+      ok: false,
+      reason: "RELEASE_NOT_PREVIEWABLE",
+    });
+  });
+
+  it("still needs its build to be previewable", async () => {
+    const token = await forRelease();
+    sqlite.exec(
+      "UPDATE storefront_theme_builds SET status = 'failed' WHERE id = 'build-ok'",
+    );
+    expect(await verify(token)).toEqual({
+      ok: false,
+      reason: "BUILD_NOT_PREVIEWABLE",
+    });
+  });
+
+  it("and the build's own preview do not revoke each other", async () => {
+    const build = await issuedToken();
+    const release = await forRelease();
+    expect((await verify(build)).ok).toBe(true);
+    expect((await verify(release)).ok).toBe(true);
+    const newer = await forRelease();
+    expect(await verify(release)).toEqual({
+      ok: false,
+      reason: "CAPABILITY_REVOKED",
+    });
+    expect((await verify(newer)).ok).toBe(true);
+    expect((await verify(build)).ok).toBe(true);
+  });
+
+  it("goes with its release", async () => {
+    await forRelease();
+    sqlite.exec("DELETE FROM storefront_releases WHERE id = 'release-1'");
     const left = sqlite
       .prepare(
         "SELECT count(*) AS n FROM storefront_build_preview_capabilities",

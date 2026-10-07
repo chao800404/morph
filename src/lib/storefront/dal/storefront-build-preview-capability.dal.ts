@@ -2,6 +2,7 @@ import { getDb } from "@/db";
 import { users } from "@/db/auth.schema";
 import {
   storefrontBuildPreviewCapabilities,
+  storefrontReleases,
   storefrontThemeBuilds,
   storefrontThemes,
 } from "@/db/storefront.schema";
@@ -19,6 +20,8 @@ export type BuildPreviewCapabilityRecord = Readonly<{
   storefrontId: string;
   themeId: string;
   buildId: string;
+  /** The release previewed, or null for the build alone. */
+  releaseId: string | null;
   userId: string;
   expiresAt: string;
   revokedAt: string | null;
@@ -29,6 +32,13 @@ export type BuildPreviewCapabilityRecord = Readonly<{
     artifactPrefix: string | null;
     contentPublicationId: string | null;
   }> | null;
+  /** The named release, or null when none is named or it is gone. */
+  release: Readonly<{
+    storefrontId: string;
+    themeId: string;
+    themeBuildId: string;
+    contentPublicationId: string | null;
+  }> | null;
   themeLive: boolean;
   user: Readonly<{ role: string | null; banned: boolean }> | null;
 }>;
@@ -36,9 +46,10 @@ export type BuildPreviewCapabilityRecord = Readonly<{
 export const storefrontBuildPreviewCapabilityDal = {
   /**
    * Stores a new capability and revokes the ones the same user already held
-   * for the same build, so that one user has at most one live address per
-   * build. Revocation runs first: if the insert then fails, the user has none
-   * and asks again, which is the safe way round.
+   * for the same build and release, so that one user has at most one live
+   * address per build, and one per release of it. Revocation runs first: if
+   * the insert then fails, the user has none and asks again, which is the
+   * safe way round.
    */
   async issue(data: {
     id: string;
@@ -46,6 +57,7 @@ export const storefrontBuildPreviewCapabilityDal = {
     storefrontId: string;
     themeId: string;
     buildId: string;
+    releaseId?: string | null;
     userId: string;
     expiresAt: string;
     now: string;
@@ -57,6 +69,9 @@ export const storefrontBuildPreviewCapabilityDal = {
       .where(
         and(
           eq(storefrontBuildPreviewCapabilities.buildId, data.buildId),
+          data.releaseId
+            ? eq(storefrontBuildPreviewCapabilities.releaseId, data.releaseId)
+            : isNull(storefrontBuildPreviewCapabilities.releaseId),
           eq(storefrontBuildPreviewCapabilities.userId, data.userId),
           isNull(storefrontBuildPreviewCapabilities.revokedAt),
           isNull(storefrontBuildPreviewCapabilities.deletedAt),
@@ -68,6 +83,7 @@ export const storefrontBuildPreviewCapabilityDal = {
       storefrontId: data.storefrontId,
       themeId: data.themeId,
       buildId: data.buildId,
+      releaseId: data.releaseId ?? null,
       userId: data.userId,
       expiresAt: data.expiresAt,
       createdAt: data.now,
@@ -90,6 +106,13 @@ export const storefrontBuildPreviewCapabilityDal = {
           artifactPrefix: storefrontThemeBuilds.artifactPrefix,
           contentPublicationId: storefrontThemeBuilds.contentPublicationId,
         },
+        release: {
+          id: storefrontReleases.id,
+          storefrontId: storefrontReleases.storefrontId,
+          themeId: storefrontReleases.themeId,
+          themeBuildId: storefrontReleases.themeBuildId,
+          contentPublicationId: storefrontReleases.contentPublicationId,
+        },
         themeId: storefrontThemes.id,
         user: { id: users.id, role: users.role, banned: users.banned },
       })
@@ -102,6 +125,16 @@ export const storefrontBuildPreviewCapabilityDal = {
             storefrontBuildPreviewCapabilities.buildId,
           ),
           isNull(storefrontThemeBuilds.deletedAt),
+        ),
+      )
+      .leftJoin(
+        storefrontReleases,
+        and(
+          eq(
+            storefrontReleases.id,
+            storefrontBuildPreviewCapabilities.releaseId,
+          ),
+          isNull(storefrontReleases.deletedAt),
         ),
       )
       .leftJoin(
@@ -124,12 +157,13 @@ export const storefrontBuildPreviewCapabilityDal = {
       )
       .limit(1);
     if (!row) return null;
-    const { capability, build, user } = row;
+    const { capability, build, release, user } = row;
     return {
       id: capability.id,
       storefrontId: capability.storefrontId,
       themeId: capability.themeId,
       buildId: capability.buildId,
+      releaseId: capability.releaseId,
       userId: capability.userId,
       expiresAt: capability.expiresAt,
       revokedAt: capability.revokedAt,
@@ -140,6 +174,14 @@ export const storefrontBuildPreviewCapabilityDal = {
             status: build.status,
             artifactPrefix: build.artifactPrefix,
             contentPublicationId: build.contentPublicationId,
+          }
+        : null,
+      release: release?.id
+        ? {
+            storefrontId: release.storefrontId,
+            themeId: release.themeId,
+            themeBuildId: release.themeBuildId,
+            contentPublicationId: release.contentPublicationId,
           }
         : null,
       themeLive: Boolean(row.themeId),
