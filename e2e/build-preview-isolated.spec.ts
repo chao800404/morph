@@ -1,6 +1,14 @@
+import { randomUUID } from "node:crypto";
+
 import { expect, test } from "@playwright/test";
 
-import { enableSelection } from "./helpers";
+import {
+  clickExposedElement,
+  enableSelection,
+  openContentTab,
+  previewFrame,
+  settleSelection,
+} from "./helpers";
 
 /**
  * The isolated Build Preview, in a real container.
@@ -10,9 +18,11 @@ import { enableSelection } from "./helpers";
  * a `bp-<token>` host, reached through Core. This is the one place that
  * chain runs for real: the transport and policy tests use a stand-in sandbox.
  *
- * What it shows, in order: the editor frames a `bp-` host rather than the
- * static page; the build's Worker answers it; Core answers `/_morph/content`
- * there from the build's content snapshot.
+ * What it shows, in order: a value typed into the page's content is sealed
+ * with the build; the editor frames a `bp-` host rather than the static page;
+ * the build's Worker answers it; Core answers `/_morph/content` there from the
+ * build's content snapshot, which holds the value; and the page the Worker
+ * rendered shows it, read from inside its container.
  *
  * Requests to the preview host are made from inside the frame. Chromium
  * resolves `*.localhost` itself; Node, where Playwright's own request client
@@ -50,6 +60,45 @@ test.describe("isolated Build Preview", () => {
     // before that is received by nothing: the first run of this spec waited
     // ten minutes for a build that never started.
     await enableSelection(page);
+
+    // A value only this run's draft holds, so the build's content snapshot can
+    // be told apart from the Theme's defaults and from any earlier run. Typed
+    // into the hero's field the way publish.spec.ts does it.
+    const marker = `morph-bp-${randomUUID()}`;
+    const field = page
+      .locator('[data-slot="inspector-content-field"] input')
+      .first();
+    const section = page.getByRole("button", { name: "hero", exact: true });
+    if (await section.isVisible().catch(() => false)) {
+      await section.click();
+      await settleSelection(page);
+      await openContentTab(page);
+    }
+    if (!(await field.isVisible().catch(() => false))) {
+      const selected = await clickExposedElement(
+        page,
+        previewFrame(page).locator(
+          "h1[data-storefront-field], h2[data-storefront-field], p[data-storefront-field]",
+        ),
+      );
+      expect(
+        selected,
+        "neither the section tree nor the canvas exposed an editable text field",
+      ).not.toBeNull();
+      await openContentTab(page);
+    }
+    await expect(field).toBeVisible({ timeout: 30_000 });
+    await field.fill(marker);
+    await field.press("Tab");
+    await expect(
+      previewFrame(page).getByText(marker, { exact: false }).first(),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Unpublished",
+      { timeout: 30_000 },
+    );
+
     // Addressed by its stable attribute: the same control becomes the build's
     // cancel action while it runs.
     const build = page.locator("button[data-editor-build-action]");
@@ -74,10 +123,10 @@ test.describe("isolated Build Preview", () => {
       "allow-same-origin allow-scripts",
     );
 
-    const previewFrame = () =>
+    const isolatedFrame = () =>
       page.frame({ url: (url) => url.hostname === address.hostname });
-    await expect.poll(previewFrame, { timeout: 120_000 }).toBeTruthy();
-    const preview = previewFrame()!;
+    await expect.poll(isolatedFrame, { timeout: 120_000 }).toBeTruthy();
+    const preview = isolatedFrame()!;
 
     // The build's Worker answered the document.
     await expect(preview.locator("body")).not.toBeEmpty({ timeout: 120_000 });
@@ -94,21 +143,24 @@ test.describe("isolated Build Preview", () => {
     expect(document.status).toBe(200);
     expect(document.type).toContain("text/html");
 
-    // Core answers the content endpoint on the preview host, from the
-    // build's snapshot, never cached. A build started from the toolbar has
-    // no snapshot of its own yet, so what it holds is not asserted here; that
-    // the container's own request for it reached the outbound policy is read
-    // from the server's `[build-preview-egress]` line after the run.
+    // Core answers the content endpoint on the preview host from the build's
+    // snapshot, never cached — and the snapshot is the draft sealed when the
+    // build was made, so it holds this run's marker.
     const content = await preview.evaluate(async () => {
       const response = await fetch("/_morph/content?path=/");
       return {
         status: response.status,
         cacheControl: response.headers.get("cache-control"),
-        type: response.headers.get("content-type"),
+        body: await response.text(),
       };
     });
     expect(content.status).toBe(200);
     expect(content.cacheControl).toBe("private, no-store");
-    expect(content.type).toContain("application/json");
+    expect(content.body).toContain(marker);
+    // And the page the build's Worker rendered carries it: Theme code read
+    // that content from inside its container, through the outbound policy.
+    await expect(
+      preview.getByText(marker, { exact: false }).first(),
+    ).toBeVisible({ timeout: 60_000 });
   });
 });

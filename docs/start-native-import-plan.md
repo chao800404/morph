@@ -345,8 +345,12 @@ STRIPE_SECRET [ 新增 Secret ]
               （請求在 Worker 內由政策直接回應，不需要可連線）。
             - 外連政策逐筆記錄決定（只有 scheme 與主機，每個容器最多 20 行）。驗證時記錄顯示：容器內 Worker 的
               內容請求 `answered: own content`；wrangler 自己對 npm 與 Cloudflare 的請求被拒。
-          - 待確認（產品決定）：從工具列建置的 build 沒有自己的內容快照（只有非 SSR 發布會帶
-            `publicationDraft`），Build Preview 目前顯示 Theme 預設值。應封存目前草稿、顯示線上內容，或維持現狀。
+          - 工具列建置封存目前草稿（2026-10-07 決定採用 (a)）：建置前先送出待存的欄位修改，再以發布時同一段
+            程式（`prepareContentDraftForBuild`，由發布流程抽出、行為不變）確認該頁的內容 Document 並準備該頁與
+            外框的草稿，交給建置封存成內容快照；Build Preview 因此顯示發布這一頁會送出的內容，而不是 Theme
+            預設值。發布重用 build 的條件多一項：build 帶有內容快照時，只有封存的草稿仍是目前的草稿才重用，
+            否則先重建（`resolvePublishBuildPlan` 的 `buildContentCurrent`）；伺服器端的內容比對
+            （`PUBLISH_BUILD_CONTENT_MISMATCH`）仍是最終把關。
           - 待做：
             - 本機 E2E（sidecar）：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用
               `*.localhost` 或另設主機。
