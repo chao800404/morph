@@ -352,6 +352,28 @@ STRIPE_SECRET [ 新增 Secret ]
               `*.localhost` 或另設主機。
             - 已發布媒體（`/_morph/media/`）在 Build Preview 主機上依 build 的內容版本提供。
        2. **Sandbox 建置程式接上原生建置與內容快照**：預先渲染只讀該次建置綁定的凍結內容快照。
+          設計（2026-10-07；可再調整）：
+          - **輸入**：materializer 目前略過 Theme 自己的 `vite.config.*`、`wrangler.json(c)` 並拒絕建置。原生模式
+            改為把它們留在建置輸入與 `inputHash` 裡，輸入加上 `buildMode: "native"`；建置紀錄的 compiler 身分用
+            `tanstack-start-native` 與固定工具鏈版本，與平台建置分開，凍結後不可改。
+          - **開關**：只由伺服器端設定 `MORPH_NATIVE_START_BUILD=1` 開啟（預設關閉，正式環境一律拒絕），直到
+            第 3 步驗收通過、第 4 步解除。關閉時行為與現在完全相同（`NATIVE_START_BUILD_UNAVAILABLE`）。
+          - **工具鏈相容**：容器內不安裝套件，`node_modules` 一律來自固定工具鏈。沿用現有的
+            `validateThemeStartPackageContract`（`package.json` 的 Start、React、Vite、Cloudflare 外掛等必須等於
+            固定版本），不另寫一套版本規則；不符時以 `NATIVE_TOOLCHAIN_MISMATCH` 拒絕並列出它的診斷。工具鏈沒有的
+            其他套件沿用現有的依賴核准機制。接受 `^`／`~` 範圍屬於「Theme 依賴快照與工具鏈矩陣」那一步。
+          - **預先渲染讀凍結內容**：產生 `.morph/vite.config.ts`，以 `import` 載入 Theme 原本的
+            `vite.config.ts`（不修改），只加上 Morph 現有的凍結內容外掛
+            （`themePrerenderContentPluginSource`：只在 Node 預覽伺服器、`TSS_PRERENDERING` 時作用，
+            不進 Worker 產物），以 `vite build --config .morph/vite.config.ts` 建置。沒有內容快照的建置不產生
+            包裝檔，直接用 Theme 的設定。
+          - **產物**：沿用 1b-1 的 `collectNativeStartArtifact` 轉成 `runtime/server`、`runtime/client`，之後的
+            `verifyArtifact`、manifest、發布、Build Preview 與平台建置共用同一條路徑。
+          - **拆分**：N1 materializer／輸入／開關（已完成：開關開啟時保留 Theme 的設定檔、在排入建置前以
+            `native.plan` 拒絕無法建置的設定、compiler 身分 `tanstack-start-native`；兩個建置程式收到原生輸入時以
+            `NATIVE_START_BUILD_RUNNER_PENDING` 明確拒絕，不會改用平台設定建置）→ N2 本機建置程式（包裝檔產生、
+            真實建置測試，含內容快照的預先渲染）→ N3 Sandbox 建置程式（替身測試，再以本機 Docker 實跑）→
+            第 3 步驗收。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
           店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
        4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。

@@ -10,6 +10,23 @@ import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-b
 import { themeRevisionStore } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
 import { ThemeBuildService } from "./theme-build.service";
+import { isProductionEnvironment } from "./storefront-domain-provider";
+
+/**
+ * Whether Themes carrying their own build configuration are built with it
+ * (docs/start-native-import-plan.md, step 1b-2). Off unless the server sets
+ * `MORPH_NATIVE_START_BUILD=1`, and never in production until the publish
+ * acceptance has passed; while off, such a Theme is refused exactly as
+ * before (`NATIVE_START_BUILD_UNAVAILABLE`).
+ */
+export function nativeStartBuildEnabled(
+  bindings: Record<string, unknown>,
+): boolean {
+  return (
+    bindings.MORPH_NATIVE_START_BUILD === "1" &&
+    !isProductionEnvironment(bindings)
+  );
+}
 
 /**
  * Server composition root for ThemeBuildService.
@@ -44,10 +61,15 @@ export function createServerThemeBuildService(options?: {
     });
   }
 
+  const nativeStartBuild = nativeStartBuildEnabled(
+    env as unknown as Record<string, unknown>,
+  );
   return new ThemeBuildService(
     storefrontThemeBuildDal,
     runner,
-    materializeThemeBuildInput,
+    nativeStartBuild
+      ? (params) => materializeThemeBuildInput({ ...params, nativeStartBuild })
+      : materializeThemeBuildInput,
     artifactStore,
     options?.revisionStore ?? themeRevisionStore,
     // Addressed by build id, the same way the runner acquires its session, so a
