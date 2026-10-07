@@ -454,19 +454,8 @@ test.describe("publish loop", () => {
       const fileInput = createForm.locator('input[type="file"]');
       // The input is server-rendered, so it is there before the form's
       // chunks have loaded; a file chosen then has no change handler to
-      // receive it, and Create submits nothing. React claiming the input is
-      // the signal that its handler is attached.
-      await expect
-        .poll(
-          () =>
-            fileInput.evaluate((input) =>
-              Object.keys(input).some((key) =>
-                key.startsWith("__reactProps$"),
-              ),
-            ),
-          { timeout: 45_000 },
-        )
-        .toBe(true);
+      // receive it, and Create submits nothing.
+      await expectHydrated(fileInput);
       await fileInput.setInputFiles({
         name: `${libraryName}.png`,
         mimeType: "image/png",
@@ -597,9 +586,28 @@ async function writeHandoff(
   );
 }
 
+/**
+ * Waits until React has claimed a server-rendered element, which is when its
+ * handlers are attached. Before that the element is already on the page, and
+ * a click or a chosen file reaches nothing.
+ */
+async function expectHydrated(target: import("@playwright/test").Locator) {
+  await expect
+    .poll(
+      () =>
+        target.evaluate((element) =>
+          Object.keys(element).some((key) => key.startsWith("__reactProps$")),
+        ),
+      { timeout: 45_000 },
+    )
+    .toBe(true);
+}
+
 /** Release ids as the history panel lists them, newest first. */
 async function listReleaseLabels(page: import("@playwright/test").Page) {
-  await page.getByRole("button", { name: "Release history" }).click();
+  const history = page.getByRole("button", { name: "Release history" });
+  await expectHydrated(history);
+  await history.click();
   const dialog = page.getByRole("dialog").first();
   await expect(dialog).toBeVisible();
   await expect(
