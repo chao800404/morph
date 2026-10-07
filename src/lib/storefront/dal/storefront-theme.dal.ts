@@ -15,6 +15,7 @@ import {
   storefrontThemeBuilds,
   storefrontThemeFiles,
   storefrontReleases,
+  storefrontContentPublicationItems,
   storefrontPages,
   storefrontPageRevisions,
 } from "@/db/storefront.schema";
@@ -1468,6 +1469,7 @@ export const storefrontThemeDal = {
             // the active release is the new one and its deployment record is
             // necessarily empty.
             metadata: storefrontReleases.metadata,
+            contentPublicationId: storefrontReleases.contentPublicationId,
             sourceGeneration: storefrontThemeRevisions.sourceGeneration,
           })
           .from(storefrontReleases)
@@ -1639,9 +1641,36 @@ export const storefrontThemeDal = {
     if (pendingShell) assertRenderingModeReady(pendingShell.document);
 
     const now = new Date().toISOString();
+    // "Already live" means the live release serves this draft, not that the
+    // template row once recorded it as published: a rollback moves the live
+    // release back without touching template rows, and the draft published
+    // before it would be reported live while the storefront serves the
+    // release the rollback chose.
+    const [liveServesDraft] = activeRelease?.contentPublicationId
+      ? await db
+          .select({ id: storefrontContentPublicationItems.id })
+          .from(storefrontContentPublicationItems)
+          .where(
+            and(
+              eq(
+                storefrontContentPublicationItems.publicationId,
+                activeRelease.contentPublicationId,
+              ),
+              eq(storefrontContentPublicationItems.itemType, "template"),
+              eq(storefrontContentPublicationItems.contentId, data.templateId),
+              eq(
+                storefrontContentPublicationItems.revisionId,
+                data.expectedDraftRevisionId,
+              ),
+              isNull(storefrontContentPublicationItems.deletedAt),
+            ),
+          )
+          .limit(1)
+      : [];
     const templateUnchanged =
       template.draftRevisionId === template.publishedRevisionId &&
-      !pendingShell;
+      !pendingShell &&
+      Boolean(liveServesDraft);
     const sourceUnchanged =
       template.publishedSourceRevisionId === sourceRevisionId;
     // Whether the Worker actually received this build, not just whether D1
@@ -1929,9 +1958,13 @@ export const storefrontThemeDal = {
       previousPublishedRevisionId: template.publishedRevisionId,
       previousPublishedSourceRevisionId: template.publishedSourceRevisionId,
       sourceRevisionId,
-      draftGeneration: templateUnchanged
-        ? (template.draftGeneration ?? 1)
-        : (template.draftGeneration ?? 1) + 1,
+      // The page's row moves on only when its draft was written above; a
+      // publish that seals only the shell, or republishes the same draft,
+      // leaves the page at its generation.
+      draftGeneration:
+        template.draftRevisionId !== template.publishedRevisionId
+          ? (template.draftGeneration ?? 1) + 1
+          : (template.draftGeneration ?? 1),
       releaseGeneration: unchanged
         ? (template.releaseGeneration ?? 1)
         : (template.releaseGeneration ?? 1) + 1,
