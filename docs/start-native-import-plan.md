@@ -389,7 +389,12 @@ STRIPE_SECRET [ 新增 Secret ]
             包裝檔與匯入防護、原生產物規則、真實建置測試——專案自己的設定預先渲染 `/landing`，HTML 含凍結內容、
             不含預設值；快照、包裝檔與 `.morph/` 不進產物；Worker 不含內容；設定沒有預先渲染內容要求的頁面時被拒；
             防護在真實建置中放行專案別名與核准套件，拒絕已安裝但未核准的套件與工作區外的檔案）→ N3 Sandbox 建置程式
-            （替身測試，再以本機 Docker 實跑；在那之前 Sandbox 建置程式仍明確拒絕原生輸入）→ 第 3 步驗收。
+            （已完成，以替身測試：原生計畫的檔案與 `public/` 二進位檔以現有的 `materializeThemeSandboxWorkspace` 寫入
+            `/workspace`，`node_modules` 是映像連到固定工具鏈的那份；以映像的 Vite 執行
+            `vite build --config .morph/vite.config.ts`，環境只有 `NODE_ENV`、`NODE_OPTIONS` 與計畫的
+            `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`。讀回時列出 `node_modules` 以外的檔案，先以原始碼上限加產物上限
+            檢查總量才讀內容。收集、產物上限、原生驗證與 manifest 由兩個建置程式共用的 `nativeBuildResult` 負責）→
+            第 3 步驗收（同時是 Sandbox 原生建置的真實容器驗證）。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→
           店面驗證 → 回滾；涵蓋 SSR、靜態資產、server functions、404 與首次發布。
        4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。

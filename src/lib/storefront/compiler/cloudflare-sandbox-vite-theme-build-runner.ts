@@ -24,6 +24,14 @@ import {
   type ThemeWorkspaceBinaryLoader,
 } from "./theme-sandbox-workspace";
 import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
+import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
+import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
+import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
+import { nativeBuildResult } from "./native-build-result";
+
+/** The image's pinned Vite, the same binary the platform build runs. */
+const NATIVE_VITE_BIN = "/opt/morph-toolchain/node_modules/.bin/vite";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -258,18 +266,6 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
     const startTime = Date.now();
-    // Built with the platform's configuration, a native project would be a
-    // different program from the one its author wrote. Refused by name until
-    // this runner builds it with its own.
-    if (input.buildMode === "native") {
-      return {
-        success: false,
-        errorMessage:
-          "NATIVE_START_BUILD_RUNNER_PENDING: This build runner cannot build a Theme with its own configuration yet.",
-        diagnosticsJson: { stage: "native-build" },
-        durationMs: 0,
-      };
-    }
     const logs: ThemeBuildRunnerLog[] = [];
 
     const addLog = (level: "info" | "warn" | "error", message: string) => {
@@ -287,12 +283,19 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       `Starting Cloudflare Sandbox theme build for buildId: ${input.buildId}`,
     );
 
-    // Guard 0: Verify Compiler Identity
+    // Guard 0: Verify Compiler Identity. A native build is the project's own
+    // toolchain at the pinned Start version; a platform build is this runner's.
+    const expectedCompilerId =
+      input.buildMode === "native" ? NATIVE_START_COMPILER_ID : this.compilerId;
+    const expectedCompilerVersion =
+      input.buildMode === "native"
+        ? THEME_START_TOOLCHAIN.reactStart
+        : this.compilerVersion;
     if (
-      input.compilerId !== this.compilerId ||
-      input.compilerVersion !== this.compilerVersion
+      input.compilerId !== expectedCompilerId ||
+      input.compilerVersion !== expectedCompilerVersion
     ) {
-      const msg = `COMPILER_IDENTITY_MISMATCH: Runner toolchain is ${this.compilerId}@${this.compilerVersion}, but input requested ${input.compilerId}@${input.compilerVersion}`;
+      const msg = `COMPILER_IDENTITY_MISMATCH: Runner toolchain is ${expectedCompilerId}@${expectedCompilerVersion}, but input requested ${input.compilerId}@${input.compilerVersion}`;
       addLog("error", msg);
       return {
         success: false,
@@ -346,7 +349,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     // Guard 3: Path containment and reserved paths, by the same rule a Live
     // Preview update is held to.
     for (const file of input.files) {
-      const refusal = refuseThemeWorkspacePath(file.path);
+      const refusal = refuseThemeWorkspacePath(file.path, {
+        ownStartConfig: input.buildMode === "native",
+      });
       if (refusal) {
         addLog("error", refusal);
         return {
@@ -441,6 +446,16 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       const loadBinary: ThemeWorkspaceBinaryLoader | undefined = readBinaryFile
         ? (ref) => readBinaryFile(ref.digest)
         : undefined;
+      if (input.buildMode === "native") {
+        return await this.runNativeBuild(input, {
+          sandbox: sandboxSession,
+          loadBinary,
+          binaryFiles,
+          addLog,
+          logs,
+          startTime,
+        });
+      }
       const prepared = themeFramework().planWorkspace({
         files: [
           ...input.files,
@@ -833,5 +848,166 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         } catch {}
       }
     }
+  }
+
+  /**
+   * A native Start build in the container: the project's own configuration,
+   * through Morph's wrapper (import guard, and the frozen content for
+   * prerendering), with the image's pinned toolchain — `/workspace/node_modules`
+   * is the image's link to it — and no Morph environment beyond what Vite
+   * needs. The result is the shared native one (`nativeBuildResult`).
+   */
+  private async runNativeBuild(
+    input: ThemeBuildRunnerInput,
+    context: {
+      sandbox: CloudflareSandboxSession;
+      loadBinary: ThemeWorkspaceBinaryLoader | undefined;
+      binaryFiles: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
+      addLog: (level: "info" | "warn" | "error", message: string) => void;
+      logs: ThemeBuildRunnerLog[];
+      startTime: number;
+    },
+  ): Promise<ThemeBuildRunnerResult> {
+    const { sandbox, loadBinary, binaryFiles, addLog, logs, startTime } =
+      context;
+    const root = "/workspace";
+    const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage,
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    };
+
+    const registry = buildThemeRouteRegistry(input.files);
+    const routeRegistry = registry.valid ? registry : null;
+    const prerenderContent = routeRegistry
+      ? await createThemePrerenderContent(input.contentSnapshot, routeRegistry)
+      : undefined;
+    const plan = themeFramework().build.native.plan(input.files, {
+      allowedPackages: nativeAllowedPackages(this.approvedDependencies),
+      ...(prerenderContent
+        ? { prerenderContent: JSON.stringify(prerenderContent) }
+        : {}),
+    });
+    if (!plan.ok) return fail("native-plan", plan.message);
+    const [command, ...args] = plan.command;
+    if (command !== "vite") {
+      return fail("native-plan", `NATIVE_COMMAND: unexpected "${command}".`);
+    }
+
+    await materializeThemeSandboxWorkspace(
+      {
+        writeFile: (filePath, content) =>
+          writeSandboxWorkspaceFile(sandbox, filePath, content),
+        mkdir: async (dirPath, options) => {
+          await sandbox.mkdir(dirPath, options);
+        },
+      },
+      [
+        ...plan.workspaceFiles.map((file) => ({
+          path: `${root}/${file.path}`,
+          content: file.content,
+        })),
+        ...binaryFiles.map((file) => ({
+          path: `${root}/${file.path}`,
+          binary: { digest: file.digest, sizeBytes: file.sizeBytes },
+        })),
+      ],
+      { loadBinary },
+    );
+
+    addLog(
+      "info",
+      `Executing native Start build in Sandbox: vite ${args.join(" ")}`,
+    );
+    const built = await sandbox.exec(
+      `${NATIVE_VITE_BIN} ${args.join(" ")} --logLevel error`,
+      {
+        cwd: root,
+        timeout: this.maxDurationMs,
+        timeoutMs: this.maxDurationMs,
+        // Zero Morph server secrets: only what the build itself needs.
+        env: {
+          NODE_ENV: "production",
+          NODE_OPTIONS: "--unhandled-rejections=strict",
+          ...plan.env,
+        },
+      },
+    );
+    if (built.stdout) addLog("info", built.stdout);
+    if (!(built.success ?? built.exitCode === 0)) {
+      return fail(
+        "sandbox-native-compiler",
+        `NATIVE_BUILD_FAILED: ${(built.stderr || built.stdout || "vite build exited with a non-zero status").slice(-2_000)}`,
+      );
+    }
+
+    // Everything the build left in the workspace but the toolchain, bounded
+    // before any body is read: the sources plus at most the output limit.
+    const listed = await sandbox.exec(
+      `find ${root} -path ${root}/node_modules -prune -o -type f -exec stat -c "%s %n" {} +`,
+      { timeout: 10_000, timeoutMs: 10_000 },
+    );
+    if (!(listed.success ?? listed.exitCode === 0)) {
+      return fail(
+        "output-collection",
+        `DIST_SCAN_FAILED: ${listed.stderr || listed.stdout || "could not list the workspace"}`,
+      );
+    }
+    const entries: Array<{ fullPath: string; relPath: string; size: number }> =
+      [];
+    for (const line of (listed.stdout || "").split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const fullPath = match[2]!.trim();
+      if (!fullPath.startsWith(`${root}/`)) continue;
+      entries.push({
+        fullPath,
+        relPath: fullPath.slice(root.length + 1),
+        size: Number.parseInt(match[1]!, 10),
+      });
+    }
+    const readBudget = this.maxSourceSizeBytes + this.maxOutputSizeBytes;
+    const listedBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+    if (
+      entries.length > this.maxSourceFiles + 2 * this.maxOutputFiles ||
+      listedBytes > readBudget
+    ) {
+      return fail(
+        "output-limits",
+        `LIMIT_EXCEEDED: The native build left ${entries.length} files (${listedBytes} bytes) in the workspace.`,
+      );
+    }
+    const outputs = new Map<string, Uint8Array>();
+    for (const entry of entries) {
+      const read = await sandbox.readFile(entry.fullPath, { encoding: "none" });
+      const raw =
+        read && typeof read === "object" && "content" in read
+          ? read.content
+          : read;
+      outputs.set(entry.relPath, await fileContentToUint8Array(raw));
+    }
+
+    return nativeBuildResult({
+      input,
+      outputs,
+      routeRegistry,
+      limits: {
+        maxOutputFiles: this.maxOutputFiles,
+        maxOutputSizeBytes: this.maxOutputSizeBytes,
+      },
+      mimeType: getMimeType,
+      isText: isTextMimeType,
+      logs,
+      addLog,
+      startTime,
+    });
   }
 }

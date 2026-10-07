@@ -44,6 +44,7 @@ import {
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
+import { nativeBuildResult } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
 import { themeFramework } from "../theme-framework";
 import {
@@ -1127,93 +1128,19 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       }
     };
     await walk(tempDir);
-    let collected: ReturnType<typeof native.collect>;
-    try {
-      collected = native.collect(outputs);
-    } catch (error) {
-      return fail(
-        "output-collection",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-
-    const files = [...collected.files];
-    if (files.length > this.maxOutputFiles) {
-      return fail(
-        "output-limits",
-        `LIMIT_EXCEEDED: Theme dist output file count (${files.length}) exceeds limit of ${this.maxOutputFiles}`,
-      );
-    }
-    const artifacts: ThemeBuildArtifactFile[] = files.map(
-      ([relPath, content]) => {
-        const bytes =
-          typeof content === "string"
-            ? new TextEncoder().encode(content)
-            : content;
-        const mimeType = getMimeType(relPath);
-        return {
-          path: relPath,
-          content: isTextMimeType(mimeType)
-            ? new TextDecoder().decode(bytes)
-            : bytes,
-          mimeType,
-          sizeBytes: bytes.byteLength,
-        };
+    return nativeBuildResult({
+      input,
+      outputs,
+      routeRegistry,
+      limits: {
+        maxOutputFiles: this.maxOutputFiles,
+        maxOutputSizeBytes: this.maxOutputSizeBytes,
       },
-    );
-    const totalBytes = artifacts.reduce(
-      (sum, artifact) => sum + (artifact.sizeBytes ?? 0),
-      0,
-    );
-    if (totalBytes > this.maxOutputSizeBytes) {
-      return fail(
-        "output-limits",
-        `LIMIT_EXCEEDED: Theme dist output (${totalBytes} bytes) exceeds limit of ${this.maxOutputSizeBytes} bytes`,
-      );
-    }
-
-    try {
-      native.verifyArtifact({
-        artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
-        routeRegistry,
-        contentSnapshot: input.contentSnapshot,
-      });
-    } catch (error) {
-      return fail(
-        "artifact-verification",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-
-    const manifest: ThemeBuildArtifactManifest = {
-      entry: input.entry,
-      artifactEntry: native.artifactEntry,
-      filesCount: input.files.length,
-      inputHash: input.inputHash,
-      bundleFiles: artifacts.map((artifact) => ({
-        path: artifact.path,
-        sizeBytes: artifact.sizeBytes ?? 0,
-        mimeType: artifact.mimeType,
-      })),
-      cssChunks: artifacts
-        .filter((artifact) => artifact.mimeType === "text/css")
-        .map((artifact) => artifact.path),
-      jsChunks: artifacts
-        .filter((artifact) => artifact.mimeType === "application/javascript")
-        .map((artifact) => artifact.path),
-      metadata: native.manifestMetadata(routeRegistry),
-    };
-    addLog(
-      "info",
-      `Native build completed with ${artifacts.length} artifact files.`,
-    );
-    return {
-      success: true,
-      artifacts,
-      manifestJson: manifest,
-      diagnosticsJson: { warnings: [] },
+      mimeType: getMimeType,
+      isText: isTextMimeType,
       logs,
-      durationMs: Date.now() - startTime,
-    };
+      addLog,
+      startTime,
+    });
   }
 }
