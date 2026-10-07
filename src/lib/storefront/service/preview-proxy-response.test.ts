@@ -5,6 +5,11 @@ import {
   proxyPreviewModuleRequest,
   uncacheablePreviewError,
 } from "./preview-proxy-response";
+import { readPreviewErrorCode } from "./preview-proxy-observation";
+import {
+  PREVIEW_RUNTIME_INTERRUPTED_CODE,
+  PREVIEW_RUNTIME_INTERRUPTED_STATUS,
+} from "./preview-runtime-interruption";
 
 describe("bounded recovery of SDK module routing failures", () => {
   const interrupted = () =>
@@ -27,15 +32,44 @@ describe("bounded recovery of SDK module routing failures", () => {
     expect(pause.mock.calls).toEqual([[100]]);
   });
 
-  it("stops after two retries and still isolates the failed response", async () => {
+  it("stops after two retries and answers with the interruption status", async () => {
     const proxy = vi.fn().mockImplementation(async () => interrupted());
     const pause = vi.fn().mockResolvedValue(undefined);
     const response = await proxyPreviewModuleRequest(request(), proxy, pause);
     expect(proxy).toHaveBeenCalledTimes(3);
     expect(pause.mock.calls).toEqual([[100], [250]]);
     const finished = finishPreviewResponse(response!);
+    // Not the SDK's 500, which a Theme's compile error shares: the editor
+    // reloads a page broken by this status and leaves a Theme's 500 alone.
+    expect(finished.status).toBe(PREVIEW_RUNTIME_INTERRUPTED_STATUS);
     expect(finished.headers.get("cache-control")).toBe("no-store");
-    expect(await finished.text()).toBe("Proxy routing error");
+    expect(await readPreviewErrorCode(finished)).toBe(
+      PREVIEW_RUNTIME_INTERRUPTED_CODE,
+    );
+  });
+
+  it("passes the container's own 500 through on the last attempt", async () => {
+    const compileError = new Response("Proxy routing error", {
+      status: 500,
+      headers: { "content-type": "text/html" },
+    });
+    const proxy = vi
+      .fn()
+      .mockResolvedValueOnce(interrupted())
+      .mockResolvedValueOnce(interrupted())
+      .mockResolvedValueOnce(compileError);
+    expect(await proxyPreviewModuleRequest(request(), proxy, vi.fn())).toBe(
+      compileError,
+    );
+    expect(proxy).toHaveBeenCalledTimes(3);
+  });
+
+  it("leaves the SDK's 500 alone for a request it never retries", async () => {
+    const refused = interrupted();
+    const proxy = vi.fn().mockResolvedValue(refused);
+    expect(
+      await proxyPreviewModuleRequest(request("/", "GET"), proxy, vi.fn()),
+    ).toBe(refused);
   });
 
   it.each([
