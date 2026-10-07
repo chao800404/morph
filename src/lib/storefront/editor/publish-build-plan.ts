@@ -32,6 +32,12 @@ export type PublishBuildPlanInput = {
   /** Source generation being published. */
   currentSourceGeneration: number;
   /**
+   * The active release's build holds the content it was sealed with (or may:
+   * unknown counts), so it cannot carry different content. The server holds
+   * a publish to the same rule (`PUBLISH_BUILD_CONTENT_MISMATCH`).
+   */
+  activeReleaseBuildBoundToContent?: boolean;
+  /**
    * Source generation the active release's artifact was built from, or null
    * when this theme has never been released.
    *
@@ -57,6 +63,7 @@ export function resolvePublishBuildPlan({
   buildContentCurrent,
   currentSourceGeneration,
   activeReleaseSourceGeneration,
+  activeReleaseBuildBoundToContent,
 }: PublishBuildPlanInput): PublishBuildPlan {
   // Source alone cannot prove an artifact contains the current content.
   // Server-side publication comparison remains the final authority.
@@ -76,7 +83,11 @@ export function resolvePublishBuildPlan({
   // The generations have to agree for that to be true — editing the Theme and
   // pressing Publish without building leaves a release whose artifact predates
   // the edit, and publishing it would ship the old store under the new source.
-  return activeReleaseSourceGeneration === currentSourceGeneration
+  // A release whose artifact holds its sealed content cannot take other
+  // content: the content changed (that is why there is something to
+  // publish), so it is built anew.
+  return activeReleaseSourceGeneration === currentSourceGeneration &&
+    !activeReleaseBuildBoundToContent
     ? { action: "reuse-release" }
     : { action: "build" };
 }

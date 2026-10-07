@@ -28,6 +28,11 @@ export interface StorefrontThemeEditorDTO {
       themeBuildId: string;
       /** Source generation the release's artifact was built from. */
       sourceGeneration: number;
+      /**
+       * Its build was sealed with content and did not prove its artifact
+       * free of it, so publishing other content needs a new build.
+       */
+      buildBoundToContent: boolean;
     } | null;
   };
   templates: Array<{

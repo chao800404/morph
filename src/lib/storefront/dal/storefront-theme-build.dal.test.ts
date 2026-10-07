@@ -83,6 +83,7 @@ beforeEach(() => {
       compiler_version text,
       dependencies_json text,
       content_publication_id text,
+      content_dependency text,
       artifact_prefix text,
       manifest_json text,
       diagnostics_json text,

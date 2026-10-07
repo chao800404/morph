@@ -159,6 +159,8 @@ describe("a native Start build in the build runner", () => {
       expect(html).toContain("<h1>native-sealed-sentinel</h1>");
       expect(html).not.toContain("COMPONENT_DEFAULT");
       if (!result.success) return;
+      // Its prerender read content, so it was built again with the content.
+      expect(result.contentDependency).toBe("dependent");
 
       // Described as the native artifact it is, previewed by its Worker.
       expect(result.manifestJson.artifactEntry).toBe("runtime/server/index.js");
@@ -194,17 +196,16 @@ describe("a native Start build in the build runner", () => {
     async () => {
       // The project prerenders it; the CMS policy does not get a say in
       // whether the sealed content reaches that page.
-      const html = page(
-        await run(
-          nativeInput("native-runner-ssr-policy", ["/landing"], {
-            renderPolicy: "ssr",
-            title: "native-sealed-under-ssr",
-          }),
-        ),
-        "/landing",
+      const result = await run(
+        nativeInput("native-runner-ssr-policy", ["/landing"], {
+          renderPolicy: "ssr",
+          title: "native-sealed-under-ssr",
+        }),
       );
+      const html = page(result, "/landing");
       expect(html).toContain("<h1>native-sealed-under-ssr</h1>");
       expect(html).not.toContain("COMPONENT_DEFAULT");
+      expect(result.success && result.contentDependency).toBe("dependent");
     },
   );
 
@@ -249,16 +250,41 @@ describe("a native Start build in the build runner", () => {
     "builds a prerendered page that reads no content, with nothing sealed",
     { timeout: 240_000 },
     async () => {
-      const html = page(
-        await run(
-          nativeInput("native-runner-plain", ["/plain"], "none", [
+      const result = await run(
+        nativeInput("native-runner-plain", ["/plain"], "none", [
+          { path: "src/routes/__root.tsx", content: PLAIN_ROOT },
+          { path: "src/routes/plain.tsx", content: PLAIN },
+        ]),
+      );
+      expect(page(result, "/plain")).toContain("<h1>plain-static-page</h1>");
+      expect(result.success && result.contentDependency).toBe("independent");
+    },
+  );
+
+  it(
+    "proves an artifact independent when content is sealed but nothing reads it",
+    { timeout: 240_000 },
+    async () => {
+      // Content is sealed with the build, yet its prerender reads none: the
+      // first pass, which holds no content at all, already succeeds.
+      const result = await run(
+        nativeInput(
+          "native-runner-sealed-unread",
+          ["/plain"],
+          { renderPolicy: "ssr", title: "never-read-sentinel" },
+          [
             { path: "src/routes/__root.tsx", content: PLAIN_ROOT },
             { path: "src/routes/plain.tsx", content: PLAIN },
-          ]),
+          ],
         ),
-        "/plain",
       );
-      expect(html).toContain("<h1>plain-static-page</h1>");
+      expect(page(result, "/plain")).toContain("<h1>plain-static-page</h1>");
+      expect(result.success && result.contentDependency).toBe("independent");
+      if (!result.success) return;
+      const everything = result.artifacts
+        .map((file) => text(file.content))
+        .join("\n");
+      expect(everything).not.toContain("never-read-sentinel");
     },
   );
 

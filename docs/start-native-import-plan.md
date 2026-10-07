@@ -414,7 +414,30 @@ STRIPE_SECRET [ 新增 Secret ]
           生效 release 的 build 回到第一次那個，店面回到第一版。產物皆由驗證程式從該次執行的 R2 依 manifest 重建後執行。
           已知的本機限制（原有，非本步驟造成）：本機店面的 Theme Worker 回呼店面主機名稱取內容時，workerd 無法解析
           `*.localhost`（`DNS lookup failed`），需要內容的頁面在本機店面拿不到內容；驗收的路由不讀內容。
-       4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。
+          （2026-10-07 已解決：驗收啟動 Theme Worker 時，以本機 Build Preview worker 的外連對應，把店面主機名稱這一個
+          origin 保留 Host 接回 Core；產品程式不變，Core 仍依主機名稱與生效 release 回答。）
+          **內容配對驗收（G0，2026-10-07 本機真實容器通過）**：只保證「有封存內容的 build」（工具列建置與發布觸發的建置
+          都封存草稿）。`e2e/native-publish-acceptance.spec.ts`（SSR 加上專案自己預先渲染、讀內容的靜態頁；build 記為
+          依賴）：Build Preview 只顯示封存草稿；舊 build 的預覽重開也不會讀到新草稿；指名舊 build 的發布以
+          `PUBLISH_BUILD_CONTENT_MISMATCH` 拒絕且 D1 不變；改字後的工具列發布會重建；送出前草稿被改，由最後的 OCC
+          以 `TEMPLATE_DRAFT_CONFLICT` 拒絕，D1 不變、不重試；回滾後程式與內容一起回到原版。SSR、SSG 與
+          `/_morph/content` 分別斷言，沒有新舊混搭。`e2e/native-content-dependency.spec.ts`（只有 SSR；build 證明為
+          不依賴）：重新整理後純內容發布不建置、店面顯示新內容；回滾恢復原內容；依賴未知的 build 被伺服器拒絕、
+          前端改走重建。處理途中改草稿以 DAL 測試涵蓋（最後的 OCC）。未驗：Cloudflare 部署環境。
+          **建置的內容依賴（三種狀態）**：build 成功時記下 `content_dependency`，由平台建置流程證明，不採信 Theme 宣告。
+          平台建置只有拿到預先渲染內容才是 `dependent`，否則 `independent`（內容只會以這個方式進入平台建置）。原生建置
+          第一次在建置程序完全沒有內容的情況下建置：成功即 `independent`；預先渲染讀了內容（被拒並記錄）就從清空的工作區
+          帶封存內容再建一次，記為 `dependent`。NULL 為未知（所有舊 build）。發布時伺服器只重用生效 release 自己的 build
+          （不再挑同原始碼最新的 build），內容比對對 `dependent` 與未知照舊要求一致，只有 `independent` 可帶不同內容；
+          編輯器的建置計畫同一規則，伺服器仍為最後裁決者。
+          **回滾後重新發布**：「已上線」改為以生效 release 的內容發布是否含這一版草稿判斷。原本以 template 的已發布紀錄
+          判斷，回滾後重新發布被回滾掉的草稿會回「已發布」而什麼都沒寫。
+          **已知、另行處理**：Live Preview 在原始碼變更後被平台「更新 sandbox runtime」打斷時，有時不會重新啟動
+          （調查中）；`publish.spec.ts` 中 Release history 對話框一次 Escape 未關閉（調查中）。發布觸發的建置成功後
+          自動開啟 Build Preview 的行為之後改為「發布成功」才開啟、並顯示該 release 的內容。
+       4. 驗收通過後才解除 `NATIVE_START_BUILD_UNAVAILABLE`（限定與固定工具鏈相同的版本）。啟用是獨立的 PR：
+          限定已認證的工具鏈組合、確認「有設定檔」不會誤判既有 Theme、未認證版本有清楚診斷；Cloudflare 部署環境的
+          內容配對驗收仍未完成。
    - 1c：原生 Theme 的 Live Preview（平台入口設定注入）。
    - 1d：以同一組請求比較 Morph 原生建置與本地基準（需一個仍用 Vite 7 的官方 commit 作 fixture）。
 2. **Theme 依賴快照與工具鏈矩陣**：lockfile 驅動的自動申請、三類政策、安裝腳本與原生套件政策、

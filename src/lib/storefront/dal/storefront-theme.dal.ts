@@ -15,6 +15,7 @@ import {
   storefrontThemeBuilds,
   storefrontThemeFiles,
   storefrontReleases,
+  storefrontContentPublicationItems,
   storefrontPages,
   storefrontPageRevisions,
 } from "@/db/storefront.schema";
@@ -55,7 +56,7 @@ import {
   collectMediaAssetIds,
   verifyMediaReferences,
 } from "@/lib/storefront/theme-media-verification";
-import { and, asc, desc, eq, isNotNull, isNull, max } from "drizzle-orm";
+import { and, asc, eq, isNull, max } from "drizzle-orm";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -677,6 +678,9 @@ export const storefrontThemeDal = {
             // a release built from older source, and without this the editor
             // could not know that before asking.
             sourceGeneration: storefrontThemeRevisions.sourceGeneration,
+            buildContentPublicationId:
+              storefrontThemeBuilds.contentPublicationId,
+            buildContentDependency: storefrontThemeBuilds.contentDependency,
           })
           .from(storefrontReleases)
           .innerJoin(
@@ -685,6 +689,10 @@ export const storefrontThemeDal = {
               storefrontReleases.sourceRevisionId,
               storefrontThemeRevisions.id,
             ),
+          )
+          .leftJoin(
+            storefrontThemeBuilds,
+            eq(storefrontReleases.themeBuildId, storefrontThemeBuilds.id),
           )
           .where(
             and(
@@ -807,8 +815,15 @@ export const storefrontThemeDal = {
         activeRelease:
           activeRelease && activeRelease.sourceGeneration !== null
             ? {
-                ...activeRelease,
+                id: activeRelease.id,
+                sourceRevisionId: activeRelease.sourceRevisionId,
+                themeBuildId: activeRelease.themeBuildId,
                 sourceGeneration: activeRelease.sourceGeneration,
+                // Its artifact holds the content it was sealed with (or may:
+                // unknown counts), so other content cannot go out on it.
+                buildBoundToContent:
+                  activeRelease.buildContentPublicationId !== null &&
+                  activeRelease.buildContentDependency !== "independent",
               }
             : null,
       },
@@ -1454,6 +1469,7 @@ export const storefrontThemeDal = {
             // the active release is the new one and its deployment record is
             // necessarily empty.
             metadata: storefrontReleases.metadata,
+            contentPublicationId: storefrontReleases.contentPublicationId,
             sourceGeneration: storefrontThemeRevisions.sourceGeneration,
           })
           .from(storefrontReleases)
@@ -1475,57 +1491,16 @@ export const storefrontThemeDal = {
           )
           .limit(1)
       : [];
-    // Resolve the build server-side when the caller did not name one.
-    //
-    // The editor only knows about a Build Preview while it is showing one, so a
-    // reload would otherwise make an existing, valid build unpublishable and
-    // force a rebuild. Falling back to the active release's build instead is
-    // wrong in the opposite direction: it would publish stale bytes under a
-    // newer source. The authoritative answer is the newest succeeded build
-    // whose revision matches the theme's current source generation.
-    const [resolvedBuild] =
-      data.themeBuildId || data.sourceRevisionId
-        ? []
-        : await db
-            .select({
-              id: storefrontThemeBuilds.id,
-              sourceRevisionId: storefrontThemeBuilds.sourceRevisionId,
-            })
-            .from(storefrontThemeBuilds)
-            .innerJoin(
-              storefrontThemeRevisions,
-              eq(
-                storefrontThemeBuilds.sourceRevisionId,
-                storefrontThemeRevisions.id,
-              ),
-            )
-            .where(
-              and(
-                eq(storefrontThemeBuilds.storefrontId, data.storefrontId),
-                eq(storefrontThemeBuilds.themeId, data.themeId),
-                eq(storefrontThemeBuilds.status, "succeeded"),
-                isNotNull(storefrontThemeBuilds.artifactPrefix),
-                isNotNull(storefrontThemeBuilds.manifestJson),
-                isNull(storefrontThemeBuilds.deletedAt),
-                isNull(storefrontThemeRevisions.deletedAt),
-                eq(
-                  storefrontThemeRevisions.sourceGeneration,
-                  template.sourceGeneration,
-                ),
-              ),
-            )
-            .orderBy(desc(storefrontThemeBuilds.createdAt))
-            .limit(1);
-
+    // A publish that names no build republishes the active release's own
+    // build, and only while the Theme's source is the one that build was made
+    // from; otherwise it must build. No other build is picked on its behalf:
+    // "the newest succeeded build for this source" is an artifact nobody chose
+    // for this publish, sealed with content nobody checked against it.
     const sourceRevisionId =
-      data.sourceRevisionId ??
-      resolvedBuild?.sourceRevisionId ??
-      activeRelease?.sourceRevisionId;
-    const themeBuildId =
-      data.themeBuildId ?? resolvedBuild?.id ?? activeRelease?.themeBuildId;
+      data.sourceRevisionId ?? activeRelease?.sourceRevisionId;
+    const themeBuildId = data.themeBuildId ?? activeRelease?.themeBuildId;
     if (
       !data.sourceRevisionId &&
-      !resolvedBuild &&
       (activeRelease?.sourceGeneration == null ||
         activeRelease.sourceGeneration !== template.sourceGeneration)
     ) {
@@ -1546,6 +1521,7 @@ export const storefrontThemeDal = {
         artifactPrefix: storefrontThemeBuilds.artifactPrefix,
         manifestJson: storefrontThemeBuilds.manifestJson,
         contentPublicationId: storefrontThemeBuilds.contentPublicationId,
+        contentDependency: storefrontThemeBuilds.contentDependency,
       })
       .from(storefrontThemeBuilds)
       .where(
@@ -1665,9 +1641,36 @@ export const storefrontThemeDal = {
     if (pendingShell) assertRenderingModeReady(pendingShell.document);
 
     const now = new Date().toISOString();
+    // "Already live" means the live release serves this draft, not that the
+    // template row once recorded it as published: a rollback moves the live
+    // release back without touching template rows, and the draft published
+    // before it would be reported live while the storefront serves the
+    // release the rollback chose.
+    const [liveServesDraft] = activeRelease?.contentPublicationId
+      ? await db
+          .select({ id: storefrontContentPublicationItems.id })
+          .from(storefrontContentPublicationItems)
+          .where(
+            and(
+              eq(
+                storefrontContentPublicationItems.publicationId,
+                activeRelease.contentPublicationId,
+              ),
+              eq(storefrontContentPublicationItems.itemType, "template"),
+              eq(storefrontContentPublicationItems.contentId, data.templateId),
+              eq(
+                storefrontContentPublicationItems.revisionId,
+                data.expectedDraftRevisionId,
+              ),
+              isNull(storefrontContentPublicationItems.deletedAt),
+            ),
+          )
+          .limit(1)
+      : [];
     const templateUnchanged =
       template.draftRevisionId === template.publishedRevisionId &&
-      !pendingShell;
+      !pendingShell &&
+      Boolean(liveServesDraft);
     const sourceUnchanged =
       template.publishedSourceRevisionId === sourceRevisionId;
     // Whether the Worker actually received this build, not just whether D1
@@ -1720,7 +1723,15 @@ export const storefrontThemeDal = {
       for (const { document: publicationDocument } of publicationDocuments) {
         assertRenderingModeReady(publicationDocument);
       }
-      if (build.contentPublicationId) {
+      // A build sealed with content must be published with that content,
+      // unless the build proved its artifact holds none of it: then the
+      // release's own content is what runtime reads, and any content may go
+      // with it. Unknown is held to the seal like dependent. A build sealed
+      // with nothing was never given any content to hold.
+      if (
+        build.contentPublicationId &&
+        build.contentDependency !== "independent"
+      ) {
         const boundContent =
           await storefrontThemeBuildDal.readBuildContentSnapshot({
             storefrontId: data.storefrontId,
@@ -1947,9 +1958,13 @@ export const storefrontThemeDal = {
       previousPublishedRevisionId: template.publishedRevisionId,
       previousPublishedSourceRevisionId: template.publishedSourceRevisionId,
       sourceRevisionId,
-      draftGeneration: templateUnchanged
-        ? (template.draftGeneration ?? 1)
-        : (template.draftGeneration ?? 1) + 1,
+      // The page's row moves on only when its draft was written above; a
+      // publish that seals only the shell, or republishes the same draft,
+      // leaves the page at its generation.
+      draftGeneration:
+        template.draftRevisionId !== template.publishedRevisionId
+          ? (template.draftGeneration ?? 1) + 1
+          : (template.draftGeneration ?? 1),
       releaseGeneration: unchanged
         ? (template.releaseGeneration ?? 1)
         : (template.releaseGeneration ?? 1) + 1,

@@ -3,6 +3,7 @@ import {
   storefrontThemeBuilds,
   storefrontThemeRevisions,
   storefrontThemes,
+  type StorefrontThemeBuildContentDependency,
 } from "@/db/storefront.schema";
 import type {
   StorefrontThemeBuildDTO,
@@ -30,6 +31,7 @@ function mapBuildRowToDTO(
     compilerVersion: row.compilerVersion,
     dependencies: row.dependenciesJson ?? null,
     contentPublicationId: row.contentPublicationId ?? null,
+    contentDependency: row.contentDependency ?? null,
     artifactPrefix: row.artifactPrefix,
     manifestJson: row.manifestJson,
     diagnosticsJson: row.diagnosticsJson,
@@ -466,6 +468,8 @@ export const storefrontThemeBuildDal = {
       manifestJson: any;
       diagnosticsJson?: any;
       completedAt?: string;
+      /** What the runner proved; omitted leaves the build unknown (NULL). */
+      contentDependency?: StorefrontThemeBuildContentDependency;
     },
   ): Promise<StorefrontThemeBuildDTO> {
     const existing = await this.getBuild(storefrontId, themeId, buildId);
@@ -476,6 +480,16 @@ export const storefrontThemeBuildDal = {
     if (existing.status !== "building") {
       throw new Error(
         `INVALID_STATE_TRANSITION: Cannot succeed build from status "${existing.status}". Only "building" builds can transition to "succeeded".`,
+      );
+    }
+
+    if (
+      options.contentDependency !== undefined &&
+      options.contentDependency !== "dependent" &&
+      options.contentDependency !== "independent"
+    ) {
+      throw new Error(
+        `INVALID_CONTENT_DEPENDENCY: "${String(options.contentDependency)}" is not a recorded content dependency.`,
       );
     }
 
@@ -510,6 +524,7 @@ export const storefrontThemeBuildDal = {
         artifactPrefix: options.artifactPrefix.trim(),
         manifestJson: options.manifestJson,
         diagnosticsJson: options.diagnosticsJson ?? existing.diagnosticsJson,
+        contentDependency: options.contentDependency ?? null,
         completedAt,
         updatedAt: now,
       })

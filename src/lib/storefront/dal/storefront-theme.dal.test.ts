@@ -157,6 +157,7 @@ beforeEach(() => {
       artifact_prefix text,
       manifest_json text,
       content_publication_id text,
+      content_dependency text,
       created_by text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -863,6 +864,176 @@ describe("storefront theme DAL", () => {
       }
     },
   );
+
+  it.each([
+    [null, "refused"],
+    ["dependent", "refused"],
+    ["independent", "published"],
+  ] as const)(
+    "holds a build sealed with other content to its seal unless it proved itself independent (%s)",
+    async (dependency, outcome) => {
+      // The build was sealed with an older draft; the draft being published
+      // is a newer one. Only an artifact proven to hold no content may go out
+      // with content other than its seal; unknown counts as dependent.
+      insertPolicyTemplate();
+      const saved = await storefrontThemeDal.updateRenderPolicy({
+        ...policyWrite(),
+        setting: { scope: "page", policy: { mode: "ssr" } },
+      });
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+        VALUES ('old-policy-revision', 'policy-template', 0, ?, 'now')`,
+        )
+        .run(JSON.stringify({ version: 1, sections: [] }));
+      sqlite.exec(
+        "INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at) VALUES ('build-content', 'storefront-a', 'now', 'now')",
+      );
+      sqlite.exec(`INSERT INTO storefront_content_publication_items
+        (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+        VALUES ('build-item', 'build-content', 'template', 'policy-template', 'old-policy-revision', '{"templateType":"index"}', 'now', 'now')`);
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_builds SET content_publication_id = 'build-content', content_dependency = ?",
+        )
+        .run(dependency);
+      sqlite.exec(`INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+        VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+
+      const publish = storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: acceptRevision,
+      });
+
+      if (outcome === "refused") {
+        await expect(publish).rejects.toThrow("PUBLISH_BUILD_CONTENT_MISMATCH");
+        expect(
+          sqlite
+            .prepare("SELECT COUNT(*) AS count FROM storefront_releases")
+            .get(),
+        ).toEqual({ count: 0 });
+        expect(
+          sqlite
+            .prepare(
+              "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+            )
+            .get(),
+        ).toEqual({ active_release_id: null });
+        return;
+      }
+      const result = await publish;
+      expect(result?.releaseCreated).toBe(true);
+      // The release carries the content being published, not the build's
+      // seal: that is what its runtime reads.
+      const release = sqlite
+        .prepare(
+          "SELECT theme_build_id, content_publication_id FROM storefront_releases",
+        )
+        .get() as { theme_build_id: string; content_publication_id: string };
+      expect(release.theme_build_id).toBe(
+        "33333333-3333-4333-8333-333333333333",
+      );
+      expect(release.content_publication_id).not.toBe("build-content");
+      expect(
+        sqlite
+          .prepare(
+            "SELECT revision_id FROM storefront_content_publication_items WHERE publication_id = ? AND content_id = 'policy-template'",
+          )
+          .get(release.content_publication_id),
+      ).toEqual({ revision_id: saved!.draftRevisionId });
+    },
+  );
+
+  it("refuses a publish whose draft changed after it was read, at the final draft check", async () => {
+    // The build is sealed with the draft the request names, so the content
+    // check passes; the draft then changes while the publish is in progress
+    // (here, from inside the publish, after it has read the revision and
+    // before it writes). Only the batch's own draft guard can stop it.
+    insertPolicyTemplate();
+    const saved = await storefrontThemeDal.updateRenderPolicy({
+      ...policyWrite(),
+      setting: { scope: "page", policy: { mode: "ssr" } },
+    });
+    sqlite.exec(
+      "INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at) VALUES ('build-content', 'storefront-a', 'now', 'now')",
+    );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_content_publication_items
+      (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+      VALUES ('build-item', 'build-content', 'template', 'policy-template', ?, '{"templateType":"index"}', 'now', 'now')`,
+      )
+      .run(saved!.draftRevisionId);
+    sqlite.exec(
+      "UPDATE storefront_theme_builds SET content_publication_id = 'build-content'",
+    );
+    sqlite.exec(`INSERT INTO storefront_theme_revisions
+      (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+      VALUES ('22222222-2222-4222-8222-222222222222', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');`);
+    let changedDraftRevisionId: string | undefined;
+
+    await expect(
+      storefrontThemeDal.publishTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "policy-template",
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
+        expectedDraftRevisionId: saved!.draftRevisionId,
+        expectedDraftGeneration: 2,
+        expectedReleaseGeneration: 1,
+        verifySourceRevision: async () => {
+          const changed = await storefrontThemeDal.updateRenderPolicy({
+            ...policyWrite(),
+            expectedDraftGeneration: 2,
+            setting: { scope: "page", policy: { mode: "inherit" } },
+          });
+          changedDraftRevisionId = changed!.draftRevisionId;
+        },
+      }),
+    ).rejects.toThrow("TEMPLATE_DRAFT_CONFLICT");
+
+    expect(changedDraftRevisionId).toBeTruthy();
+    expect(changedDraftRevisionId).not.toBe(saved!.draftRevisionId);
+    // Nothing of the publish was written: no release, no pointer move, no
+    // content publication besides the build's, and the newer draft stands.
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM storefront_content_publications",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT active_release_id FROM storefronts WHERE id = 'storefront-a'",
+        )
+        .get(),
+    ).toEqual({ active_release_id: null });
+    expect(
+      sqlite
+        .prepare(
+          "SELECT draft_revision_id, published_revision_id FROM storefront_theme_templates WHERE id = 'policy-template'",
+        )
+        .get(),
+    ).toEqual({
+      draft_revision_id: changedDraftRevisionId,
+      published_revision_id: null,
+    });
+  });
 
   it("preserves policy through section renaming and reordering", async () => {
     insertPolicyTemplate();
@@ -1820,6 +1991,9 @@ export default function Hero() { return <h1 />; }`;
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: ensured.template.id,
+        // A first publish names the build it made, as the editor does.
+        sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+        themeBuildId: "33333333-3333-4333-8333-333333333333",
         expectedDraftRevisionId: draft!.draftRevisionId,
         expectedDraftGeneration: draft!.draftGeneration,
         expectedReleaseGeneration: 1,
@@ -3121,6 +3295,9 @@ describe("preparing an untouched template for its first publish", () => {
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-initial",
+      // A first publish names the build it made, as the editor does.
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
       expectedDraftRevisionId: draft!.draftRevisionId,
       expectedDraftGeneration: draft!.draftGeneration,
       expectedReleaseGeneration: 1,
@@ -3254,21 +3431,18 @@ describe("publish build resolution", () => {
       expectedReleaseGeneration: 1,
     });
 
-  it("resolves the build for the current source when the caller names none", async () => {
-    // The editor only knows a Build Preview while it is showing one, so a
-    // reload must not make an existing valid build unpublishable.
+  it("does not pick a build for a caller that names none and has no release to republish", async () => {
+    // A succeeded build for this very source exists; it is still not chosen
+    // on the caller's behalf. Publishing without a release must build.
     seedTemplateAndRevision();
 
-    const result = await publish();
-
-    expect(result).toMatchObject({
-      themeBuildId: "33333333-3333-4333-8333-333333333333",
-      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
-      releaseCreated: true,
-    });
+    await expect(publish()).rejects.toThrow(/PUBLISH_BUILD_NOT_READY/);
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 0 });
   });
 
-  it("prefers the newest succeeded build for the current source generation", async () => {
+  it("republishes the active release's own build, never a newer one for the same source", async () => {
     seedTemplateAndRevision(`
       INSERT INTO storefront_theme_builds
         (id, storefront_id, theme_id, source_revision_id, status, artifact_prefix, manifest_json, created_at, updated_at)
@@ -3276,10 +3450,23 @@ describe("publish build resolution", () => {
         ('44444444-4444-4444-8444-444444444444', 'storefront-a', 'theme-a',
          '22222222-2222-4222-8222-222222222222', 'succeeded',
          'themes/theme-a/builds/build-b', '{}', 'zzz-later', 'zzz-later');
+      INSERT INTO storefront_releases
+        (id, storefront_id, theme_id, source_revision_id, theme_build_id, status,
+         metadata, created_at, updated_at)
+      VALUES
+        ('55555555-5555-4555-8555-555555555555', 'storefront-a', 'theme-a',
+         '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333',
+         'available', '{"deployedThemeBuildId":"33333333-3333-4333-8333-333333333333"}',
+         'now', 'now');
+      UPDATE storefronts SET active_release_id = '55555555-5555-4555-8555-555555555555'
+        WHERE id = 'storefront-a';
     `);
 
     const result = await publish();
-    expect(result!.themeBuildId).toBe("44444444-4444-4444-8444-444444444444");
+    expect(result).toMatchObject({
+      themeBuildId: "33333333-3333-4333-8333-333333333333",
+      sourceRevisionId: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   it("never selects a build bound to a different source generation", async () => {
@@ -3893,5 +4080,102 @@ describe("publishing seals a complete snapshot", () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => /^morph-mig-/.test(row.id ?? ""))).toBe(true);
     expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  });
+});
+
+describe("publishing after a rollback", () => {
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const REV_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const REV_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const doc = (title: string) =>
+    JSON.stringify({
+      version: 1,
+      sections: [{ id: "hero", type: "hero", enabled: true, props: { title } }],
+    }).replaceAll("'", "''");
+
+  /**
+   * Release 1 served A and release 2 served B, both on one build; the store
+   * was then rolled back to `active`. The template still records B as
+   * published, because a rollback moves only the live pointer.
+   */
+  const seed = (active: "release-1" | "release-2") => {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_revisions
+        (id, storefront_id, theme_id, revision_number, source_generation, snapshot, created_at, updated_at)
+        VALUES ('${SOURCE}', 'storefront-a', 'theme-a', 1, 1, '[]', 'now', 'now');
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-a', 'theme-a', 'index', 'Home', '${doc("B")}', '${REV_B}', '${REV_B}', 3, 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at)
+        VALUES ('${REV_A}', 'template-a', 1, '${doc("A")}', 'now'),
+               ('${REV_B}', 'template-a', 2, '${doc("B")}', 'now');
+      INSERT INTO storefront_content_publications (id, storefront_id, created_at, updated_at)
+        VALUES ('pub-a', 'storefront-a', 'now', 'now'), ('pub-b', 'storefront-a', 'now', 'now');
+      INSERT INTO storefront_content_publication_items
+        (id, publication_id, item_type, content_id, revision_id, metadata, created_at, updated_at)
+        VALUES ('item-a', 'pub-a', 'template', 'template-a', '${REV_A}', '{"templateType":"index"}', 'now', 'now'),
+               ('item-b', 'pub-b', 'template', 'template-a', '${REV_B}', '{"templateType":"index"}', 'now', 'now');
+      INSERT INTO storefront_releases
+        (id, storefront_id, theme_id, source_revision_id, theme_build_id, content_publication_id, status, metadata, created_at, updated_at)
+        VALUES ('release-1', 'storefront-a', 'theme-a', '${SOURCE}', '${BUILD}', 'pub-a', 'available', '{"deployedThemeBuildId":"${BUILD}"}', 'now', 'now'),
+               ('release-2', 'storefront-a', 'theme-a', '${SOURCE}', '${BUILD}', 'pub-b', 'available', '{"deployedThemeBuildId":"${BUILD}"}', 'now', 'now');
+      UPDATE storefront_themes SET published_source_revision_id = '${SOURCE}', release_generation = 3
+        WHERE id = 'theme-a';
+      UPDATE storefronts SET active_release_id = '${active}' WHERE id = 'storefront-a';
+    `);
+  };
+
+  const publishB = () =>
+    storefrontThemeDal.publishTemplate({
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-a",
+      expectedDraftRevisionId: REV_B,
+      expectedDraftGeneration: 3,
+      expectedReleaseGeneration: 3,
+    });
+
+  it("publishes a draft the rollback took off the storefront, rather than calling it live", async () => {
+    // Rolled back to A. Publishing B again must put B live, even though the
+    // template row still says B was published.
+    seed("release-1");
+
+    const result = await publishB();
+
+    expect(result).toMatchObject({ unchanged: false, releaseCreated: true });
+    const live = sqlite
+      .prepare(
+        `SELECT r.id, i.revision_id AS revision
+           FROM storefronts s
+           JOIN storefront_releases r ON r.id = s.active_release_id
+           JOIN storefront_content_publication_items i ON i.publication_id = r.content_publication_id
+          WHERE s.id = 'storefront-a'`,
+      )
+      .get() as { id: string; revision: string };
+    expect(live.id).not.toBe("release-1");
+    expect(live.revision).toBe(REV_B);
+    // The page row was not rewritten (its draft was already the published
+    // one), so its generation stands; the editor sends that next.
+    expect(result!.draftGeneration).toBe(3);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT draft_generation FROM storefront_theme_templates WHERE id = 'template-a'",
+        )
+        .get(),
+    ).toEqual({ draft_generation: 3 });
+  });
+
+  it("still calls a draft live when the live release serves it", async () => {
+    seed("release-2");
+
+    const result = await publishB();
+
+    expect(result).toMatchObject({ unchanged: true, releaseCreated: false });
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_releases").get(),
+    ).toEqual({ count: 2 });
   });
 });

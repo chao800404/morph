@@ -44,13 +44,13 @@ import {
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
-import { nativeBuildResult } from "./native-build-result";
+import { nativeBuildResult, runNativeBuildPasses } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
 import { themeFramework } from "../theme-framework";
 import {
-  createNativePrerenderContent,
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
+  type NativePrerenderContent,
 } from "./theme-prerender-content";
 
 function getMimeType(filePath: string): string {
@@ -613,6 +613,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       // Execute Vite build with timeout guard
       const outDir = path.join(tempDir, "dist");
 
+      // Content reaches a platform build only as the frozen prerender
+      // content below; without it the build never holds any.
+      let sealedContentGiven = false;
       if (routeRegistry) {
         addLog(
           "info",
@@ -624,6 +627,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             input.contentSnapshot,
             routeRegistry,
           );
+          sealedContentGiven = prerenderContent !== undefined;
           const prerenderOptions = themePrerenderOptions(
             input.contentSnapshot,
             routeRegistry,
@@ -967,6 +971,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: { warnings: [] },
         logs,
         durationMs: Date.now() - startTime,
+        contentDependency: sealedContentGiven ? "dependent" : "independent",
       };
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
@@ -1022,6 +1027,40 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       startTime: number;
     },
   ): Promise<ThemeBuildRunnerResult> {
+    const registry = buildThemeRouteRegistry(input.files);
+    return runNativeBuildPasses({
+      input,
+      routeRegistry: registry.valid ? registry : null,
+      addLog: context.addLog,
+      // Each pass builds in its own copy of the sources: nothing a pass
+      // writes, its record of refused reads included, reaches the next.
+      pass: async (prerenderContent) => {
+        const workDir = await fs.mkdtemp(`${context.tempDir}-pass-`);
+        try {
+          await fs.cp(context.tempDir, workDir, { recursive: true });
+          return await this.runNativeBuildPass(
+            input,
+            { ...context, tempDir: workDir },
+            prerenderContent,
+          );
+        } finally {
+          await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+        }
+      },
+    });
+  }
+
+  /** One native build in `context.tempDir`, with what its prerender may read. */
+  private async runNativeBuildPass(
+    input: ThemeBuildRunnerInput,
+    context: {
+      tempDir: string;
+      addLog: (level: "info" | "warn" | "error", message: string) => void;
+      logs: ThemeBuildRunnerLog[];
+      startTime: number;
+    },
+    prerenderContent: NativePrerenderContent,
+  ): Promise<ThemeBuildRunnerResult> {
     const { tempDir, addLog, logs, startTime } = context;
     const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
       addLog("error", msg);
@@ -1042,10 +1081,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
     const native = themeFramework().build.native;
     const plan = native.plan(input.files, {
       allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-      prerenderContent: await createNativePrerenderContent(
-        input.contentSnapshot,
-        routeRegistry,
-      ),
+      prerenderContent,
     });
     if (!plan.ok) return fail("native-plan", plan.message);
 

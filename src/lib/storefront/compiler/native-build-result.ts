@@ -1,5 +1,10 @@
 import { themeFramework } from "../theme-framework";
-import { NATIVE_PRERENDER_REFUSED_READS_PATH } from "./theme-prerender-content";
+import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
+  NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
+  createNativePrerenderContent,
+  type NativePrerenderContent,
+} from "./theme-prerender-content";
 import type { ThemeRouteRegistry } from "./theme-route-registry";
 import type {
   ThemeBuildArtifactFile,
@@ -8,6 +13,48 @@ import type {
   ThemeBuildRunnerLog,
   ThemeBuildRunnerResult,
 } from "./theme-build-runner.types";
+
+/**
+ * A native build, run so that its result says whether the artifact carries
+ * CMS content — proven by the build, not declared by the Theme.
+ *
+ * The first pass gets no content at all: the sealed snapshot is not in the
+ * build's process, so whatever it produces cannot contain it, whatever the
+ * project's own config does at build time. If that pass succeeds the
+ * artifact is `independent`. If its prerender read Morph content (refused,
+ * and recorded), the build is run again from a clean workspace with the
+ * sealed content, and that artifact is `dependent`. Any other failure is the
+ * build's own and is returned as it is.
+ *
+ * `pass` runs one complete build in a workspace holding nothing of an
+ * earlier pass.
+ */
+export async function runNativeBuildPasses(options: {
+  input: ThemeBuildRunnerInput;
+  routeRegistry: ThemeRouteRegistry | null;
+  addLog(level: "info" | "warn" | "error", message: string): void;
+  pass(prerenderContent: NativePrerenderContent): Promise<ThemeBuildRunnerResult>;
+}): Promise<ThemeBuildRunnerResult> {
+  const first = await options.pass(NATIVE_PRERENDER_WITHOUT_SNAPSHOT);
+  if (first.success) return { ...first, contentDependency: "independent" };
+  if (
+    !options.input.contentSnapshot ||
+    first.diagnosticsJson?.stage !== "prerender-content"
+  ) {
+    return first;
+  }
+  options.addLog(
+    "info",
+    "Prerendering read Morph content: building again with this build's sealed content.",
+  );
+  const second = await options.pass(
+    await createNativePrerenderContent(
+      options.input.contentSnapshot,
+      options.routeRegistry,
+    ),
+  );
+  return second.success ? { ...second, contentDependency: "dependent" } : second;
+}
 
 /** Which paths' content reads were refused, and why, from the prerender's record. */
 function refusedReadsMessage(record: Uint8Array | string): string {

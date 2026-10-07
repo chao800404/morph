@@ -1,7 +1,7 @@
 import type { Sandbox } from "@cloudflare/sandbox";
 import {
-  createNativePrerenderContent,
   createThemePrerenderContent,
+  type NativePrerenderContent,
 } from "./theme-prerender-content";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import { themePublicTextMimeType } from "../theme-public-files";
@@ -31,10 +31,12 @@ import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
-import { nativeBuildResult } from "./native-build-result";
+import { nativeBuildResult, runNativeBuildPasses } from "./native-build-result";
 
 /** The image's pinned Vite, the same binary the platform build runs. */
 const NATIVE_VITE_BIN = "/opt/morph-toolchain/node_modules/.bin/vite";
+/** Where a native build lays out the project, beside the image's toolchain link. */
+const NATIVE_WORKSPACE_ROOT = "/workspace";
 
 export type CloudflareSandboxExecResult = {
   exitCode?: number;
@@ -459,6 +461,12 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           startTime,
         });
       }
+      const prerenderContent = input.contentSnapshot
+        ? await createThemePrerenderContent(
+            input.contentSnapshot,
+            buildThemeRouteRegistry(input.files),
+          )
+        : undefined;
       const prepared = themeFramework().planWorkspace({
         files: [
           ...input.files,
@@ -474,12 +482,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         approvedDependencies: this.approvedDependencies,
         mode: "build",
         contentSnapshot: input.contentSnapshot,
-        prerenderContent: input.contentSnapshot
-          ? await createThemePrerenderContent(
-              input.contentSnapshot,
-              buildThemeRouteRegistry(input.files),
-            )
-          : undefined,
+        prerenderContent,
       });
       if (!prepared.ok) {
         addLog("error", prepared.errorMessage);
@@ -821,6 +824,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: { warnings: [] },
         logs,
         durationMs: Date.now() - startTime,
+        // Content reaches a platform build only as the frozen prerender
+        // content; without it the build never held any.
+        contentDependency: prerenderContent ? "dependent" : "independent",
       };
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
@@ -871,9 +877,53 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       startTime: number;
     },
   ): Promise<ThemeBuildRunnerResult> {
+    const registry = buildThemeRouteRegistry(input.files);
+    let passes = 0;
+    return runNativeBuildPasses({
+      input,
+      routeRegistry: registry.valid ? registry : null,
+      addLog: context.addLog,
+      pass: async (prerenderContent) => {
+        // A later pass starts from an empty workspace: nothing the earlier
+        // one wrote, its record of refused reads included, may remain. The
+        // toolchain link is the image's and stays.
+        if (passes++ > 0) {
+          const cleared = await context.sandbox.exec(
+            `find ${NATIVE_WORKSPACE_ROOT} -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +`,
+            { timeout: 30_000, timeoutMs: 30_000 },
+          );
+          if (!(cleared.success ?? cleared.exitCode === 0)) {
+            context.addLog("error", "Could not clear the workspace for the next pass.");
+            return {
+              success: false,
+              errorMessage: `WORKSPACE_RESET_FAILED: ${cleared.stderr || cleared.stdout || "could not clear the workspace"}`,
+              diagnosticsJson: { stage: "native-workspace" },
+              logs: context.logs,
+              durationMs: Date.now() - context.startTime,
+            };
+          }
+        }
+        return this.runNativeBuildPass(input, context, prerenderContent);
+      },
+    });
+  }
+
+  /** One native build in the workspace, with what its prerender may read. */
+  private async runNativeBuildPass(
+    input: ThemeBuildRunnerInput,
+    context: {
+      sandbox: CloudflareSandboxSession;
+      loadBinary: ThemeWorkspaceBinaryLoader | undefined;
+      binaryFiles: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
+      addLog: (level: "info" | "warn" | "error", message: string) => void;
+      logs: ThemeBuildRunnerLog[];
+      startTime: number;
+    },
+    prerenderContent: NativePrerenderContent,
+  ): Promise<ThemeBuildRunnerResult> {
     const { sandbox, loadBinary, binaryFiles, addLog, logs, startTime } =
       context;
-    const root = "/workspace";
+    const root = NATIVE_WORKSPACE_ROOT;
     const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
       addLog("error", msg);
       return {
@@ -892,10 +942,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     const routeRegistry = registry.valid ? registry : null;
     const plan = themeFramework().build.native.plan(input.files, {
       allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-      prerenderContent: await createNativePrerenderContent(
-        input.contentSnapshot,
-        routeRegistry,
-      ),
+      prerenderContent,
     });
     if (!plan.ok) return fail("native-plan", plan.message);
     const [command, ...args] = plan.command;

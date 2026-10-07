@@ -530,6 +530,9 @@ export class ThemeBuildService {
           artifactPrefix: storeResult.artifactPrefix,
           manifestJson: storeResult.manifest,
           diagnosticsJson: runnerResult.diagnosticsJson,
+          ...(runnerResult.contentDependency
+            ? { contentDependency: runnerResult.contentDependency }
+            : {}),
         },
       );
     } catch (finalizeError) {
