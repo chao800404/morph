@@ -29,7 +29,15 @@ const artifact: BuildPreviewArtifact = {
   headersFile: "/*\n  X-Test: 1\n",
 };
 
-function fakeSession(options: { ready?: boolean; running?: boolean } = {}) {
+function fakeSession(
+  options: {
+    ready?: boolean;
+    running?: boolean;
+    /** A real container: output not delivered, the port check answers. */
+    silent?: boolean;
+    logs?: { stdout?: string; stderr?: string };
+  } = {},
+) {
   let running = options.running ?? false;
   const written = new Map<string, { content: string; encoding?: string }>();
   const commands: string[] = [];
@@ -53,6 +61,15 @@ function fakeSession(options: { ready?: boolean; running?: boolean } = {}) {
         },
       ) => {
         commands.push(command);
+        if (options.silent) {
+          return {
+            id: "p1",
+            waitForPort: vi.fn(async () => {
+              if (options.ready === false) throw new Error("port never opened");
+              running = true;
+            }),
+          };
+        }
         queueMicrotask(() => {
           if (options.ready === false) {
             opts?.onOutput?.("stderr", "✘ [ERROR] could not start");
@@ -80,6 +97,8 @@ function fakeSession(options: { ready?: boolean; running?: boolean } = {}) {
         : [],
     ),
     containerFetch: vi.fn(async () => new Response("from-container")),
+    getProcessLogs: vi.fn(async () => options.logs ?? {}),
+    killProcess: vi.fn(async () => undefined),
     setSleepAfter: vi.fn(async () => undefined),
     destroy: vi.fn(async () => undefined),
   };
@@ -144,6 +163,31 @@ describe("the container Build Preview transport", () => {
       WRANGLER_SEND_METRICS: "false",
       NODE_ENV: "production",
     });
+  });
+
+  it("is ready by its port when no output arrives, as in a real container", async () => {
+    const { session } = fakeSession({ silent: true });
+    const { server: target } = server(session as never);
+    await start(target);
+    const started = await session.startProcess.mock.results[0]!.value;
+    expect(started.waitForPort).toHaveBeenCalledWith(
+      BUILD_PREVIEW_CONTAINER_PORT,
+      { mode: "tcp", timeout: 1_000 },
+    );
+    expect(session.setSleepAfter).toHaveBeenCalledWith("10m");
+  });
+
+  it("names the cause from the process's own logs when it fails", async () => {
+    const { session } = fakeSession({
+      silent: true,
+      ready: false,
+      logs: { stderr: "✘ [ERROR] no such file: index.js" },
+    });
+    const { server: target } = server(session as never);
+    await expect(start(target)).rejects.toThrow(
+      "port never opened: ✘ [ERROR] no such file: index.js",
+    );
+    expect(session.killProcess).toHaveBeenCalledWith("p1");
   });
 
   it("does not start twice", async () => {

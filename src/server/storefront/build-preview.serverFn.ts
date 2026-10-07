@@ -7,6 +7,7 @@ import {
   buildPreviewHostname,
   issueBuildPreviewCapability,
 } from "@/lib/storefront/service/build-preview/build-preview-capability";
+import { createBuildPreviewServer } from "@/lib/storefront/service/build-preview/build-preview-server.factory";
 import { createServerThemeBuildService } from "@/lib/storefront/service/theme-build-service.factory";
 import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-preview-server-origin";
 import { getStorefrontThemeBuildInputSchema } from "@/lib/validations/storefront-theme-build";
@@ -17,6 +18,10 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
  * capability held by them, presented as its own host under the Live Preview's
  * preview hostname and held to the same hostname rules. The address is the
  * whole result; the instance starts on its first request.
+ *
+ * Refused, with the executor's reason, where this environment cannot run a
+ * Build Preview at all, so the editor can tell "not here" from "failed" and
+ * keep its static preview instead of framing an address that answers 503.
  */
 export const openBuildPreview = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
@@ -41,6 +46,15 @@ export const openBuildPreview = createServerFn({ method: "POST" })
           new Error(host.reason),
           "PREVIEW_HOST_UNAVAILABLE",
           "Build Preview needs a preview hostname on a site of its own.",
+        );
+      }
+      const executor = createBuildPreviewServer(bindings);
+      if (!executor.enabled) {
+        return failure(
+          "Open Build Preview error",
+          new Error(executor.reason),
+          "BUILD_PREVIEW_EXECUTOR_UNAVAILABLE",
+          executor.message,
         );
       }
       // Scoped to the store and Theme in the request, so a build of another

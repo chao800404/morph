@@ -34,16 +34,62 @@ export type BuildPreviewEgressDeps = Readonly<{
   /** The container id a capability's instance runs in. */
   containerIdFor(capabilityId: string): string;
   now?: Date;
+  /** Where each decision is recorded; `console.info` unless given. */
+  log?: (line: string) => void;
 }>;
 
-function refuse(request: Request, reason: string): Response {
-  let destination = "unknown";
+/**
+ * Lines one container may write, per isolate. A Theme can make as many
+ * requests as it likes, and each would otherwise be a log line; a decision
+ * is worth seeing, a flood of them is not.
+ */
+const MAX_LINES_PER_CONTAINER = 20;
+const MAX_TRACKED_CONTAINERS = 200;
+const linesByContainer = new Map<string, number>();
+
+function destinationOf(request: Request): string {
   try {
     const url = new URL(request.url);
-    destination = `${url.protocol}//${url.host}`;
+    return `${url.protocol}//${url.host}`;
   } catch {
-    // Left as "unknown": never the path or query, where data travels.
+    // Never the path or query, where data travels.
+    return "unknown";
   }
+}
+
+/**
+ * Records one decision: answered or refused, the destination's scheme and
+ * host, and the container — so an operator can see a preview reach its
+ * content, or why it did not.
+ */
+function record(
+  containerId: string,
+  request: Request,
+  decision: string,
+  log: (line: string) => void,
+): void {
+  const key = containerId.slice(0, 64);
+  const written = linesByContainer.get(key) ?? 0;
+  if (written >= MAX_LINES_PER_CONTAINER) return;
+  if (
+    !linesByContainer.has(key) &&
+    linesByContainer.size >= MAX_TRACKED_CONTAINERS
+  ) {
+    const oldest = linesByContainer.keys().next().value;
+    if (oldest !== undefined) linesByContainer.delete(oldest);
+  }
+  linesByContainer.set(key, written + 1);
+  log(
+    `[build-preview-egress] ${JSON.stringify({
+      container: key.slice(0, 12),
+      destination: destinationOf(request),
+      decision,
+    })}`,
+  );
+}
+
+function refuse(request: Request, reason: string): Response {
+  const destination = destinationOf(request);
   return new Response(
     `Build Preview outbound policy refused ${destination} (${PREVIEW_EGRESS_DENIED}: ${reason}). ` +
       "A Build Preview can read its own content and reach nothing else.\n",
@@ -63,25 +109,31 @@ export async function answerBuildPreviewEgress(
   containerId: string,
   deps: BuildPreviewEgressDeps,
 ): Promise<Response> {
+  const log = deps.log ?? ((line: string) => console.info(line));
+  const refused = (reason: string) => {
+    record(containerId, request, `refused: ${reason}`, log);
+    return refuse(request, reason);
+  };
   let url: URL;
   try {
     url = new URL(request.url);
   } catch {
-    return refuse(request, "not a URL");
+    return refused("not a URL");
   }
   const token = buildPreviewTokenFromHost(url.host, deps.env);
   if (!token || url.pathname !== "/_morph/content") {
-    return refuse(request, "not this preview's content");
+    return refused("not this preview's content");
   }
   const verified = await verifyBuildPreviewCapability({
     dal: deps.capabilityDal,
     token,
     now: deps.now,
   });
-  if (!verified.ok) return refuse(request, verified.reason);
+  if (!verified.ok) return refused(verified.reason);
   if (deps.containerIdFor(verified.capability.id) !== containerId) {
-    return refuse(request, "another preview's content");
+    return refused("another preview's content");
   }
+  record(containerId, request, "answered: own content", log);
   return serveBuildPreviewContent({
     request,
     capability: verified.capability,
