@@ -9,6 +9,8 @@ vi.mock("cloudflare:workers", () => ({ env: {} }));
 const TOKEN = "0123456789abcdef0123456789abcdef01234567";
 const OWN = `https://bp-${TOKEN}.preview.example.test`;
 
+const lines: string[] = [];
+
 function deps() {
   const getPublishedDocument = vi.fn(async () => ({
     sections: [{ id: "hero", enabled: true, props: { heading: "Frozen" } }],
@@ -43,6 +45,7 @@ function deps() {
       contentPorts: { getPublishedDocument } as never,
       containerIdFor: (capabilityId: string) => `container-of-${capabilityId}`,
       now: new Date("2026-10-07T00:00:00.000Z"),
+      log: (line: string) => lines.push(line),
     },
   };
 }
@@ -96,6 +99,31 @@ describe("a Build Preview container's outbound requests", () => {
     expect(answered.status).toBe(403);
     expect(await answered.text()).toContain("another preview's content");
     expect(getPublishedDocument).not.toHaveBeenCalled();
+  });
+
+  it("are each recorded with the decision and host, never the path or query", async () => {
+    lines.length = 0;
+    await (
+      await ask(`${OWN}/_morph/content?path=/secret-page`).response
+    ).text();
+    await (await ask("https://api.example.com/leak?secret=1").response).text();
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('"decision":"answered: own content"');
+    expect(lines[1]).toContain(
+      `"decision":"refused: not this preview's content"`,
+    );
+    expect(lines[1]).toContain('"destination":"https://api.example.com"');
+    expect(lines.join("\n")).not.toMatch(/secret|leak|_morph/);
+  });
+
+  it("are recorded only so often per container", async () => {
+    lines.length = 0;
+    for (let i = 0; i < 30; i += 1) {
+      await (
+        await ask("https://api.example.com/", "noisy-container").response
+      ).text();
+    }
+    expect(lines).toHaveLength(20);
   });
 
   it("never name the path or query of what they refused", async () => {

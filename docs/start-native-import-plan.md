@@ -331,11 +331,25 @@ STRIPE_SECRET [ 新增 Secret ]
             - 注意：一般開發機有容器綁定，所以本機輔助程序傳輸只在 `local_preview_e2e` 環境使用；一般
               `pnpm dev` 會走容器版本。
             - 尚未以真實容器驗證：`wrangler dev` 在無網路容器中的啟動、就緒訊息、`containerFetch` 與外連攔截。
+          - 編輯器（已完成）：建置成功後先呼叫 `openBuildPreview`；環境有執行器時，預覽框載入 `bp-` 主機，
+            並以與 user-code Live Preview 相同的規則（必須跨來源）給 `allow-same-origin allow-scripts`；沒有執行器時
+            （server function 以 `BUILD_PREVIEW_EXECUTOR_UNAVAILABLE` 拒絕）照舊顯示靜態預覽。網址與 build id
+            綁定，之後顯示的其他 build 不會沿用前一個 build 的網址。
+          - 真實容器驗證（2026-10-07，本機 Docker，`MORPH_E2E_TRANSPORT=cloudflare-sandbox`）：
+            `e2e/build-preview-isolated.spec.ts` 通過。過程中找到並修正兩個替身測試看不到的問題：
+            - 容器內背景程序的輸出不保證在請求等待時送達（Live Preview 也記錄過），只等 `Ready on` 會逾時；
+              改以 `waitForPort(8788, { mode: "tcp" })` 判斷就緒（不用 HTTP 探測，避免執行 Theme 程式），
+              失敗時讀回程序自己的記錄放進錯誤訊息。
+            - 容器的外連攔截只涵蓋 80／443；本機內容來源帶開發伺服器的連接埠時，Theme 的內容請求被網路直接
+              拒絕、政策看不到、頁面默默顯示預設值。容器版本的內容來源改用預覽主機的預設連接埠
+              （請求在 Worker 內由政策直接回應，不需要可連線）。
+            - 外連政策逐筆記錄決定（只有 scheme 與主機，每個容器最多 20 行）。驗證時記錄顯示：容器內 Worker 的
+              內容請求 `answered: own content`；wrangler 自己對 npm 與 Cloudflare 的請求被拒。
+          - 待確認（產品決定）：從工具列建置的 build 沒有自己的內容快照（只有非 SSR 發布會帶
+            `publicationDraft`），Build Preview 目前顯示 Theme 預設值。應封存目前草稿、顯示線上內容，或維持現狀。
           - 待做：
-            - 以本機 `pnpm dev`（Docker 容器）實際驗證容器版本：啟動、回應、資產、內容回呼、外連拒絕、休眠後重啟。
-            - 驗證通過後，編輯器 iframe 改用 `openBuildPreview`。
-            - 本機 E2E：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用 `*.localhost`
-              或另設主機。
+            - 本機 E2E（sidecar）：`local_preview_e2e` 用 `127.0.0.1` 作預覽主機，無法有子網域，需改用
+              `*.localhost` 或另設主機。
             - 已發布媒體（`/_morph/media/`）在 Build Preview 主機上依 build 的內容版本提供。
        2. **Sandbox 建置程式接上原生建置與內容快照**：預先渲染只讀該次建置綁定的凍結內容快照。
        3. **完整發布驗收（本機）**：Code 儲存 → 原生建置 → Build Preview → 發布同一 build（比對產物雜湊）→

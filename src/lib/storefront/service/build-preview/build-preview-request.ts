@@ -18,6 +18,7 @@ import {
 } from "./build-preview-capability";
 import { serveBuildPreviewContent } from "./build-preview-content";
 import type { BuildPreviewServerSelection } from "./build-preview-server.factory";
+import type { BuildPreviewServer } from "./build-preview-server.types";
 
 /**
  * Core's handling of a request on a Build Preview host.
@@ -78,15 +79,36 @@ function localContentUpstream(url: URL): string {
   return `${url.protocol}//localhost:${port}`;
 }
 
+/**
+ * The origin the Theme is told to read its content from.
+ *
+ * Locally, the preview host as the browser reached it: the instance's egress
+ * connects there through Core's loopback. In a container, the same host on
+ * its scheme's default port: the container's outbound policy answers the
+ * request inside the Worker without any network, and only ports 80 and 443
+ * reach that policy at all — the first real run, on a dev server's port,
+ * had the Theme's content request refused by the network before the policy
+ * ever saw it, and the page fell back to its defaults without a word.
+ */
+export function buildPreviewContentOrigin(
+  url: URL,
+  kind: BuildPreviewServer["kind"],
+): string {
+  return kind === "cloudflare-sandbox"
+    ? `${url.protocol}//${url.hostname}`
+    : url.origin;
+}
+
 function forwardedRequest(
   request: Request,
   url: URL,
   capability: VerifiedBuildPreviewCapability,
   body: ArrayBuffer | null,
+  contentOrigin: string,
 ): Request {
   const headers = previewRequestHeaders(request.headers);
   headers.set("x-morph-storefront-host", url.host);
-  headers.set("x-morph-content-origin", url.origin);
+  headers.set("x-morph-content-origin", contentOrigin);
   headers.set("x-morph-storefront-id", capability.storefrontId);
   headers.set("x-morph-theme-build-id", capability.buildId);
   if (capability.contentPublicationId) {
@@ -141,6 +163,7 @@ export async function handleBuildPreviewRequest(
     return plain(503, `${selection.reason}: ${selection.message}`);
   }
   const { server } = selection;
+  const contentOrigin = buildPreviewContentOrigin(url, server.kind);
 
   // Read once: a request may have to be sent twice, before and after a start.
   const body =
@@ -150,7 +173,7 @@ export async function handleBuildPreviewRequest(
   const send = () =>
     server.fetch(
       capability.id,
-      forwardedRequest(request, url, capability, body),
+      forwardedRequest(request, url, capability, body, contentOrigin),
     );
 
   let response = await send();
@@ -172,7 +195,7 @@ export async function handleBuildPreviewRequest(
     await server.start({
       instanceId: capability.id,
       artifact: artifact.artifact,
-      contentOrigin: url.origin,
+      contentOrigin,
       ...(server.kind === "local-sidecar"
         ? { contentUpstream: localContentUpstream(url) }
         : {}),

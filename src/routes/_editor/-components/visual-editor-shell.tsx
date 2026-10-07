@@ -149,6 +149,7 @@ import {
   cancelThemeBuild,
   getThemeBuild,
 } from "@/server/storefront/storefront-theme-builds.serverFn";
+import { openBuildPreview } from "@/server/storefront/build-preview.serverFn";
 import {
   createStorefrontThemePage,
   createStorefrontThemeRevision,
@@ -1784,6 +1785,28 @@ export function VisualEditorShell({
   const [activePreviewToken, setActivePreviewToken] = useState<string | null>(
     null,
   );
+  /**
+   * The isolated Build Preview's address (`bp-<token>.<preview host>`), when
+   * this environment can run one: the build's own Worker, on a host of its
+   * own. Without it the static `/preview-build/` page is shown instead. Kept
+   * with the build it was opened for, so a later build shown here (a failed
+   * one, say) can never be framed with an earlier build's address.
+   */
+  const [isolatedPreview, setIsolatedPreview] = useState<{
+    buildId: string;
+    url: string;
+  } | null>(null);
+  const activeIsolatedPreviewUrl =
+    isolatedPreview && isolatedPreview.buildId === activeBuildPreview?.id
+      ? isolatedPreview.url
+      : null;
+  const isolatedPreviewSecurity = activeIsolatedPreviewUrl
+    ? resolveLivePreviewSecurity({
+        editorOrigin: context.previewChannel?.editorOrigin ?? "",
+        configuredPreviewOrigin: activeIsolatedPreviewUrl,
+        executionMode: "user-code",
+      })
+    : null;
   const [isBuildPending, setIsBuildPending] = useState(false);
   /**
    * True only for a build that publishing started for itself.
@@ -5006,7 +5029,24 @@ export function VisualEditorShell({
             .previewToken;
           if (abortController.signal.aborted) return { ok: false };
 
-          if (!token) {
+          // The isolated Build Preview first: the build's own Worker on a
+          // host of its own. Refused where this environment has no executor,
+          // and then the static page below is shown as before.
+          const isolated = await openBuildPreview({
+            data: {
+              storefrontId: context.storefront.id,
+              themeId: context.theme.id,
+              buildId: build.id,
+            },
+          }).catch(() => null);
+          if (abortController.signal.aborted) return { ok: false };
+          const isolatedUrl =
+            isolated?.success && isolated.data ? isolated.data.url : null;
+          setIsolatedPreview(
+            isolatedUrl ? { buildId: build.id, url: isolatedUrl } : null,
+          );
+
+          if (!token && !isolatedUrl) {
             const tokenResult = await getPreviewBuildToken({
               data: {
                 storefrontId: context.storefront.id,
@@ -5020,7 +5060,7 @@ export function VisualEditorShell({
           }
 
           if (abortController.signal.aborted) return { ok: false };
-          if (!token) {
+          if (!token && !isolatedUrl) {
             toast.error(
               "Build succeeded but preview capability token missing.",
             );
@@ -5034,7 +5074,7 @@ export function VisualEditorShell({
           }
 
           setActiveBuildPreview(build);
-          setActivePreviewToken(token);
+          setActivePreviewToken(token ?? null);
           setActiveBuildSourceGeneration(currentGeneration);
           setPreviewMode("build");
           toast.success(
@@ -9115,7 +9155,20 @@ export function VisualEditorShell({
               {formatBuildDiagnostics(buildDiagnostics)}
             </div>
           )}
-          {activePreviewToken ? (
+          {isolatedPreviewSecurity?.enabled && activeIsolatedPreviewUrl ? (
+            // The build's own Worker. Cross-origin is required, not assumed:
+            // the same rule as a user-code Live Preview grants the frame its
+            // own origin only when that origin is not the editor's.
+            <iframe
+              key={`isolated-build-preview-${activeBuildPreview.id}`}
+              src={activeIsolatedPreviewUrl}
+              title={`${context.theme.name} build preview`}
+              sandbox={isolatedPreviewSecurity.sandbox}
+              referrerPolicy="no-referrer"
+              data-build-preview="isolated"
+              className="block size-full flex-1 border-0 bg-stone-50"
+            />
+          ) : activePreviewToken ? (
             <iframe
               key={`build-preview-${activeBuildPreview.id}`}
               src={`/preview-build/${encodeURIComponent(activeBuildPreview.id)}/${encodeURIComponent(activePreviewToken)}/`}

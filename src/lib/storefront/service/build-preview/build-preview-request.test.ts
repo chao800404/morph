@@ -181,6 +181,33 @@ describe("a request on a Build Preview host", () => {
     );
   });
 
+  it("tells a container Theme its content origin on a port its egress policy sees", async () => {
+    let running = false;
+    const fetches: Request[] = [];
+    const { deps, server } = setup({
+      server: {
+        kind: "cloudflare-sandbox",
+        fetch: vi.fn(async (_id: string, forwarded: Request) => {
+          fetches.push(forwarded);
+          return running ? new Response("started") : null;
+        }),
+        start: vi.fn(async () => {
+          running = true;
+        }),
+      },
+    });
+    await handleBuildPreviewRequest(new Request(`http://${HOST}:3300/`), deps);
+    expect(server.start).toHaveBeenCalledWith(
+      expect.objectContaining({ contentOrigin: `http://${HOST}` }),
+    );
+    expect(server.start).not.toHaveBeenCalledWith(
+      expect.objectContaining({ contentUpstream: expect.anything() }),
+    );
+    expect(fetches.at(-1)?.headers.get("x-morph-content-origin")).toBe(
+      `http://${HOST}`,
+    );
+  });
+
   it("does not start an instance from an artifact that fails verification", async () => {
     const tampered = fixtureBuild({
       manifest: { files: [] } as never,

@@ -42,7 +42,18 @@ export type BuildPreviewSandboxSession = Readonly<{
       onOutput?: (stream: "stdout" | "stderr", data: string) => void;
       onExit?: (code: number | null) => void;
     },
-  ): Promise<{ id?: string }>;
+  ): Promise<{
+    id?: string;
+    /** The SDK's process-aware readiness check, from inside the container. */
+    waitForPort?(
+      port: number,
+      options?: { mode?: "tcp" | "http"; timeout?: number },
+    ): Promise<void>;
+  }>;
+  getProcessLogs?(
+    processId: string,
+  ): Promise<{ stdout?: string; stderr?: string }>;
+  killProcess?(processId: string): Promise<void>;
   listProcesses(): Promise<
     ReadonlyArray<{ id?: string; command?: string; status?: string }>
   >;
@@ -144,40 +155,68 @@ export class CloudflareSandboxBuildPreviewServer implements BuildPreviewServer {
     }
 
     let output = "";
-    const ready = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () =>
-          reject(
-            new Error(`BUILD_PREVIEW_CONTAINER_TIMEOUT: ${output.slice(-400)}`),
-          ),
-        this.options.readyTimeoutMs ?? 60_000,
-      );
-      void session
-        .startProcess(BUILD_PREVIEW_CONTAINER_COMMAND, {
+    let settle!: (outcome: "ready" | Error) => void;
+    const outcome = new Promise<"ready" | Error>((resolve) => {
+      settle = resolve;
+    });
+    const timeoutMs = this.options.readyTimeoutMs ?? 60_000;
+    const timer = setTimeout(
+      () => settle(new Error("BUILD_PREVIEW_CONTAINER_TIMEOUT")),
+      timeoutMs,
+    );
+    let processId: string | undefined;
+    try {
+      const process = await session.startProcess(
+        BUILD_PREVIEW_CONTAINER_COMMAND,
+        {
           // Nothing of Morph's environment: no credential, no binding.
           env: { WRANGLER_SEND_METRICS: "false", NODE_ENV: "production" },
           onOutput: (_stream, data) => {
             output = `${output}${data}`.slice(-4_000);
-            if (output.includes(READY_MARKER)) {
-              clearTimeout(timer);
-              resolve();
-            }
+            if (output.includes(READY_MARKER)) settle("ready");
           },
-          onExit: (code) => {
-            clearTimeout(timer);
-            reject(
-              new Error(
-                `BUILD_PREVIEW_CONTAINER_EXITED: ${code}: ${output.slice(-400)}`,
-              ),
-            );
-          },
+          onExit: (code) =>
+            settle(new Error(`BUILD_PREVIEW_CONTAINER_EXITED: ${code}`)),
+        },
+      );
+      processId = process.id;
+      // Readiness by the port, not by the log: a real container does not
+      // promise to deliver a background process's output while this request
+      // waits (the Live Preview transport found the same), so the first real
+      // run waited out its timeout with an empty log. TCP only — an HTTP
+      // probe would run the Theme's own code.
+      void process
+        .waitForPort?.(BUILD_PREVIEW_CONTAINER_PORT, {
+          mode: "tcp",
+          timeout: timeoutMs,
         })
-        .catch((error: unknown) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-    });
-    await ready;
+        .then(
+          () => settle("ready"),
+          (error: unknown) =>
+            settle(
+              error instanceof Error
+                ? error
+                : new Error("BUILD_PREVIEW_CONTAINER_PORT"),
+            ),
+        );
+    } catch (error) {
+      settle(error instanceof Error ? error : new Error(String(error)));
+    }
+    const result = await outcome;
+    clearTimeout(timer);
+    if (result !== "ready") {
+      // What the process itself said, read back rather than relied on from
+      // the callback, so a failure here names its cause.
+      const logs = processId
+        ? await session.getProcessLogs?.(processId).catch(() => null)
+        : null;
+      const said =
+        `${logs?.stdout ?? ""}${logs?.stderr ?? ""}`.trim() || output.trim();
+      if (processId) await session.killProcess?.(processId).catch(() => {});
+      throw new Error(
+        `${result.message}${said ? `: ${said.slice(-600)}` : ""}`,
+      );
+    }
     await session.setSleepAfter?.(this.options.sleepAfter ?? "10m");
   }
 
