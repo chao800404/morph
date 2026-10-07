@@ -677,6 +677,9 @@ export const storefrontThemeDal = {
             // a release built from older source, and without this the editor
             // could not know that before asking.
             sourceGeneration: storefrontThemeRevisions.sourceGeneration,
+            buildContentPublicationId:
+              storefrontThemeBuilds.contentPublicationId,
+            buildContentDependency: storefrontThemeBuilds.contentDependency,
           })
           .from(storefrontReleases)
           .innerJoin(
@@ -685,6 +688,10 @@ export const storefrontThemeDal = {
               storefrontReleases.sourceRevisionId,
               storefrontThemeRevisions.id,
             ),
+          )
+          .leftJoin(
+            storefrontThemeBuilds,
+            eq(storefrontReleases.themeBuildId, storefrontThemeBuilds.id),
           )
           .where(
             and(
@@ -807,8 +814,15 @@ export const storefrontThemeDal = {
         activeRelease:
           activeRelease && activeRelease.sourceGeneration !== null
             ? {
-                ...activeRelease,
+                id: activeRelease.id,
+                sourceRevisionId: activeRelease.sourceRevisionId,
+                themeBuildId: activeRelease.themeBuildId,
                 sourceGeneration: activeRelease.sourceGeneration,
+                // Its artifact holds the content it was sealed with (or may:
+                // unknown counts), so other content cannot go out on it.
+                buildBoundToContent:
+                  activeRelease.buildContentPublicationId !== null &&
+                  activeRelease.buildContentDependency !== "independent",
               }
             : null,
       },

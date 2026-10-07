@@ -139,4 +139,30 @@ describe("resolvePublishBuildPlan", () => {
       }),
     ).toEqual({ action: "build" });
   });
+
+  it("builds when the release's artifact holds the content it was sealed with", () => {
+    // Same source, edited content: an artifact that carries its content (or
+    // may — unknown counts) cannot go out with other content.
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: false,
+        buildSourceGeneration: null,
+        currentSourceGeneration: 4,
+        activeReleaseSourceGeneration: 4,
+        activeReleaseBuildBoundToContent: true,
+      }),
+    ).toEqual({ action: "build" });
+  });
+
+  it("republishes the release when its artifact holds no content", () => {
+    expect(
+      resolvePublishBuildPlan({
+        hasBuild: false,
+        buildSourceGeneration: null,
+        currentSourceGeneration: 4,
+        activeReleaseSourceGeneration: 4,
+        activeReleaseBuildBoundToContent: false,
+      }),
+    ).toEqual({ action: "reuse-release" });
+  });
 });

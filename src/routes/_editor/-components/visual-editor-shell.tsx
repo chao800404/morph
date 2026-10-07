@@ -4517,6 +4517,8 @@ export function VisualEditorShell({
           currentSourceGeneration: currentGeneration,
           activeReleaseSourceGeneration:
             context.theme.activeRelease?.sourceGeneration ?? null,
+          activeReleaseBuildBoundToContent:
+            context.theme.activeRelease?.buildBoundToContent ?? false,
         });
       // A build this publish makes is sealed with the draft it publishes, and
       // sealing needs the draft in the Document writer's form. Known before
@@ -4556,6 +4558,8 @@ export function VisualEditorShell({
       const seal = buildContentSealRef.current;
       const buildContentCurrent =
         !activeBuildPreview?.contentPublicationId ||
+        // Proven to hold none of its sealed content: any content may go out.
+        activeBuildPreview.contentDependency === "independent" ||
         (seal !== null &&
           seal.buildId === activeBuildPreview.id &&
           seal.templateId === publishTemplate.id &&
