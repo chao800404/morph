@@ -68,6 +68,27 @@ describe("stalePreviewSyncPaths", () => {
     ).toEqual([HERO]);
   });
 
+  // A path deleted and made again starts over at version 1 (so does every
+  // file a rollback restores). A copy edited from the old file's version 2
+  // is not an edit of the new file, however its number compares: let through,
+  // it was fenced as version 2 and the preview showed the deleted file's
+  // content until the next save or start.
+  it("refuses an edit of a file since deleted and made again at a lower version", () => {
+    expect(
+      stalePreviewSyncPaths(
+        [{ path: HERO, content: "old hero v2 + edit", baseVersion: 2 }],
+        saved({ [HERO]: { version: 1, content: "hero again" } }),
+      ),
+    ).toEqual([HERO]);
+    // Taking the new file's content is still catching up.
+    expect(
+      stalePreviewSyncPaths(
+        [{ path: HERO, content: "hero again", baseVersion: 2 }],
+        saved({ [HERO]: { version: 1, content: "hero again" } }),
+      ),
+    ).toEqual([]);
+  });
+
   it("refuses a file deleted or created elsewhere", () => {
     expect(
       stalePreviewSyncPaths(

@@ -15,7 +15,8 @@
  * checked before a newer save lands could still write after it. That is what
  * the preview's write fence closes (`compiler/preview-write-fence.ts`); this
  * check stays as the cheap early refusal that also covers a file deleted or
- * created elsewhere.
+ * created elsewhere — including deleted and made again under the same path,
+ * which the fence takes on generation alone.
  */
 
 export type PreviewSyncFile = Readonly<{
@@ -47,8 +48,13 @@ export function stalePreviewSyncPaths(
     // a tab putting back its own failed edit, or taking the version another
     // tab won with, is catching up rather than going back.
     if (file.content === current.content) continue;
-    // Anything else must be an edit of the saved version, not of one before it.
-    if (file.baseVersion === null || file.baseVersion < current.version) {
+    // Anything else must be an edit of exactly the saved version. Older is a
+    // copy another tab has saved over. Newer cannot be this file at all: a
+    // tab's base is a version the server has already committed (an in-flight
+    // save does not advance it), and one file's versions only go up — but a
+    // path deleted and made again, or restored by a rollback, starts over at
+    // version 1, and an edit of the old file must not pass as the new one's.
+    if (file.baseVersion !== current.version) {
       stale.push(file.path);
     }
   }
