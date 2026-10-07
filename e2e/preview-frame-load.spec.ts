@@ -5,7 +5,12 @@ import {
   type Request,
   type Route,
 } from "@playwright/test";
-import { EDITOR_PATH, openEditor, previewFrame } from "./helpers";
+import {
+  EDITOR_PATH,
+  enableSelection,
+  openEditor,
+  previewFrame,
+} from "./helpers";
 
 /**
  * How long the editor waits for a Live Preview frame that is still loading.
@@ -168,5 +173,131 @@ test.describe("a Live Preview frame that is slow to load", () => {
     await expect(page.getByRole("alert")).toHaveCount(0);
     // Brought back by a new frame, not by the stalled one recovering.
     expect(documents.length, "a new frame after Retry").toBeGreaterThan(2);
+  });
+});
+
+/**
+ * A preview page whose modules a runtime interruption refused.
+ *
+ * When the Sandbox runtime is interrupted for longer than the proxy's bounded
+ * retries, the proxy answers the module read with its interruption status
+ * (preview-runtime-interruption.ts). The module's graph fails for that
+ * document, and the container is serving again a moment later — so no server
+ * check finds anything wrong, and the page used to sit on "Loading React
+ * preview…" until the load watchdog's no-progress window ran out.
+ *
+ * These cases answer one bridge module with exactly what the proxy sends, from
+ * inside the frame's network, and show the editor reconnecting the frame as
+ * soon as the page reports it — well inside the watchdog's window — and, when
+ * the interruption does not end, giving up after that one reconnect.
+ */
+const INTERRUPTED_MODULE = "/src/morph/preview/preview-sizing-css.ts";
+
+function interruptedModule() {
+  return {
+    status: 503,
+    contentType: "application/json",
+    headers: { "Cache-Control": "no-store" },
+    body: JSON.stringify({
+      error:
+        "Live Preview's runtime was interrupted while serving this module. Reload the preview.",
+      code: "PREVIEW_RUNTIME_INTERRUPTED",
+    }),
+  };
+}
+
+function collectLifecycle(page: Page) {
+  const lines: string[] = [];
+  page.on("console", (message) => {
+    const text = message.text();
+    if (text.startsWith("[preview-lifecycle]")) lines.push(text);
+  });
+  return lines;
+}
+
+test.describe("a Live Preview frame whose modules an interruption refused", () => {
+  test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
+
+  test("is reconnected at once, without waiting for the load watchdog", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const documents = countFrameDocuments(page);
+    const lifecycle = collectLifecycle(page);
+    let refused = 0;
+
+    // Only the first document's request is refused, as an interruption that
+    // has ended by the time the frame is loaded again.
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (!isPreviewSubresource(page, request)) return route.fallback();
+      if (
+        documents.length === 1 &&
+        new URL(request.url()).pathname.endsWith(INTERRUPTED_MODULE)
+      ) {
+        refused += 1;
+        return route.fulfill(interruptedModule());
+      }
+      await answer(route);
+    });
+
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await expect
+      .poll(() => documents.length, { timeout: 180_000 })
+      .toBeGreaterThanOrEqual(2);
+    // Sections alone prove nothing: the refused module is the bridge's, so the
+    // broken document still renders the Theme. A working bridge in the new
+    // document does — the step the interrupted run never got past.
+    await enableSelection(page);
+
+    expect(refused, "the first document asked for the module").toBe(1);
+    expect(documents, "one reconnect, to a new document").toHaveLength(2);
+    // Reconnected because the page said why, not because it fell silent.
+    expect(documents[1] - documents[0]).toBeLessThan(OLD_DEADLINE_MS);
+    expect(lifecycle).toContainEqual(
+      expect.stringMatching(
+        /^\[preview-lifecycle\] reconnecting recoveries=1 \| Live Preview was interrupted while loading/,
+      ),
+    );
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("is given up on after one reconnect if the interruption goes on", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const documents = countFrameDocuments(page);
+    let retried = false;
+
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (!isPreviewSubresource(page, request)) return route.fallback();
+      if (
+        !retried &&
+        new URL(request.url()).pathname.endsWith(INTERRUPTED_MODULE)
+      ) {
+        return route.fulfill(interruptedModule());
+      }
+      await answer(route);
+    });
+
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const alert = page.getByRole("alert").filter({
+      hasText: "Live Preview was interrupted while loading",
+    });
+    await expect(alert).toBeVisible({ timeout: 180_000 });
+    expect(
+      documents,
+      "one automatic reconnect, then no more attempts",
+    ).toHaveLength(2);
+    expect(documents[1] - documents[0]).toBeLessThan(OLD_DEADLINE_MS);
+
+    retried = true;
+    await alert.getByRole("button", { name: "Retry Preview" }).click();
+    await expect
+      .poll(() => documents.length, { timeout: 120_000 })
+      .toBeGreaterThan(2);
+    await enableSelection(page);
+    await expect(page.getByRole("alert")).toHaveCount(0);
   });
 });

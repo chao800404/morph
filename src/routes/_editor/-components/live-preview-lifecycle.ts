@@ -46,6 +46,18 @@ export type LivePreviewLifecycleEvent =
       message: string;
       at: number;
     }>
+  /**
+   * The frame's document cannot come up: a module it needed was refused by
+   * an interruption of the preview runtime. Same bounded recovery as any
+   * other failure, but only for a frame still on its way or showing — a
+   * preview that already failed or is reconnecting has nothing to reload.
+   */
+  | Readonly<{
+      type: "frame-interrupted";
+      key: string;
+      message: string;
+      at: number;
+    }>
   | Readonly<{ type: "recovery-request-finished"; recoveryId: number }>
   | Readonly<{ type: "manual-recovery" }>;
 
@@ -183,6 +195,20 @@ export function reduceLivePreviewLifecycle(
         message: event.message,
       };
     }
+    case "frame-interrupted":
+      if (
+        state.phase !== "loading-frame" &&
+        state.phase !== "syncing-source" &&
+        state.phase !== "ready"
+      ) {
+        return state;
+      }
+      return reduceLivePreviewLifecycle(state, {
+        type: "automatic-recovery",
+        key: event.key,
+        message: event.message,
+        at: event.at,
+      });
     case "recovery-request-finished":
       if (
         state.phase !== "reconnecting" ||

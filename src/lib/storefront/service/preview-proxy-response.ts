@@ -1,12 +1,16 @@
 import { isolateSvgResponse } from "../theme-svg-isolation";
 import { withoutPlatformCookies } from "./preview-proxy-credentials";
+import { previewRuntimeInterruptedResponse } from "./preview-runtime-interruption";
 
 /**
  * The SDK catches a runtime interruption and returns this exact, opaque 500.
  * A failed ESM import poisons that document's module graph even if the runtime
  * is healthy again a moment later. Retry only reads of Vite's module assets,
- * never a page, API, server function or write. Persistent failures still reach
- * the browser; this is bounded recovery, not evidence of a healthy runtime.
+ * never a page, API, server function or write. An interruption that outlasts
+ * the retries still reaches the browser, as the proxy's own interruption
+ * status rather than the SDK's 500, so the editor can tell it from a Theme's
+ * compile error and load the page again; see preview-runtime-interruption.ts.
+ * This is bounded recovery, not evidence of a healthy runtime.
  */
 export async function proxyPreviewModuleRequest(
   request: Request,
@@ -38,8 +42,7 @@ export async function proxyPreviewModuleRequest(
         /\.(?:[cm]?[jt]sx?|css)$/.test(path)));
   for (let attempt = 0; ; attempt++) {
     const response = await proxy(request);
-    if (!moduleRead || response?.status !== 500 || attempt === 2)
-      return response;
+    if (!moduleRead || response?.status !== 500) return response;
     // Only inspect a bounded text body. The SDK uses a short plain-text
     // response, but the container can also return arbitrary 500 bodies.
     if (!response.headers.get("content-type")?.startsWith("text/plain"))
@@ -78,6 +81,7 @@ export async function proxyPreviewModuleRequest(
       });
     if (!matches) return response;
     void response.body?.cancel().catch(() => {});
+    if (attempt === 2) return previewRuntimeInterruptedResponse();
     await pause(attempt === 0 ? 100 : 250);
   }
 }

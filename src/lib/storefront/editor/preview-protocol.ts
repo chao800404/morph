@@ -382,7 +382,9 @@ export type PreviewToEditorMessage =
        * Sent by a classic script that runs before either module graph, because
        * a module that fails to load stops its whole graph — including the
        * bridge that would otherwise say so — and the editor is left waiting
-       * out its timeout with nothing to show for it. Observation only.
+       * out its timeout with nothing to show for it. Observation, except for
+       * a graph broken by the proxy's interruption status, which the editor
+       * answers with its bounded reconnect (preview-runtime-interruption.ts).
        */
       type: "morph:storefront-preview-diagnostic";
       kind: "script-failed" | "load-summary";
@@ -1017,7 +1019,9 @@ function isDiagnosticPath(value: unknown): value is string {
 
 /**
  * Bounded like everything else from the frame: it runs Theme JavaScript, so
- * a diagnostic is a claim to log, never something to act on.
+ * a diagnostic is a claim. It is logged, and at most it can reconnect the
+ * frame that made it, within the editor's one automatic recovery — no more
+ * than a frame that stalls already gets.
  */
 function parsePreviewDiagnostic(
   value: Record<string, unknown>,

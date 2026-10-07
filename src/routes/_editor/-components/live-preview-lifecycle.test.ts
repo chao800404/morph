@@ -99,6 +99,70 @@ describe("Live Preview lifecycle", () => {
     });
   });
 
+  it("reconnects an interrupted frame at once, and only once", () => {
+    const frame = reduceLivePreviewLifecycle(initialLivePreviewLifecycleState, {
+      type: "server-ready",
+      key: "preview-1",
+    });
+    const reconnecting = reduceLivePreviewLifecycle(frame, {
+      type: "frame-interrupted",
+      key: "preview-1",
+      message: "Interrupted",
+      at: 0,
+    });
+    expect(reconnecting).toMatchObject({
+      phase: "reconnecting",
+      key: null,
+      automaticRecoveryAttempts: 1,
+      recoveryId: 1,
+    });
+    expect(livePreviewLifecycleLabel(reconnecting.phase)).toBe(
+      "Reconnecting Live Preview…",
+    );
+
+    // The frame it replaced keeps reporting the same failure; that frame is
+    // gone, and so is anything it says.
+    expect(
+      reduceLivePreviewLifecycle(reconnecting, {
+        type: "frame-interrupted",
+        key: "preview-1",
+        message: "Interrupted",
+        at: 0,
+      }),
+    ).toBe(reconnecting);
+
+    const secondFrame = [
+      { type: "recovery-request-finished", recoveryId: 1 },
+      { type: "server-ready", key: "preview-2" },
+    ].reduce(
+      (state, event) =>
+        reduceLivePreviewLifecycle(state, event as LivePreviewLifecycleEvent),
+      reconnecting,
+    );
+    const failed = reduceLivePreviewLifecycle(secondFrame, {
+      type: "frame-interrupted",
+      key: "preview-2",
+      message: "Interrupted again",
+      at: 0,
+    });
+    expect(failed).toMatchObject({
+      phase: "failed",
+      message: "Interrupted again",
+    });
+  });
+
+  it("does not let an interruption report revive a preview that gave up", () => {
+    const failed = failedAfterOneRecovery();
+    expect(
+      reduceLivePreviewLifecycle(failed, {
+        type: "frame-interrupted",
+        key: "preview-2",
+        message: "Interrupted",
+        at: Number.MAX_SAFE_INTEGER,
+      }),
+    ).toBe(failed);
+  });
+
   it("keeps a spent preview failed when the server repeats its last answer", () => {
     // The preview server query holds its successful result for as long as the
     // editor is open, so "the server is ready" arrives again on every render
