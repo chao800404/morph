@@ -4508,15 +4508,31 @@ export function VisualEditorShell({
           activeTemplate.document.renderPolicy.mode !== "ssr") ||
         (layoutTemplate?.document.websiteRenderPolicy !== undefined &&
           layoutTemplate.document.websiteRenderPolicy.mode !== "ssr");
+      const buildPlan = (buildContentCurrent: boolean) =>
+        resolvePublishBuildPlan({
+          requiresContentBuild,
+          hasBuild: Boolean(activeBuildPreview),
+          buildSourceGeneration: activeBuildSourceGeneration,
+          buildContentCurrent,
+          currentSourceGeneration: currentGeneration,
+          activeReleaseSourceGeneration:
+            context.theme.activeRelease?.sourceGeneration ?? null,
+        });
+      // A build this publish makes is sealed with the draft it publishes, and
+      // sealing needs the draft in the Document writer's form. Known before
+      // preparing whenever the build is not just stale content, so the draft
+      // is prepared once.
+      const preparedForSeal =
+        requiresContentBuild || buildPlan(true).action === "build";
       const prepared = await prepareContentDraftForBuild({
         currentGeneration,
         verb: "publish",
-        alwaysPrepare: requiresContentBuild,
+        alwaysPrepare: preparedForSeal,
       });
       if (!prepared) return;
       const publishTemplate = { id: prepared.templateId };
-      const publishDraftRevisionId = prepared.draftRevisionId;
-      const publishDraftGeneration = prepared.draftGeneration;
+      let publishDraftRevisionId = prepared.draftRevisionId;
+      let publishDraftGeneration = prepared.draftGeneration;
       if (!publishDraftRevisionId) {
         toast.error("Cannot publish: template draft revision is missing.");
         return;
@@ -4550,15 +4566,7 @@ export function VisualEditorShell({
                 layoutTemplate.draftRevisionId ??
                 null)
               : null));
-      const plan = resolvePublishBuildPlan({
-        requiresContentBuild,
-        hasBuild: Boolean(activeBuildPreview),
-        buildSourceGeneration: activeBuildSourceGeneration,
-        buildContentCurrent,
-        currentSourceGeneration: currentGeneration,
-        activeReleaseSourceGeneration:
-          context.theme.activeRelease?.sourceGeneration ?? null,
-      });
+      const plan = buildPlan(buildContentCurrent);
 
       let publishBuild = activeBuildPreview;
       if (plan.action === "build") {
@@ -4568,24 +4576,55 @@ export function VisualEditorShell({
         // go live when nothing of the sort was asked for.
         setIsPublishBuilding(true);
         try {
-          const attempt = await handleBuildPreviewRef.current?.(
-            requiresContentBuild
-              ? {
-                  templateId: publishTemplate.id,
-                  expectedDraftRevisionId: publishDraftRevisionId,
-                  expectedDraftGeneration: publishDraftGeneration,
-                  expectedSourceGeneration: currentGeneration,
-                  expectedReleaseGeneration:
-                    context.theme.releaseGeneration ?? 1,
-                }
-              : undefined,
-          );
+          // The build publishing makes is sealed with the draft it publishes,
+          // as a toolbar build is: whatever the build prerenders reads that
+          // content, never none (a native build refuses to prerender content
+          // it was not given), and Core's content check holds it to the same.
+          // Only a build made because the sealed content went stale gets
+          // here unprepared; its drafts exist, so this is the one preparation.
+          if (!preparedForSeal) {
+            const sealed = await prepareContentDraftForBuild({
+              currentGeneration,
+              verb: "publish",
+              alwaysPrepare: true,
+            });
+            if (!sealed) return;
+            if (
+              sealed.templateId !== publishTemplate.id ||
+              !sealed.draftRevisionId
+            ) {
+              toast.error(
+                "Cannot publish: the page's content draft changed while preparing it. Review your changes and publish again.",
+              );
+              return;
+            }
+            publishDraftRevisionId = sealed.draftRevisionId;
+            publishDraftGeneration = sealed.draftGeneration;
+          }
+          const layoutDraftRevisionId = layoutTemplate
+            ? (templateDraftRevisionIdRef.current.get(layoutTemplate.id) ??
+              layoutTemplate.draftRevisionId ??
+              null)
+            : null;
+          const attempt = await handleBuildPreviewRef.current?.({
+            templateId: publishTemplate.id,
+            expectedDraftRevisionId: publishDraftRevisionId,
+            expectedDraftGeneration: publishDraftGeneration,
+            expectedSourceGeneration: currentGeneration,
+            expectedReleaseGeneration: context.theme.releaseGeneration ?? 1,
+          });
           if (!attempt?.ok || !attempt.build) {
             // The build reported why it failed. Saying "publish failed" on top of
             // that would name the wrong step.
             return;
           }
           publishBuild = attempt.build;
+          buildContentSealRef.current = {
+            buildId: attempt.build.id,
+            templateId: publishTemplate.id,
+            draftRevisionId: publishDraftRevisionId,
+            layoutDraftRevisionId,
+          };
         } finally {
           setIsPublishBuilding(false);
         }
