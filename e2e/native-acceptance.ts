@@ -302,6 +302,34 @@ export function heroField(context: EditorContext, marker: string) {
   throw new Error(`no draft field holds ${marker}`);
 }
 
+/**
+ * The store's primary domain, or null when it has none: where "Open live
+ * site" goes. Read rather than assumed, because the specs in one run share
+ * the store, and a primary domain cannot be removed, so an earlier spec's
+ * domain may still be the primary one.
+ */
+export async function primaryDomain(page: Page): Promise<string | null> {
+  const listed = (await serverFn(
+    page,
+    DOMAINS,
+    "listStorefrontDomains",
+    {},
+  )) as {
+    success: boolean;
+    message?: string;
+    data?: { domains: { hostname: string; isPrimary: boolean }[] };
+  };
+  expect(listed.success, listed.message).toBe(true);
+  return (
+    listed.data!.domains.find((domain) => domain.isPrimary)?.hostname ?? null
+  );
+}
+
+/** Where a release preview's "Open live site" goes, as a hostname. */
+export function liveSiteHost(preview: { liveSite: string | null }) {
+  return preview.liveSite ? new URL(preview.liveSite).hostname : null;
+}
+
 /** The saved draft holding `marker`, once the editor's write has landed. */
 export async function savedField(
   page: Page,
