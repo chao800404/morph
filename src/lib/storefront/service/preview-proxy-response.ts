@@ -1,3 +1,4 @@
+import { THEME_PREVIEW_STUB_MODULE_PATHS } from "../compiler/theme-preview-server-stub";
 import { isolateSvgResponse } from "../theme-svg-isolation";
 import { withoutPlatformCookies } from "./preview-proxy-credentials";
 import { previewRuntimeInterruptedResponse } from "./preview-runtime-interruption";
@@ -35,6 +36,11 @@ export async function proxyPreviewModuleRequest(
       path === "/@id/virtual:tanstack-start-dev-client-entry" ||
       path === "/@tanstack-start/styles.css" ||
       path === "/__morph_preview_client.ts" ||
+      // The client-only runtime's own entry and the stubs Morph puts in the
+      // place of server-only modules. Platform code, and pure module source;
+      // the stubs' paths carry no extension for the test below to find.
+      path === "/__entry.tsx" ||
+      THEME_PREVIEW_STUB_MODULE_PATHS.includes(path) ||
       ((path.startsWith("/src/") ||
         path.startsWith("/@fs/") ||
         path.startsWith("/node_modules/.vite/") ||

@@ -81,6 +81,10 @@ describe("bounded recovery of SDK module routing failures", () => {
     "/__morph_preview_client.ts",
     "/__morph-theme-preview__/@react-refresh",
     "/__morph-theme-preview__/src/index.tsx",
+    "/__morph-theme-preview__/__entry.tsx",
+    "/__morph-theme-preview__/@id/__x00__morph-theme-start-server-stub",
+    "/__morph-theme-preview__/@id/__x00__morph-theme-preview-async-hooks-stub",
+    "/__morph-theme-preview__/@id/__x00__morph-theme-start-fn-stubs",
   ])("also recovers Vite's extensionless module %s", async (path) => {
     const success = new Response("export {}");
     const proxy = vi
@@ -91,6 +95,23 @@ describe("bounded recovery of SDK module routing failures", () => {
       success,
     );
     expect(proxy).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers a Morph stub interrupted past the retries with the interruption status", async () => {
+    // Observed in a local container run: the SDK's 500 for this module went
+    // to the browser as it was, the page's entry failed with it, and the
+    // editor could not tell it from a Theme's compile error, so it never
+    // reconnected the frame.
+    const proxy = vi.fn().mockImplementation(async () => interrupted());
+    const response = await proxyPreviewModuleRequest(
+      request(
+        "/__morph-theme-preview__/@id/__x00__morph-theme-start-server-stub",
+      ),
+      proxy,
+      vi.fn().mockResolvedValue(undefined),
+    );
+    expect(proxy).toHaveBeenCalledTimes(3);
+    expect(response?.status).toBe(PREVIEW_RUNTIME_INTERRUPTED_STATUS);
   });
 
   it("does not turn an unreadable error body into a routing exception", async () => {
@@ -118,6 +139,11 @@ describe("bounded recovery of SDK module routing failures", () => {
     ["/src/example.svg", "GET"],
     ["/@id/virtual:tanstack-start-validate-server-fn-id?id=example", "GET"],
     ["/@id/virtual:unknown", "GET"],
+    ["/@id/__x00__theme-own-virtual-module", "GET"],
+    [
+      "/__morph-theme-preview__/@id/__x00__morph-theme-start-server-stub",
+      "POST",
+    ],
     ["/@tanstack-start/unknown", "GET"],
     ["/@id/virtual:tanstack-start-dev-client-entry", "POST"],
     ["/@tanstack-start/styles.css", "POST"],
