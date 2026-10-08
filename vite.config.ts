@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { devtools } from "@tanstack/devtools-vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, transformWithEsbuild, type Plugin } from "vite";
 import viteTsConfigPaths from "vite-tsconfig-paths";
 import {
   DEV_PREVIEW_PASSTHROUGH_HEADER,
@@ -106,6 +106,90 @@ function morphDevPreviewPassthrough(): Plugin {
   };
 }
 
+/**
+ * Prints Morph's server chunks ASCII-only and without whitespace or comments.
+ * Server build only: the client build is untouched.
+ *
+ * workerd compiles every server chunk into each Worker isolate at start, and
+ * V8 keeps a script's source for the isolate's lifetime: two bytes per
+ * character if any character is above U+00FF, which a single em dash in a
+ * comment is enough for. Measured at about 15 MiB less isolate memory after
+ * GC in every state (docs/evidence/main-worker-memory-2026-10.md, section 8).
+ *
+ * Only esbuild's own output options are used. Names and syntax are never
+ * minified, so stack traces keep their function names, and source maps
+ * (`environments.ssr.build.sourcemap`) map positions back to Morph's source.
+ * esbuild leaves regular expressions and tagged templates as written, where
+ * escaping could change a value; any chunk that keeps a character above
+ * U+007F is reported, never rewritten.
+ *
+ * `order: "post"`: Vite's own `vite:esbuild-transpile` reprints every server
+ * chunk with `charset: "utf8"` and readable whitespace, which would undo this.
+ */
+function morphServerOutput(): Plugin {
+  return {
+    name: "morph:server-output",
+    apply: "build",
+    applyToEnvironment: (environment) => environment.name === "ssr",
+    renderChunk: {
+      order: "post",
+      async handler(code, chunk) {
+        const result = await transformWithEsbuild(code, chunk.fileName, {
+          loader: "js",
+          format: "esm",
+          charset: "ascii",
+          minifyWhitespace: true,
+          minifyIdentifiers: false,
+          minifySyntax: false,
+          // Unchanged from Vite's default; whether license comments must be
+          // kept is a separate decision.
+          legalComments: "none",
+          sourcemap: true,
+        });
+        return { code: result.code, map: result.map };
+      },
+    },
+    generateBundle(_options, bundle) {
+      // Bounded, so a regression cannot flood the build log or print much of
+      // a chunk's source: a few chunks, one short excerpt each.
+      const MAX_CHUNKS = 10;
+      const EXCERPT_BEFORE = 24;
+      const EXCERPT_AFTER = 8;
+      const kept: string[] = [];
+      let chunks = 0;
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        const code = output.code;
+        let count = 0;
+        let first = -1;
+        for (let index = 0; index < code.length; index += 1) {
+          if (code.charCodeAt(index) <= 0x7f) continue;
+          count += 1;
+          if (first < 0) first = index;
+        }
+        if (count === 0) continue;
+        chunks += 1;
+        if (kept.length < MAX_CHUNKS) {
+          const excerpt = code.slice(
+            Math.max(0, first - EXCERPT_BEFORE),
+            first + EXCERPT_AFTER,
+          );
+          kept.push(
+            `  ${output.fileName}: ${count} character(s), first at ${JSON.stringify(excerpt)}`,
+          );
+        }
+      }
+      if (chunks > 0) {
+        const more =
+          chunks > kept.length ? `\n  …and ${chunks - kept.length} more` : "";
+        this.warn(
+          `${chunks} server chunk(s) keep characters above U+007F, which esbuild leaves as written in regular expressions and tagged templates. This is a notice, not an error; such a chunk is stored two bytes per character in each Worker isolate.\n${kept.join("\n")}${more}`,
+        );
+      }
+    },
+  };
+}
+
 const config = defineConfig({
   plugins: [
     morphDevPreviewPassthrough(),
@@ -141,7 +225,16 @@ const config = defineConfig({
       projects: ["./tsconfig.json"],
     }),
     viteReact(),
+    morphServerOutput(),
   ],
+  environments: {
+    // Source maps for the server chunks, which `morphServerOutput` prints
+    // without line breaks: a stack trace's positions map back to Morph's
+    // source through them. They stay in dist/server, which is not served as
+    // static assets; `upload_source_maps` in wrangler.jsonc hands them to
+    // Cloudflare at deploy.
+    ssr: { build: { sourcemap: true } },
+  },
   server: {
     /**
      * Local Live Preview workspaces are laid out under the checkout

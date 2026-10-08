@@ -397,3 +397,70 @@ Every run of both builds returned the same SSR statuses, completed all
 the change made 7 POSTs instead of 6), and imported every chunk with no
 failures. The limits in section 5 apply unchanged: local workerd, one
 request flow, production accounting unknown.
+\n
+## 8. Follow-up: server output, ASCII and whitespace (2026-10-08)
+
+Candidates #1 and #2 (section 4), measured as four separate builds of
+`origin/main` @ `7d9ecce`, then applied as `morphServerOutput` in
+`vite.config.ts`. It reprints each server chunk with esbuild's own output
+options (`charset: "ascii"`, `minifyWhitespace: true`; identifiers and syntax
+are never minified), in the server environment only, after Vite's own
+`vite:esbuild-transpile`, which reprints with `charset: "utf8"`. Server source
+maps are on.
+
+Section 3.2's attribution needs one correction. On this build the characters
+above U+00FF were almost all in string literals (11,077) and template text
+(1,502), not comments (159): Vite's transpile already drops most comments.
+The comments that remain are mostly em dashes in Morph's own source, and
+esbuild does not escape comments, so ASCII output alone left 23 chunks
+(6.88 Mi characters, `worker-entry` among them) two-byte. Whitespace
+minification removes those comments.
+
+Memory, the harness of section 7, 3 runs per build, isolate used after full
+GC (MiB), load average 1.8–5.2, largest spread between runs 0.09 MiB:
+
+| Build | Loaded | After SSR | After editor | All chunks |
+| --- | --- | --- | --- | --- |
+| Baseline | 46.43 | 66.68 | 75.94 | 83.18 |
+| ASCII only (global `esbuild.charset`) | −4.35 | −4.36 | −4.40 | −4.39 |
+| ASCII only (server plugin) | −4.29 | −4.28 | −4.28 | −4.28 |
+| Whitespace only (server plugin) | −6.98 | −7.03 | −7.37 | −7.36 |
+| ASCII + whitespace (server plugin) | −15.28 | −15.31 | −15.67 | −15.67 |
+
+The combination is more than the sum: whitespace minification removes the
+comments that kept 23 chunks two-byte, and with them gone every chunk is
+stored one byte per character. The global setting also changed the client
+bundle, so it was not used.
+
+Pre-GC totals still reach 130.1 MiB after the editor session with both
+options (108.3–130.1, against 123.7–130.1 at baseline). This shows that the
+resident set fell by about 15 MiB. It does not show that the peak is safe
+under the 128 MB limit.
+
+Request outcomes matched in all 15 runs: the same SSR statuses, all 17 editor
+steps, every server-function POST 200, every chunk imported. Server JS went
+from 19.0 MB to 14.8 MB (gzip 3.84 to 3.35 MB).
+
+Correctness of the applied version:
+
+- Client output byte-identical to the baseline (426 files).
+- Values: chunks paired by the modules in their source maps (`sources`), not
+  by file name. 679 of 681 chunks paired; the remaining two (`router`,
+  `_tanstack-start-manifest`, virtual modules with empty `sources`) were
+  compared as a set, and `index.js` by name. Every string literal, template
+  element (cooked; raw too where tagged), regular expression and identifier
+  is unchanged: 167,901, 14,035, 1,525 and 962,697 of them.
+- Source maps: four declarations map back to their file and line in Morph's
+  source, including from one-line output. Every one of the 682 server files
+  points at an existing map. `router`'s map has no `sources` (a virtual
+  module), as at baseline.
+- `toString()`: the paths that turn function text into data were checked.
+  Prettier's TypeScript reads only a function's name, which is unchanged;
+  the `setImmediate` polyfill's `new Function` runs only for a string; the
+  five `new Blob` calls wrap binary data. None stringify a function whose
+  text changed.
+
+Limits: local workerd only; the production stack-trace restoration through
+uploaded source maps is not verified until a deploy; license comments are
+removed, as Vite already did before this change, and are a pre-deploy item
+to check against each package's license.
