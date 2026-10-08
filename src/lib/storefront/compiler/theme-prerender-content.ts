@@ -44,6 +44,28 @@ export type NativePrerenderContent = Readonly<{
   refusedAll?: string;
 }>;
 
+/**
+ * What a build's sealed content answers for one read: the content, or why the
+ * read is refused. Every content server a native build runs answers through
+ * this one function — Start's preview middleware and Astro's loopback server
+ * embed its source (`toString`), so it uses nothing outside itself.
+ */
+export function answerSealedContentRead(
+  sealed: NativePrerenderContent,
+  path: string,
+): { content: StorefrontContentResult } | { refused: string } {
+  if (Object.hasOwn(sealed.content, path)) {
+    return { content: sealed.content[path]! };
+  }
+  return {
+    refused:
+      sealed.refusedAll ||
+      (Object.hasOwn(sealed.unavailable, path)
+        ? sealed.unavailable[path]!
+        : "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path"),
+  };
+}
+
 /** A native build with no sealed content: every content read is refused. */
 export const NATIVE_PRERENDER_WITHOUT_SNAPSHOT: NativePrerenderContent = {
   content: {},
@@ -215,11 +237,12 @@ export function themePrerenderContentPluginSource(
   const load = options.refusedReadsPath
     ? `const sealed = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));
       const content = sealed.content;
+      const answerSealedContentRead = (${answerSealedContentRead.toString()});
       const refusedReads = path.join(${JSON.stringify(root)}, ${JSON.stringify(options.refusedReadsPath)});`
     : `const content = JSON.parse(fs.readFileSync(${contentFile}, "utf8"));`;
   const refuse = options.refusedReadsPath
     ? `if (req.method === "GET") {
-              const reason = sealed.refusedAll || (Object.hasOwn(sealed.unavailable, pathname) ? sealed.unavailable[pathname] : "NATIVE_PRERENDER_PATH_NOT_SEALED: no static route of this build has this path");
+              const reason = answerSealedContentRead(sealed, pathname).refused;
               fs.mkdirSync(path.dirname(refusedReads), { recursive: true });
               fs.appendFileSync(refusedReads, JSON.stringify({ path: pathname, reason }) + "\\n");
             }

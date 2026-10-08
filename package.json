@@ -18,6 +18,7 @@
     "check:deploy-artifact": "node scripts/check-deploy-artifact.mjs",
     "serve": "vite preview",
     "test": "vitest run",
+    "toolchain:astro": "npm ci --prefix sandbox/toolchains/astro-7.3 --no-audit --no-fund",
     "pretest": "pnpm generate:theme-types",
     "typecheck": "tsc --noEmit",
     "pretypecheck": "pnpm generate:theme-types && pnpm generate:preview-bridge",
