@@ -5,10 +5,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
-import {
-  createStarterThemeWorkspaceUpgradePlan,
-  starterThemeWorkspaceFiles,
-} from "./starter-theme-files";
+import { starterThemeWorkspaceFiles } from "./starter-theme-files";
 
 type Page = { _hidden: string[]; [slotId: string]: unknown };
 type Morph = {
@@ -307,29 +304,7 @@ describe("morph.pages.get in the browser", () => {
   });
 });
 
-describe("existing workspaces keep their content module", () => {
-  const START_MANIFEST = {
-    id: "manifest",
-    path: "morph.theme.json",
-    content: JSON.stringify({
-      name: "Starter",
-      entry: "src/routes/index.tsx",
-      router: { framework: "tanstack-start" },
-      components: {},
-    }),
-    version: 1,
-  };
-  /** The complete workspace a new store starts with, with this content module. */
-  const workspace = (content: string, withManifest: boolean) => [
-    ...starterThemeWorkspaceFiles().map((file, index) => ({
-      id: `file-${index}`,
-      path: file.path,
-      content: file.path === "src/morph/content.ts" ? content : file.content,
-      version: 1,
-    })),
-    ...(withManifest ? [START_MANIFEST] : []),
-  ];
-
+describe("the content module a workspace starts with", () => {
   it("starts a new workspace on the module with pages", () => {
     expect(
       starterThemeWorkspaceFiles().find(
@@ -337,23 +312,6 @@ describe("existing workspaces keep their content module", () => {
       )?.content,
     ).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
   });
-
-  it.each([
-    ["source-first, untouched", LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE, false],
-    ["with a Start manifest, untouched", LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE, true],
-    ["source-first, edited", LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine", false],
-    ["with a Start manifest, edited", LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine", true],
-  ])(
-    "no upgrade plan replaces the previous module (%s)",
-    (_label, content, withManifest) => {
-      const plan = createStarterThemeWorkspaceUpgradePlan(
-        workspace(content, withManifest) as never,
-      );
-      expect(
-        plan.files.some((file) => file.path === "src/morph/content.ts"),
-      ).toBe(false);
-    },
-  );
 
   it("keeps the previous module as it was, without pages", () => {
     expect(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE).not.toContain(

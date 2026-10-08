@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import {
   createStarterThemeWorkspaceUpgrade,
   STARTER_THEME_FILES,
+  STARTER_THEME_FILES_WITH_LEGACY_MANIFEST,
 } from "./starter-theme-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_URL_FIELD_SOURCE,
@@ -54,10 +55,17 @@ describe("the starter a new store is created from", () => {
 });
 
 describe("a workspace created before links were unified", () => {
+  // Links were unified before the Starter went source-first, so such a
+  // workspace has the manifest-era layout, morph.theme.json included.
   const upgradeFor = (path: string, content: string) => {
-    const upgrades = createStarterThemeWorkspaceUpgrade([
-      { path, content, version: 1 },
-    ] as never);
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.map((file, index) => ({
+        id: `file-${index}`,
+        path: file.path,
+        content: file.path === path ? content : file.content,
+        version: 1,
+      })),
+    );
     return upgrades.find((file) => file.path === path);
   };
 
