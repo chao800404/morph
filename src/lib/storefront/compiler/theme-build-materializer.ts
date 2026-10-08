@@ -18,6 +18,7 @@ import {
   validateThemeStartPackageContract,
 } from "./theme-start-toolchain";
 import { themeFramework, type ThemeFrameworkId } from "../theme-framework";
+import { themeToolchainById } from "../theme-framework/theme-toolchains";
 import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
 import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contract";
 import {
@@ -386,6 +387,45 @@ export function materializeThemeBuildInput({
       nativeStartBuild,
       framework: build.framework,
     });
+  // The hash format and toolchain come from the build's record, and only from
+  // it: no step re-reads what is "current".
+  const recordedFormat = build.inputHashFormat ?? null;
+  if (recordedFormat !== null && recordedFormat !== 2) {
+    throw new Error(
+      `INPUT_HASH_FORMAT_UNKNOWN: Build "${build.id}" records inputHashFormat ${recordedFormat}, which this Morph cannot verify.`,
+    );
+  }
+  let toolchainId: string | undefined;
+  if (recordedFormat === 2) {
+    if (!build.framework) {
+      throw new Error(
+        `THEME_FRAMEWORK_MISSING: Build "${build.id}" uses inputHashFormat 2 but records no framework.`,
+      );
+    }
+    if (!build.toolchainId) {
+      throw new Error(
+        `THEME_TOOLCHAIN_MISSING: Build "${build.id}" uses inputHashFormat 2 but records no toolchain.`,
+      );
+    }
+    const toolchain = themeToolchainById(build.toolchainId);
+    if (!toolchain) {
+      throw new Error(
+        `THEME_TOOLCHAIN_UNKNOWN: Build "${build.id}" records toolchain ${build.toolchainId}, which is not in this Morph's toolchain registry.`,
+      );
+    }
+    if (toolchain.framework !== framework) {
+      throw new Error(
+        `THEME_TOOLCHAIN_FRAMEWORK_MISMATCH: Build "${build.id}" records framework "${framework}" but toolchain ${build.toolchainId} is for "${toolchain.framework}".`,
+      );
+    }
+    toolchainId = toolchain.id;
+  } else if (build.toolchainId) {
+    // A legacy record never named a toolchain; one that does is not legacy.
+    throw new Error(
+      `INPUT_HASH_FORMAT_UNKNOWN: Build "${build.id}" records a toolchain but no inputHashFormat.`,
+    );
+  }
+
   const defaultCompilerId =
     buildMode === "native" ? NATIVE_START_COMPILER_ID : "tailwind-v4-build";
   const defaultCompilerVersion =
@@ -437,6 +477,7 @@ export function materializeThemeBuildInput({
       binaryFiles,
       entry,
       framework,
+      ...(toolchainId ? { inputHashFormat: 2 as const, toolchainId } : {}),
       ...(build.dependencies
         ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
         : {}),
@@ -466,6 +507,7 @@ export function materializeThemeBuildInput({
     compilerId,
     compilerVersion,
     framework,
+    ...(toolchainId ? { inputHashFormat: 2 as const, toolchainId } : {}),
     ...(build.dependencies
       ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
       : {}),

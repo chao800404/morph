@@ -252,6 +252,101 @@ React 與 Vue 混用維持 multi-runtime 計畫的判定（Unverified，vite-plu
   是同一個套件的兩種 binding。A2 加一項檢查：Morph 鎖定的 compiler-rs 版本與 Astro 工具鏈中 `astro` 依賴的
   版本一致或相容（R1 報告 §5）。
 
+### 2.2.1 工具鏈識別與 `inputHash` 的版本格式（2026-10-08，A2a 實作）
+
+**問題。** A1 讓框架「不是 Start 時才進雜湊」，以保留既有 build 的雜湊。若工具鏈也用「目前工具鏈就省略」的
+規則，日後「目前」改變時，相同輸入可能換了工具鏈卻得到相同雜湊。現有的 `compilerId`／`compilerVersion` 也不足以
+當工具鏈身分：原生建置的版本只是 `@tanstack/react-start` 的版本，間接依賴、Node 與映像都不在其中。
+
+**格式欄位。** `storefront_theme_builds.input_hash_format`（整數，可為 NULL）：
+
+- NULL：legacy（第 1 版）。序列化與今天完全相同，包括 A1 的框架規則。只用於重新產生與驗證既有 build；
+  新 build 不再寫入這個格式。
+- 2：新格式。框架與完整工具鏈識別**一律**進雜湊，沒有依「目前版本」省略的條件。
+- 重新產生 build 輸入時依記錄的格式選擇序列化方式；不認得的格式一律拒絕（`INPUT_HASH_FORMAT_UNKNOWN`），
+  不退回其他格式。
+- 影響：相同輸入在第 2 版下的雜湊與 legacy 不同。切換後，legacy build 仍能照原格式驗證、預覽、發布；
+  新 build 不會與 legacy build 視為同一份而被重用。
+
+**工具鏈清單與識別。** 每套工具鏈在映像建置時寫入一份清單（例如
+`/opt/morph-toolchain/<root>/toolchain.manifest.json`），內容：
+
+- 框架、精確的直接依賴組合；
+- lockfile 的完整 SHA-256；
+- 實際安裝的套件樹（名稱、版本、integrity）的 SHA-256；
+- Node 版本、npm 版本；
+- 基礎映像的 digest；
+- `os`／`arch`／`libc`。
+
+**工具鏈識別 = 清單正規化後的完整 SHA-256。** 資料庫存完整值；短前綴只供顯示與 log。
+
+**可信對照表。** 產生器輸出 `theme-toolchains.generated.ts`：識別 → 框架、根目錄、清單雜湊。build 記錄框架與
+工具鏈識別；建置程式只從對照表取得根目錄，不接受 Theme 或請求提供的路徑。對照表中沒有的識別一律拒絕
+（`THEME_TOOLCHAIN_UNKNOWN`）。
+
+**建置前核對。** 建置程式在寫入工作區之前，讀取容器中該根目錄的清單並計算雜湊；與 build 記錄不符時建置失敗
+（`THEME_TOOLCHAIN_MISMATCH`），不改用其他工具鏈。`node_modules` 連結在該次建置的工作區內建立，指向對照表給的
+根目錄；不在映像層建立共用連結，也不動其他工作區。Live Preview 沒有 build 記錄，使用對照表中該框架的工具鏈，
+啟動前做同樣的核對與連結。
+
+**平台工具不屬於 Theme 工具鏈。** 部署（`wrangler deploy`）與 Build Preview（`wrangler dev`）使用平台固定的
+Wrangler（`/opt/morph-platform`），獨立目錄與 lockfile，不因 Theme 的框架切換。Theme 工具鏈裡的 Wrangler 只供
+該框架的建置流程使用。這是工具版本的分離，**不是同一容器內的安全邊界**；帶憑證的部署容器仍不能執行 Theme 程式
+（目前程式碼：部署容器的 id 是 `deploy-<storefront>-<release>`，絕不與建置共用；部署設定由 Morph 依發布計畫產生；
+`--env-file /dev/null`）。
+
+**Legacy 與遷移。** 既有 build（`input_hash_format` 為 NULL）沒有工具鏈識別，記為「legacy、未記錄工具鏈」，
+不推定它用的是哪一套。工具鏈搬到新目錄後，legacy build 若需要重建，以新格式建立新的 build，不改寫舊記錄。
+
+**清單的固定序列化。**
+
+- JSON 正規化：物件鍵依 Unicode 碼位排序，無多餘空白，UTF-8；雜湊對這個位元組序列計算。
+- 套件樹以「安裝位置」為單位（npm lockfile 的 `packages` 鍵，例如 `node_modules/a/node_modules/b`），
+  每筆記錄名稱、版本、`resolved`、`integrity`、依賴關係（`dependencies`／`optionalDependencies`／
+  `peerDependencies` 的名稱與範圍）、`optional`、`os`／`cpu`／`libc` 限制。依安裝位置排序。
+- 缺少的欄位一律寫成 `null`，不省略，也不以空字串代替。
+- 路徑一律為相對於工具鏈根目錄的 POSIX 路徑。排除時間戳、絕對路徑、快取路徑、`.package-lock.json` 的
+  `lockfileVersion` 以外的 metadata 等不穩定資料。
+- 序列化規則本身有版本號（`manifestFormat: 1`），改規則就換版本，不靜默改變既有識別的意義。
+
+**產生順序（不互相依賴）。**
+
+1. `Dockerfile.sandbox` 以 digest 固定基礎映像，每套工具鏈以自己的 lockfile 執行 `npm ci`（安裝腳本照常執行，
+   原生套件需要）；
+2. 映像建置的最後一步，在映像內產生每套工具鏈的清單與識別；
+3. 一個平台腳本以明確的 tag 建置映像、從映像讀出清單，產生 `theme-toolchains.generated.ts`（不手動修改）；
+4. 才建置 Morph。
+
+映像建置不讀 registry，registry 只從映像產生，所以兩者沒有循環。重建映像時，固定的基礎映像與 lockfile 應得到
+相同的清單（實測：不使用快取重建，三套識別都相同；映像 ID 不同，所以識別不能用映像 ID）；若不同，建置前核對會
+讓建置失敗，而不是程式碼拿新表去對舊映像而不自知。產生器並核對 repo 中的 `package.json`、lockfile 與映像內的相同。
+lockfile 只消除版本解析的漂移，不是完整的環境重現；Node、npm 與基礎映像另外固定並記入清單。
+
+**核對的範圍：相容性與來源核對，不是防竄改。** 清單只證明 **Theme 執行前，容器宣告的工具鏈符合預期**；不保證
+整次建置一直使用未修改的工具鏈。容器內的程序以 root 執行（2026-10-08 實測：root 可寫入 `chmod a-w` 的檔案與
+目錄），所以工具鏈目錄**不設為唯讀**，檔案權限對 root 不構成阻擋。
+
+- 每次建置使用新的容器（實例 id 為 `buildId`，結束即銷毀）：能限制跨 build 的殘留，是有效的一道防線，但不能取代
+  外連與權限隔離。
+- 核對在寫入工作區、執行任何 Theme 設定之前完成。
+- 不能說「修改只影響這次產物」：這需要確認沒有共用的工作區、掛載、快取或其他控制能力；而且建置容器目前可以外連，
+  副作用不一定只限於產物。沙箱外的產物檢查也不能證明任意程式碼安全。
+- Theme 降權（非 root）、容器控制服務的可達性與能力、工具鏈保護與可寫工作區／快取的分離，是獨立的安全閘門
+  （`TODO.md` 部署前阻擋項），不隨 A2 完成。真正的唯讀掛載待確認平台是否支援，不先承諾。
+- Vite 的快取目前寫在工具鏈目錄下（`node_modules/.vite`，未設定 `cacheDir`），與 A2 之前相同。移到每次工作區
+  會改變建置與預覽的行為，列入規劃，另做回歸驗證，不在 A2 一起改。
+
+**第 2 版貫穿所有流程。** 建立、排隊、執行、重用、發布驗證都只讀 build 記錄上的格式與工具鏈識別，途中不重新
+取「目前版本」。必須有的測試：缺少工具鏈識別、未知格式、未知識別、清單與記錄不符、新舊格式的雜湊不同，
+以及重新產生時依記錄的格式選擇序列化方式。
+
+**Legacy 的驗證與重用分開。**
+
+- 驗證：既有 build 依 legacy 格式重新產生並比對雜湊，規則不變。
+- 重用：已成功的 legacy 產物能否發布與回滾，沿用既有規則；這次的 migration 不能改變它。必須驗證歷史 release
+  的回滾在 migration 後仍可運作（release 指向的 build 與產物不受影響）。
+- 新建置一律使用新格式與已記錄的工具鏈，不假裝使用舊工具鏈。
+
 ### 2.3 工作區規劃：保留哪些 Theme 設定檔
 
 阻礙 B3：規劃器（`isThemeSourceOnlyPath`、`planThemeSandboxWorkspace`）會丟掉 Theme 的 `wrangler.json(c)`，
@@ -984,7 +1079,7 @@ R1、R2、M1、M1c 的證據（`~/projects/astro-spike/r1-parser/`、`~/projects
 | M1c    | 專用解析器 Worker 的本機實驗（0.3 的設計條件，3.1）：本機 workerd 中 core 與解析器兩個 Worker 以 service binding 連接，不部署                                                           | 量到並記錄：slot 先於讀 body、等待數與等待時間的上限與拒絕、串流讀取時的位元組上限（不信任 `Content-Length`）、回應序列化的保護；同樣大小不同形狀（大量小節點、解析器允許的最深巢狀、長字串、無效語法）；並行 1、2、4、8（admission 開與關）；連續大檔；369 KB 壓力只經另一個入口；trap 後恢復（重複，且檢查之後的結果是否正確）；經過 binding 的大小與時間；GC 前後的記憶體（定義同 M1，確認 Wasm 不重複計算）。每個條件多次，記錄機器負載。**結果（2026-10-08）：本機完成**（3.1、M1c 報告）。**M1c 本機通過不開啟 L2**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | M1c-C  | **部署後的解析器 Worker 的雲端驗證（正式閘門）。** 解析器 Worker 是新的部署單位，部署需要使用者另外核准；核准之前不進行                                                                 | 以部署的解析器 Worker（沒有 route，只經 service binding；沒有 D1、R2 或部署相關的 binding）重做 M1c 的情境：100 KB 的各種形狀、單一 slot 下的並行與連續請求、trap 與毒化。以 Cloudflare 自己的記錄判定（Workers Metrics 的記憶體、超過記憶體上限的錯誤或 isolate 被終止、錯誤率），不以本機數字推估；要回答 128 MB 如何計算（GC 前或後、shared Wasm memory 是否計入）、毒化的 isolate 何時被回收、雲端的 trap 門檻、冷啟動與實例化時間。通過條件：上述負載下沒有任何記憶體上限錯誤或因記憶體被終止的 isolate，trap 一律得到明確錯誤。前提：128 MB 是每個 isolate 的上限，由該 isolate 中所有並行請求共用，包含 JS heap 與 Wasm；序列化降低峰值但控制不了 GC 時機，本機通過不能證明部署後留在上限內。**通過之前，L2（使用解析器 Worker 的步驟）與 A7 的解析器部分都不得使用它**；不通過時改走 0.3 的備案。**結果（2026-10-08）：通過**。判定依 Workers Logs 的 invocation outcome，逐請求對帳；每一種合法負載至少 3 輪完整、`exceededMemory` 為 0（3.1、M1c-C 報告）。128 MB 的計算方式、毒化 isolate 的回收、冷啟動仍未回答；正式部署解析器 Worker 仍要使用者另外核准 |
 | A1     | 框架身分：`ThemeFrameworkId` 加入 `astro`、build 輸入記錄框架、`nativeBuildResult` 與預覽 runtime 依記錄選 adapter、Start 原生建置的共用部分搬到共用模組。只有 Start 一個實作，行為不變 | 既有測試、Start 的 E2E 不變；新增測試：build 輸入的框架被改動時 `inputHash` 也會改變；`theme-framework.test.ts` 的介面規則仍然成立。**結果（2026-10-08，本機）**：`storefront_theme_builds.framework`（migration 0075，可為 NULL）記錄框架；NULL 是框架被記錄之前的 build，由 `resolveThemeFramework` 讀成 TanStack Start，這是唯一做這個對應的地方。materializer 把框架寫進 build 輸入，只有不是 Start 時才算進 `inputHash`，所以既有 build 記錄的 `inputHash` 不變。materializer、兩個建置程式、`nativeBuildResult` 與兩個 Live Preview 傳輸都依紀錄選 adapter；`astro` 與未知值在任何工作區或容器之前以 `THEME_FRAMEWORK_UNAVAILABLE`／`THEME_FRAMEWORK_UNKNOWN` 拒絕，不退回 Start。Live Preview 的輸入可以帶框架，但網站層級的紀錄要到 multi-runtime 第 6 步才有，目前沒有呼叫者傳入。新增測試：框架改變時 `inputHash` 改變（反向驗證過：拿掉雜湊中的框架後該測試失敗）、未紀錄與 Start 的雜湊相同、既有 build 的雜湊仍相符、`astro` 被拒且 runner 不執行；`theme-framework.test.ts` 未修改且通過。`pnpm typecheck`、`typecheck:data`、`test`、`build`、`check:e2e-assertions`、`check-e2e-shards`、`check:migrations` 通過。真實容器 E2E（`MORPH_NATIVE_START_BUILD=1`）一次：`native-content-dependency` 通過，`native-publish-acceptance` 走完步驟 1–5 後，步驟 6 的建置容器啟動失敗（`SandboxError: Container failed to start`，`stage: sandbox-runtime`；該 build 已通過 materializer，`framework` 為 NULL），測試等不到發布而失敗；當時未重跑。原因查明是 #149 的啟動重試在真實 RPC 下從未生效（錯誤跨 Durable Object RPC 後只剩訊息），由 #155 修正。**修正後補驗（2026-10-08，本機，負載 2.5→4.6）**：A1 分支合併含 #155 的 `main` 後，同樣兩個 spec 在真實容器跑一次，4 個測試全數通過，`native-publish-acceptance` 走完發布、過期發布被拒、並行編輯與回滾 |
-| A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間；Morph 鎖定的 compiler-rs 與工具鏈中 `astro` 依賴的版本相容。**真實 Sandbox 中**：預先渲染 Worker 連得到建置程序的 loopback（4.3 前提 3）；R2 的失敗情境（無快照、500、連線被拒、拿掉標頭送達，各自在 fail-fast 與只靠建置後檢查下）結果與本機相同；7.2 的監聽 socket 清單                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| A2     | 工具鏈「框架 × 版本」：多工具鏈根目錄、產生器、映像、本機 `toolchainProblem` 依 adapter 判斷                                                                                            | Start 工具鏈的內容雜湊不變；Astro 工具鏈從自己的根目錄解析到 Vite 8；量測映像大小、Node 版本與容器冷啟動時間；Morph 鎖定的 compiler-rs 與工具鏈中 `astro` 依賴的版本相容。**真實 Sandbox 中**：預先渲染 Worker 連得到建置程序的 loopback（4.3 前提 3）；R2 的失敗情境（無快照、500、連線被拒、拿掉標頭送達，各自在 fail-fast 與只靠建置後檢查下）結果與本機相同；7.2 的監聽 socket 清單。**A2a 結果（2026-10-09，本機；只代表基礎設施完成，不代表 Astro 已驗收）**：工具鏈分成 `/opt/morph-toolchain/tanstack-start-1.168`、`/opt/morph-toolchain/astro-7.3` 與平台的 `/opt/morph-platform`，各自 `package.json`＋lockfile，映像以 digest 固定基礎映像並以 `npm ci` 安裝，寫入工具鏈清單（2.2.1）。Start 的 lockfile 鎖定 2026-10-03 映像的套件樹：基線 168 個安裝位置在 17 個欄位逐一一致，`npm ci` 另多裝 6 個 musl 版可選原生套件（npm 10.9.8 的 lockfile 不記 libc），已測的載入情境使用 glibc 版；完整安裝樹不完全相同（證據：`~/projects/astro-spike/a2-toolchain/LOCK-A-REPORT.md`）。乾淨的 5 天後 `npm install` 有 10 個間接依賴漂移，證明原本未鎖定的安裝不可重現。不用快取重建映像，三套識別相同。Astro 工具鏈解析到 Vite 8.3.3、Start 仍是 Vite 7.3.5；Morph 鎖定的 compiler-rs（0.5.1）與 `astro` 要求的 `^0.5.0` 相容，有測試。migration 0076 加入 `input_hash_format` 與 `toolchain_id`，legacy build 不回填。真實容器 E2E（`MORPH_E2E_TRANSPORT=cloudflare-sandbox`，新映像）：`native-publish-acceptance`（建置、預先渲染、Build Preview、發布、過期發布被拒、並行編輯、回滾）與 `native-content-dependency` 通過；`build-preview-isolated` 在三份 spec 一起跑時於 `enableSelection`（預覽已渲染、選取按鈕 10 秒內未出現）失敗一次，單獨重跑通過，記為間歇性失敗、未修正；第一次執行在另一個 session 的 vitest 同時執行（負載 14）時於 Live Preview 前置檢查逾時。執行期間建置、Build Preview 與 Live Preview 容器內的程序只映射了 `tanstack-start-1.168` 下的 glibc 原生二進位（rollup、兩份 lightningcss、tailwind oxide），musl 為 0；依容器類別的歸屬未確認（Build Preview 容器也看到 Start 工具鏈的二進位，原因未查）。映像：未壓縮 1.421 → 1.913 GB；gzip 壓縮（拉取大小的近似）整個映像 472 → 748 MB、基礎映像以上的層 252 → 529 MB；容器啟動（`docker run` 到 `/bin/true`）與 Start 工具鏈 `vite --version` 的時間在誤差內相同。映像中留有 npm 快取（舊 442 MB、新 186 MB），未在 A2a 移除。未量：Cloudflare 上的拉取與冷啟動。A2b（真實 Sandbox 驗證）尚未進行 |
 | A3     | 預先渲染內容的可行性，以真實建置測試驗證（形式同 `src/lib/storefront/compiler/native-start-runner.test.ts`）                                                                            | R2 已在本機證明可行，A2 已在 Sandbox 確認 loopback；4.3 的三值測試全部符合：HTML 是封存的 A，不是預設值 D 或目前草稿 B；內容接口失敗（無快照、500、連線被拒、拿掉標頭）一律讓建置失敗，不退回預設值，fail-fast 與建置後檢查各自有效；記錄以每次建置的 nonce 綁定；`ASTRO_ADAPTER_INCOMPATIBLE` 與「stamp 數不等於預先渲染頁數」各有會觸發它的測試；4.3 的路徑測試清單全部通過；失敗的建置沒有產物，成功的產物中沒有包裝標記、`.prerender/`、`.morph/` 診斷檔。**任一項不成立就停止**，回到設計層                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | A4     | Astro 原生建置（本機建置程式，再到 Sandbox 建置程式）：包裝設定檔、匯入防護、產物整理、5.2 的規則、manifest、compiler 身分                                                              | 官方 Astro Cloudflare 範例以 fixture 原樣保存（`fixtures/astro/<example>/`，附 `SOURCE.json` 與逐檔雜湊，作法同 tanstack fixture），能建置的部分建置成功，不能的以 `KNOWN GAP` 斷言（例如 `SESSION`）；最簡單的 Astro Theme 加上 `session: false` 與 `imageService` 後建置成功，5.2 每一條拒絕規則各有一個會觸發它的測試；匯入防護放行專案別名與 Astro 虛擬模組，拒絕未核准的套件與工作區外的檔案                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | A5     | Astro 的 Build Preview、發布、回滾，跑 G0 同一組驗收                                                                                                                                    | 真實容器中 G0 的五項對 Astro 全部通過；`SESSION` 的處理方式已決定並實作（基礎設施對應，或明確的替代方案）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

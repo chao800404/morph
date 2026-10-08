@@ -1,4 +1,5 @@
 import { svgIsolationHeadersFile } from "../theme-svg-isolation";
+import { SANDBOX_PLATFORM_WRANGLER_BIN } from "../theme-framework/theme-toolchains";
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import { writeSandboxWorkspaceFile } from "@/lib/storefront/compiler/sandbox-file-writer";
 import type {
@@ -21,7 +22,9 @@ const CLIENT_DIR = `${DEPLOY_ROOT}/client`;
  * a build produced can be placed here.
  */
 const WORKING_DIR = `${DEPLOY_ROOT}/run`;
-const WRANGLER_BIN = "/opt/morph-toolchain/node_modules/.bin/wrangler";
+// The platform's Wrangler (sandbox/platform), never a Theme toolchain's: a
+// deployment's tool does not change with the Theme's framework.
+const WRANGLER_BIN = SANDBOX_PLATFORM_WRANGLER_BIN;
 const DEFAULT_MAX_DURATION_MS = 180_000;
 
 /** The Cloudflare API every Theme Worker is deployed through. */

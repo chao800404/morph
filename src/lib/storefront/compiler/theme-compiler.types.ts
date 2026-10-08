@@ -27,6 +27,12 @@ export type ThemeCompilerInput = {
    * framework hashes differently.
    */
   framework?: string;
+  /**
+   * Absent: the legacy serialization, unchanged. 2: `framework` and
+   * `toolchainId` are required and always hashed (theme-compiler-hasher).
+   */
+  inputHashFormat?: 2;
+  toolchainId?: string;
   dependencies?: Readonly<Record<string, string>>;
   contentSnapshot?: import("../dto/storefront-theme-build.dto").ThemeBuildContentSnapshot;
   sourceGeneration?: number;

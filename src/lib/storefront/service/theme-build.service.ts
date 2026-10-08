@@ -19,7 +19,11 @@ import {
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
-import type { ThemeFrameworkId } from "@/lib/storefront/theme-framework";
+import {
+  UNRECORDED_THEME_FRAMEWORK,
+  type ThemeFrameworkId,
+} from "@/lib/storefront/theme-framework";
+import { themeToolchainForFramework } from "@/lib/storefront/theme-framework/theme-toolchains";
 
 export type RequestPreviewBuildOptions = {
   storefrontId: string;
@@ -78,6 +82,15 @@ export class ThemeBuildService {
     options: RequestPreviewBuildOptions,
   ): Promise<StorefrontThemeBuildDTO> {
     const reuseExisting = options.reuseExisting ?? false;
+    // Recorded once, here, and read back from the record by every later step:
+    // the framework (TanStack Start when none is named, as before), hash
+    // format 2, and that framework's toolchain from the registry.
+    const framework = options.framework ?? UNRECORDED_THEME_FRAMEWORK;
+    const recordedIdentity = {
+      framework,
+      inputHashFormat: 2 as const,
+      toolchainId: themeToolchainForFramework(framework).id,
+    };
 
     // 1. Identity-based reuse check. Revision bytes are obtained through the
     // storage boundary, never from a D1-specific build DAL representation.
@@ -92,7 +105,7 @@ export class ThemeBuildService {
           inputHash: null,
           compilerId: options.compilerIdentity?.compilerId ?? null,
           compilerVersion: options.compilerIdentity?.compilerVersion ?? null,
-          framework: options.framework ?? null,
+          ...recordedIdentity,
           dependencies: options.dependencies ?? null,
           contentPublicationId: options.contentPublicationId ?? null,
           artifactPrefix: null,
@@ -154,7 +167,7 @@ export class ThemeBuildService {
         createdBy: options.createdBy,
         dependencies: options.dependencies,
         contentPublicationId: options.contentPublicationId,
-        ...(options.framework ? { framework: options.framework } : {}),
+        ...recordedIdentity,
       },
     );
 

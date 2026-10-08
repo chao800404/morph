@@ -24,6 +24,17 @@ export type StorefrontThemeBuildDTO = {
    * used (`resolveThemeFramework`), and an unknown value is refused there.
    */
   framework?: string | null;
+  /**
+   * How `inputHash` was computed, as recorded. Absent or null is the legacy
+   * format; 2 always hashes the framework and the toolchain identity. A build
+   * is verified only by its own format; an unknown one is refused.
+   */
+  inputHashFormat?: number | null;
+  /**
+   * The toolchain identity the build is recorded with (theme-toolchains.ts).
+   * Null on legacy builds, which are not assumed to have used any toolchain.
+   */
+  toolchainId?: string | null;
   /** Exact package versions frozen into this immutable build request. */
   dependencies?: ThemeDependencyMap | null;
   /** Null/absent keeps legacy source-only builds content-independent. */
@@ -79,6 +90,14 @@ export type StorefrontThemeBuildInput = {
    * The materializer always sets it; absent reads as TanStack Start.
    */
   framework?: ThemeFrameworkId;
+  /** See `StorefrontThemeBuildDTO.inputHashFormat`; absent is legacy. */
+  inputHashFormat?: 2;
+  /**
+   * The recorded toolchain identity; set on every format-2 input. The runner
+   * finds the toolchain's directory from it in the registry, and checks the
+   * container's manifest against it before any Theme code runs.
+   */
+  toolchainId?: string;
   dependencies?: ThemeDependencyMap;
   contentSnapshot?: ThemeBuildContentSnapshot;
   /**

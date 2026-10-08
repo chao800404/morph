@@ -6,6 +6,7 @@ import {
   planThemeSandboxWorkspace,
   type ThemeWorkspaceFile,
 } from "./theme-sandbox-workspace";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 /**
  * The insurance between the two Live Preview transports.
@@ -89,7 +90,7 @@ describe("the two Live Preview transports", () => {
         .split("/checkout/.morph-previews/theme-a-user-1")
         .join("/workspace")
         .split("/checkout")
-        .join("/opt/morph-toolchain");
+        .join(`${START_TOOLCHAIN.root}`);
     for (const [index, file] of local.workspaceFiles.entries()) {
       expect(rewritten(file)).toBe(text(sandbox.workspaceFiles[index]!));
     }

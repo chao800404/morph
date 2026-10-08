@@ -9,6 +9,11 @@ import {
 } from "./cloudflare-sandbox-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 import { THEME_PREVIEW_FS_ALLOW_ROOTS } from "./theme-preview-dev-server";
+import {
+  START_TOOLCHAIN,
+  answerToolchainCommand,
+} from "./sandbox-toolchain.test-support";
+import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
 
 describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
   it("rejects CMS-selected packages that are not in the pinned sandbox toolchain", () => {
@@ -22,6 +27,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
 
   const createMockSandbox = (
     overrides?: Partial<CloudflareSandboxSession>,
+    container: { manifestHash?: string } = {},
   ): {
     session: CloudflareSandboxSession;
     writtenFiles: Map<string, string | Uint8Array>;
@@ -100,6 +106,14 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
       }),
       ...overrides,
     };
+    // The container answers the toolchain check (theme-toolchains.ts) as the
+    // image would; every other command is the test's own.
+    const ownExec = session.exec;
+    session.exec = vi.fn(
+      async (command: string, options?: any) =>
+        answerToolchainCommand(command, container.manifestHash) ??
+        ownExec(command, options),
+    ) as any;
 
     return {
       session,
@@ -130,6 +144,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
     compilerVersion: "4.1.17",
+    toolchainId: START_TOOLCHAIN.id,
     files: files as any,
     ...overrides,
   });
@@ -204,7 +219,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     // a performance bound — see the default in the runner for the measurement
     // behind it.
     expect(mock.session.exec).toHaveBeenCalledWith(
-      "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
+      `${START_TOOLCHAIN.root}/node_modules/.bin/vite build --config /workspace/vite.config.ts`,
       expect.objectContaining({
         timeout: 120_000,
         env: {
@@ -302,7 +317,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(generatedConfig).toContain("@tanstack/react-start/server");
     expect(generatedConfig).toContain("node:async_hooks");
     expect(mock.session.exec).toHaveBeenCalledWith(
-      "/opt/morph-toolchain/node_modules/.bin/vite build --config /workspace/vite.config.ts",
+      `${START_TOOLCHAIN.root}/node_modules/.bin/vite build --config /workspace/vite.config.ts`,
       expect.objectContaining({
         env: {
           NODE_ENV: "production",
@@ -662,6 +677,97 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(mock.session.destroy).toHaveBeenCalledTimes(1);
   });
 
+  describe("the toolchain the build records", () => {
+    const source = [
+      {
+        path: "src/pages/index.tsx",
+        content: "export default () => <h1>Home</h1>;",
+        isEntry: true,
+      },
+    ];
+
+    it.each([
+      ["THEME_TOOLCHAIN_MISSING", undefined],
+      ["THEME_TOOLCHAIN_UNKNOWN", "0".repeat(64)],
+      [
+        "THEME_TOOLCHAIN_FRAMEWORK_MISMATCH",
+        themeToolchainForFramework("astro").id,
+      ],
+    ])(
+      "is refused with %s before any container is started",
+      async (code, toolchainId) => {
+        const provider: CloudflareSandboxProvider = { getSandbox: vi.fn() };
+        const runner = new CloudflareSandboxViteThemeBuildRunner({
+          sandboxProvider: provider,
+        });
+
+        const result = await runner.run(createInput(source, { toolchainId }));
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.errorMessage).toContain(code);
+          expect(result.diagnosticsJson?.stage).toBe("toolchain");
+        }
+        expect(provider.getSandbox).not.toHaveBeenCalled();
+      },
+    );
+
+    it("is not built with a container whose manifest is another toolchain's, and nothing of the Theme is written", async () => {
+      const mock = createMockSandbox(undefined, {
+        manifestHash: "e".repeat(64),
+      });
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(createInput(source));
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain("THEME_TOOLCHAIN_MISMATCH");
+      }
+      expect(mock.writtenFiles.size).toBe(0);
+      const commands = vi
+        .mocked(mock.session.exec)
+        .mock.calls.map(([command]) => command);
+      expect(commands.some((command) => command.includes("vite build"))).toBe(
+        false,
+      );
+      expect(commands.some((command) => command.includes("ln -s"))).toBe(false);
+      expect(mock.session.destroy).toHaveBeenCalled();
+    });
+
+    it("links this build's workspace to the recorded toolchain and builds with its Vite", async () => {
+      const mock = createMockSandbox();
+      const runner = new CloudflareSandboxViteThemeBuildRunner({
+        sandboxProvider: { getSandbox: vi.fn(async () => mock.session) },
+      });
+
+      const result = await runner.run(createInput(source));
+
+      expect(result.success).toBe(true);
+      const commands = vi
+        .mocked(mock.session.exec)
+        .mock.calls.map(([command]) => command);
+      const checked = commands.indexOf(
+        `sha256sum ${START_TOOLCHAIN.manifestPath}`,
+      );
+      const linked = commands.findIndex((command) =>
+        command.includes(
+          `ln -s ${START_TOOLCHAIN.root}/node_modules /workspace/node_modules`,
+        ),
+      );
+      const built = commands.findIndex((command) =>
+        command.startsWith(
+          `${START_TOOLCHAIN.root}/node_modules/.bin/vite build`,
+        ),
+      );
+      expect(checked).toBeGreaterThanOrEqual(0);
+      expect(linked).toBeGreaterThan(checked);
+      expect(built).toBeGreaterThan(linked);
+    });
+  });
+
   it("kills process and destroys container when sandbox execution times out", async () => {
     const mock = createMockSandbox({
       exec: vi.fn(async (command: string) => {
@@ -882,8 +988,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     return factory(posixPath, await import("node:fs"));
   };
 
-  const VITE_DEV_CLIENT =
-    "/@fs/opt/morph-toolchain/node_modules/vite/dist/client/client.mjs";
+  const VITE_DEV_CLIENT = `/@fs${START_TOOLCHAIN.root}/node_modules/vite/dist/client/client.mjs`;
 
   it("serves Vite's own dev client so the Live Preview can run at all", async () => {
     const enforcer = await loadGeneratedEnforcer("serve");
@@ -924,7 +1029,7 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     );
     expect(THEME_PREVIEW_FS_ALLOW_ROOTS).toEqual([
       "/workspace",
-      "/opt/morph-toolchain/node_modules",
+      `${START_TOOLCHAIN.root}/node_modules`,
     ]);
   });
 });

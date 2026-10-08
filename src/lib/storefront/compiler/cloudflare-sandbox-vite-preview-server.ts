@@ -4,6 +4,11 @@ import {
   type ThemeFrameworkId,
 } from "../theme-framework";
 import {
+  registeredThemeToolchains,
+  themeToolchainForFramework,
+} from "../theme-framework/theme-toolchains";
+import { prepareSandboxToolchain } from "./sandbox-toolchain";
+import {
   materializeThemeSandboxWorkspace,
   unplannedWorkspaceFiles,
   type ThemeWorkspaceFile,
@@ -16,10 +21,7 @@ import {
   writeSandboxWorkspaceFile,
   type SandboxFileWriter,
 } from "./sandbox-file-writer";
-import {
-  SANDBOX_TOOLCHAIN_ROOT,
-  THEME_PREVIEW_SERVER_BASE_PATH,
-} from "./theme-preview-dev-server";
+import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { boundedPreviewLogAppender } from "./bounded-preview-log";
 import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
@@ -88,7 +90,15 @@ function safeHostname(url: string | null | undefined): string | null {
   }
 }
 
-const VITE_BIN = `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/.bin/vite`;
+/** Any registered toolchain's Vite: what a running preview server is. */
+const PREVIEW_VITE_BINS = registeredThemeToolchains().map(
+  (toolchain) => `${toolchain.root}/node_modules/.bin/vite`,
+);
+function isPreviewViteCommand(command: string | undefined): boolean {
+  return Boolean(
+    command && PREVIEW_VITE_BINS.some((bin) => command.includes(bin)),
+  );
+}
 
 /** Line Vite prints once it can serve requests. Kept as a compatibility path. */
 const READY_MARKER = "ready in";
@@ -592,6 +602,9 @@ export class CloudflareSandboxVitePreviewServer {
       };
     }
     const framework = recordedFramework.framework;
+    // A preview has no build record; it uses the registry's toolchain for its
+    // framework, checked against the container's manifest before it starts.
+    const toolchain = themeToolchainForFramework(framework.id);
 
     let session: PreviewServerSession | null = null;
     try {
@@ -680,6 +693,7 @@ export class CloudflareSandboxVitePreviewServer {
         mode: "preview-server",
         previewContent: input.previewContent,
         previewRuntime: input.previewRuntime,
+        toolchainRoot: toolchain.root,
       });
       const workspacePlanMs = Date.now() - workspacePlanStartedAt;
       if (!prepared.ok) {
@@ -687,6 +701,19 @@ export class CloudflareSandboxVitePreviewServer {
           ok: false,
           stage: prepared.stage,
           errorMessage: prepared.errorMessage,
+          logs,
+        };
+      }
+      const toolchainReady = await prepareSandboxToolchain(
+        session,
+        toolchain,
+        (_level, message) => addLog(message),
+      );
+      if (!toolchainReady.ok) {
+        return {
+          ok: false,
+          stage: "preview-toolchain",
+          errorMessage: `${toolchainReady.code}: ${toolchainReady.message}`,
           logs,
         };
       }
@@ -733,7 +760,7 @@ export class CloudflareSandboxVitePreviewServer {
       const processLookupMs = Date.now() - processLookupStartedAt;
       const alreadyServing = (running ?? []).find(
         (process) =>
-          process.command?.includes(VITE_BIN) &&
+          isPreviewViteCommand(process.command) &&
           (process.status === "running" || process.status === "starting"),
       );
 
@@ -1028,7 +1055,7 @@ export class CloudflareSandboxVitePreviewServer {
           command?: string;
           status?: string;
         }) =>
-          Boolean(process.command?.includes(VITE_BIN)) &&
+          isPreviewViteCommand(process.command) &&
           (process.status === "running" || process.status === "starting");
         const replacement = current?.find(
           (process) =>
@@ -1091,7 +1118,7 @@ export class CloudflareSandboxVitePreviewServer {
       const process = await session.startProcess(
         // --strictPort so the server cannot quietly land on another port and
         // leave the exposed URL pointing at nothing.
-        `${VITE_BIN} --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`,
+        `${toolchain.root}/node_modules/.bin/vite --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`,
         {
           // Nothing from Morph's own environment. The preview holds no
           // credential, and its capability is the preview URL alone.
@@ -1260,7 +1287,7 @@ export class CloudflareSandboxVitePreviewServer {
       if (!running) return false;
       const viteRunning = running.some(
         (process) =>
-          process.command?.includes(VITE_BIN) &&
+          isPreviewViteCommand(process.command) &&
           (process.status === "running" || process.status === "starting"),
       );
       if (!viteRunning) return false;

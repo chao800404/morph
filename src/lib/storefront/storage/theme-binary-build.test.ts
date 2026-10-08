@@ -16,6 +16,7 @@ import {
   d1ThemeSourceStore,
   readThemeBinaryFile,
 } from "./d1-theme-storage";
+import { START_TOOLCHAIN } from "../compiler/sandbox-toolchain.test-support";
 
 /**
  * Binary Theme files through the storage layer, against real SQLite with the
@@ -312,6 +313,11 @@ describe("building a frozen revision with a binary file, locally", () => {
           inputHash: null,
           compilerId: null,
           compilerVersion: null,
+          // A build as one is created now: framework, hash format and
+          // toolchain recorded (a legacy record still queued is not built).
+          framework: "tanstack-start",
+          inputHashFormat: 2,
+          toolchainId: START_TOOLCHAIN.id,
           artifactPrefix: null,
           manifestJson: null,
           diagnosticsJson: null,
@@ -401,6 +407,9 @@ describe("building the starter Theme with a binary file, locally", () => {
     inputHash: null,
     compilerId: null,
     compilerVersion: null,
+    framework: "tanstack-start",
+    inputHashFormat: 2 as const,
+    toolchainId: START_TOOLCHAIN.id,
     artifactPrefix: null,
     manifestJson: null,
     diagnosticsJson: null,

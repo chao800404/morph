@@ -1,12 +1,18 @@
 /**
- * Root of the pinned toolchain baked into `Dockerfile.sandbox`.
+ * Root of the TanStack Start toolchain in `Dockerfile.sandbox`: only a default,
+ * for callers that name no root (tests). Sandbox builds and previews always
+ * pass the root from the toolchain registry (theme-toolchains.ts), and a test
+ * keeps this literal equal to the registry's Start root. A literal, because
+ * this module stays self-contained.
  *
  * Theme source can never install packages during a request, so every module a
- * Theme is allowed to import already lives here when the container starts.
+ * Theme is allowed to import already lives in its toolchain when the
+ * container starts.
  */
 import type { Plugin } from "vite";
 
-export const SANDBOX_TOOLCHAIN_ROOT = "/opt/morph-toolchain";
+export const SANDBOX_TOOLCHAIN_ROOT =
+  "/opt/morph-toolchain/tanstack-start-1.168";
 
 /** Browser HTTP access must not expose server-only source, including Vite's
  * inline sourcesContent maps and ?raw responses. SSR module-runner transforms

@@ -5,6 +5,7 @@ import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 /**
  * A native Start build through the build runner, for real: the project's own
@@ -80,6 +81,7 @@ function nativeInput(
     inputHash: "b".repeat(64),
     compilerId: NATIVE_START_COMPILER_ID,
     compilerVersion: THEME_START_TOOLCHAIN.reactStart,
+    toolchainId: START_TOOLCHAIN.id,
     buildMode: "native",
     files: [
       ...STARTER_THEME_FILES.filter((file) => !own.has(file.path)),

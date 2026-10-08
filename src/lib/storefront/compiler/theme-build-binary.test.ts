@@ -4,6 +4,7 @@ import { normalizeRevisionSnapshot } from "./theme-build-materializer";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import { CloudflareSandboxViteThemeBuildRunner } from "./cloudflare-sandbox-vite-theme-build-runner";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 /**
  * Binary files on the way from a frozen revision to a build: carried by
@@ -171,6 +172,7 @@ describe("the Sandbox build runner with binary files", () => {
         compilerId: (built as unknown as { compilerId: string }).compilerId,
         compilerVersion: (built as unknown as { compilerVersion: string })
           .compilerVersion,
+        toolchainId: START_TOOLCHAIN.id,
         files: [{ path: "src/routes/index.tsx", content: "x" }],
         binaryFiles: [
           {
@@ -229,6 +231,7 @@ describe("the local build runner with binary files", () => {
       inputHash: "h",
       compilerId: runner.compilerId,
       compilerVersion: runner.compilerVersion,
+      toolchainId: START_TOOLCHAIN.id,
       files: [{ path: "src/routes/index.tsx", content: "export {};" }],
       binaryFiles: [
         {

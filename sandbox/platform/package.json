@@ -1,0 +1,7 @@
+{
+  "name": "morph-sandbox-platform",
+  "private": true,
+  "dependencies": {
+    "wrangler": "4.146.0"
+  }
+}

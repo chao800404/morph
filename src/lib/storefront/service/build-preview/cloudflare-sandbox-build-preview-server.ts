@@ -3,6 +3,7 @@ import type {
   BuildPreviewServer,
 } from "./build-preview-server.types";
 import { bytesToBase64 } from "./build-preview-wire";
+import { SANDBOX_PLATFORM_WRANGLER_BIN } from "@/lib/storefront/theme-framework/theme-toolchains";
 
 /**
  * The container `BuildPreviewServer` transport.
@@ -81,7 +82,9 @@ function dirname(path: string): string {
   return path.slice(0, path.lastIndexOf("/"));
 }
 
-export const BUILD_PREVIEW_CONTAINER_COMMAND = `wrangler dev --config ${ROOT}/server/wrangler.json --ip 0.0.0.0 --port ${BUILD_PREVIEW_CONTAINER_PORT} --show-interactive-dev-session=false`;
+// The platform's Wrangler, by its absolute path: never a Theme toolchain's,
+// and not whatever `wrangler` the PATH would find.
+export const BUILD_PREVIEW_CONTAINER_COMMAND = `${SANDBOX_PLATFORM_WRANGLER_BIN} dev --config ${ROOT}/server/wrangler.json --ip 0.0.0.0 --port ${BUILD_PREVIEW_CONTAINER_PORT} --show-interactive-dev-session=false`;
 
 export class CloudflareSandboxBuildPreviewServer implements BuildPreviewServer {
   readonly kind = "cloudflare-sandbox" as const;
