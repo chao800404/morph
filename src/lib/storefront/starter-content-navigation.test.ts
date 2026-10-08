@@ -12,12 +12,15 @@ import { createStarterThemeWorkspaceUpgrade } from "./starter-theme-files";
 function clientLoader(
   fetcher: typeof fetch,
 ): (pathname: string) => Promise<unknown> {
-  const compiled = ts.transpileModule(STARTER_THEME_CONTENT_MODULE_SOURCE, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
-  }).outputText;
+  // The module reads import.meta.env, which a CommonJS evaluation cannot parse.
+  const compiled = ts
+    .transpileModule(STARTER_THEME_CONTENT_MODULE_SOURCE, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    })
+    .outputText.replaceAll("import.meta", "__importMeta");
   const exports: Record<string, unknown> = {};
   const requireModule = (name: string) => {
     if (name === "react")
@@ -36,10 +39,11 @@ function clientLoader(
       };
     throw new Error(`Unexpected import ${name}`);
   };
-  new Function("exports", "require", "fetch", compiled)(
+  new Function("exports", "require", "fetch", "__importMeta", compiled)(
     exports,
     requireModule,
     fetcher,
+    { env: { DEV: false } },
   );
   return exports.loadContentSlots as (pathname: string) => Promise<unknown>;
 }

@@ -1999,6 +1999,103 @@ export const loadContentSlots = createIsomorphicFn()
   });
 `;
 
+/**
+ * The content module before it gained `morph.pages.get`: slot values by id,
+ * read through the React context, with no way to fetch a page by path.
+ * Kept verbatim so an untouched copy can be upgraded and an edited one left
+ * alone.
+ */
+export const LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createContext, useContext } from "react";
+
+export type MorphContentSlots = Record<string, Record<string, unknown>>;
+
+export type MorphContent = {
+  slots: MorphContentSlots;
+  /** Sections the author hid. Absent slots are not the same thing. */
+  hiddenSlots: string[];
+};
+
+const MorphContentContext = createContext<MorphContent>({
+  slots: {},
+  hiddenSlots: [],
+});
+
+export const MorphContentProvider = MorphContentContext.Provider;
+
+/** Reads the stored values for one content slot. */
+export function content(slotId: string): Record<string, unknown> {
+  return useContext(MorphContentContext).slots[slotId] ?? {};
+}
+
+/**
+ * Whether the author hid this section.
+ *
+ * Spreading props cannot cancel a render, so the route has to ask. A slot with
+ * no stored values is not hidden — it just has none, and the component's
+ * defaults are the right answer for it.
+ */
+export function isSectionHidden(slotId: string): boolean {
+  return useContext(MorphContentContext).hiddenSlots.includes(slotId);
+}
+
+/**
+ * Loads the published content for one route.
+ *
+ * The server branch is the only one that touches the request; Start strips it
+ * from the client bundle, which is what keeps the server-only import out of
+ * client code. Client navigation fetches the destination route's public content;
+ * an error must not silently replace authored values/visibility with defaults.
+ *
+ * Morph Core owns the answer \u2014 only it knows which release is active \u2014 so
+ * this asks it back on the origin it forwarded the request from, rather than
+ * reading any store directly. Every failure degrades to defaults: content must
+ * never be able to take the storefront down.
+ */
+/** Every degradation path returns this, so callers never see a partial shape. */
+const EMPTY_CONTENT: MorphContent = { slots: {}, hiddenSlots: [] };
+
+export const loadContentSlots = createIsomorphicFn()
+  .client(async (pathname: string): Promise<MorphContent> => {
+    const response = await fetch(
+      "/_morph/content?path=" + encodeURIComponent(pathname),
+      { headers: { accept: "application/json" }, credentials: "omit", signal: AbortSignal.timeout(15_000) },
+    );
+    if (!response.ok) throw new Error("Published content is temporarily unavailable.");
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object"
+      || !("slots" in payload) || !payload.slots || typeof payload.slots !== "object" || Array.isArray(payload.slots)
+      || !("hiddenSlots" in payload) || !Array.isArray(payload.hiddenSlots)
+      || !payload.hiddenSlots.every((slot: unknown) => typeof slot === "string")) {
+      throw new Error("Invalid published content response.");
+    }
+    return { slots: payload.slots as MorphContentSlots, hiddenSlots: payload.hiddenSlots as string[] };
+  })
+  .server(async (pathname: string): Promise<MorphContent> => {
+    try {
+      const request = getRequest();
+      const origin = request.headers.get("x-morph-content-origin");
+      if (!origin) return EMPTY_CONTENT;
+      const response = await fetch(
+        origin + "/_morph/content?path=" + encodeURIComponent(pathname),
+        { headers: { accept: "application/json" } },
+      );
+      if (!response.ok) return EMPTY_CONTENT;
+      const payload = (await response.json()) as {
+        slots?: MorphContentSlots;
+        hiddenSlots?: string[];
+      };
+      return {
+        slots: payload?.slots ?? {},
+        hiddenSlots: payload?.hiddenSlots ?? [],
+      };
+    } catch {
+      return EMPTY_CONTENT;
+    }
+  });
+`;
+
 export const STARTER_THEME_CONTENT_MODULE_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createContext, useContext } from "react";
@@ -2088,6 +2185,194 @@ export const loadContentSlots = createIsomorphicFn()
       return EMPTY_CONTENT;
     }
   });
+
+/**
+ * Why a page could not be read. A closed set, so a route can show something
+ * specific for the cases it understands and treat the rest alike.
+ */
+export type MorphContentErrorCode =
+  | "no_content_source"
+  | "invalid_content_origin"
+  | "invalid_path"
+  | "store_unreachable"
+  | "content_not_found"
+  | "store_error"
+  | "redirect_refused"
+  | "invalid_response"
+  | "response_too_large"
+  | "reserved_slot";
+
+/**
+ * The words for each code. Written here and not taken from the store's
+ * answer, so what reaches a browser is never an upstream response, an address
+ * or a stack. The detail goes to the server's log.
+ */
+const MORPH_CONTENT_MESSAGES: Record<MorphContentErrorCode, string> = {
+  no_content_source:
+    "No content source. Run inside Morph, or while developing set MORPH_CONTENT_ORIGIN to your store address, for example https://your-store.example.",
+  invalid_content_origin: "The content source address is not usable.",
+  invalid_path: "A page path starts with / and is at most 500 characters.",
+  store_unreachable: "The content service could not be reached.",
+  content_not_found: "The store has no content for this page.",
+  store_error: "The content service reported an error.",
+  redirect_refused: "The content service redirected, which is not followed.",
+  invalid_response: "The content service sent a response that could not be used.",
+  response_too_large: "The content service response was too large.",
+  reserved_slot: "The content service sent a slot named _hidden, which is reserved.",
+};
+
+/** Raised when a page cannot be read. The caller decides what to show instead. */
+export class MorphContentError extends Error {
+  readonly code: MorphContentErrorCode;
+  constructor(code: MorphContentErrorCode, message?: string) {
+    super(message ?? MORPH_CONTENT_MESSAGES[code]);
+    this.name = "MorphContentError";
+    this.code = code;
+  }
+}
+
+function isMorphContentErrorCode(value: unknown): value is MorphContentErrorCode {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(MORPH_CONTENT_MESSAGES, value);
+}
+
+/**
+ * One page's published content: each slot's values under its slot id, ready to
+ * spread onto a section. Sections the author hid are listed in _hidden, which
+ * no slot id can be called because ids never start with an underscore.
+ */
+export type MorphPage = {
+  readonly _hidden: readonly string[];
+  readonly [slotId: string]: any;
+};
+
+const CONTENT_TIMEOUT_MS = 15_000;
+
+/**
+ * The address of a Morph store, from the local environment. Server only, and
+ * only while developing: a build that reaches here without the platform's own
+ * address must fail, not quietly read whichever store the shell names.
+ */
+function localContentOrigin(): string | null {
+  // Written as import.meta.env so a build can replace it with a constant. Held
+  // in a variable first, Vite would not recognise it and the check would be
+  // decided at run time by whatever the host provides.
+  if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV !== true) return null;
+  const env = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env;
+  const value = env?.MORPH_CONTENT_ORIGIN?.trim();
+  return value ? value : null;
+}
+
+/**
+ * Reads one page of published content. Unlike loadContentSlots this never
+ * falls back to component defaults: a page that cannot be read throws, so a
+ * wrong address or a missing release is something you see rather than a site
+ * that quietly shows placeholder text.
+ */
+async function fetchPage(url: string, onServer: boolean): Promise<MorphPage> {
+  // The detail of a failure belongs in the log of the machine that saw it. It
+  // is not put in the error, which a page may render for anyone to read.
+  const note = (detail: string) => {
+    if (onServer) console.warn("[morph] " + detail);
+  };
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { accept: "application/json" },
+      credentials: "omit",
+      signal: AbortSignal.timeout(CONTENT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    note("Could not reach " + url + ": " + (error instanceof Error ? error.message : "request failed"));
+    throw new MorphContentError("store_unreachable");
+  }
+  if (!response.ok) {
+    // The local development proxy names its refusals with one of the codes
+    // above. Anything else, including Core's plain-text errors, is told apart
+    // by status alone.
+    let named: unknown = null;
+    try {
+      named = ((await response.json()) as { code?: unknown } | null)?.code;
+    } catch {
+      named = null;
+    }
+    note(url + " answered " + response.status + ".");
+    throw new MorphContentError(
+      isMorphContentErrorCode(named)
+        ? named
+        : response.status === 404 ? "content_not_found" : "store_error",
+    );
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    note(url + " did not send JSON.");
+    throw new MorphContentError("invalid_response");
+  }
+  if (!payload || typeof payload !== "object"
+    || !("slots" in payload) || !payload.slots || typeof payload.slots !== "object" || Array.isArray(payload.slots)
+    || !("hiddenSlots" in payload) || !Array.isArray(payload.hiddenSlots)
+    || !payload.hiddenSlots.every((slot: unknown) => typeof slot === "string")) {
+    note(url + " sent a payload of the wrong shape.");
+    throw new MorphContentError("invalid_response");
+  }
+  // _hidden is where the hidden list lives. A slot of that name would be lost
+  // behind it, so it is refused instead of dropped.
+  if (Object.prototype.hasOwnProperty.call(payload.slots, "_hidden")) {
+    throw new MorphContentError("reserved_slot");
+  }
+  return { ...(payload.slots as Record<string, unknown>), _hidden: payload.hiddenSlots as string[] };
+}
+
+const getPage = createIsomorphicFn()
+  .client(async (path: string): Promise<MorphPage> =>
+    fetchPage("/_morph/content?path=" + encodeURIComponent(path), false),
+  )
+  .server(async (path: string): Promise<MorphPage> => {
+    // Inside Morph the platform names its own address on each request. On your
+    // own machine nothing does, so the store is named once in the environment.
+    // A header that is present but unusable is an error of its own: falling
+    // through to the local address would swap a release's content for another
+    // store's without anyone seeing it happen.
+    const forwarded = getRequest().headers.get("x-morph-content-origin");
+    const local = forwarded === null ? localContentOrigin() : null;
+    const origin = forwarded ?? local;
+    if (origin === null) throw new MorphContentError("no_content_source");
+    const label = forwarded !== null
+      ? "The platform content origin header"
+      : "MORPH_CONTENT_ORIGIN";
+    let base: URL;
+    try {
+      base = new URL(origin);
+    } catch {
+      throw new MorphContentError("invalid_content_origin", label + " is not a valid address.");
+    }
+    if (base.protocol !== "https:" && base.protocol !== "http:") {
+      throw new MorphContentError("invalid_content_origin", label + " must be an http or https address.");
+    }
+    return fetchPage(base.origin + "/_morph/content?path=" + encodeURIComponent(path), true);
+  });
+
+export const morph = {
+  pages: {
+    /**
+     * const home = await morph.pages.get("/home");
+     * <Hero {...home.hero} />
+     */
+    get(path: string): Promise<MorphPage> {
+      if (typeof path !== "string" || !path.startsWith("/") || path.length > 500) {
+        return Promise.reject(new MorphContentError("invalid_path"));
+      }
+      return getPage(path);
+    },
+    /** Whether the author hid this section on the page. */
+    isHidden(page: MorphPage, slotId: string): boolean {
+      return page._hidden.includes(slotId);
+    },
+  },
+};
 `;
 
 export const STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
