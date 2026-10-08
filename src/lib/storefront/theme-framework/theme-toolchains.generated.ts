@@ -38,15 +38,15 @@ export const GENERATED_SANDBOX_TOOLCHAINS = [
     }
   },
   {
-    "id": "5ad55f6bc34660e95f536c9c3b873a3382a1a4de614d341181f5763531787feb",
+    "id": "d991657b876de72a874dfb84898f2124872db70309c17391a16611c9ca9475ef",
     "framework": "astro",
     "root": "/opt/morph-toolchain/astro-7.3",
     "manifestFormat": 1,
-    "packageJsonSha256": "c8f7eee0c388a4879285291fa09c7710fd3fa008f059ce1f1c3f95b009bb2e1d",
-    "packageLockSha256": "ef3b4738a84c79ad3d4bf9b8c5f1abeb91d24f2c397bf2d3986f13f0891fa42a",
-    "installedPositions": 245,
+    "packageJsonSha256": "7dc003cb4967390e5a2fdce6645311cf1f86dfab55cc64949070f17caf688b87",
+    "packageLockSha256": "53f07358971902578eb798c6123ce2716332649808456806fd055dbbb2194c85",
+    "installedPositions": 249,
     "directDependencies": {
-      "@astrojs/cloudflare": "14.3.3",
+      "@astrojs/cloudflare": "14.3.4",
       "@astrojs/compiler-rs": "0.5.1",
       "@astrojs/react": "7.0.0",
       "@cloudflare/vite-plugin": "1.62.5",
