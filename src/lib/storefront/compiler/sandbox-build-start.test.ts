@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   classifySandboxStartError,
+  describeSandboxStartError,
+  SandboxStartProbeError,
   startBuildSandbox,
 } from "./sandbox-build-start";
 
@@ -242,5 +244,99 @@ describe("startBuildSandbox", () => {
     // Bounded by the 10 ms left, not by the 60 s destroy bound.
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(run.options.acquire).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The shape of @cloudflare/sandbox 0.12.7's `SandboxError`: an own
+ * `errorResponse`, with `code` and `context` as prototype getters.
+ */
+class SdkShapedError extends Error {
+  constructor(
+    readonly errorResponse: {
+      code: string;
+      message: string;
+      context: Record<string, unknown>;
+    },
+  ) {
+    super(errorResponse.message);
+    this.name = "SandboxError";
+  }
+  get code() {
+    return this.errorResponse.code;
+  }
+  get context() {
+    return this.errorResponse.context;
+  }
+}
+
+describe("the start probe's answer across RPC", () => {
+  const startupError = () =>
+    new SdkShapedError({
+      code: "INTERNAL_ERROR",
+      message: "Container failed to start: Container failed to start",
+      context: { phase: "startup", error: "Container failed to start" },
+    });
+
+  it("is why the answer is a value: a cloned error has lost the fields", () => {
+    // workerd's RPC drops them the same way (measured 2026-10-08); this
+    // clone stands in for it and pins the reason for the design.
+    expect(classifySandboxStartError(startupError())).toBe("startup");
+    expect(classifySandboxStartError(structuredClone(startupError()))).toBe(
+      null,
+    );
+  });
+
+  it("keeps a start failure classifiable after the clone", () => {
+    const sent = structuredClone(describeSandboxStartError(startupError()));
+    expect(sent).toEqual({
+      ok: false,
+      name: "SandboxError",
+      message: "Container failed to start: Container failed to start",
+      code: "INTERNAL_ERROR",
+      context: { phase: "startup" },
+    });
+    if (sent.ok) throw new Error("unreachable");
+    expect(classifySandboxStartError(new SandboxStartProbeError(sent))).toBe(
+      "startup",
+    );
+
+    const unavailable = structuredClone(
+      describeSandboxStartError(
+        new SdkShapedError({
+          code: "CONTAINER_UNAVAILABLE",
+          message: "no capacity",
+          context: { retryable: true, reason: "capacity" },
+        }),
+      ),
+    );
+    if (unavailable.ok) throw new Error("unreachable");
+    expect(
+      classifySandboxStartError(new SandboxStartProbeError(unavailable)),
+    ).toBe("container-unavailable");
+  });
+
+  it("copies only primitive fields the classifier reads, and no code it was not given", () => {
+    expect(
+      describeSandboxStartError(
+        Object.assign(new Error("odd"), {
+          code: 7,
+          context: { phase: { nested: true }, retryable: "yes", extra: "x" },
+        }),
+      ),
+    ).toEqual({
+      ok: false,
+      name: "Error",
+      message: "odd",
+      code: null,
+      context: {},
+    });
+    expect(describeSandboxStartError("a string")).toEqual({
+      ok: false,
+      name: "Error",
+      message: "a string",
+      code: null,
+      context: {},
+    });
   });
 });

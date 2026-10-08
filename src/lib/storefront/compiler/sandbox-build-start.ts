@@ -11,7 +11,9 @@
  *
  * A retry is allowed only when all of these hold:
  * - the probe failed with a start failure the SDK reports structurally
- *   (`classifySandboxStartError`); an unrecognised error is not retried;
+ *   (`classifySandboxStartError`); an unrecognised error is not retried. The
+ *   probe runs inside the Durable Object and returns those fields as a value
+ *   (`SandboxStartProbeResult`), since a thrown error loses them over RPC;
  * - the failed attempt's container was destroyed, and that was confirmed
  *   within a bound, so two attempts never overlap;
  * - the build is still this run's to finish (`stillRunning`), checked after
@@ -58,6 +60,74 @@ export function classifySandboxStartError(
     return "startup";
   }
   return null;
+}
+
+/**
+ * The probe's answer, as the build Sandbox's Durable Object returns it
+ * (`Sandbox.probeStart`, src/server/build-sandbox.ts).
+ *
+ * A value, not a thrown error, because an error thrown across Durable Object
+ * RPC reaches the caller as a plain `Error` with only its message: the SDK's
+ * `code` and `context` are gone, so `classifySandboxStartError` could never
+ * match a real start failure from the caller's side. Measured in workerd
+ * 2026-10-08. Only the fields the classifier reads are copied, all of them
+ * primitives, so the value survives the RPC as it was.
+ */
+export type SandboxStartProbeResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{
+      ok: false;
+      name: string;
+      message: string;
+      code: string | null;
+      context: Readonly<{
+        retryable?: boolean;
+        phase?: string;
+        reason?: string;
+      }>;
+    }>;
+
+/** Run inside the Durable Object, where the SDK's error still has its fields. */
+export function describeSandboxStartError(
+  error: unknown,
+): SandboxStartProbeResult {
+  const fields =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; context?: unknown })
+      : {};
+  const context =
+    fields.context && typeof fields.context === "object"
+      ? (fields.context as Record<string, unknown>)
+      : {};
+  return {
+    ok: false,
+    name: error instanceof Error ? error.name : "Error",
+    message: messageOf(error),
+    code: typeof fields.code === "string" ? fields.code : null,
+    context: {
+      ...(typeof context.retryable === "boolean"
+        ? { retryable: context.retryable }
+        : {}),
+      ...(typeof context.phase === "string" ? { phase: context.phase } : {}),
+      ...(typeof context.reason === "string" ? { reason: context.reason } : {}),
+    },
+  };
+}
+
+/**
+ * The caller's side: a failed probe result as an error carrying the same
+ * structured fields, for `startBuildSandbox` to classify and rethrow.
+ */
+export class SandboxStartProbeError extends Error {
+  readonly code: string | null;
+  readonly context: Extract<SandboxStartProbeResult, { ok: false }>["context"];
+
+  constructor(result: Extract<SandboxStartProbeResult, { ok: false }>) {
+    super(result.message);
+    this.name = result.name;
+    this.code = result.code;
+    this.context = result.context;
+  }
 }
 
 export const SANDBOX_START_MAX_RETRIES = 2;
