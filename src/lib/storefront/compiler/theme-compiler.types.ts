@@ -21,6 +21,12 @@ export type ThemeCompilerInput = {
     sizeBytes: number;
   }>;
   entry?: string;
+  /**
+   * The framework the input is built for (`ThemeFrameworkId`). Absent and
+   * the unrecorded framework (TanStack Start) hash alike; any other
+   * framework hashes differently.
+   */
+  framework?: string;
   dependencies?: Readonly<Record<string, string>>;
   contentSnapshot?: import("../dto/storefront-theme-build.dto").ThemeBuildContentSnapshot;
   sourceGeneration?: number;

@@ -1,5 +1,6 @@
 import type { ThemeCompilerInput } from "./theme-compiler.types";
 import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dto";
+import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
 
 /** Publication/item row IDs are incidental; retained content references are not. */
 export function serializeThemeBuildContentDocuments(
@@ -45,6 +46,14 @@ export function serializeCompilerInput(
     compilerVersion:
       compilerIdentity?.version ?? input.compilerVersion ?? "4.1.17",
     entry: input.entry ?? "src/pages/index.tsx",
+    // Only when it is not the unrecorded framework: an input for another
+    // framework must not hash like the same files built as Start, and every
+    // input from before frameworks were recorded — all of them Start — must
+    // hash exactly as it did, or its recorded inputHash would stop matching.
+    ...(input.framework !== undefined &&
+    input.framework !== UNRECORDED_THEME_FRAMEWORK
+      ? { framework: input.framework }
+      : {}),
     ...(sortedDependencies ? { dependencies: sortedDependencies } : {}),
     ...(input.contentSnapshot
       ? {

@@ -609,6 +609,13 @@ export const storefrontThemeBuilds = sqliteTable(
     inputHash: text("input_hash"),
     compilerId: text("compiler_id"),
     compilerVersion: text("compiler_version"),
+    /**
+     * The framework the build was made for, frozen with it. NULL is a build
+     * from before the framework was recorded, and reads as TanStack Start
+     * (`resolveThemeFramework`); a value is read as recorded, never mapped
+     * to another framework.
+     */
+    framework: text("framework"),
     dependenciesJson: text("dependencies_json", { mode: "json" }).$type<
       Record<string, string>
     >(),

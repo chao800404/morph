@@ -17,7 +17,7 @@ import {
   isThemeStartConfigPath,
   validateThemeStartPackageContract,
 } from "./theme-start-toolchain";
-import { themeFramework } from "../theme-framework";
+import { themeFramework, type ThemeFrameworkId } from "../theme-framework";
 import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
 import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contract";
 import {
@@ -53,13 +53,25 @@ const SHA256_DIGEST = /^[0-9a-f]{64}$/;
 export function normalizeRevisionSnapshot(
   snapshot: unknown,
   sourceRevisionId: string,
-  options: { nativeStartBuild?: boolean } = {},
+  options: {
+    nativeStartBuild?: boolean;
+    /**
+     * The framework the build records (`StorefrontThemeBuildDTO.framework`);
+     * absent reads as TanStack Start. One Morph cannot build is refused
+     * before anything else, with `THEME_FRAMEWORK_UNAVAILABLE`.
+     */
+    framework?: string | null;
+  } = {},
 ): {
   files: ThemeCompilerFile[];
   binaryFiles: ThemeBuildBinaryFile[];
   entry: string;
+  framework: ThemeFrameworkId;
   buildMode?: "native";
 } {
+  // Before the files: whatever they hold, a build recorded for a framework
+  // Morph cannot build is not built as one it can.
+  const framework = themeFramework(options.framework);
   if (!snapshot || !Array.isArray(snapshot) || snapshot.length === 0) {
     throw new Error(
       `EMPTY_OR_CORRUPT_REVISION_SNAPSHOT: Source revision ${sourceRevisionId} snapshot is empty or invalid. Zero files found.`,
@@ -316,7 +328,7 @@ export function normalizeRevisionSnapshot(
     // Refused here, before a build is queued, with the plan's own reasons:
     // a configuration Morph cannot build is not something to find out in
     // a container minutes later.
-    const plan = themeFramework().build.native.plan(sortedFiles);
+    const plan = framework.build.native.plan(sortedFiles);
     if (!plan.ok) {
       throw new Error(`${plan.message} (source revision ${sourceRevisionId})`);
     }
@@ -326,6 +338,7 @@ export function normalizeRevisionSnapshot(
     files: sortedFiles,
     binaryFiles,
     entry,
+    framework: framework.id,
     ...(native ? { buildMode: "native" as const } : {}),
   };
 }
@@ -368,11 +381,11 @@ export function materializeThemeBuildInput({
 
   // Normalize files strictly from revision snapshot. First, because a native
   // build has a compiler identity of its own.
-  const { files, binaryFiles, entry, buildMode } = normalizeRevisionSnapshot(
-    revision.snapshot,
-    revision.id,
-    { nativeStartBuild },
-  );
+  const { files, binaryFiles, entry, framework, buildMode } =
+    normalizeRevisionSnapshot(revision.snapshot, revision.id, {
+      nativeStartBuild,
+      framework: build.framework,
+    });
   const defaultCompilerId =
     buildMode === "native" ? NATIVE_START_COMPILER_ID : "tailwind-v4-build";
   const defaultCompilerVersion =
@@ -423,6 +436,7 @@ export function materializeThemeBuildInput({
       files,
       binaryFiles,
       entry,
+      framework,
       ...(build.dependencies
         ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
         : {}),
@@ -451,6 +465,7 @@ export function materializeThemeBuildInput({
     inputHash,
     compilerId,
     compilerVersion,
+    framework,
     ...(build.dependencies
       ? { dependencies: normalizeThemeDependencyMap(build.dependencies) }
       : {}),

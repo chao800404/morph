@@ -1,4 +1,4 @@
-import { themeFramework } from "../theme-framework";
+import { resolveThemeFramework } from "../theme-framework";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
@@ -119,7 +119,6 @@ export function nativeBuildResult(options: {
   startTime: number;
 }): ThemeBuildRunnerResult {
   const { input, routeRegistry, limits, logs, addLog, startTime } = options;
-  const native = themeFramework().build.native;
   const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
     addLog("error", msg);
     return {
@@ -133,6 +132,13 @@ export function nativeBuildResult(options: {
       durationMs: Date.now() - startTime,
     };
   };
+
+  // The framework the build records, not whichever one is the default: an
+  // artifact is collected, verified and described by the rules of the
+  // framework that built it.
+  const framework = resolveThemeFramework(input.framework);
+  if (!framework.ok) return fail("framework", framework.message);
+  const native = framework.framework.build.native;
 
   // A page that read Morph content while prerendering, and was refused,
   // holds component defaults where the author's content belongs; Start

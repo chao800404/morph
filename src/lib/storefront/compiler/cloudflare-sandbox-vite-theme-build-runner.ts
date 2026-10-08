@@ -20,7 +20,7 @@ import type {
 } from "./theme-build-runner.types";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePackageRoot } from "./theme-dependency-policy";
-import { themeFramework } from "../theme-framework";
+import { resolveThemeFramework, themeFramework } from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
   PINNED_SANDBOX_DEPENDENCIES,
@@ -322,6 +322,23 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
+    // Guard 0b: the framework the build records. One Morph cannot build is
+    // refused here, before any workspace exists, and never built as another.
+    const recordedFramework = resolveThemeFramework(input.framework);
+    if (!recordedFramework.ok) {
+      addLog("error", recordedFramework.message);
+      return {
+        success: false,
+        errorMessage: recordedFramework.message,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: recordedFramework.message }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
     // Guard 1: Check source files count limit
     if (input.files.length > this.maxSourceFiles) {
       const msg = `LIMIT_EXCEEDED: Theme exceeds max source files limit of ${this.maxSourceFiles} (received ${input.files.length})`;
@@ -497,7 +514,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             buildThemeRouteRegistry(input.files),
           )
         : undefined;
-      const prepared = themeFramework().planWorkspace({
+      const prepared = themeFramework(input.framework).planWorkspace({
         files: [
           ...input.files,
           ...binaryFiles.map((file) => ({
@@ -810,7 +827,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         });
       }
 
-      themeFramework().build.verifyArtifact({
+      themeFramework(input.framework).build.verifyArtifact({
         artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
         routeRegistry: routeRegistry ?? null,
         contentSnapshot: input.contentSnapshot,
@@ -825,7 +842,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
       const manifest: ThemeBuildArtifactManifest = {
         entry: input.entry,
-        artifactEntry: themeFramework().build.artifactEntry(
+        artifactEntry: themeFramework(input.framework).build.artifactEntry(
           routeRegistry ?? null,
         ),
         filesCount: input.files.length,
@@ -837,7 +854,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         })),
         cssChunks,
         jsChunks,
-        metadata: themeFramework().build.manifestMetadata(
+        metadata: themeFramework(input.framework).build.manifestMetadata(
           routeRegistry ?? null,
         ),
       };
@@ -992,10 +1009,13 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
     const registry = buildThemeRouteRegistry(input.files);
     const routeRegistry = registry.valid ? registry : null;
-    const plan = themeFramework().build.native.plan(input.files, {
-      allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-      prerenderContent,
-    });
+    const plan = themeFramework(input.framework).build.native.plan(
+      input.files,
+      {
+        allowedPackages: nativeAllowedPackages(this.approvedDependencies),
+        prerenderContent,
+      },
+    );
     if (!plan.ok) return fail("native-plan", plan.message);
     const [command, ...args] = plan.command;
     if (command !== "vite") {

@@ -1,4 +1,8 @@
-import { themeFramework } from "../theme-framework";
+import {
+  resolveThemeFramework,
+  type ThemeFrameworkAdapter,
+  type ThemeFrameworkId,
+} from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
   unplannedWorkspaceFiles,
@@ -147,10 +151,11 @@ async function waitForProcessToStop(
 
 function withPreviewServerBase(
   exposedUrl: string,
+  framework: ThemeFrameworkAdapter,
   runtime?: ThemePreviewRuntime,
 ): string {
   const url = new URL(exposedUrl);
-  url.pathname = previewServerPath(runtime);
+  url.pathname = previewServerPath(framework, runtime);
   return url.toString();
 }
 
@@ -254,13 +259,21 @@ export type StartPreviewServerInput = Readonly<{
    * today's client-only preview.
    */
   previewRuntime?: ThemePreviewRuntime;
+  /**
+   * The framework the Theme records. Absent reads as TanStack Start, as
+   * every preview did before frameworks were recorded; one Morph cannot
+   * preview is refused before anything is started, never previewed as
+   * another framework.
+   */
+  framework?: ThemeFrameworkId;
 }>;
 
-/** Where a preview of this runtime is framed, on the exposed origin. */
+/** Where a preview of this framework and runtime is framed, on the exposed origin. */
 export function previewServerPath(
+  framework: ThemeFrameworkAdapter,
   runtime: ThemePreviewRuntime | undefined,
 ): string {
-  return themeFramework().preview.framePath(runtime);
+  return framework.preview.framePath(runtime);
 }
 
 export type StartPreviewServerResult =
@@ -567,6 +580,18 @@ export class CloudflareSandboxVitePreviewServer {
       };
     }
     const previewHost = host.hostname;
+    // Before any container is acquired: a framework Morph cannot preview
+    // costs nothing and changes nothing.
+    const recordedFramework = resolveThemeFramework(input.framework);
+    if (!recordedFramework.ok) {
+      return {
+        ok: false,
+        stage: "preview-framework",
+        errorMessage: recordedFramework.message,
+        logs,
+      };
+    }
+    const framework = recordedFramework.framework;
 
     let session: PreviewServerSession | null = null;
     try {
@@ -646,7 +671,7 @@ export class CloudflareSandboxVitePreviewServer {
 
       const workspaceStartedAt = Date.now();
       const workspacePlanStartedAt = Date.now();
-      const prepared = themeFramework().planWorkspace({
+      const prepared = framework.planWorkspace({
         files: input.files,
         entry: input.entry,
         buildId: input.previewId,
@@ -919,6 +944,7 @@ export class CloudflareSandboxVitePreviewServer {
       }
       const previewUrl = withPreviewServerBase(
         exposedUrl,
+        framework,
         input.previewRuntime,
       );
       observation.address = {

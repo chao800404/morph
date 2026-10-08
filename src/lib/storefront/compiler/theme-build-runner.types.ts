@@ -118,6 +118,8 @@ export type ThemeBuildRunnerInput = Readonly<{
   readBinaryFile?: (digest: string) => Promise<Uint8Array>;
   /** See `StorefrontThemeBuildInput.buildMode`. */
   buildMode?: StorefrontThemeBuildInput["buildMode"];
+  /** See `StorefrontThemeBuildInput.framework`; absent reads as TanStack Start. */
+  framework?: StorefrontThemeBuildInput["framework"];
   /**
    * Whether the build is still this run's to finish: its row is still
    * `building`. A runner asks before it retries anything, so a build that was

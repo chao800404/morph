@@ -17,7 +17,10 @@ import {
   planFencedWrite,
   type FenceLedgerRecord,
 } from "./preview-write-fence";
-import { themeFramework } from "../theme-framework";
+import {
+  resolveThemeFramework,
+  type ThemeFrameworkAdapter,
+} from "../theme-framework";
 import {
   materializeThemeSandboxWorkspace,
   type ThemePreviewRuntime,
@@ -145,12 +148,10 @@ function safeOrigin(url: string | null | undefined): string | null {
 
 function withPreviewServerBase(
   origin: string,
+  framework: ThemeFrameworkAdapter,
   runtime?: ThemePreviewRuntime,
 ): string {
-  return new URL(
-    themeFramework().preview.framePath(runtime),
-    `${origin}/`,
-  ).toString();
+  return new URL(framework.preview.framePath(runtime), `${origin}/`).toString();
 }
 
 function withReadyTimeout<T>(
@@ -342,6 +343,19 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       };
     }
 
+    // The framework the Theme records, before anything is laid out or run;
+    // one Morph cannot preview is not previewed as another.
+    const recordedFramework = resolveThemeFramework(input.framework);
+    if (!recordedFramework.ok) {
+      return {
+        ok: false,
+        stage: "preview-framework",
+        errorMessage: recordedFramework.message,
+        logs,
+      };
+    }
+    const framework = recordedFramework.framework;
+
     const root = this.workspaceRootFor(input.previewId);
     const toolchainFailure = this.toolchainProblem(root);
     if (toolchainFailure) {
@@ -358,7 +372,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const hostWorkspaceRoot = root.split(path.sep).join("/");
 
     const workspacePlanStartedAt = Date.now();
-    const prepared = themeFramework().planWorkspace({
+    const prepared = framework.planWorkspace({
       files: input.files,
       entry: input.entry,
       buildId: input.previewId,
@@ -531,7 +545,11 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           try {
             const child = await this.startChildServer(root, addLog);
             const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
-            const url = withPreviewServerBase(origin, input.previewRuntime);
+            const url = withPreviewServerBase(
+              origin,
+              framework,
+              input.previewRuntime,
+            );
             this.running.set(input.previewId, {
               root,
               workspaceFingerprint: prepared.workspaceFingerprint,
@@ -633,7 +651,11 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           }
 
           const origin = `http://${LOCAL_PREVIEW_HOST}:${boundPort}`;
-          const url = withPreviewServerBase(origin, input.previewRuntime);
+          const url = withPreviewServerBase(
+            origin,
+            framework,
+            input.previewRuntime,
+          );
           this.running.set(input.previewId, {
             root,
             workspaceFingerprint: prepared.workspaceFingerprint,

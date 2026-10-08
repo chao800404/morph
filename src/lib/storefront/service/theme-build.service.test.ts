@@ -88,6 +88,7 @@ beforeEach(() => {
       input_hash text,
       compiler_id text,
       compiler_version text,
+      framework text,
       dependencies_json text,
       content_publication_id text,
       content_dependency text,
@@ -685,6 +686,58 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
     expect(build.status).toBe("failed");
     expect(build.errorMessage).toContain("EMPTY_OR_CORRUPT_REVISION_SNAPSHOT");
+  });
+
+  it("records no framework for a build that names none, and runs it as TanStack Start", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-start", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Start</h1>;" },
+    ]);
+    const seen: Array<string | undefined> = [];
+    const build = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-start",
+      runner: new FakeThemeBuildRunner({
+        shouldSucceed: true,
+        onRun: (input) => {
+          seen.push(input.framework);
+        },
+      }),
+    });
+
+    expect(build.status).toBe("succeeded");
+    expect(build.framework).toBeNull();
+    expect(seen).toEqual(["tanstack-start"]);
+  });
+
+  it("refuses a build recorded for a framework Morph cannot build, and never runs it", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-astro", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Astro</h1>;" },
+    ]);
+    let ran = false;
+    const build = await service.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-astro",
+      framework: "astro",
+      runner: new FakeThemeBuildRunner({
+        shouldSucceed: true,
+        onRun: () => {
+          ran = true;
+        },
+      }),
+    });
+
+    expect(build.status).toBe("failed");
+    expect(build.framework).toBe("astro");
+    expect(build.errorMessage).toMatch(/^THEME_FRAMEWORK_UNAVAILABLE: /);
+    expect(build.diagnosticsJson).toMatchObject({ stage: "materializer" });
+    expect(build.inputHash).toBeNull();
+    expect(ran).toBe(false);
   });
 
   it("ensures an existing succeeded build is never mutated by a subsequent build failure", async () => {

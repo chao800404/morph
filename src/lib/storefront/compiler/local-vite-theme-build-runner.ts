@@ -50,7 +50,7 @@ import {
   runNativeBuildPasses,
 } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
-import { themeFramework } from "../theme-framework";
+import { resolveThemeFramework, themeFramework } from "../theme-framework";
 import {
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
@@ -189,6 +189,23 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "compiler-identity",
           errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    // Guard 0b: the framework the build records. One Morph cannot build is
+    // refused here, before any workspace exists, and never built as another.
+    const recordedFramework = resolveThemeFramework(input.framework);
+    if (!recordedFramework.ok) {
+      addLog("error", recordedFramework.message);
+      return {
+        success: false,
+        errorMessage: recordedFramework.message,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: recordedFramework.message }],
         },
         logs,
         durationMs: Date.now() - startTime,
@@ -641,7 +658,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
           if (prerenderOptions) {
             // Native Start reopens this config in vite.preview(). Use the same
             // platform-owned configuration as Sandbox, never customer config.
-            const plan = themeFramework().planWorkspace({
+            const plan = themeFramework(input.framework).planWorkspace({
               files: input.files,
               entry: input.entry,
               buildId: input.buildId,
@@ -932,7 +949,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       // One rule with the sandbox runner. That runner checks prerendered pages
       // first; this test-only runner used to check them last, so a build
       // missing both now reports the pages, as production always did.
-      themeFramework().build.verifyArtifact({
+      themeFramework(input.framework).build.verifyArtifact({
         artifactPaths: new Set(artifacts.map((artifact) => artifact.path)),
         routeRegistry: routeRegistry ?? null,
         contentSnapshot: input.contentSnapshot,
@@ -946,7 +963,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
       const manifest: ThemeBuildArtifactManifest = {
         entry: input.entry,
-        artifactEntry: themeFramework().build.artifactEntry(
+        artifactEntry: themeFramework(input.framework).build.artifactEntry(
           routeRegistry ?? null,
         ),
         filesCount: input.files.length,
@@ -958,7 +975,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         })),
         cssChunks,
         jsChunks,
-        metadata: themeFramework().build.manifestMetadata(
+        metadata: themeFramework(input.framework).build.manifestMetadata(
           routeRegistry ?? null,
         ),
       };
@@ -1082,7 +1099,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
     const registry = buildThemeRouteRegistry(input.files);
     const routeRegistry = registry.valid ? registry : null;
-    const native = themeFramework().build.native;
+    const native = themeFramework(input.framework).build.native;
     const plan = native.plan(input.files, {
       allowedPackages: nativeAllowedPackages(this.approvedDependencies),
       prerenderContent,

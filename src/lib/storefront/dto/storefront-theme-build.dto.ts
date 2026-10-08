@@ -6,6 +6,7 @@ import type {
 import type { StorefrontContentPublicationItemDTO } from "./storefront-content-publication.dto";
 import type { ThemeCompilerFile } from "@/lib/storefront/compiler/theme-compiler.types";
 import type { ThemeDependencyMap } from "@/lib/storefront/compiler/theme-dependency-policy";
+import type { ThemeFrameworkId } from "@/lib/storefront/theme-framework/theme-framework.types";
 
 export type StorefrontThemeBuildDTO = {
   id: string;
@@ -16,6 +17,13 @@ export type StorefrontThemeBuildDTO = {
   inputHash: string | null;
   compilerId: string | null;
   compilerVersion: string | null;
+  /**
+   * The framework this build was made for, as recorded; absent or null is a
+   * build from before the framework was recorded and reads as TanStack Start.
+   * A string, not `ThemeFrameworkId`: what a row holds is checked where it is
+   * used (`resolveThemeFramework`), and an unknown value is refused there.
+   */
+  framework?: string | null;
   /** Exact package versions frozen into this immutable build request. */
   dependencies?: ThemeDependencyMap | null;
   /** Null/absent keeps legacy source-only builds content-independent. */
@@ -65,6 +73,12 @@ export type StorefrontThemeBuildInput = {
   inputHash: string;
   compilerId: string;
   compilerVersion: string;
+  /**
+   * The framework the build runs through, from the build's record; part of
+   * `inputHash` whenever it is not TanStack Start (theme-compiler-hasher).
+   * The materializer always sets it; absent reads as TanStack Start.
+   */
+  framework?: ThemeFrameworkId;
   dependencies?: ThemeDependencyMap;
   contentSnapshot?: ThemeBuildContentSnapshot;
   /**
