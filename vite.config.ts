@@ -150,30 +150,40 @@ function morphServerOutput(): Plugin {
       },
     },
     generateBundle(_options, bundle) {
+      // Bounded, so a regression cannot flood the build log or print much of
+      // a chunk's source: a few chunks, one short excerpt each.
+      const MAX_CHUNKS = 10;
+      const EXCERPT_BEFORE = 24;
+      const EXCERPT_AFTER = 8;
       const kept: string[] = [];
+      let chunks = 0;
       for (const output of Object.values(bundle)) {
         if (output.type !== "chunk") continue;
         const code = output.code;
-        const samples: string[] = [];
         let count = 0;
+        let first = -1;
         for (let index = 0; index < code.length; index += 1) {
           if (code.charCodeAt(index) <= 0x7f) continue;
           count += 1;
-          if (samples.length < 3) {
-            samples.push(
-              JSON.stringify(code.slice(Math.max(0, index - 30), index + 10)),
-            );
-          }
+          if (first < 0) first = index;
         }
-        if (count > 0) {
+        if (count === 0) continue;
+        chunks += 1;
+        if (kept.length < MAX_CHUNKS) {
+          const excerpt = code.slice(
+            Math.max(0, first - EXCERPT_BEFORE),
+            first + EXCERPT_AFTER,
+          );
           kept.push(
-            `  ${output.fileName}: ${count} character(s), e.g. ${samples.join(", ")}`,
+            `  ${output.fileName}: ${count} character(s), first at ${JSON.stringify(excerpt)}`,
           );
         }
       }
-      if (kept.length > 0) {
+      if (chunks > 0) {
+        const more =
+          chunks > kept.length ? `\n  …and ${chunks - kept.length} more` : "";
         this.warn(
-          `${kept.length} server chunk(s) keep characters above U+007F, which esbuild leaves as written in regular expressions and tagged templates. This is a notice, not an error; such a chunk is stored two bytes per character in each Worker isolate.\n${kept.join("\n")}`,
+          `${chunks} server chunk(s) keep characters above U+007F, which esbuild leaves as written in regular expressions and tagged templates. This is a notice, not an error; such a chunk is stored two bytes per character in each Worker isolate.\n${kept.join("\n")}${more}`,
         );
       }
     },
