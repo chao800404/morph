@@ -283,6 +283,20 @@ export default function Hero({ items = [] }) {
       expect(out).not.toContain("<span data-storefront-field");
     });
 
+    it("wraps a section bound through a page variable the same way", () => {
+      const out = run(
+        `import { morph } from "../morph/content";
+export default async function Page() {
+  const home = await morph.pages.get("/home");
+  return <main><Hero {...home["starter-hero"]} /><Promo {...home.promo} /></main>;
+}
+`,
+        "src/routes/index.tsx",
+      );
+      expect(out).toContain('data-storefront-section-id="starter-hero"');
+      expect(out).toContain('data-storefront-section-id="promo"');
+    });
+
     it("wraps nothing the component never declared", () => {
       const out = run(`export default function Hero({ actionLabel, action }) {
   return <ThemeLink link={action}>{actionLabel}</ThemeLink>;

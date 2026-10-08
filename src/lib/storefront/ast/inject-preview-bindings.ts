@@ -4,6 +4,10 @@ import {
   contentFieldsSidecarPath,
   readComponentContentFields,
 } from "./theme-content-fields-declaration";
+import {
+  collectPageVariables,
+  readPageBindingKey,
+} from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 
 /**
@@ -380,9 +384,14 @@ function declaredFields(file: {
  * twice on a page — so the only place the answer exists is where its content
  * is handed to it: `<Hero {...content("starter-hero")} />`.
  */
-function readSectionSlotId(openingElement: any): string | null {
+function readSectionSlotId(
+  openingElement: any,
+  pageVariables: ReadonlySet<string>,
+): string | null {
   for (const attribute of openingElement?.attributes ?? []) {
     if (attribute?.type !== "JSXSpreadAttribute") continue;
+    const pageKey = readPageBindingKey(attribute.argument, pageVariables);
+    if (pageKey !== null) return pageKey.length > 0 ? pageKey : null;
     const call = attribute.argument;
     if (
       call?.type !== "CallExpression" ||
@@ -602,6 +611,7 @@ export function injectPreviewBindings(
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
+    const pageVariables = collectPageVariables(ast);
     const insertions: Insertion[] = [];
     const slotIds: string[] = [];
     // Component rows the repeated-field branch has already wrapped. The row is
@@ -719,7 +729,7 @@ export function injectPreviewBindings(
         // a component's element and an attribute put there becomes a prop the
         // component is free to ignore — it would never reach the page. The
         // wrapper is taken out of layout so the page looks the same.
-        const slotId = readSectionSlotId(opening);
+        const slotId = readSectionSlotId(opening, pageVariables);
         if (slotId && node.start != null && node.end != null) {
           slotIds.push(slotId);
           insertions.push({

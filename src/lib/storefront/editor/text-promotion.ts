@@ -8,6 +8,11 @@ import { isThemeSectionSourcePath } from "../theme-section-convention";
 import { contentFieldsSidecarPath } from "../ast/theme-content-fields-declaration";
 import { parseColocatedContentFields } from "../ast/theme-content-fields-source";
 import { isValidThemeContentSlotId } from "../theme-content-slots";
+import {
+  collectPageVariables,
+  isPageBindingExpression,
+  readPageBindingKey,
+} from "../ast/theme-content-binding";
 
 /**
  * Whether fixed text written in a component can become a Design-editable
@@ -372,10 +377,18 @@ function hasRestProps(pattern: AnyNode): boolean {
   );
 }
 
-function readSlotId(element: AnyNode): string | null {
+function readSlotId(
+  element: AnyNode,
+  pageVariables: ReadonlySet<string>,
+): string | null {
   for (const attribute of element.openingElement?.attributes ?? []) {
     const call =
       attribute?.type === "JSXSpreadAttribute" ? attribute.argument : null;
+    const pageKey = readPageBindingKey(call, pageVariables);
+    if (pageKey !== null) {
+      if (isValidThemeContentSlotId(pageKey)) return pageKey;
+      continue;
+    }
     if (
       call?.type === "CallExpression" &&
       call.callee?.type === "Identifier" &&
@@ -404,8 +417,14 @@ function callSiteAfterContent(
   const ast = parseSource(source);
   if (!ast) return { found: false };
   let result: { explicit: string[]; opaque: boolean } | null = null;
+  const pageVariables = collectPageVariables(ast);
   walk(ast.program, [], (node) => {
-    if (node.type !== "JSXElement" || readSlotId(node) !== slotId) return;
+    if (
+      node.type !== "JSXElement" ||
+      readSlotId(node, pageVariables) !== slotId
+    ) {
+      return;
+    }
     const explicit: string[] = [];
     let opaque = false;
     let afterContent = false;
@@ -413,9 +432,10 @@ function callSiteAfterContent(
       if (attribute?.type === "JSXSpreadAttribute") {
         const call = attribute.argument;
         const isContent =
-          call?.type === "CallExpression" &&
-          call.callee?.type === "Identifier" &&
-          call.callee.name === "content";
+          isPageBindingExpression(call, pageVariables) ||
+          (call?.type === "CallExpression" &&
+            call.callee?.type === "Identifier" &&
+            call.callee.name === "content");
         if (isContent) {
           afterContent = true;
           continue;

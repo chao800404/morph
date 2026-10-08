@@ -909,3 +909,100 @@ function Home() {
     ]);
   });
 });
+
+describe("page-object content bindings", () => {
+  const pageRoute = `import { createFileRoute } from "@tanstack/react-router";
+import { morph } from "../morph/content";
+import Hero from "../components/Hero";
+import Promo from "../components/Promo";
+
+export const Route = createFileRoute("/")({ component: Home });
+async function Home() {
+  const home = await morph.pages.get("/home");
+  return (
+    <main>
+      <Promo {...home["promo-slot"]} />
+      <Hero {...home.hero} />
+    </main>
+  );
+}`;
+  const withRoute = (content: string) =>
+    files.map((file) =>
+      file.path === "src/routes/index.tsx" ? { ...file, content } : file,
+    );
+
+  it('derives the same sections from home.key as from content("key")', () => {
+    const result = deriveThemeRouteSections(
+      withRoute(pageRoute),
+      "src/routes/index.tsx",
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.hasContentImport).toBe(true);
+    expect(
+      result.sections.map((section) => ({
+        id: section.slotId,
+        type: section.sectionType,
+        source: section.componentSourcePath,
+      })),
+    ).toEqual([
+      { id: "promo-slot", type: "promo", source: "src/components/Promo.tsx" },
+      { id: "hero", type: "hero", source: "src/components/Hero.tsx" },
+    ]);
+  });
+
+  it("does not guess a binding from a variable it cannot resolve", () => {
+    const result = deriveThemeRouteSections(
+      withRoute(
+        pageRoute.replace('await morph.pages.get("/home")', "await loadPage()"),
+      ),
+      "src/routes/index.tsx",
+    );
+
+    expect(result.sections).toEqual([]);
+  });
+
+  it("flags a spread off the page that names no usable key as an invalid binding", () => {
+    const dynamicRoute = `import { morph } from "../morph/content";
+import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+async function Home() {
+  const home = await morph.pages.get("/home");
+  return <main><Promo {...home[key]} /></main>;
+}`;
+    const result = deriveThemeRouteSections(
+      [
+        { path: "src/routes/index.tsx", content: dynamicRoute },
+        {
+          path: "src/components/sections/Promo.tsx",
+          content: "export default function Promo(){return null;}",
+        },
+      ],
+      "src/routes/index.tsx",
+    );
+
+    expect(result.sections).toEqual([]);
+    expect(result.unboundSections).toHaveLength(1);
+    expect(result.unboundSections[0]).toMatchObject({
+      componentName: "Promo",
+      canBind: false,
+    });
+  });
+
+  it("removes one section by editing only its own element", () => {
+    const removed = removeThemeRouteSection(
+      pageRoute,
+      withRoute(pageRoute),
+      "src/routes/index.tsx",
+      "hero",
+    );
+
+    expect(removed.diagnostic).toBeUndefined();
+    expect(removed.changed).toBe(true);
+    expect(removed.code).toContain(
+      'const home = await morph.pages.get("/home");',
+    );
+    expect(removed.code).toContain('<Promo {...home["promo-slot"]} />');
+    expect(removed.code).not.toContain("<Hero");
+  });
+});
