@@ -1152,10 +1152,21 @@ export function getGeneratedThemePackageDeclarations(
   return hasGeneratedPackage ? loadedThemePackageDeclarations : [];
 }
 
-/** Loads and caches the code-split declaration payload. */
+/**
+ * Loads and caches the code-split declaration payload.
+ *
+ * Browser only. On the server it resolves to nothing, as
+ * `getGeneratedThemePackageDeclarations()` always has there: the only caller
+ * is an effect, which never runs during SSR. The check is the build-time
+ * `import.meta.env.SSR`, so the server build drops the `import()` and never
+ * emits the payload's chunk. An emitted chunk is compiled into every Worker
+ * isolate at start whether or not it is imported, about 6.3 MiB for this one
+ * (docs/evidence/main-worker-memory-2026-10.md, 3.5).
+ */
 export function preloadGeneratedThemePackageDeclarations(): Promise<
   readonly GeneratedThemePackageDeclaration[]
 > {
+  if (import.meta.env.SSR) return Promise.resolve(loadedThemePackageDeclarations);
   themePackageDeclarationsPromise ??= import(
     "./editor-code-package-declarations.generated"
   )
