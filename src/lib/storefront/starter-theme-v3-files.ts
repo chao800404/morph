@@ -2002,8 +2002,11 @@ export const loadContentSlots = createIsomorphicFn()
 /**
  * The content module before it gained `morph.pages.get`: slot values by id,
  * read through the React context, with no way to fetch a page by path.
- * Kept verbatim so an untouched copy can be upgraded and an edited one left
- * alone.
+ *
+ * Kept verbatim but not upgraded yet: existing workspaces keep this module
+ * until the Starter upgrade can tell a source-first workspace is on Start (it
+ * has no morph.theme.json) and stops re-adding components the workspace keeps
+ * under `src/components/sections/`. Tests use it to show no plan replaces it.
  */
 export const LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE = `import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
