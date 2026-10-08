@@ -2,7 +2,16 @@ import type { StorefrontTemplateType } from "@/db/storefront.schema";
 
 export type RouteTemplateType = Exclude<StorefrontTemplateType, "layout">;
 
-function normalizeRoutePath(path: string): string {
+/**
+ * A request path as Core reads content for it: no query, no trailing slash,
+ * `/` for the root. `/about` and `/about/` are one key; no two different
+ * paths become one.
+ *
+ * Self-contained on purpose: a build's sealed content server embeds this
+ * function's own source (astro-native-prerender.ts), so prerendering keys a
+ * read exactly as Core does at runtime rather than by a second copy.
+ */
+export function normalizeRoutePath(path: string): string {
   return (path || "/").split("?")[0]!.replace(/\/+$/, "") || "/";
 }
 

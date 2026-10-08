@@ -62,6 +62,12 @@ jobs:
       - name: Check migration timestamps
         run: pnpm check:sql-timestamps
 
+      # The Astro toolchain the Sandbox image installs, from the same lockfile,
+      # so the Astro prerender build tests run against what a build container
+      # runs. Without it those tests fail in CI rather than skip.
+      - name: Install the Astro toolchain
+        run: pnpm toolchain:astro
+
       - name: Test
         run: pnpm test
 
