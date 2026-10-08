@@ -354,3 +354,46 @@ node scripts/make-variants.mjs && scripts/run-experiments.sh
 node scripts/analyze.mjs snapshots/<snapshot> raw/analysis/<name>.json
 node scripts/summarize.mjs   # raw/summary.md
 ```
+
+## 7. Follow-up: candidate #3 applied (2026-10-08)
+
+Candidate #3 (section 4) as a product change, measured on its own. The
+server build no longer emits the declarations chunk: its only loader,
+`preloadGeneratedThemePackageDeclarations`, returns early under the
+build-time `import.meta.env.SSR`, so the SSR build drops the `import()`.
+Its only caller is an effect, which never runs during SSR, so the server
+never loaded the chunk and still does not.
+
+Builds: `origin/main` @ `461a901` (baseline) and the same commit with the
+change, both an unmodified `pnpm build`.
+
+| Build output | Baseline | With the change |
+| --- | --- | --- |
+| Server chunks | 682 | 681 |
+| Server `assets` bytes | 22,649,770 | 19,302,179 (−3,347,591) |
+| Server files holding the declarations | 1 | 0 |
+| Client output | — | byte-identical to the baseline (`diff -rq`, 426 files) |
+
+Memory, the same harness as sections 1–2 (a copy of it, with
+`scripts/seed.mjs` taking the variant name), a fresh state with migrations
+through 0075, the `full` sequence, 3 runs each, isolate used after full GC
+(MiB), load average 2.0–3.9 for all six runs:
+
+| State | Baseline (min–max) | With the change (min–max) | Difference (medians) |
+| --- | --- | --- | --- |
+| Loaded | 52.72–52.72 | 46.42–46.42 | −6.30 |
+| After public SSR | 73.02–73.04 | 66.65–66.68 | −6.37 |
+| After the editor session | 82.24–82.28 | 75.88–75.92 | −6.34 |
+| All chunks evaluated | 89.50–89.54 | 83.13–83.17 | −6.36 |
+
+This matches the post-processed `nodecl` variant (−6.3 MiB, section 2).
+Pre-GC totals moved as GC timing allows: the editor session's fell from
+129.7–150.7 to 122.1–130.9 MiB, while the loaded state's rose from
+62.7–63.9 to 68.3–68.5 MiB. Pre-GC figures are not used for the
+comparison (section 5.3).
+
+Every run of both builds returned the same SSR statuses, completed all
+17 editor steps with every server-function POST answering 200 (one run with
+the change made 7 POSTs instead of 6), and imported every chunk with no
+failures. The limits in section 5 apply unchanged: local workerd, one
+request flow, production accounting unknown.
