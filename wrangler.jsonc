@@ -7,6 +7,11 @@
   "name": "morph",
   "compatibility_date": "2026-03-24",
   "compatibility_flags": ["nodejs_compat"],
+  // The server build prints chunks without line breaks to save isolate memory
+  // (morphServerOutput in vite.config.ts). Its source maps go to Cloudflare
+  // with the deploy, so stack traces in Workers Logs map back to Morph's
+  // source. They are uploaded as source maps, not served as static assets.
+  "upload_source_maps": true,
   // User-owned entry instead of "@tanstack/react-start/server-entry".
   // See src/server.ts for why (TanStack/router#7285 breaks SSR HMR).
   "main": "src/server.ts",
