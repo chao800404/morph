@@ -91,6 +91,7 @@ beforeEach(() => {
       input_hash text,
       compiler_id text,
       compiler_version text,
+      framework text,
       dependencies_json text,
       content_publication_id text,
       content_dependency text,

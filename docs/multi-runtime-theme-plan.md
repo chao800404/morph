@@ -113,6 +113,10 @@ L1 能通用，是因為內容配對、內容依賴的證明、Build Preview、r
 - 產生的 `vite.config.ts` 文字與入口檔仍由 `theme-sandbox-workspace.ts` 產生，屬於 TanStack Start
   adapter 的內部實作；第 3 步原生建置時改為執行專案自己的設定。
 - 目前只有一個框架，`themeFramework()` 對所有 Theme 回傳它，包括沒有路由的舊單一入口 Theme。
+  （2026-10-08，Astro 計畫 A1）adapter 改為依紀錄選擇：build 記錄框架（`storefront_theme_builds.framework`，
+  NULL 為 TanStack Start），`resolveThemeFramework` 是唯一把「沒有紀錄」讀成 Start 的地方；`astro` 只是 id，
+  選到時以 `THEME_FRAMEWORK_UNAVAILABLE` 拒絕。Live Preview 的啟動輸入也帶框架，但網站層級的紀錄要到第 6 步
+  （建立網站時選擇框架）才有，目前沒有呼叫者傳入，一律讀成 Start。
 
 ## 檔案語言接入層（Source adapter）
 

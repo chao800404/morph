@@ -9,6 +9,7 @@ import type {
   StorefrontThemeBuildDTO,
   ThemeBuildContentSnapshot,
 } from "@/lib/storefront/dto/storefront-theme-build.dto";
+import type { ThemeFrameworkId } from "@/lib/storefront/theme-framework/theme-framework.types";
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import {
@@ -29,6 +30,7 @@ function mapBuildRowToDTO(
     inputHash: row.inputHash,
     compilerId: row.compilerId,
     compilerVersion: row.compilerVersion,
+    framework: row.framework ?? null,
     dependencies: row.dependenciesJson ?? null,
     contentPublicationId: row.contentPublicationId ?? null,
     contentDependency: row.contentDependency ?? null,
@@ -166,6 +168,8 @@ export const storefrontThemeBuildDal = {
       createdBy?: string;
       dependencies?: Readonly<Record<string, string>>;
       contentPublicationId?: string;
+      /** Absent records nothing, which reads as TanStack Start. */
+      framework?: ThemeFrameworkId;
     },
   ): Promise<StorefrontThemeBuildDTO> {
     const isThemeOwner = await this.verifyThemeOwnership(storefrontId, themeId);
@@ -203,6 +207,7 @@ export const storefrontThemeBuildDal = {
         themeId,
         sourceRevisionId: options.sourceRevisionId,
         contentPublicationId: options.contentPublicationId ?? null,
+        framework: options.framework ?? null,
         dependenciesJson: options.dependencies
           ? { ...options.dependencies }
           : null,

@@ -2,14 +2,39 @@ import type { ThemeBuildContentSnapshot } from "../dto/storefront-theme-build.dt
 import type { NativePrerenderContent } from "../compiler/theme-prerender-content";
 import type { ThemeRouteRegistry } from "../compiler/theme-route-registry";
 import type {
-  NativeStartArtifact,
-  NativeStartBuildPlan,
-} from "./tanstack-start-native-build";
+  NativeThemeArtifact,
+  NativeThemeBuildPlan,
+} from "./cloudflare-native-build";
 import type {
   PlanThemeWorkspaceInput,
   PrepareThemeWorkspaceResult,
   ThemePreviewRuntime,
 } from "../compiler/theme-sandbox-workspace";
+
+/**
+ * Every framework id Morph knows of. Knowing an id is not supporting it: an
+ * id is available only when `THEME_FRAMEWORKS` has an adapter for it
+ * (theme-framework/index.ts), and selecting one that has none is refused with
+ * `THEME_FRAMEWORK_UNAVAILABLE`, never served by another framework.
+ *
+ * `astro` is named ahead of its adapter (docs/astro-theme-plan.md, A1) so a
+ * build can record it and be refused for it; nothing offers it to anyone yet.
+ */
+export const THEME_FRAMEWORK_IDS = ["tanstack-start", "astro"] as const;
+
+export type ThemeFrameworkId = (typeof THEME_FRAMEWORK_IDS)[number];
+
+/**
+ * The framework a record that names none is: every build, preview and
+ * release from before frameworks were recorded is TanStack Start, the only
+ * framework there was.
+ */
+export const UNRECORDED_THEME_FRAMEWORK: ThemeFrameworkId = "tanstack-start";
+
+export type ThemeFrameworkSourceFile = Readonly<{
+  path: string;
+  content?: string | null;
+}>;
 
 /**
  * What a front-end framework contributes to Morph, and nothing else.
@@ -30,13 +55,6 @@ import type {
  * importing them. File-language work (parse, source locations, content
  * fields, rewrite) is a separate layer: src/lib/storefront/source-language/.
  */
-export type ThemeFrameworkId = "tanstack-start";
-
-export type ThemeFrameworkSourceFile = Readonly<{
-  path: string;
-  content?: string | null;
-}>;
-
 export type ThemeFrameworkAdapter = Readonly<{
   id: ThemeFrameworkId;
   /** Whether these source files are a project written for this framework. */
@@ -78,10 +96,10 @@ export type ThemeFrameworkAdapter = Readonly<{
           allowedPackages?: readonly string[];
           prerenderContent?: NativePrerenderContent;
         }>,
-      ): NativeStartBuildPlan;
+      ): NativeThemeBuildPlan;
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
-      ): NativeStartArtifact;
+      ): NativeThemeArtifact;
       artifactEntry: string;
       verifyArtifact(input: {
         artifactPaths: ReadonlySet<string>;

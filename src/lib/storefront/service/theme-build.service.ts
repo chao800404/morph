@@ -19,6 +19,7 @@ import {
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
+import type { ThemeFrameworkId } from "@/lib/storefront/theme-framework";
 
 export type RequestPreviewBuildOptions = {
   storefrontId: string;
@@ -38,6 +39,11 @@ export type RequestPreviewBuildOptions = {
   dependencies?: Readonly<Record<string, string>>;
   /** Existing, sealed content publication; never client-supplied documents. */
   contentPublicationId?: string;
+  /**
+   * The framework the site records, frozen into the build. Absent records
+   * nothing, which reads as TanStack Start; nothing records another yet.
+   */
+  framework?: ThemeFrameworkId;
 };
 
 export class ThemeBuildService {
@@ -86,6 +92,7 @@ export class ThemeBuildService {
           inputHash: null,
           compilerId: options.compilerIdentity?.compilerId ?? null,
           compilerVersion: options.compilerIdentity?.compilerVersion ?? null,
+          framework: options.framework ?? null,
           dependencies: options.dependencies ?? null,
           contentPublicationId: options.contentPublicationId ?? null,
           artifactPrefix: null,
@@ -147,6 +154,7 @@ export class ThemeBuildService {
         createdBy: options.createdBy,
         dependencies: options.dependencies,
         contentPublicationId: options.contentPublicationId,
+        ...(options.framework ? { framework: options.framework } : {}),
       },
     );
 
