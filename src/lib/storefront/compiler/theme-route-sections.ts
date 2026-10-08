@@ -8,6 +8,12 @@ import {
   readComponentSourcePaths,
   resolveThemeContentCapabilitiesFromFiles,
 } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  NO_PAGE_VARIABLES,
+  collectPageVariables,
+  isPageBindingExpression,
+  readPageBindingKey,
+} from "@/lib/storefront/ast/theme-content-binding";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 
 type ThemeSourceFile = Readonly<{ path: string; content?: string | null }>;
@@ -210,19 +216,27 @@ function walkWithParent(
   }
 }
 
-function readSlotId(node: any): string | null {
+function readSlotId(
+  node: any,
+  pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
+): string | null {
   if (node?.type !== "JSXElement") return null;
   for (const attribute of node.openingElement?.attributes ?? []) {
-    const call =
+    const spread =
       attribute?.type === "JSXSpreadAttribute" ? attribute.argument : null;
+    const pageKey = readPageBindingKey(spread, pageVariables);
+    if (pageKey !== null) {
+      if (isValidThemeContentSlotId(pageKey)) return pageKey;
+      continue;
+    }
     if (
-      call?.type !== "CallExpression" ||
-      call.callee?.type !== "Identifier" ||
-      call.callee.name !== "content"
+      spread?.type !== "CallExpression" ||
+      spread.callee?.type !== "Identifier" ||
+      spread.callee.name !== "content"
     ) {
       continue;
     }
-    const argument = call.arguments?.[0];
+    const argument = spread.arguments?.[0];
     if (
       argument?.type === "StringLiteral" &&
       isValidThemeContentSlotId(argument.value)
@@ -246,13 +260,17 @@ function sourceLocationFor(routeSourcePath: string, node: any): string | null {
     : null;
 }
 
-function hasContentSpread(node: any): boolean {
+function hasContentSpread(
+  node: any,
+  pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
+): boolean {
   return (node?.openingElement?.attributes ?? []).some(
     (attribute: any) =>
       attribute?.type === "JSXSpreadAttribute" &&
-      attribute.argument?.type === "CallExpression" &&
-      attribute.argument.callee?.type === "Identifier" &&
-      attribute.argument.callee.name === "content",
+      (isPageBindingExpression(attribute.argument, pageVariables) ||
+        (attribute.argument?.type === "CallExpression" &&
+          attribute.argument.callee?.type === "Identifier" &&
+          attribute.argument.callee.name === "content")),
   );
 }
 
@@ -350,12 +368,13 @@ function parsePositionedSections(
   const sections: PositionedSection[] = [];
   const hasContentImport = Array.from(imports.values()).some(
     ({ imported, sourcePath }) =>
-      imported === "content" &&
+      (imported === "content" || imported === "morph") &&
       normalizePath(sourcePath) === "src/morph/content.ts",
   );
+  const pageVariables = collectPageVariables(ast);
   const seenSlots = new Set<string>();
   walkWithParent(ast.program, null, (node, parent) => {
-    const slotId = readSlotId(node);
+    const slotId = readSlotId(node, pageVariables);
     if (!slotId) return;
     const componentName = jsxIdentifier(node);
     const imported = componentName ? imports.get(componentName) : null;
@@ -425,7 +444,7 @@ function parsePositionedSections(
     const imported = imports.get(componentName);
     if (!imported || imported.missing) return;
     const option = addableBySource.get(normalizePath(imported.sourcePath));
-    if (!option || readSlotId(node)) return;
+    if (!option || readSlotId(node, pageVariables)) return;
     const sourceStart = node.start;
     const sourceEnd = node.end;
     const sourceLocation = sourceLocationFor(normalizedRoutePath, node);
@@ -436,7 +455,7 @@ function parsePositionedSections(
     ) {
       return;
     }
-    const hasInvalidBinding = hasContentSpread(node);
+    const hasInvalidBinding = hasContentSpread(node, pageVariables);
     const canBind = !hasInvalidBinding && isDirectSectionPosition(parent);
     unboundSections.push({
       componentRef: option.componentRef,
@@ -1530,7 +1549,7 @@ function insertContentSpread(
         "The section source changed since it was listed. Refresh the route and try again.",
     };
   }
-  if (hasContentSpread(target)) {
+  if (hasContentSpread(target, collectPageVariables(ast))) {
     return {
       code: source,
       changed: false,
