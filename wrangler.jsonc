@@ -117,18 +117,34 @@
       "new_sqlite_classes": ["BuildPreviewSandbox"],
     },
   ],
+  // Instance sizes from the local measurements in
+  // docs/evidence/container-sizing-2026-10.md. Without `instance_type` every
+  // container is `lite` (256 MiB), where all three workloads were OOM-killed.
   "containers": [
+    // Builds and deployments. Sized by CPU: each build command has a fixed
+    // 120 s budget, and ¼ vCPU timed out. 1 vCPU passed every replay; 3 GiB
+    // (the least Cloudflare allows per vCPU) is 1.6× the largest unconstrained
+    // peak (1.9 GiB). The disk matches `basic`'s, which holds the image.
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile.sandbox",
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 3072,
+        "disk_mb": 4000,
+      },
     },
+    // Live Preview: peaks under 520 MiB while starting, settles near 380 MiB.
     {
       "class_name": "PreviewSandbox",
       "image": "./Dockerfile.sandbox",
+      "instance_type": "basic",
     },
+    // Build Preview: under 460 MiB.
     {
       "class_name": "BuildPreviewSandbox",
       "image": "./Dockerfile.sandbox",
+      "instance_type": "basic",
     },
   ],
   // IMPORTANT: Do NOT put BETTER_AUTH_SECRET in vars!
