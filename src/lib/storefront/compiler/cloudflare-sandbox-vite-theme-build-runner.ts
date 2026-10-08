@@ -32,7 +32,9 @@ import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
 import {
   SANDBOX_START_BUDGET_MS,
+  SandboxStartProbeError,
   startBuildSandbox,
+  type SandboxStartProbeResult,
 } from "./sandbox-build-start";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
 import {
@@ -93,6 +95,12 @@ export interface CloudflareSandboxSession {
   ): Promise<CloudflareSandboxExecResult>;
   killProcess?(pid?: number): Promise<void>;
   destroy(): Promise<void>;
+  /**
+   * The start probe, run inside the build Sandbox's Durable Object
+   * (src/server/build-sandbox.ts) so a start failure keeps its structured
+   * fields. A session without it is probed with `exec`.
+   */
+  probeStart?(timeoutMs: number): Promise<SandboxStartProbeResult>;
 }
 
 export interface CloudflareSandboxProvider {
@@ -440,16 +448,21 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         const startDeadline = startTime + SANDBOX_START_BUDGET_MS;
         sandbox = await startBuildSandbox({
           acquire,
-          probe: (session) => {
+          probe: async (session) => {
             const timeout = Math.max(
               1,
               Math.min(60_000, startDeadline - Date.now()),
             );
-            return session.exec("true", {
-              cwd: "/",
-              timeout,
-              timeoutMs: timeout,
-            });
+            if (!session.probeStart) {
+              return session.exec("true", {
+                cwd: "/",
+                timeout,
+                timeoutMs: timeout,
+              });
+            }
+            const probed = await session.probeStart(timeout);
+            if (!probed.ok) throw new SandboxStartProbeError(probed);
+            return probed;
           },
           destroy: (session) => session.destroy(),
           stillRunning: input.stillRunning,

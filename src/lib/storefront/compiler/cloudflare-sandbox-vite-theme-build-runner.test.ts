@@ -538,6 +538,100 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     ).toBe(true);
   });
 
+  it("starts the container again when the Durable Object's probe reports a failed start", async () => {
+    // What a real session does: the probe runs inside the Durable Object and
+    // answers with a value, because a thrown SDK error reaches the caller
+    // with its message only. The answer is cloned as RPC would.
+    const failed = createMockSandbox({
+      probeStart: vi.fn(async () =>
+        structuredClone({
+          ok: false as const,
+          name: "SandboxError",
+          message: "Container failed to start: Container failed to start",
+          code: "INTERNAL_ERROR",
+          context: { phase: "startup" },
+        }),
+      ),
+    });
+    const started = createMockSandbox({
+      probeStart: vi.fn(async () => ({ ok: true as const })),
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi
+        .fn()
+        .mockResolvedValueOnce(failed.session)
+        .mockResolvedValueOnce(started.session),
+    };
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => <h1>Home</h1>;",
+          isEntry: true,
+        },
+      ]),
+    );
+
+    expect(result.success).toBe(true);
+    expect(provider.getSandbox).toHaveBeenCalledTimes(2);
+    expect(failed.session.destroy).toHaveBeenCalledTimes(1);
+    // The probe is the Durable Object's, not an `exec` from here.
+    expect(failed.session.exec).not.toHaveBeenCalled();
+    expect(failed.writtenFiles.size).toBe(0);
+    expect(vi.mocked(started.session.probeStart!).mock.calls[0]![0]).toBe(
+      60_000,
+    );
+    expect(
+      vi
+        .mocked(started.session.exec)
+        .mock.calls.some(([command]) => command === "true"),
+    ).toBe(false);
+    expect(
+      result.logs?.some((log) =>
+        log.message.includes(
+          "Attempt 1 failed to start the container (startup)",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not start again when the Durable Object's probe reports some other failure", async () => {
+    const mock = createMockSandbox({
+      probeStart: vi.fn(async () => ({
+        ok: false as const,
+        name: "Error",
+        message: "Command failed",
+        code: null,
+        context: {},
+      })),
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => <h1>Home</h1>;",
+          isEntry: true,
+        },
+      ]),
+    );
+
+    expect(result.success).toBe(false);
+    expect(provider.getSandbox).toHaveBeenCalledTimes(1);
+    expect(mock.session.destroy).toHaveBeenCalledTimes(1);
+    expect(mock.writtenFiles.size).toBe(0);
+  });
+
   it("does not start again once the container answered, even for a start-coded error", async () => {
     // The probe answered, so the workspace write that fails may have taken
     // effect: this is no longer the start phase, and nothing is retried.

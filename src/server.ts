@@ -44,7 +44,7 @@ if (import.meta.hot) {
   });
 }
 
-export { Sandbox } from "@cloudflare/sandbox";
+export { Sandbox } from "@/server/build-sandbox";
 export { PreviewSandbox } from "@/server/preview-sandbox";
 export { BuildPreviewSandbox } from "@/server/build-preview-sandbox";
 // Carries a container's outbound requests to its class's outbound policy.
