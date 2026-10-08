@@ -3,7 +3,11 @@ import {
   createDefaultStorefrontHomeDocument,
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
-import { LEGACY_STARTER_THEME_INDEX_SOURCE } from "../starter-theme-v3-files";
+import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_INDEX_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "../starter-theme-v3-files";
 
 const mocks = vi.hoisted(() => ({
   getDb: vi.fn(),
@@ -72,10 +76,10 @@ function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
   return db;
 }
 
-function createLegacyStarterDb() {
+function createLegacyStarterDb(starterTemplateVersion = 2) {
   const results = [
-    [{ metadata: { starterTemplateVersion: 2 } }],
-    [{ metadata: { starterTemplateVersion: 2 } }],
+    [{ metadata: { starterTemplateVersion } }],
+    [{ metadata: { starterTemplateVersion } }],
     [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
     [{ id: "product-template" }],
     [{ id: "layout-template" }],
@@ -199,6 +203,65 @@ describe("storefrontDal starter workspace provisioning", () => {
         createdBy: "user-a",
       }),
     );
+  });
+
+  describe("a Theme on Starter version 27", () => {
+    // The version before morph.pages.get. Without the bump to 28 the upgrade
+    // never ran for these, however exact the byte match below.
+    const workspace = (content: string) => [
+      {
+        id: "manifest-file",
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          name: "Starter",
+          entry: "src/routes/index.tsx",
+          router: { framework: "tanstack-start" },
+          components: {},
+        }),
+        version: 3,
+      },
+      { id: "content-file", path: "src/morph/content.ts", content, version: 5 },
+    ];
+    const savedContentModule = () =>
+      (mocks.saveFilesBatch.mock.calls[0]?.[2] as
+        | { path: string; content?: string; expectedFileId?: string; expectedVersion?: number }[]
+        | undefined)?.find((file) => file.path === "src/morph/content.ts");
+
+    it("upgrades an untouched content module, guarded by its id and version", async () => {
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
+
+      await expect(
+        storefrontDal.ensureStoredStarterPreview({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          createdBy: "user-a",
+        }),
+      ).resolves.toBe(true);
+
+      expect(savedContentModule()).toMatchObject({
+        content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+        expectedFileId: "content-file",
+        expectedVersion: 5,
+      });
+    });
+
+    it("leaves a content module the author edited as it is", async () => {
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine"),
+      );
+
+      await storefrontDal.ensureStoredStarterPreview({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        createdBy: "user-a",
+      });
+
+      expect(savedContentModule()).toBeUndefined();
+    });
   });
 
   it("does not mutate a theme outside the requested storefront", async () => {
