@@ -35,6 +35,7 @@ import { calculateThemeSourceSha256 } from "../storage/cloudflare-r2-theme-sourc
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 /**
  * TanStack Start behaviour of a built Theme, in the Worker its build produces.
@@ -65,6 +66,7 @@ const input = (
   inputHash: "c".repeat(64),
   compilerId: "tailwind-v4-build",
   compilerVersion: "4.1.17",
+  toolchainId: START_TOOLCHAIN.id,
   files,
 });
 

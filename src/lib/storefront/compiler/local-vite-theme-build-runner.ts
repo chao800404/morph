@@ -51,6 +51,7 @@ import {
 } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
 import { resolveThemeFramework, themeFramework } from "../theme-framework";
+import { themeToolchainById } from "../theme-framework/theme-toolchains";
 import {
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
@@ -206,6 +207,33 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "framework",
           errors: [{ severity: "error", message: recordedFramework.message }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    // Guard 0c: the toolchain the build records must be a registered one, for
+    // its framework; a build without one is refused, as in the Sandbox. This
+    // runner builds with the checkout's own packages, not the Sandbox
+    // toolchain, so it checks no manifest: a local build says nothing about
+    // the toolchain identity it records. It is for development, not a sandbox.
+    const toolchainMessage = !input.toolchainId
+      ? "THEME_TOOLCHAIN_MISSING: The build records no toolchain, so it is not built with any."
+      : !themeToolchainById(input.toolchainId)
+        ? `THEME_TOOLCHAIN_UNKNOWN: Toolchain ${input.toolchainId} is not in this Morph's toolchain registry.`
+        : themeToolchainById(input.toolchainId)!.framework !==
+            recordedFramework.framework.id
+          ? `THEME_TOOLCHAIN_FRAMEWORK_MISMATCH: Toolchain ${input.toolchainId} is not for "${recordedFramework.framework.id}".`
+          : null;
+    if (toolchainMessage) {
+      addLog("error", toolchainMessage);
+      return {
+        success: false,
+        errorMessage: toolchainMessage,
+        diagnosticsJson: {
+          stage: "toolchain",
+          errors: [{ severity: "error", message: toolchainMessage }],
         },
         logs,
         durationMs: Date.now() - startTime,

@@ -22,6 +22,12 @@ import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePackageRoot } from "./theme-dependency-policy";
 import { resolveThemeFramework, themeFramework } from "../theme-framework";
 import {
+  shortToolchainId,
+  themeToolchainById,
+  type ThemeToolchain,
+} from "../theme-framework/theme-toolchains";
+import { prepareSandboxToolchain } from "./sandbox-toolchain";
+import {
   materializeThemeSandboxWorkspace,
   PINNED_SANDBOX_DEPENDENCIES,
   type ThemeWorkspaceBinaryLoader,
@@ -44,7 +50,6 @@ import {
 } from "./native-build-result";
 
 /** The image's pinned Vite, the same binary the platform build runs. */
-const NATIVE_VITE_BIN = "/opt/morph-toolchain/node_modules/.bin/vite";
 /** Where a native build lays out the project, beside the image's toolchain link. */
 const NATIVE_WORKSPACE_ROOT = "/workspace";
 
@@ -347,6 +352,44 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       };
     }
 
+    // Guard 0c: the toolchain the build records, found in the registry. The
+    // directory comes from the registry alone, never from the input. A build
+    // without a recorded toolchain (a legacy record still queued) is refused
+    // rather than built with whatever is installed now.
+    const toolchainRefusal = (code: string, message: string) => {
+      const msg = `${code}: ${message}`;
+      addLog("error", msg);
+      return {
+        success: false as const,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage: "toolchain",
+          errors: [{ severity: "error" as const, message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    };
+    if (!input.toolchainId) {
+      return toolchainRefusal(
+        "THEME_TOOLCHAIN_MISSING",
+        "The build records no toolchain, so it is not built with any.",
+      );
+    }
+    const toolchain = themeToolchainById(input.toolchainId);
+    if (!toolchain) {
+      return toolchainRefusal(
+        "THEME_TOOLCHAIN_UNKNOWN",
+        `Toolchain ${input.toolchainId} is not in this Morph's toolchain registry.`,
+      );
+    }
+    if (toolchain.framework !== recordedFramework.framework.id) {
+      return toolchainRefusal(
+        "THEME_TOOLCHAIN_FRAMEWORK_MISMATCH",
+        `Toolchain ${shortToolchainId(toolchain.id)} is for "${toolchain.framework}", but the build records "${recordedFramework.framework.id}".`,
+      );
+    }
+
     // Guard 1: Check source files count limit
     if (input.files.length > this.maxSourceFiles) {
       const msg = `LIMIT_EXCEEDED: Theme exceeds max source files limit of ${this.maxSourceFiles} (received ${input.files.length})`;
@@ -507,12 +550,21 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       }
 
       const sandboxSession = sandbox;
+      const toolchainReady = await prepareSandboxToolchain(
+        sandboxSession,
+        toolchain,
+        addLog,
+      );
+      if (!toolchainReady.ok) {
+        return toolchainRefusal(toolchainReady.code, toolchainReady.message);
+      }
       // Each read as it is written, a bounded number at a time.
       const loadBinary: ThemeWorkspaceBinaryLoader | undefined = readBinaryFile
         ? (ref) => readBinaryFile(ref.digest)
         : undefined;
       if (input.buildMode === "native") {
         return await this.runNativeBuild(input, {
+          toolchain,
           sandbox: sandboxSession,
           loadBinary,
           binaryFiles,
@@ -543,6 +595,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         mode: "build",
         contentSnapshot: input.contentSnapshot,
         prerenderContent,
+        toolchainRoot: toolchain.root,
       });
       if (!prepared.ok) {
         addLog("error", prepared.errorMessage);
@@ -576,7 +629,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           "Executing platform-owned TanStack Start Cloudflare build inside Sandbox...",
         );
         const startExecResult = await sandbox.exec(
-          `/opt/morph-toolchain/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
+          `${toolchain.root}/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
           {
             timeout: this.maxDurationMs,
             timeoutMs: this.maxDurationMs,
@@ -615,7 +668,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
       // Execute build inside container with exact pinned Vite binary and timeout guard
       const execResult = await sandbox.exec(
-        `/opt/morph-toolchain/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
+        `${toolchain.root}/node_modules/.bin/vite build --config ${workspaceRoot}/vite.config.ts`,
         {
           timeout: this.maxDurationMs,
           timeoutMs: this.maxDurationMs,
@@ -941,13 +994,14 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   /**
    * A native Start build in the container: the project's own configuration,
    * through Morph's wrapper (import guard, and the frozen content for
-   * prerendering), with the image's pinned toolchain — `/workspace/node_modules`
-   * is the image's link to it — and no Morph environment beyond what Vite
+   * prerendering), with the toolchain the build records — `/workspace/node_modules`
+   * is linked to it for this build — and no Morph environment beyond what Vite
    * needs. The result is the shared native one (`nativeBuildResult`).
    */
   private async runNativeBuild(
     input: ThemeBuildRunnerInput,
     context: {
+      toolchain: ThemeToolchain;
       sandbox: CloudflareSandboxSession;
       loadBinary: ThemeWorkspaceBinaryLoader | undefined;
       binaryFiles: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
@@ -965,7 +1019,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       pass: async (prerenderContent) => {
         // A later pass starts from an empty workspace: nothing the earlier
         // one wrote, its record of refused reads included, may remain. The
-        // toolchain link is the image's and stays.
+        // toolchain link is this build's and stays.
         if (passes++ > 0) {
           const cleared = await context.sandbox.exec(
             `find ${NATIVE_WORKSPACE_ROOT} -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +`,
@@ -994,6 +1048,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   private async runNativeBuildPass(
     input: ThemeBuildRunnerInput,
     context: {
+      toolchain: ThemeToolchain;
       sandbox: CloudflareSandboxSession;
       loadBinary: ThemeWorkspaceBinaryLoader | undefined;
       binaryFiles: ReadonlyArray<Readonly<ThemeBuildBinaryFile>>;
@@ -1061,7 +1116,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       `Executing native Start build in Sandbox: vite ${args.join(" ")}`,
     );
     const built = await sandbox.exec(
-      `${NATIVE_VITE_BIN} ${args.join(" ")} --logLevel error`,
+      `${context.toolchain.root}/node_modules/.bin/vite ${args.join(" ")} --logLevel error`,
       {
         cwd: root,
         timeout: this.maxDurationMs,

@@ -31,6 +31,8 @@ function mapBuildRowToDTO(
     compilerId: row.compilerId,
     compilerVersion: row.compilerVersion,
     framework: row.framework ?? null,
+    inputHashFormat: row.inputHashFormat ?? null,
+    toolchainId: row.toolchainId ?? null,
     dependencies: row.dependenciesJson ?? null,
     contentPublicationId: row.contentPublicationId ?? null,
     contentDependency: row.contentDependency ?? null,
@@ -170,6 +172,9 @@ export const storefrontThemeBuildDal = {
       contentPublicationId?: string;
       /** Absent records nothing, which reads as TanStack Start. */
       framework?: ThemeFrameworkId;
+      /** Every new build: format 2 with its framework and toolchain recorded. */
+      inputHashFormat?: 2;
+      toolchainId?: string;
     },
   ): Promise<StorefrontThemeBuildDTO> {
     const isThemeOwner = await this.verifyThemeOwnership(storefrontId, themeId);
@@ -208,6 +213,8 @@ export const storefrontThemeBuildDal = {
         sourceRevisionId: options.sourceRevisionId,
         contentPublicationId: options.contentPublicationId ?? null,
         framework: options.framework ?? null,
+        inputHashFormat: options.inputHashFormat ?? null,
+        toolchainId: options.toolchainId ?? null,
         dependenciesJson: options.dependencies
           ? { ...options.dependencies }
           : null,

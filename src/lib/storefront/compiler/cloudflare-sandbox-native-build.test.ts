@@ -2,6 +2,7 @@
 // Node, not jsdom: jsdom's TextEncoder makes a Uint8Array of another realm,
 // which the runner's byte reader (`instanceof Uint8Array`) does not take.
 import { describe, expect, it, vi } from "vitest";
+import { START_TOOLCHAIN, answerToolchainCommand } from "./sandbox-toolchain.test-support";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 
@@ -37,6 +38,7 @@ const input = (): ThemeBuildRunnerInput =>
     inputHash: "c".repeat(64),
     compilerId: NATIVE_START_COMPILER_ID,
     compilerVersion: THEME_START_TOOLCHAIN.reactStart,
+    toolchainId: START_TOOLCHAIN.id,
     buildMode: "native",
     files: [
       { path: "src/index.tsx", content: "export default () => null;\n" },
@@ -135,6 +137,9 @@ function fakeSandbox(
         command: string,
         opts?: { cwd?: string; env?: Record<string, string> },
       ) => {
+        // The image's answer to the toolchain check, before the build's own.
+        const toolchainAnswer = answerToolchainCommand(command);
+        if (toolchainAnswer) return toolchainAnswer;
         commands.push({ command, cwd: opts?.cwd, env: opts?.env });
         if (command.includes("vite") && command.includes(" build")) {
           if (options.buildFails) {
@@ -205,7 +210,7 @@ describe("the Sandbox runner's native build", () => {
     await runner.run(input());
     const build = commands.find((entry) => entry.command.includes(" build"));
     expect(build?.command).toBe(
-      "/opt/morph-toolchain/node_modules/.bin/vite build --config .morph/vite.config.ts --logLevel error",
+      `${START_TOOLCHAIN.root}/node_modules/.bin/vite build --config .morph/vite.config.ts --logLevel error`,
     );
     expect(build?.cwd).toBe("/workspace");
     expect(Object.keys(build?.env ?? {}).sort()).toEqual([

@@ -149,9 +149,9 @@ function baseEnv(home: string): Record<string, string> {
 }
 
 describe("where a deployment sends its token", () => {
-  it("runs the wrangler version the deploy container pins", async () => {
+  it("runs the wrangler version the platform tools pin", async () => {
     const pinned = JSON.parse(
-      await readFile(path.join(process.cwd(), "sandbox-toolchain-package.json"), "utf8"),
+      await readFile(path.join(process.cwd(), "sandbox/platform/package.json"), "utf8"),
     ).dependencies.wrangler;
     const installed = JSON.parse(
       await readFile(path.join(WRANGLER_DIR, "package.json"), "utf8"),

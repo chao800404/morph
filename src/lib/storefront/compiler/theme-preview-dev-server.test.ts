@@ -12,6 +12,7 @@ import {
   themePreviewServerSourcePlugin,
   themePreviewServerSourcePluginSource,
 } from "./theme-preview-dev-server";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 describe("server source HTTP boundary", () => {
   it("uses the same refusal in generated configs without blocking ordinary client modules", () => {
@@ -101,7 +102,7 @@ describe("preview dev infrastructure allowance", () => {
       "/@fs/opt/other-toolchain/node_modules/evil.js",
       `/@fs${SANDBOX_TOOLCHAIN_ROOT}/secrets.env`,
       `${SANDBOX_TOOLCHAIN_ROOT}/node_modules/vite/dist/client/client.mjs`,
-      "../../opt/morph-toolchain/node_modules/vite/dist/client/client.mjs",
+      `../..${START_TOOLCHAIN.root}/node_modules/vite/dist/client/client.mjs`,
     ]) {
       expect(isPreviewDevInfrastructureSpecifier(source)).toBe(false);
     }

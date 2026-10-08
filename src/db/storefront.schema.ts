@@ -616,6 +616,19 @@ export const storefrontThemeBuilds = sqliteTable(
      * to another framework.
      */
     framework: text("framework"),
+    /**
+     * How `inputHash` was computed. NULL is the legacy format: every build from
+     * before this column, verified exactly as it always was and never
+     * rewritten. 2: framework and toolchain identity always part of the hash.
+     * A build is verified only by the format it records.
+     */
+    inputHashFormat: integer("input_hash_format"),
+    /**
+     * The toolchain the build is recorded with: the SHA-256 identity of the
+     * Sandbox image's toolchain manifest (theme-toolchains.ts). NULL on legacy
+     * builds, which did not record one and are not assumed to have used any.
+     */
+    toolchainId: text("toolchain_id"),
     dependenciesJson: text("dependencies_json", { mode: "json" }).$type<
       Record<string, string>
     >(),

@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { themeToolchainForFramework } from "@/lib/storefront/theme-framework/theme-toolchains";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -89,6 +90,8 @@ beforeEach(() => {
       compiler_id text,
       compiler_version text,
       framework text,
+      input_hash_format integer,
+      toolchain_id text,
       dependencies_json text,
       content_publication_id text,
       content_dependency text,
@@ -688,13 +691,13 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(build.errorMessage).toContain("EMPTY_OR_CORRUPT_REVISION_SNAPSHOT");
   });
 
-  it("records no framework for a build that names none, and runs it as TanStack Start", async () => {
+  it("records TanStack Start, hash format 2 and its toolchain for a build that names no framework", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
     seedRevision("storefront-1", "theme-1", "rev-start", 1, [
       { path: "src/index.tsx", content: "export default () => <h1>Start</h1>;" },
     ]);
-    const seen: Array<string | undefined> = [];
+    const seen: Array<Pick<typeof build, "framework" | "toolchainId"> & { inputHashFormat?: number }> = [];
     const build = await service.requestPreviewBuild({
       storefrontId: "storefront-1",
       themeId: "theme-1",
@@ -702,14 +705,25 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       runner: new FakeThemeBuildRunner({
         shouldSucceed: true,
         onRun: (input) => {
-          seen.push(input.framework);
+          seen.push({
+            framework: input.framework,
+            inputHashFormat: input.inputHashFormat,
+            toolchainId: input.toolchainId,
+          });
         },
       }),
     });
 
+    // Recorded when the build is created, and run as recorded: no later step
+    // asks again what is current.
+    const start = themeToolchainForFramework("tanstack-start");
     expect(build.status).toBe("succeeded");
-    expect(build.framework).toBeNull();
-    expect(seen).toEqual(["tanstack-start"]);
+    expect(build.framework).toBe("tanstack-start");
+    expect(build.inputHashFormat).toBe(2);
+    expect(build.toolchainId).toBe(start.id);
+    expect(seen).toEqual([
+      { framework: "tanstack-start", inputHashFormat: 2, toolchainId: start.id },
+    ]);
   });
 
   it("refuses a build recorded for a framework Morph cannot build, and never runs it", async () => {

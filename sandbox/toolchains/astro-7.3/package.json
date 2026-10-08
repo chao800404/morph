@@ -1,0 +1,16 @@
+{
+  "name": "morph-sandbox-toolchain-astro",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@astrojs/cloudflare": "14.3.3",
+    "@astrojs/compiler-rs": "0.5.1",
+    "@astrojs/react": "7.0.0",
+    "@cloudflare/vite-plugin": "1.62.5",
+    "astro": "7.3.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "vite": "8.3.3",
+    "wrangler": "4.147.0"
+  }
+}

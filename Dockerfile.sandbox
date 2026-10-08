@@ -1,15 +1,43 @@
-FROM docker.io/cloudflare/sandbox:0.12.7
+# Base image pinned by digest: the manifests below record it, and a toolchain's
+# identity depends on it.
+FROM docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe
+ENV MORPH_SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe
 
-# `pnpm generate:theme-types` writes this manifest from src/cms.config.ts.
-# Keep package installation in the image build: Theme source must never be
-# allowed to run npm install during a request.
-WORKDIR /opt/morph-toolchain
-COPY sandbox-toolchain-package.json ./package.json
-RUN npm install --no-audit --no-fund
+# Package installation stays in the image build: Theme source must never be
+# allowed to run npm install during a request. Each toolchain installs from its
+# own lockfile with `npm ci` (install scripts run, as native packages need), then
+# records its manifest and identity (sandbox/toolchain-manifest.mjs). The
+# registry the Worker uses (theme-toolchains.generated.ts) is generated from
+# these manifests by scripts/generate-sandbox-toolchains.mjs, never the reverse.
+#
+# The directories are not made read-only: processes in the container run as
+# root, for which file permissions are no barrier. A manifest is a
+# compatibility and provenance check made before Theme code runs, not tamper
+# evidence.
+COPY sandbox/toolchain-manifest.mjs /opt/morph-sandbox/toolchain-manifest.mjs
 
-# Symlink toolchain node_modules so /workspace can resolve locally without npm download
-RUN mkdir -p /workspace && ln -s /opt/morph-toolchain/node_modules /workspace/node_modules
+# TanStack Start (`package.json` generated from src/cms.config.ts by
+# `pnpm generate:theme-types`).
+COPY sandbox/toolchains/tanstack-start-1.168/package.json sandbox/toolchains/tanstack-start-1.168/package-lock.json /opt/morph-toolchain/tanstack-start-1.168/
+RUN cd /opt/morph-toolchain/tanstack-start-1.168 \
+  && npm ci --no-audit --no-fund \
+  && node /opt/morph-sandbox/toolchain-manifest.mjs tanstack-start .
 
-ENV PATH="/opt/morph-toolchain/node_modules/.bin:${PATH}"
-ENV NODE_PATH="/opt/morph-toolchain/node_modules"
+# Astro: installed and recorded only. Not offered to any Theme yet.
+COPY sandbox/toolchains/astro-7.3/package.json sandbox/toolchains/astro-7.3/package-lock.json /opt/morph-toolchain/astro-7.3/
+RUN cd /opt/morph-toolchain/astro-7.3 \
+  && npm ci --no-audit --no-fund \
+  && node /opt/morph-sandbox/toolchain-manifest.mjs astro .
+
+# Platform tools (deploy, Build Preview): a fixed Wrangler of their own, never
+# switched by a Theme's framework. This separates tool versions; it is not a
+# security boundary inside one container.
+COPY sandbox/platform/package.json sandbox/platform/package-lock.json /opt/morph-platform/
+RUN cd /opt/morph-platform \
+  && npm ci --no-audit --no-fund \
+  && node /opt/morph-sandbox/toolchain-manifest.mjs platform .
+
+# Each build or preview links /workspace/node_modules to its own toolchain when
+# it lays out the workspace; the image holds no shared link.
+RUN mkdir -p /workspace
 WORKDIR /workspace

@@ -149,7 +149,7 @@ describe("the container Build Preview transport", () => {
       atob(written.get("/workspace/build-preview/server/index.js")!.content),
     ).toBe("export default {}");
     expect(commands.at(-1)).toBe(
-      `wrangler dev --config /workspace/build-preview/server/wrangler.json --ip 0.0.0.0 --port ${BUILD_PREVIEW_CONTAINER_PORT} --show-interactive-dev-session=false`,
+      `/opt/morph-platform/node_modules/.bin/wrangler dev --config /workspace/build-preview/server/wrangler.json --ip 0.0.0.0 --port ${BUILD_PREVIEW_CONTAINER_PORT} --show-interactive-dev-session=false`,
     );
     expect(session.setSleepAfter).toHaveBeenCalledWith("10m");
   });

@@ -36,6 +36,10 @@ import {
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
   refuseThemeWorkspacePath,
 } from "./theme-workspace-path";
+import type { ThemeFrameworkId } from "../theme-framework";
+
+/** The framework whose toolchain a local checkout has: its own packages. */
+const LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK: ThemeFrameworkId = "tanstack-start";
 
 /**
  * The second implementation of `ThemePreviewServer`: a real Vite dev server on
@@ -281,8 +285,18 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * states the roots a dev server may read. If those two answers disagree the
    * failure is a config error several layers down that reads like a Theme bug,
    * so it is asked here instead and answered in one sentence.
+   *
+   * By framework: this transport's toolchain root is the checkout's own
+   * packages, which are TanStack Start's. Another framework has no local
+   * toolchain here, and is told so rather than served with Start's Vite.
    */
-  private toolchainProblem(root: string): string | null {
+  private toolchainProblem(
+    root: string,
+    framework: ThemeFrameworkId,
+  ): string | null {
+    if (framework !== LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK) {
+      return `LOCAL_PREVIEW_TOOLCHAIN_UNAVAILABLE: A locally-run Live Preview has a toolchain for "${LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK}" only (this checkout's packages), not for "${framework}".`;
+    }
     let current = root;
     for (;;) {
       const candidate = path.join(
@@ -357,7 +371,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const framework = recordedFramework.framework;
 
     const root = this.workspaceRootFor(input.previewId);
-    const toolchainFailure = this.toolchainProblem(root);
+    const toolchainFailure = this.toolchainProblem(root, framework.id);
     if (toolchainFailure) {
       return {
         ok: false,

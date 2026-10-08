@@ -8,6 +8,7 @@ import {
 } from "./theme-sandbox-workspace";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 const CARD = `import type { ThemeContentFields } from "../morph/content-fields";
 
@@ -521,7 +522,7 @@ export const Route = createFileRoute('/helper')({ loader: () => fn() });`,
     // Every path the generated config resolves at runtime is the container's.
     expect(viteConfig).toContain('root: "/workspace"');
     expect(viteConfig).toContain(
-      'allow: ["/workspace","/opt/morph-toolchain/node_modules"]',
+      `allow: ["/workspace","${START_TOOLCHAIN.root}/node_modules"]`,
     );
     expect(viteConfig).toContain('path.relative("/workspace", resolved)');
     expect(viteConfig).toContain(
@@ -534,7 +535,7 @@ export const Route = createFileRoute('/helper')({ loader: () => fn() });`,
       '!normalizedResolved.startsWith("/workspace")',
     );
     expect(viteConfig).toContain(
-      'source.startsWith("/@fs/opt/morph-toolchain/node_modules/")',
+      `source.startsWith("/@fs${START_TOOLCHAIN.root}/node_modules/")`,
     );
     for (const outDir of ["runtime", "preview"]) {
       expect(viteConfig).toContain(`"/workspace/dist/${outDir}"`);

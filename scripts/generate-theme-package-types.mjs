@@ -757,7 +757,10 @@ writtenOutputs.push(
     sandboxDependencyModuleSource,
   ),
   writeFileIfChanged(
-    path.join(root, "sandbox-toolchain-package.json"),
+    // The TanStack Start toolchain's manifest; its lockfile is resolved
+    // separately (npm, in the pinned base image) and Dockerfile.sandbox
+    // installs both with `npm ci`.
+    path.join(root, "sandbox/toolchains/tanstack-start-1.168/package.json"),
     sandboxPackageSource,
   ),
 );

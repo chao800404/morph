@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 function nativeInput(): ThemeBuildRunnerInput {
   return {
@@ -16,6 +17,7 @@ function nativeInput(): ThemeBuildRunnerInput {
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
     compilerVersion: "4.1.17",
+    toolchainId: START_TOOLCHAIN.id,
     files: [
       ...STARTER_THEME_FILES,
       {

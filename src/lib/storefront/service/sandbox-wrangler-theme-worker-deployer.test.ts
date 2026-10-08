@@ -125,7 +125,7 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(paths).toContain("/workspace/deploy/client/assets/app.js");
     expect(paths).toContain("/workspace/deploy/server/wrangler.json");
     expect(execCommand).toContain(
-      "/opt/morph-toolchain/node_modules/.bin/wrangler deploy",
+      "/opt/morph-platform/node_modules/.bin/wrangler deploy",
     );
   });
 
@@ -259,7 +259,7 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
       expect(path.startsWith("/workspace/deploy/run/")).toBe(false);
     }
     expect(execCommand).toBe(
-      "/opt/morph-toolchain/node_modules/.bin/wrangler deploy --config /workspace/deploy/server/wrangler.json --env-file /dev/null",
+      "/opt/morph-platform/node_modules/.bin/wrangler deploy --config /workspace/deploy/server/wrangler.json --env-file /dev/null",
     );
     expect(execOptions.env).toMatchObject({
       CLOUDFLARE_API_BASE_URL: "https://api.cloudflare.com/client/v4",

@@ -26,11 +26,29 @@ export function serializeThemeBuildContentDocuments(
 /**
  * Computes a deterministic string representation of theme virtual filesystem.
  * Files are sorted by path to ensure consistent order regardless of input permutation.
+ *
+ * Two formats, chosen only by `input.inputHashFormat`:
+ * - absent: the legacy serialization, unchanged, so every recorded legacy
+ *   `inputHash` still matches;
+ * - 2: the format number, the framework and the toolchain identity are always
+ *   part of the payload. Nothing is left out because it equals a "current"
+ *   value, so a change of what is current can never make two different
+ *   toolchains hash alike.
  */
 export function serializeCompilerInput(
   input: ThemeCompilerInput,
   compilerIdentity?: { id?: string; version?: string },
 ): string {
+  if (input.inputHashFormat !== undefined && input.inputHashFormat !== 2) {
+    throw new Error(
+      `INPUT_HASH_FORMAT_UNKNOWN: inputHashFormat ${String(input.inputHashFormat)} is not one this Morph can compute.`,
+    );
+  }
+  if (input.inputHashFormat === 2 && (!input.framework || !input.toolchainId)) {
+    throw new Error(
+      "INPUT_HASH_FORMAT_INCOMPLETE: format 2 needs the recorded framework and toolchain identity.",
+    );
+  }
   const sortedFiles = [...input.files].sort((a, b) =>
     a.path.localeCompare(b.path),
   );
@@ -42,6 +60,13 @@ export function serializeCompilerInput(
       )
     : undefined;
   const payload = {
+    ...(input.inputHashFormat === 2
+      ? {
+          inputHashFormat: 2,
+          framework: input.framework,
+          toolchainId: input.toolchainId,
+        }
+      : {}),
     compilerId: compilerIdentity?.id ?? input.compilerId ?? "tailwind-browser",
     compilerVersion:
       compilerIdentity?.version ?? input.compilerVersion ?? "4.1.17",
@@ -50,7 +75,9 @@ export function serializeCompilerInput(
     // framework must not hash like the same files built as Start, and every
     // input from before frameworks were recorded — all of them Start — must
     // hash exactly as it did, or its recorded inputHash would stop matching.
-    ...(input.framework !== undefined &&
+    // Legacy format only. Format 2 put the framework first, always.
+    ...(input.inputHashFormat === undefined &&
+    input.framework !== undefined &&
     input.framework !== UNRECORDED_THEME_FRAMEWORK
       ? { framework: input.framework }
       : {}),

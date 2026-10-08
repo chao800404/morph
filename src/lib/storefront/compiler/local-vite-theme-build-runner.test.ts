@@ -4,6 +4,7 @@ import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { STARTER_THEME_CATALOG_FILES } from "@/lib/storefront/starter-theme-catalog-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
+import { START_TOOLCHAIN } from "./sandbox-toolchain.test-support";
 
 // Real Vite builds. These reach ~8s under a loaded parallel run, and 20s was
 // not enough headroom above that; the sibling describe below already uses 60s.
@@ -41,6 +42,7 @@ describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
     compilerVersion: "4.1.17",
+    toolchainId: START_TOOLCHAIN.id,
     files: files as any,
     ...overrides,
   });
@@ -655,6 +657,7 @@ describe(
         inputHash: "a".repeat(64),
         compilerId: "tailwind-v4-build",
         compilerVersion: "4.1.17",
+        toolchainId: START_TOOLCHAIN.id,
         files: STARTER_THEME_FILES as never,
       } as never);
 

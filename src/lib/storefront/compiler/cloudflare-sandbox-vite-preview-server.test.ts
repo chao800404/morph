@@ -19,6 +19,10 @@ import {
   THEME_PREVIEW_WORKSPACE_MANIFEST_PATH,
   type PreviewServerSession,
 } from "./cloudflare-sandbox-vite-preview-server";
+import {
+  START_TOOLCHAIN,
+  answerToolchainCommand,
+} from "./sandbox-toolchain.test-support";
 
 type Harness = {
   session: PreviewServerSession;
@@ -158,6 +162,9 @@ const createSession = (
       destroyed += 1;
     },
     async exec(command) {
+      // The image's answer to the toolchain check (theme-toolchains.ts).
+      const toolchainAnswer = answerToolchainCommand(command);
+      if (toolchainAnswer) return toolchainAnswer;
       const removal = /^rm -rf (\S+)$/.exec(command);
       if (removal) {
         io.removeTree(removal[1]!);
@@ -285,6 +292,38 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     for (const env of harness.envs) {
       expect(Object.keys(env ?? {}).sort()).toEqual(["NODE_ENV"]);
     }
+  });
+
+  it("does not start a preview in a container whose toolchain manifest is another one's", async () => {
+    const harness = createSession("ready");
+    const ownExec = harness.session.exec.bind(harness.session);
+    (harness.session as { exec: typeof ownExec }).exec = async (command) =>
+      answerToolchainCommand(command, "e".repeat(64)) ?? ownExec(command);
+
+    const result = await startWith(harness);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.stage).toBe("preview-toolchain");
+      expect(result.errorMessage).toContain("THEME_TOOLCHAIN_MISMATCH");
+    }
+    // Nothing of the Theme reached the container, and no Vite was started.
+    expect(workspaceWrites(harness)).toEqual([]);
+    expect(
+      harness.commands.some((command) => command.includes("/.bin/vite")),
+    ).toBe(false);
+  });
+
+  it("starts the preview with its framework's toolchain from the registry", async () => {
+    const harness = createSession("ready");
+    expect((await startWith(harness)).ok).toBe(true);
+    expect(
+      harness.commands.some((command) =>
+        command.startsWith(
+          `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/`,
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("checks the platform health endpoint for Start readiness", async () => {
@@ -479,8 +518,7 @@ describe("CloudflareSandboxVitePreviewServer", () => {
 describe("checking on a preview someone is watching", () => {
   const viteProcess = (status: string) => ({
     id: "vite",
-    command:
-      "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+    command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
     status,
   });
 
@@ -614,8 +652,7 @@ describe("asking twice for the same preview", () => {
           ? [
               {
                 id: "already-running",
-                command:
-                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
                 status: "running",
               },
             ]
@@ -819,8 +856,7 @@ describe("asking twice for the same preview", () => {
         return [
           {
             id: looks === 1 ? "already-running" : "someone-elses",
-            command:
-              "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+            command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
             status: "running",
           },
         ];
@@ -853,8 +889,7 @@ describe("asking twice for the same preview", () => {
           ? [
               {
                 id: "already-running",
-                command:
-                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
                 status: "running",
               },
             ]
@@ -923,8 +958,7 @@ describe("recording what a start decided", () => {
           ? [
               {
                 id: "already-running",
-                command:
-                  "/opt/morph-toolchain/node_modules/.bin/vite --config /workspace/vite.config.ts",
+                command: `${START_TOOLCHAIN.root}/node_modules/.bin/vite --config /workspace/vite.config.ts`,
                 status: "running",
               },
             ]
