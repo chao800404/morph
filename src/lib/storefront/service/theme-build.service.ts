@@ -413,6 +413,14 @@ export class ThemeBuildService {
       runnerResult = await runner.run({
         ...buildInput,
         readBinaryFile: this.readBinaryFile,
+        stillRunning: async () =>
+          (
+            await this.dal.getBuild(
+              params.storefrontId,
+              params.themeId,
+              params.buildId,
+            )
+          )?.status === "building",
       });
     } catch (runnerException) {
       const exceptionMessage =

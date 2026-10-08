@@ -30,6 +30,10 @@ import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
 import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme-build.dto";
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
+import {
+  SANDBOX_START_BUDGET_MS,
+  startBuildSandbox,
+} from "./sandbox-build-start";
 import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
 import {
   nativeBuildFailureMessage,
@@ -419,17 +423,39 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         "Acquiring isolated Cloudflare Sandbox container session...",
       );
 
+      let acquire: (() => Promise<CloudflareSandboxSession>) | null = null;
       if (this.sandboxProvider) {
-        sandbox = await this.sandboxProvider.getSandbox(
-          this.sandboxBinding,
-          input.buildId,
-        );
+        const provider = this.sandboxProvider;
+        acquire = () => provider.getSandbox(this.sandboxBinding, input.buildId);
       } else if (this.sandboxBinding) {
         const { getSandbox } = await import("@cloudflare/sandbox");
-        sandbox = getSandbox(
-          this.sandboxBinding as DurableObjectNamespace<Sandbox>,
-          input.buildId,
-        ) as any;
+        const binding = this.sandboxBinding as DurableObjectNamespace<Sandbox>;
+        acquire = async () => getSandbox(binding, input.buildId) as any;
+      }
+      if (acquire) {
+        // The start phase alone may be retried; see sandbox-build-start.ts.
+        // Nothing of the Theme is written before it returns. It has its own
+        // budget from the start of the run; the build commands after it keep
+        // their own bound (`maxDurationMs` each), exactly as before.
+        const startDeadline = startTime + SANDBOX_START_BUDGET_MS;
+        sandbox = await startBuildSandbox({
+          acquire,
+          probe: (session) => {
+            const timeout = Math.max(
+              1,
+              Math.min(60_000, startDeadline - Date.now()),
+            );
+            return session.exec("true", {
+              cwd: "/",
+              timeout,
+              timeoutMs: timeout,
+            });
+          },
+          destroy: (session) => session.destroy(),
+          stillRunning: input.stillRunning,
+          deadline: startDeadline,
+          log: addLog,
+        });
       } else {
         const msg =
           "SANDBOX_UNAVAILABLE: Cloudflare Sandbox binding or provider is not configured in current environment";
@@ -854,11 +880,30 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         durationMs: Date.now() - startTime,
       };
     } finally {
-      // Strictly destroy sandbox container session
+      // Strictly destroy sandbox container session. Bounded, and recorded
+      // when it cannot be confirmed: a timed-out command is not proof that its
+      // process stopped, and an unconfirmed teardown is not reported as done.
       if (sandbox) {
+        const session = sandbox;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await sandbox.destroy();
-        } catch {}
+          await Promise.race([
+            session.destroy(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("did not finish within 30000 ms")),
+                30_000,
+              );
+            }),
+          ]);
+        } catch (destroyError) {
+          addLog(
+            "warn",
+            `Sandbox teardown could not be confirmed: ${destroyError instanceof Error ? destroyError.message : String(destroyError)}`,
+          );
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
     }
   }
@@ -897,7 +942,10 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
             { timeout: 30_000, timeoutMs: 30_000 },
           );
           if (!(cleared.success ?? cleared.exitCode === 0)) {
-            context.addLog("error", "Could not clear the workspace for the next pass.");
+            context.addLog(
+              "error",
+              "Could not clear the workspace for the next pass.",
+            );
             return {
               success: false,
               errorMessage: `WORKSPACE_RESET_FAILED: ${cleared.stderr || cleared.stdout || "could not clear the workspace"}`,
@@ -990,10 +1038,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
           NODE_ENV: "production",
           ...plan.env,
           // The plan's options (its module hook) and this runner's own.
-          NODE_OPTIONS: [
-            "--unhandled-rejections=strict",
-            plan.env.NODE_OPTIONS,
-          ]
+          NODE_OPTIONS: ["--unhandled-rejections=strict", plan.env.NODE_OPTIONS]
             .filter(Boolean)
             .join(" "),
         },
