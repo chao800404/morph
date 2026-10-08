@@ -177,8 +177,36 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Twice in one night (PR #144) this step sat on an Ubuntu mirror until
+      # the job's 30 minutes ran out, before a single test had run. apt then
+      # times out each connection instead of waiting forever, and an attempt
+      # that times out, or fails to reach a package source, is tried again,
+      # up to three times. Any other failure, and a third failed attempt,
+      # still fails the job. Only installation is retried here; nothing that
+      # tests anything is.
       - name: Install Chromium for Playwright
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
+          for attempt in 1 2 3; do
+            status=0
+            timeout 240 pnpm exec playwright install --with-deps chromium 2>&1 | tee install.log || status=$?
+            [ "$status" -eq 0 ] && exit 0
+            if [ "$status" -ne 124 ] && ! grep -Eq "$transient" install.log; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            # A timed-out attempt can leave apt running and holding its lock.
+            sudo pkill -f apt-get || true
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts."
+          exit 1
 
       # Nothing here is a secret. The database is created empty for this run
       # and deleted after it, the account exists only inside it, and the ids
