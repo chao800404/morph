@@ -746,7 +746,7 @@ fail-fast 與建置後檢查**各自**要被證明有效：每一個失敗情境
 | 環節          | 共用（不改）                                                                                       | Astro 專屬                                                                                                                               |
 | ------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | 輸入          | materializer、`buildMode: "native"`、`inputHash`、開關預設關閉、正式環境拒絕                       | 輸入記錄 `framework: "astro"` 與工具鏈 id；compiler 身分為 `astro-native`                                                                |
-| 執行          | 兩個建置程式、只拿到必要環境變數、Sandbox 不外連                                                   | 命令為 `astro build --config .morph/astro.build.config.mjs`；`ASTRO_TELEMETRY_DISABLED=1`                                                |
+| 執行          | 兩個建置程式、只拿到必要環境變數、Sandbox 不外連（目標；目前未落實，見 7.1）                     | 命令為 `astro build --config .morph/astro.build.config.mjs`；`ASTRO_TELEMETRY_DISABLED=1`                                                |
 | 產物          | `.wrangler/deploy/config.json` → Worker 設定 → `runtime/server`、`runtime/client`；manifest 與雜湊 | 只整理成功的建置；排除 `prerenderWorkerConfigPath` 指向的目錄；adapter 自動加入的綁定（5.2）；不能只看 `astro build` 的 exit code（4.3） |
 | Build Preview | 每個權杖一個隔離實例、只載入該 build 的產物、外連政策只回答自己的 `/_morph/content`                | 無                                                                                                                                       |
 | 發布          | 重用預覽過的 build、`buildContentCurrent`、`PUBLISH_BUILD_CONTENT_MISMATCH`、只有 Certified 能發布 | 無                                                                                                                                       |
@@ -894,7 +894,7 @@ relay 的 `applied` 表示「游標之後有 payload，而且都已套用」，�
 
 | 層                     | Live Preview                                                                                                 | 建置（含預先渲染）                                                | Build Preview                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
-| **邊界：容器網路政策** | 【事實】`PreviewSandbox`：`enableInternet = false`、`interceptHttps`，對外請求一律交給 `refusePreviewEgress` | 【事實】Sandbox 建置容器不能外連（start-native-import-plan）      | 【事實】`BuildPreviewSandbox`：同上，只回答自己的 `/_morph/content` |
+| **邊界：容器網路政策** | 【事實】`PreviewSandbox`：`enableInternet = false`、`interceptHttps`，對外請求一律交給 `refusePreviewEgress` | 【事實，2026-10-08 更正】**建置容器目前可以外連**：建置用的 `Sandbox` 類別（`src/server/build-sandbox.ts`）沒有設定 `enableInternet`，SDK（`@cloudflare/containers` 0.3.7）預設為 `true`。「建置沙箱不能外連」是 start-native-import-plan 的政策目標，尚未落實；見下方說明與 `TODO.md` 的部署前阻擋項 | 【事實】`BuildPreviewSandbox`：同上，只回答自己的 `/_morph/content` |
 | 輔助：Worker 內的檢查  | 預覽 Worker entry 的 `previewOutboundRefusal`（2.5），只負責給 Theme 作者明確的錯誤訊息                      | `prerender` 環境的包裝拒絕非內容讀取，只負責明確的錯誤訊息（4.3） | 無（產物原樣執行，不注入）                                          |
 
 - 不論 2.5 最後採用 Worker entry 還是 `injectScript`，上表的邊界都不變。所以橋接方案的選擇不影響安全性；
@@ -902,8 +902,16 @@ relay 的 `applied` 表示「游標之後有 payload，而且都已套用」，�
 - **本機 sidecar 不是安全邊界。** 它在開發者自己的機器上以 loopback 執行 Theme 程式，與 Start 相同，只供
   開關開啟的開發與測試環境使用。Astro 預覽在本機時，Theme 伺服器程式實際上可以對外連線；Worker 內的檢查
   只是讓開發者看到與容器中相同的錯誤。
-- 【待驗】Astro 預覽與建置在容器中，各會發出哪些對外請求（Astro 遙測、wrangler、套件解析等），要在 A2、A4、A6
-  中從政策記錄確認都被拒絕，而且被拒不會讓啟動卡住。
+- 【待驗】Astro 預覽在容器中會發出哪些對外請求（Astro 遙測、wrangler、套件解析等），要在 A6 中從政策記錄確認
+  都被拒絕，而且被拒不會讓啟動卡住。
+- **建置的外連（2026-10-08 更正）：** 建置容器目前不拒絕外連，所以 A2、A4 只能記錄建置**嘗試**連到哪裡，
+  不能從政策記錄確認被拒。直接以 Docker 執行映像觀察到的外連，只說明工具鏈的行為，不代表 Sandbox SDK、代理或
+  Cloudflare 的網路政策。
+- **建置與部署共用 `Sandbox` 類別，但不共用容器。** 建置的實例以 `buildId` 為 id；部署以
+  `deploymentSandboxSessionId(storefrontId, releaseId)` 為 id。Cloudflare 憑證只放在部署那一次 `exec` 的環境
+  變數中，不寫入工作區；兩者結束後都銷毀容器（部署在 `finally` 中）。共用類別的影響是外連設定相同：部署需要
+  連到 Cloudflare API，所以不能直接關掉這個類別的外連。要先把建置拆成自己的類別並關閉外連；部署的類別也不應
+  永久自由外連，應依它實際需要的目的地另定允許清單。這是獨立的工作，不隨 A2 完成而結束。
 
 ### 7.2 建置期的監聽 socket（inspector port）
 

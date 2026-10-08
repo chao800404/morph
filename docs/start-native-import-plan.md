@@ -47,7 +47,8 @@ Morph 匯入的是**原生 TanStack Start 專案**，不是「轉換成 Morph �
    正式建置其實有問題」。
 4. **建置沙箱視為完全不可信。** 允許：讀寫 Theme 工作區、執行 subprocess、Vite plugin、loader、
    預先渲染。不允許：讀取 Morph secrets、其他商店資料、主機檔案系統、直接使用正式 D1／R2 綁定、
-   任意外連、直接部署。產物在沙箱外檢查（manifest、入口、大小、禁止內容），通過才能成為 release。
+   任意外連、直接部署（「不允許任意外連」目前尚未落實：建置容器可以外連，2026-10-08 確認，見 Astro 計畫 7.1
+   與 `TODO.md` 的部署前阻擋項）。產物在沙箱外檢查（manifest、入口、大小、禁止內容），通過才能成為 release。
    Cloudflare 也提醒不要把 credential 放進 sandbox（[Sandbox security](https://developers.cloudflare.com/sandbox/sdk/concepts/security/)）。
    本機開發用的建置程式（`local-vite-theme-build-runner`）不是安全沙箱，只供開發者測試自己的專案；
    執行客戶設定的正式建置只在 Cloudflare Sandbox。
@@ -187,7 +188,7 @@ Theme-owned versions, platform-certified compatibility.
   長期由「平台工具鏈（TanStack Start、React、Vite、Cloudflare plugin）+ Theme 依賴快照」取代單一預裝清單。
 - **沿用客戶的 package manager**：`packageManager` + lockfile + 依賴雜湊 + Node 相容性構成
   Theme Build Environment Snapshot。第一階段只支援 pnpm（frozen install），npm／yarn／bun 之後再開。
-- 套件快取在平台端，建置時放入沙箱；建置沙箱維持不能外連。
+- 套件快取在平台端，建置時放入沙箱；建置沙箱維持不能外連（目標；目前尚未落實，見 Astro 計畫 7.1）。
 
 ## 基礎設施對應（唯一無法零設定搬移的部分）
 
