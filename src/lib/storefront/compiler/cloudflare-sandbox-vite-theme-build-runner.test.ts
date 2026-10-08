@@ -457,9 +457,124 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     expect(mock.session.destroy).toHaveBeenCalled();
   });
 
+  const startupFailure = () =>
+    Object.assign(new Error("Container failed to start"), {
+      code: "INTERNAL_ERROR",
+      context: { phase: "startup", error: "Container failed to start" },
+    });
+
+  it("starts the container again when it failed to start, and builds once in the one that did", async () => {
+    const failed = createMockSandbox({
+      exec: vi.fn(async () => {
+        throw startupFailure();
+      }),
+    });
+    const started = createMockSandbox();
+    const order: string[] = [];
+    vi.mocked(failed.session.destroy).mockImplementation(async () => {
+      order.push("destroy failed");
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          order.push("acquire 1");
+          return failed.session;
+        })
+        .mockImplementationOnce(async () => {
+          order.push("acquire 2");
+          return started.session;
+        }),
+    };
+    const stillRunning = vi.fn(async () => true);
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput(
+        [
+          {
+            path: "src/pages/index.tsx",
+            content: "export default () => <h1>Home</h1>;",
+            isEntry: true,
+          },
+        ],
+        { stillRunning },
+      ),
+    );
+
+    expect(result.success).toBe(true);
+    // The same build and Sandbox id, the failed attempt destroyed first.
+    expect(provider.getSandbox).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      "sandbox-build-123",
+    );
+    expect(order).toEqual(["acquire 1", "destroy failed", "acquire 2"]);
+    // The retried start came out of the start phase's own budget; the build
+    // after it still has its full bound.
+    const buildTimeout = vi
+      .mocked(started.session.exec)
+      .mock.calls.find(([command]) => command.includes("vite build"))![1]!
+      .timeout!;
+    expect(buildTimeout).toBe(120_000);
+    // After the wait, and again once the container answered.
+    expect(stillRunning).toHaveBeenCalledTimes(2);
+    // Nothing of the Theme reached the container that did not start; the one
+    // that did was built in once, and this run reports one result.
+    expect(failed.session.exec).toHaveBeenCalledTimes(1);
+    expect(failed.writtenFiles.size).toBe(0);
+    expect(started.writtenFiles.size).toBeGreaterThan(0);
+    if (result.success) {
+      expect(new Set(result.artifacts.map((file) => file.path)).size).toBe(
+        result.artifacts.length,
+      );
+    }
+    expect(
+      result.logs?.some((log) =>
+        log.message.includes("attempt 2 of at most 3"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not start again once the container answered, even for a start-coded error", async () => {
+    // The probe answered, so the workspace write that fails may have taken
+    // effect: this is no longer the start phase, and nothing is retried.
+    const mock = createMockSandbox({
+      writeFile: vi.fn(async () => {
+        throw startupFailure();
+      }),
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => <h1>Home</h1>;",
+          isEntry: true,
+        },
+      ]),
+    );
+
+    expect(result.success).toBe(false);
+    expect(provider.getSandbox).toHaveBeenCalledTimes(1);
+    expect(mock.session.destroy).toHaveBeenCalledTimes(1);
+  });
+
   it("kills process and destroys container when sandbox execution times out", async () => {
     const mock = createMockSandbox({
-      exec: vi.fn(async () => {
+      exec: vi.fn(async (command: string) => {
+        // The container starts; the build in it is what runs out of time.
+        if (command === "true") {
+          return { exitCode: 0, success: true, stdout: "", stderr: "" };
+        }
         // Says 120000 because that is the threshold now. The string is
         // fabricated and asserts nothing, which is exactly why it was still
         // claiming 30000 after the default moved — a number nothing checks is a
@@ -492,6 +607,40 @@ describe("CloudflareSandboxViteThemeBuildRunner (Phase 4B-5)", () => {
     }
     expect(mock.session.killProcess).toHaveBeenCalled();
     expect(mock.session.destroy).toHaveBeenCalled();
+    // Timed out is not finished: nothing of the build was collected.
+    expect(mock.session.readFile).not.toHaveBeenCalled();
+  });
+
+  it("records a teardown it could not confirm, rather than reporting it done", async () => {
+    const mock = createMockSandbox({
+      destroy: vi.fn(async () => {
+        throw new Error("destroy refused");
+      }),
+    });
+    const provider: CloudflareSandboxProvider = {
+      getSandbox: vi.fn(async () => mock.session),
+    };
+    const runner = new CloudflareSandboxViteThemeBuildRunner({
+      sandboxProvider: provider,
+    });
+
+    const result = await runner.run(
+      createInput([
+        {
+          path: "src/pages/index.tsx",
+          content: "export default () => <h1>Home</h1>;",
+          isEntry: true,
+        },
+      ]),
+    );
+
+    expect(
+      result.logs?.some(
+        (log) =>
+          log.level === "warn" &&
+          log.message.includes("teardown could not be confirmed"),
+      ),
+    ).toBe(true);
   });
 
   it("fails cleanly when Cloudflare Sandbox provider is not available", async () => {

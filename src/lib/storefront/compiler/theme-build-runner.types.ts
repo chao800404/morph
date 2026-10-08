@@ -118,6 +118,13 @@ export type ThemeBuildRunnerInput = Readonly<{
   readBinaryFile?: (digest: string) => Promise<Uint8Array>;
   /** See `StorefrontThemeBuildInput.buildMode`. */
   buildMode?: StorefrontThemeBuildInput["buildMode"];
+  /**
+   * Whether the build is still this run's to finish: its row is still
+   * `building`. A runner asks before it retries anything, so a build that was
+   * cancelled or taken over meanwhile is not started again. Absent, nothing
+   * is retried on that basis.
+   */
+  stillRunning?: () => Promise<boolean>;
 }>;
 
 /**

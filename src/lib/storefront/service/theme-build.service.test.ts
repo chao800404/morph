@@ -358,6 +358,45 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     },
   );
 
+  it("tells the runner whether its build is still running, and stops saying so once it is cancelled", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1");
+    seedRevision("storefront-1", "theme-1", "rev-still-running", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Home</h1>;" },
+    ]);
+    const fake = new FakeThemeBuildRunner({ shouldSucceed: true });
+    const answers: boolean[] = [];
+    const runner = {
+      id: fake.id,
+      isolation: fake.isolation,
+      run: async (input: Parameters<typeof fake.run>[0]) => {
+        // As a runner would before retrying its start phase.
+        answers.push(await input.stillRunning!());
+        await service.cancelBuild({
+          storefrontId: input.storefrontId,
+          themeId: input.themeId,
+          buildId: input.buildId,
+        });
+        answers.push(await input.stillRunning!());
+        return fake.run(input);
+      },
+    };
+
+    // The run's own completion write then loses to the cancellation; that
+    // outcome is not what this test is about.
+    await service
+      .requestPreviewBuild({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: "rev-still-running",
+        createdBy: "user-test",
+        runner: runner as never,
+      })
+      .catch(() => undefined);
+
+    expect(answers).toEqual([true, false]);
+  });
+
   it("transitions to failed when artifact store throws an exception during file upload", async () => {
     seedStorefront("storefront-1");
     seedTheme("storefront-1", "theme-1");
