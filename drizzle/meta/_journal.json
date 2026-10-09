@@ -442,6 +442,20 @@
       "when": 1791472409131,
       "tag": "0076_build_toolchain",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "6",
+      "when": 1791534178539,
+      "tag": "0077_theme_framework",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "6",
+      "when": 1791543028664,
+      "tag": "0078_theme_sync_capabilities",
+      "breakpoints": true
     }
   ]
 }

@@ -45,6 +45,7 @@ beforeEach(() => {
       source_index_status text,
       source_index text,
       release_generation integer DEFAULT 1 NOT NULL,
+      framework text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,

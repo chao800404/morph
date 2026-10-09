@@ -37,6 +37,8 @@ import {
   refuseThemeWorkspacePath,
 } from "./theme-workspace-path";
 import type { ThemeFrameworkId } from "../theme-framework";
+import type { ThemePreviewDevServer } from "../theme-framework/theme-framework.types";
+import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
 
 /** The framework whose toolchain a local checkout has: its own packages. */
 const LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK: ThemeFrameworkId = "tanstack-start";
@@ -139,6 +141,28 @@ type RunningPreview = Readonly<{
 const START_PREVIEW_CHILD = fileURLToPath(
   new URL("./local-vite-preview-child.mjs", import.meta.url),
 );
+
+/** The forked child that runs a framework's own dev server (`astro dev`). */
+const DEV_SERVER_PREVIEW_CHILD = fileURLToPath(
+  new URL("./local-astro-preview-child.mjs", import.meta.url),
+);
+
+/**
+ * Points `<root>/node_modules` at a toolchain's packages, replacing whatever
+ * link was there. A real directory there is never Morph's, so it is refused.
+ */
+async function linkToolchainModules(root: string, modules: string): Promise<void> {
+  const link = path.join(root, "node_modules");
+  const existing = await fs.lstat(link).catch(() => null);
+  if (existing && !existing.isSymbolicLink()) {
+    throw new Error(
+      `LOCAL_PREVIEW_WORKSPACE_MODULES: "${link}" is not the toolchain link Morph writes.`,
+    );
+  }
+  if (existing && (await fs.readlink(link)) === modules) return;
+  if (existing) await fs.unlink(link);
+  await fs.symlink(modules, link, "dir");
+}
 
 /** The origin of a URL, or null when it is not one this can read. */
 function safeOrigin(url: string | null | undefined): string | null {
@@ -286,16 +310,27 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
    * failure is a config error several layers down that reads like a Theme bug,
    * so it is asked here instead and answered in one sentence.
    *
-   * By framework: this transport's toolchain root is the checkout's own
-   * packages, which are TanStack Start's. Another framework has no local
-   * toolchain here, and is told so rather than served with Start's Vite.
+   * By framework: TanStack Start's toolchain is the checkout's own packages.
+   * A framework with its own dev server runs the toolchain installed from the
+   * Sandbox image's lockfile into sandbox/toolchains/ (`pnpm toolchain:astro`),
+   * so a local preview runs what a container runs; without it the start is
+   * refused, never served with Start's Vite.
    */
   private toolchainProblem(
     root: string,
-    framework: ThemeFrameworkId,
+    framework: ThemeFrameworkAdapter,
   ): string | null {
-    if (framework !== LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK) {
-      return `LOCAL_PREVIEW_TOOLCHAIN_UNAVAILABLE: A locally-run Live Preview has a toolchain for "${LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK}" only (this checkout's packages), not for "${framework}".`;
+    if (framework.preview.devServer) {
+      const modules = path.join(
+        this.toolchainRootFor(framework),
+        "node_modules",
+      );
+      return fsSync.existsSync(path.join(modules, "astro", "package.json"))
+        ? null
+        : `LOCAL_PREVIEW_TOOLCHAIN_MISSING: No "${framework.id}" toolchain is installed at "${modules}". Install it with pnpm toolchain:${framework.id}.`;
+    }
+    if (framework.id !== LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK) {
+      return `LOCAL_PREVIEW_TOOLCHAIN_UNAVAILABLE: A locally-run Live Preview has a toolchain for "${LOCAL_PREVIEW_TOOLCHAIN_FRAMEWORK}" only (this checkout's packages), not for "${framework.id}".`;
     }
     let current = root;
     for (;;) {
@@ -319,6 +354,17 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       }
       current = parent;
     }
+  }
+
+  /** Where a framework's toolchain is in this checkout; see `toolchainProblem`. */
+  private toolchainRootFor(framework: ThemeFrameworkAdapter): string {
+    if (!framework.preview.devServer) return this.toolchainRoot;
+    return path.join(
+      this.toolchainRoot,
+      "sandbox",
+      "toolchains",
+      path.basename(themeToolchainForFramework(framework.id).root),
+    );
   }
 
   /**
@@ -359,7 +405,9 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
 
     // The framework the Theme records, before anything is laid out or run;
     // one Morph cannot preview is not previewed as another.
-    const recordedFramework = resolveThemeFramework(input.framework);
+    const recordedFramework = resolveThemeFramework(input.framework, {
+      astroThemes: input.astroThemes === true,
+    });
     if (!recordedFramework.ok) {
       return {
         ok: false,
@@ -371,7 +419,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     const framework = recordedFramework.framework;
 
     const root = this.workspaceRootFor(input.previewId);
-    const toolchainFailure = this.toolchainProblem(root, framework.id);
+    const toolchainFailure = this.toolchainProblem(root, framework);
     if (toolchainFailure) {
       return {
         ok: false,
@@ -396,7 +444,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       previewContent: input.previewContent,
       previewRuntime: input.previewRuntime,
       hostWorkspaceRoot,
-      toolchainRoot: this.toolchainRoot.split(path.sep).join("/"),
+      toolchainRoot: this.toolchainRootFor(framework).split(path.sep).join("/"),
     });
     const workspacePlanMs = Date.now() - workspacePlanStartedAt;
     if (!prepared.ok) {
@@ -532,6 +580,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
             prepared.workspaceFingerprint,
           );
+          // A framework's own dev server resolves its packages from the
+          // workspace, as a container's does through its toolchain link.
+          if (framework.preview.devServer) {
+            await linkToolchainModules(
+              root,
+              path.join(this.toolchainRootFor(framework), "node_modules"),
+            );
+          }
           // Laid out whole: what the ledger records is now on disk, whether
           // or not the server that follows comes up.
           recordLaidOut();
@@ -555,9 +611,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         const workspaceMs = Date.now() - workspaceStartedAt;
 
         const startedAt = Date.now();
-        if (input.previewRuntime === "start") {
+        const devServer = framework.preview.devServer;
+        if (input.previewRuntime === "start" || devServer) {
           try {
-            const child = await this.startChildServer(root, addLog);
+            const child = await this.startChildServer(root, addLog, devServer);
             const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
             const url = withPreviewServerBase(
               origin,
@@ -948,21 +1005,32 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   }
 
   /**
-   * Forks one dev server for a Start preview and waits until it listens.
-   * Its output joins this start's log; it exits when this process does.
+   * Forks one dev server — a Start preview's Vite, or a framework's own dev
+   * server — and waits until it listens. Its output joins this start's log;
+   * it exits when this process does.
    */
   private startChildServer(
     root: string,
     addLog: (line: string) => void,
+    devServer?: ThemePreviewDevServer,
   ): Promise<{ port: number; handle: PreviewServerHandle }> {
     return new Promise((resolve, reject) => {
       const child = fork(
-        START_PREVIEW_CHILD,
-        [root, LOCAL_PREVIEW_HOST, String(this.port)],
+        devServer ? DEV_SERVER_PREVIEW_CHILD : START_PREVIEW_CHILD,
+        [
+          root,
+          LOCAL_PREVIEW_HOST,
+          String(this.port),
+          ...(devServer ? [devServer.configPath] : []),
+        ],
         {
           cwd: root,
           stdio: ["ignore", "pipe", "pipe", "ipc"],
-          env: { PATH: process.env.PATH ?? "", NODE_ENV: "development" },
+          env: {
+            PATH: process.env.PATH ?? "",
+            NODE_ENV: "development",
+            ...devServer?.env,
+          },
         },
       );
       let alive = true;

@@ -36,6 +36,7 @@ import { Route as BackendDashboardSettingsIndexRouteImport } from './routes/_bac
 import { Route as BackendDashboardSettingsSlugRouteImport } from './routes/_backend/dashboard/settings/$slug'
 import { Route as PreviewBuildBuildIdTokenIndexRouteImport } from './routes/preview-build/$buildId/$token/index'
 import { Route as PreviewBuildBuildIdTokenSplatRouteImport } from './routes/preview-build/$buildId/$token/$'
+import { Route as BackendApiStorefrontThemeSyncSplatRouteImport } from './routes/_backend/api/storefront/theme-sync/$'
 import { Route as BackendDashboardSlugIdPageRouteImport } from './routes/_backend/dashboard/$slug/$id/$page'
 import { Route as BackendDashboardSlugIdEditRouteImport } from './routes/_backend/dashboard/$slug/$id/edit'
 import { Route as BackendDashboardSettingsSlugIdRouteImport } from './routes/_backend/dashboard/settings/$slug/$id'
@@ -192,6 +193,12 @@ const PreviewBuildBuildIdTokenSplatRoute =
     path: '/preview-build/$buildId/$token/$',
     getParentRoute: () => rootRouteImport,
   } as any)
+const BackendApiStorefrontThemeSyncSplatRoute =
+  BackendApiStorefrontThemeSyncSplatRouteImport.update({
+    id: '/api/storefront/theme-sync/$',
+    path: '/api/storefront/theme-sync/$',
+    getParentRoute: () => BackendRoute,
+  } as any)
 const BackendDashboardSlugIdPageRoute =
   BackendDashboardSlugIdPageRouteImport.update({
     id: '/$page',
@@ -284,6 +291,7 @@ export interface FileRoutesByFullPath {
   '/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
   '/preview-build/$buildId/$token/': typeof PreviewBuildBuildIdTokenIndexRoute
+  '/api/storefront/theme-sync/$': typeof BackendApiStorefrontThemeSyncSplatRoute
   '/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -319,6 +327,7 @@ export interface FileRoutesByTo {
   '/reset-password': typeof BackendAuthResetPasswordIndexRoute
   '/dashboard/settings': typeof BackendDashboardSettingsIndexRoute
   '/preview-build/$buildId/$token': typeof PreviewBuildBuildIdTokenIndexRoute
+  '/api/storefront/theme-sync/$': typeof BackendApiStorefrontThemeSyncSplatRoute
   '/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -360,6 +369,7 @@ export interface FileRoutesById {
   '/_backend/_auth/reset-password/': typeof BackendAuthResetPasswordIndexRoute
   '/_backend/dashboard/settings/': typeof BackendDashboardSettingsIndexRoute
   '/preview-build/$buildId/$token/': typeof PreviewBuildBuildIdTokenIndexRoute
+  '/_backend/api/storefront/theme-sync/$': typeof BackendApiStorefrontThemeSyncSplatRoute
   '/_backend/dashboard/$slug/$id/$page': typeof BackendDashboardSlugIdPageRouteWithChildren
   '/_backend/dashboard/$slug/$id/edit': typeof BackendDashboardSlugIdEditRoute
   '/_backend/dashboard/settings/$slug/$id': typeof BackendDashboardSettingsSlugIdRouteWithChildren
@@ -399,6 +409,7 @@ export interface FileRouteTypes {
     | '/reset-password/'
     | '/dashboard/settings/'
     | '/preview-build/$buildId/$token/'
+    | '/api/storefront/theme-sync/$'
     | '/dashboard/$slug/$id/$page'
     | '/dashboard/$slug/$id/edit'
     | '/dashboard/settings/$slug/$id'
@@ -434,6 +445,7 @@ export interface FileRouteTypes {
     | '/reset-password'
     | '/dashboard/settings'
     | '/preview-build/$buildId/$token'
+    | '/api/storefront/theme-sync/$'
     | '/dashboard/$slug/$id/$page'
     | '/dashboard/$slug/$id/edit'
     | '/dashboard/settings/$slug/$id'
@@ -474,6 +486,7 @@ export interface FileRouteTypes {
     | '/_backend/_auth/reset-password/'
     | '/_backend/dashboard/settings/'
     | '/preview-build/$buildId/$token/'
+    | '/_backend/api/storefront/theme-sync/$'
     | '/_backend/dashboard/$slug/$id/$page'
     | '/_backend/dashboard/$slug/$id/edit'
     | '/_backend/dashboard/settings/$slug/$id'
@@ -686,6 +699,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/preview-build/$buildId/$token/$'
       preLoaderRoute: typeof PreviewBuildBuildIdTokenSplatRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_backend/api/storefront/theme-sync/$': {
+      id: '/_backend/api/storefront/theme-sync/$'
+      path: '/api/storefront/theme-sync/$'
+      fullPath: '/api/storefront/theme-sync/$'
+      preLoaderRoute: typeof BackendApiStorefrontThemeSyncSplatRouteImport
+      parentRoute: typeof BackendRoute
     }
     '/_backend/dashboard/$slug/$id/$page': {
       id: '/_backend/dashboard/$slug/$id/$page'
@@ -929,6 +949,7 @@ interface BackendRouteChildren {
   BackendApiAuthSplatRoute: typeof BackendApiAuthSplatRoute
   BackendApiStoreSplatRoute: typeof BackendApiStoreSplatRoute
   BackendApiStorefrontThemeBinaryFileRoute: typeof BackendApiStorefrontThemeBinaryFileRoute
+  BackendApiStorefrontThemeSyncSplatRoute: typeof BackendApiStorefrontThemeSyncSplatRoute
 }
 
 const BackendRouteChildren: BackendRouteChildren = {
@@ -941,6 +962,8 @@ const BackendRouteChildren: BackendRouteChildren = {
   BackendApiStoreSplatRoute: BackendApiStoreSplatRoute,
   BackendApiStorefrontThemeBinaryFileRoute:
     BackendApiStorefrontThemeBinaryFileRoute,
+  BackendApiStorefrontThemeSyncSplatRoute:
+    BackendApiStorefrontThemeSyncSplatRoute,
 }
 
 const BackendRouteWithChildren =

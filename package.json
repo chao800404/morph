@@ -26,6 +26,7 @@
     "deploy": "node scripts/check-pending-migrations.mjs --remote && pnpm run build && wrangler deploy",
     "preview": "pnpm run build && vite preview",
     "theme:pull": "node scripts/theme-artifact-pull.mjs",
+    "morph:sync": "tsx scripts/morph-sync.ts",
     "theme:serve": "node scripts/theme-artifact-smoke.mjs --artifact /tmp/morph-theme-artifact --port 8799 --keep",
     "theme:verify": "node scripts/theme-artifact-smoke.mjs --artifact /tmp/morph-theme-artifact",
     "theme:local": "npm run theme:pull && npm run theme:serve",

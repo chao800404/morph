@@ -3,6 +3,7 @@ import {
   SandboxWranglerThemeWorkerDeployer,
   deploymentSandboxSessionId,
   scrubDeploymentSecrets,
+  wranglerDeployConfig,
 } from "./sandbox-wrangler-theme-worker-deployer";
 import type { ThemeWorkerDeploymentRequest } from "./theme-worker-deployer.types";
 
@@ -209,6 +210,15 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(config.preview_urls).toBe(false);
     expect(config.routes).toBeUndefined();
     expect(config.route).toBeUndefined();
+  });
+
+  it("gives the Worker its own assets binding when the plan names one", () => {
+    expect(
+      wranglerDeployConfig({ ...request.plan, assetsBinding: "ASSETS" }).assets,
+    ).toEqual({ directory: "../client", binding: "ASSETS" });
+    expect(wranglerDeployConfig(request.plan).assets).toEqual({
+      directory: "../client",
+    });
   });
 
   it("passes credentials only through the exec environment, never into the workspace", async () => {

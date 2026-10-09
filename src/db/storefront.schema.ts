@@ -160,6 +160,14 @@ export const storefrontThemes = sqliteTable(
     sourceIndexStatus: text("source_index_status"),
     sourceIndex: text("source_index", { mode: "json" }).$type<JsonValue>(),
     releaseGeneration: integer("release_generation").notNull().default(1),
+    /**
+     * The framework the site is a project of (docs/astro-theme-plan.md 2.1),
+     * recorded once and never converted. Each build freezes it into its own
+     * record. NULL is every site from before it was recorded, and reads as
+     * TanStack Start; nothing in the product sets it yet (multi-runtime
+     * step 6 chooses it when a site is created).
+     */
+    framework: text("framework"),
     metadata: metadata(),
     ...timestamps,
   },
@@ -706,6 +714,44 @@ export const storefrontBuildPreviewCapabilities = sqliteTable(
     ),
     index("storefront_build_preview_capabilities_build_user_idx").on(
       table.buildId,
+      table.userId,
+    ),
+  ],
+);
+
+/**
+ * Access to one Theme's source from a developer's own machine, held by one
+ * user: what `morph-sync` presents to read and write the workspace it keeps
+ * a local copy of (docs/local-code-sync.md).
+ *
+ * The same shape as a Build Preview capability, for the same reasons: only
+ * the token's SHA-256 is stored, and each request is checked against the row,
+ * the Theme and the user again, so expiry, revocation, a deleted Theme or a
+ * removed admin take effect on the next request. It grants nothing beyond the
+ * Theme's source files — no publish, no rollback, no other store data.
+ */
+export const storefrontThemeSyncCapabilities = sqliteTable(
+  "storefront_theme_sync_capabilities",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_theme_sync_capabilities_token_idx").on(
+      table.tokenHash,
+    ),
+    index("storefront_theme_sync_capabilities_theme_user_idx").on(
+      table.themeId,
       table.userId,
     ),
   ],

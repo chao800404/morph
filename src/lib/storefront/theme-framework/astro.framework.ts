@@ -10,6 +10,10 @@ import {
   nativeAstroCompilerIdentity,
   planNativeAstroBuild,
 } from "./astro-native-build";
+import {
+  ASTRO_PREVIEW_DEV_SERVER,
+  planAstroPreviewWorkspace,
+} from "./astro-preview-workspace";
 import type { ThemeFrameworkAdapter } from "./theme-framework.types";
 
 const CLIENT_ASSETS_DIRECTORY = "runtime/client";
@@ -26,19 +30,19 @@ const unavailable = (what: string, step: string) =>
  * `MORPH_ASTRO_THEMES` switch (theme-framework/index.ts, `astroThemes`), and
  * never in production until certification (docs/astro-theme-plan.md A8).
  *
- * There is no platform build of an Astro project and no Live Preview yet
- * (A6); asking for either is refused by name rather than answered with
- * Start's. The worker entry is whatever the Worker config the build wrote
+ * There is no platform build of an Astro project; asking for one is refused
+ * by name rather than answered with Start's. Its Live Preview is `astro dev`
+ * through Morph's wrapper config (astro-preview-workspace.ts, A6). The worker entry is whatever the Worker config the build wrote
  * names (`collectNativeAstroArtifact`); Astro's is `entry.mjs`.
  */
 export const astroFramework: ThemeFrameworkAdapter = {
   id: "astro",
   detect: (files) => files.some((file) => ASTRO_CONFIG.test(file.path)),
-  planWorkspace: () => {
-    throw unavailable("A Live Preview", "A6");
-  },
+  planWorkspace: planAstroPreviewWorkspace,
   preview: {
+    // `astro dev` at the root of the preview's own origin (2.4, B9).
     framePath: () => "/",
+    devServer: ASTRO_PREVIEW_DEV_SERVER,
   },
   build: {
     artifactEntry: () => {

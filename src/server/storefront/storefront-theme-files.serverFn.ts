@@ -55,11 +55,39 @@ import { planConfirmedPublicUrlRewrite } from "@/lib/storefront/service/public-u
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { isEditablePublicTextPath, projectPublicTextFile } from "@/lib/storefront/editor/public-text-file";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
+import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
 
 function rejectLegacyManifestDeletion() {
   return fail(
     "The legacy theme manifest cannot be deleted through the generic file API. Run the server-owned migration after its manifest-removal gate passes.",
     { error: "MANIFEST_REMOVAL_REQUIRES_MIGRATION" },
+  );
+}
+
+/**
+ * The platform's own build files (`isThemeAuthoringRefusedPath`) never belong
+ * in a Theme workspace: no server flow writes them there, and the editor
+ * refuses to create or rename onto them. That refusal is only a convenience;
+ * this is the check. Source-only files (vite.config, wrangler, the route tree)
+ * are the author's and are not refused.
+ *
+ * Deleting one stays allowed, under the same session, generation and version
+ * checks as any deletion: a workspace that already holds one cannot be built
+ * (`PLATFORM_OWNED_THEME_BUILD_PATH`) or have it synced to its Live Preview
+ * (`RESERVED_THEME_BUILD_PATH`), and deleting it is the way back. Moving one
+ * elsewhere is not needed for that, so it is refused like any other write.
+ */
+function findAuthoringRefusedPath(paths: Iterable<string>): string | undefined {
+  for (const path of paths) {
+    if (isThemeAuthoringRefusedPath(path)) return path;
+  }
+  return undefined;
+}
+
+function rejectAuthoringRefusedPath(path: string) {
+  return fail(
+    `"${path}" is provided by the platform's build and cannot be written. It may only be deleted.`,
+    { error: "THEME_PATH_REFUSED" },
   );
 }
 
@@ -580,6 +608,9 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
     if (data.path === LEGACY_THEME_MANIFEST_PATH) {
       return rejectLegacyManifestDeletion();
     }
+    if (isThemeAuthoringRefusedPath(data.path)) {
+      return rejectAuthoringRefusedPath(data.path);
+    }
     try {
       const saved = await themeSourceStore.saveFile(
         data.storefrontId,
@@ -649,6 +680,19 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
       )
     ) {
       return rejectLegacyManifestDeletion();
+    }
+    // The whole batch, checked before anything is written. Deletions are
+    // not: removing one of these is allowed.
+    const refusedPath = findAuthoringRefusedPath([
+      ...data.files.map((file) => file.path),
+      ...(data.routePathMoves ?? []).flatMap((move) => [
+        move.fromSourcePath,
+        move.toSourcePath,
+      ]),
+      ...(data.binaryCopies ?? []).map((copy) => copy.to),
+    ]);
+    if (refusedPath !== undefined) {
+      return rejectAuthoringRefusedPath(refusedPath);
     }
     try {
       let files = data.files;

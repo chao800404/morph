@@ -31,6 +31,9 @@ export const EDITOR_SHARDS = [
     "native-content-dependency.spec.ts",
     // Container transport only, like the three above: skipped on every CI shard.
     "source-asset-publish.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only: skipped on every CI
+    // shard, like the container-only files above.
+    "astro-publish-acceptance.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -45,8 +48,11 @@ export const EDITOR_SHARDS = [
     // Unmeasured too, and on the same shard for the same reason. Its Build
     // Preview steps run only with the container transport.
     "starter-upgrade.spec.ts",
-    // Unmeasured until the next rebalance; placed here with the other two.
+    // Unmeasured until the next rebalance; placed here with the other
+    // unmeasured files. Three tests, about 3 minutes locally.
     "content-module-restore.spec.ts",
+    // Unmeasured; a few server function calls and no editor, so seconds.
+    "theme-path-refused.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
@@ -58,6 +64,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; like public-root-url.spec.ts,
     // which it follows, about 25 s.
     "source-asset.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Two tests, about 4 minutes locally.
+    "local-code-sync.spec.ts",
   ],
 ];
 

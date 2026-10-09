@@ -652,6 +652,7 @@ export const storefrontThemeDal = {
         themeName: storefrontThemes.name,
         themeStatus: storefrontThemes.status,
         themeReleaseGeneration: storefrontThemes.releaseGeneration,
+        themeFramework: storefrontThemes.framework,
       })
       .from(storefrontThemes)
       .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
@@ -808,6 +809,7 @@ export const storefrontThemeDal = {
         name: context.themeName,
         status: context.themeStatus,
         releaseGeneration: context.themeReleaseGeneration ?? 1,
+        framework: context.themeFramework ?? null,
         // A release whose revision carries no generation cannot be shown to
         // still match the current source, so it is reported as absent rather
         // than as a reusable artifact. Publishing then builds, which is the

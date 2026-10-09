@@ -1,3 +1,4 @@
+import { astroThemesEnabled } from "@/lib/storefront/service/theme-build-service.factory";
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -186,6 +187,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
         ? { previewRuntime: "start" as const }
         : {}),
+      // As the site records it: an Astro site is not previewed as Start, and
+      // is previewed at all only where this server turns Astro on.
+      framework: editorContext.theme.framework,
+      astroThemes: astroThemesEnabled(env as unknown as Record<string, unknown>),
     });
     if (!started.ok) {
       const traceId = recordPreviewStartFailure({

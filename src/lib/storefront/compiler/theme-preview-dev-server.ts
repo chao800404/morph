@@ -196,3 +196,87 @@ export const THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES: readonly string[] = [
   "@tanstack/router-core/ssr/client",
   "@tanstack/router-core/isServer",
 ];
+
+/**
+ * Source of the Live Preview's HTTP HMR relay, a Vite plugin object
+ * expression for a generated config.
+ *
+ * Cloudflare's local preview-port bridge cannot carry Vite's HMR WebSocket
+ * reliably. The relay keeps Vite's own update calculation and browser
+ * handler, but moves each payload across an HTTP request on the
+ * already-isolated preview origin; the browser still applies the native
+ * payload, so component state survives source edits. Shared by every
+ * framework's preview config, so each relays the same way.
+ */
+export function previewHttpHmrPluginSource(): string {
+  return `{
+  name: "morph-preview-http-hmr",
+  enforce: "post",
+  configureServer(server) {
+    let sequence = 0;
+    const entries = [];
+    const waiters = new Set();
+    let quietTimer = null;
+    const wakeAfterQuiet = () => {
+      if (quietTimer !== null) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => {
+        quietTimer = null;
+        for (const wake of waiters) wake();
+        waiters.clear();
+      }, 120);
+    };
+    const hot = server.environments.client.hot;
+    const send = hot.send.bind(hot);
+    hot.send = (payload, ...rest) => {
+      if (payload && typeof payload === "object" && payload.type !== "connected") {
+        sequence += 1;
+        entries.push({ sequence, payload });
+        if (entries.length > 100) entries.splice(0, entries.length - 100);
+        wakeAfterQuiet();
+      }
+      return send(payload, ...rest);
+    };
+    server.middlewares.use((req, res, next) => {
+      const url = new URL(req.url || "/", "http://preview.invalid");
+      if (
+        url.pathname !== "/__morph-theme-preview__/_morph/hmr" &&
+        url.pathname !== "/_morph/hmr"
+      ) return next();
+      const after = Number(url.searchParams.get("after") || "0");
+      const respond = () => {
+        if (res.writableEnded) return;
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("cache-control", "no-store");
+        res.end(JSON.stringify({
+          sequence,
+          entries: entries.filter((entry) => entry.sequence > after),
+        }));
+      };
+      if (url.searchParams.has("cursor") || entries.some((entry) => entry.sequence > after)) {
+        setTimeout(respond, quietTimer === null ? 0 : 140);
+        return;
+      }
+      waiters.add(respond);
+      setTimeout(() => {
+        waiters.delete(respond);
+        respond();
+      }, 5_000);
+    });
+  },
+  transform(code, id) {
+    if (!id.replace(/\\\\/g, "/").endsWith("/vite/dist/client/client.mjs")) return null;
+    const connect = "transport.connect(createHMRHandler(handleMessage));";
+    if (!code.includes(connect)) {
+      throw new Error("MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED");
+    }
+    return {
+      code: code.replace(
+        connect,
+        "globalThis.__morphApplyViteHmrPayload = (payload) => handleMessage(payload);",
+      ),
+      map: null,
+    };
+  },
+}`;
+}

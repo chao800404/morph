@@ -79,6 +79,7 @@ describe("ThemeBuildService storage boundary", () => {
     });
 
     const dal = {
+      readThemeFramework: vi.fn(async () => null),
       getRevision: vi.fn(() => {
         throw new Error("build DAL revision access must not be used");
       }),
