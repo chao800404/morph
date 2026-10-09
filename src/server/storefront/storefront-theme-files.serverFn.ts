@@ -71,11 +71,11 @@ function rejectLegacyManifestDeletion() {
  * this is the check. Source-only files (vite.config, wrangler, the route tree)
  * are the author's and are not refused.
  *
- * Only arriving at one of these paths is refused. Removing one — a deletion,
- * or a move away from it — stays allowed: a workspace that already holds one
- * cannot be built (`PLATFORM_OWNED_THEME_BUILD_PATH`) or have it synced to its
- * Live Preview (`RESERVED_THEME_BUILD_PATH`), and deleting it is the only way
- * back.
+ * Deleting one stays allowed, under the same session, generation and version
+ * checks as any deletion: a workspace that already holds one cannot be built
+ * (`PLATFORM_OWNED_THEME_BUILD_PATH`) or have it synced to its Live Preview
+ * (`RESERVED_THEME_BUILD_PATH`), and deleting it is the way back. Moving one
+ * elsewhere is not needed for that, so it is refused like any other write.
  */
 function findAuthoringRefusedPath(paths: Iterable<string>): string | undefined {
   for (const path of paths) {
@@ -681,11 +681,14 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     ) {
       return rejectLegacyManifestDeletion();
     }
-    // Every destination in the batch, checked before anything is written.
-    // Deletions and move sources are not: removing one of these is allowed.
+    // The whole batch, checked before anything is written. Deletions are
+    // not: removing one of these is allowed.
     const refusedPath = findAuthoringRefusedPath([
       ...data.files.map((file) => file.path),
-      ...(data.routePathMoves ?? []).map((move) => move.toSourcePath),
+      ...(data.routePathMoves ?? []).flatMap((move) => [
+        move.fromSourcePath,
+        move.toSourcePath,
+      ]),
       ...(data.binaryCopies ?? []).map((copy) => copy.to),
     ]);
     if (refusedPath !== undefined) {

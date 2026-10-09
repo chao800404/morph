@@ -321,8 +321,8 @@ describe("saveStorefrontThemeFilesBatch", () => {
     expect(store.saveFilesBatch).toHaveBeenCalledTimes(1);
   });
 
-  it("lets a platform file be moved away", async () => {
-    store.saveFilesBatch.mockResolvedValue({ sourceGeneration: 4 });
+  // Not needed to recover, so not opened: only deletion is.
+  it("refuses a route move away from a platform file", async () => {
     const result = await call(
       saveStorefrontThemeFilesBatch,
       batch({
@@ -340,8 +340,7 @@ describe("saveStorefrontThemeFilesBatch", () => {
         ],
       }),
     );
-    expect(result.success).toBe(true);
-    expect(store.saveFilesBatch).toHaveBeenCalledTimes(1);
+    expectRefused(result, "__entry.tsx");
   });
 });
 
