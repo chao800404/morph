@@ -27,6 +27,12 @@ export type SandboxViteThemeBuildRunnerOptions = {
   workDirPrefix?: string;
   /** Whitelist of approved module names that themes are permitted to import */
   approvedDependencies?: readonly string[];
+  /**
+   * The server's Astro switch (`MORPH_ASTRO_THEMES`, never in production):
+   * whether a build recorded as Astro is built. Off, it is refused before any
+   * workspace exists, as before Astro had an adapter.
+   */
+  astroThemes?: boolean;
 };
 
 /**

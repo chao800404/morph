@@ -37,21 +37,24 @@ import {
 } from "./theme-path-aliases";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePublicTextMimeType } from "../theme-public-files";
-import {
-  THEME_START_TOOLCHAIN,
-  resolveThemeStartServerEntry,
-} from "./theme-start-toolchain";
-import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
-import { buildThemeRouteRegistry } from "./theme-route-registry";
-import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
+import { resolveThemeStartServerEntry } from "./theme-start-toolchain";
+import { randomBytes } from "node:crypto";
 import {
   nativeBuildFailureMessage,
   nativeBuildResult,
   runNativeBuildPasses,
 } from "./native-build-result";
 import { themePrerenderOptions } from "./theme-prerender";
-import { resolveThemeFramework, themeFramework } from "../theme-framework";
-import { themeToolchainById } from "../theme-framework/theme-toolchains";
+import {
+  resolveThemeFramework,
+  themeFramework,
+  type ThemeFrameworkAdapter,
+  type ThemeFrameworkOptions,
+} from "../theme-framework";
+import {
+  themeToolchainById,
+  themeToolchainForFramework,
+} from "../theme-framework/theme-toolchains";
 import {
   createThemePrerenderContent,
   THEME_PRERENDER_CONTENT_FILE,
@@ -128,6 +131,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
   private readonly maxLogLines: number;
   private readonly approvedDependencies: Set<string>;
   private readonly workDirPrefix: string;
+  private readonly frameworks: ThemeFrameworkOptions;
 
   constructor(options: SandboxViteThemeBuildRunnerOptions = {}) {
     this.id = options.id ?? "local-vite-theme-build-runner";
@@ -148,6 +152,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
     this.maxOutputSizeBytes = options.maxOutputSizeBytes ?? 20 * 1024 * 1024; // 20 MB
     this.maxLogLines = options.maxLogLines ?? 500;
     this.workDirPrefix = options.workDirPrefix ?? ".morph-builds";
+    this.frameworks = { astroThemes: options.astroThemes === true };
     this.approvedDependencies = new Set(
       options.approvedDependencies ?? DEFAULT_APPROVED_DEPENDENCIES,
     );
@@ -169,15 +174,56 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
     addLog("info", `Starting local theme build for buildId: ${input.buildId}`);
 
-    // Guard 0: Verify Compiler Identity
-    // A native build is the project's own toolchain run at the pinned Start
-    // version; a platform build is this runner's.
-    const expectedCompilerId =
-      input.buildMode === "native" ? NATIVE_START_COMPILER_ID : this.compilerId;
-    const expectedCompilerVersion =
+    // Guard 0: the framework the build records. One Morph cannot build — or
+    // one this runner was not given the switch for — is refused here, before
+    // any workspace exists, and never built as another.
+    const recordedFramework = resolveThemeFramework(
+      input.framework,
+      this.frameworks,
+    );
+    if (!recordedFramework.ok) {
+      addLog("error", recordedFramework.message);
+      return {
+        success: false,
+        errorMessage: recordedFramework.message,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: recordedFramework.message }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+    // A framework with no platform build is built natively or not at all.
+    if (
+      input.buildMode !== "native" &&
+      recordedFramework.framework.id === "astro"
+    ) {
+      const msg =
+        "THEME_FRAMEWORK_UNAVAILABLE: An Astro Theme is built with its own configuration only; it has no platform build.";
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    // Guard 0b: Verify Compiler Identity
+    // A native build is the project's own toolchain run at its framework's
+    // pinned version; a platform build is this runner's.
+    const nativeIdentity =
       input.buildMode === "native"
-        ? THEME_START_TOOLCHAIN.reactStart
-        : this.compilerVersion;
+        ? recordedFramework.framework.build.native.compilerIdentity()
+        : null;
+    const expectedCompilerId = nativeIdentity?.id ?? this.compilerId;
+    const expectedCompilerVersion =
+      nativeIdentity?.version ?? this.compilerVersion;
     if (
       input.compilerId !== expectedCompilerId ||
       input.compilerVersion !== expectedCompilerVersion
@@ -190,23 +236,6 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "compiler-identity",
           errors: [{ severity: "error", message: msg }],
-        },
-        logs,
-        durationMs: Date.now() - startTime,
-      };
-    }
-
-    // Guard 0b: the framework the build records. One Morph cannot build is
-    // refused here, before any workspace exists, and never built as another.
-    const recordedFramework = resolveThemeFramework(input.framework);
-    if (!recordedFramework.ok) {
-      addLog("error", recordedFramework.message);
-      return {
-        success: false,
-        errorMessage: recordedFramework.message,
-        diagnosticsJson: {
-          stage: "framework",
-          errors: [{ severity: "error", message: recordedFramework.message }],
         },
         logs,
         durationMs: Date.now() - startTime,
@@ -1076,10 +1105,11 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       startTime: number;
     },
   ): Promise<ThemeBuildRunnerResult> {
-    const registry = buildThemeRouteRegistry(input.files);
+    const native = themeFramework(input.framework, this.frameworks).build
+      .native;
     return runNativeBuildPasses({
       input,
-      routeRegistry: registry.valid ? registry : null,
+      routeRegistry: native.routeRegistry(input.files),
       addLog: context.addLog,
       // Each pass builds in its own copy of the sources: nothing a pass
       // writes, its record of refused reads included, reaches the next.
@@ -1125,12 +1155,15 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       };
     };
 
-    const registry = buildThemeRouteRegistry(input.files);
-    const routeRegistry = registry.valid ? registry : null;
-    const native = themeFramework(input.framework).build.native;
+    const framework = themeFramework(input.framework, this.frameworks);
+    const native = framework.build.native;
+    const routeRegistry = native.routeRegistry(input.files);
+    // This pass's own: records the build leaves are accepted only with it.
+    const nonce = randomBytes(16).toString("hex");
     const plan = native.plan(input.files, {
-      allowedPackages: nativeAllowedPackages(this.approvedDependencies),
+      allowedPackages: native.allowedPackages(this.approvedDependencies),
       prerenderContent,
+      nonce,
     });
     if (!plan.ok) return fail("native-plan", plan.message);
 
@@ -1149,30 +1182,44 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       await fs.writeFile(fullPath, file.content);
     }
     // The pinned toolchain, as the native build test and the container use.
-    await fs.symlink(
-      path.join(process.cwd(), "node_modules"),
-      path.join(tempDir, "node_modules"),
-    );
+    const toolchainModules = localToolchainNodeModules(framework);
+    if (!existsSync(toolchainModules)) {
+      return fail(
+        "toolchain",
+        `LOCAL_TOOLCHAIN_MISSING: This checkout has no ${framework.id} toolchain at ${toolchainModules}; install it from its lockfile (pnpm toolchain:astro).`,
+      );
+    }
+    await fs.symlink(toolchainModules, path.join(tempDir, "node_modules"));
 
     const [command, ...args] = plan.command;
-    if (command !== "vite") {
+    const cli =
+      command === "vite"
+        ? [
+            path.join(
+              path.dirname(
+                createRequire(import.meta.url).resolve("vite/package.json"),
+              ),
+              "bin/vite.js",
+            ),
+            ...args,
+            "--logLevel",
+            "error",
+          ]
+        : command === "astro"
+          ? [path.join(toolchainModules, "astro/bin/astro.mjs"), ...args]
+          : null;
+    if (!cli) {
       return fail("native-plan", `NATIVE_COMMAND: unexpected "${command}".`);
     }
-    addLog("info", `Executing native Start build: vite ${args.join(" ")}`);
-    const viteCli = path.join(
-      path.dirname(createRequire(import.meta.url).resolve("vite/package.json")),
-      "bin/vite.js",
+    addLog(
+      "info",
+      `Executing native ${framework.id} build: ${command} ${args.join(" ")}`,
     );
+    let buildFailure: { stage: string; message: string } | undefined;
     try {
       await promisify(execFile)(
         process.execPath,
-        [
-          "--unhandled-rejections=strict",
-          viteCli,
-          ...args,
-          "--logLevel",
-          "error",
-        ],
+        ["--unhandled-rejections=strict", ...cli],
         {
           cwd: tempDir,
           env: {
@@ -1186,17 +1233,25 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               : {}),
           },
           timeout: Math.max(1, this.maxDurationMs - (Date.now() - startTime)),
-          maxBuffer: 1024 * 1024,
+          maxBuffer: 16 * 1024 * 1024,
         },
       );
     } catch (error) {
-      const detail = error as { stderr?: string; message?: string };
-      return fail(
-        "compiler",
-        nativeBuildFailureMessage(
-          detail.stderr || detail.message || String(error),
+      const detail = error as {
+        stdout?: string;
+        stderr?: string;
+        message?: string;
+      };
+      // The workspace is read anyway: its records may say why, as a refused
+      // content read does when the build stops on it.
+      buildFailure = {
+        stage: "compiler",
+        message: nativeBuildFailureMessage(
+          [detail.stderr, detail.stdout].filter(Boolean).join("\n") ||
+            detail.message ||
+            String(error),
         ),
-      );
+      };
     }
 
     const outputs = new Map<string, Uint8Array>();
@@ -1218,6 +1273,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       input,
       outputs,
       routeRegistry,
+      nonce,
+      frameworks: this.frameworks,
+      buildFailure,
       limits: {
         maxOutputFiles: this.maxOutputFiles,
         maxOutputSizeBytes: this.maxOutputSizeBytes,
@@ -1229,4 +1287,22 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       startTime,
     });
   }
+}
+
+/**
+ * Where this checkout keeps a framework's toolchain packages. Start's are the
+ * checkout's own (the toolchain Morph itself is developed with); any other is
+ * installed from the Sandbox image's lockfile into sandbox/toolchains/
+ * (`pnpm toolchain:astro`), so a local build runs what a container runs.
+ */
+function localToolchainNodeModules(framework: ThemeFrameworkAdapter): string {
+  if (framework.id === "tanstack-start") {
+    return path.join(process.cwd(), "node_modules");
+  }
+  return path.join(
+    process.cwd(),
+    "sandbox/toolchains",
+    path.basename(themeToolchainForFramework(framework.id).root),
+    "node_modules",
+  );
 }

@@ -24,6 +24,9 @@ import {
   nativeWrapperConfigSource,
 } from "./tanstack-start-native-wrapper";
 
+/** The compiler identity of a native Start build: the pinned Start version. */
+export const NATIVE_START_COMPILER_ID = "tanstack-start-native";
+
 export {
   NATIVE_DEPLOY_CONFIG_PATH,
   NATIVE_WRANGLER_CONFIG_PATH,

@@ -6,6 +6,7 @@ import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-server";
 import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
 import { THEME_FRAMEWORKS, themeFramework } from ".";
+import { astroFramework } from "./astro.framework";
 import { tanstackStartFramework } from "./tanstack-start.framework";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -14,7 +15,9 @@ describe("the framework adapter boundary", () => {
   // docs/multi-runtime-theme-plan.md, step 2: an adapter owns preview, build,
   // routes and artifacts — never auth, OCC, documents, publish or rollback.
   it("has only framework concerns on it", () => {
-    for (const framework of THEME_FRAMEWORKS) {
+    // Astro is behind the server's switch, not in THEME_FRAMEWORKS; it is
+    // held to the same boundary.
+    for (const framework of [...THEME_FRAMEWORKS, astroFramework]) {
       expect(Object.keys(framework).sort()).toEqual(
         ["build", "detect", "id", "planWorkspace", "preview"].sort(),
       );
@@ -27,15 +30,39 @@ describe("the framework adapter boundary", () => {
           "verifyArtifact",
         ].sort(),
       );
-      expect(Object.keys(framework.build.native).sort()).toEqual(
-        [
+      // What a native build of the framework is: its compiler identity,
+      // routes, importable packages, plan, artifact and — for a framework
+      // whose prerender keeps records — how those records are read.
+      const native = Object.keys(framework.build.native);
+      expect(native).toEqual(
+        expect.arrayContaining([
+          "allowedPackages",
           "artifactEntry",
           "collect",
+          "compilerIdentity",
           "manifestMetadata",
           "plan",
+          "routeRegistry",
           "verifyArtifact",
-        ].sort(),
+        ]),
       );
+      expect(
+        native.filter(
+          (key) =>
+            ![
+              "allowedPackages",
+              "artifactEntry",
+              "collect",
+              "compilerIdentity",
+              "manifestMetadata",
+              "plan",
+              "routeRegistry",
+              "verifyArtifact",
+              "prerenderRecordsFailure",
+              "failedBuildCause",
+            ].includes(key),
+        ),
+      ).toEqual([]);
     }
   });
 
