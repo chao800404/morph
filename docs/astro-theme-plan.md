@@ -1406,6 +1406,30 @@ A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6
 - 序號的讀取、指紋排除序號（只限資料檔）、Worker 讀資料檔並在探測回報序號、sidecar 協定多一個端點。
 - Start 的伺服器預覽相關的真實測試（4 個檔案、98 個測試）照常通過。
 
+### 6.6 快照一致性與實例確認（2026-10-09，使用者審閱 6.5 後要求；本機 sidecar）
+
+使用者指出：序號代表更新順序，不保證快照內容一致；確認訊號要屬於當前的預覽實例。做法：
+
+- **一致讀取**（`readConsistentPreviewContent`）：快照要讀 template 與頁面草稿，不止一次讀取，中間可能有寫入。讀內容前後各讀一次所有草稿的版本（`readDraftVersions`：每個 template 的 `draftGeneration` 與 `draftRevisionId`，每個頁面的 `draftRevisionId` 與 `updatedAt`；每次內容寫入都會改變其中之一），兩次一致才採用，否則重讀；三次都不一致就以 `PREVIEW_CONTENT_UNSTABLE` 拒絕，不寫入。啟動與同步都用這個讀取。
+- **序號、雜湊與版本綁在一起**：快照帶 `contentTicket`、`contentHash`（內容本身的 SHA-256，不含這些中繼欄位）與 `contentVersions`。預覽收到同一個序號時，內容雜湊相同視為同一次寫入，重新確認（回應遺失後重送不會被當成新寫入）；雜湊不同以 `PREVIEW_CONTENT_TICKET_CONFLICT` 拒絕。sidecar 重算雜湊，與快照宣稱的不符就拒絕。中繼欄位不算內容，也不算工作區指紋。
+- **確認屬於當前實例**：傳輸層每次啟動 dev server 都產生一個實例識別碼，蓋在資料檔上（`previewInstance`），之後每次內容寫入也一樣。Worker 在位址探測同時回報序號與實例，兩者來自同一次讀取；確認時兩者都要對上，另一個伺服器寫的檔案或回報不算確認。
+
+**實例放在資料檔，不另外放一個檔案**：第一版把實例放在獨立的 `.morph-preview-instance.json`，由 Worker 另外 import。這讓下面的時序衝突在本機必然發生，所以改為資料檔的欄位，Worker 不必多 import 任何東西。
+
+**`deps_ssr` 失敗：已找到來源，未修復**（6.5 的 CI 失敗）：
+
+- 診斷輸出的堆疊在 Cloudflare plugin 的 `getWorkerEntryExportTypes`（`workers/runner-worker`）：dev server 啟動時，plugin 在 workerd 中執行 Worker entry 取得它的 export 類型，模組載入去讀 `.vite/deps_ssr`。
+- Vite 的除錯輸出顯示，這時 ssr 的第一次依賴最佳化還在進行（暫存目錄已建立，還沒改名為 `deps_ssr`），整個 dev server 因此啟動失敗。
+- Worker entry 多一個動態 import（上面的實例檔）時，掃描時間從約 0.18 秒變成約 0.83 秒，本機每次都失敗；拿掉之後連跑三次都通過。原本的 Worker entry 也有同樣的時序窗口，只是窄，CI 高負載下才碰到。
+- 依使用者指示，不加重試掩蓋。這是 Cloudflare plugin 與 Vite 第一次 ssr 最佳化之間的時序問題，要在 A6c 或之後另外處理（例如確認最佳化完成之後才讓 plugin 執行 entry），在那之前標為已定位、未修復，診斷保留。
+
+**測試**：
+
+- 一致讀取：沒有寫入時讀一次就採用；讀取途中另一個請求修改了兩份草稿，第一次讀到「template 舊、頁面新」的組合被丟棄，重讀後兩者一致；一直在變就拒絕，不產生快照。
+- 草稿版本（真實 SQLite）：沒有寫入時不變；template 的草稿寫入、頁面的草稿寫入、頁面刪除都會改變版本。
+- 真實的本機 Astro 預覽：6.5 的排序測試照常通過；同一序號同一內容重送時重新確認、同一序號不同內容被拒；Worker 讀到的資料檔標著另一個伺服器時，重送不算確認（`PREVIEW_CONTENT_NOT_CONFIRMED`），之後由這個伺服器的傳輸寫入的下一份快照照常確認；雜湊與內容不符的快照被拒。連續執行三次都通過。
+- 雜湊只取內容，不受序號、版本、實例影響；指紋同樣不受影響。
+
 ## 7. 安全預設
 
 `@astrojs/cloudflare` 與 Cloudflare Vite plugin 的預設，是為作者自己的電腦設計的。在 Morph 的預覽與建置中：

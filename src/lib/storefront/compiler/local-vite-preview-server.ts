@@ -27,9 +27,17 @@ import {
   type ThemeWorkspacePlanFile,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
-import { previewContentTicket } from "./theme-preview-content";
+import {
+  previewContentDigest,
+  previewContentHash,
+  previewContentTicket,
+  withPreviewInstance,
+} from "./theme-preview-content";
 import type { PreviewContentWriteResult } from "./preview-content-write";
-import { PREVIEW_CONTENT_TICKET_HEADER } from "./theme-preview-start-runtime";
+import {
+  PREVIEW_CONTENT_TICKET_HEADER,
+  PREVIEW_INSTANCE_HEADER,
+} from "./theme-preview-start-runtime";
 import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
 import type {
   StartPreviewServerInput,
@@ -147,6 +155,12 @@ type RunningPreview = Readonly<{
    * a content sync can be confirmed.
    */
   confirmsContent: boolean;
+  /**
+   * The nonce this dev server was started with, stamped into the content
+   * file (`previewInstance`); only a probe naming it confirms a content
+   * sync. Null for a preview that confirms nothing.
+   */
+  instance: string | null;
 }>;
 
 
@@ -178,6 +192,19 @@ async function linkToolchainModules(root: string, modules: string): Promise<void
   if (existing && (await fs.readlink(link)) === modules) return;
   if (existing) await fs.unlink(link);
   await fs.symlink(modules, link, "dir");
+}
+
+/**
+ * Stamps the content file a workspace holds with the dev server about to
+ * serve it, by one rename. A workspace without one has nothing to stamp.
+ */
+async function stampPreviewInstance(root: string, instance: string): Promise<void> {
+  const target = path.join(root, THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH);
+  const text = await fs.readFile(target, "utf8").catch(() => null);
+  if (text === null) return;
+  const next = `${target}.next-${randomUUID()}`;
+  await fs.writeFile(next, withPreviewInstance(text, instance));
+  await fs.rename(next, target);
 }
 
 /** The draft content snapshot a plan lays out, or null when it has none. */
@@ -660,6 +687,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         const devServer = framework.preview.devServer;
         if (input.previewRuntime === "start" || devServer) {
           try {
+            // Stamped into the content file before the server starts, so its
+            // Worker names this server and no earlier one on the probe.
+            const instance = randomUUID();
+            await stampPreviewInstance(root, instance);
             const child = await this.startChildServer(root, addLog, devServer);
             const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
             const url = withPreviewServerBase(
@@ -674,6 +705,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               origin,
               server: child.handle,
               confirmsContent: true,
+              instance,
             });
             return {
               ok: true,
@@ -785,6 +817,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             },
             // The client-only preview has no Worker to read a snapshot.
             confirmsContent: false,
+            instance: null,
           });
 
           return {
@@ -1048,14 +1081,17 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
 
   /**
    * Writes a newer draft content snapshot into a running preview, then waits
-   * until the preview's Worker reads it (docs/astro-theme-plan.md 6.5).
+   * until the preview's Worker reads it (docs/astro-theme-plan.md 6.5, 6.6).
    *
-   * `content` is the whole data file as Core built it, carrying its ticket.
-   * Written only if its ticket is higher than the one on disk — a lower one
-   * arriving late is refused, never laid over a newer snapshot — and by one
-   * rename, so a reader sees the old file or the new one. Applied means the
-   * Worker's address probe has named this ticket or a later one: only then
-   * may a page reload and expect it.
+   * `content` is the whole data file as Core built it, carrying its ticket
+   * and the hash of its content, which is checked here. Written only if its
+   * ticket is higher than the one on disk — a lower one arriving late is
+   * refused, never laid over a newer snapshot; the same ticket with other
+   * content is refused as a conflict; the same ticket with the same content
+   * is the same write, and is confirmed again — and by one rename, so a
+   * reader sees the old file or the new one. Applied means the Worker of
+   * the dev server running now has named this ticket or a later one on its
+   * address probe: only then may a page reload and expect it.
    */
   async writeContent(
     previewId: string,
@@ -1068,18 +1104,30 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         "PREVIEW_CONTENT_INVALID: a content sync carries a snapshot with its ticket.",
       );
     }
+    if (previewContentHash(content) !== (await previewContentDigest(content))) {
+      throw new Error(
+        "PREVIEW_CONTENT_INVALID: the snapshot's hash is not the hash of its content.",
+      );
+    }
     const written = await this.serialised(previewId, () =>
       this.writeContentNow(previewId, content),
     );
-    if (!written.written) {
+    if (written.outcome === "superseded") {
       return {
         applied: false,
         reason: "PREVIEW_CONTENT_SUPERSEDED",
         ticket: written.ticket,
       };
     }
+    if (written.outcome === "conflict") {
+      return {
+        applied: false,
+        reason: "PREVIEW_CONTENT_TICKET_CONFLICT",
+        ticket: written.ticket,
+      };
+    }
     const running = this.running.get(previewId);
-    if (!running?.confirmsContent) {
+    if (!running?.confirmsContent || !running.instance) {
       return {
         applied: false,
         reason: "PREVIEW_CONTENT_UNCONFIRMABLE",
@@ -1094,7 +1142,12 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           new URL(START_PREVIEW_ADDRESS_PROBE_PATH, running.origin),
           { cache: "no-store", signal: AbortSignal.timeout(5_000) },
         );
-        read = Number(probe.headers.get(PREVIEW_CONTENT_TICKET_HEADER) ?? 0);
+        // A probe from any other server — one this preview ran before —
+        // says nothing about the snapshot this one reads.
+        read =
+          probe.headers.get(PREVIEW_INSTANCE_HEADER) === running.instance
+            ? Number(probe.headers.get(PREVIEW_CONTENT_TICKET_HEADER) ?? 0)
+            : 0;
       } catch {
         // Not answering yet; asked again until the deadline.
       }
@@ -1114,7 +1167,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private async writeContentNow(
     previewId: string,
     content: string,
-  ): Promise<{ written: boolean; ticket: number }> {
+  ): Promise<{
+    outcome: "written" | "same" | "superseded" | "conflict";
+    ticket: number;
+  }> {
     const running = this.running.get(previewId);
     if (!running) {
       throw new Error(
@@ -1122,15 +1178,26 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       );
     }
     const target = path.join(running.root, THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH);
-    const current = previewContentTicket(
-      await fs.readFile(target, "utf8").catch(() => null),
-    );
+    const onDisk = await fs.readFile(target, "utf8").catch(() => null);
+    const current = previewContentTicket(onDisk);
     const ticket = previewContentTicket(content);
-    if (ticket <= current) return { written: false, ticket: current };
+    if (ticket < current) return { outcome: "superseded", ticket: current };
+    if (ticket === current) {
+      return {
+        outcome:
+          previewContentHash(onDisk) === previewContentHash(content)
+            ? "same"
+            : "conflict",
+        ticket: current,
+      };
+    }
     const next = `${target}.next-${randomUUID()}`;
-    await fs.writeFile(next, content);
+    await fs.writeFile(
+      next,
+      running.instance ? withPreviewInstance(content, running.instance) : content,
+    );
     await fs.rename(next, target);
-    return { written: true, ticket };
+    return { outcome: "written", ticket };
   }
 
   async stop(previewId: string, _processId?: string): Promise<void> {

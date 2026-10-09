@@ -19,6 +19,23 @@ beforeEach(() => {
     CREATE TABLE storefront_themes (id text PRIMARY KEY NOT NULL);
     INSERT INTO storefronts VALUES ('store');
     INSERT INTO storefront_themes VALUES ('theme');
+    CREATE TABLE storefront_theme_templates (
+      id text PRIMARY KEY NOT NULL,
+      theme_id text NOT NULL,
+      draft_generation integer DEFAULT 1 NOT NULL,
+      draft_revision_id text,
+      deleted_at text
+    );
+    CREATE TABLE storefront_pages (
+      id text PRIMARY KEY NOT NULL,
+      storefront_id text NOT NULL,
+      handle text NOT NULL,
+      draft_revision_id text,
+      updated_at text NOT NULL,
+      deleted_at text
+    );
+    INSERT INTO storefront_theme_templates VALUES ('index', 'theme', 1, 'tr-1', NULL);
+    INSERT INTO storefront_pages VALUES ('p', 'store', 'about', 'pr-1', 't1', NULL);
   `);
   // The migration itself, as D1 applies it.
   sqlite.exec(
@@ -70,5 +87,32 @@ describe("preview content tickets", () => {
         .prepare("SELECT COUNT(*) AS count FROM storefront_theme_preview_content_tickets")
         .get(),
     ).toEqual({ count: 0 });
+  });
+});
+
+describe("the drafts' versions", () => {
+  const read = () => storefrontPreviewContentTicketDal.readDraftVersions(scope);
+
+  it("stay the same while nothing is written", async () => {
+    expect(await read()).toBe(await read());
+  });
+
+  it("move with a template's draft write, and with a page's", async () => {
+    const before = await read();
+    sqlite.exec(
+      "UPDATE storefront_theme_templates SET draft_generation = 2 WHERE id = 'index'",
+    );
+    const afterTemplate = await read();
+    expect(afterTemplate).not.toBe(before);
+    sqlite.exec(
+      "UPDATE storefront_pages SET draft_revision_id = 'pr-2', updated_at = 't2' WHERE id = 'p'",
+    );
+    expect(await read()).not.toBe(afterTemplate);
+  });
+
+  it("move when a page or template comes or goes", async () => {
+    const before = await read();
+    sqlite.exec("UPDATE storefront_pages SET deleted_at = 'now' WHERE id = 'p'");
+    expect(await read()).not.toBe(before);
   });
 });

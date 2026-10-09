@@ -13,6 +13,8 @@ import {
 
 /** The address probe's header naming the content snapshot the Worker reads. */
 export const PREVIEW_CONTENT_TICKET_HEADER = "x-morph-content-ticket";
+/** The address probe's header naming the dev server the Worker belongs to. */
+export const PREVIEW_INSTANCE_HEADER = "x-morph-preview-instance";
 
 /**
  * The Live Preview that runs TanStack Start itself (PROTOTYPE).
@@ -206,12 +208,15 @@ export default {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return new Response(null, { status: 405, headers: { Allow: "GET, HEAD", "cache-control": "no-store" } });
       }
-      // The ticket of the snapshot this Worker reads now: what a content
-      // sync waits for before the page may reload.
+      // The ticket of the snapshot this Worker reads now, and which dev
+      // server this Worker belongs to: what a content sync waits for before
+      // the page may reload, from the server it wrote to and no other.
       let ticket = 0;
+      let instance = "";
       try {
         await readSnapshot();
         ticket = Number.isSafeInteger(snapshot.contentTicket) ? snapshot.contentTicket : 0;
+        instance = typeof snapshot.previewInstance === "string" ? snapshot.previewInstance : "";
       } catch {
         // Unreadable: the probe still answers, naming no snapshot.
       }
@@ -221,6 +226,7 @@ export default {
           "cache-control": "no-store",
           ${JSON.stringify(START_PREVIEW_ID_HEADER)}: ${JSON.stringify(previewId)},
           ${JSON.stringify(PREVIEW_CONTENT_TICKET_HEADER)}: String(ticket),
+          ${JSON.stringify(PREVIEW_INSTANCE_HEADER)}: instance,
         },
       });
     }

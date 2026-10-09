@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
+  previewContentDigest,
+  previewContentHash,
   previewContentTicket,
   previewContentWithoutTicket,
+  withPreviewInstance,
 } from "./theme-preview-content";
 import {
   PREVIEW_CONTENT_TICKET_HEADER,
@@ -69,5 +72,58 @@ describe("the preview Worker entry", () => {
   it("names the ticket of the snapshot it reads on the address probe", () => {
     expect(source).toContain(JSON.stringify(PREVIEW_CONTENT_TICKET_HEADER));
     expect(source).toContain("await readSnapshot();");
+  });
+});
+
+describe("a content snapshot's hash", () => {
+  const content = JSON.stringify({
+    templates: { index: { slots: { hero: { headline: "A" } }, hiddenSlots: [] } },
+    pages: {},
+  });
+  const described = (meta: Record<string, unknown>) =>
+    JSON.stringify({ ...JSON.parse(content), ...meta });
+
+  it("is taken over the content alone, not its ticket, versions or server", async () => {
+    const plain = await previewContentDigest(content);
+    expect(plain).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      await previewContentDigest(
+        described({
+          contentTicket: 4,
+          contentHash: plain,
+          contentVersions: "[1]",
+          previewInstance: "server-1",
+        }),
+      ),
+    ).toBe(plain);
+    expect(
+      await previewContentDigest(content.replace('"A"', '"B"')),
+    ).not.toBe(plain);
+  });
+
+  it("is read back only when it is one", () => {
+    const hash = "a".repeat(64);
+    expect(previewContentHash(described({ contentHash: hash }))).toBe(hash);
+    expect(previewContentHash(described({ contentHash: "short" }))).toBeNull();
+    expect(previewContentHash(content)).toBeNull();
+    expect(previewContentHash(null)).toBeNull();
+  });
+
+  it("leaves the fingerprint alone, as the ticket does", () => {
+    const at = `/workspace/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`;
+    const fingerprint = (text: string) =>
+      themeWorkspaceFingerprint([{ path: at, content: text }]);
+    expect(
+      fingerprint(described({ contentHash: "a".repeat(64), previewInstance: "s1" })),
+    ).toBe(fingerprint(described({ contentHash: "b".repeat(64), previewInstance: "s2" })));
+  });
+
+  it("is stamped with the server it is written for, without touching the content", () => {
+    const stamped = withPreviewInstance(described({ contentTicket: 2 }), "server-2");
+    expect(JSON.parse(stamped)).toMatchObject({
+      contentTicket: 2,
+      previewInstance: "server-2",
+    });
+    expect(previewContentWithoutTicket(stamped)).toBe(content);
   });
 });
