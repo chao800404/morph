@@ -318,13 +318,14 @@ export function createSyncSession(options: SyncSessionOptions) {
         reason: "Morph or the folder changed while waiting for the answer; planning again.",
       };
     }
-    if (massDeletion) {
-      // Approved deletions are the developer's own; the count starts over.
-      deletionsApproved = true;
-      state.deletionLog = [];
-      state.deletionHold = undefined;
-    }
+    // Approved deletions are the developer's own and are not logged. The hold
+    // and the count are cleared only once they have all landed (end of the
+    // cycle): if a request fails or its outcome is unknown, the hold stays,
+    // and the next cycle reads the workspace back, drops what is already gone,
+    // and asks about what is left. The approval is never carried over.
+    if (massDeletion) deletionsApproved = true;
     const baseBefore = window.windowBase ?? base.size;
+    let deletionsDone = 0;
 
     // Workspace → local. Each write first checks the local file is still the
     // one the plan saw; one edited since is left for the next cycle.
@@ -350,6 +351,7 @@ export function createSyncSession(options: SyncSessionOptions) {
           if (!(await unchangedSinceScan())) break;
           await folder.remove(action.path);
           delete state.files[action.path];
+          deletionsDone += 1;
           if (!deletionsApproved) logDeletions(0, 1, baseBefore);
           break;
         case "adopt":
@@ -418,6 +420,7 @@ export function createSyncSession(options: SyncSessionOptions) {
             delete state.files[action.path];
           }
         }
+        deletionsDone += removals.length;
         if (!deletionsApproved) logDeletions(removals.length, 0, baseBefore);
         await persist();
       }
@@ -432,6 +435,12 @@ export function createSyncSession(options: SyncSessionOptions) {
     // generation; otherwise the next poll must see a newer one and re-plan.
     if (requests.length === 0) state.sourceGeneration = listed.sourceGeneration;
     else state.sourceGeneration = generation;
+    // Every approved deletion landed: the hold has nothing left to hold.
+    // One skipped (its file changed after the scan) keeps it for next time.
+    if (deletionsApproved && deletionsDone === plannedDeletions) {
+      state.deletionLog = [];
+      state.deletionHold = undefined;
+    }
     await persist();
     return { status: "applied", summary, sourceGeneration: state.sourceGeneration };
   }

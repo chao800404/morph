@@ -146,7 +146,12 @@ export function createFakeCapabilities(): StorefrontThemeSyncCapabilityDAL & { r
 /** The real client, talking to the real handler, without a network. */
 export function createHarnessClient(
   workspace: ReturnType<typeof createFakeWorkspace>,
-  options: { beforeRequest?: (url: URL, init: RequestInit) => void } = {},
+  options: {
+    /** Runs before the server sees the request; throwing = it never arrived. */
+    beforeRequest?: (url: URL, init: RequestInit) => void;
+    /** Runs after the server answered; throwing = the answer was lost. */
+    afterResponse?: (url: URL) => void;
+  } = {},
 ) {
   const deps: ThemeSyncApiDeps = { dal: createFakeCapabilities(), ...workspace.deps };
   return createThemeSyncClient({
@@ -154,7 +159,9 @@ export function createHarnessClient(
     token: TEST_TOKEN,
     fetch: (async (input: URL, init: RequestInit) => {
       options.beforeRequest?.(new URL(input), init);
-      return handleThemeSyncRequest(new Request(input, init), deps);
+      const response = await handleThemeSyncRequest(new Request(input, init), deps);
+      options.afterResponse?.(new URL(input));
+      return response;
     }) as typeof fetch,
   });
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createConfirmPolicy } from "./sync-confirm";
 import { createSyncSession, type CyclePlanSummary, type SyncState } from "./sync-session";
 import {
   createFakeWorkspace,
@@ -22,6 +23,7 @@ function setup(options: {
   local?: Record<string, string>;
   confirm?: (summary: CyclePlanSummary, why: string) => boolean;
   beforeRequest?: (url: URL, init: RequestInit) => void;
+  afterResponse?: (url: URL) => void;
   now?: () => Date;
 }) {
   const workspace = createFakeWorkspace(options.morph);
@@ -30,7 +32,10 @@ function setup(options: {
     options.confirm ? options.confirm(summary, why) : true,
   );
   const saved: SyncState[] = [];
-  const client = createHarnessClient(workspace, { beforeRequest: options.beforeRequest });
+  const client = createHarnessClient(workspace, {
+    beforeRequest: options.beforeRequest,
+    afterResponse: options.afterResponse,
+  });
   const open = (state: SyncState) =>
     createSyncSession({
       client,
@@ -224,13 +229,100 @@ describe("a local folder linked to a Theme", () => {
     function clocked(confirmMass = false) {
       let clock = new Date("2026-10-09T10:00:00.000Z").getTime();
       const yes = { mass: confirmMass };
+      // Save requests can be made to fail before or after the server.
+      const net = { failBefore: false, failAfter: false };
+      const isSave = (url: URL) => url.pathname.endsWith("files/save");
       const harness = setup({
         morph,
         confirm: (_summary, why) => why === "startup" || yes.mass,
         now: () => new Date(clock),
+        beforeRequest: (url) => {
+          if (isSave(url) && net.failBefore) throw new TypeError("fetch failed: never sent");
+        },
+        afterResponse: (url) => {
+          if (isSave(url) && net.failAfter) throw new TypeError("fetch failed: answer lost");
+        },
       });
-      return { ...harness, yes, advance: (ms: number) => (clock += ms) };
+      return { ...harness, yes, net, advance: (ms: number) => (clock += ms) };
     }
+
+    /** 12 deleted and sent; 4 more refused and held; the log then expires. */
+    async function heldFour() {
+      const harness = clocked();
+      await harness.session.runCycle();
+      deleteLocally(harness.local, 0, 12);
+      await harness.session.runCycle();
+      deleteLocally(harness.local, 12, 4);
+      expect((await harness.session.runCycle()).status).toBe("declined");
+      harness.advance(20 * 60_000);
+      return harness;
+    }
+
+    it("keeps the hold when an approved deletion never reached Morph", async () => {
+      const { workspace, session, yes, net, saved } = await heldFour();
+      yes.mass = true;
+      net.failBefore = true;
+      await expect(session.runCycle()).rejects.toThrow("never sent");
+      expect(workspace.files.size).toBe(48);
+      expect(saved.at(-1)!.deletionHold).toBeDefined();
+
+      // The yes was for that attempt. Four deletions alone are under the
+      // threshold, but they are still held: nothing is sent without asking.
+      yes.mass = false;
+      net.failBefore = false;
+      expect((await session.runCycle()).status).toBe("declined");
+      expect(workspace.files.size).toBe(48);
+    });
+
+    // This one and the next held before the hold moved to the end of the
+    // cycle too: they pin existing behaviour (no client retry; one approval
+    // per run) rather than show the fix.
+    it("reads Morph back after an answer is lost, and does not send the deletion again", async () => {
+      const { workspace, session, yes, net, saved } = await heldFour();
+      yes.mass = true;
+      net.failAfter = true;
+      await expect(session.runCycle()).rejects.toThrow("answer lost");
+      // It did land: the four are gone from Morph.
+      expect(workspace.files.size).toBe(44);
+      const savesAfterLoss = workspace.saves.length;
+
+      yes.mass = false;
+      net.failAfter = false;
+      const next = await session.runCycle();
+      // Read back: nothing left to delete, so nothing is sent or asked.
+      expect(next.status).toBe("applied");
+      expect(next.summary.remoteDeletions).toEqual([]);
+      expect(workspace.saves.length).toBe(savesAfterLoss);
+      expect(saved.at(-1)!.deletionHold).toBeUndefined();
+    });
+
+    it("never lets --allow-mass-delete approve the plan made after one was dropped", async () => {
+      const workspace = createFakeWorkspace(morph);
+      const local = createMemoryFolder();
+      const policy = createConfirmPolicy({ yes: true, allowMassDelete: true, interactive: false });
+      let editDuringFirstAsk = true;
+      const session = createSyncSession({
+        client: createHarnessClient(workspace),
+        folder: local.folder,
+        state: emptyState(),
+        saveState: async () => undefined,
+        confirm: async (_summary, why) => {
+          const decision = policy.decide(why) === "yes";
+          if (why === "mass-deletion" && editDuringFirstAsk) {
+            editDuringFirstAsk = false;
+            workspace.editInMorph("src/f40.ts", "edited while asking");
+          }
+          return decision;
+        },
+      });
+      await session.runCycle();
+      deleteLocally(local, 0, 16);
+      // The flag's one approval goes to this plan, which is then dropped.
+      expect((await session.runCycle()).status).toBe("retry");
+      // The new plan is a new list: the spent flag does not cover it.
+      expect((await session.runCycle()).status).toBe("declined");
+      expect(workspace.files.size).toBe(60);
+    });
 
     const restoreLocally = (local: ReturnType<typeof createMemoryFolder>, from: number, count: number) => {
       for (let index = from; index < from + count; index += 1) {

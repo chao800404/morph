@@ -302,7 +302,10 @@ async function start() {
       if (error instanceof ThemeSyncApiRefusal && error.status === 401) {
         fail(`Morph refused the token (${error.message}). Link again from the editor.`);
       }
-      log(`Sync failed, retrying: ${error instanceof Error ? error.message : String(error)}`);
+      // A request that failed may still have landed. Nothing is re-sent: the
+      // next cycle reads the workspace back and plans from what is there.
+      log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      dirty = true;
       delay = Math.min(delay * 2, POLL_IDLE_MAX_MS);
     } finally {
       running = false;
