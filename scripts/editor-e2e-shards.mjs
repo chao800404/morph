@@ -53,6 +53,8 @@ export const EDITOR_SHARDS = [
     "content-module-restore.spec.ts",
     // Unmeasured; a few server function calls and no editor, so seconds.
     "theme-path-refused.spec.ts",
+    // Unmeasured; two editor opens and one right-click on a throwaway Theme.
+    "code-tree-context-menu.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
