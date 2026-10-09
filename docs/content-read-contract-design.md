@@ -1,0 +1,176 @@
+# 內容讀取契約與隱藏區塊（設計草稿）
+
+狀態：**草稿，待核准。** 尚未實作，不是已採用的規則；§3、§4、§5 的每一項決定都要經核准才生效。
+所述「現況」已於 2026-10-10 對照 `main`（`149d185`）核對。
+
+本文件定義 Theme 讀取 CMS 內容時，各種區塊狀態要回傳什麼，以及「隱藏」如何在不限制作者寫法的前提下成立。
+跨框架綁定（Design 如何辨識畫面元素屬於哪個欄位）見文末附錄；它依賴本契約，所以先定契約。
+
+## 1. 目標與非目標
+
+目標：
+
+- 作者用框架原本的寫法讀內容，包括逐欄傳值 `<Hero title={hero.title} />`，不必為了 Morph 改寫程式。
+- 編輯器裡的「隱藏」在正式網站真的不顯示，且不讓頁面崩潰。
+- 被隱藏的內容不出現在目前 release 的公開回應中。
+
+非目標：
+
+- 不保證收回曾經公開過的內容（舊 release、快取、已被下載的頁面）。
+- 不保護作者直接寫進原始碼、JS、HTML 或靜態資源的資料。隱藏不是保密功能。
+- 不保證任意寫法都能自動隱藏。無法安全處理的區塊實例，不提供隱藏。
+
+## 2. 現況
+
+實驗：平台的 `resolveStorefrontContent` 組內容 → 原封不動的 Starter `morph.pages.get()` → 真 React 渲染逐欄傳值、不加 `?.` 的元件。實驗測試尚未納入 repo，待改寫為有明確斷言、可重跑的正式測試後另行提交。
+
+| 區塊狀態                                 | `page.hero`              | 逐欄傳值的結果                                  |
+| ---------------------------------------- | ------------------------ | ----------------------------------------------- |
+| 有內容                                   | `{ title, description }` | 正常                                            |
+| 存在，props 為 `{}`、`null` 或沒有 props | `{}`                     | 顯示元件預設值                                  |
+| 只缺某欄位                               | 缺該欄位                 | 該欄位顯示預設值                                |
+| 欄位為 `""` 或 `null`                    | 原值                     | 畫面空白（React 預設值只在 `undefined` 時生效） |
+| **被隱藏**                               | `undefined`              | **整頁崩潰**                                    |
+| Document 裡沒有該區塊                    | `undefined`              | 整頁崩潰                                        |
+| 頁面沒有 Document                        | 全部 `undefined`         | 整頁崩潰                                        |
+
+其他已核對的事實：
+
+- `resolveStorefrontContent`（`storefront-content-runtime.ts`）遇到 `enabled === false` 時，從 `slots` 刪除該區塊並列入 `hiddenSlots`。
+- Core 的 `/_morph/content`（`storefront-production.service.ts` `serveContent`）一律回 200 與 `resolveStorefrontContent` 的結果，沒有 Document 時也一樣。`MorphContentError("content_not_found")` 只由本機開發代理（`local-dev/morph-dev-content-proxy.ts`）產生；`docs/local-development.md`「讀不到時顯示明確的原因」對正式環境不成立。
+- 預覽快照（`createThemePreviewContentSnapshot`）呼叫同一個 `resolveStorefrontContent`；預覽的即時隱藏（`theme-preview-content.ts` 的 `updatePreviewContent`，`enabled === false`）是另一段程式，同樣刪除該區塊。
+- `content("x")` 經 `resolveThemeContentSlot`，對缺少的區塊回傳 `{}`，所以同一個隱藏操作的後果取決於作者用哪種寫法。
+- 「恢復元件預設值」已存在：寫入時的 `resetProps`，Inspector 的「重設為程式碼預設值」。
+
+未驗證：經過 Theme Worker 的完整正式流程、瀏覽器端 Live Preview 的畫面。
+
+## 3. 契約（待核准）
+
+| 情況              | 回傳                                       | 說明                                         |
+| ----------------- | ------------------------------------------ | -------------------------------------------- |
+| 區塊存在但沒內容  | `{}`                                       | 維持現狀                                     |
+| **區塊被隱藏**    | **`{}`，並列在 `_hidden` / `hiddenSlots`** | 不帶原始內容；改變：從 `undefined` 改為 `{}` |
+| 區塊不存在        | 不回傳（`undefined`）                      | 維持現狀，不掩蓋寫錯的 slot 名稱             |
+| 頁面沒有 Document | 維持現狀（空內容，200）                    | 見 §5，先修文件承諾，不一律改 404            |
+| 欄位為 `""`       | 保留                                       | 代表作者刻意清空                             |
+| 欄位為 `null`     | 依欄位型別契約決定是否允許                 | 不做全域轉換                                 |
+| 恢復元件預設值    | 移除該欄位（既有 `resetProps`）            | 不用 `null` 或 `""` 表示                     |
+
+**`{}` 的作用僅限於保留區塊物件的形狀**：`hero.title` 會得到 `undefined` 而不是崩潰，但 `hero.title.toUpperCase()` 這類依賴值的表達式仍會出錯，而且沒有判斷的頁面會把隱藏的區塊用元件預設值顯示出來。避免執行隱藏區塊的表達式、讓區塊真的不顯示，都由 §4 安全注入的判斷負責，不由 `{}` 負責。
+
+## 4. 隱藏：由編譯流程注入判斷（待核准）
+
+### 4.1 原則
+
+- 隱藏內容不出現在公開回應。
+- 能安全處理的區塊實例，在正式建置與預覽時自動加入「隱藏就不渲染」的判斷；作者原始碼不變。
+- 無法安全處理的實例，不開放隱藏。
+
+### 4.2 判斷必須早於 props 計算
+
+注入結果要像：
+
+```tsx
+isHidden(page, "hero") ? null : <Hero title={page.hero.title.toUpperCase()} />;
+```
+
+不能先算出 props 再交給包裝元件隱藏，否則 props 的計算仍會先執行而崩潰。
+
+作者若在別處先算好值：
+
+```tsx
+const title = page.hero.title.toUpperCase();
+// ...
+<Hero title={title} />;
+```
+
+在 JSX 處注入判斷也救不了。這類實例只有在 transformer 能證明可安全改寫時才開放隱藏，否則不開放（規則 02 鐵則 6：AST patch 只在能證明安全時進行）。
+
+### 4.3 能力檢查（與權限檢查分開）
+
+既有的登入、角色、所有權與 OCC 檢查不變。新增的是**能力檢查**：以目前已儲存的 source generation 判斷，這個區塊實例能否安全支援隱藏。
+
+初步盤點（`main` `149d185`，以 grep 找出，實作前須逐一確認）會改變或帶入 `enabled` 的伺服器路徑：
+
+| 路徑                                             | 入口                                                   | 對 `enabled` 的影響                            |
+| ------------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------- |
+| `storefrontThemeDal.updateSectionProps`          | `updateStorefrontThemeSectionProps`（`props.enabled`） | 直接設定，Design 的隱藏走這裡                  |
+| `storefrontPageDal.update`                       | `storefront-pages.serverFn.ts`                         | 寫入整份頁面 Document，`enabled` 由輸入決定    |
+| `storefrontPageDal.restoreRevision`              | `storefront-pages.serverFn.ts`                         | 還原舊版，帶回當時的 `enabled`                 |
+| `storefrontThemeDal.restoreFailedPublish`        | `storefront-themes.serverFn.ts`                        | 還原 Document                                  |
+| `reorderSections`、`renameSection`、文字升級寫入 | 各自的 server function                                 | 沿用既有區塊物件，理論上不改 `enabled`，需確認 |
+
+能力檢查應放在這些路徑共用的 service／DAL 邊界，不只擋單一 server function，否則其他入口會繞過它。規則：
+
+- **改成隱藏**（`enabled` 從 true 變 false）時，要求能力成立；
+- **取消隱藏**不需要能力；
+- **未改變隱藏狀態的寫入**（例如改文字、重新排序）不因既有的隱藏區塊失去能力而被拒絕，避免作者被鎖住；
+- **還原舊版**帶回的隱藏狀態，與「改成隱藏」同樣檢查，或明確標記為需要處理。
+
+### 4.4 能力失效與恢復出口
+
+已隱藏的區塊，作者之後修改原始碼，使它無法再安全處理：
+
+- **工作區不鎖住**：草稿仍可儲存、預覽、編輯其他內容。
+- **在 Design 明確標示**：例如「這個區塊已隱藏，但目前的程式碼無法保證它在正式網站不顯示」。
+- **兩個恢復出口**：
+  1. 取消隱藏（永遠允許）；
+  2. 修正原始碼，讓實例重新可被安全處理，例如改回可辨識的寫法；修正後能力自動恢復。
+- **建置與發布**：發布前若該 release 的內容含有「隱藏但無能力」的區塊，拒絕發布並列出區塊與恢復出口，不得默默顯示。單純建置（Build Preview）不拒絕，只帶出同樣的診斷。
+
+### 4.5 SSR、SSG 與舊 build
+
+- **SSR**：含判斷的建置產物，依 release 的內容決定是否渲染。隱藏狀態改變屬於內容變更，不需重建。
+- **SSG／預先渲染**：HTML 已寫死。隱藏狀態改變時，沿用既有的內容依賴規則（`e2e/native-content-dependency.spec.ts`：只有建置證明不含內容時，內容發布才可跳過建置）決定是否重建。
+- **舊 build**：注入判斷之前的建置產物不具備這個能力。需要明確政策，例如：偵測到 release 的 build 不含判斷時，隱藏操作要求重建，或在 Design 標示「需重新建置才生效」。不得假定舊 build 已受保護。
+
+### 4.6 三條路徑同時修改
+
+正式網站（`resolveStorefrontContent`）、預覽快照（`createThemePreviewContentSnapshot`，共用前者）、預覽即時隱藏（`updatePreviewContent`）要一起改，避免預覽與正式行為不一致。
+
+### 4.7 驗收
+
+每個案例同時檢查：
+
+1. 不崩潰；
+2. 真的不顯示（不是改成顯示元件預設值）；
+3. 目前 release 的 `/_morph/content` 回應、SSR HTML、預先渲染 HTML 都不含被隱藏的內容；
+4. 取消隱藏後重新顯示原本的內容；
+5. 修改原始碼使實例失去能力後：Design 有提示、工作區可繼續操作、兩個恢復出口都有效、發布被拒絕並列出原因。
+
+案例至少涵蓋：`content("x")`、`{...page.x}`、逐欄傳值、值經轉換、先在別處計算值（應不開放）、Start 與 `.astro` 頁面，以及每一條 §4.3 的寫入路徑。
+
+## 5. 不存在的內容（待核准）
+
+- 合法的 Code 撰寫 route 可能還沒有 CMS 內容，不能一律回 404。
+- 先查清楚 Core 能否可靠區分：頁面存在但尚無內容、路徑不存在、頁面存在但引用了不存在的 slot。
+- 在能區分之前：修正 `docs/local-development.md` 的承諾，不讓 API 假裝能判定。
+- 嚴格讀取（讀不到就丟出明確錯誤）可以另設明確選項，不改變既有 `loadContentSlots` 與 `morph.pages.get()` 的相容行為。
+
+## 6. 前提與待決事項
+
+- **完整 Start 預覽尚非預設**：預設 Live Preview 是純前端模式，server function 不能執行（回傳 `undefined`，難以診斷）。完整 Start 預覽要設定 `MORPH_THEME_PREVIEW_RUNTIME=start`，是否改為預設需另做開放決策。純前端模式下對 `createServerFn` 給出明確錯誤，是一個可單獨處理的體驗改善。
+- **待決**：
+  - §3 的契約；
+  - §4 由編譯流程注入隱藏判斷是否可以接受；
+  - §4.3 能力檢查的位置；
+  - §4.5 舊 build 的相容政策；
+  - `null` 欄位的型別契約；
+  - §5 的區分方式。
+
+## 附錄：綁定探測實驗（與本契約分開）
+
+在預覽中把每個欄位換成唯一探針，讓頁面照作者程式重新執行，再看探針出現在哪個元素。實驗測試尚未納入 repo。
+
+| 預覽模式           | 案例                                                                                                    | 結果                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 純前端、完整 Start | 同一頁五種寫法：`content()` 展開、loader→解構→逐欄傳值、`toUpperCase()`、展開後跨 slot 覆寫、兩欄位拼接 | 12 個欄位全部與預期一致；被覆寫與未使用的欄位正確判為找不到                    |
+| 純前端             | server function → loader                                                                                | 頁面無法執行（見 §6），與探測無關                                              |
+| 完整 Start         | server function → loader                                                                                | 頁面正常；探針找不到，因為探針只改了瀏覽器快照，server function 在伺服器讀資料 |
+
+限制：
+
+- 這只證明這組案例可行，不代表所有瀏覽器端寫法都能可靠探測。
+- 探測範圍限於 Morph 從 Document 與 `contentFields` 知道的區塊與欄位。
+- 伺服器端探測需要隔離設計後才做。#181、#185 合併的草稿同步與快照一致性，可以作為傳輸基礎，但正式草稿與實驗探針不是同一種資料：只在專屬實驗預覽使用、不寫入 Document 或工作區、不覆蓋使用者的新修改、中斷不殘留、副作用隔離、確認的是當次探測版本、不交換共用容器的快照。
+- 未測：Astro、重複列、圖片與非文字欄位、會變動的內容、效能。
