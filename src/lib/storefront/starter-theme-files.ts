@@ -23,6 +23,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
@@ -44,11 +45,13 @@ import {
   LEGACY_STARTER_THEME_LINK_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
 import {
+  PREVIOUS_THEME_START_DEPENDENCY_VERSIONS,
   THEME_START_BUILD_DEPENDENCIES,
   THEME_START_RUNTIME_DEPENDENCIES,
 } from "./compiler/theme-start-toolchain";
 import { planAdoptPageOwnedSections } from "./editor/page-section-copy";
 import { planThemeFileMove } from "./ast/theme-file-move";
+import { deriveThemeSourceRouterFramework } from "./theme-source-runtime-contract";
 
 /**
  * Compatibility entry files for the original Starter Theme layout.
@@ -1124,6 +1127,116 @@ function generatedMimeType(path: string): string {
 }
 
 /**
+ * Whether a missing `src/components/<Name>.tsx` may be added back.
+ *
+ * Only where the workspace's `sections/<Name>.tsx` is the one-line re-export
+ * the Starter itself wrote, byte for byte: that file imports the old path, and
+ * Morph wrote both. Anything else there is not added back next to:
+ *
+ * - an implementation, as a source-first workspace has: the component moved,
+ *   and a copy at the old path would be one nothing imports;
+ * - any other re-export, however close: the author wrote it, and a missing
+ *   target is theirs to resolve, which the build reports, not Morph's to
+ *   restore from the Starter.
+ *
+ * With no `sections/` file at all, a manifest-era workspace from before the
+ * section library, the component is added as it always was.
+ */
+function oldSectionComponentRestorable(
+  path: string,
+  existingByPath: ReadonlyMap<string, ExistingStarterThemeFile>,
+): boolean {
+  const name = /^src\/components\/([^/]+)\.tsx$/.exec(path)?.[1];
+  if (
+    !name ||
+    !(STARTER_THEME_SECTION_ENTRY_COMPONENTS as readonly string[]).includes(name)
+  ) {
+    return true;
+  }
+  const sectionPath = `src/components/sections/${name}.tsx`;
+  const section = existingByPath.get(sectionPath);
+  if (!section) return true;
+  return (
+    section.content ===
+    STARTER_THEME_SECTION_ENTRY_FILES.find((file) => file.path === sectionPath)
+      ?.content
+  );
+}
+
+type StarterWorkspaceFramework = Readonly<{
+  hasManifest: boolean;
+  /** The router framework morph.theme.json declares, when it declares one. */
+  declaredRouterFramework: string | null;
+  manifestUnreadable: boolean;
+  /** No declaration, and the source is a Start project by the build's rule. */
+  isStartBySource: boolean;
+}>;
+
+function readStarterWorkspaceFramework(
+  existingFiles: readonly ExistingStarterThemeFile[],
+): StarterWorkspaceFramework {
+  const manifest = existingFiles.find(
+    (file) => file.path === "morph.theme.json",
+  );
+  let declaredRouterFramework: string | null = null;
+  let manifestUnreadable = false;
+  if (manifest) {
+    try {
+      const parsedManifest: unknown = JSON.parse(manifest.content);
+      if (
+        isRecord(parsedManifest) &&
+        isRecord(parsedManifest.router) &&
+        typeof parsedManifest.router.framework === "string"
+      ) {
+        declaredRouterFramework = parsedManifest.router.framework;
+      }
+    } catch {
+      // Malformed authored manifests remain untouched and fail through the
+      // normal compiler diagnostics rather than being inferred as Starter.
+      manifestUnreadable = true;
+    }
+  }
+  // A workspace created since the Starter went source-first has no
+  // morph.theme.json, so nothing declares it to be on Start. Its source is then
+  // asked the same question the Start adapter and the build materializer ask,
+  // so this and the build cannot disagree. A manifest that declares a
+  // framework, or that cannot be read, is never overruled by the files.
+  const isStartBySource =
+    !manifest &&
+    deriveThemeSourceRouterFramework(existingFiles) === "tanstack-start";
+  return {
+    hasManifest: Boolean(manifest),
+    declaredRouterFramework,
+    manifestUnreadable,
+    isStartBySource,
+  };
+}
+
+/**
+ * Whether the Starter upgrade has anything to say to this workspace at all.
+ *
+ * Not to one that is identifiably another framework: a manifest declaring a
+ * router framework other than Start, or no manifest and source that is not a
+ * Start project. Such a workspace may still carry a Starter version, because
+ * it began as the Starter, and every rule here would otherwise run on it.
+ * A manifest that cannot be read keeps the behaviour it had before this check.
+ */
+function starterUpgradeApplies(framework: StarterWorkspaceFramework): boolean {
+  const { declaredRouterFramework, manifestUnreadable, hasManifest } = framework;
+  // Declares a framework: only Start.
+  if (declaredRouterFramework !== null) {
+    return declaredRouterFramework === "tanstack-start";
+  }
+  // Cannot be read: as before this check.
+  if (manifestUnreadable) return true;
+  // Declares no router: a manifest-era workspace from before Start, which the
+  // upgrade was first written for.
+  if (hasManifest) return true;
+  // No manifest: only a Start project by the build's rule.
+  return framework.isStartBySource;
+}
+
+/**
  * Produces an additive, OCC-ready upgrade for an existing v2 starter
  * workspace. Authored files are preserved. Legacy shell components are
  * replaced only when their bytes still exactly match the previous bootstrap,
@@ -1144,23 +1257,11 @@ export function createStarterThemeWorkspaceUpgrade(
   const upgrades: StarterThemeWorkspaceUpgradeFile[] = [];
 
   const existingLegacyPage = existingByPath.get("src/pages/index.tsx");
-  const existingManifestForRouteContract =
-    existingByPath.get("morph.theme.json");
-  let alreadyUsesStartRouteContract = false;
-  if (existingManifestForRouteContract) {
-    try {
-      const parsedManifest: unknown = JSON.parse(
-        existingManifestForRouteContract.content,
-      );
-      if (isRecord(parsedManifest) && isRecord(parsedManifest.router)) {
-        alreadyUsesStartRouteContract =
-          parsedManifest.router.framework === "tanstack-start";
-      }
-    } catch {
-      // Malformed authored manifests remain untouched and fail through the
-      // normal compiler diagnostics rather than being inferred as Starter.
-    }
-  }
+  const framework = readStarterWorkspaceFramework(existingFiles);
+  if (!starterUpgradeApplies(framework)) return upgrades;
+  const { declaredRouterFramework, isStartBySource } = framework;
+  const alreadyUsesStartRouteContract =
+    declaredRouterFramework === "tanstack-start";
   const canAdoptRouteContract =
     alreadyUsesStartRouteContract ||
     Boolean(
@@ -1169,6 +1270,9 @@ export function createStarterThemeWorkspaceUpgrade(
         existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
     );
 
+  // Adding files stays with the manifest-era workspaces it was written for. A
+  // source-first workspace started with every one of these, so one that is
+  // missing was removed by its author.
   if (canAdoptRouteContract) {
     for (const file of STARTER_THEME_V4_NEW_FILES) {
       if (existingByPath.has(file.path)) continue;
@@ -1179,7 +1283,11 @@ export function createStarterThemeWorkspaceUpgrade(
         expectMissing: true,
       });
     }
+  }
 
+  // Replacing bytes Morph wrote, and correcting the pins it owns, is safe on
+  // any Start workspace: each rule matches an exact Starter generation.
+  if (canAdoptRouteContract || isStartBySource) {
     const existingHomeRoute = existingByPath.get("src/routes/index.tsx");
     if (
       existingHomeRoute?.content === LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE ||
@@ -1241,7 +1349,10 @@ export function createStarterThemeWorkspaceUpgrade(
         existingContentModule.content ===
           LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE ||
         existingContentModule.content ===
-          LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE)
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE ||
+        // Before `morph.pages.get`.
+        existingContentModule.content ===
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE)
     ) {
       upgrades.push({
         path: existingContentModule.path,
@@ -1281,17 +1392,30 @@ export function createStarterThemeWorkspaceUpgrade(
           }
 
           // Platform-owned toolchain versions are corrected, not merely added.
-          // The build container ships one pinned version of each, so a Theme
-          // cannot run against a different one — and the build contract
-          // validates them by exact equality. Skipping an entry that is present
-          // but wrong (for example `react: "^19.0.0"` from an older starter)
-          // leaves the workspace permanently unbuildable with no way to
-          // recover through the upgrade path.
+          // The build container ships one pinned version of each and the
+          // build refuses any other (`INVALID_START_PACKAGE`), so a pin Morph
+          // wrote and later moved leaves the workspace unbuildable until it is
+          // brought forward. Only a missing entry or one of those earlier pins
+          // is: a value Morph never wrote was chosen by the author, and is
+          // left for the build to report rather than overwritten.
+          const correctable = (
+            current: unknown,
+            dependency: string,
+            resolved: unknown,
+          ) =>
+            current !== resolved &&
+            (current === undefined ||
+              (typeof current === "string" &&
+                (PREVIOUS_THEME_START_DEPENDENCY_VERSIONS[dependency] ?? []).includes(
+                  current,
+                )));
           for (const [dependency, version] of Object.entries(
             THEME_START_RUNTIME_DEPENDENCIES,
           )) {
             const resolved = targetDependencies[dependency] ?? version;
-            if (existingDependencies[dependency] === resolved) continue;
+            if (!correctable(existingDependencies[dependency], dependency, resolved)) {
+              continue;
+            }
             existingDependencies[dependency] = resolved;
             packageChanged = true;
           }
@@ -1299,7 +1423,11 @@ export function createStarterThemeWorkspaceUpgrade(
             THEME_START_BUILD_DEPENDENCIES,
           )) {
             const resolved = targetDevDependencies[dependency] ?? version;
-            if (existingDevDependencies[dependency] === resolved) continue;
+            if (
+              !correctable(existingDevDependencies[dependency], dependency, resolved)
+            ) {
+              continue;
+            }
             existingDevDependencies[dependency] = resolved;
             packageChanged = true;
           }
@@ -1331,6 +1459,7 @@ export function createStarterThemeWorkspaceUpgrade(
 
   for (const file of STARTER_THEME_V3_NEW_FILES) {
     if (existingByPath.has(file.path)) continue;
+    if (!oldSectionComponentRestorable(file.path, existingByPath)) continue;
     upgrades.push({
       path: file.path,
       content: file.content,
@@ -1638,6 +1767,11 @@ export function createStarterThemeWorkspaceUpgrade(
 export function createStarterThemeWorkspaceUpgradePlan(
   existingFiles: ExistingStarterThemeFile[],
 ): StarterThemeWorkspaceUpgradePlan {
+  // Before the deletions and the home adoption too, which are planned here
+  // rather than in the upgrade: a workspace of another framework gets nothing.
+  if (!starterUpgradeApplies(readStarterWorkspaceFramework(existingFiles))) {
+    return { files: [], deletions: [] };
+  }
   const files = createStarterThemeWorkspaceUpgrade(existingFiles);
   const existingLegacyPage = existingFiles.find(
     (file) => file.path === "src/pages/index.tsx",

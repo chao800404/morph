@@ -5,7 +5,12 @@ import {
   DEFAULT_HEADER_NAV_ITEM_IDS,
 } from "./default-row-ids";
 import { parseComponentSource } from "./ast/theme-ast-transformer";
-import { validateThemeStartPackageContract } from "./compiler/theme-start-toolchain";
+import {
+  PREVIOUS_THEME_START_DEPENDENCY_VERSIONS,
+  THEME_START_BUILD_DEPENDENCIES,
+  THEME_START_RUNTIME_DEPENDENCIES,
+  validateThemeStartPackageContract,
+} from "./compiler/theme-start-toolchain";
 import {
   createStarterThemeWorkspaceUpgrade,
   createStarterThemeWorkspaceUpgradePlan,
@@ -43,6 +48,28 @@ import {
   STARTER_THEME_V4_NEW_FILES,
   STARTER_THEME_V3_NEW_FILES,
 } from "./starter-theme-v3-files";
+
+/**
+ * These files inside the workspace a store is created with, which is a Start
+ * project; the upgrade has nothing to say to a workspace it cannot tell is
+ * one, so a handful of files on their own is no longer a Starter.
+ */
+function inStartWorkspace(
+  files: ReadonlyArray<{ id: string; path: string; content: string; version: number }>,
+) {
+  const given = new Set(files.map((file) => file.path));
+  return [
+    ...starterThemeWorkspaceFiles()
+      .filter((file) => !given.has(file.path))
+      .map((file, index) => ({
+        id: `starter-${index}`,
+        path: file.path,
+        content: file.content,
+        version: 1,
+      })),
+    ...files,
+  ];
+}
 
 describe("starter Principles theme source", () => {
   it("ships a token-only order transfer confirmation route in new Themes", () => {
@@ -516,7 +543,7 @@ describe("starter Principles theme source", () => {
       },
     ];
 
-    const upgrades = createStarterThemeWorkspaceUpgrade(existing);
+    const upgrades = createStarterThemeWorkspaceUpgrade(inStartWorkspace(existing));
 
     expect(
       upgrades.find((file) => file.path === "src/components/Hero.tsx"),
@@ -544,10 +571,12 @@ describe("starter Principles theme source", () => {
 
     expect(
       createStarterThemeWorkspaceUpgrade(
-        existing.map((file) => ({
-          ...file,
-          content: `${file.content}\n// authored`,
-        })),
+        inStartWorkspace(
+          existing.map((file) => ({
+            ...file,
+            content: `${file.content}\n// authored`,
+          })),
+        ),
       ).some((file) =>
         [
           "src/components/Hero.tsx",
@@ -693,7 +722,7 @@ describe("starter Principles theme source", () => {
       id: String(index),
       version: 20,
     }));
-    const upgrades = createStarterThemeWorkspaceUpgrade(existing);
+    const upgrades = createStarterThemeWorkspaceUpgrade(inStartWorkspace(existing));
     for (const file of markerized) {
       expect(
         upgrades.find((upgrade) => upgrade.path === file.path),
@@ -712,7 +741,7 @@ describe("starter Principles theme source", () => {
         : file,
     );
     expect(
-      createStarterThemeWorkspaceUpgrade(authored).some(
+      createStarterThemeWorkspaceUpgrade(inStartWorkspace(authored)).some(
         (upgrade) => upgrade.path === "src/components/Hero.tsx",
       ),
     ).toBe(false);
@@ -745,14 +774,16 @@ export default function Principles({ label = "Why we choose differently" }: Prin
   );
 }
 `;
-    const upgrades = createStarterThemeWorkspaceUpgrade([
-      {
-        id: "authored",
-        path: "src/components/Principles.tsx",
-        content: authored,
-        version: 7,
-      },
-    ]);
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      inStartWorkspace([
+        {
+          id: "authored",
+          path: "src/components/Principles.tsx",
+          content: authored,
+          version: 7,
+        },
+      ]),
+    );
     const upgrade = upgrades.find(
       (file) => file.path === "src/components/Principles.tsx",
     );
@@ -826,14 +857,16 @@ export default function Principles({ label = "Why we choose differently" }: Prin
         false,
       );
       seen.add(content);
-      const upgrades = createStarterThemeWorkspaceUpgrade([
-        {
-          id: "header",
-          path: "src/components/Header.tsx",
-          content,
-          version: 4,
-        },
-      ]);
+      const upgrades = createStarterThemeWorkspaceUpgrade(
+        inStartWorkspace([
+          {
+            id: "header",
+            path: "src/components/Header.tsx",
+            content,
+            version: 4,
+          },
+        ]),
+      );
       expect(
         upgrades.find((file) => file.path === "src/components/Header.tsx")
           ?.content,
@@ -854,14 +887,16 @@ export default function Principles({ label = "Why we choose differently" }: Prin
     expect(LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE).toContain(
       "<span key={item.label}>",
     );
-    const upgrades = createStarterThemeWorkspaceUpgrade([
-      {
-        id: "header",
-        path: "src/components/Header.tsx",
-        content: LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
-        version: 4,
-      },
-    ]);
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      inStartWorkspace([
+        {
+          id: "header",
+          path: "src/components/Header.tsx",
+          content: LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE,
+          version: 4,
+        },
+      ]),
+    );
     expect(
       upgrades.find((file) => file.path === "src/components/Header.tsx")
         ?.content,
@@ -875,14 +910,16 @@ export default function Principles({ label = "Why we choose differently" }: Prin
     expect(header).toContain('link={{ href: "/account" }}');
     expect(header).toContain("Account");
 
-    const upgrades = createStarterThemeWorkspaceUpgrade([
-      {
-        id: "header",
-        path: "src/components/Header.tsx",
-        content: LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE,
-        version: 7,
-      },
-    ]);
+    const upgrades = createStarterThemeWorkspaceUpgrade(
+      inStartWorkspace([
+        {
+          id: "header",
+          path: "src/components/Header.tsx",
+          content: LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE,
+          version: 7,
+        },
+      ]),
+    );
     expect(
       upgrades.find((file) => file.path === "src/components/Header.tsx")
         ?.content,
@@ -891,14 +928,16 @@ export default function Principles({ label = "Why we choose differently" }: Prin
     const authoredHeader =
       LEGACY_STARTER_THEME_HEADER_ACCOUNTLESS_SOURCE + "\n// merchant edit\n";
     expect(
-      createStarterThemeWorkspaceUpgrade([
-        {
-          id: "header-authored",
-          path: "src/components/Header.tsx",
-          content: authoredHeader,
-          version: 8,
-        },
-      ]).some((file) => file.path === "src/components/Header.tsx"),
+      createStarterThemeWorkspaceUpgrade(
+        inStartWorkspace([
+          {
+            id: "header-authored",
+            path: "src/components/Header.tsx",
+            content: authoredHeader,
+            version: 8,
+          },
+        ]),
+      ).some((file) => file.path === "src/components/Header.tsx"),
     ).toBe(false);
   });
 
@@ -1110,10 +1149,10 @@ export default function Principles({ label = "Why we choose differently" }: Prin
 });
 
 describe("platform toolchain version correction", () => {
-  it("corrects a platform dependency that exists with an unsupported version", () => {
-    // A theme created by an older starter carries `^19.0.0`, which the Start
-    // package contract rejects by exact equality. Leaving it in place would
-    // make the workspace permanently unbuildable.
+  it("corrects a pin an earlier Starter wrote", () => {
+    // `^19.0.0` (React before 2026-08-25) and `vite` 7.2.7 (until 2026-09-05)
+    // are values Morph's own Starter wrote, which the build now refuses
+    // (INVALID_START_PACKAGE). Left in place, no upgrade could fix them.
     const upgrades = createStarterThemeWorkspaceUpgrade([
       {
         id: "manifest",
@@ -1139,7 +1178,7 @@ describe("platform toolchain version correction", () => {
             "@tanstack/react-start": "1.168.32",
           },
           devDependencies: {
-            vite: "7.0.0",
+            vite: "7.2.7",
             tailwindcss: "4.1.17",
           },
         }),
@@ -1162,6 +1201,61 @@ describe("platform toolchain version correction", () => {
     expect(upgraded.devDependencies.vite).toBe("7.3.5");
     // Dependencies the platform does not own keep the customer's choice.
     expect(upgraded.dependencies.clsx).toBe("customer-version");
+  });
+
+  it("leaves a version Morph never wrote, which the author chose", () => {
+    const upgrades = createStarterThemeWorkspaceUpgrade([
+      {
+        id: "manifest",
+        path: "morph.theme.json",
+        content: JSON.stringify({
+          name: "Dawn Starter",
+          entry: "src/routes/index.tsx",
+          router: { framework: "tanstack-start" },
+          components: {},
+        }),
+        version: 1,
+      },
+      {
+        id: "package",
+        path: "package.json",
+        content: JSON.stringify({
+          dependencies: {
+            react: "19.2.1",
+            "react-dom": "19.2.1",
+            "@tanstack/react-router": "1.170.18",
+            "@tanstack/react-start": "1.168.32",
+          },
+          devDependencies: {
+            "@tanstack/router-plugin": "1.168.23",
+            "@cloudflare/vite-plugin": "1.62.4",
+            "@vitejs/plugin-react": "5.2.0",
+            "@tailwindcss/vite": "4.1.17",
+            tailwindcss: "4.1.17",
+            // Never a Starter value: the author's.
+            vite: "7.0.0",
+          },
+        }),
+        version: 1,
+      },
+    ] as never);
+
+    expect(upgrades.some((upgrade) => upgrade.path === "package.json")).toBe(
+      false,
+    );
+  });
+
+  it("knows only earlier pins, never a current one, as correctable", () => {
+    const current: Record<string, string> = {
+      ...THEME_START_RUNTIME_DEPENDENCIES,
+      ...THEME_START_BUILD_DEPENDENCIES,
+    };
+    for (const [dependency, previous] of Object.entries(
+      PREVIOUS_THEME_START_DEPENDENCY_VERSIONS,
+    )) {
+      expect(current[dependency], dependency).toBeDefined();
+      expect(previous, dependency).not.toContain(current[dependency]);
+    }
   });
 
   it("produces a package.json that satisfies the Start package contract", () => {

@@ -19,6 +19,7 @@ import {
 } from "../default-storefront-document";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 import { createStarterThemeWorkspaceUpgradePlan } from "../starter-theme-files";
+import { themeSourceStore } from "../storage/theme-storage.server";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -187,7 +188,13 @@ async function ensureStarterThemeWorkspace(
   if (sourceGeneration === null) {
     throw new Error("Starter Theme source generation is unavailable.");
   }
-  await storefrontThemeFileDal.saveFilesBatch(
+  // Through the source store, as every other workspace save goes: it decides
+  // the revision and records the manifest that names binary files' bytes, and
+  // updates the source index. Written straight to the DAL, the revision had no
+  // manifest, which the DAL refuses for a workspace holding any binary file
+  // (an uploaded image is enough), so the upgrade failed on every editor load
+  // and the editor could not open.
+  await themeSourceStore.saveFilesBatch(
     storefrontId,
     themeId,
     upgradePlan.files,
