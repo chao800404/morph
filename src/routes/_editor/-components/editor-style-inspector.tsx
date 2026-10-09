@@ -193,6 +193,20 @@ export type InspectorPropsChangeOptions = {
   skipPreviewSync?: boolean;
 };
 
+/**
+ * A value an inline canvas edit wrote to a section's stored props.
+ *
+ * It is what the author typed and what the Document is being given, not text
+ * read off the canvas. `id` increases with each commit, so the same value
+ * written twice is still two commits.
+ */
+export type InspectorInlineTextCommit = Readonly<{
+  id: number;
+  sectionId: string;
+  fieldPath: string;
+  value: string;
+}>;
+
 type EditorStyleInspectorProps = {
   /** Storefront/theme/template identity; section ids are only locally unique. */
   resourceKey?: string;
@@ -270,6 +284,11 @@ type EditorStyleInspectorProps = {
     next: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /**
+   * The last value an inline canvas edit wrote. Applied to this section's
+   * fields before the save and refetch bring it back as stored props.
+   */
+  inlineTextCommit?: InspectorInlineTextCommit | null;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   /**
    * Which source of truth this render edits.
@@ -364,22 +383,6 @@ const DIRECT_CONTENT_FIELD_KEYS = [
   "imageAlt",
   "image",
 ] as const;
-
-// `selection.contentValue` is the live text-edit buffer from the preview. A
-// media element has no text nodes, so its value must continue to come from the
-// section Document instead of a stale/empty rendered text value.
-const MEDIA_SELECTION_KINDS = new Set([
-  "image",
-  "picture",
-  "icon",
-  "svg",
-  "video",
-  "audio",
-  "canvas",
-  "iframe",
-  "embed",
-  "map",
-]);
 
 const IMAGE_POSITION_OPTIONS = [
   "center",
@@ -706,6 +709,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onPropsChange,
+  inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
   sectionTemplatePaths,
@@ -750,6 +754,23 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       sectionId: section.id,
       sectionProps: section.props,
     });
+  // A commit seen when this panel mounted is already in the props it read.
+  const appliedInlineCommitRef = useRef(inlineTextCommit?.id ?? 0);
+  const [inlineCommitEpoch, setInlineCommitEpoch] = useState(0);
+  useEffect(() => {
+    if (!inlineTextCommit) return;
+    if (inlineTextCommit.id === appliedInlineCommitRef.current) return;
+    appliedInlineCommitRef.current = inlineTextCommit.id;
+    if (inlineTextCommit.sectionId !== section.id) return;
+    const next = setFieldPathValue(
+      localPropsRef.current,
+      inlineTextCommit.fieldPath,
+      inlineTextCommit.value,
+    );
+    localPropsRef.current = next;
+    setLocalProps(next);
+    setInlineCommitEpoch((epoch) => epoch + 1);
+  }, [inlineTextCommit, localPropsRef, section.id, setLocalProps]);
   const optimisticStyleRef = useRef<{
     key: string;
     revision: number;
@@ -809,7 +830,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // rendered empty even though the Document section has editable fields.
   const isSectionSelection = !isSelectedNode;
   const selectedKind = selection?.kind ?? "custom";
-  const useSelectionContentValue = !MEDIA_SELECTION_KINDS.has(selectedKind);
   // Restricted to this section: a selected parent can span several components,
   // and two instances of one component expose the same field names. Editing
   // through an unfiltered list would write to whichever instance came first.
@@ -862,32 +882,21 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const prefix = activeFieldPath.slice(0, activeFieldPath.lastIndexOf("."));
     return prefix + "." + key;
   };
+  /**
+   * The stored value of a field: the section's props, never the canvas.
+   *
+   * What the canvas shows is what the Theme rendered from the value, and its
+   * `content()` may change a value on the way. Offering rendered text here
+   * would save it back transformed, compounding on every edit.
+   */
   const selectedFieldValue = (key: string): unknown => {
     const path = nestedFieldPath(key);
-    const value = path ? getFieldPathValue(props, path) : props[key];
-    // Canvas inline editing updates the selected preview descriptor before the
-    // debounced Document refetch reaches this panel. Prefer that value for the
-    // selected text control so the Inspector converges immediately.
-    if (
-      isSelectedNode &&
-      useSelectionContentValue &&
-      selectedField === key &&
-      selection?.contentValue !== null &&
-      selection?.contentValue !== undefined
-    ) {
-      return selection.contentValue;
-    }
-    if (value !== undefined) return value;
-    return isSelectedNode && useSelectionContentValue && selectedField === key
-      ? selection?.contentValue
-      : undefined;
+    return path ? getFieldPathValue(props, path) : props[key];
   };
+  // Inputs hold their own value. An inline canvas edit changes a stored value
+  // underneath them, so they are remounted to show it.
   const contentFieldInputKey = (fieldKey: string) =>
-    `${contentResourceKey}:${fieldKey}:${
-      isSelectedNode && useSelectionContentValue && selectedField === fieldKey
-        ? (selection?.contentValue ?? "")
-        : ""
-    }`;
+    `${contentResourceKey}:${fieldKey}:${inlineCommitEpoch}`;
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
   const optimisticString = (key: string): string | undefined => {
@@ -2456,7 +2465,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
             onToggle={() => toggleSection("content")}
           >
             <div
-              key={`${contentResourceKey}:${resetEpoch}`}
+              key={`${contentResourceKey}:${resetEpoch}:${inlineCommitEpoch}`}
               className="w-full min-w-0 space-y-3"
             >
               {orderContentBlocks(

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INLINE_TEXT_EDIT_MAX_LENGTH,
   hasInlineTextDocumentTarget,
+  inlineTextMatchesStoredValue,
   isInlineTextEditCandidate,
   normalizeInlineTextEditValue,
   shouldNormalizeInlineTextInput,
@@ -64,5 +65,28 @@ describe("inline text editing", () => {
     expect(shouldNormalizeInlineTextInput(true, false)).toBe(false);
     expect(shouldNormalizeInlineTextInput(false, true)).toBe(false);
     expect(shouldNormalizeInlineTextInput(false, false)).toBe(true);
+  });
+});
+
+describe("whether rendered text is the stored value", () => {
+  it("is when the page renders the value unchanged", () => {
+    expect(inlineTextMatchesStoredValue("Stored title", "Stored title")).toBe(
+      true,
+    );
+    // The same text as the wire contract writes it.
+    expect(inlineTextMatchesStoredValue("a\u00a0b\r\nc", "a b\nc")).toBe(true);
+  });
+
+  it("is not when the Theme changed the value on its way", () => {
+    expect(inlineTextMatchesStoredValue("TRANSFORMED:PROBE", "probe")).toBe(
+      false,
+    );
+  });
+
+  it("is not when nothing is stored, or what is stored is not text", () => {
+    expect(inlineTextMatchesStoredValue("Default", undefined)).toBe(false);
+    expect(inlineTextMatchesStoredValue("", null)).toBe(false);
+    expect(inlineTextMatchesStoredValue("3", 3)).toBe(false);
+    expect(inlineTextMatchesStoredValue(null, "Stored")).toBe(false);
   });
 });

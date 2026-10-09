@@ -217,12 +217,17 @@ describe("applying document changes to the real React preview", () => {
         }),
     );
     const restore = vi.fn();
+    const restoreTarget = vi.fn();
     const report = vi.fn();
     const draw = vi.fn();
     const refresh = new Function(
       "window",
       "requestAnimationFrame",
       "restoreSelectedSection",
+      "restoreSelectedTarget",
+      "selectionEnabled",
+      "lastRestoreTarget",
+      "selectedSectionId",
       "reportStructure",
       "drawOverlays",
       source + "; return refreshPreviewContent;",
@@ -230,6 +235,10 @@ describe("applying document changes to the real React preview", () => {
       { __morphPreviewRouter: { invalidate } },
       (callback: () => void) => frames.push(callback),
       restore,
+      restoreTarget,
+      false,
+      null,
+      null,
       report,
       draw,
     );
@@ -243,6 +252,7 @@ describe("applying document changes to the real React preview", () => {
     finish();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(restore).toHaveBeenCalledOnce();
+    expect(restoreTarget).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalledOnce();
     expect(draw).toHaveBeenCalledOnce();
     refresh();
@@ -317,6 +327,32 @@ describe("editing text in the page it is rendered on", () => {
     // Taking it would end the edit on the first click into it.
     expect(BRIDGE).toContain("const editing = inlineEditor.editingElement();");
     expect(BRIDGE).toContain("editing.contains(event.target)");
+  });
+
+  it("begins only on text that is the value the page rendered it from", () => {
+    // content() may change a value on its way to the component; typing over
+    // the changed text would save it changed.
+    expect(BRIDGE).toContain("storedValue: (target) =>");
+    expect(BRIDGE).toContain(
+      "getFieldPathValue(previewSlotContent(target.sectionId), target.fieldPath)",
+    );
+  });
+
+  it("tells the editor when it refuses text bound to a field", () => {
+    expect(BRIDGE).toContain("onRefused: (target) => {");
+    expect(BRIDGE).toContain(
+      'type: "morph:storefront-preview-inline-text-refused"',
+    );
+  });
+
+  it("ends an edit whose element a render replaced, unsaved", () => {
+    const observer = BRIDGE.slice(
+      BRIDGE.indexOf("const structureObserver = new MutationObserver"),
+    );
+    expect(observer).toContain(
+      "if (inlineEditor.editingElement()?.isConnected === false) {",
+    );
+    expect(observer).toContain("inlineEditor.finish(false);");
   });
 
   it("sends what was typed through the commit message", () => {
@@ -519,5 +555,27 @@ describe("confirming the Theme source the editor is waiting on", () => {
       BRIDGE.indexOf("function acknowledgePendingStyleRevision()"),
     );
     expect(acknowledgment).toContain("pendingStyleRevision = null;");
+  });
+});
+
+describe("a field typed into in the Inspector", () => {
+  const fieldUpdate = BRIDGE.slice(
+    BRIDGE.indexOf('"morph:storefront-preview-update-selection-field"'),
+  );
+
+  it("renders text through the Theme's content(), not into the element", () => {
+    // Writing it into the element shows it unchanged, and takes the node from
+    // React, which then keeps updating one that is no longer on the page.
+    expect(fieldUpdate).not.toContain("target.textContent = message.value");
+    expect(fieldUpdate).toContain("updatePreviewContent(");
+    expect(fieldUpdate).toContain("refreshPreviewContent();");
+  });
+
+  it("keeps the selection on the field across the refresh", () => {
+    const refresh = BRIDGE.slice(
+      BRIDGE.indexOf("function refreshPreviewContent()"),
+      BRIDGE.indexOf("let selectionEnabled"),
+    );
+    expect(refresh).toContain("restoreSelectedTarget(lastRestoreTarget);");
   });
 });

@@ -24,6 +24,7 @@ import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
   EditorStyleInspector,
+  type InspectorInlineTextCommit,
   type InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
@@ -101,6 +102,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** The last value an inline canvas edit wrote; see the Inspector's prop. */
+  inlineTextCommit?: InspectorInlineTextCommit | null;
   onCodeComponentPropsChange?: (
     filePath: string,
     nextProps: Record<string, unknown>,
@@ -225,6 +228,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  inlineTextCommit,
   onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
@@ -491,6 +495,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onRepairThemeLinkBinding={onRepairThemeLinkBinding}
               onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
+              inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
             />
           ) : (
