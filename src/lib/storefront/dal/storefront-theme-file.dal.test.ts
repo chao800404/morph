@@ -4,6 +4,11 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
+import {
+  createStarterThemeWorkspaceUpgradePlan,
+  starterThemeWorkspaceFiles,
+} from "../starter-theme-files";
+import { LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE } from "../starter-theme-v3-files";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -1073,5 +1078,99 @@ describe("storefront theme file DAL", () => {
         expectedSourceGeneration: 999,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("a Starter upgrade racing another tab's save", () => {
+  const CONTENT = "src/morph/content.ts";
+  const AUTHOR_EDIT = "export const authored = true;\n";
+
+  /**
+   * A source-first workspace with the pre-pages content module, an upgrade
+   * planned from it, and then another tab saving content.ts first.
+   */
+  async function planThenAnotherTabSaves() {
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      starterThemeWorkspaceFiles().map((file) => ({
+        path: file.path,
+        content:
+          file.path === CONTENT
+            ? LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE
+            : file.content,
+        mimeType: file.mimeType,
+        expectMissing: true,
+      })),
+      { expectedSourceGeneration: 1 },
+    );
+    const listed = await storefrontThemeFileDal.listFiles(
+      "storefront-a",
+      "theme-a",
+    );
+    const planned = createStarterThemeWorkspaceUpgradePlan(
+      listed.map((file) => ({
+        id: file.id,
+        path: file.path,
+        content: file.content,
+        version: file.version,
+      })),
+    );
+    expect(planned.files.map((file) => file.path)).toEqual([CONTENT]);
+    const plannedGeneration = await storefrontThemeFileDal.getSourceGeneration(
+      "storefront-a",
+      "theme-a",
+    );
+
+    const before = listed.find((file) => file.path === CONTENT)!;
+    await storefrontThemeFileDal.saveFilesBatch(
+      "storefront-a",
+      "theme-a",
+      [
+        {
+          path: CONTENT,
+          content: AUTHOR_EDIT,
+          expectedFileId: before.id,
+          expectedVersion: before.version,
+        },
+      ],
+      { expectedSourceGeneration: plannedGeneration! },
+    );
+    return { planned, plannedGeneration: plannedGeneration! };
+  }
+
+  const contentNow = async () =>
+    (await storefrontThemeFileDal.listFiles("storefront-a", "theme-a")).find(
+      (file) => file.path === CONTENT,
+    )?.content;
+
+  it("refuses the plan when it was made at an earlier source generation", async () => {
+    const { planned, plannedGeneration } = await planThenAnotherTabSaves();
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch("storefront-a", "theme-a", planned.files, {
+        expectedSourceGeneration: plannedGeneration,
+        deletions: planned.deletions,
+      }),
+    ).rejects.toThrow("CONFLICT_SOURCE_GENERATION_MISMATCH");
+    expect(await contentNow()).toBe(AUTHOR_EDIT);
+  });
+
+  it("refuses the plan on the file's version even when the generation is read late", async () => {
+    // The upgrade reads the generation after listing the files, so another
+    // tab's save can land in between; the file version still catches it.
+    const { planned } = await planThenAnotherTabSaves();
+    const lateGeneration = await storefrontThemeFileDal.getSourceGeneration(
+      "storefront-a",
+      "theme-a",
+    );
+
+    await expect(
+      storefrontThemeFileDal.saveFilesBatch("storefront-a", "theme-a", planned.files, {
+        expectedSourceGeneration: lateGeneration!,
+        deletions: planned.deletions,
+      }),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+    expect(await contentNow()).toBe(AUTHOR_EDIT);
   });
 });

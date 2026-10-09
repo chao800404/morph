@@ -14,7 +14,7 @@
 
 不能做（目前）：
 
-- **只有新建立的工作區有 `morph.pages.get`。** 既有工作區的 `src/morph/content.ts` 維持原樣，不會被自動升級；Starter 的升級機制要先修正（沒有 `morph.theme.json` 的工作區識別、元件搬到 `sections/` 之後的補檔規則），才會另外提供升級。
+- **既有工作區要沒改過 `src/morph/content.ts` 才會自動取得 `morph.pages.get`。** 下次開啟編輯器時，Starter 升級（版本 28）只替換逐位元組相同的舊版模組；作者改過的維持原樣，需要自行加入。
 - **只讀已發布內容。** 不支援草稿；草稿需要 Core 另行提供授權，尚未設計。
 - **這不是「CMS 畫布連接本機網站」。** 在 Morph 編輯器裡看到、選取、編輯本機頁面，是另一個功能，尚未實作。
 - Design 在區塊上新增 section 時，仍寫 `{...content("slot")}`，不會產生 `{...home.slot}`。

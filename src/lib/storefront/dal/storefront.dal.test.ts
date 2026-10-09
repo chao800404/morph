@@ -3,14 +3,22 @@ import {
   createDefaultStorefrontHomeDocument,
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
-import { LEGACY_STARTER_THEME_INDEX_SOURCE } from "../starter-theme-v3-files";
+import {
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_INDEX_SOURCE,
+  STARTER_THEME_CONTENT_MODULE_SOURCE,
+} from "../starter-theme-v3-files";
+import { starterThemeWorkspaceFiles } from "../starter-theme-files";
 
 const mocks = vi.hoisted(() => ({
   getDb: vi.fn(),
   listFiles: vi.fn(),
   initStarterTheme: vi.fn(),
   getSourceGeneration: vi.fn(),
+  /** The source store's save: the one the upgrade writes through. */
   saveFilesBatch: vi.fn(),
+  /** The DAL's own save, which records a revision with no manifest. */
+  dalSaveFilesBatch: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
@@ -19,8 +27,11 @@ vi.mock("./storefront-theme-file.dal", () => ({
     listFiles: mocks.listFiles,
     initStarterTheme: mocks.initStarterTheme,
     getSourceGeneration: mocks.getSourceGeneration,
-    saveFilesBatch: mocks.saveFilesBatch,
+    saveFilesBatch: mocks.dalSaveFilesBatch,
   },
+}));
+vi.mock("../storage/theme-storage.server", () => ({
+  themeSourceStore: { saveFilesBatch: mocks.saveFilesBatch },
 }));
 
 import { storefrontDal } from "./storefront.dal";
@@ -72,10 +83,10 @@ function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
   return db;
 }
 
-function createLegacyStarterDb() {
+function createLegacyStarterDb(starterTemplateVersion = 2) {
   const results = [
-    [{ metadata: { starterTemplateVersion: 2 } }],
-    [{ metadata: { starterTemplateVersion: 2 } }],
+    [{ metadata: { starterTemplateVersion } }],
+    [{ metadata: { starterTemplateVersion } }],
     [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
     [{ id: "product-template" }],
     [{ id: "layout-template" }],
@@ -199,6 +210,127 @@ describe("storefrontDal starter workspace provisioning", () => {
         createdBy: "user-a",
       }),
     );
+  });
+
+  describe("a source-first Theme on Starter version 27", () => {
+    // The files a store is created with: no morph.theme.json, section
+    // components under `sections/`.
+    const workspace = (content: string) =>
+      starterThemeWorkspaceFiles().map((file, index) => ({
+        id: `file-${index}`,
+        path: file.path,
+        content: file.path === "src/morph/content.ts" ? content : file.content,
+        version: 3,
+      }));
+    const saved = () =>
+      mocks.saveFilesBatch.mock.calls[0]?.[2] as
+        | { path: string; content?: string; expectedFileId?: string }[]
+        | undefined;
+
+    it("writes exactly the untouched content module on editor load", async () => {
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
+      mocks.listFiles.mockResolvedValue(files);
+
+      await expect(
+        storefrontDal.ensureStoredStarterPreview({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          createdBy: "user-a",
+        }),
+      ).resolves.toBe(true);
+
+      expect(saved()).toEqual([
+        expect.objectContaining({
+          path: "src/morph/content.ts",
+          content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+          expectedFileId: files.find(
+            (file) => file.path === "src/morph/content.ts",
+          )!.id,
+          expectedVersion: 3,
+        }),
+      ]);
+    });
+
+    it("writes through the source store, never the DAL's own save", async () => {
+      // The DAL's save records the revision without a manifest and refuses
+      // that for a workspace holding a binary file, which failed the editor
+      // load for every Theme with an uploaded image. The source store builds
+      // the manifest.
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
+
+      await storefrontDal.ensureStoredStarterPreview({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        createdBy: "user-a",
+      });
+
+      expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(mocks.saveFilesBatch.mock.calls[0]?.[3]).toMatchObject({
+        createRevision: true,
+        createdBy: "user-a",
+      });
+      expect(mocks.dalSaveFilesBatch).not.toHaveBeenCalled();
+    });
+
+    it("writes nothing when the content module was edited", async () => {
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine"),
+      );
+
+      await storefrontDal.ensureStoredStarterPreview({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        createdBy: "user-a",
+      });
+
+      expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
+    });
+
+    it("does nothing on the next load, once the Theme is on the current version", async () => {
+      const db = createLegacyStarterDb(STOREFRONT_STARTER_TEMPLATE_VERSION);
+      mocks.getDb.mockResolvedValue(db);
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
+
+      await expect(
+        storefrontDal.ensureStoredStarterPreview({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          createdBy: "user-a",
+        }),
+      ).resolves.toBe(false);
+
+      expect(mocks.listFiles).not.toHaveBeenCalled();
+      expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("keeps the Theme on 27 when the write is refused, so the next load plans again", async () => {
+      const db = createLegacyStarterDb(27);
+      mocks.getDb.mockResolvedValue(db);
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
+      mocks.saveFilesBatch.mockRejectedValueOnce(
+        new Error("CONFLICT_VERSION_MISMATCH"),
+      );
+
+      await expect(
+        storefrontDal.ensureStoredStarterPreview({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          createdBy: "user-a",
+        }),
+      ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+      // The version is written only after the files; it was not.
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   it("does not mutate a theme outside the requested storefront", async () => {

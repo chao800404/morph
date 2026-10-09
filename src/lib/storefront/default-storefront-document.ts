@@ -53,8 +53,12 @@ import {
  * 27: move an untouched Starter home route onto page-owned section copies, so
  *     its sections stay editable while the section library they came from
  *     stays template source Design mode does not write.
+ * 28: an untouched `src/morph/content.ts` gains `morph.pages.get`. Also the
+ *     first upgrade a source-first workspace (no morph.theme.json) actually
+ *     receives: its replacements now run, and the section components it keeps
+ *     under `sections/` are no longer added back at their old paths.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 27;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 28;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

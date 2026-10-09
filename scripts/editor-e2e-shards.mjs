@@ -40,6 +40,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest tests.
     "content-fields-sidecar.spec.ts",
+    // Unmeasured too, and on the same shard for the same reason. Its Build
+    // Preview steps run only with the container transport.
+    "starter-upgrade.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

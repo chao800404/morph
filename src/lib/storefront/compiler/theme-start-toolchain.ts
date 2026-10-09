@@ -49,6 +49,28 @@ export const THEME_START_BUILD_DEPENDENCIES: Readonly<Record<string, string>> =
     vite: THEME_START_TOOLCHAIN.vite,
   };
 
+/**
+ * Every other value a Starter `package.json` has carried for a dependency
+ * Morph pins, so the Starter upgrade can tell a pin Morph wrote from one an
+ * author chose. Only these, and a missing entry, are corrected; any other
+ * value is the author's and stays, and the build reports it
+ * (`validateThemeStartPackageContract`).
+ *
+ * From the history of the Starter template: before 2026-08-25 it declared
+ * `react` and `react-dom` as `^19.0.0` and no build dependencies; since then
+ * it spreads the constants above, whose `vite` was `7.2.7` until 2026-09-05
+ * and whose `@cloudflare/vite-plugin` was `1.50.0` until 2026-10-03. Add the
+ * old value here whenever a pin above changes.
+ */
+export const PREVIOUS_THEME_START_DEPENDENCY_VERSIONS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  react: ["^19.0.0"],
+  "react-dom": ["^19.0.0"],
+  vite: ["7.2.7"],
+  "@cloudflare/vite-plugin": ["1.50.0"],
+};
+
 const PLATFORM_OWNED_THEME_BUILD_PATHS = new Set([
   "__entry.tsx",
   // The Start Live Preview's Worker entry and page module; see
