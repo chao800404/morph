@@ -1,10 +1,14 @@
 import { assertThemePrerenderArtifacts } from "../compiler/theme-prerender";
+import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
+import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-server";
 import { planThemeSandboxWorkspace } from "../compiler/theme-sandbox-workspace";
 import { deriveThemeSourceRouterFramework } from "../theme-source-runtime-contract";
 import type { ThemeFrameworkAdapter } from "./theme-framework.types";
 import {
+  NATIVE_START_COMPILER_ID,
   collectNativeStartArtifact,
+  nativeAllowedPackages,
   planNativeStartBuild,
 } from "./tanstack-start-native-build";
 
@@ -75,6 +79,15 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
           }
         : undefined,
     native: {
+      compilerIdentity: () => ({
+        id: NATIVE_START_COMPILER_ID,
+        version: THEME_START_TOOLCHAIN.reactStart,
+      }),
+      routeRegistry: (files) => {
+        const registry = buildThemeRouteRegistry(files);
+        return registry.valid ? registry : null;
+      },
+      allowedPackages: nativeAllowedPackages,
       plan: planNativeStartBuild,
       collect: collectNativeStartArtifact,
       artifactEntry: WORKER_ENTRY,

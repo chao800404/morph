@@ -1,3 +1,4 @@
+import { astroFramework } from "./astro.framework";
 import { tanstackStartFramework } from "./tanstack-start.framework";
 import {
   THEME_FRAMEWORK_IDS,
@@ -18,6 +19,26 @@ export {
 export const THEME_FRAMEWORKS: readonly ThemeFrameworkAdapter[] = [
   tanstackStartFramework,
 ];
+
+/**
+ * Frameworks a caller has to ask for. Astro is built only where the server
+ * turns it on (`MORPH_ASTRO_THEMES=1`, never in production;
+ * theme-build-service.factory) and passes `astroThemes`; everywhere else —
+ * every Live Preview, and every build path not given the switch — it is
+ * refused exactly as before it had an adapter.
+ */
+export type ThemeFrameworkOptions = Readonly<{
+  /** The server's Astro switch (docs/astro-theme-plan.md 8.2). */
+  astroThemes?: boolean;
+}>;
+
+function availableFrameworks(
+  options: ThemeFrameworkOptions,
+): readonly ThemeFrameworkAdapter[] {
+  return options.astroThemes === true
+    ? [...THEME_FRAMEWORKS, astroFramework]
+    : THEME_FRAMEWORKS;
+}
 
 export type ThemeFrameworkUnavailableCode =
   "THEME_FRAMEWORK_UNAVAILABLE" | "THEME_FRAMEWORK_UNKNOWN";
@@ -59,14 +80,18 @@ export type ThemeFrameworkResolution =
  *
  * Absent (`null` or `undefined`) is `UNRECORDED_THEME_FRAMEWORK`, so every
  * record from before the framework was recorded reads exactly as it did. A
- * recorded id without an adapter (`astro`, until its adapter exists) or a
- * value that is no framework id at all is refused; nothing falls back.
+ * recorded id without an adapter available to this caller (`astro`, unless
+ * `options.astroThemes`) or a value that is no framework id at all is
+ * refused; nothing falls back.
  */
 export function resolveThemeFramework(
   recorded: string | null | undefined,
+  options: ThemeFrameworkOptions = {},
 ): ThemeFrameworkResolution {
   const id = recorded ?? UNRECORDED_THEME_FRAMEWORK;
-  const framework = THEME_FRAMEWORKS.find((candidate) => candidate.id === id);
+  const framework = availableFrameworks(options).find(
+    (candidate) => candidate.id === id,
+  );
   if (framework) return { ok: true, framework };
   const error = new ThemeFrameworkUnavailableError(
     (THEME_FRAMEWORK_IDS as readonly string[]).includes(id)
@@ -92,8 +117,9 @@ export function resolveThemeFramework(
  */
 export function themeFramework(
   recorded?: string | null,
+  options: ThemeFrameworkOptions = {},
 ): ThemeFrameworkAdapter {
-  const resolved = resolveThemeFramework(recorded);
+  const resolved = resolveThemeFramework(recorded, options);
   if (!resolved.ok) {
     throw new ThemeFrameworkUnavailableError(resolved.code, resolved.framework);
   }

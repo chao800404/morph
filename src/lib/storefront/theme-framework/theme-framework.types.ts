@@ -90,13 +90,41 @@ export type ThemeFrameworkAdapter = Readonly<{
      * is previewed by running its Worker.
      */
     native: Readonly<{
+      /** The compiler identity a native build of this framework records. */
+      compilerIdentity(): Readonly<{ id: string; version: string }>;
+      /** The project's routes, or null if they cannot be read. */
+      routeRegistry(
+        files: readonly Readonly<{ path: string; content: string }>[],
+      ): ThemeRouteRegistry | null;
+      /** Packages a build may import: its toolchain's, plus `extra`. */
+      allowedPackages(extra?: Iterable<string>): readonly string[];
       plan(
         files: readonly Readonly<{ path: string; content: string }>[],
         options?: Readonly<{
           allowedPackages?: readonly string[];
           prerenderContent?: NativePrerenderContent;
+          /** The build pass's nonce, for frameworks whose records carry one. */
+          nonce?: string;
         }>,
       ): NativeThemeBuildPlan;
+      /**
+       * Whether the prerender read only sealed content, from the records a
+       * finished build left; null if it did. A framework whose prerender
+       * records only refused reads (Start) has none.
+       */
+      prerenderRecordsFailure?(
+        outputs: ReadonlyMap<string, Uint8Array | string>,
+        nonce: string,
+      ): Readonly<{ stage: string; message: string }> | null;
+      /**
+       * Why a build that exited non-zero failed, when its records say: a
+       * refused content read is `prerender-content`, which the build passes
+       * act on. Null when the records say nothing.
+       */
+      failedBuildCause?(
+        outputs: ReadonlyMap<string, Uint8Array | string>,
+        nonce: string,
+      ): Readonly<{ stage: string; message: string }> | null;
       collect(
         outputs: ReadonlyMap<string, Uint8Array | string>,
       ): NativeThemeArtifact;

@@ -10,6 +10,7 @@ import type {
   ThemeRouteRegistry,
 } from "../compiler/theme-route-registry";
 import { normalizeRoutePath } from "../theme-template-routes";
+import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
 
 /**
  * How an Astro build's prerendered pages read the build's sealed content.
@@ -84,6 +85,11 @@ export function astroPrerenderWorkspaceFiles(options: {
   prerenderContent?: NativePrerenderContent;
   /** This build's nonce; every record it accepts carries it. */
   nonce: string;
+  /**
+   * Packages the build may import (the import guard); absent, no guard —
+   * the prerender-content tests, which build a fixed Theme.
+   */
+  allowedPackages?: readonly string[];
   testFaults?: AstroPrerenderTestFaults;
 }): readonly Readonly<{ path: string; content: string }>[] {
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(options.nonce)) {
@@ -98,6 +104,7 @@ export function astroPrerenderWorkspaceFiles(options: {
       path: ASTRO_BUILD_INTEGRATION_PATH,
       content: astroBuildIntegrationSource({
         nonce: options.nonce,
+        allowedPackages: options.allowedPackages,
         testFaults: options.testFaults ?? {},
       }),
     },
@@ -136,9 +143,15 @@ export default {
 /** The integration's source; reads nothing from this process at build time. */
 export function astroBuildIntegrationSource(options: {
   nonce: string;
+  allowedPackages?: readonly string[];
   testFaults: AstroPrerenderTestFaults;
 }): string {
   const faults = options.testFaults;
+  const guard = options.allowedPackages
+    ? `const allowedPackages = new Set(${JSON.stringify([...new Set(options.allowedPackages)].sort())});
+const workspaceRoot = root;
+const importGuard = ${nativeImportGuardPluginSource()};`
+    : "const importGuard = null;";
   return `// Written by Morph for this build (astro-native-prerender.ts).
 import fs from "node:fs";
 import http from "node:http";
@@ -169,6 +182,11 @@ const answerSealedContentRead = (${answerSealedContentRead.toString()});
 const pageKey = (page) => normalizeRoutePath(new URL(String(page), "http://astro.invalid").pathname);
 
 const root = fs.realpathSync(process.cwd());
+
+// Judged on where an import resolves, as Start's build judges it
+// (tanstack-start-native-wrapper.ts): inside the workspace, or inside an
+// approved package; Astro's virtual modules resolve to plugin-made ids.
+${guard}
 const record = (file, entry) => {
   const target = path.join(root, file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -276,7 +294,7 @@ export function morphAstroBuild() {
     name: "morph:astro-build",
     hooks: {
       "astro:config:setup": ({ updateConfig }) => {
-        updateConfig({ vite: { plugins: [prerenderPlugin] } });
+        updateConfig({ vite: { plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin] } });
       },
       "astro:config:done": ({ config }) => {
         // Under "file" or "preserve" a prerendered page asks for its content
@@ -460,6 +478,45 @@ function readRecords(
   return { records, invalid };
 }
 
+function refusedReadsFailure(
+  refused: readonly PrerenderRecord[],
+): AstroPrerenderFailure {
+  const reasons = new Map<string, string>();
+  for (const read of refused) {
+    const path = String(read.path);
+    if (!reasons.has(path)) reasons.set(path, String(read.reason));
+  }
+  const detail = [...reasons]
+    .slice(0, 10)
+    .map(([path, reason]) => `${path} (${reason})`)
+    .join(", ");
+  return {
+    code: "NATIVE_PRERENDER_CONTENT_UNAVAILABLE",
+    message: `NATIVE_PRERENDER_CONTENT_UNAVAILABLE: prerendering read Morph content this build has not sealed: ${detail}. Build from the editor so the content is sealed with the build, or stop prerendering pages that read content.`,
+  };
+}
+
+/**
+ * Whether a build that stopped early — fail-fast ends it at the first failed
+ * read, before any page list exists — stopped on a refused read of this
+ * build's: `NATIVE_PRERENDER_CONTENT_UNAVAILABLE`, or null. A torn record
+ * or one of another build is not evidence of anything, so it is null too.
+ */
+export function astroRefusedReadsFailure(
+  outputs: ReadonlyMap<string, Uint8Array | string>,
+  nonce: string,
+): AstroPrerenderFailure | null {
+  const refused = readRecords(
+    outputs,
+    NATIVE_PRERENDER_REFUSED_READS_PATH,
+    nonce,
+  );
+  if (!refused || refused.invalid > 0 || refused.records.length === 0) {
+    return null;
+  }
+  return refusedReadsFailure(refused.records);
+}
+
 /**
  * Whether an Astro build's prerender read only sealed content, from the
  * records its content server wrote, bound to this build's nonce.
@@ -506,21 +563,7 @@ export function astroPrerenderRecordsFailure(
       `${invalid} prerender record(s) are torn or belong to another build.`,
     );
   }
-  if (refused.records.length > 0) {
-    const reasons = new Map<string, string>();
-    for (const read of refused.records) {
-      const path = String(read.path);
-      if (!reasons.has(path)) reasons.set(path, String(read.reason));
-    }
-    const detail = [...reasons]
-      .slice(0, 10)
-      .map(([path, reason]) => `${path} (${reason})`)
-      .join(", ");
-    return fail(
-      "NATIVE_PRERENDER_CONTENT_UNAVAILABLE",
-      `prerendering read Morph content this build has not sealed: ${detail}.`,
-    );
-  }
+  if (refused.records.length > 0) return refusedReadsFailure(refused.records);
   const failed = stamps.records.filter(
     (stamp) => typeof stamp.failures !== "number" || stamp.failures > 0,
   );
