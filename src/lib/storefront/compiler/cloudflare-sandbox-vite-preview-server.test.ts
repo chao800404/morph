@@ -27,6 +27,7 @@ import {
 type Harness = {
   session: PreviewServerSession;
   written: Map<string, string>;
+  encodings: Map<string, string>;
   writePaths: string[];
   deletedPaths: string[];
   commands: string[];
@@ -45,6 +46,8 @@ const createSession = (
   behaviour: "ready" | "log-ready" | "silent" | "exit" = "ready",
 ): Harness => {
   const written = new Map<string, string>();
+  /** The `encoding` each write was given: "base64" for bytes. */
+  const encodings = new Map<string, string>();
   const writePaths: string[] = [];
   const deletedPaths: string[] = [];
   const commands: string[] = [];
@@ -92,9 +95,10 @@ const createSession = (
 
   const session: PreviewServerSession = {
     async mkdir() {},
-    async writeFile(path, content) {
+    async writeFile(path, content, options) {
       writePaths.push(path);
       written.set(path, String(content));
+      if (options?.encoding) encodings.set(path, options.encoding);
     },
     async readFile(path) {
       if (!written.has(path)) throw new Error("ENOENT");
@@ -198,6 +202,7 @@ const createSession = (
   return {
     session,
     written,
+    encodings,
     writePaths,
     deletedPaths,
     commands,
@@ -264,6 +269,31 @@ const startWith = (
 };
 
 describe("CloudflareSandboxVitePreviewServer", () => {
+  it("writes a binary file kept under src/ into the workspace as its bytes", async () => {
+    // docs/astro-theme-plan.md 5.2.5: the same by-reference path as public/.
+    const harness = createSession("ready");
+    const hero = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 250, 251]);
+    const digest = "e".repeat(64);
+    const result = await startWith(harness, {
+      files: [
+        ...THEME,
+        { path: "src/assets/hero.png", binary: { digest, sizeBytes: hero.byteLength } },
+      ] as never,
+      loadBinary: async (ref) => {
+        if (ref.digest !== digest) throw new Error("unknown blob");
+        return hero;
+      },
+    });
+    expect(result.ok).toBe(true);
+    // Staged, then moved into place by the fenced start; it arrives as the
+    // base64 of its bytes, never as text.
+    expect(harness.written.get("/workspace/src/assets/hero.png")).toBe(
+      Buffer.from(hero).toString("base64"),
+    );
+    const stagedAs = [...harness.encodings.entries()].filter(([, encoding]) => encoding === "base64");
+    expect(stagedAs.length).toBeGreaterThan(0);
+  });
+
   it("puts no Morph credential into the container, even if handed one", async () => {
     const harness = createSession("ready");
     const secrets = {
