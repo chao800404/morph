@@ -51,6 +51,9 @@ export const EDITOR_SHARDS = [
     "public-svg.spec.ts",
     "initial-code-publish.spec.ts",
     "route-capabilities.spec.ts",
+    // Unmeasured until the next rebalance; like public-root-url.spec.ts,
+    // which it follows, about 25 s.
+    "source-asset.spec.ts",
   ],
 ];
 

@@ -186,6 +186,8 @@ describe("the binary file write entry", () => {
     expect(options).toEqual({
       expectedSourceGeneration: 3,
       createdBy: "user-1",
+      // The entry takes src/ as well as public/ (docs/astro-theme-plan.md 5.2.5).
+      allowSourceAssets: true,
     });
   });
 

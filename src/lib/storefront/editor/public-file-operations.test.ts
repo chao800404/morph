@@ -23,7 +23,7 @@ describe("checkPublicFileWrite", () => {
     ).toBeNull();
   });
 
-  it("refuses a path outside public/, a format it does not serve, and an oversized file", () => {
+  it("refuses a path outside public/ and src/, a format it does not serve, and an oversized file", () => {
     const check = (path: string, size = 10) =>
       checkPublicFileWrite({
         path,
@@ -31,8 +31,12 @@ describe("checkPublicFileWrite", () => {
         replacing: false,
         existingPaths: existing,
       });
-    expect(check("src/new.png")).toContain("public/");
+    expect(check("assets/new.png")).toContain("public/ or src/");
     expect(check("public/images/clip.mp4")).not.toBeNull();
+    // src/ takes images and fonts, never SVG (docs/astro-theme-plan.md 5.2.5).
+    expect(check("src/assets/new.png")).toBeNull();
+    expect(check("src/assets/logo.svg")).toContain("keep them in public/");
+    expect(check("src/assets/data.json")).not.toBeNull();
     expect(
       check("public/images/big.png", THEME_PUBLIC_LIMITS.maxFileBytes + 1),
     ).not.toBeNull();

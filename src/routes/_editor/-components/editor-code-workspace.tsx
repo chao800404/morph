@@ -75,6 +75,8 @@ import type { PublicUrlRewriteRequest } from "@/lib/storefront/editor/public-url
 import { reviewPublicUrlMove } from "@/lib/storefront/editor/public-url-move-review";
 import {
   THEME_PUBLIC_ACCEPT,
+  THEME_SOURCE_ASSET_ACCEPT,
+  isThemeSourceAssetPath,
   themePublicUrlPath,
 } from "@/lib/storefront/theme-public-files";
 import {
@@ -2724,6 +2726,17 @@ const EditorCodeWorkspaceContent = forwardRef<
       moveMutation.mutate({ moves }, { onSuccess: () => onDone?.() });
       return;
     }
+    // A src/ binary file is not moved or renamed yet: its importers would
+    // have to be rewritten with it, which nothing here does.
+    const fromSource = binaryMoves.find((move) =>
+      isThemeSourceAssetPath(move.from),
+    );
+    if (fromSource) {
+      toast.error(
+        `${fromSource.from} cannot be moved or renamed yet; upload it again under the new name and update its imports.`,
+      );
+      return;
+    }
     const outside = binaryMoves.find((move) => !move.to.startsWith("public/"));
     if (outside) {
       toast.error(`${outside.from} can only move within public/.`);
@@ -3368,20 +3381,37 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   const isPublicPath = (path: string) =>
     path === "public" || path.startsWith("public/");
+  /**
+   * Folders binary files may be uploaded into: `public/`, served as they
+   * are, and `src/`, where code imports them (docs/astro-theme-plan.md 5.2.5).
+   */
+  const canUploadInto = (path: string) =>
+    isPublicPath(path) || path === "src" || path.startsWith("src/");
+  /** The formats a folder takes, for the file picker; the server decides. */
+  const acceptFor = (path: string) =>
+    path === "src" || isThemeSourceAssetPath(path)
+      ? THEME_SOURCE_ASSET_ACCEPT
+      : THEME_PUBLIC_ACCEPT;
 
   const startUpload = (folder: string) => {
     uploadFolderRef.current = folder;
+    if (uploadInputRef.current) {
+      uploadInputRef.current.accept = acceptFor(folder);
+    }
     uploadInputRef.current?.click();
   };
 
-  /** Into the selected folder under `public/`, or `public/` itself. */
+  /**
+   * Into the selected folder under `public/` or `src/` — or the folder of a
+   * selected binary file — and otherwise into `public/` itself.
+   */
   const startUploadFromToolbar = () => {
     const selected = selectedPathsRef.current[0] ?? "";
     const binary = binaryFileByPath.get(selected);
     if (binary) {
       startUpload(selected.slice(0, selected.lastIndexOf("/")));
     } else if (
-      isPublicPath(selected) &&
+      canUploadInto(selected) &&
       !files.some((file) => file.path === selected)
     ) {
       startUpload(selected);
@@ -3394,6 +3424,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     const binary = binaryFileByPath.get(path);
     if (!binary) return;
     replaceTargetRef.current = binary;
+    if (replaceInputRef.current) {
+      replaceInputRef.current.accept = acceptFor(binary.path);
+    }
     replaceInputRef.current?.click();
   };
 
@@ -3448,13 +3481,15 @@ const EditorCodeWorkspaceContent = forwardRef<
       kind: "delete-folder",
       path,
       fileCount: filesInFolder.length + binaryInFolder.length,
-      ...(binaryInFolder.length > 0
+      // Only public/ files have a URL a Theme might reference; a src/ file
+      // is reached by import, which the build reports if it breaks.
+      ...(binaryInFolder.some((binary) => themePublicUrlPath(binary.path))
         ? {
             review: reviewPublicUrls(
-              binaryInFolder.map((binary) => ({
-                from: themePublicUrlPath(binary.path) ?? binary.path,
-                to: null,
-              })),
+              binaryInFolder.flatMap((binary) => {
+                const url = themePublicUrlPath(binary.path);
+                return url ? [{ from: url, to: null }] : [];
+              }),
             ),
           }
         : {}),
@@ -3928,7 +3963,7 @@ const EditorCodeWorkspaceContent = forwardRef<
                   <FolderPlus className="size-3.5" />
                   New Folder
                 </ContextMenuItem>
-                {isPublicPath(node.path) ? (
+                {canUploadInto(node.path) ? (
                   <ContextMenuItem
                     disabled={binaryWriteMutation.isPending}
                     onClick={() => startUpload(node.path)}
@@ -4266,8 +4301,8 @@ const EditorCodeWorkspaceContent = forwardRef<
               </button>
               <button
                 type="button"
-                title="Upload files to public/"
-                aria-label="Upload files to public/"
+                title="Upload files to public/ or the selected src/ folder"
+                aria-label="Upload files"
                 disabled={binaryWriteMutation.isPending}
                 onClick={startUploadFromToolbar}
                 className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
@@ -4901,7 +4936,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         multiple
         accept={THEME_PUBLIC_ACCEPT}
         className="hidden"
-        aria-label="Upload files to public/"
+        aria-label="Upload files to the chosen folder"
         data-code-upload-input
         onChange={handleUploadChosen}
       />

@@ -1,4 +1,5 @@
 import {
+  checkThemeBinaryPath,
   checkThemePublicPath,
   describeThemePublicProblem,
   THEME_PUBLIC_DIRECTORY,
@@ -23,7 +24,8 @@ export function checkPublicFileWrite(input: {
   /** Every path the workspace holds, source and binary. */
   existingPaths: ReadonlySet<string>;
 }): string | null {
-  const check = checkThemePublicPath(input.path);
+  // public/ or src/ (docs/astro-theme-plan.md 5.2.5); the server judges again.
+  const check = checkThemeBinaryPath(input.path);
   if (!check.ok) {
     return `${input.path}: ${describeThemePublicProblem(check.reason)}`;
   }

@@ -10,6 +10,7 @@ import type {
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { toast } from "sonner";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import { THEME_SOURCE_ASSET_ACCEPT } from "@/lib/storefront/theme-public-files";
 import {
   applyThemeManifestMigrationServerFn,
   deleteStorefrontThemeFile,
@@ -1248,7 +1249,10 @@ describe("EditorCodeWorkspace binary files", () => {
     content: `export default () => <img src="/images/hero.png" alt="" />;\n`,
   };
 
-  function renderWithBinary(sourceFiles: StorefrontThemeFileDTO[] = [file]) {
+  function renderWithBinary(
+    sourceFiles: StorefrontThemeFileDTO[] = [file],
+    shownTree: StorefrontThemeFileTreeNode[] = tree,
+  ) {
     const client = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -1262,7 +1266,7 @@ describe("EditorCodeWorkspace binary files", () => {
           themeId="theme-1"
           files={sourceFiles}
           binaryFiles={[hero]}
-          tree={tree}
+          tree={shownTree}
         />
       </QueryClientProvider>,
     );
@@ -1818,12 +1822,50 @@ describe("EditorCodeWorkspace binary files", () => {
       });
 
       fireEvent.click(
-        screen.getByRole("button", { name: "Upload files to public/" }),
+        screen.getByRole("button", { name: "Upload files" }),
       );
       choose("[data-code-upload-input]", [font]);
 
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       expect(sent(0).url.searchParams.get("path")).toBe("public/brand.woff2");
+    });
+
+    it("uploads into a src/ folder from its menu, offering src/'s formats only", async () => {
+      // docs/astro-theme-plan.md 5.2.5: images code imports live under src/.
+      renderWithBinary(undefined, [
+        ...tree,
+        {
+          name: "src",
+          path: "src",
+          isDirectory: true,
+          children: [
+            {
+              name: "components",
+              path: "src/components",
+              isDirectory: true,
+              children: [],
+            },
+          ],
+        },
+      ]);
+      fireEvent.contextMenu(screen.getByText("components"));
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Upload Files…" }),
+      );
+      const input = document.querySelector<HTMLInputElement>(
+        "[data-code-upload-input]",
+      )!;
+      expect(input.accept).toBe(THEME_SOURCE_ASSET_ACCEPT);
+      expect(input.accept).not.toContain(".svg");
+
+      const image = new File([new Uint8Array([0x89, 0x50])], "hero.png", {
+        type: "image/png",
+      });
+      choose("[data-code-upload-input]", [image]);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(sent(0).url.searchParams.get("path")).toBe(
+        "src/components/hero.png",
+      );
     });
   });
 });

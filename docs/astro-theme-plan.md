@@ -1229,10 +1229,23 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 
 編輯中替換 `src/` 的圖片後，預覽要重新啟動，這和 `public/` 一樣，是 Code mode 那一側的工作（PR 3）。
 
-**還沒做的**（PR 3 以及驗收）：
+**PR 3：Code mode 與開放入口（2026-10-09）。**
 
-- Code mode 的上傳、取代、刪除，以及替換後重新啟動預覽；
-- 經過預覽、建置、發布、回滾的真實容器端到端驗收。
+- 上傳入口（`theme-binary-upload.ts`）傳入 `allowSourceAssets`，從這裡起使用者可以把檔案放進 `src/`。
+- Code mode：
+  - `src/` 底下的資料夾也有「Upload Files…」，工具列的上傳會跟著選取的 `src/` 資料夾；
+  - 檔案選擇器的 `accept` 依目的地切換，`src/` 只列 png、jpg、webp、gif、avif、woff、woff2；
+  - 用戶端的預檢（`checkPublicFileWrite`）改用共用的 `checkThemeBinaryPath`，伺服器照樣再檢查一次；
+  - 取代、刪除、上傳後重新啟動預覽，都沿用 `public/` 的同一條路徑，不分目錄。
+- 刪除資料夾時的網址審查只列 `public/` 的檔案。`src/` 的檔案沒有網址，是靠 import 引用；引用斷了，建置會報錯。
+- 移動與重新命名：`src/` 的二進位檔先拒絕，訊息改成「重新上傳並更新 import」。這是因為移動時沒有東西會一起改寫 import。原本那句「只能在 `public/` 內移動」用在 `src/` 上並不正確。
+- 端到端測試（`e2e/source-asset.spec.ts`，CI 的 sidecar 傳輸，第 3 個分片）：
+  - 經同一個上傳入口放入 `src/assets/…png`；
+  - 在 Code 裡讓 hero 元件 import 它，畫布顯示這張圖，且讀到的位元組與上傳的相同；
+  - 同一個入口對 `src/` 下的 SVG 回 422；
+  - 結束時把 hero 改回原狀。
+
+**還沒做的**：經過 Build Preview、發布、回滾的真實容器驗收（`MORPH_E2E_TRANSPORT=cloudflare-sandbox`），在本機另外執行。
 
 ### 5.3 Build Preview、發布、回滾
 
