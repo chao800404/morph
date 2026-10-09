@@ -29,6 +29,8 @@ export const EDITOR_SHARDS = [
     // Container transport only, like the two above: skipped on every CI shard.
     "native-publish-acceptance.spec.ts",
     "native-content-dependency.spec.ts",
+    // Container transport only, like the three above: skipped on every CI shard.
+    "source-asset-publish.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -51,8 +53,11 @@ export const EDITOR_SHARDS = [
     "public-svg.spec.ts",
     "initial-code-publish.spec.ts",
     "route-capabilities.spec.ts",
+    // Unmeasured until the next rebalance; like public-root-url.spec.ts,
+    // which it follows, about 25 s.
+    "source-asset.spec.ts",
     // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files.
+    // fewest files. Two tests, about 4 minutes locally.
     "local-code-sync.spec.ts",
   ],
 ];

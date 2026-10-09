@@ -1119,7 +1119,7 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 **從 fixture 得出的缺口**（依影響排序，都還沒有處理）：
 
 1. Morph 要求 Wrangler 設定，但 adapter 14 沒有設定檔也能建置；**已處理（5.2.4）**
-2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；**儲存與建置已處理，入口未開（5.2.5）**
+2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；**已處理，入口已開，真實容器驗收通過（5.2.5）**
 3. Cloudflare 官方範本附的 `public/.assetsignore` 被 `public/` 規則拒絕；
 4. 常見的官方 integration（mdx、sitemap、rss）不在 Astro 工具鏈中；
 5. adapter 預設的 `SESSION`（已知，5.2）。
@@ -1222,11 +1222,39 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
   - Astro 以 `imageService: "compile"` 處理 `src/assets/hero.png`，產出 `/_astro/hero.*.webp`，頁面的 `<img>` 指向它；
   - 兩者的產物中都沒有原始碼路徑。
 
-**還沒做的**（PR 2、PR 3 以及驗收）：
+**PR 2：兩種 Live Preview 傳輸（2026-10-09）。** 不需要改產品程式。兩種傳輸啟動時都以參照與 `loadBinary` 取得二進位檔，寫入工作區時用共用的 `materializeThemeSandboxWorkspace` 或本機的同一套寫入流程，兩者都沒有限定 `public/`。這次補上證明：
 
-- 兩種 Live Preview 傳輸；
-- Code mode 的上傳、取代、刪除；
-- 經過預覽、建置、發布、回滾的真實容器端到端驗收。
+- 本機傳輸（`local-vite-preview-server.source-asset.test.ts`，真實的 Start Live Preview）：路由匯入 `src/assets/hero.png`，`/gallery` 正常渲染，頁面 `<img>` 指向的網址回傳的位元組與儲存的相同。
+- Sandbox 傳輸（`cloudflare-sandbox-vite-preview-server.test.ts`，假容器）：圖片先暫存，再由受 fence 保護的啟動流程移到 `/workspace/src/assets/hero.png`，內容是位元組的 base64，以 base64 寫入。真實容器要在最後的端到端驗收中確認。
+
+編輯中替換 `src/` 的圖片後，預覽要重新啟動，這和 `public/` 一樣，是 Code mode 那一側的工作（PR 3）。
+
+**PR 3：Code mode 與開放入口（2026-10-09）。**
+
+- 上傳入口（`theme-binary-upload.ts`）傳入 `allowSourceAssets`，從這裡起使用者可以把檔案放進 `src/`。
+- Code mode：
+  - `src/` 底下的資料夾也有「Upload Files…」，工具列的上傳會跟著選取的 `src/` 資料夾；
+  - 檔案選擇器的 `accept` 依目的地切換，`src/` 只列 png、jpg、webp、gif、avif、woff、woff2；
+  - 用戶端的預檢（`checkPublicFileWrite`）改用共用的 `checkThemeBinaryPath`，伺服器照樣再檢查一次；
+  - 取代、刪除、上傳後重新啟動預覽，都沿用 `public/` 的同一條路徑，不分目錄。
+- 刪除資料夾時的網址審查只列 `public/` 的檔案。`src/` 的檔案沒有網址，是靠 import 引用；引用斷了，建置會報錯。
+- 移動與重新命名：`src/` 的二進位檔先拒絕，訊息改成「重新上傳並更新 import」。這是因為移動時沒有東西會一起改寫 import。原本那句「只能在 `public/` 內移動」用在 `src/` 上並不正確。
+- 端到端測試（`e2e/source-asset.spec.ts`，CI 的 sidecar 傳輸，第 3 個分片）：
+  - 經同一個上傳入口放入 `src/assets/…png`；
+  - 在 Code 裡讓 hero 元件 import 它，畫布顯示這張圖，且讀到的位元組與上傳的相同；
+  - 同一個入口對 `src/` 下的 SVG 回 422；
+  - 結束時把 hero 改回原狀。
+
+**真實容器驗收（2026-10-09，本機一次通過）。** `e2e/source-asset-publish.spec.ts`，只在 `MORPH_E2E_TRANSPORT=cloudflare-sandbox` 與本機部署器下執行，CI 的各分片都會略過（放在第 1 個分片，和其他只用容器傳輸的檔案一起）：
+
+1. 經 Code 寫入一個 Start 路由，它 import `src/assets/e2e-source-asset.png`；圖片 v1 經同一個上傳入口放入。
+2. 發布，在 Sandbox 容器中從封存的版本建置：
+   - 該 release 的 Build Preview 在它自己的主機上回傳的圖片位元組與 v1 相同；
+   - 店面（本機部署器從這次執行的 R2 讀回 release 的產物）回傳的位元組也與 v1 相同，頁面上的網址不含原始碼路徑。
+3. 以檔案的 `expectedVersion` 取代成 v2（OCC），再發布：店面回傳 v2。
+4. 以 `expectedActiveReleaseId` 回滾到第一個 release：回到第一個 build，店面回傳 v1，讀的是原本的 blob。
+
+結果：3 個測試通過，6.0 分鐘。前一次執行在第二次編輯時失敗：重啟後的 Live Preview 畫布遇到 `OperationInterruptedError`（「platform was updating the sandbox runtime」），一直沒有載入。這個錯誤在先前許多容器執行中都出現過，不是這次的改動造成的。因為這份驗收要證明的是建置、發布與回滾，第二份草稿改用編輯器自己的草稿寫入，與 `native-publish-acceptance.spec.ts` 第 6 步相同。容器傳輸下 Live Preview 重新啟動後沒有回來，是另一個問題。
 
 ### 5.3 Build Preview、發布、回滾
 
