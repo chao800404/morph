@@ -1,4 +1,5 @@
 // @vitest-environment node
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { injectPreviewBindings } from "./inject-preview-bindings";
 
@@ -593,6 +594,208 @@ export default function List({ items = [] }) {
     expect(() =>
       parse(out, { sourceType: "module", plugins: ["jsx", "typescript"] }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * With nothing between two wrapped elements, one wrapper's closing tag and the
+ * next one's opening tag go in at the same offset. Put in the other order, the
+ * second element renders inside the first one's wrapper, and the editor credits
+ * its fields to the wrong owner.
+ */
+describe("wrappers written back to back", () => {
+  type Wrapper = { owner: string; inside: string[]; holds: string };
+
+  /**
+   * Each wrapper the output contains, the wrappers it sits inside, and the
+   * source it encloses — after proving the output still compiles as TSX.
+   */
+  const wrappersOf = async (out: string): Promise<Wrapper[]> => {
+    const { diagnostics = [] } = ts.transpileModule(out, {
+      fileName: "out.tsx",
+      reportDiagnostics: true,
+      compilerOptions: {
+        jsx: ts.JsxEmit.ReactJSX,
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+      },
+    });
+    expect(
+      diagnostics.map((d) =>
+        ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+      ),
+    ).toEqual([]);
+
+    const { parse } = await import("@babel/parser");
+    const ast = parse(out, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+    const attribute = (opening: any, name: string): string | undefined => {
+      const found = opening.attributes.find(
+        (a: any) => a.type === "JSXAttribute" && a.name?.name === name,
+      );
+      if (!found) return undefined;
+      return found.value?.type === "StringLiteral" ? found.value.value : "";
+    };
+    const ownerOf = (opening: any): string | null => {
+      const section = attribute(opening, "data-storefront-section-id");
+      if (section !== undefined) return `section ${section}`;
+      const field = attribute(opening, "data-storefront-field");
+      if (attribute(opening, "data-morph-preview-row-wrapper") !== undefined) {
+        return `row ${field}`;
+      }
+      if (opening.name?.name === "span" && field !== undefined) {
+        return `content ${field}`;
+      }
+      return null;
+    };
+    const wrappers: Wrapper[] = [];
+    const walk = (node: any, inside: string[]): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) walk(child, inside);
+        return;
+      }
+      let within = inside;
+      if (node.type === "JSXElement") {
+        const owner = ownerOf(node.openingElement);
+        if (owner) {
+          const children = node.children.filter(
+            (c: any) => c.type !== "JSXText" || c.value.trim() !== "",
+          );
+          wrappers.push({
+            owner,
+            inside,
+            holds: children.map((c: any) => out.slice(c.start, c.end)).join(""),
+          });
+          within = [...inside, owner];
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key.endsWith("Comments")) continue;
+        walk(value, within);
+      }
+    };
+    walk(ast.program, []);
+    return wrappers;
+  };
+
+  it("closes one section before the next one opens", async () => {
+    const out = run(
+      `import { content } from "../morph/content";
+export default function Page() {
+  return <main><Promo {...content("promo-a")} /><Promo {...content("promo-b")} /></main>;
+}
+`,
+      "src/routes/index.tsx",
+    );
+    expect(out).toContain(
+      '><div data-storefront-section-id="promo-a" style={{ display: "contents" }}><Promo {...content("promo-a")} /></div>' +
+        '<div data-storefront-section-id="promo-b" style={{ display: "contents" }}><Promo {...content("promo-b")} /></div></main>',
+    );
+    // Siblings, each holding only its own instance.
+    expect(await wrappersOf(out)).toEqual([
+      {
+        owner: "section promo-a",
+        inside: [],
+        holds: '<Promo {...content("promo-a")} />',
+      },
+      {
+        owner: "section promo-b",
+        inside: [],
+        holds: '<Promo {...content("promo-b")} />',
+      },
+    ]);
+  });
+
+  it("closes one content wrapper before the next one opens", async () => {
+    const out = run(`export const contentFields = {
+  heading: { type: "text" },
+  tagline: { type: "text" },
+} as const;
+export default function Hero({ heading, tagline }) {
+  return <p><ThemeLink>{heading}</ThemeLink><ThemeLink>{tagline}</ThemeLink></p>;
+}
+`);
+    expect(out).toContain(
+      '><span data-storefront-field="heading" style={{ display: "contents" }}><ThemeLink>{heading}</ThemeLink></span>' +
+        '<span data-storefront-field="tagline" style={{ display: "contents" }}><ThemeLink>{tagline}</ThemeLink></span></p>',
+    );
+    expect(await wrappersOf(out)).toEqual([
+      {
+        owner: "content heading",
+        inside: [],
+        holds: "<ThemeLink>{heading}</ThemeLink>",
+      },
+      {
+        owner: "content tagline",
+        inside: [],
+        holds: "<ThemeLink>{tagline}</ThemeLink>",
+      },
+    ]);
+  });
+
+  it("closes a section before the content wrapper beside it opens", async () => {
+    const out = run(
+      `import { content } from "../morph/content";
+export const contentFields = { heading: { type: "text" } } as const;
+export default function Page({ heading }) {
+  return <main><Promo {...content("promo")} /><ThemeLink>{heading}</ThemeLink></main>;
+}
+`,
+      "src/routes/index.tsx",
+    );
+    expect(out).toContain(
+      '<Promo {...content("promo")} /></div><span data-storefront-field="heading"',
+    );
+    expect(await wrappersOf(out)).toEqual([
+      {
+        owner: "section promo",
+        inside: [],
+        holds: '<Promo {...content("promo")} />',
+      },
+      {
+        owner: "content heading",
+        inside: [],
+        holds: "<ThemeLink>{heading}</ThemeLink>",
+      },
+    ]);
+  });
+
+  // Rows of one loop never touch in the source — each is followed by the rest
+  // of its callback — but a row can be a section too, which wraps one element
+  // twice. The row wrapper is the array child carrying the key, so it is the
+  // outer one, and the two close in the reverse of the order they open.
+  it("nests a section inside the row wrapper around the same element", async () => {
+    const out = run(
+      `import { content } from "../morph/content";
+export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+} as const;
+export default function Page({ items = [] }) {
+  return <main>{items.map((item, i) => <Promo key={item.id} {...content("promo")} />)}</main>;
+}
+`,
+      "src/routes/index.tsx",
+    );
+    expect(out).toMatch(
+      /<div key=\{item\.id\}[^>]*data-morph-preview-row-wrapper="" style=\{\{ display: "contents" \}\}><div data-storefront-section-id="promo" style=\{\{ display: "contents" \}\}><Promo key=\{item\.id\} \{\.\.\.content\("promo"\)\} \/><\/div><\/div>\)/,
+    );
+    expect(await wrappersOf(out)).toEqual([
+      {
+        owner: "row items",
+        inside: [],
+        holds: expect.stringMatching(
+          /^<div data-storefront-section-id="promo"/,
+        ),
+      },
+      {
+        owner: "section promo",
+        inside: ["row items"],
+        holds: '<Promo key={item.id} {...content("promo")} />',
+      },
+    ]);
   });
 });
 
