@@ -179,6 +179,26 @@ export function createSyncSession(options: SyncSessionOptions) {
     ];
   }
 
+  /**
+   * Whether both sides are as the plan saw them: the workspace at the same
+   * generation, and the folder holding the same files with the same text.
+   */
+  async function unchangedSincePlanned(
+    generation: number,
+    planned: ReadonlyMap<string, LocalScanEntry>,
+  ): Promise<boolean> {
+    if ((await client.generation()) !== generation) return false;
+    const { files } = await folder.scan();
+    const now = new Map(
+      [...files].filter(([path]) => themeSyncPathExclusion(path) === null),
+    );
+    if (now.size !== planned.size) return false;
+    for (const [path, entry] of now) {
+      if (planned.get(path)?.hash !== entry.hash) return false;
+    }
+    return true;
+  }
+
   /** Reads the workspace text files that moved, in bounded requests. */
   async function readRemote(paths: readonly string[]) {
     const contents = new Map<string, { id: string; version: number; content: string }>();
@@ -267,19 +287,16 @@ export function createSyncSession(options: SyncSessionOptions) {
         : null);
     const summary = summarize(actions, skipped, massDeletion);
 
-    // Approved deletions are the developer's own; the count starts over.
     let deletionsApproved = false;
+    let asked = false;
     if (massDeletion) {
       if (!(await options.confirm(summary, "mass-deletion"))) {
         state.deletionHold ??= { since: now().toISOString(), reason: massDeletion };
         await persist();
         return { status: "declined", summary };
       }
-      deletionsApproved = true;
-      state.deletionLog = [];
-      state.deletionHold = undefined;
+      asked = true;
     }
-    const baseBefore = window.windowBase ?? base.size;
     const startup = firstCycle;
     firstCycle = false;
     if (startup && hasWork(summary) && !massDeletion) {
@@ -287,7 +304,27 @@ export function createSyncSession(options: SyncSessionOptions) {
         firstCycle = true;
         return { status: "declined", summary };
       }
+      asked = true;
     }
+
+    // A yes is for the plan that was shown. Asking can take minutes; if
+    // either side moved meanwhile, that plan is not applied — the next cycle
+    // plans from what is there now and asks again. The hold stays.
+    if (asked && !(await unchangedSincePlanned(listed.sourceGeneration, local))) {
+      if (startup) firstCycle = true;
+      return {
+        status: "retry",
+        summary,
+        reason: "Morph or the folder changed while waiting for the answer; planning again.",
+      };
+    }
+    if (massDeletion) {
+      // Approved deletions are the developer's own; the count starts over.
+      deletionsApproved = true;
+      state.deletionLog = [];
+      state.deletionHold = undefined;
+    }
+    const baseBefore = window.windowBase ?? base.size;
 
     // Workspace → local. Each write first checks the local file is still the
     // one the plan saw; one edited since is left for the next cycle.

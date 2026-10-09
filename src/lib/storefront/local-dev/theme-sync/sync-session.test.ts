@@ -263,6 +263,71 @@ describe("a local folder linked to a Theme", () => {
       expect(workspace.files.size).toBe(44);
     });
 
+    // Deletions sent to Morph carry versions, so OCC alone already refuses
+    // this one; kept to show the replan that follows.
+    it("applies nothing it was approved for when Morph changed while it asked", async () => {
+      const { workspace, local, session, yes, confirm } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 16);
+      expect((await session.runCycle()).status).toBe("declined");
+
+      // The yes arrives after someone edited a file that was to be deleted.
+      yes.mass = true;
+      confirm.mockImplementationOnce(async () => {
+        workspace.editInMorph("src/f00.ts", "edited in Morph meanwhile");
+        return true;
+      });
+      const result = await session.runCycle();
+      expect(result.status).toBe("retry");
+      expect(workspace.files.size).toBe(60);
+
+      // Planned again from what is there: the edited file is now a conflict,
+      // not a deletion, and the other 15 are asked about again.
+      yes.mass = false;
+      const again = await session.runCycle();
+      expect(again.status).toBe("declined");
+      expect(again.summary.remoteDeletions).toHaveLength(15);
+      expect(again.summary.remoteDeletions).not.toContain("src/f00.ts");
+      expect(workspace.files.get("src/f00.ts")!.content).toBe("edited in Morph meanwhile");
+    });
+
+    it("does not delete a local file Morph brought back while it asked", async () => {
+      const { workspace, local, session, yes, confirm } = clocked();
+      await session.runCycle();
+      // Morph deletes 16 files; the local copies would follow.
+      for (let index = 0; index < 16; index += 1) {
+        workspace.editInMorph(`src/f${String(index).padStart(2, "0")}.ts`, null);
+      }
+      expect((await session.runCycle()).status).toBe("declined");
+
+      // While the prompt waits, one of them is created again in Morph.
+      yes.mass = true;
+      confirm.mockImplementationOnce(async () => {
+        workspace.editInMorph("src/f00.ts", "brought back in Morph");
+        return true;
+      });
+      expect((await session.runCycle()).status).toBe("retry");
+      expect(local.trash).toEqual([]);
+      expect(local.files.has("src/f00.ts")).toBe(true);
+    });
+
+    it("applies nothing it was approved for when the folder changed while it asked", async () => {
+      const { workspace, local, session, yes, confirm } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 16);
+      expect((await session.runCycle()).status).toBe("declined");
+
+      // While the prompt waits, the developer restores one of the files.
+      yes.mass = true;
+      confirm.mockImplementationOnce(async () => {
+        restoreLocally(local, 0, 1);
+        return true;
+      });
+      expect((await session.runCycle()).status).toBe("retry");
+      expect(workspace.files.size).toBe(60);
+      expect(workspace.files.has("src/f00.ts")).toBe(true);
+    });
+
     it("lets the stop go once the stopped files are back, deleting nothing", async () => {
       const { workspace, local, session, saved } = clocked();
       await session.runCycle();

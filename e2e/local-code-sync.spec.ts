@@ -52,10 +52,10 @@ function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number;
   });
 }
 
-function startCli(dir: string, env: NodeJS.ProcessEnv): Cli {
+function startCli(dir: string, env: NodeJS.ProcessEnv, extra: string[] = []): Cli {
   const child = spawn(
     "pnpm",
-    ["exec", "tsx", "scripts/morph-sync.ts", "start", "--dir", dir, "--yes"],
+    ["exec", "tsx", "scripts/morph-sync.ts", "start", "--dir", dir, "--yes", ...extra],
     { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"], detached: true },
   );
   let output = "";
@@ -181,6 +181,12 @@ test("deletions en masse stop sync until the developer says so, however they arr
     expect(await exited(cli)).toBe(1);
     expect(cli.output()).toContain("delete 20 files from the workspace");
     expect(cli.output()).toContain("Not applied. Rerun with --allow-mass-delete");
+    // The prompt names where the deletion would happen, and every file.
+    expect(cli.output()).toContain(`Store:  ${scope.storefrontId}`);
+    expect(cli.output()).toContain(`Theme:  ${scope.themeId}`);
+    for (const path of probes.slice(0, 20)) {
+      expect(cli.output()).toContain(`delete from Morph: ${path}`);
+    }
     cli = null;
     expect(await morphPaths(page, scope, folder)).toHaveLength(40);
     await git(dir, ["checkout", "-q", "main"]);
@@ -201,6 +207,19 @@ test("deletions en masse stop sync until the developer says so, however they arr
     expect(cli.output()).toMatch(/5 more files from the workspace, 20 in the last 15 minutes/);
     cli = null;
     expect(await morphPaths(page, scope, folder)).toHaveLength(25);
+
+    // --allow-mass-delete approves the held deletion once: the 5 go...
+    cli = startCli(dir, cliEnv(home), ["--allow-mass-delete"]);
+    await expect
+      .poll(async () => (await morphPaths(page, scope, folder)).length, { timeout: 30_000 })
+      .toBe(20);
+    expect(cli.output()).toContain("Approved by --allow-mass-delete, for this deletion only.");
+    // ...and a second mass deletion in the same run stops all the same.
+    for (const path of probes.slice(20, 35)) await rm(join(dir, path));
+    expect(await exited(cli)).toBe(1);
+    expect(cli.output()).toContain("it approves one mass deletion");
+    cli = null;
+    expect(await morphPaths(page, scope, folder)).toHaveLength(20);
   } finally {
     await cli?.stop();
     await removeThemeFiles(page, scope, probes);

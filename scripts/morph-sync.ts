@@ -22,6 +22,7 @@ import {
   createThemeSyncClient,
   ThemeSyncApiRefusal,
 } from "../src/lib/storefront/local-dev/theme-sync/sync-client";
+import { createConfirmPolicy, describeMassDeletion } from "../src/lib/storefront/local-dev/theme-sync/sync-confirm";
 import { createLocalSyncFolder, SYNC_DIRECTORY } from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
 import { themeSyncPathExclusion } from "../src/lib/storefront/local-dev/theme-sync/sync-paths";
 import {
@@ -152,26 +153,52 @@ async function link() {
 }
 
 function sessionFor(state: SyncState, client: ReturnType<typeof createThemeSyncClient>, dryRun: boolean) {
+  // One policy per run: --allow-mass-delete approves the first mass deletion
+  // of this run and no other (sync-confirm.ts).
+  const policy = createConfirmPolicy({
+    yes: flags.yes ?? false,
+    allowMassDelete: flags["allow-mass-delete"] ?? false,
+    interactive: Boolean(process.stdin.isTTY),
+    dryRun,
+  });
   return createSyncSession({
     client,
     folder: createLocalSyncFolder(root),
     state,
     saveState,
     confirm: async (summary, why) => {
-      printSummary(summary);
-      if (dryRun) return false;
-      // --yes accepts what changed while sync was not running. Deleting en
-      // masse is never accepted by it: that is what an emptied folder or a
-      // branch switch looks like, and it needs its own explicit flag.
-      if (why === "startup" && flags.yes) return true;
-      if (why === "mass-deletion" && flags["allow-mass-delete"]) return true;
-      if (!process.stdin.isTTY) {
-        log(why === "startup"
-          ? "Changes made while sync was not running need confirming; rerun with --yes or in a terminal."
-          : "Not applied. Rerun with --allow-mass-delete if this is intended.");
+      if (why === "mass-deletion") {
+        const listFile = join(root, SYNC_DIRECTORY, "pending-deletions.txt");
+        const described = describeMassDeletion({
+          origin: state.origin,
+          storefrontId: state.storefrontId,
+          themeId: state.themeId,
+          folder: root,
+          summary,
+          listFile,
+        });
+        if (described.fileContent !== null) {
+          await fs.mkdir(join(root, SYNC_DIRECTORY), { recursive: true });
+          await fs.writeFile(listFile, described.fileContent);
+        }
+        for (const line of described.lines) log(line);
+      } else {
+        printSummary(summary);
+      }
+      const decision = policy.decide(why);
+      if (decision === "yes") {
+        if (why === "mass-deletion") log("Approved by --allow-mass-delete, for this deletion only.");
+        return true;
+      }
+      if (decision === "no") {
+        if (!dryRun) {
+          log(why === "startup"
+            ? "Changes made while sync was not running need confirming; rerun with --yes or in a terminal."
+            : "Not applied. Rerun with --allow-mass-delete if this is intended; it approves one mass deletion.");
+        }
         return false;
       }
-      const answer = await ask(why === "startup" ? "Apply these changes? [y/N] " : "Apply this anyway? [y/N] ");
+      const answer = await ask(why === "startup" ? "Apply these changes? [y/N] " : "Delete these files? [y/N] ");
       return /^y(es)?$/i.test(answer);
     },
   });
