@@ -29,6 +29,20 @@ export function nativeStartBuildEnabled(
 }
 
 /**
+ * Whether a build recorded as Astro is built (docs/astro-theme-plan.md 8.2).
+ * Off unless the server sets `MORPH_ASTRO_THEMES=1`, and never in production
+ * until Astro is certified (A8); while off, such a build is refused with
+ * `THEME_FRAMEWORK_UNAVAILABLE`, by the materializer and by the runner alike.
+ */
+export function astroThemesEnabled(
+  bindings: Record<string, unknown>,
+): boolean {
+  return (
+    bindings.MORPH_ASTRO_THEMES === "1" && !isProductionEnvironment(bindings)
+  );
+}
+
+/**
  * Server composition root for ThemeBuildService.
  *
  * Storage implementation selection is centralized behind the generic server
@@ -42,6 +56,9 @@ export function createServerThemeBuildService(options?: {
 }): ThemeBuildService {
   let runner = options?.runner;
   let artifactStore = options?.artifactStore;
+  const astroThemes = astroThemesEnabled(
+    env as unknown as Record<string, unknown>,
+  );
 
   if (
     runner === undefined &&
@@ -55,6 +72,7 @@ export function createServerThemeBuildService(options?: {
       approvedDependencies: configuredDependencies
         ? Object.keys(configuredDependencies)
         : undefined,
+      astroThemes,
     });
     artifactStore = new CloudflareR2ThemeBuildArtifactStore({
       r2Bucket: (env as any).R2_BUCKET,
@@ -67,8 +85,13 @@ export function createServerThemeBuildService(options?: {
   return new ThemeBuildService(
     storefrontThemeBuildDal,
     runner,
-    nativeStartBuild
-      ? (params) => materializeThemeBuildInput({ ...params, nativeStartBuild })
+    nativeStartBuild || astroThemes
+      ? (params) =>
+          materializeThemeBuildInput({
+            ...params,
+            nativeStartBuild,
+            astroThemes,
+          })
       : materializeThemeBuildInput,
     artifactStore,
     options?.revisionStore ?? themeRevisionStore,
