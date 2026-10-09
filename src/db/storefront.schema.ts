@@ -758,6 +758,32 @@ export const storefrontThemeSyncCapabilities = sqliteTable(
 );
 
 /**
+ * The order of the draft content snapshots written into one Live Preview
+ * (docs/astro-theme-plan.md 6.5, A6b).
+ *
+ * Each start and each content sync takes the next ticket here, before it
+ * reads the drafts it builds its snapshot from. A sync is sent only after the
+ * edit it carries is saved, so a higher ticket's snapshot holds every edit a
+ * lower one does; the preview keeps the highest it has been given, and a
+ * lower one arriving late is refused. Keyed by the preview session id
+ * (`deriveThemePreviewSessionId`: storefront, theme and user).
+ */
+export const storefrontThemePreviewContentTickets = sqliteTable(
+  "storefront_theme_preview_content_tickets",
+  {
+    previewId: text("preview_id").primaryKey(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    ticket: integer("ticket").notNull().default(0),
+    ...timestamps,
+  },
+);
+
+/**
  * Per-theme package enablement state.  The package/version itself is always
  * checked against the platform allowlist from cms.config before this table is
  * written; the table only records tenant intent and build lifecycle state.

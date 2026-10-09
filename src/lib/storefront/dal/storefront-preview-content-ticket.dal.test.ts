@@ -23,7 +23,7 @@ beforeEach(() => {
   // The migration itself, as D1 applies it.
   sqlite.exec(
     readFileSync(
-      resolve("drizzle/0078_preview_content_tickets.sql"),
+      resolve("drizzle/0079_preview_content_tickets.sql"),
       "utf8",
     ).replaceAll("--> statement-breakpoint", ""),
   );
