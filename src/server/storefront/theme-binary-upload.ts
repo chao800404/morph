@@ -179,6 +179,10 @@ export async function handleThemeBinaryUpload(
       {
         expectedSourceGeneration: data.expectedSourceGeneration,
         createdBy: user.id,
+        // src/ as well as public/: storage, builds, both Live Preview
+        // transports and Code mode now hold such files
+        // (docs/astro-theme-plan.md 5.2.5).
+        allowSourceAssets: true,
       },
     );
     return json({ success: true, data: saved }, 200);
