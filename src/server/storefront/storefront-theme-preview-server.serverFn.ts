@@ -55,9 +55,18 @@ import {
   type FencedPreviewFileWrite,
 } from "@/lib/storefront/service/preview-file-sync";
 import {
+  PREVIEW_INSTANCE_PATH,
   runFencedWriteInSandbox,
+  runPreviewContentRequestInSandbox,
   type FenceSandbox,
 } from "@/lib/storefront/compiler/preview-write-fence-sandbox";
+import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
+import {
+  confirmContainerPreviewContent,
+  readPreviewContentProbe,
+  writeContainerPreviewContent,
+  type PreviewContentConfirmDeps,
+} from "@/lib/storefront/service/preview-content-confirm";
 
 /**
  * Starts and stops the dev server behind a Theme's Live Preview.
@@ -365,13 +374,6 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
     if (!selection.enabled) {
       return fail(selection.message, { error: selection.reason });
     }
-    if (!selection.writeContent) {
-      return fail(
-        "This Live Preview transport cannot take a content sync yet.",
-        { error: "PREVIEW_CONTENT_SYNC_UNAVAILABLE" },
-      );
-    }
-
     const previewId = await deriveThemePreviewSessionId({
       storefrontId,
       themeId,
@@ -393,12 +395,25 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
     if (!read.ok) return read.failure;
     const content = read.previewContent;
 
-    let written: Awaited<ReturnType<NonNullable<typeof selection.writeContent>>>;
+    let written: PreviewContentWriteResult;
     try {
-      written = await selection.writeContent({
-        previewId,
-        content: JSON.stringify(content),
-      });
+      written =
+        selection.kind === "cloudflare-sandbox"
+          ? await writeContainerPreviewContent(
+              await containerContentDeps(previewId, selection.previewHostname),
+              {
+                content: JSON.stringify(content),
+                instancePath: PREVIEW_INSTANCE_PATH,
+              },
+            )
+          : selection.writeContent
+            ? await selection.writeContent({
+                previewId,
+                content: JSON.stringify(content),
+              })
+            : (() => {
+                throw new Error("PREVIEW_CONTENT_SYNC_UNAVAILABLE");
+              })();
     } catch (error) {
       return fail("Could not update the Live Preview content.", {
         error: error instanceof Error ? error.message : "WRITE_FAILED",
@@ -420,6 +435,114 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
     }
     return ok("Live Preview content applied", { ticket: written.ticket });
   });
+
+/**
+ * The confirmation of a content sync alone (docs/astro-theme-plan.md 6.6):
+ * whether the preview's running dev server now reads `ticket` or a later
+ * one. For a sync whose answer was lost — asked again, never sent again
+ * blindly. Writes nothing.
+ */
+export const confirmThemePreviewContent = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(
+      themePreviewServerInputSchema.extend({
+        ticket: z.number().int().positive(),
+      }),
+      data,
+    ),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId, ticket } = input.data;
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
+    if (!selection.enabled) {
+      return fail(selection.message, { error: selection.reason });
+    }
+    if (
+      !(await storefrontThemeBuildDal.verifyThemeOwnership(storefrontId, themeId))
+    ) {
+      return fail("Storefront theme not found", { error: "NOT_FOUND" });
+    }
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+    let confirmed: PreviewContentWriteResult;
+    try {
+      confirmed =
+        selection.kind === "cloudflare-sandbox"
+          ? await confirmContainerPreviewContent(
+              await containerContentDeps(previewId, selection.previewHostname),
+              { ticket, instancePath: PREVIEW_INSTANCE_PATH },
+            )
+          : selection.confirmContent
+            ? await selection.confirmContent({ previewId, ticket })
+            : (() => {
+                throw new Error("PREVIEW_CONTENT_SYNC_UNAVAILABLE");
+              })();
+    } catch (error) {
+      return fail("Could not ask the Live Preview what it shows.", {
+        error: error instanceof Error ? error.message : "CONFIRM_FAILED",
+      });
+    }
+    if (!confirmed.applied) {
+      return {
+        ...fail("The Live Preview is not showing that content yet.", {
+          error: confirmed.reason,
+        }),
+        ticket: confirmed.ticket,
+      };
+    }
+    return ok("Live Preview content confirmed", { ticket: confirmed.ticket });
+  });
+
+/**
+ * A container preview's content requests and its Worker's address probe,
+ * reached through the Sandbox proxy at the address the preview is exposed
+ * on (docs/astro-theme-plan.md A6c).
+ */
+async function containerContentDeps(
+  previewId: string,
+  previewHostname: string,
+): Promise<PreviewContentConfirmDeps> {
+  const { getSandbox, proxyToSandbox } = await import("@cloudflare/sandbox");
+  const sandbox = getSandbox(
+    previewSandboxBinding(env as unknown as Record<string, unknown>) as never,
+    previewId,
+  ) as unknown as FenceSandbox & {
+    getExposedPorts?(
+      hostname: string,
+    ): Promise<Array<{ port: number; status: string; url: string }>>;
+  };
+  return {
+    run: (request) => runPreviewContentRequestInSandbox(sandbox, request),
+    probe: async () => {
+      const exposed = await sandbox.getExposedPorts?.(previewHostname).catch(() => []);
+      const address = exposed?.find(
+        (entry) =>
+          entry.port === THEME_PREVIEW_SERVER_PORT && entry.status === "active",
+      )?.url;
+      if (!address) return null;
+      const response = await proxyToSandbox(
+        new Request(new URL(previewAddressProbePath(), address), {
+          headers: { Accept: "*/*", "cache-control": "no-store" },
+          signal: AbortSignal.timeout(5_000),
+        }),
+        previewProxyEnv(env as unknown as Record<string, unknown>) as never,
+      );
+      if (!response || response.status >= 400) {
+        await response?.body?.cancel();
+        return null;
+      }
+      await response.body?.cancel();
+      return readPreviewContentProbe(response.headers);
+    },
+  };
+}
 
 export const stopThemePreviewServer = createServerFn({ method: "POST" })
   .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))

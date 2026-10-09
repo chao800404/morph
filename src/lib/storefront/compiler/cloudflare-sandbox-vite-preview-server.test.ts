@@ -189,7 +189,7 @@ const createSession = (
       written.delete(fenced[1]!);
       written.delete(fenced[2]!);
       const result =
-        request.op === "content" || request.op === "stamp"
+        request.op === "content" || request.op === "stamp" || request.op === "read"
           ? applyPreviewContentRequest(
               {
                 ...io,

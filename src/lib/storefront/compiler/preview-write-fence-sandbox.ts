@@ -119,10 +119,23 @@ export type PreviewContentRequest =
       path: string;
       instancePath: string;
       instance: string;
+    }>
+  /** What the file holds and which server is stamped; writes nothing. */
+  | Readonly<{
+      op: "read";
+      path: string;
+      instancePath: string;
     }>;
 
 export type PreviewContentResult = Readonly<{
-  outcome: "written" | "same" | "superseded" | "conflict" | "no-server" | "stamped";
+  outcome:
+    | "written"
+    | "same"
+    | "superseded"
+    | "conflict"
+    | "no-server"
+    | "stamped"
+    | "read";
   /** The ticket the file holds after the request. */
   ticket: number;
   /** The running instance, or null when no server has been stamped. */
@@ -378,6 +391,9 @@ export function applyPreviewContentRequest(
   }
   const instanceText = io.readText(request.instancePath);
   const instance = instanceText ? instanceText.trim() : null;
+  if (request.op === "read") {
+    return { outcome: "read", ticket: placed.ticket, instance };
+  }
   const incoming = read(request.content);
   if (!incoming.parsed || incoming.ticket === 0) {
     throw new Error("PREVIEW_CONTENT_INVALID: a content sync carries a snapshot with its ticket.");
@@ -460,7 +476,7 @@ const io = {
 let result;
 try {
   result =
-    request.op === "content" || request.op === "stamp"
+    request.op === "content" || request.op === "stamp" || request.op === "read"
       ? applyPreviewContentRequest(io, request)
       : applyFencedRequest(io, LEDGER, request, { planFencedWrite, planFencedStart });
 } finally {
