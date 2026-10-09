@@ -39,7 +39,6 @@ const OUT = join(
 const MODULES = [
   "spacing-overlay",
   "selection-taxonomy",
-  "selection-content-value",
   "preview-protocol",
   "preview-sizing-css",
   "preview-height-reporter",

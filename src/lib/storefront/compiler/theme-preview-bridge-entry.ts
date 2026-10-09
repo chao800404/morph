@@ -45,11 +45,15 @@ import {
 } from "./preview/selection-style-preview";
 import { createInlineTextEditor } from "./preview/inline-text-editor";
 import {
+  getFieldPathValue,
+  setFieldPathValue,
+} from "./preview/selection-taxonomy";
+import {
   isCompatibleReorderTarget,
   reorderCommitFor,
   reorderIdentity,
 } from "./preview/preview-reorder-identity";
-import { updatePreviewContent } from "./preview-content";
+import { previewSlotContent, updatePreviewContent } from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -70,7 +74,18 @@ function refreshPreviewContent() {
     void Promise.resolve()
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
-        restoreSelectedSection();
+        // The selected element is re-found, not widened to its section:
+        // typing in the Inspector refreshes on every change, and the
+        // selection must stay on the field being typed into.
+        if (
+          selectionEnabled &&
+          lastRestoreTarget &&
+          lastRestoreTarget.sectionId === selectedSectionId
+        ) {
+          restoreSelectedTarget(lastRestoreTarget);
+        } else {
+          restoreSelectedSection();
+        }
         reportStructure();
         drawOverlays();
       })
@@ -103,6 +118,23 @@ const inlineEditor = createInlineTextEditor({
   },
   // Typing changes how much room the text takes, so the rings follow it.
   onLayoutChanged: () => drawOverlays(),
+  // What this page rendered the field from. The Theme's content() may change
+  // a value on its way to the component; the text is then not the value.
+  storedValue: (target) =>
+    target.sectionId && target.fieldPath
+      ? getFieldPathValue(previewSlotContent(target.sectionId), target.fieldPath)
+      : undefined,
+  onRefused: (target) => {
+    if (!channel || !target.sectionId || !target.fieldPath) return;
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-inline-text-refused",
+        sectionId: target.sectionId,
+        fieldPath: target.fieldPath,
+      },
+      channel,
+    );
+  },
 });
 
 const toOverlayItem = (item) =>
@@ -594,6 +626,10 @@ if (channel) {
   // The editor's own overlays are appended to <body>; a Theme that owns the
   // whole document is observed from there. See isPreviewEditorUiMutation.
   const structureObserver = new MutationObserver((allMutations) => {
+    // A render that replaced the element being edited ends the edit, unsaved.
+    if (inlineEditor.editingElement()?.isConnected === false) {
+      inlineEditor.finish(false);
+    }
     const mutations = overlays
       ? allMutations.filter(
           (mutation) => !isPreviewEditorUiMutation(mutation, overlays.owns),
@@ -1214,7 +1250,23 @@ if (channel) {
       } else if (message.fieldKey === "actionHref") {
         target.setAttribute("href", message.value);
       } else {
-        target.textContent = message.value;
+        // Text reaches the page through the Theme's content(), which may
+        // change it on the way. Writing the typed value into the element
+        // would show it unchanged, and would take the element from React,
+        // which then keeps updating a node that is no longer on the page. The
+        // value goes where the page reads its content, and the page renders.
+        const sectionId = selectedItem.sectionId;
+        if (!sectionId) return;
+        updatePreviewContent(
+          sectionId,
+          setFieldPathValue(
+            previewSlotContent(sectionId) || {},
+            fieldPath || message.fieldKey,
+            message.value,
+          ),
+        );
+        refreshPreviewContent();
+        return;
       }
       drawOverlays();
       return;

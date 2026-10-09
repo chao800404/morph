@@ -233,9 +233,7 @@ export function previewContentForPath(pathname) {
 }
 
 export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
-  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
-    (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
-  const content = previewContentForPath(pathname);
+  const content = currentPreviewContent();
   if (enabled === false) {
     delete content.slots[sectionId];
     if (!content.hiddenSlots.includes(sectionId)) content.hiddenSlots.push(sectionId);
@@ -250,6 +248,19 @@ export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
     for (const key of resetKeys) delete next[key];
     content.slots[sectionId] = next;
   }
+}
+
+// Below \`updatePreviewContent\`: the dev-server plugin copies the resolver
+// above it, and these read the browser's page.
+function currentPreviewContent() {
+  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
+    (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
+  return previewContentForPath(pathname);
+}
+
+/** The values this page's content holds for one slot, as it renders from them. */
+export function previewSlotContent(sectionId) {
+  return currentPreviewContent().slots[sectionId];
 }
 
 const nativeFetch = window.fetch.bind(window);

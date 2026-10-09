@@ -50,6 +50,9 @@ export const EDITOR_SHARDS = [
     "starter-upgrade.spec.ts",
     // Unmeasured; a few server function calls and no editor, so seconds.
     "theme-path-refused.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest tests. Three tests, each loading the editor two or three times.
+    "content-module-transform.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
