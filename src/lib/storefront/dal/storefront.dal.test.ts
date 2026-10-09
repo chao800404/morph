@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
   initStarterTheme: vi.fn(),
   getSourceGeneration: vi.fn(),
+  /** The source store's save: the one the upgrade writes through. */
   saveFilesBatch: vi.fn(),
+  /** The DAL's own save, which records a revision with no manifest. */
+  dalSaveFilesBatch: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
@@ -24,8 +27,11 @@ vi.mock("./storefront-theme-file.dal", () => ({
     listFiles: mocks.listFiles,
     initStarterTheme: mocks.initStarterTheme,
     getSourceGeneration: mocks.getSourceGeneration,
-    saveFilesBatch: mocks.saveFilesBatch,
+    saveFilesBatch: mocks.dalSaveFilesBatch,
   },
+}));
+vi.mock("../storage/theme-storage.server", () => ({
+  themeSourceStore: { saveFilesBatch: mocks.saveFilesBatch },
 }));
 
 import { storefrontDal } from "./storefront.dal";
@@ -244,6 +250,30 @@ describe("storefrontDal starter workspace provisioning", () => {
           expectedVersion: 3,
         }),
       ]);
+    });
+
+    it("writes through the source store, never the DAL's own save", async () => {
+      // The DAL's save records the revision without a manifest and refuses
+      // that for a workspace holding a binary file, which failed the editor
+      // load for every Theme with an uploaded image. The source store builds
+      // the manifest.
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
+
+      await storefrontDal.ensureStoredStarterPreview({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        createdBy: "user-a",
+      });
+
+      expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(mocks.saveFilesBatch.mock.calls[0]?.[3]).toMatchObject({
+        createRevision: true,
+        createdBy: "user-a",
+      });
+      expect(mocks.dalSaveFilesBatch).not.toHaveBeenCalled();
     });
 
     it("writes nothing when the content module was edited", async () => {

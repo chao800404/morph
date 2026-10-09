@@ -15,6 +15,7 @@ import { signedInPage } from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
+  uploadThemeBinary,
   writeThemeFiles,
 } from "./native-compat";
 import {
@@ -76,6 +77,11 @@ const OLD_PATH_COMPONENTS = [
   "src/components/ImageWithText.tsx",
   "src/components/Newsletter.tsx",
 ];
+const UPLOADED_IMAGE = "public/starter-upgrade-check.png";
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "base64",
+);
 const EDITED_PRE_PAGES_MODULE =
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// edited by the author\n";
 
@@ -269,6 +275,17 @@ test.describe("Starter upgrade to version 28", () => {
     await openEditor(page);
     original = await workspace(page);
     expect(original[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    // A binary file, as any Theme with an uploaded image has. An upgrade that
+    // records its revision without a manifest is refused for such a workspace,
+    // and then the editor cannot open; CI found it when an earlier spec on the
+    // shard had uploaded one. Here it does not depend on what ran before.
+    const uploaded = await uploadThemeBinary(
+      page,
+      scope!,
+      UPLOADED_IMAGE,
+      ONE_PIXEL_PNG,
+    );
+    expect(uploaded.ok(), await uploaded.text()).toBe(true);
     await page.context().close();
   });
 
@@ -277,7 +294,10 @@ test.describe("Starter upgrade to version 28", () => {
     // On the current version first, so loading the editor upgrades nothing.
     setStarterVersion(28);
     await openEditor(page);
-    const removed = await removeThemeFiles(page, scope!, [PROBE_ROUTE]);
+    const removed = await removeThemeFiles(page, scope!, [
+      PROBE_ROUTE,
+      UPLOADED_IMAGE,
+    ]);
     expect(removed.success, JSON.stringify(removed)).toBe(true);
     await save(page, [
       { path: CONTENT_MODULE, content: original[CONTENT_MODULE]! },
