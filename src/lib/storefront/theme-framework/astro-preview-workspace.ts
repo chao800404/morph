@@ -141,8 +141,13 @@ export default {
  * The import guard of an Astro Live Preview: the build's rule (an import
  * resolves inside the workspace or inside an approved package), with the one
  * thing only a dev server does. A dependency Vite pre-bundled resolves into
- * `node_modules/.vite/`, which names no package, so it is judged by the
- * package the Theme asked for.
+ * the dependency cache (`depsCacheDir`, in the workspace), which names no
+ * package, so it is judged by the package the Theme asked for.
+ *
+ * Judged by where the path is, never by reading it: Vite names a
+ * dependency's file in the cache as soon as it discovers the dependency,
+ * before its optimizer has written the directory, so the file may not exist
+ * yet when its import is resolved.
  */
 function previewImportGuardSource(): string {
   return `{
@@ -157,18 +162,24 @@ function previewImportGuardSource(): string {
       if (!resolved || resolved.external) return resolved ?? null;
       const id = resolved.id.split("?")[0].replace(/\\\\/g, "/");
       if (id.startsWith("\\0") || !path.isAbsolute(id)) return resolved;
+      if (insideDepsCache(id)) {
+        const bare = source.split("?")[0];
+        if (bare.startsWith(".") || bare.startsWith("/") || path.isAbsolute(bare)) {
+          // One pre-bundled chunk importing another.
+          if (insideDepsCache(from.split("?")[0])) return resolved;
+          throw new Error('UNAPPROVED_DEPENDENCY_PATH: Theme imports "' + source + '" by path from the dev server\\'s dependency cache.');
+        }
+        const segments = bare.split("/");
+        const name = segments[0].startsWith("@") ? segments[0] + "/" + segments[1] : segments[0];
+        if (!allowedPackages.has(name)) {
+          throw new Error('UNAPPROVED_DEPENDENCY: Theme imports "' + source + '" from package "' + name + '", which is not an approved dependency.');
+        }
+        return resolved;
+      }
       const packages = id.lastIndexOf("/node_modules/");
       if (packages >= 0) {
         const parts = id.slice(packages + "/node_modules/".length).split("/");
-        let name = parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
-        if (name === ".vite") {
-          const bare = source.split("?")[0];
-          if (bare.startsWith(".") || bare.startsWith("/") || path.isAbsolute(bare)) {
-            throw new Error('UNAPPROVED_DEPENDENCY_PATH: Theme imports "' + source + '" by path from the dev server\\'s dependency cache.');
-          }
-          const segments = bare.split("/");
-          name = segments[0].startsWith("@") ? segments[0] + "/" + segments[1] : segments[0];
-        }
+        const name = parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
         if (!allowedPackages.has(name)) {
           throw new Error('UNAPPROVED_DEPENDENCY: Theme imports "' + source + '" from package "' + name + '", which is not an approved dependency.');
         }
@@ -194,6 +205,16 @@ import { fileURLToPath } from "node:url";
 
 const workspaceRoot = fs.realpathSync(fileURLToPath(new URL("..", import.meta.url)));
 const allowedPackages = new Set(${JSON.stringify([...new Set(options.allowedPackages)].sort())});
+// The workspace's node_modules is a link to the shared, pinned toolchain;
+// Vite's default cache under it would be shared by every preview, and written
+// into the toolchain itself.
+const depsCacheDir = path.join(workspaceRoot, ".vite");
+// Path segments, not a string prefix: \`.vite-other/\` and \`.vite/../\` are
+// not the cache.
+const insideDepsCache = (file) => {
+  const relative = path.relative(depsCacheDir, file);
+  return relative !== "" && relative.split(path.sep)[0] !== ".." && !path.isAbsolute(relative);
+};
 
 const importGuard = ${previewImportGuardSource()};
 const previewServerSourcePlugin = ${themePreviewServerSourcePluginSource()};
@@ -208,10 +229,7 @@ export function morphAstroPreview() {
       "astro:config:setup": ({ updateConfig }) => {
         updateConfig({
           vite: {
-            // The workspace's node_modules is a link to the shared, pinned
-            // toolchain; Vite's default cache under it would be shared by
-            // every preview, and written into the toolchain itself.
-            cacheDir: path.join(workspaceRoot, ".vite"),
+            cacheDir: depsCacheDir,
             plugins: [
               previewServerSourcePlugin,
               previewSvgIsolationPlugin,
