@@ -337,6 +337,56 @@ describe("a request on a Build Preview host", () => {
       expect(response?.headers.get("location")).toBe("/products?q=1&b=2");
     });
 
+    describe("sends the browser only to this same origin", () => {
+      const unescape = (value: string) => value.replaceAll("&amp;", "&");
+      const resolvesHere = (target: string) =>
+        new URL(target, `https://${HOST}/`).host === HOST;
+
+      it.each(["//evil.example/x", "/\\evil.example/x", "///evil.example/x"])(
+        "redirects %s, once started, to a path here",
+        async (path) => {
+          const { deps } = setup();
+          const response = await handleBuildPreviewRequest(
+            request(`${path}?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=2`, {
+              headers: { "sec-fetch-dest": "iframe" },
+            }),
+            deps,
+          );
+          expect(response?.status).toBe(302);
+          const location = response!.headers.get("location")!;
+          expect(location).toBe("/evil.example/x");
+          expect(resolvesHere(location)).toBe(true);
+        },
+      );
+
+      it.each(["//evil.example/x", "/\\evil.example/x"])(
+        "reloads %s, and offers to try again, on a path here",
+        async (path) => {
+          const { deps } = unavailable();
+          const reload = await handleBuildPreviewRequest(
+            request(path, { headers: { "sec-fetch-dest": "iframe" } }),
+            deps,
+          );
+          const refresh = /url=([^"]+)">/.exec(await reload!.text())?.[1];
+          expect(unescape(refresh!)).toBe(
+            `/evil.example/x?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=2`,
+          );
+          expect(resolvesHere(unescape(refresh!))).toBe(true);
+
+          const bounded = await handleBuildPreviewRequest(
+            request(
+              `${path}?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=${BUILD_PREVIEW_START_MAX_ATTEMPTS}`,
+              { headers: { "sec-fetch-dest": "iframe" } },
+            ),
+            deps,
+          );
+          const href = /<a href="([^"]+)">/.exec(await bounded!.text())?.[1];
+          expect(unescape(href!)).toBe("/evil.example/x");
+          expect(resolvesHere(unescape(href!))).toBe(true);
+        },
+      );
+    });
+
     it("still verifies the capability first for a counted reload", async () => {
       const { deps, server } = setup({
         record: record({ revokedAt: "2026-10-06T00:00:00.000Z" }),

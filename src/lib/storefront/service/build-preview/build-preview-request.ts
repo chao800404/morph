@@ -136,8 +136,15 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
-function pathAndQuery(url: URL): string {
-  return `${url.pathname}${url.search}`;
+/**
+ * The address as a path on this same origin, for everything Core sends the
+ * browser to (the redirect, the reload, the "try again" link). The request's
+ * own pathname is not one: `//evil.example/x` is a valid pathname and, used as
+ * a URL, a different host. Leading slashes collapse to one, so it can only
+ * ever be a path here.
+ */
+function sameOriginPath(url: URL): string {
+  return `/${url.pathname.replace(/^\/+/, "")}${url.search}`;
 }
 
 /**
@@ -176,14 +183,14 @@ function starting(request: Request, url: URL, attempt: number): Response {
   };
   if (attempt >= BUILD_PREVIEW_START_MAX_ATTEMPTS) {
     return new Response(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Preview unavailable</title></head><body><p>BUILD_PREVIEW_CONTAINER_UNAVAILABLE: the preview could not be started.</p><p><a href="${escapeHtml(pathAndQuery(url))}">Try again</a></p></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Preview unavailable</title></head><body><p>BUILD_PREVIEW_CONTAINER_UNAVAILABLE: the preview could not be started.</p><p><a href="${escapeHtml(sameOriginPath(url))}">Try again</a></p></body></html>`,
       { status: 503, headers: htmlHeaders },
     );
   }
   const next = new URL(url);
   next.search = `${url.search ? `${url.search}&` : "?"}${BUILD_PREVIEW_START_ATTEMPT_PARAM}=${attempt + 1}`;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}; url=${escapeHtml(pathAndQuery(next))}"><title>Starting preview</title></head><body><p>The preview is starting. This page reloads by itself.</p></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}; url=${escapeHtml(sameOriginPath(next))}"><title>Starting preview</title></head><body><p>The preview is starting. This page reloads by itself.</p></body></html>`,
     {
       status: 503,
       headers: {
@@ -306,7 +313,7 @@ export async function handleBuildPreviewRequest(
       return new Response(null, {
         status: 302,
         headers: {
-          location: pathAndQuery(forwardUrl),
+          location: sameOriginPath(forwardUrl),
           "cache-control": "no-store",
           "x-robots-tag": "noindex",
         },
