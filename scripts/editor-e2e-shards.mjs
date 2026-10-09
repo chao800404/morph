@@ -63,6 +63,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; like public-root-url.spec.ts,
     // which it follows, about 25 s.
     "source-asset.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Two tests, about 4 minutes locally.
+    "local-code-sync.spec.ts",
   ],
 ];
 
