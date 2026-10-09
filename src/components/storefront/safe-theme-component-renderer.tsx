@@ -1733,11 +1733,15 @@ function renderModuleComponent(
         sourcePath,
         imported.source,
       );
-      // The platform content module is modelled natively: `content()` is
-      // resolved from the Document above, and its provider only exists so the
-      // deployed Theme can pass server-loaded values down. Interpreting the
-      // module itself would mean supporting `createContext`, which the preview
-      // deliberately does not, for a value the preview never reads.
+      // The content module is modelled natively: `content()` is resolved from
+      // the Document above, and its provider only exists so the deployed Theme
+      // can pass server-loaded values down. Interpreting the module itself
+      // would mean supporting `createContext`, which the preview deliberately
+      // does not, for a value the preview never reads.
+      // This serves only the old `/_editor/.../preview` route: the editor's
+      // canvas is Live Preview, which runs the author's own module. An edited
+      // module still renders here as the Starter one; the branch goes with the
+      // interpreter when that is removed.
       if (importedPath === THEME_CONTENT_MODULE_PATH) {
         env[`__builtin:${name}`] = (builtinProps: Record<string, unknown>) => {
           const children = builtinProps.children;

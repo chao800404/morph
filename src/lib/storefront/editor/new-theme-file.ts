@@ -6,6 +6,7 @@ import {
 } from "@/lib/storefront/compiler/theme-route-registry";
 import { contentFieldsSidecarPath } from "@/lib/storefront/ast/theme-content-fields-declaration";
 import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
+import { RESTORE_THEME_CONTENT_MODULE_COMMAND } from "@/lib/storefront/ast/theme-content-module";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import {
   checkThemePublicPath,
@@ -289,12 +290,13 @@ function validateThemeFilePath(
     };
   }
 
-  // Seeded and upgraded by the platform. Unlike build-generated files it does
-  // reach the build, so it is refused here rather than at the build boundary.
+  // The author's file once it exists; this only runs while it does not. Morph
+  // seeds it, so bringing it back is the explicit restore command, which
+  // writes the Starter module rather than an empty one Design cannot use.
   if (path === THEME_CONTENT_MODULE_PATH) {
     return {
       ok: false,
-      message: `"${path}" is provided by Morph and cannot be replaced.`,
+      message: `"${path}" is the Starter content module. Restore it with "${RESTORE_THEME_CONTENT_MODULE_COMMAND}" from the Command Palette.`,
     };
   }
 

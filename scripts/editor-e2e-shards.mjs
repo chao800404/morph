@@ -45,6 +45,8 @@ export const EDITOR_SHARDS = [
     // Unmeasured too, and on the same shard for the same reason. Its Build
     // Preview steps run only with the container transport.
     "starter-upgrade.spec.ts",
+    // Unmeasured until the next rebalance; placed here with the other two.
+    "content-module-restore.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
