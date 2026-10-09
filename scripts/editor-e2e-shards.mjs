@@ -51,6 +51,9 @@ export const EDITOR_SHARDS = [
     "public-svg.spec.ts",
     "initial-code-publish.spec.ts",
     "route-capabilities.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files.
+    "local-code-sync.spec.ts",
   ],
 ];
 

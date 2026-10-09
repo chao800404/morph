@@ -110,6 +110,7 @@ import {
   Files,
   FilePlus2,
   FolderPlus,
+  FolderSync,
   ListChecks,
   PanelBottomOpen,
   Search as SearchIcon,
@@ -177,6 +178,7 @@ import {
   EditorCodeCommandCenter,
   type EditorCodeCommand,
 } from "./editor-code-command-center";
+import { EditorLocalSyncDialog } from "./editor-local-sync-dialog";
 import {
   replaceEditorCodeMatches,
   type EditorCodeSearchMatch,
@@ -634,6 +636,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     "closed" | "files" | "commands"
   >("closed");
   const [dependenciesDialogOpen, setDependenciesDialogOpen] = useState(false);
+  const [localSyncDialogOpen, setLocalSyncDialogOpen] = useState(false);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
   const [bottomPanelTab, setBottomPanelTab] = useState<"problems" | "output">(
     "problems",
@@ -3540,6 +3543,13 @@ const EditorCodeWorkspaceContent = forwardRef<
         run: () => setDependenciesDialogOpen(true),
       },
       {
+        id: "link-local-folder",
+        label: "Theme: Link Local Folder",
+        detail: "Sync this Theme with a folder on your machine",
+        icon: FolderSync,
+        run: () => setLocalSyncDialogOpen(true),
+      },
+      {
         id: "format",
         label: "Format Document",
         shortcut: "Shift+Alt+F",
@@ -4665,6 +4675,12 @@ const EditorCodeWorkspaceContent = forwardRef<
         files={files}
         commands={editorCommands}
         onOpenFile={handleOpenFile}
+      />
+      <EditorLocalSyncDialog
+        open={localSyncDialogOpen}
+        onOpenChange={setLocalSyncDialogOpen}
+        storefrontId={storefrontId}
+        themeId={themeId}
       />
       <Dialog
         open={starterBootstrapDialogOpen}
