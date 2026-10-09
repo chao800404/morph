@@ -70,10 +70,14 @@ function rejectLegacyManifestDeletion() {
  * refuses to create or rename onto them. That refusal is only a convenience;
  * this is the check. Source-only files (vite.config, wrangler, the route tree)
  * are the author's and are not refused.
+ *
+ * Only arriving at one of these paths is refused. Removing one — a deletion,
+ * or a move away from it — stays allowed: a workspace that already holds one
+ * cannot be built (`PLATFORM_OWNED_THEME_BUILD_PATH`) or have it synced to its
+ * Live Preview (`RESERVED_THEME_BUILD_PATH`), and deleting it is the only way
+ * back.
  */
-function findAuthoringRefusedPath(
-  paths: Iterable<string>,
-): string | undefined {
+function findAuthoringRefusedPath(paths: Iterable<string>): string | undefined {
   for (const path of paths) {
     if (isThemeAuthoringRefusedPath(path)) return path;
   }
@@ -82,7 +86,7 @@ function findAuthoringRefusedPath(
 
 function rejectAuthoringRefusedPath(path: string) {
   return fail(
-    `"${path}" is provided by the platform's build and cannot be written, renamed or deleted.`,
+    `"${path}" is provided by the platform's build and cannot be written. It may only be deleted.`,
     { error: "THEME_PATH_REFUSED" },
   );
 }
@@ -677,14 +681,11 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     ) {
       return rejectLegacyManifestDeletion();
     }
+    // Every destination in the batch, checked before anything is written.
+    // Deletions and move sources are not: removing one of these is allowed.
     const refusedPath = findAuthoringRefusedPath([
       ...data.files.map((file) => file.path),
-      ...(data.deletions ?? []).map((deletion) => deletion.path),
-      // A move away from one of these removes it just as a deletion would.
-      ...(data.routePathMoves ?? []).flatMap((move) => [
-        move.fromSourcePath,
-        move.toSourcePath,
-      ]),
+      ...(data.routePathMoves ?? []).map((move) => move.toSourcePath),
       ...(data.binaryCopies ?? []).map((copy) => copy.to),
     ]);
     if (refusedPath !== undefined) {
@@ -975,9 +976,6 @@ export const deleteStorefrontThemeFile = createServerFn({ method: "POST" })
     const data = input.data;
     if (data.path === LEGACY_THEME_MANIFEST_PATH) {
       return rejectLegacyManifestDeletion();
-    }
-    if (isThemeAuthoringRefusedPath(data.path)) {
-      return rejectAuthoringRefusedPath(data.path);
     }
     try {
       const success = await themeSourceStore.deleteFile(

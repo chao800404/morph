@@ -124,6 +124,76 @@ describe("saveStorefrontThemeFile", () => {
   );
 });
 
+describe("other spellings of a platform file", () => {
+  // Stored paths are the parsed input, compared exactly (no case folding, as
+  // in every build and preview check). So a spelling either fails parsing or
+  // parses to the refused path; none reaches the store as something else.
+  const UNSAFE = [
+    "./__entry.tsx",
+    "src/../__entry.tsx",
+    "/__entry.tsx",
+    ".\\__entry.tsx",
+    "src\\..\\__entry.tsx",
+    "__entry.tsx\0",
+  ];
+
+  function expectNothingWritten(result: Result) {
+    expect(result.success).toBe(false);
+    expect(store.saveFile).not.toHaveBeenCalled();
+    expect(store.saveFilesBatch).not.toHaveBeenCalled();
+  }
+
+  it.each(UNSAFE)("does not save %j", async (path) => {
+    const result = await call(saveStorefrontThemeFile, {
+      ...theme,
+      path,
+      content: "",
+      expectMissing: true,
+    });
+    expectNothingWritten(result);
+    expect(result.error).toBe("INVALID_INPUT");
+  });
+
+  it.each(UNSAFE)("does not move or copy onto %j", async (path) => {
+    for (const extra of [
+      {
+        files: [{ path: "src/x.ts", content: "", expectMissing: true }],
+        routePathMoves: [
+          { fromSourcePath: "src/routes/a.tsx", toSourcePath: path },
+        ],
+      },
+      {
+        binaryCopies: [
+          {
+            from: "public/a.png",
+            to: path,
+            expectedFileId: fileId,
+            expectedVersion: 1,
+          },
+        ],
+      },
+    ]) {
+      const result = await call(saveStorefrontThemeFilesBatch, {
+        ...theme,
+        files: [],
+        ...extra,
+      });
+      expectNothingWritten(result);
+      expect(result.error).toBe("INVALID_INPUT");
+    }
+  });
+
+  it("trims surrounding whitespace before checking, as the store does", async () => {
+    const result = await call(saveStorefrontThemeFile, {
+      ...theme,
+      path: "  __entry.tsx  ",
+      content: "",
+      expectMissing: true,
+    });
+    expectRefused(result, "__entry.tsx");
+  });
+});
+
 describe("saveStorefrontThemeFilesBatch", () => {
   const batch = (extra: Record<string, unknown>) => ({
     ...theme,
@@ -136,7 +206,6 @@ describe("saveStorefrontThemeFilesBatch", () => {
       saveStorefrontThemeFilesBatch,
       batch({
         files: [
-          { path: "src/ok.ts", content: "", expectMissing: true },
           {
             path: "__morph_preview_worker.ts",
             content: "",
@@ -146,18 +215,6 @@ describe("saveStorefrontThemeFilesBatch", () => {
       }),
     );
     expectRefused(result, "__morph_preview_worker.ts");
-  });
-
-  it("refuses a deletion", async () => {
-    const result = await call(
-      saveStorefrontThemeFilesBatch,
-      batch({
-        deletions: [
-          { path: "__entry.tsx", expectedFileId: fileId, expectedVersion: 1 },
-        ],
-      }),
-    );
-    expectRefused(result, "__entry.tsx");
   });
 
   it("refuses a route move onto a platform file", async () => {
@@ -174,22 +231,6 @@ describe("saveStorefrontThemeFilesBatch", () => {
       }),
     );
     expectRefused(result, "__morph_preview_client.ts");
-  });
-
-  it("refuses a route move away from a platform file", async () => {
-    const result = await call(
-      saveStorefrontThemeFilesBatch,
-      batch({
-        files: [{ path: "src/x.ts", content: "", expectMissing: true }],
-        routePathMoves: [
-          {
-            fromSourcePath: "__entry.tsx",
-            toSourcePath: "src/routes/entry.tsx",
-          },
-        ],
-      }),
-    );
-    expectRefused(result, "__entry.tsx");
   });
 
   it("refuses a binary copy onto a platform file", async () => {
@@ -209,6 +250,43 @@ describe("saveStorefrontThemeFilesBatch", () => {
     expectRefused(result, "__entry.tsx");
   });
 
+  it("writes nothing of a batch that mixes valid changes with one refused path", async () => {
+    // Valid writes, a deletion, a move and a copy around the one refused file:
+    // the whole batch is checked before any of it reaches the store.
+    const result = await call(
+      saveStorefrontThemeFilesBatch,
+      batch({
+        files: [
+          { path: "src/components/Hero.tsx", content: "", expectMissing: true },
+          { path: "vite.config.ts", content: "", expectMissing: true },
+          { path: "__entry.tsx", content: "", expectMissing: true },
+          { path: "src/routes/b.tsx", content: "", expectMissing: true },
+        ],
+        deletions: [
+          { path: "src/old.ts", expectedFileId: fileId, expectedVersion: 1 },
+        ],
+        routePathMoves: [
+          {
+            fromSourcePath: "src/routes/a.tsx",
+            toSourcePath: "src/routes/b.tsx",
+          },
+        ],
+        binaryCopies: [
+          {
+            from: "public/a.png",
+            to: "public/b.png",
+            expectedFileId: fileId,
+            expectedVersion: 1,
+          },
+        ],
+      }),
+    );
+    expectRefused(result, "__entry.tsx");
+    for (const method of Object.values(store)) {
+      expect(method).not.toHaveBeenCalled();
+    }
+  });
+
   it("still saves source-only files in a batch", async () => {
     store.saveFilesBatch.mockResolvedValue({ sourceGeneration: 4 });
     const result = await call(
@@ -226,25 +304,54 @@ describe("saveStorefrontThemeFilesBatch", () => {
     expect(result.success).toBe(true);
     expect(store.saveFilesBatch).toHaveBeenCalledTimes(1);
   });
+
+  // A workspace that already holds one cannot be built or previewed;
+  // removing it is the only way back.
+  it("lets a platform file be deleted", async () => {
+    store.saveFilesBatch.mockResolvedValue({ sourceGeneration: 4 });
+    const result = await call(
+      saveStorefrontThemeFilesBatch,
+      batch({
+        deletions: [
+          { path: "__entry.tsx", expectedFileId: fileId, expectedVersion: 1 },
+        ],
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(store.saveFilesBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a platform file be moved away", async () => {
+    store.saveFilesBatch.mockResolvedValue({ sourceGeneration: 4 });
+    const result = await call(
+      saveStorefrontThemeFilesBatch,
+      batch({
+        files: [
+          { path: "src/routes/entry.tsx", content: "", expectMissing: true },
+        ],
+        deletions: [
+          { path: "__entry.tsx", expectedFileId: fileId, expectedVersion: 1 },
+        ],
+        routePathMoves: [
+          {
+            fromSourcePath: "__entry.tsx",
+            toSourcePath: "src/routes/entry.tsx",
+          },
+        ],
+      }),
+    );
+    expect(result.success).toBe(true);
+    expect(store.saveFilesBatch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("deleteStorefrontThemeFile", () => {
-  it.each(REFUSED)("refuses deleting %s", async (path) => {
-    const result = await call(deleteStorefrontThemeFile, {
-      ...theme,
-      path,
-      expectedFileId: fileId,
-      expectedVersion: 1,
-    });
-    expectRefused(result, path);
-  });
-
-  it("still deletes a source-only file", async () => {
+  it.each([...REFUSED, "vite.config.ts"])("deletes %s", async (path) => {
     store.deleteFile.mockResolvedValue(true);
     store.getSourceGeneration.mockResolvedValue(4);
     const result = await call(deleteStorefrontThemeFile, {
       ...theme,
-      path: "vite.config.ts",
+      path,
       expectedFileId: fileId,
       expectedVersion: 1,
     });
