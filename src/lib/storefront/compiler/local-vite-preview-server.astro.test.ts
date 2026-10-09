@@ -7,6 +7,7 @@ import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtu
 import { LocalVitePreviewServer } from "./local-vite-preview-server";
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { THEME_PREVIEW_START_CLIENT_PATH } from "./theme-preview-start-runtime";
+import { previewContentDigest } from "./theme-preview-content";
 
 /**
  * docs/astro-theme-plan.md A6: an Astro Live Preview on the local transport,
@@ -43,6 +44,25 @@ const previewContent = {
 
 let server: LocalVitePreviewServer;
 let origin = "";
+
+/** A content snapshot as Core writes one: content, ticket and its hash. */
+async function snapshot(headline: string, contentTicket: number) {
+  const content = {
+    templates: { index: { slots: { hero: { headline } }, hiddenSlots: [] } },
+    pages: {},
+  };
+  return JSON.stringify({
+    ...content,
+    contentTicket,
+    contentHash: await previewContentDigest(JSON.stringify(content)),
+  });
+}
+
+/** Which A6B marker the server-rendered page shows now. */
+async function shown() {
+  const html = await (await fetch(`${origin}/live`)).text();
+  return /A6B-[A-Z]/.exec(html)?.[0] ?? null;
+}
 
 const available = fsSync.existsSync(ASTRO_TOOLCHAIN);
 
@@ -147,29 +167,19 @@ describe.skipIf(!available)(
     // page as a ticketed snapshot, confirmed through the Worker before a
     // page may reload; a late older one never replaces a newer one.
     it("keeps the newest content snapshot, whatever order they arrive in", async () => {
-      const snapshot = (headline: string, contentTicket: number) =>
-        JSON.stringify({
-          templates: { index: { slots: { hero: { headline } }, hiddenSlots: [] } },
-          pages: {},
-          contentTicket,
-        });
-      const shown = async () => {
-        const html = await (await fetch(`${origin}/live`)).text();
-        return /A6B-[A-Z]/.exec(html)?.[0] ?? null;
-      };
 
       // A, then C; B, taken between them, arrives last.
-      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-A", 101))).toEqual({
+      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-A", 101))).toEqual({
         applied: true,
         ticket: 101,
       });
       expect(await shown()).toBe("A6B-A");
-      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-C", 103))).toEqual({
+      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-C", 103))).toEqual({
         applied: true,
         ticket: 103,
       });
       expect(await shown()).toBe("A6B-C");
-      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-B", 102))).toEqual({
+      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-B", 102))).toEqual({
         applied: false,
         reason: "PREVIEW_CONTENT_SUPERSEDED",
         ticket: 103,
@@ -193,7 +203,7 @@ describe.skipIf(!available)(
           platformHostEnv: {},
           framework: "astro",
           astroThemes: true,
-          previewContent: JSON.parse(snapshot(headline, contentTicket)),
+          previewContent: JSON.parse(await snapshot(headline, contentTicket)),
         });
         expect(started).toMatchObject({ ok: true });
         // Laid out again, it listens on a port of its own.
@@ -205,13 +215,59 @@ describe.skipIf(!available)(
       await expect.poll(shown, { timeout: 10_000 }).toBe("A6B-D");
     });
 
-    it("refuses a snapshot without a ticket", async () => {
+    // docs/astro-theme-plan.md 6.6: one ticket names one content, and only
+    // the dev server a snapshot was written to may confirm it.
+    it("confirms a resend of the same snapshot, and refuses its ticket with other content", async () => {
+      // D (104) is what the preview holds after the test above.
+      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-D", 104))).toEqual({
+        applied: true,
+        ticket: 104,
+      });
+      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-E", 104))).toEqual({
+        applied: false,
+        reason: "PREVIEW_CONTENT_TICKET_CONFLICT",
+        ticket: 104,
+      });
+      expect(await shown()).toBe("A6B-D");
+    });
+
+    it("is confirmed only by the dev server it was written to", async () => {
+      const contentFile = path.join(
+        server.workspaceRootFor(PREVIEW_ID),
+        ".morph-preview-content.json",
+      );
+      // F (105) as another server wrote it: the Worker now reads a file that
+      // names that server. A resend of F is the same write, and its report
+      // is about another server, so it confirms nothing.
+      const f = await snapshot("A6B-F", 105);
+      await fs.writeFile(
+        contentFile,
+        JSON.stringify({ ...JSON.parse(f), previewInstance: "an-earlier-server" }),
+      );
+      await expect.poll(shown, { timeout: 10_000 }).toBe("A6B-F");
+      expect(
+        await server.writeContent(PREVIEW_ID, f, { confirmTimeoutMs: 3_000 }),
+      ).toMatchObject({ applied: false, reason: "PREVIEW_CONTENT_NOT_CONFIRMED" });
+      // Written by this server's transport, stamped with this server: G is
+      // confirmed.
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-G", 106)),
+      ).toEqual({ applied: true, ticket: 106 });
+      expect(await shown()).toBe("A6B-G");
+    });
+
+    it("refuses a snapshot without a ticket, or whose hash is not its content's", async () => {
       await expect(
         server.writeContent(
           PREVIEW_ID,
           JSON.stringify({ templates: {}, pages: {} }),
         ),
       ).rejects.toThrow(/^PREVIEW_CONTENT_INVALID: /);
+      const forged = JSON.parse(await snapshot("A6B-H", 107));
+      forged.templates.index.slots.hero.headline = "A6B-I";
+      await expect(
+        server.writeContent(PREVIEW_ID, JSON.stringify(forged)),
+      ).rejects.toThrow(/^PREVIEW_CONTENT_INVALID: .*hash/);
     });
   },
 );

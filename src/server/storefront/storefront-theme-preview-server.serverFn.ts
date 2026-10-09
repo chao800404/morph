@@ -26,7 +26,12 @@ import {
   previewProxyEnv,
   previewSandboxBinding,
 } from "@/lib/storefront/service/preview-sandbox-binding";
-import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
+import {
+  createThemePreviewContentSnapshot,
+  previewContentDigest,
+  type ThemePreviewContentSnapshot,
+} from "@/lib/storefront/compiler/theme-preview-content";
+import { readConsistentPreviewContent } from "@/lib/storefront/service/preview-content-read";
 import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
@@ -120,13 +125,13 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     if (contentTicket === null) {
       return fail("Storefront theme not found", { error: "NOT_FOUND" });
     }
-    const editorContext = await storefrontThemeDal.findEditorContext(
+    const read = await readPreviewContent({
       storefrontId,
       themeId,
-    );
-    if (!editorContext) {
-      return fail("Storefront theme not found", { error: "NOT_FOUND" });
-    }
+      contentTicket,
+    });
+    if (!read.ok) return read.failure;
+    const { editorContext, previewContent } = read;
     // The files together with the generation they are: the preview refuses
     // a start read before a save it has already laid out, which only works
     // if the generation named here is the one these files were read at.
@@ -134,18 +139,13 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       ReturnType<typeof themeSourceStore.getWorkspaceSnapshot>
     >;
     let sourceGeneration: number;
-    let pages: Awaited<ReturnType<typeof storefrontPageDal.listDraftDocuments>>;
     try {
-      const [snapshot, draftPages] = await Promise.all([
-        readAtSourceGeneration(
-          () => themeSourceStore.getSourceGeneration(storefrontId, themeId),
-          () => themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
-        ),
-        storefrontPageDal.listDraftDocuments(storefrontId),
-      ]);
+      const snapshot = await readAtSourceGeneration(
+        () => themeSourceStore.getSourceGeneration(storefrontId, themeId),
+        () => themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
+      );
       entries = snapshot.value;
       sourceGeneration = snapshot.generation;
-      pages = draftPages;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith("SOURCE_GENERATION_UNSTABLE")) {
@@ -171,18 +171,6 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
         error: "THEME_ENTRY_MISSING",
       });
     }
-
-    // Library media is readable only with a session the preview page lacks,
-    // so the snapshot carries signed addresses for it instead.
-    const previewContent = {
-      ...(await withSignedPreviewMedia(
-        await createThemePreviewContentSnapshot({
-          templates: editorContext.templates,
-          pages,
-        }),
-      )),
-      contentTicket,
-    };
 
     const server = selection.server;
     const started = await server.start({
@@ -262,6 +250,75 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
   });
 
 /**
+ * The draft content snapshot a start or a content sync writes, built under
+ * `contentTicket` from one consistent read of the drafts
+ * (`readConsistentPreviewContent`), and bound to it: the snapshot carries
+ * the ticket, the hash of its content and the draft versions it was read
+ * at (docs/astro-theme-plan.md 6.6).
+ */
+async function readPreviewContent(input: {
+  storefrontId: string;
+  themeId: string;
+  contentTicket: number;
+}): Promise<
+  | Readonly<{
+      ok: true;
+      editorContext: NonNullable<
+        Awaited<ReturnType<typeof storefrontThemeDal.findEditorContext>>
+      >;
+      previewContent: ThemePreviewContentSnapshot;
+    }>
+  | Readonly<{ ok: false; failure: ReturnType<typeof fail> }>
+> {
+  const { storefrontId, themeId } = input;
+  const read = await readConsistentPreviewContent({
+    readVersions: () =>
+      storefrontPreviewContentTicketDal.readDraftVersions({
+        storefrontId,
+        themeId,
+      }),
+    readContent: () =>
+      Promise.all([
+        storefrontThemeDal.findEditorContext(storefrontId, themeId),
+        storefrontPageDal.listDraftDocuments(storefrontId),
+      ]),
+  });
+  if (!read.ok) {
+    return {
+      ok: false,
+      failure: fail("The drafts are being saved; try the preview again.", {
+        error: read.error,
+      }),
+    };
+  }
+  const [editorContext, pages] = read.content;
+  if (!editorContext) {
+    return {
+      ok: false,
+      failure: fail("Storefront theme not found", { error: "NOT_FOUND" }),
+    };
+  }
+  // Library media is readable only with a session the preview page lacks,
+  // so the snapshot carries signed addresses for it instead.
+  const content = await withSignedPreviewMedia(
+    await createThemePreviewContentSnapshot({
+      templates: editorContext.templates,
+      pages,
+    }),
+  );
+  return {
+    ok: true,
+    editorContext,
+    previewContent: {
+      ...content,
+      contentTicket: input.contentTicket,
+      contentHash: await previewContentDigest(JSON.stringify(content)),
+      contentVersions: read.versions,
+    },
+  };
+}
+
+/**
  * The next content ticket for a preview of a theme this storefront has, or
  * null when it has no such theme. Take it before reading the drafts a
  * snapshot is built from (storefront.schema.ts,
@@ -328,22 +385,13 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
     if (contentTicket === null) {
       return fail("Storefront theme not found", { error: "NOT_FOUND" });
     }
-    const [editorContext, pages] = await Promise.all([
-      storefrontThemeDal.findEditorContext(storefrontId, themeId),
-      storefrontPageDal.listDraftDocuments(storefrontId),
-    ]);
-    if (!editorContext) {
-      return fail("Storefront theme not found", { error: "NOT_FOUND" });
-    }
-    const content = {
-      ...(await withSignedPreviewMedia(
-        await createThemePreviewContentSnapshot({
-          templates: editorContext.templates,
-          pages,
-        }),
-      )),
+    const read = await readPreviewContent({
+      storefrontId,
+      themeId,
       contentTicket,
-    };
+    });
+    if (!read.ok) return read.failure;
+    const content = read.previewContent;
 
     let written: Awaited<ReturnType<NonNullable<typeof selection.writeContent>>>;
     try {

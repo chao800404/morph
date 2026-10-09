@@ -53,7 +53,37 @@ export type ThemePreviewContentSnapshot = Readonly<{
    * snapshot from before tickets.
    */
   contentTicket?: number;
+  /**
+   * SHA-256 of the content itself (`previewContentBody`), bound to the
+   * ticket: one ticket names exactly one content, and a preview refuses the
+   * same ticket with any other (docs/astro-theme-plan.md 6.6).
+   */
+  contentHash?: string;
+  /** The draft versions the content was read at, one consistent read. */
+  contentVersions?: string;
+  /**
+   * Which dev server this file was written for: a nonce the transport
+   * stamps when a server starts and on every content write. The preview's
+   * Worker names it beside the ticket, from the same read, so a content
+   * sync is confirmed only for the server it was written to, never by a
+   * report about another (docs/astro-theme-plan.md 6.6).
+   */
+  previewInstance?: string;
 }>;
+
+/** A snapshot's fields that describe it rather than being content. */
+const PREVIEW_CONTENT_META_KEYS = [
+  "contentTicket",
+  "contentHash",
+  "contentVersions",
+  "previewInstance",
+] as const;
+
+/** The snapshot text stamped with the dev server it is written for. */
+export function withPreviewInstance(text: string, instance: string): string {
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  return JSON.stringify({ ...parsed, previewInstance: instance });
+}
 
 /** The ticket a written snapshot carries; 0 for none, or one unreadable. */
 export function previewContentTicket(text: string | null): number {
@@ -70,21 +100,48 @@ export function previewContentTicket(text: string | null): number {
 }
 
 /**
- * The snapshot as workspace content: the same text without its ticket. The
- * ticket orders writes; two snapshots that differ only in it describe the
- * same workspace (`themeWorkspaceFingerprint`).
+ * The snapshot as content alone: the same text without its ticket, hash and
+ * versions. Those order and identify writes; two snapshots that differ only
+ * in them describe the same workspace (`themeWorkspaceFingerprint`), and
+ * this is what the hash is taken over.
  */
 export function previewContentWithoutTicket(text: string): string {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
-    if (parsed && typeof parsed === "object" && "contentTicket" in parsed) {
-      const { contentTicket: _ticket, ...content } = parsed;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      PREVIEW_CONTENT_META_KEYS.some((key) => key in parsed)
+    ) {
+      const content = { ...parsed };
+      for (const key of PREVIEW_CONTENT_META_KEYS) delete content[key];
       return JSON.stringify(content);
     }
   } catch {
     // Not a snapshot this can read: counted as it is.
   }
   return text;
+}
+
+/** The content hash a written snapshot carries, or null for none. */
+export function previewContentHash(text: string | null): string | null {
+  if (text === null) return null;
+  try {
+    const hash = (JSON.parse(text) as { contentHash?: unknown })?.contentHash;
+    return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SHA-256 of a snapshot's content (`previewContentWithoutTicket`), in hex.
+ * Web Crypto, so Core in its Worker and the sidecar in Node take it alike.
+ */
+export async function previewContentDigest(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(previewContentWithoutTicket(text));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 const ROUTE_TEMPLATE_TYPES = [
