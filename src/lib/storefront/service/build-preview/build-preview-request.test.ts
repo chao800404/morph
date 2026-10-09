@@ -4,6 +4,8 @@ import { fixtureBuild } from "./build-preview-artifact.fixture";
 import { hashBuildPreviewToken } from "./build-preview-capability";
 import {
   BUILD_PREVIEW_STARTING_RETRY_SECONDS,
+  BUILD_PREVIEW_START_ATTEMPT_PARAM,
+  BUILD_PREVIEW_START_MAX_ATTEMPTS,
   handleBuildPreviewRequest,
   type BuildPreviewRequestDeps,
 } from "./build-preview-request";
@@ -163,6 +165,20 @@ describe("a request on a Build Preview host", () => {
     expect(server.start).not.toHaveBeenCalled();
   });
 
+  it("forwards a page load's address untouched and answers it directly", async () => {
+    const { deps, server } = setup();
+    const response = await handleBuildPreviewRequest(
+      request("/products?q=a+b&x=%2F&x=2", {
+        headers: { "sec-fetch-dest": "iframe" },
+      }),
+      deps,
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("from-instance");
+    const forwarded = vi.mocked(server.fetch).mock.calls[0]?.[1];
+    expect(forwarded?.url).toBe(`https://${HOST}/products?q=a+b&x=%2F&x=2`);
+  });
+
   it("starts the instance from the verified artifact when there is none", async () => {
     let running = false;
     const { deps, server } = setup({
@@ -241,7 +257,9 @@ describe("a request on a Build Preview host", () => {
     it("gives the frame a page that loads the address again, not an error it stays on", async () => {
       const { deps, server } = unavailable();
       const response = await handleBuildPreviewRequest(
-        request("/", { headers: { "sec-fetch-dest": "iframe" } }),
+        request("/products?q=a%20b", {
+          headers: { "sec-fetch-dest": "iframe" },
+        }),
         deps,
       );
       expect(response?.status).toBe(503);
@@ -255,10 +273,82 @@ describe("a request on a Build Preview host", () => {
       );
       const html = await response?.text();
       expect(html).toContain(
-        `<meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}">`,
+        `<meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}; url=/products?q=a%20b&amp;${BUILD_PREVIEW_START_ATTEMPT_PARAM}=2">`,
       );
       expect(html).not.toContain("<script");
       expect(server.start).not.toHaveBeenCalled();
+    });
+
+    it("counts each reload on the address it reloads", async () => {
+      const { deps } = unavailable();
+      const response = await handleBuildPreviewRequest(
+        request(`/?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=3`, {
+          headers: { "sec-fetch-dest": "iframe" },
+        }),
+        deps,
+      );
+      expect(await response?.text()).toContain(
+        `url=/?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=4">`,
+      );
+    });
+
+    it("stops reloading at the bound and names the failure by its code", async () => {
+      const { deps, server } = unavailable();
+      const response = await handleBuildPreviewRequest(
+        request(
+          `/products?q=1&${BUILD_PREVIEW_START_ATTEMPT_PARAM}=${BUILD_PREVIEW_START_MAX_ATTEMPTS}`,
+          { headers: { "sec-fetch-dest": "iframe" } },
+        ),
+        deps,
+      );
+      expect(server.fetch).toHaveBeenCalled();
+      expect(response?.status).toBe(503);
+      expect(response?.headers.get("retry-after")).toBeNull();
+      expect(response?.headers.get("content-security-policy")).toBe(
+        "default-src 'none'",
+      );
+      const html = await response!.text();
+      expect(html).not.toContain("http-equiv");
+      expect(html).not.toContain("<script");
+      expect(html).toContain("BUILD_PREVIEW_CONTAINER_UNAVAILABLE");
+      // Only the code: nothing of the platform's own message.
+      expect(html).not.toContain("Container failed to start");
+      expect(html).toContain('<a href="/products?q=1">Try again</a>');
+    });
+
+    it("never forwards the counter, and leaves the address once started", async () => {
+      const forwarded: Request[] = [];
+      const { deps } = setup({
+        server: {
+          fetch: vi.fn(async (_id: string, sent: Request) => {
+            forwarded.push(sent);
+            return new Response("theme page");
+          }),
+        },
+      });
+      const response = await handleBuildPreviewRequest(
+        request(`/products?q=1&${BUILD_PREVIEW_START_ATTEMPT_PARAM}=2&b=2`, {
+          headers: { "sec-fetch-dest": "iframe" },
+        }),
+        deps,
+      );
+      expect(forwarded.at(-1)?.url).toBe(`https://${HOST}/products?q=1&b=2`);
+      expect(response?.status).toBe(302);
+      expect(response?.headers.get("location")).toBe("/products?q=1&b=2");
+    });
+
+    it("still verifies the capability first for a counted reload", async () => {
+      const { deps, server } = setup({
+        record: record({ revokedAt: "2026-10-06T00:00:00.000Z" }),
+      });
+      const response = await handleBuildPreviewRequest(
+        request(`/?${BUILD_PREVIEW_START_ATTEMPT_PARAM}=2`, {
+          headers: { "sec-fetch-dest": "iframe" },
+        }),
+        deps,
+      );
+      expect(response?.status).toBe(410);
+      expect(server.fetch).not.toHaveBeenCalled();
     });
 
     it("tells a sub-resource to retry, in plain text", async () => {

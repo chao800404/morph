@@ -74,46 +74,121 @@ function plain(status: number, message: string): Response {
 
 /** Seconds before the browser asks again for an instance that is starting. */
 export const BUILD_PREVIEW_STARTING_RETRY_SECONDS = 3;
+/**
+ * How many page loads in a row may find the container unavailable before
+ * the page stops reloading and says so. Each load already asks the
+ * container twice, so five loads span roughly 20 seconds — the failure seen
+ * was over by the next request, and a container that is still not starting
+ * after that is not going to by itself (a broken image looks exactly like a
+ * transient failure from here).
+ */
+export const BUILD_PREVIEW_START_MAX_ATTEMPTS = 5;
+/**
+ * The reload's attempt counter, on the address the starting page reloads.
+ * Core's own: removed before the request reaches the instance, and a page
+ * load carrying it is redirected to the address without it once the instance
+ * answers, so the Theme never sees it — not in the request, not in
+ * `location`. A counter on the address rather than a record or a cookie:
+ * it belongs to that one frame's loads and leaves nothing behind.
+ */
+export const BUILD_PREVIEW_START_ATTEMPT_PARAM = "__morph_bp_start";
+
+/** The address without the attempt counter, other parameters byte-for-byte. */
+function withoutAttemptParam(url: URL): {
+  url: URL;
+  attempt: number | null;
+} {
+  if (!url.search) return { url, attempt: null };
+  let attempt: number | null = null;
+  const kept = url.search
+    .slice(1)
+    .split("&")
+    .filter((pair) => {
+      const [key, value = ""] = pair.split("=");
+      if (key !== BUILD_PREVIEW_START_ATTEMPT_PARAM) return true;
+      const parsed = Number.parseInt(value, 10);
+      attempt = Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+      return false;
+    });
+  if (attempt === null) return { url, attempt: null };
+  const clean = new URL(url);
+  clean.search = kept.length ? `?${kept.join("&")}` : "";
+  return { url: clean, attempt };
+}
+
+function isPageLoad(request: Request): boolean {
+  const destination = request.headers.get("sec-fetch-dest");
+  return (
+    request.method === "GET" &&
+    (destination === "document" ||
+      destination === "iframe" ||
+      (!destination &&
+        (request.headers.get("accept") ?? "").includes("text/html")))
+  );
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function pathAndQuery(url: URL): string {
+  return `${url.pathname}${url.search}`;
+}
 
 /**
  * The answer while the instance's container could not be started: 503 with
  * `Retry-After`, and for a page load a document that loads the same address
  * again — the editor's frame is cross-origin and cannot tell an error page
  * from the Theme's, so without this the user stayed on the error until they
- * reloaded by hand. The document is Core's own: no script, nothing loaded
- * from anywhere (`default-src 'none'`), and only this address to go back to.
+ * reloaded by hand. Up to `BUILD_PREVIEW_START_MAX_ATTEMPTS` loads; then the
+ * page stops and names the failure by its code, with a link to try again.
+ * The document is Core's own: no script, nothing loaded from anywhere
+ * (`default-src 'none'`), and only this address to go to.
  */
-function starting(request: Request): Response {
+function starting(request: Request, url: URL, attempt: number): Response {
   const headers = {
     "cache-control": "no-store",
-    "retry-after": String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
     "x-content-type-options": "nosniff",
     "x-robots-tag": "noindex",
   };
-  const destination = request.headers.get("sec-fetch-dest");
-  const isPage =
-    request.method === "GET" &&
-    (destination === "document" ||
-      destination === "iframe" ||
-      (!destination &&
-        (request.headers.get("accept") ?? "").includes("text/html")));
-  if (!isPage) {
+  if (!isPageLoad(request)) {
     return new Response(
       "BUILD_PREVIEW_STARTING: the preview is starting; retry shortly.",
       {
         status: 503,
-        headers: { ...headers, "content-type": "text/plain; charset=utf-8" },
+        headers: {
+          ...headers,
+          "retry-after": String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
+          "content-type": "text/plain; charset=utf-8",
+        },
       },
     );
   }
+  const htmlHeaders = {
+    ...headers,
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy": "default-src 'none'",
+  };
+  if (attempt >= BUILD_PREVIEW_START_MAX_ATTEMPTS) {
+    return new Response(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Preview unavailable</title></head><body><p>BUILD_PREVIEW_CONTAINER_UNAVAILABLE: the preview could not be started.</p><p><a href="${escapeHtml(pathAndQuery(url))}">Try again</a></p></body></html>`,
+      { status: 503, headers: htmlHeaders },
+    );
+  }
+  const next = new URL(url);
+  next.search = `${url.search ? `${url.search}&` : "?"}${BUILD_PREVIEW_START_ATTEMPT_PARAM}=${attempt + 1}`;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}"><title>Starting preview</title></head><body><p>The preview is starting. This page reloads by itself.</p></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}; url=${escapeHtml(pathAndQuery(next))}"><title>Starting preview</title></head><body><p>The preview is starting. This page reloads by itself.</p></body></html>`,
     {
       status: 503,
       headers: {
-        ...headers,
-        "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "default-src 'none'",
+        ...htmlHeaders,
+        "retry-after": String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
       },
     },
   );
@@ -213,14 +288,31 @@ export async function handleBuildPreviewRequest(
   if (!selection.enabled) {
     return plain(503, `${selection.reason}: ${selection.message}`);
   }
+  // The starting page's attempt counter never reaches the instance.
+  const { url: forwardUrl, attempt } = withoutAttemptParam(url);
   try {
-    return await answerFromInstance(
+    const response = await answerFromInstance(
       request,
-      url,
+      forwardUrl,
       capability,
       selection.server,
       deps,
     );
+    if (attempt !== null && isPageLoad(request)) {
+      // Started: load the address without the counter, so the Theme's page
+      // does not find it in `location` either. The instance is running now;
+      // the next load is answered by it.
+      await response.body?.cancel();
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: pathAndQuery(forwardUrl),
+          "cache-control": "no-store",
+          "x-robots-tag": "noindex",
+        },
+      });
+    }
+    return response;
   } catch (error) {
     if (!(error instanceof BuildPreviewInstanceUnavailableError)) throw error;
     console.warn(
@@ -228,10 +320,11 @@ export async function handleBuildPreviewRequest(
         scope: "storefront.build-preview.instance-unavailable",
         capabilityId: capability.id,
         buildId: capability.buildId,
+        attempt: attempt ?? 1,
         message: error.message,
       }),
     );
-    return starting(request);
+    return starting(request, forwardUrl, attempt ?? 1);
   }
 }
 
