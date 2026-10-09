@@ -182,6 +182,11 @@ export function massDeletionWarning(input: {
   localCount: number;
   remoteTextCount: number;
   recent?: RecentDeletions;
+  /**
+   * How many files there were when the window opened. The share is taken of
+   * this, so files added since cannot dilute it below the threshold.
+   */
+  windowBase?: number;
   threshold?: { count: number; share: number; minimum: number };
 }): string | null {
   if (input.baseCount === 0) return null;
@@ -198,8 +203,9 @@ export function massDeletionWarning(input: {
     if (planned === 0) continue;
     const earlier = kind === "delete-remote" ? recent.toWorkspace : recent.toLocal;
     const deletions = planned + earlier;
-    // Out of the files there were before the earlier deletions.
-    const before = input.baseCount + earlier;
+    // Out of the files there were when the window opened; without a window,
+    // out of the files there were before these deletions.
+    const before = input.windowBase ?? input.baseCount + earlier;
     if (
       deletions >= count ||
       (deletions >= minimum && deletions / before >= share)

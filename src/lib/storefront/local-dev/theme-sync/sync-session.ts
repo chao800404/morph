@@ -38,7 +38,21 @@ export type SyncState = {
    * mass-deletion check counts them against the next plan. Persisted: a
    * restart in the middle of a slow deletion must not start the count over.
    */
-  deletionLog?: Array<{ at: string; toWorkspace: number; toLocal: number }>;
+  deletionLog?: Array<{
+    at: string;
+    toWorkspace: number;
+    toLocal: number;
+    /** Files in the base before this entry's deletions. */
+    baseBefore?: number;
+  }>;
+  /**
+   * Set when a mass deletion was refused. While it is set, no plan that
+   * deletes anything is applied without an explicit yes — not after waiting,
+   * not after a restart, not once the log above has expired. It clears on an
+   * explicit yes, or when a plan no longer deletes anything (the files came
+   * back), since then there is nothing left that it holds back.
+   */
+  deletionHold?: { since: string; reason: string };
 };
 
 export type LocalScanEntry = Readonly<{ text: string; hash: string }>;
@@ -145,20 +159,23 @@ export function createSyncSession(options: SyncSessionOptions) {
     state.deletionLog = (state.deletionLog ?? []).filter(
       (entry) => Date.parse(entry.at) > since,
     );
-    return state.deletionLog.reduce(
+    const recent = state.deletionLog.reduce(
       (sum, entry) => ({
         toWorkspace: sum.toWorkspace + entry.toWorkspace,
         toLocal: sum.toLocal + entry.toLocal,
       }),
       { toWorkspace: 0, toLocal: 0 },
     );
+    // The window opened at its oldest entry; the share is of what was there.
+    const windowBase = state.deletionLog[0]?.baseBefore;
+    return { recent, windowBase };
   }
 
-  function logDeletions(toWorkspace: number, toLocal: number) {
+  function logDeletions(toWorkspace: number, toLocal: number, baseBefore: number) {
     if (toWorkspace + toLocal === 0) return;
     state.deletionLog = [
       ...(state.deletionLog ?? []),
-      { at: now().toISOString(), toWorkspace, toLocal },
+      { at: now().toISOString(), toWorkspace, toLocal, baseBefore },
     ];
   }
 
@@ -227,25 +244,42 @@ export function createSyncSession(options: SyncSessionOptions) {
     }
 
     const actions = planSync({ base, local, remote, remoteHashes });
-    const massDeletion = massDeletionWarning({
-      actions,
-      baseCount: base.size,
-      localCount: local.size,
-      remoteTextCount: [...remote.values()].filter((file) => file.kind === "text").length,
-      recent: recentDeletions(),
-    });
+    const window = recentDeletions();
+    const plannedDeletions = actions.filter(
+      (action) => action.kind === "delete-remote" || action.kind === "delete-local",
+    ).length;
+    // Nothing left to delete: a refused deletion is no longer pending.
+    if (state.deletionHold && plannedDeletions === 0) {
+      state.deletionHold = undefined;
+      await persist();
+    }
+    const massDeletion =
+      massDeletionWarning({
+        actions,
+        baseCount: base.size,
+        localCount: local.size,
+        remoteTextCount: [...remote.values()].filter((file) => file.kind === "text").length,
+        recent: window.recent,
+        windowBase: window.windowBase,
+      }) ??
+      (state.deletionHold
+        ? `Deletions were stopped at ${state.deletionHold.since} (${state.deletionHold.reason}) and still need a yes: this would delete ${plannedDeletions} files.`
+        : null);
     const summary = summarize(actions, skipped, massDeletion);
 
     // Approved deletions are the developer's own; the count starts over.
     let deletionsApproved = false;
     if (massDeletion) {
       if (!(await options.confirm(summary, "mass-deletion"))) {
+        state.deletionHold ??= { since: now().toISOString(), reason: massDeletion };
         await persist();
         return { status: "declined", summary };
       }
       deletionsApproved = true;
       state.deletionLog = [];
+      state.deletionHold = undefined;
     }
+    const baseBefore = window.windowBase ?? base.size;
     const startup = firstCycle;
     firstCycle = false;
     if (startup && hasWork(summary) && !massDeletion) {
@@ -279,7 +313,7 @@ export function createSyncSession(options: SyncSessionOptions) {
           if (!(await unchangedSinceScan())) break;
           await folder.remove(action.path);
           delete state.files[action.path];
-          if (!deletionsApproved) logDeletions(0, 1);
+          if (!deletionsApproved) logDeletions(0, 1, baseBefore);
           break;
         case "adopt":
           state.files[action.path] = action.entry;
@@ -347,7 +381,7 @@ export function createSyncSession(options: SyncSessionOptions) {
             delete state.files[action.path];
           }
         }
-        if (!deletionsApproved) logDeletions(removals.length, 0);
+        if (!deletionsApproved) logDeletions(removals.length, 0, baseBefore);
         await persist();
       }
     } catch (error) {

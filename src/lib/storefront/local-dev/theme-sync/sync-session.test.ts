@@ -223,13 +223,71 @@ describe("a local folder linked to a Theme", () => {
 
     function clocked(confirmMass = false) {
       let clock = new Date("2026-10-09T10:00:00.000Z").getTime();
+      const yes = { mass: confirmMass };
       const harness = setup({
         morph,
-        confirm: (_summary, why) => why === "startup" || confirmMass,
+        confirm: (_summary, why) => why === "startup" || yes.mass,
         now: () => new Date(clock),
       });
-      return { ...harness, advance: (ms: number) => (clock += ms) };
+      return { ...harness, yes, advance: (ms: number) => (clock += ms) };
     }
+
+    const restoreLocally = (local: ReturnType<typeof createMemoryFolder>, from: number, count: number) => {
+      for (let index = from; index < from + count; index += 1) {
+        const path = `src/f${String(index).padStart(2, "0")}.ts`;
+        local.files.set(path, morph[path]!);
+      }
+    };
+
+    it("holds a refused deletion until an explicit yes, past the window and a restart", async () => {
+      const { workspace, local, session, restart, advance, yes, confirm } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 12);
+      await session.runCycle();
+      deleteLocally(local, 12, 4);
+      expect((await session.runCycle()).status).toBe("declined");
+
+      // Twenty minutes later the log has expired, and sync was restarted:
+      // 4 deletions alone would pass, but they are the ones that were stopped.
+      advance(20 * 60_000);
+      const later = restart();
+      expect((await later.runCycle()).status).toBe("declined");
+      expect(confirm).toHaveBeenLastCalledWith(
+        expect.objectContaining({ massDeletion: expect.stringMatching(/still need a yes: this would delete 4 files/) }),
+        "mass-deletion",
+      );
+      expect(workspace.files.size).toBe(48);
+
+      yes.mass = true;
+      expect((await later.runCycle()).status).toBe("applied");
+      expect(workspace.files.size).toBe(44);
+    });
+
+    it("lets the stop go once the stopped files are back, deleting nothing", async () => {
+      const { workspace, local, session, saved } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 12);
+      await session.runCycle();
+      deleteLocally(local, 12, 4);
+      expect((await session.runCycle()).status).toBe("declined");
+      restoreLocally(local, 12, 4);
+      expect((await session.runCycle()).status).toBe("applied");
+      expect(workspace.files.size).toBe(48);
+      expect(saved.at(-1)!.deletionHold).toBeUndefined();
+    });
+
+    it("takes the share of the files there were when the window opened", async () => {
+      const { workspace, local, session } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 12);
+      await session.runCycle();
+      // Forty new files would put 16 deletions under a quarter of 88.
+      for (let index = 0; index < 40; index += 1) local.files.set(`src/new${index}.ts`, `n${index}`);
+      expect((await session.runCycle()).status).toBe("applied");
+      deleteLocally(local, 12, 4);
+      expect((await session.runCycle()).status).toBe("declined");
+      expect(workspace.files.size).toBe(88);
+    });
 
     it("stops once the deletions add up, though each batch was small", async () => {
       const { workspace, local, session, confirm, advance } = clocked();
