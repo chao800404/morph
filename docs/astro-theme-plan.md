@@ -1119,7 +1119,7 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 **從 fixture 得出的缺口**（依影響排序，都還沒有處理）：
 
 1. Morph 要求 Wrangler 設定，但 adapter 14 沒有設定檔也能建置；**已處理（5.2.4）**
-2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；
+2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；**儲存與建置已處理，入口未開（5.2.5）**
 3. Cloudflare 官方範本附的 `public/.assetsignore` 被 `public/` 規則拒絕；
 4. 常見的官方 integration（mdx、sitemap、rss）不在 Astro 工具鏈中；
 5. adapter 預設的 `SESSION`（已知，5.2）。
@@ -1169,6 +1169,64 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
   - 工具狀態不進產物。
 - `native-astro-runner.build.test.ts`：沒有設定的真實建置成功，頁面是封存值，產物沒有 `.wrangler`。
 - `official-astro-import.test.ts`：`adapter-with-react` 的缺口往下移，現在真實建置成功，產物以預設 `SESSION` 拒絕。
+
+### 5.2.5 缺口 2：`src/` 下的二進位檔（2026-10-09，使用者審閱過邊界；三個 PR 中的第一個）
+
+**做法**：延伸既有的二進位檔機制，不另建一套資源系統：R2 不可變 blob、D1 的 `encoding` / `blob_digest`、`saveThemeBinaryFile`、原始碼版本以 digest 參照。
+
+**規則**（`theme-public-files.ts`，與 `public/` 同一份契約）：
+
+- **位置與類型**：只有 `src/` 底下，只收 png、jpg、webp、gif、avif、woff、woff2。這一輪不收 SVG，也不收影音或任意二進位檔。
+- **不收 SVG 的理由**：從 `src/` 匯入的 SVG 可能被內嵌成頁面上的標記，不經過 `public/` SVG 的隔離標頭；SVG 放在 `public/`。
+- **路徑規則**沿用既有的正規化與保留規則：不能有 `..`、`.` 開頭的段落或 `node_modules`，也到不了工具鏈或平台的工作目錄。`.wrangler/`、`.morph/` 本來就不在 `src/` 下，原生建置也另外拒絕它們（5.2.4）。
+- **公開與否**：Morph 不為它們建立任何 CMS 的公開入口，也不檢查路由衝突。但這不代表不公開：頁面用到之後，實際怎麼公開由框架的建置產物決定，可能是雜湊檔名、處理過的版本，或直接內嵌進頁面。所以不能存放秘密資料。
+- **配額與 `public/` 共用**：200 個檔案、50 MB。並行時也成立：寫入要求的 `sourceGeneration` 必須與讀取配額時相同，同一個版本出發的兩個寫入只會成功一個。取代檔案保留逐檔的 `expectedVersion`（OCC）。
+
+**檔案簽章不等於處理安全**：
+
+- 簽章只證明格式。`src/` 的圖片還要看檔頭宣告的尺寸（`theme-image-dimensions.ts`，只讀檔頭，不解碼）：單邊最多 16 383 像素、總共最多 4,000 萬像素，讀不出尺寸就拒絕。
+- 16 383 是實測後定的。用 Astro 的 `imageService: "compile"` 建置時，寬 16 384 的圖片在最大的那個版本無法編碼成 WebP，建置把 PNG 的內容以 `.webp` 檔名輸出；16 383 時每個版本都是真正的 WebP（WebP 格式的單邊上限）。
+- **處理成本**：本機、`compile`、三種寬度各一次，記錄建置程序樹的 RSS 峰值（每 50 ms 取樣）。這是量級，不是穩定性的結論：
+
+  | 圖片 | 建置時間 | RSS 峰值 |
+  | --- | --- | --- |
+  | 64 × 48 | 5.1 秒 | 1103 MiB |
+  | 7680 × 5120（像素上限附近，純色、檔案很小） | 7.4 秒 | 1266 MiB |
+  | 16 383 × 2400 | 7.5 秒 | 1349 MiB |
+
+  都遠低於建置容器的 3 GiB 與建置的逾時；建置的時間與記憶體仍由容器規格和 runner 的 `maxDurationMs` 約束。
+
+**入口仍然關閉**：
+
+- `saveThemeBinaryFile` 只有在呼叫端明確傳入 `allowSourceAssets` 時才接受 `src/`，現在沒有任何使用者入口會傳入。
+- materializer 與發布前檢查已接受 `src/` 的二進位參照。發布時會依當下的規則重新檢查路徑，但不重讀點陣與字型的位元組，與 `public/` 的點陣檔相同。
+- 第一個 PR 合併只代表儲存與建置支援，不代表使用者已能操作。兩種 Live Preview 傳輸（PR 2）與 Code mode（PR 3）完成後才開放入口。
+
+**測試**：
+
+- 契約：
+  - 位置、類型、SVG、路徑規則；
+  - 共用配額；
+  - 各格式的檔頭解析，以及無法判斷時回傳 null。
+- 儲存（真實 SQLite 加 migration）：
+  - 沒有開關時拒絕；
+  - 存入、修訂版本與建置的參照；
+  - SVG、格式、尺寸過大與檔頭無法讀取都拒絕，而且什麼都不寫入；
+  - 共用配額的數量與總量；
+  - 同一個 generation 的兩個寫入只成功一個；
+  - 取代時的 OCC；
+  - 較早的修訂版本讀回原本的 blob，回滾後恢復；
+  - 發布檢查不讀位元組，也會拒絕舊規則存下的 `src/` SVG。
+- 真實建置：
+  - Start 的路由匯入 `src/assets/hero.png`，客戶端輸出中有一個雜湊檔名的 PNG，位元組相同；
+  - Astro 以 `imageService: "compile"` 處理 `src/assets/hero.png`，產出 `/_astro/hero.*.webp`，頁面的 `<img>` 指向它；
+  - 兩者的產物中都沒有原始碼路徑。
+
+**還沒做的**（PR 2、PR 3 以及驗收）：
+
+- 兩種 Live Preview 傳輸；
+- Code mode 的上傳、取代、刪除；
+- 經過預覽、建置、發布、回滾的真實容器端到端驗收。
 
 ### 5.3 Build Preview、發布、回滾
 
