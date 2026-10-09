@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { SOURCE_SAVED_ELSEWHERE } from "@/lib/storefront/editor/source-saved-elsewhere";
+import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { cn } from "@/lib/utils";
 import { AlertTriangle, LoaderCircle } from "lucide-react";
 
@@ -8,8 +8,8 @@ const MAX_LISTED = 3;
 /**
  * Edits this tab could not save because the Theme moved on elsewhere.
  *
- * A save is refused when another tab, another person or local sync saved to
- * the Theme first (`SOURCE_SAVED_ELSEWHERE`). The
+ * A save is refused when something else saved to the Theme first: possibly
+ * another tab, another person or local sync (`POSSIBLE_SAVE_SOURCES`). The
  * refusal said so in a toast that vanished in seconds, with one button
  * labelled "Accept Remote" — which reads as taking their version over yours,
  * while what it did was let your edits be saved on top. The edits were never
@@ -53,10 +53,12 @@ export function EditorSourceConflictNotice({
       <div className="min-w-0 flex-1">
         <p className="font-medium text-foreground">
           Remote source changes detected in this theme
-          <span className="font-normal text-muted-foreground">
-            {" "}
-            — saved from {SOURCE_SAVED_ELSEWHERE}
-          </span>
+        </p>
+        {/* Its own line, and allowed to wrap: never cut, never in the way of
+            the button. The source cannot be told, so it is offered as a
+            possibility. */}
+        <p className="text-muted-foreground">
+          The source may be {POSSIBLE_SAVE_SOURCES}.
         </p>
         <p className="truncate text-muted-foreground" title={paths.join(", ")}>
           Your changes to {listed.join(", ")}
@@ -68,6 +70,7 @@ export function EditorSourceConflictNotice({
         type="button"
         size="xs"
         variant="form"
+        className="shrink-0"
         disabled={saving}
         onClick={onSave}
       >
