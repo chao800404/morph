@@ -1118,11 +1118,57 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 
 **從 fixture 得出的缺口**（依影響排序，都還沒有處理）：
 
-1. Morph 要求 Wrangler 設定，但 adapter 14 沒有設定檔也能建置；
+1. Morph 要求 Wrangler 設定，但 adapter 14 沒有設定檔也能建置；**已處理（5.2.4）**
 2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；
 3. Cloudflare 官方範本附的 `public/.assetsignore` 被 `public/` 規則拒絕；
 4. 常見的官方 integration（mdx、sitemap、rss）不在 Astro 工具鏈中；
 5. adapter 預設的 `SESSION`（已知，5.2）。
+
+### 5.2.4 缺口 1：Wrangler 設定可省略（2026-10-09，使用者審閱過邊界）
+
+**實驗**：
+
+- adapter 14 在沒有 Wrangler 設定時照常建置，自己寫出 Worker 設定：
+  - 名稱取自 `package.json`；
+  - `compatibility_date` 是工具鏈 workerd 的日期；
+  - `compatibility_flags` 為空；
+  - `assets` 帶 `ASSETS` 綁定。
+- 正規化後的設定裡，每一種綁定欄位都會出現，但都是空的（`durable_objects: { bindings: [] }`、`queues: { producers: [], consumers: [] }`）。
+- 不論有沒有設定，預先渲染時 Miniflare 都在工作區寫 `.wrangler/state`。
+
+**決定**：
+
+- **沒有設定時，交給 adapter 的預設值**。Morph 不另外產生一份，也不設定 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`，結果與作者在 Morph 之外執行 `astro build` 相同。
+- **沒有設定檔不代表沒有檢查。** 建置寫出的 Worker 設定一律經過產物規則：
+  - 5.2 的 `SESSION`、`IMAGES`、`cache`；
+  - 共用的綁定清單：`unmappedBindings`，頂層與 `previews` 都讀，以 `NATIVE_BINDINGS_UNMAPPED` 拒絕。
+  
+  這一步放在建置產物上，因為 adapter 可能加入專案沒寫的綁定。
+- **「有宣告」的判斷**：陣列有元素，或物件中有任何實際的值，才算有宣告，所以 Wrangler 寫出的空結構不算。這條規則同時用在專案自己的設定上，該拒絕的實際宣告不受影響。
+- `compatibility_flags` 目前沒有任何既有規則，也沒有新增。
+- **`wrangler.toml` 在建置前拒絕**，不論是否另有 `.jsonc`。adapter 會讀它，Morph 不讀 TOML，它的綁定會在沒有檢查的情況下進入建置。
+- **`.wrangler/` 與 `.morph/` 不能來自 Theme 的原始碼**（`NATIVE_RESERVED_PATH`，Start 與 Astro 都適用）：
+  - `.wrangler/` 有產物整理所讀的 `deploy/config.json`，以及預先渲染會當作 KV、D1、R2 讀取的 Miniflare 狀態；
+  - `.morph/` 是 Morph 的包裝與建置紀錄。
+  
+  以前 Start 只取代 Morph 自己會寫的那幾個檔，其他檔案會留在工作區；現在整個目錄拒絕。
+- **工具狀態不進產物，也不進下一次建置**：
+  - 產物整理只收 Worker 目錄與 assets 目錄，又加一條 `.wrangler/` 路徑在產物中就以 `NATIVE_ARTIFACT_TOOL_STATE` 拒絕；
+  - 每次建置從原始碼版本寫出新的工作區，兩階段建置之間會清空工作區（只留工具鏈連結）；
+  - 原始碼本身也不能帶 `.wrangler/`。
+
+**測試**：
+
+- `astro-native-build.test.ts`：
+  - 有、沒有設定時的 plan；
+  - `wrangler.toml`；
+  - 專案設定宣告綁定，包括 `previews`；
+  - 兩種框架的保留路徑；
+  - 建置寫出的設定宣告綁定就拒絕；
+  - adapter 的空結構可以通過；
+  - 工具狀態不進產物。
+- `native-astro-runner.build.test.ts`：沒有設定的真實建置成功，頁面是封存值，產物沒有 `.wrangler`。
+- `official-astro-import.test.ts`：`adapter-with-react` 的缺口往下移，現在真實建置成功，產物以預設 `SESSION` 拒絕。
 
 ### 5.3 Build Preview、發布、回滾
 

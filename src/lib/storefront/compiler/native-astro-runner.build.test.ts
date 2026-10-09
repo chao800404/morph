@@ -295,6 +295,33 @@ export const prerender = true;
   );
 
   it(
+    "builds a project with no Wrangler config, on the adapter's defaults",
+    BUILD,
+    async () => {
+      const files = astroThemeFiles().filter(
+        (entry) => entry.path !== "wrangler.jsonc",
+      );
+      const result = await run(
+        astroInput("astro-runner-no-wrangler", files, ["/about"]),
+      );
+      if (!result.success) throw new Error(result.errorMessage);
+      expect(file(result, "runtime/client/about/index.html")).toContain(
+        VALUE_SEALED,
+      );
+      const worker = JSON.parse(file(result, "runtime/server/wrangler.json")!) as {
+        main?: string;
+        compatibility_date?: string;
+      };
+      expect(worker.main).toBe("entry.mjs");
+      expect(worker.compatibility_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Miniflare's state from the prerender stays in the workspace.
+      expect(
+        result.artifacts.some((artifact) => artifact.path.includes(".wrangler")),
+      ).toBe(false);
+    },
+  );
+
+  it(
     "is refused for a file outside the workspace",
     BUILD,
     async () => {
