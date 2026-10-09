@@ -359,9 +359,12 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
   - Live Preview 只透過資料接口提供草稿內容；寫死 origin 或改用其他 endpoint 的模組，在預覽中會被
     對外連線規則拒絕或得到 404。
   - 編輯器的靜態模型（`deriveThemeRouteSections`、`inject-preview-bindings`、Inspector）假設
-    `content("x")` 就是 Document 中 slot `x` 的值。作者改寫 slot 名稱或轉換值時，畫布顯示轉換後的
-    結果，Inspector 顯示儲存值。`confirmThemeContentModuleFunctionExport` 只確認語法上是函式，不擋
-    這類語意改變。
+    `content("x")` 就是 Document 中 slot `x` 的值。Inspector 對選取中的文字欄位，顯示的是畫布上渲染
+    後的文字（從預覽 DOM 讀出），不是 Document 的儲存值；作者讓 `content()` 轉換值時，從 Inspector
+    編輯會把轉換後的文字寫回 Document（已在瀏覽器重現，屬資料完整性問題，另案修正）。
+    `confirmThemeContentModuleFunctionExport` 只確認語法上是函式，不擋這類語意改變。
+  - 即時編輯時，預覽 bridge 直接把輸入值寫進 DOM，繞過作者的 `content()`；要重新載入才看得到作者
+    轉換後的結果（已在瀏覽器重現）。
   - 作者在模組層自行快取時，預覽中的即時編輯可能要重新載入才看得到；正式網站是否顯示過期內容、是否
     跨請求或跨內容發布保留，取決於作者的快取方式。
 
