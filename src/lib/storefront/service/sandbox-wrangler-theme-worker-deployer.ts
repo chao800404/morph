@@ -99,7 +99,10 @@ export function wranglerDeployConfig(
     main: plan.mainModule,
     compatibility_date: plan.compatibilityDate,
     compatibility_flags: [...plan.compatibilityFlags],
-    assets: { directory: "../client" },
+    assets: {
+      directory: "../client",
+      ...(plan.assetsBinding ? { binding: plan.assetsBinding } : {}),
+    },
     no_bundle: true,
     rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }],
     // No public address of its own. Morph Core reaches the Theme Worker

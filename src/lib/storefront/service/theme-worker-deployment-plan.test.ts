@@ -174,6 +174,40 @@ describe("planThemeWorkerDeployment", () => {
     }
   });
 
+  it("carries the assets binding the Worker reads its own assets through, and no other", () => {
+    // Astro's entry falls back to env.ASSETS for every path it does not
+    // route; the adapter's Worker config names it.
+    const astro = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: manifest(),
+      workerConfig: {
+        ...REAL_WORKER_CONFIG,
+        assets: { directory: "../client", binding: "ASSETS" },
+      },
+    });
+    expect(astro.success && astro.plan.assetsBinding).toBe("ASSETS");
+
+    const start = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: manifest(),
+      workerConfig: REAL_WORKER_CONFIG,
+    });
+    expect(start.success && "assetsBinding" in start.plan).toBe(false);
+
+    for (const binding of ["", "ASSETS; rm", 42]) {
+      expect(
+        planThemeWorkerDeployment({
+          storefrontId: "sf_1",
+          manifest: manifest(),
+          workerConfig: {
+            ...REAL_WORKER_CONFIG,
+            assets: { directory: "../client", binding },
+          },
+        }),
+      ).toMatchObject({ success: false, reason: "INVALID_WORKER_CONFIG" });
+    }
+  });
+
   it("refuses a Worker config with no compatibility date", () => {
     const { compatibility_date: _omitted, ...withoutDate } = REAL_WORKER_CONFIG;
     const result = planThemeWorkerDeployment({

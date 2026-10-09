@@ -1,7 +1,6 @@
 import {
   resolveThemeFramework,
   type ThemeFrameworkAdapter,
-  type ThemeFrameworkId,
 } from "../theme-framework";
 import {
   registeredThemeToolchains,
@@ -273,9 +272,10 @@ export type StartPreviewServerInput = Readonly<{
    * The framework the Theme records. Absent reads as TanStack Start, as
    * every preview did before frameworks were recorded; one Morph cannot
    * preview is refused before anything is started, never previewed as
-   * another framework.
+   * another framework. Passed as recorded, so a value that names no
+   * framework is refused too (`THEME_FRAMEWORK_UNKNOWN`).
    */
-  framework?: ThemeFrameworkId;
+  framework?: string | null;
 }>;
 
 /** Where a preview of this framework and runtime is framed, on the exposed origin. */

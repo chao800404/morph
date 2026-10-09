@@ -8,6 +8,7 @@ import { FakeThemeBuildArtifactStore } from "../compiler/fake-theme-build-artifa
 import { FakeThemeBuildRunner } from "../compiler/fake-theme-build-runner";
 import { materializeThemeBuildInput } from "../compiler/theme-build-materializer";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
+import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtures";
 
 import { ThemeBuildService } from "./theme-build.service";
 
@@ -42,6 +43,7 @@ beforeEach(() => {
       source_index_status text,
       source_index text,
       release_generation integer DEFAULT 1 NOT NULL,
+      framework text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -138,16 +140,21 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       );
   };
 
-  const seedTheme = (storefrontId = "storefront-1", themeId = "theme-1") => {
+  const seedTheme = (
+    storefrontId = "storefront-1",
+    themeId = "theme-1",
+    framework: string | null = null,
+  ) => {
     sqlite
       .prepare(
-        "INSERT INTO storefront_themes (id, storefront_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO storefront_themes (id, storefront_id, name, status, framework, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         themeId,
         storefrontId,
         "Main Theme",
         "draft",
+        framework,
         new Date().toISOString(),
         new Date().toISOString(),
       );
@@ -728,7 +735,7 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
 
   it("refuses a build recorded for a framework Morph cannot build, and never runs it", async () => {
     seedStorefront("storefront-1");
-    seedTheme("storefront-1", "theme-1");
+    seedTheme("storefront-1", "theme-1", "astro");
     seedRevision("storefront-1", "theme-1", "rev-astro", 1, [
       { path: "src/index.tsx", content: "export default () => <h1>Astro</h1>;" },
     ]);
@@ -737,7 +744,6 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
       storefrontId: "storefront-1",
       themeId: "theme-1",
       sourceRevisionId: "rev-astro",
-      framework: "astro",
       runner: new FakeThemeBuildRunner({
         shouldSucceed: true,
         onRun: () => {
@@ -752,6 +758,62 @@ describe("ThemeBuildService Orchestration (Phase 4B-3)", () => {
     expect(build.diagnosticsJson).toMatchObject({ stage: "materializer" });
     expect(build.inputHash).toBeNull();
     expect(ran).toBe(false);
+  });
+
+  it("records the framework the site records, and runs it as recorded where Astro is on", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1", "astro");
+    seedRevision(
+      "storefront-1",
+      "theme-1",
+      "rev-astro",
+      1,
+      astroThemeFiles().map(({ path, content }) => ({ path, content })),
+    );
+    const astroService = new ThemeBuildService(
+      storefrontThemeBuildDal,
+      undefined,
+      (params) => materializeThemeBuildInput({ ...params, astroThemes: true }),
+      new FakeThemeBuildArtifactStore(),
+    );
+    const seen: Array<string | null | undefined> = [];
+    const build = await astroService.requestPreviewBuild({
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+      sourceRevisionId: "rev-astro",
+      runner: new FakeThemeBuildRunner({
+        shouldSucceed: true,
+        onRun: (input) => {
+          seen.push(input.framework);
+        },
+      }),
+    });
+
+    const astro = themeToolchainForFramework("astro");
+    expect(build.framework).toBe("astro");
+    expect(build.toolchainId).toBe(astro.id);
+    expect(build.errorMessage).toBeNull();
+    expect(seen).toEqual(["astro"]);
+  });
+
+  it("refuses a site recording no framework Morph knows, before any build is created", async () => {
+    seedStorefront("storefront-1");
+    seedTheme("storefront-1", "theme-1", "remix");
+    seedRevision("storefront-1", "theme-1", "rev-remix", 1, [
+      { path: "src/index.tsx", content: "export default () => <h1>Remix</h1>;" },
+    ]);
+
+    await expect(
+      service.requestPreviewBuild({
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        sourceRevisionId: "rev-remix",
+        runner: new FakeThemeBuildRunner({ shouldSucceed: true }),
+      }),
+    ).rejects.toThrow(/^THEME_FRAMEWORK_UNKNOWN: /);
+    expect(
+      sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_theme_builds").get(),
+    ).toEqual({ count: 0 });
   });
 
   it("ensures an existing succeeded build is never mutated by a subsequent build failure", async () => {

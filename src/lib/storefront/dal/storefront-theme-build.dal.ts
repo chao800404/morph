@@ -117,6 +117,30 @@ export const storefrontThemeBuildDal = {
   },
 
   /**
+   * The framework the site records (`storefront_themes.framework`), as
+   * stored: NULL for a site that records none, `undefined` for no such
+   * site. Never mapped here; `ThemeBuildService` checks it.
+   */
+  async readThemeFramework(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<string | null | undefined> {
+    const db = await getDb();
+    const [theme] = await db
+      .select({ framework: storefrontThemes.framework })
+      .from(storefrontThemes)
+      .where(
+        and(
+          eq(storefrontThemes.id, themeId),
+          eq(storefrontThemes.storefrontId, storefrontId),
+          isNull(storefrontThemes.deletedAt),
+        ),
+      )
+      .limit(1);
+    return theme ? theme.framework : undefined;
+  },
+
+  /**
    * Validates that the source revision exists, belongs to the exact storefrontId and themeId,
    * and is not deleted.
    */

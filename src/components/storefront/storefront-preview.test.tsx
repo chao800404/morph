@@ -19,6 +19,7 @@ const context: StorefrontThemeEditorDTO = {
     name: "Default",
     status: "draft",
     releaseGeneration: 1,
+    framework: null,
     activeRelease: null,
   },
   templates: [
