@@ -86,6 +86,7 @@ beforeEach(() => {
       published_source_revision_id text,
       source_generation integer DEFAULT 1 NOT NULL,
       release_generation integer DEFAULT 1 NOT NULL,
+      framework text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -1316,6 +1317,20 @@ describe("storefront theme DAL", () => {
       ).id,
     ).toBe("winner");
   });
+  it("reports the framework the site records, as stored", async () => {
+    expect(
+      (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+        ?.theme.framework,
+    ).toBeNull();
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'")
+      .run();
+    expect(
+      (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+        ?.theme.framework,
+    ).toBe("astro");
+  });
+
   it("does not return a theme owned by another storefront", async () => {
     await expect(
       storefrontThemeDal.findEditorContext("storefront-a", "theme-b"),

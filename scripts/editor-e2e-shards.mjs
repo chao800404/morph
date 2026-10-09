@@ -31,6 +31,9 @@ export const EDITOR_SHARDS = [
     "native-content-dependency.spec.ts",
     // Container transport only, like the three above: skipped on every CI shard.
     "source-asset-publish.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only: skipped on every CI
+    // shard, like the container-only files above.
+    "astro-publish-acceptance.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",

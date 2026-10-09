@@ -186,6 +186,8 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
         ? { previewRuntime: "start" as const }
         : {}),
+      // As the site records it: an Astro site is not previewed as Start.
+      framework: editorContext.theme.framework,
     });
     if (!started.ok) {
       const traceId = recordPreviewStartFailure({
