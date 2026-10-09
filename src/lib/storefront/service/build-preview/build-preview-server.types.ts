@@ -34,6 +34,22 @@ export type BuildPreviewInstanceStart = Readonly<{
   contentUpstream?: string;
 }>;
 
+/**
+ * The platform did not give the instance a place to run this time — its
+ * container failed to start before anything of the build ran. Unlike a
+ * build that does not start (its own process exiting, never opening its
+ * port), asking again later can succeed, so Core answers "starting" and the
+ * browser asks again rather than being left on an error.
+ */
+export class BuildPreviewInstanceUnavailableError extends Error {
+  readonly code = "BUILD_PREVIEW_INSTANCE_UNAVAILABLE";
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "BuildPreviewInstanceUnavailableError";
+  }
+}
+
 export type BuildPreviewServer = Readonly<{
   kind: "local-sidecar" | "cloudflare-sandbox";
   /**
