@@ -1,5 +1,6 @@
 import {
   selectionKindFromElement,
+  type ContentUnavailableReason,
   type EditableDescendantField,
 } from "./selection-taxonomy";
 import type {
@@ -69,12 +70,46 @@ export function selectionStyleSnapshot(
   };
 }
 
+/**
+ * A restore target whose row path is re-read through the row's `id`.
+ *
+ * The path names the row by index, and after a reorder that index belongs to
+ * another row: restoring by it would move the selection, silently, onto a row
+ * the author did not pick. The id stays with the row, so the path is taken
+ * from wherever that row is now. A row that is gone leaves the target alone;
+ * the identities below decide, as they did before ids were carried.
+ */
+function followRestoredRow(
+  section: HTMLElement,
+  target: PreviewSelectionRestoreTarget,
+): PreviewSelectionRestoreTarget {
+  const match =
+    target.itemId && target.fieldPath
+      ? /^([^.]+)\.(\d+)(\..+)?$/.exec(target.fieldPath)
+      : null;
+  if (!match) return target;
+  const [, key = "", , rest = ""] = match;
+  for (const row of section.querySelectorAll<HTMLElement>(
+    `[data-storefront-item-id="${CSS.escape(target.itemId!)}"][data-storefront-field-path]`,
+  )) {
+    // The row itself (`items.2`), not a field inside it.
+    const rowPath = row.dataset.storefrontFieldPath ?? "";
+    const index = rowPath.startsWith(`${key}.`)
+      ? rowPath.slice(key.length + 1)
+      : "";
+    if (!/^\d+$/.test(index)) continue;
+    return { ...target, fieldPath: `${rowPath}${rest}` };
+  }
+  return target;
+}
+
 export function resolvePreviewSelectionRestoreElement(
   section: HTMLElement,
   target: PreviewSelectionRestoreTarget,
   retainedElement?: HTMLElement | null,
 ): HTMLElement {
   if (target.isSection) return section;
+  target = followRestoredRow(section, target);
   const sourceLocationSelector = target.sourceLocation
     ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
     : null;
@@ -329,6 +364,41 @@ function isRefusedContent(element: HTMLElement): boolean {
   );
 }
 
+/**
+ * Why an element inside a component's row offers no content, or `null` when
+ * it offers some or names none to begin with.
+ *
+ * Read from what the compiler wrote: an empty field is a prop the list did not
+ * set from the row; a field with no path is a component that was not handed
+ * its row; a path that is not the row's is a list of the component's own.
+ */
+export function previewContentUnavailableReason(
+  element: HTMLElement,
+): ContentUnavailableReason | null {
+  if (!element.hasAttribute("data-storefront-field")) return null;
+  if (previewFieldBinding(element)?.fieldKey) return null;
+  if (!enclosingComponentRow(element)) return null;
+  if (element.dataset.storefrontField === "") return "value-not-from-row";
+  return element.dataset.storefrontFieldPath ? "nested-list" : "row-not-passed";
+}
+
+/**
+ * The `id` of the repeated-field row an element belongs to, in its own
+ * section: what lets the editor confirm the row before it writes, since the
+ * index in its path moves whenever the rows do.
+ */
+function previewRowItemId(element: HTMLElement): string | null {
+  const row = element.closest<HTMLElement>("[data-storefront-item-id]");
+  if (
+    !row ||
+    closestPreviewSectionRoot(row) !== closestPreviewSectionRoot(element)
+  ) {
+    return null;
+  }
+  const id = row.dataset.storefrontItemId ?? "";
+  return id && id.length <= 200 ? id : null;
+}
+
 /** Whether something inside `element` is a field the editor can prove. */
 function hasBoundDescendantField(element: HTMLElement): boolean {
   for (const candidate of element.querySelectorAll<HTMLElement>(
@@ -512,6 +582,7 @@ export function collectPreviewEditableNodes(root: {
         htmlId: hasUniqueHtmlId ? htmlId : undefined,
         nodeId: nodeId || undefined,
         fieldPath: fieldPath || undefined,
+        ...(itemId ? { itemId } : {}),
         elementKey: elementKey || undefined,
         fieldKey: fieldKey || undefined,
         isSection: false,
@@ -601,7 +672,13 @@ export type SelectableInfo = {
   tagName: string;
   role: string | null;
   inputType: string | null;
+  /** The repeated-field row the element is in, by its persistent `id`. */
+  itemId: string | null;
+  /** Why the element offers no content to edit, when that can be said. */
+  contentUnavailable: ContentUnavailableReason | null;
 };
+
+type ResolvedElement = Omit<SelectableInfo, "itemId" | "contentUnavailable">;
 
 export const getComponentDisplayName = (type: string): string => {
   switch (type.toLowerCase()) {
@@ -680,7 +757,7 @@ export const selectionMetadata = (item: SelectableInfo) => {
  * rather than walking to the route's marked `<main>` ancestor. The latter is
  * the page root and made every tree section click appear to select the page.
  */
-function sectionRootSelectable(section: HTMLElement): SelectableInfo {
+function sectionRootSelectable(section: HTMLElement): ResolvedElement {
   const sectionId = previewSectionIdOf(section) ?? null;
   const sectionType =
     section.dataset.storefrontSectionType ??
@@ -708,6 +785,18 @@ function sectionRootSelectable(section: HTMLElement): SelectableInfo {
 export const resolveSelectable = (
   target: EventTarget | null,
 ): SelectableInfo | null => {
+  const item = resolveSelectableElement(target);
+  if (!item) return null;
+  return {
+    ...item,
+    itemId: previewRowItemId(item.element),
+    contentUnavailable: previewContentUnavailableReason(item.element),
+  };
+};
+
+const resolveSelectableElement = (
+  target: EventTarget | null,
+): ResolvedElement | null => {
   if (!(target instanceof HTMLElement)) return null;
 
   // 0. A content field is more precise than an ancestor AST marker. Some

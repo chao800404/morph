@@ -158,6 +158,11 @@ function clicked(root: HTMLElement, text: string) {
   };
 }
 
+/** Why the element showing `text` offers no content, as the bridge reports. */
+function reasonFor(root: HTMLElement, text: string) {
+  return resolveSelectable(elementShowing(root, text))?.contentUnavailable;
+}
+
 describe("a row rendered by its own component, declared with of:", () => {
   it("lists each row and each of its fields under the row's own path", async () => {
     const root = await mount([
@@ -238,6 +243,47 @@ describe("a row rendered by its own component, declared with of:", () => {
       isSection: false,
     });
     expect(row.tagName).toBe("ARTICLE");
+  });
+
+  it("keeps a restored selection on its row after the rows are reordered", async () => {
+    const files = [
+      CARD,
+      list(`<Card key={item.id ?? index} {...item} />`),
+      route(),
+    ];
+    const first = await mount(files);
+    const selected = resolveSelectable(elementShowing(first, "T2"));
+    expect([selected?.fieldPath, selected?.itemId]).toEqual([
+      "items.1.title",
+      "r2",
+    ]);
+
+    // The rows swap before the page re-renders. Index 1 is now r1's.
+    const root = await mount(files, {
+      index: {
+        version: 1,
+        sections: [
+          section("list", {
+            label: "Why",
+            items: [
+              { id: "r2", title: "T2", body: "B2" },
+              { id: "r1", title: "T1", body: "B1" },
+            ],
+          }),
+        ],
+      },
+    });
+    const restored = resolvePreviewSelectionRestoreElement(
+      root.querySelector<HTMLElement>('[data-storefront-section-id="list"]')!,
+      {
+        sectionId: "list",
+        fieldKey: "title",
+        fieldPath: "items.1.title",
+        itemId: "r2",
+        isSection: false,
+      },
+    );
+    expect(restored.textContent).toBe("T2");
   });
 
   it("reaches rows the Document has not stored yet", async () => {
@@ -349,6 +395,52 @@ describe("a row component whose fields the call site does not prove", () => {
       fieldKey: null,
       fieldPath: null,
     });
+    expect(item?.contentUnavailable).toBe("value-not-from-row");
+  });
+
+  it("judges a prop by the value that ends up in effect, whichever way round", async () => {
+    // `heading="fixed"` after the spread: the literal is what Card shows, so
+    // heading is not the row's.
+    const after = await offered([
+      {
+        path: "src/components/Card.tsx",
+        content: `export const contentFields = { heading: { type: "text" }, body: { type: "textarea" } };
+export default function Card({ heading = "", body = "" }) {
+  return <article><h3>{heading}</h3><p>{body}</p></article>;
+}`,
+      },
+      list(
+        `<Card key={item.id} {...item} heading="fixed" />`,
+        `{ type: "array", fields: { heading: { type: "text" }, body: { type: "textarea" } } }`,
+      ),
+      route(),
+    ]);
+    expect(after.paths).toEqual([
+      "label",
+      "items.0",
+      "items.0.body",
+      "items.1",
+      "items.1.body",
+    ]);
+    expect(reasonFor(after.root, "fixed")).toBe("value-not-from-row");
+
+    // The literal first, the spread after: the row's value wins only when the
+    // row holds one, and the literal shows when it does not. Which of the two
+    // is on the page depends on stored data, so the editor cannot confirm the
+    // row is the source and does not write to it.
+    const before = await offered([
+      CARD,
+      list(`<Card key={item.id} title="fixed" {...item} />`),
+      route(),
+    ]);
+    expect(before.paths).toEqual([
+      "label",
+      "items.0",
+      "items.0.body",
+      "items.1",
+      "items.1.body",
+    ]);
+    expect(reasonFor(before.root, "T1")).toBe("value-not-from-row");
   });
 
   it("refuses every prop when something else is spread onto the row", async () => {
@@ -368,12 +460,14 @@ describe("a row component whose fields the call site does not prove", () => {
       fieldKey: null,
       fieldPath: null,
     });
+    expect(reasonFor(root, "B1")).toBe("value-not-from-row");
   });
 
-  it("refuses the fields of a component that takes its props whole", async () => {
-    // `function Card(props)` could pass anything it receives on to the page,
-    // so it is not handed the row. Its fields stay its own names, and inside
-    // a row those are not the section's.
+  it("does not yet reach the fields of a component that takes its props whole", async () => {
+    // `function Card(props)` is ordinary React the editor does not support
+    // yet: the row is handed over through the component's destructured props,
+    // and this one has none to add it to. It previews as written; what it may
+    // not do is guess a field.
     const { root, paths } = await offered([
       {
         path: "src/components/Card.tsx",
@@ -399,11 +493,11 @@ export default function Card(props) {
     });
   });
 
-  it("refuses the fields a component names as its own when it cannot be handed the row", async () => {
-    // Behind `memo()` the compiler cannot point at the function React calls,
-    // so Card is not handed the row — yet its elements are still marked with
-    // its own declared `title` and `body`. Inside the List's row those are
-    // not the List's: the editor must refuse them, not read a top-level
+  it("refuses the fields a component names as its own when it is not yet handed the row", async () => {
+    // `memo()` is ordinary React the editor does not follow yet, so Card is
+    // not handed the row — yet its elements are still marked with its own
+    // declared `title` and `body`. Inside the List's row those are not the
+    // List's: the editor must refuse them, and say why, not read a top-level
     // `title` the List never declared.
     const { root, paths } = await offered([
       {
@@ -429,6 +523,7 @@ export default memo(function Card({ title = "", body = "" }) {
       fieldKey: null,
       fieldPath: null,
     });
+    expect(reasonFor(root, "T2")).toBe("row-not-passed");
   });
 
   it("refuses a list Card keeps of its own inside the row", async () => {
@@ -468,6 +563,7 @@ export default function Card({ title = "", tags = [{ id: "t", name: "Tag" }] }) 
       fieldKey: null,
       fieldPath: null,
     });
+    expect(item?.contentUnavailable).toBe("nested-list");
   });
 
   it("notices a row field whose path never reached the page", async () => {

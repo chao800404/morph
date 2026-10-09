@@ -18,8 +18,10 @@ import { TailwindClassTokenInput } from "./tailwind-class-token-input";
 import {
   getFieldPathValue,
   setFieldPathValue,
+  type ContentUnavailableReason,
   type EditorSelectionDescriptor,
 } from "@/lib/storefront/editor/selection-taxonomy";
+import { rebaseSelectedRowPath } from "@/lib/storefront/editor/selected-row-identity";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -308,6 +310,27 @@ type EditorStyleInspectorProps = {
  * only a URL, so it cannot say which library asset was chosen, and a library
  * URL saved there renders for the author and for no visitor.
  */
+/**
+ * Why a selection offers no content, in the author's terms.
+ *
+ * None of these is a rule the Theme broke: the code previews and builds as
+ * written. They say which edit the editor cannot yet place, and where it can
+ * be made instead.
+ */
+const CONTENT_BLOCKED_MESSAGES: Record<
+  ContentUnavailableReason | "row-lost",
+  string
+> = {
+  "row-lost":
+    "This entry was moved or removed after it was selected, so an edit here would have no entry to go to. Select it again on the canvas.",
+  "value-not-from-row":
+    "This text comes from a value the list sets in code, not from this entry's own field, so editing it here could not change what the page shows. Edit it in Code; the entry's own fields are offered when the entry is selected.",
+  "row-not-passed":
+    "This list's entries are rendered by a component the editor cannot yet link to each entry (for example one that takes its props as a whole object, or is wrapped in memo()). The page previews and builds as written; edit this text in Code for now.",
+  "nested-list":
+    "This is a list inside one of the list's entries, which the editor cannot edit visually yet. The page previews and builds as written; edit it in Code for now.",
+};
+
 const STRING_IMAGE_FIELD_HINT =
   "This field stores the image as a URL, so it cannot use the Asset library. " +
   "To choose from Assets, declare it in the component's contentFields as " +
@@ -718,8 +741,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 }: EditorStyleInspectorProps) {
   const activeNodeId = selection?.nodeId;
   const activeElementKey = selection?.elementKey;
-  const activeFieldKey = selection?.fieldKey;
-  const activeFieldPath = selection?.fieldPath;
   const activeClassName = selection?.className;
   const activeSelectionIsSection = selection?.isSection;
   const activeComputedStyle = selection?.computed;
@@ -754,6 +775,28 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       sectionId: section.id,
       sectionProps: section.props,
     });
+  // The selected row, confirmed by its `id` against the rows as they are now:
+  // its index may have moved since the click, and a write to the index as
+  // selected would land on whichever row took its place.
+  const selectedRow = useMemo(
+    () =>
+      rebaseSelectedRowPath(selection?.fieldPath, selection?.itemId, props),
+    [props, selection?.fieldPath, selection?.itemId],
+  );
+  const selectedRowLost = selectedRow.lost;
+  const activeFieldKey = selectedRowLost ? null : selection?.fieldKey;
+  const activeFieldPath = selectedRow.fieldPath ?? undefined;
+  /**
+   * Why nothing here may be written, when something stops it: the selected
+   * row is gone, or the preview could not confirm where the element's content
+   * comes from. Either way the edit would have no confirmed destination, so
+   * there is none to offer — not a guess, and not a top-level field of the
+   * same name.
+   */
+  const contentBlockedReason: ContentUnavailableReason | "row-lost" | null =
+    selectedRowLost ? "row-lost" : (selection?.contentUnavailable ?? null);
+  const contentBlockedRef = useRef(contentBlockedReason);
+  contentBlockedRef.current = contentBlockedReason;
   // A commit seen when this panel mounted is already in the props it read.
   const appliedInlineCommitRef = useRef(inlineTextCommit?.id ?? 0);
   const [inlineCommitEpoch, setInlineCommitEpoch] = useState(0);
@@ -833,13 +876,26 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // Restricted to this section: a selected parent can span several components,
   // and two instances of one component expose the same field names. Editing
   // through an unfiltered list would write to whichever instance came first.
+  //
+  // Paths inside the selected row follow it by `id`, as the selection's own
+  // does; one whose row is gone is dropped rather than written elsewhere.
   const descendantFields = useMemo(
     () =>
-      (selection?.descendantFields ?? []).filter(
-        (binding) =>
-          binding.sectionId === null || binding.sectionId === section.id,
-      ),
-    [section.id, selection?.descendantFields],
+      (selection?.descendantFields ?? []).flatMap((binding) => {
+        if (binding.sectionId !== null && binding.sectionId !== section.id) {
+          return [];
+        }
+        const rebased = rebaseSelectedRowPath(
+          binding.fieldPath,
+          selection?.itemId,
+          props,
+        );
+        if (rebased.lost) return [];
+        return rebased.fieldPath === binding.fieldPath
+          ? [binding]
+          : [{ ...binding, fieldPath: rebased.fieldPath ?? binding.fieldPath }];
+      }),
+    [props, section.id, selection?.descendantFields, selection?.itemId],
   );
   // Memoized because a `useMemo` downstream lists this among its dependencies,
   // and a Set rebuilt on every render is a new value every time — which made
@@ -2165,6 +2221,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown, options?: InspectorPropsChangeOptions) => {
+      if (contentBlockedRef.current) return;
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) =>
@@ -2237,6 +2294,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        */
       seed?: { key: string; value: unknown },
     ) => {
+      if (contentBlockedRef.current) return;
       const current = localPropsRef.current;
       const base =
         seed && current[seed.key] === undefined
@@ -2459,7 +2517,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
-      {view === "content" && textPromotion ? (
+      {view === "content" && contentBlockedReason ? (
+        <div
+          data-slot="inspector-content-unavailable"
+          className="rounded-xl border border-dashed p-3"
+        >
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {CONTENT_BLOCKED_MESSAGES[contentBlockedReason]}
+          </p>
+        </div>
+      ) : null}
+
+      {view === "content" && !contentBlockedReason && textPromotion ? (
         <EditorCodeTextNotice
           key={`${componentPath}:${textPromotionTargetKey}`}
           analysis={textPromotion}
@@ -2471,7 +2540,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         />
       ) : null}
 
-      {view === "content" && !hasEditableContent && !textPromotion ? (
+      {view === "content" &&
+      !contentBlockedReason &&
+      !hasEditableContent &&
+      !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">
             This element has no editable content.
@@ -2485,6 +2557,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
       {/* 1. Content & Text Fields */}
       {view === "content" &&
+        !contentBlockedReason &&
         hasEditableContent &&
         (visibleModules.has("content") || visibleModules.has("media")) && (
           <InspectorGroup

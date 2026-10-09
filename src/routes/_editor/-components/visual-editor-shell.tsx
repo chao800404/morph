@@ -6276,6 +6276,8 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
+        itemId: message.itemId ?? null,
+        contentUnavailable: message.contentUnavailable ?? null,
         descendantFields,
         className,
         isSection: selectionIsSection,

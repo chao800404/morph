@@ -233,6 +233,8 @@ function sendSelectionReport(item) {
           ? null
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
+      itemId: item.itemId,
+      contentUnavailable: item.contentUnavailable,
       ...selectionMetadata(item),
       styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -364,6 +366,7 @@ function reportSelection(target) {
     elementKey: item.elementKey || undefined,
     fieldKey: item.fieldKey || undefined,
     fieldPath: item.fieldPath || undefined,
+    itemId: item.itemId || undefined,
     isSection: item.element === item.section,
   };
   if (selectedItem.element) {

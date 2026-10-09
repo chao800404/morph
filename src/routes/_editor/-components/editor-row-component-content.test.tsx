@@ -133,6 +133,9 @@ async function clickOn(
     elementKey: item.elementKey,
     fieldKey: item.fieldKey,
     fieldPath: item.fieldPath,
+    // As the shell copies them from the bridge's report.
+    itemId: item.itemId,
+    contentUnavailable: item.contentUnavailable,
     descendantFields: item.descendantFields,
     className: item.element.getAttribute("class") ?? "",
     isSection: item.element === item.section,
@@ -148,7 +151,7 @@ function renderInspector(
   section: Partial<TestSection> = {},
 ) {
   const onPropsChange = vi.fn();
-  render(
+  const inspector = (patch: Partial<TestSection>) => (
     <EditorStyleInspector
       view="content"
       section={
@@ -158,7 +161,7 @@ function renderInspector(
           componentRef: "src/components/List.tsx",
           enabled: true,
           props,
-          ...section,
+          ...patch,
         } as TestSection
       }
       themeFiles={
@@ -169,9 +172,15 @@ function renderInspector(
       }
       selection={selection}
       onPropsChange={onPropsChange}
-    />,
+    />
   );
-  return { onPropsChange };
+  const { rerender } = render(inspector(section));
+  return {
+    onPropsChange,
+    /** The section's stored content changing under the open panel. */
+    storedPropsBecome: (next: TestSection["props"]) =>
+      rerender(inspector({ ...section, props: next })),
+  };
 }
 
 /** The row editor's Title control for the selected row. */
@@ -277,6 +286,113 @@ describe("editing a row rendered by its own component", () => {
         { id: "d1", title: "D1", body: "Default 1" },
         { id: "d2", title: "Edited", body: "Default 2" },
       ],
+    });
+  });
+
+  it("carries the clicked row's id, which outlives its index", async () => {
+    expect((await clickOn("T2")).itemId).toBe("r2");
+  });
+
+  it("writes to the row selected even after the rows were reordered", async () => {
+    // Selected as items.1 (r2). Before the edit is made, the rows swap — a
+    // drag, an undo, another tab's save. Index 1 is now r1, which the author
+    // never touched.
+    const { onPropsChange, storedPropsBecome } = renderInspector(
+      await clickOn("T2"),
+    );
+    storedPropsBecome({
+      label: "Why",
+      items: [
+        { id: "r2", title: "T2", body: "B2" },
+        { id: "r1", title: "T1", body: "B1" },
+      ],
+    });
+
+    fireEvent.input(rowTitleInput(), { target: { value: "Edited" } });
+
+    expect(onPropsChange.mock.calls.at(-1)?.[0]).toEqual({
+      label: "Why",
+      items: [
+        { id: "r2", title: "Edited", body: "B2" },
+        { id: "r1", title: "T1", body: "B1" },
+      ],
+    });
+  });
+
+  it("refuses to write when the selected row is gone, and says why", async () => {
+    const { onPropsChange, storedPropsBecome } = renderInspector(
+      await clickOn("T2"),
+    );
+    storedPropsBecome({
+      label: "Why",
+      items: [
+        { id: "r1", title: "T1", body: "B1" },
+        { id: "r3", title: "T3", body: "B3" },
+      ],
+    });
+
+    // Nothing offered that could land on r1, r3 or a top-level `title`.
+    expect(screen.queryByDisplayValue("T3")).toBeNull();
+    expect(screen.queryByDisplayValue("T1")).toBeNull();
+    expect(screen.queryByDisplayValue("T2")).toBeNull();
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/moved or removed/);
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+
+  it("says why an element offers no content, and writes nothing for it", async () => {
+    // As the bridge reports a Card behind `memo()`: its elements name
+    // Card's own fields, which inside the row are not the List's.
+    const { onPropsChange } = renderInspector({
+      ...(await clickOn("T2")),
+      fieldKey: null,
+      fieldPath: null,
+      contentUnavailable: "row-not-passed",
+    });
+
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/cannot yet link/);
+    expect(screen.queryByDisplayValue("T2")).toBeNull();
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `__morphRow` tells the canvas which row an element is in. It authorises
+ * nothing: an author is free to write a prop of that name, and what the server
+ * stores is decided by the capability it resolves from the saved files, never
+ * by the preview.
+ */
+describe("the row hint the preview carries", () => {
+  it("never reaches the Document through an edit", async () => {
+    const { onPropsChange } = renderInspector(await clickOn("T2"));
+    fireEvent.input(rowTitleInput(), { target: { value: "Edited" } });
+    expect(JSON.stringify(onPropsChange.mock.calls.at(-1)?.[0])).not.toContain(
+      "__morphRow",
+    );
+  });
+
+  it("is dropped by the server, with any field the List never declared", async () => {
+    const sent = {
+      label: "Why",
+      title: "a top-level title the List never declared",
+      __morphRow: { field: "items", path: "items.0", fields: {} },
+      items: [
+        {
+          id: "r1",
+          title: "T1",
+          body: "B1",
+          __morphRow: { field: "items", path: "items.0", fields: {} },
+        },
+      ],
+    };
+    expect(filterThemeContentProps(sent, await serverCapability())).toEqual({
+      label: "Why",
+      items: [{ id: "r1", title: "T1", body: "B1" }],
     });
   });
 });

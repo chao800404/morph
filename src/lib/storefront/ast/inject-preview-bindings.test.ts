@@ -1002,7 +1002,7 @@ export default function List({ items = [] }) {
     expect(byName.card).toContain("__morphRow: __morphRowContext");
   });
 
-  it("hands nothing to a component it cannot see the props of", () => {
+  it("does not yet hand the row to props taken whole, memo() or an author's own __morphRow", () => {
     // `props` taken whole could reach the page; `memo()` hides which function
     // React calls; an author's own `__morphRow` is theirs.
     for (const card of [
@@ -1050,5 +1050,24 @@ export default function List({ items = [] }) {
     const { list, card } = runBoth(LIST(`<Card key={item.id} {...item} />`));
     expect(await parses(list)).not.toThrow();
     expect(await parses(card)).not.toThrow();
+  });
+
+  it("leaves nothing of it in what a build compiles", async () => {
+    // A build never runs the preview's pass: it compiles the stored source,
+    // with the editor's markers stripped. The row hint exists only in the
+    // preview's copy.
+    const { prepareSourcesForBuild } =
+      await import("@/lib/storefront/source-language/tsx-source-language");
+    const built = prepareSourcesForBuild([
+      {
+        path: "src/components/List.tsx",
+        content: LIST(`<Card key={item.id} {...item} />`),
+      },
+      { path: "src/components/Card.tsx", content: CARD },
+    ]);
+    for (const file of built.files) {
+      expect(file.content).not.toContain("__morphRow");
+      expect(file.content).not.toContain("data-storefront-field");
+    }
   });
 });

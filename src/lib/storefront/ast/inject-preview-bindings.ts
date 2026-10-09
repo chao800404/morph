@@ -553,8 +553,10 @@ function isFunctionNode(node: any): boolean {
 /**
  * The function an export names, when it is a plain function component.
  *
- * `memo(...)`, `forwardRef(...)` and anything computed are not followed: the
- * function React calls is then not one this can point at with certainty.
+ * `memo(...)`, `forwardRef(...)` and anything computed are not followed yet
+ * (docs/row-component-binding-support.md): they are ordinary React, and the
+ * function inside is what a later pass should unwrap to. Until then the row's
+ * fields there are reported as not yet supported, never guessed.
  */
 function findExportedFunction(ast: any, exportName: string): any {
   const body: any[] = ast?.program?.body ?? [];
@@ -624,9 +626,10 @@ function findExportedFunction(ast: any, exportName: string): any {
  * The destructured props a component can take its row through.
  *
  * Only an object pattern: adding the row there keeps it out of any `...rest`
- * the component passes on. A component that takes `props` whole could hand the
- * row to a DOM element, so it is not given one, and its fields stay
- * unreachable inside a list rather than guessed.
+ * the component passes on. A component that takes `props` whole is ordinary
+ * React this does not support yet: added there, the row could reach a DOM
+ * element through `{...props}`. Its fields inside a list are reported as not
+ * yet supported rather than guessed (docs/row-component-binding-support.md).
  */
 function threadablePropsPattern(fn: any): any {
   const first = fn?.params?.[0];

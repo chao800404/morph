@@ -86,8 +86,48 @@ export type EditableDescendantField = Readonly<{
   sectionId: string | null;
 }>;
 
+/**
+ * Why a selected element offers no content to edit, when the preview can say.
+ *
+ * Each names something the editor does not support yet, not something the
+ * Theme did wrong: the code runs, previews and builds as written. What it
+ * stops is a visual write whose destination the editor cannot confirm.
+ *
+ * - `value-not-from-row`: inside a list's row, the component shows a value
+ *   the list set from something other than that row's field — a literal, a
+ *   computed value, or a spread of another object.
+ * - `row-not-passed`: the row's component is written in a way the editor
+ *   cannot yet hand its row to (it takes `props` whole, or is wrapped in
+ *   `memo()` or another call), so its fields cannot be tied to the row.
+ * - `nested-list`: a list the row's component keeps of its own; a row holds
+ *   no list in the content model yet.
+ */
+export const CONTENT_UNAVAILABLE_REASONS = [
+  "value-not-from-row",
+  "row-not-passed",
+  "nested-list",
+] as const;
+export type ContentUnavailableReason =
+  (typeof CONTENT_UNAVAILABLE_REASONS)[number];
+
+export function isContentUnavailableReason(
+  value: unknown,
+): value is ContentUnavailableReason {
+  return (
+    typeof value === "string" &&
+    (CONTENT_UNAVAILABLE_REASONS as readonly string[]).includes(value)
+  );
+}
+
 export type EditorSelectionDescriptor = {
   sectionId: string;
+  /**
+   * The `id` of the repeated-field row the element belongs to, when it is in
+   * one: what confirms the row before a write, since its index can move.
+   */
+  itemId?: string | null;
+  /** Why the element offers no content, when the preview could tell. */
+  contentUnavailable?: ContentUnavailableReason | null;
   kind: SelectionKind;
   componentType: string;
   tagName: string | null;
