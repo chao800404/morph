@@ -1,3 +1,4 @@
+import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
 import { env } from "cloudflare:workers";
 import { CloudflareSandboxVitePreviewServer } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-host";
@@ -7,6 +8,7 @@ import { LocalPreviewSidecarClient } from "./local-preview-sidecar-client";
 import { previewSandboxBinding } from "./preview-sandbox-binding";
 import type {
   LocalPreviewSidecarApplyFilesRequest,
+  LocalPreviewSidecarWriteContentRequest,
   LocalPreviewSidecarApplyFilesResult,
 } from "./local-preview-sidecar.protocol";
 import {
@@ -66,6 +68,14 @@ export type ThemePreviewServerSelection =
       applyFiles?: (
         input: LocalPreviewSidecarApplyFilesRequest,
       ) => Promise<LocalPreviewSidecarApplyFilesResult>;
+      /**
+       * Writes a newer draft content snapshot and confirms it through the
+       * preview's Worker, for a transport whose filesystem this process
+       * cannot reach. The container's comes with its Astro preview (A6c).
+       */
+      writeContent?: (
+        input: LocalPreviewSidecarWriteContentRequest,
+      ) => Promise<PreviewContentWriteResult>;
     }>
   | Readonly<{ enabled: false; reason: string; message: string }>;
 
@@ -137,6 +147,7 @@ export function createServerThemePreviewServer(
       previewHostname: origin.hostname,
       admitAddress: ({ url }) => validateLoopbackPreviewUrl({ url }),
       applyFiles: (input) => client.applyFiles(input),
+      writeContent: (input) => client.writeContent(input),
     };
   }
 

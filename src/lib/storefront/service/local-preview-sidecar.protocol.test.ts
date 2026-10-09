@@ -24,8 +24,11 @@ describe("the local preview sidecar protocol", () => {
     // directly. `applyFiles` applies source; `stageBinary` is the same
     // capability for bytes, which cannot travel inside JSON without being
     // held whole and re-encoded. And `BuildPreviewServer`: start, fetch,
-    // stop of one build's isolated instance. Anything else would mean a
-    // contract is missing something, not that the sidecar needs more.
+    // stop of one build's isolated instance. `writeContent` is file
+    // application for the draft content snapshot (docs/astro-theme-plan.md
+    // 6.5): written by ticket and confirmed through the preview's Worker.
+    // Anything else would mean a contract is missing something, not that
+    // the sidecar needs more.
     expect(Object.keys(LOCAL_PREVIEW_SIDECAR_PATHS).sort()).toEqual([
       "applyFiles",
       "buildPreviewFetch",
@@ -35,6 +38,7 @@ describe("the local preview sidecar protocol", () => {
       "stageBinary",
       "start",
       "stop",
+      "writeContent",
     ]);
     // And the member names are the paths, so neither side can quietly address a
     // different endpoint for the same operation.

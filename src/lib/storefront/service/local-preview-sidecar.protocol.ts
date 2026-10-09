@@ -7,6 +7,7 @@ import type {
   BuildPreviewFetchWire,
   BuildPreviewStartWire,
 } from "./build-preview/build-preview-wire";
+import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
 
 /**
  * The wire between the Worker and the local preview sidecar.
@@ -40,6 +41,12 @@ export const LOCAL_PREVIEW_SIDECAR_PATHS = {
   stop: "/stop",
   /** The one thing a container let its caller do without a transport. */
   applyFiles: "/applyFiles",
+  /**
+   * The same capability for the draft content snapshot: a newer one, by
+   * ticket, written and confirmed through the preview's Worker
+   * (docs/astro-theme-plan.md 6.5).
+   */
+  writeContent: "/writeContent",
   /**
    * A transport preparation step of `start`, not an operation of its own:
    * one binary file's bytes, raw, sent before the start that names them. The
@@ -92,6 +99,12 @@ export type LocalPreviewSidecarApplyFilesRequest = Readonly<{
   generation?: number | null;
 }>;
 
+export type LocalPreviewSidecarWriteContentRequest = Readonly<{
+  previewId: string;
+  /** The whole data file as Core built it, carrying its ticket. */
+  content: string;
+}>;
+
 export type LocalPreviewSidecarApplyFilesResult = Readonly<{
   changed: readonly string[];
   unchanged: readonly string[];
@@ -127,6 +140,10 @@ export type LocalPreviewSidecarOperations = Readonly<{
   applyFiles: Readonly<{
     request: LocalPreviewSidecarApplyFilesRequest;
     response: LocalPreviewSidecarApplyFilesResult;
+  }>;
+  writeContent: Readonly<{
+    request: LocalPreviewSidecarWriteContentRequest;
+    response: PreviewContentWriteResult;
   }>;
   /** Raw bytes in the body; which file they are is in the headers above. */
   stageBinary: Readonly<{

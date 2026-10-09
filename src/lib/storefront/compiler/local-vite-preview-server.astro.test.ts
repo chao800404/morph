@@ -65,7 +65,15 @@ beforeAll(async () => {
     astroThemes: true,
     previewContent: previewContent as never,
   });
-  if (!started.ok) throw new Error(`${started.stage}: ${started.errorMessage}`);
+  if (!started.ok) {
+    // The dev server's own last lines say which part of it failed.
+    throw new Error(
+      [
+        `${started.stage}: ${started.errorMessage}`,
+        ...(started.logs ?? []).slice(-40),
+      ].join("\n"),
+    );
+  }
   origin = new URL(started.url).origin;
   expect(started.url).toBe(`${origin}/`);
 }, 180_000);
@@ -133,6 +141,77 @@ describe.skipIf(!available)(
       }
       expect(types).toContain("full-reload");
       expect(await (await fetch(`${origin}/live`)).text()).toContain("live-v2");
+    });
+
+    // docs/astro-theme-plan.md 6.5: draft content reaches the server-rendered
+    // page as a ticketed snapshot, confirmed through the Worker before a
+    // page may reload; a late older one never replaces a newer one.
+    it("keeps the newest content snapshot, whatever order they arrive in", async () => {
+      const snapshot = (headline: string, contentTicket: number) =>
+        JSON.stringify({
+          templates: { index: { slots: { hero: { headline } }, hiddenSlots: [] } },
+          pages: {},
+          contentTicket,
+        });
+      const shown = async () => {
+        const html = await (await fetch(`${origin}/live`)).text();
+        return /A6B-[A-Z]/.exec(html)?.[0] ?? null;
+      };
+
+      // A, then C; B, taken between them, arrives last.
+      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-A", 101))).toEqual({
+        applied: true,
+        ticket: 101,
+      });
+      expect(await shown()).toBe("A6B-A");
+      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-C", 103))).toEqual({
+        applied: true,
+        ticket: 103,
+      });
+      expect(await shown()).toBe("A6B-C");
+      expect(await server.writeContent(PREVIEW_ID, snapshot("A6B-B", 102))).toEqual({
+        applied: false,
+        reason: "PREVIEW_CONTENT_SUPERSEDED",
+        ticket: 103,
+      });
+      // Every reload after it: C, never back to A or B.
+      for (let reload = 0; reload < 5; reload++) {
+        expect(await shown()).toBe("A6B-C");
+      }
+
+      // A start read before C, landing after it, leaves C — this transport
+      // lays a start with other content out again, and the newer snapshot
+      // on disk is kept; one read after C replaces it.
+      const restart = async (headline: string, contentTicket: number) => {
+        const started = await server.start({
+          previewId: PREVIEW_ID,
+          files: astroThemeFiles({
+            extra: [{ path: "src/pages/live.astro", content: PAGE("live-v2") }],
+          }),
+          entry: "",
+          previewHostname: "127.0.0.1",
+          platformHostEnv: {},
+          framework: "astro",
+          astroThemes: true,
+          previewContent: JSON.parse(snapshot(headline, contentTicket)),
+        });
+        expect(started).toMatchObject({ ok: true });
+        // Laid out again, it listens on a port of its own.
+        if (started.ok) origin = new URL(started.url).origin;
+      };
+      await restart("A6B-A", 102);
+      expect(await shown()).toBe("A6B-C");
+      await restart("A6B-D", 104);
+      await expect.poll(shown, { timeout: 10_000 }).toBe("A6B-D");
+    });
+
+    it("refuses a snapshot without a ticket", async () => {
+      await expect(
+        server.writeContent(
+          PREVIEW_ID,
+          JSON.stringify({ templates: {}, pages: {} }),
+        ),
+      ).rejects.toThrow(/^PREVIEW_CONTENT_INVALID: /);
     });
   },
 );
