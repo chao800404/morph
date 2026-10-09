@@ -18,7 +18,10 @@ import {
 } from "./build-preview-capability";
 import { serveBuildPreviewContent } from "./build-preview-content";
 import type { BuildPreviewServerSelection } from "./build-preview-server.factory";
-import type { BuildPreviewServer } from "./build-preview-server.types";
+import {
+  BuildPreviewInstanceUnavailableError,
+  type BuildPreviewServer,
+} from "./build-preview-server.types";
 
 /**
  * Core's handling of a request on a Build Preview host.
@@ -67,6 +70,53 @@ function plain(status: number, message: string): Response {
       "x-robots-tag": "noindex",
     },
   });
+}
+
+/** Seconds before the browser asks again for an instance that is starting. */
+export const BUILD_PREVIEW_STARTING_RETRY_SECONDS = 3;
+
+/**
+ * The answer while the instance's container could not be started: 503 with
+ * `Retry-After`, and for a page load a document that loads the same address
+ * again — the editor's frame is cross-origin and cannot tell an error page
+ * from the Theme's, so without this the user stayed on the error until they
+ * reloaded by hand. The document is Core's own: no script, nothing loaded
+ * from anywhere (`default-src 'none'`), and only this address to go back to.
+ */
+function starting(request: Request): Response {
+  const headers = {
+    "cache-control": "no-store",
+    "retry-after": String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
+    "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex",
+  };
+  const destination = request.headers.get("sec-fetch-dest");
+  const isPage =
+    request.method === "GET" &&
+    (destination === "document" ||
+      destination === "iframe" ||
+      (!destination &&
+        (request.headers.get("accept") ?? "").includes("text/html")));
+  if (!isPage) {
+    return new Response(
+      "BUILD_PREVIEW_STARTING: the preview is starting; retry shortly.",
+      {
+        status: 503,
+        headers: { ...headers, "content-type": "text/plain; charset=utf-8" },
+      },
+    );
+  }
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}"><title>Starting preview</title></head><body><p>The preview is starting. This page reloads by itself.</p></body></html>`,
+    {
+      status: 503,
+      headers: {
+        ...headers,
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "default-src 'none'",
+      },
+    },
+  );
 }
 
 /**
@@ -163,7 +213,36 @@ export async function handleBuildPreviewRequest(
   if (!selection.enabled) {
     return plain(503, `${selection.reason}: ${selection.message}`);
   }
-  const { server } = selection;
+  try {
+    return await answerFromInstance(
+      request,
+      url,
+      capability,
+      selection.server,
+      deps,
+    );
+  } catch (error) {
+    if (!(error instanceof BuildPreviewInstanceUnavailableError)) throw error;
+    console.warn(
+      JSON.stringify({
+        scope: "storefront.build-preview.instance-unavailable",
+        capabilityId: capability.id,
+        buildId: capability.buildId,
+        message: error.message,
+      }),
+    );
+    return starting(request);
+  }
+}
+
+/** The instance's answer, starting it first when there is none. */
+async function answerFromInstance(
+  request: Request,
+  url: URL,
+  capability: VerifiedBuildPreviewCapability,
+  server: BuildPreviewServer,
+  deps: BuildPreviewRequestDeps,
+): Promise<Response> {
   const contentOrigin = buildPreviewContentOrigin(url, server.kind);
 
   // Read once: a request may have to be sent twice, before and after a start.

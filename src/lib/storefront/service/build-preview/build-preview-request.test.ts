@@ -3,10 +3,14 @@ import type { StorefrontBuildPreviewCapabilityDAL } from "../../dal/storefront-b
 import { fixtureBuild } from "./build-preview-artifact.fixture";
 import { hashBuildPreviewToken } from "./build-preview-capability";
 import {
+  BUILD_PREVIEW_STARTING_RETRY_SECONDS,
   handleBuildPreviewRequest,
   type BuildPreviewRequestDeps,
 } from "./build-preview-request";
-import type { BuildPreviewServer } from "./build-preview-server.types";
+import {
+  BuildPreviewInstanceUnavailableError,
+  type BuildPreviewServer,
+} from "./build-preview-server.types";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
 
@@ -219,6 +223,85 @@ describe("a request on a Build Preview host", () => {
     const response = await handleBuildPreviewRequest(request("/"), deps);
     expect(response?.status).toBe(409);
     expect(server.start).not.toHaveBeenCalled();
+  });
+
+  describe("when the instance's container could not be started", () => {
+    const unavailable = () =>
+      setup({
+        server: {
+          kind: "cloudflare-sandbox",
+          fetch: vi.fn(async () => {
+            throw new BuildPreviewInstanceUnavailableError(
+              "BUILD_PREVIEW_CONTAINER_UNAVAILABLE: Container failed to start",
+            );
+          }),
+        },
+      });
+
+    it("gives the frame a page that loads the address again, not an error it stays on", async () => {
+      const { deps, server } = unavailable();
+      const response = await handleBuildPreviewRequest(
+        request("/", { headers: { "sec-fetch-dest": "iframe" } }),
+        deps,
+      );
+      expect(response?.status).toBe(503);
+      expect(response?.headers.get("retry-after")).toBe(
+        String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
+      );
+      expect(response?.headers.get("cache-control")).toBe("no-store");
+      expect(response?.headers.get("content-type")).toContain("text/html");
+      expect(response?.headers.get("content-security-policy")).toBe(
+        "default-src 'none'",
+      );
+      const html = await response?.text();
+      expect(html).toContain(
+        `<meta http-equiv="refresh" content="${BUILD_PREVIEW_STARTING_RETRY_SECONDS}">`,
+      );
+      expect(html).not.toContain("<script");
+      expect(server.start).not.toHaveBeenCalled();
+    });
+
+    it("tells a sub-resource to retry, in plain text", async () => {
+      const { deps } = unavailable();
+      const response = await handleBuildPreviewRequest(
+        request("/assets/app.js", { headers: { "sec-fetch-dest": "script" } }),
+        deps,
+      );
+      expect(response?.status).toBe(503);
+      expect(response?.headers.get("retry-after")).toBe(
+        String(BUILD_PREVIEW_STARTING_RETRY_SECONDS),
+      );
+      expect(response?.headers.get("content-type")).toContain("text/plain");
+      expect(await response?.text()).toContain("BUILD_PREVIEW_STARTING");
+    });
+
+    it("still verifies the capability first", async () => {
+      const { deps, server } = setup({
+        record: record({ revokedAt: "2026-10-06T00:00:00.000Z" }),
+        server: {
+          fetch: vi.fn(async () => {
+            throw new BuildPreviewInstanceUnavailableError("unavailable");
+          }),
+        },
+      });
+      const response = await handleBuildPreviewRequest(request("/"), deps);
+      expect(response?.status).toBe(410);
+      expect(server.fetch).not.toHaveBeenCalled();
+    });
+
+    it("does not hide any other failure behind a retry", async () => {
+      const { deps } = setup({
+        server: {
+          fetch: vi.fn(async () => null),
+          start: vi.fn(async () => {
+            throw new Error("BUILD_PREVIEW_CONTAINER_EXITED: 1");
+          }),
+        },
+      });
+      await expect(
+        handleBuildPreviewRequest(request("/"), deps),
+      ).rejects.toThrow("BUILD_PREVIEW_CONTAINER_EXITED");
+    });
   });
 
   it("says so when this environment cannot run one", async () => {
