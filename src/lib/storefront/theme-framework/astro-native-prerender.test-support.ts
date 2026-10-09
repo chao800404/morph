@@ -3,8 +3,14 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { NativePrerenderContent } from "../compiler/theme-prerender-content";
+import {
+  NATIVE_BUILD_HOOKS_PATH,
+  NATIVE_BUILD_LOADER_PATH,
+  NATIVE_BUILD_NODE_OPTIONS,
+  nativeBuildHooksSource,
+  nativeBuildLoaderSource,
+} from "./tanstack-start-native-wrapper";
 import {
   ASTRO_WRAPPER_CONFIG_PATH,
   astroPrerenderWorkspaceFiles,
@@ -32,6 +38,8 @@ export type AstroBuildRun = Readonly<{
   /** Every file in the workspace after the build, but its packages. */
   outputs: ReadonlyMap<string, Uint8Array>;
   nonce: string;
+  /** Command lines of the workerd processes the build started. */
+  workerdArgs: readonly string[];
 }>;
 
 function walk(
@@ -62,9 +70,24 @@ export async function runAstroPrerenderBuild(options: {
   nonce?: string;
   /** Files already in the workspace before the build, e.g. stale records. */
   before?: readonly Readonly<{ path: string; content: string }>[];
+  /**
+   * Load the module hook a native build loads first, which gives every
+   * `cloudflare(...)` `inspectorPort: false` (tanstack-start-native-wrapper.ts).
+   */
+  inspectorHook?: boolean;
+  /**
+   * Build at this absolute path rather than a fresh temporary one. The
+   * server bundle records the workspace's path, so builds are compared file
+   * for file only at the same one (the Sandbox always builds in /workspace).
+   */
+  workspace?: string;
+  /** More environment for the build, e.g. a fixed `ASTRO_KEY`. */
+  env?: Readonly<Record<string, string>>;
 }): Promise<AstroBuildRun> {
   const nonce = options.nonce ?? newNonce();
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "morph-astro-a3-"));
+  const workspace = options.workspace
+    ? (fs.mkdirSync(options.workspace, { recursive: true }), options.workspace)
+    : fs.mkdtempSync(path.join(os.tmpdir(), "morph-astro-a3-"));
   try {
     const files = [
       ...options.files,
@@ -75,6 +98,12 @@ export async function runAstroPrerenderBuild(options: {
         nonce,
         testFaults: options.testFaults,
       }),
+      ...(options.inspectorHook
+        ? [
+            { path: NATIVE_BUILD_HOOKS_PATH, content: nativeBuildHooksSource() },
+            { path: NATIVE_BUILD_LOADER_PATH, content: nativeBuildLoaderSource() },
+          ]
+        : []),
     ];
     for (const file of files) {
       const target = path.join(workspace, file.path);
@@ -85,10 +114,13 @@ export async function runAstroPrerenderBuild(options: {
       ASTRO_TOOLCHAIN_NODE_MODULES,
       path.join(workspace, "node_modules"),
     );
-    let exitCode = 0;
-    let output = "";
-    try {
-      const result = await promisify(execFile)(
+    const { exitCode, output, workerdArgs } = await new Promise<{
+      exitCode: number;
+      output: string;
+      workerdArgs: string[];
+    }>((resolve) => {
+      const seen = new Set<string>();
+      const child = execFile(
         process.execPath,
         [
           path.join(ASTRO_TOOLCHAIN_NODE_MODULES, "astro/bin/astro.mjs"),
@@ -102,30 +134,79 @@ export async function runAstroPrerenderBuild(options: {
             PATH: process.env.PATH ?? "",
             HOME: workspace,
             ASTRO_TELEMETRY_DISABLED: "1",
+            ...options.env,
+            ...(options.inspectorHook
+              ? { NODE_OPTIONS: NATIVE_BUILD_NODE_OPTIONS }
+              : {}),
           },
           maxBuffer: 32 * 1024 * 1024,
           timeout: 180_000,
         },
+        (error, stdout, stderr) => {
+          clearInterval(watch);
+          const code = (error as { code?: unknown } | null)?.code;
+          resolve({
+            exitCode: error ? (typeof code === "number" ? code : 1) : 0,
+            output: `${stdout}\n${stderr}`,
+            workerdArgs: [...seen],
+          });
+        },
       );
-      output = `${result.stdout}\n${result.stderr}`;
-    } catch (error) {
-      const failed = error as {
-        code?: number;
-        stdout?: string;
-        stderr?: string;
-      };
-      exitCode = typeof failed.code === "number" ? failed.code : 1;
-      output = `${failed.stdout ?? ""}\n${failed.stderr ?? String(error)}`;
-    }
+      // Every workerd the build starts, by its command line: Miniflare passes
+      // the debugger port as --inspector-addr.
+      const watch = setInterval(() => {
+        for (const cmd of descendantCommands(child.pid)) {
+          if (cmd.includes("workerd")) seen.add(cmd);
+        }
+      }, 25);
+    });
     return {
       exitCode,
       output,
       outputs: walk(workspace, workspace, new Map()),
       nonce,
+      workerdArgs,
     };
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
+}
+
+/** Command lines of every running descendant of `pid` (Linux /proc). */
+function descendantCommands(pid: number | undefined): string[] {
+  if (pid === undefined || !fs.existsSync("/proc")) return [];
+  const parents = new Map<number, number>();
+  for (const entry of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8");
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      parents.set(Number(entry), ppid);
+    } catch {
+      // gone
+    }
+  }
+  const commands: string[] = [];
+  for (const candidate of parents.keys()) {
+    let current: number | undefined = candidate;
+    for (let depth = 0; current && depth < 32; depth++) {
+      current = parents.get(current);
+      if (current === pid) {
+        try {
+          commands.push(
+            fs
+              .readFileSync(`/proc/${candidate}/cmdline`, "utf8")
+              .replaceAll("\0", " ")
+              .trim(),
+          );
+        } catch {
+          // gone
+        }
+        break;
+      }
+    }
+  }
+  return commands;
 }
 
 export const text = (content: Uint8Array | string | undefined) =>

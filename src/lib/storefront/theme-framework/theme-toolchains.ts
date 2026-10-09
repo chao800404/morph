@@ -23,6 +23,8 @@ export type ThemeToolchain = Readonly<{
   root: string;
   /** Where its manifest is; its SHA-256 must equal `id`. */
   manifestPath: string;
+  /** Its `package.json` dependencies, at the versions installed. */
+  directDependencies: Readonly<Record<string, string>>;
 }>;
 
 const TOOLCHAINS: readonly ThemeToolchain[] = GENERATED_SANDBOX_TOOLCHAINS.map(
@@ -31,6 +33,7 @@ const TOOLCHAINS: readonly ThemeToolchain[] = GENERATED_SANDBOX_TOOLCHAINS.map(
     framework: toolchain.framework as ThemeFrameworkId,
     root: toolchain.root,
     manifestPath: `${toolchain.root}/toolchain.manifest.json`,
+    directDependencies: toolchain.directDependencies,
   }),
 );
 

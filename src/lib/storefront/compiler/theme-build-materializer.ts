@@ -11,7 +11,6 @@ import { computeThemeInputHash } from "./theme-compiler-hasher";
 import type { ThemeCompilerFile } from "./theme-compiler.types";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
 import {
-  THEME_START_TOOLCHAIN,
   isPlatformOwnedThemeBuildPath,
   isThemeSourceOnlyPath,
   isThemeStartConfigPath,
@@ -41,10 +40,17 @@ export type MaterializeThemeBuildInputParams = {
    * then refused rather than built another way until the runners can.
    */
   nativeStartBuild?: boolean;
+  /**
+   * The server's Astro switch (`MORPH_ASTRO_THEMES`, never in production;
+   * theme-build-service.factory). Off, a build recorded as Astro is refused
+   * with `THEME_FRAMEWORK_UNAVAILABLE`, as before Astro had an adapter.
+   */
+  astroThemes?: boolean;
 };
 
-/** The compiler identity of a native Start build: the pinned Start version. */
-export const NATIVE_START_COMPILER_ID = "tanstack-start-native";
+import { NATIVE_START_COMPILER_ID } from "../theme-framework/tanstack-start-native-build";
+
+export { NATIVE_START_COMPILER_ID };
 
 const SHA256_DIGEST = /^[0-9a-f]{64}$/;
 
@@ -62,6 +68,8 @@ export function normalizeRevisionSnapshot(
      * before anything else, with `THEME_FRAMEWORK_UNAVAILABLE`.
      */
     framework?: string | null;
+    /** The server's Astro switch; see `MaterializeThemeBuildInputParams`. */
+    astroThemes?: boolean;
   } = {},
 ): {
   files: ThemeCompilerFile[];
@@ -72,7 +80,12 @@ export function normalizeRevisionSnapshot(
 } {
   // Before the files: whatever they hold, a build recorded for a framework
   // Morph cannot build is not built as one it can.
-  const framework = themeFramework(options.framework);
+  const framework = themeFramework(options.framework, {
+    astroThemes: options.astroThemes,
+  });
+  // An Astro project is built with its own configuration or not at all:
+  // there is no platform build of it, and none of Start's layout rules apply.
+  const astro = framework.id === "astro";
   if (!snapshot || !Array.isArray(snapshot) || snapshot.length === 0) {
     throw new Error(
       `EMPTY_OR_CORRUPT_REVISION_SNAPSHOT: Source revision ${sourceRevisionId} snapshot is empty or invalid. Zero files found.`,
@@ -154,7 +167,8 @@ export function normalizeRevisionSnapshot(
     // A native build keeps the project's own configuration: it is what the
     // build runs with, so it is part of the input and of its hash.
     const nativeConfig =
-      options.nativeStartBuild === true && isThemeStartConfigPath(path);
+      (options.nativeStartBuild === true || astro) &&
+      isThemeStartConfigPath(path);
     if (isThemeSourceOnlyPath(path) && !nativeConfig) {
       if (isThemeStartConfigPath(path)) startConfigPaths.push(path);
       continue;
@@ -188,7 +202,7 @@ export function normalizeRevisionSnapshot(
   }
 
   const native =
-    options.nativeStartBuild === true && startConfigPaths.length > 0;
+    astro || (options.nativeStartBuild === true && startConfigPaths.length > 0);
   if (startConfigPaths.length > 0 && !native) {
     throw new Error(
       `NATIVE_START_BUILD_UNAVAILABLE: Source revision ${sourceRevisionId} carries its own build configuration (${startConfigPaths.sort().join(", ")}). Morph cannot build with a Theme's own configuration yet, and will not silently build it with a different one. It stays in the Theme's source; remove it to build with Morph's configuration.`,
@@ -241,8 +255,9 @@ export function normalizeRevisionSnapshot(
   // A migrated source revision has no authored manifest. In that case derive
   // only the runtime facts needed by the materializer from the bounded source
   // snapshot. When a legacy manifest exists it remains the compatibility
-  // oracle until that Theme passes its migration gate.
-  if (!manifestFile) {
+  // oracle until that Theme passes its migration gate. (Start's; an Astro
+  // project's routes are its src/pages/, read by its adapter.)
+  if (!manifestFile && !astro) {
     const sourceRuntime = deriveThemeSourceRuntimeContract(sortedFiles);
     sourceDerivedEntry = sourceRuntime.entry ?? undefined;
     routerFramework = sourceRuntime.routerFramework;
@@ -263,13 +278,17 @@ export function normalizeRevisionSnapshot(
     );
   }
 
-  if (routerFramework !== null && routerFramework !== "tanstack-start") {
+  if (
+    !astro &&
+    routerFramework !== null &&
+    routerFramework !== "tanstack-start"
+  ) {
     throw new Error(
       `UNSUPPORTED_THEME_ROUTER: Theme router framework "${routerFramework || "missing"}" is not supported.`,
     );
   }
 
-  if (routerFramework === "tanstack-start") {
+  if (!astro && routerFramework === "tanstack-start") {
     const routeRegistry = buildThemeRouteRegistry(sortedFiles);
     if (!routeRegistry.valid) {
       throw new Error(
@@ -293,6 +312,9 @@ export function normalizeRevisionSnapshot(
     manifestEntry ??
     sourceDerivedEntry ??
     detectedEntries[0] ??
+    (astro && fileMap.has("src/pages/index.astro")
+      ? "src/pages/index.astro"
+      : undefined) ??
     (fileMap.has("src/routes/index.tsx")
       ? "src/routes/index.tsx"
       : fileMap.has("src/pages/index.tsx")
@@ -306,9 +328,11 @@ export function normalizeRevisionSnapshot(
     a.path.localeCompare(b.path),
   );
   if (binaryFiles.length > 0) {
-    const routePaths = buildThemeRouteRegistry(sortedFiles).routes.map(
-      (route) => route.path,
-    );
+    const routePaths = (
+      astro
+        ? (framework.build.native.routeRegistry(sortedFiles)?.routes ?? [])
+        : buildThemeRouteRegistry(sortedFiles).routes
+    ).map((route) => route.path);
     const publicCheck = checkThemePublicFiles(
       binaryFiles.map((file) => ({ path: file.path, size: file.sizeBytes })),
       routePaths,
@@ -360,6 +384,7 @@ export function materializeThemeBuildInput({
   compilerIdentity,
   contentSnapshot,
   nativeStartBuild,
+  astroThemes,
 }: MaterializeThemeBuildInputParams): StorefrontThemeBuildInput {
   if (
     (build.contentPublicationId ?? null) !== (contentSnapshot?.publicationId ?? null) ||
@@ -386,6 +411,7 @@ export function materializeThemeBuildInput({
     normalizeRevisionSnapshot(revision.snapshot, revision.id, {
       nativeStartBuild,
       framework: build.framework,
+      astroThemes,
     });
   // The hash format and toolchain come from the build's record, and only from
   // it: no step re-reads what is "current".
@@ -426,12 +452,13 @@ export function materializeThemeBuildInput({
     );
   }
 
-  const defaultCompilerId =
-    buildMode === "native" ? NATIVE_START_COMPILER_ID : "tailwind-v4-build";
-  const defaultCompilerVersion =
+  // A native build's identity is its framework's pinned toolchain version.
+  const nativeIdentity =
     buildMode === "native"
-      ? THEME_START_TOOLCHAIN.reactStart
-      : TAILWIND_VERSION;
+      ? themeFramework(framework, { astroThemes }).build.native.compilerIdentity()
+      : null;
+  const defaultCompilerId = nativeIdentity?.id ?? "tailwind-v4-build";
+  const defaultCompilerVersion = nativeIdentity?.version ?? TAILWIND_VERSION;
 
   // Determine compiler identity & guard against identity drift
   let compilerId: string;

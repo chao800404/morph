@@ -14,19 +14,25 @@ ENV MORPH_SANDBOX_BASE_IMAGE=docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713
 # root, for which file permissions are no barrier. A manifest is a
 # compatibility and provenance check made before Theme code runs, not tamper
 # evidence.
+#
+# Each `npm ci` uses a cache directory of its own that the same RUN removes, so
+# no layer keeps npm's download cache or logs. Nothing in the image installs
+# from that cache later, and the manifests do not depend on it.
 COPY sandbox/toolchain-manifest.mjs /opt/morph-sandbox/toolchain-manifest.mjs
 
 # TanStack Start (`package.json` generated from src/cms.config.ts by
 # `pnpm generate:theme-types`).
 COPY sandbox/toolchains/tanstack-start-1.168/package.json sandbox/toolchains/tanstack-start-1.168/package-lock.json /opt/morph-toolchain/tanstack-start-1.168/
 RUN cd /opt/morph-toolchain/tanstack-start-1.168 \
-  && npm ci --no-audit --no-fund \
+  && npm ci --no-audit --no-fund --cache /tmp/morph-npm-cache \
+  && rm -rf /tmp/morph-npm-cache \
   && node /opt/morph-sandbox/toolchain-manifest.mjs tanstack-start .
 
 # Astro: installed and recorded only. Not offered to any Theme yet.
 COPY sandbox/toolchains/astro-7.3/package.json sandbox/toolchains/astro-7.3/package-lock.json /opt/morph-toolchain/astro-7.3/
 RUN cd /opt/morph-toolchain/astro-7.3 \
-  && npm ci --no-audit --no-fund \
+  && npm ci --no-audit --no-fund --cache /tmp/morph-npm-cache \
+  && rm -rf /tmp/morph-npm-cache \
   && node /opt/morph-sandbox/toolchain-manifest.mjs astro .
 
 # Platform tools (deploy, Build Preview): a fixed Wrangler of their own, never
@@ -34,7 +40,8 @@ RUN cd /opt/morph-toolchain/astro-7.3 \
 # security boundary inside one container.
 COPY sandbox/platform/package.json sandbox/platform/package-lock.json /opt/morph-platform/
 RUN cd /opt/morph-platform \
-  && npm ci --no-audit --no-fund \
+  && npm ci --no-audit --no-fund --cache /tmp/morph-npm-cache \
+  && rm -rf /tmp/morph-npm-cache \
   && node /opt/morph-sandbox/toolchain-manifest.mjs platform .
 
 # Each build or preview links /workspace/node_modules to its own toolchain when

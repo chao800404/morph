@@ -1,4 +1,7 @@
-import { resolveThemeFramework } from "../theme-framework";
+import {
+  resolveThemeFramework,
+  type ThemeFrameworkOptions,
+} from "../theme-framework";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
@@ -117,6 +120,15 @@ export function nativeBuildResult(options: {
   logs: ThemeBuildRunnerLog[];
   addLog(level: "info" | "warn" | "error", message: string): void;
   startTime: number;
+  /** The pass's nonce, for frameworks whose prerender records carry one. */
+  nonce?: string;
+  /** The server's framework switches this runner was given. */
+  frameworks?: ThemeFrameworkOptions;
+  /**
+   * The build's own command failed, with this stage and message. Its records
+   * may still say why — a refused content read, which the passes act on.
+   */
+  buildFailure?: Readonly<{ stage: string; message: string }>;
 }): ThemeBuildRunnerResult {
   const { input, routeRegistry, limits, logs, addLog, startTime } = options;
   const fail = (stage: string, msg: string): ThemeBuildRunnerResult => {
@@ -136,16 +148,34 @@ export function nativeBuildResult(options: {
   // The framework the build records, not whichever one is the default: an
   // artifact is collected, verified and described by the rules of the
   // framework that built it.
-  const framework = resolveThemeFramework(input.framework);
+  const framework = resolveThemeFramework(input.framework, options.frameworks);
   if (!framework.ok) return fail("framework", framework.message);
   const native = framework.framework.build.native;
+  // A framework that binds its records to the pass gets nothing it can
+  // accept without the pass's nonce.
+  const nonce = options.nonce ?? "";
 
-  // A page that read Morph content while prerendering, and was refused,
-  // holds component defaults where the author's content belongs; Start
-  // reports it as built. The read is the evidence, not the HTML.
-  const refused = options.outputs.get(NATIVE_PRERENDER_REFUSED_READS_PATH);
-  if (refused !== undefined) {
-    return fail("prerender-content", refusedReadsMessage(refused));
+  if (options.buildFailure) {
+    const cause = native.failedBuildCause?.(options.outputs, nonce);
+    return cause
+      ? fail(cause.stage, cause.message)
+      : fail(options.buildFailure.stage, options.buildFailure.message);
+  }
+
+  if (native.prerenderRecordsFailure) {
+    // Decided from the records, not from the build's exit code or the HTML:
+    // a Theme that catches a failed read renders its defaults and the build
+    // still succeeds.
+    const records = native.prerenderRecordsFailure(options.outputs, nonce);
+    if (records) return fail(records.stage, records.message);
+  } else {
+    // A page that read Morph content while prerendering, and was refused,
+    // holds component defaults where the author's content belongs; Start
+    // reports it as built. The read is the evidence, not the HTML.
+    const refused = options.outputs.get(NATIVE_PRERENDER_REFUSED_READS_PATH);
+    if (refused !== undefined) {
+      return fail("prerender-content", refusedReadsMessage(refused));
+    }
   }
 
   let collected: ReturnType<typeof native.collect>;
