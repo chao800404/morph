@@ -7,11 +7,12 @@ import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  isServerFunctionCall,
   openContentTab,
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { signedInPage } from "./native-acceptance";
+import { savedField, signedInPage } from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -194,16 +195,29 @@ async function typeHeroMarker(page: Page, marker: string) {
     await openContentTab(page);
   }
   await expect(field).toBeVisible({ timeout: 30_000 });
+  // The edit is saved after the editor's debounce, not when the canvas shows
+  // it. "Unpublished" is no evidence either: the save status already says so
+  // before the edit and does not show Saving… while the debounce runs. A
+  // test that navigates on either leaves before the save is sent, and the
+  // marker never reaches the server (CI run 37964261465). So it waits for
+  // the save carrying the marker, and reads the draft back.
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
+      (response.request().postData() ?? "").includes(marker),
+    { timeout: 30_000 },
+  );
   await field.fill(marker);
   await field.press("Tab");
   await expect(
     previewFrame(page).getByText(marker, { exact: false }).first(),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
-    "aria-label",
-    "Unpublished",
-    { timeout: 30_000 },
-  );
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  // A refused write still answers 200; the refusal is in the body.
+  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  await savedField(page, scope!, marker);
 }
 
 async function expectLiveProbe(page: Page, marker: string) {
