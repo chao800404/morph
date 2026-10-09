@@ -669,7 +669,14 @@ OCC）→ 該實例更新、其他實例不變**。
 - 「文字升級成欄位」要寫入 `.fields.ts`，而這件事目前連 TSX 都還是 Code only（`fields-in-sidecar`）。
   `.astro` 跟著同一個 PR 處理，不另做一套。
 
-### 3.6 L1.5 設計（草稿，2026-10-10，待使用者審閱；本節合併不代表核准實作）
+### 3.6 L1.5 設計（草稿第 2 版，2026-10-10，待使用者審閱；本節合併不代表核准實作）
+
+第 2 版依使用者對第 1 版的審閱修改：
+
+- `section()` 不再是必填寫法，原生寫法是支援目標；
+- 「只解析 frontmatter」改為明列它自己的可信邊界；
+- 自動標記不得新增元素；
+- 標記只是選取候選。
 
 **範圍**（使用者 2026-10-10 界定）：
 
@@ -677,42 +684,43 @@ OCC）→ 該實例更新、其他實例不變**。
 - **L1.5b 內容欄位編輯**：確認頁面或 layout、section 實例、元件來源與 `.fields.ts`，沿用 Core 的欄位驗證與 OCC。
 - **L2 原始碼改寫**：樣式與結構修改，不在本節。
 
-**第一版限定**：
+**目標與第一版的差距**（不宣稱第一版已達成目標）：
 
-- 真正的 `.astro` 頁面與元件；
-- 靜態可確認的內容綁定；
-- 同一元件的兩個實例不互相串用；
-- 逐欄 props 與解構列為驗收案例，不要求作者改用 spread。
+- **目標**：作者照框架的正常寫法讀取內容，Design 就能編輯，例如 `const { hero } = await morph.pages.get("/")` 之後寫 `<Hero title={hero.title} />`，或解構、逐欄 props。
+- **第一版**：只能確認下面 3.6.3 列出的綁定形式。辨識不了的部分**只關閉該項 Design 能力**（不提供欄位編輯，或只有 L1.5a 的跳到 Code），不禁止儲存、Live Preview、建置或發布，也不在 Code 中報錯阻擋。
 
 **與 3.2、3.3 的關係**：
 
-- 3.2 與 3.3 原本把來源位置與實例標記都放在 Morph 端，以可信解析器改寫 `.astro`，所以 L1.5 整個依賴解析器 Worker（0.3、M1c-C）。
-- 本節的前提不同：DOM 上的位置與區塊標記**只是提示**，寫入的可信度由 Core 端的靜態綁定確認、欄位驗證與 OCC 提供。在這個前提下，L1.5 不需要解析器 Worker（理由與界線見下）。
+- 3.2 與 3.3 原本把來源位置與實例標記都放在 Morph 端，以可信解析器改寫 `.astro`。
+- 本節把「預覽中的標記」與「Core 端的確認」分開：標記在預覽容器中產生，只是提示與選取候選；確認一律在 Core 從原始碼做。
 - 本節若被採用，取代 3.2、3.3 中屬於 L1.5 的部分；3.3 的「規劃時改寫」與 3.5 留給 L2。
 
-#### 3.6.1 可信解析是否為前置條件：逐項
+#### 3.6.1 可信解析：哪些步驟需要、在哪裡做
 
-| 步驟 | 需要可信 `.astro` 解析嗎 | 理由 |
-| --- | --- | --- |
-| L1.5a 在預覽中產生來源位置 | 否 | 位置只用來在 Code 開檔，不授予寫入；開檔前 Core 仍照現有規則確認路徑是這個 Theme 的檔案 |
-| L1.5b 在預覽中產生區塊標記 | 否 | 標記錯了只會選錯位置；寫入仍由下一列確認 |
-| L1.5b 確認「這個文件的 slot X 綁定到元件 C」 | 否，只解析 frontmatter | frontmatter 是 TypeScript，Core 已有 Babel；不解析模板（見 3.6.3） |
-| L1.5b 欄位驗證、OCC、所有權 | 否 | 沿用現有流程，與框架無關 |
-| 綁定寫在模板裡（`<Hero {...section(Astro, "hero", Hero)} />`） | 是 | 第一版不支援，以 unconfirmed 拒絕 |
-| 元件不是靜態 import（動態元件、經由 `Astro.props` 傳入） | 是 | 同上 |
-| slot id 不是字面值（迴圈、條件產生） | 是 | 同上 |
-| 確認某個 slot 實際渲染在哪個元素 | 是 | 屬於 L2 |
-| 任何原始碼改寫（文字、class、結構、文字升級成欄位） | 是 | L2，沿用 3.5 |
+「不需要新的解析器 Worker」不等於「不需要可信解析」。Core 端的確認全都是可信解析，只是有的能用 Core 現有的 Babel 完成，有的需要 0.3 的 `.astro` 解析器。
+
+| 步驟 | 在哪裡做 | 是否可信解析 | 需要 `.astro` 解析器嗎 |
+| --- | --- | --- | --- |
+| L1.5a 預覽中的來源位置 | 預覽容器 | 否，只是提示 | 否 |
+| 預覽中的區塊邊界標記 | 預覽容器 | 否，只是選取候選 | 否 |
+| 從 `.astro` 擷取 frontmatter | Core，從原始碼自己擷取 | 是（3.6.4） | 第一版否；擷取若無法可靠成立，就收窄或改用解析器 |
+| 確認 frontmatter 中的明確綁定 `section(Astro, "slot", Component)` | Core，Babel | 是 | 否 |
+| 確認原生寫法的綁定（`morph.pages.get` 的回傳被哪個元件、哪個 prop 使用） | Core | 是，需要分析模板 | **是** |
+| 欄位驗證、所有權、OCC | Core，現有流程 | — | 否 |
+| 確認某個 slot 實際渲染在畫面上的哪個元素 | — | 第一版不做，只有候選 | L2 |
+| 任何原始碼改寫 | Core | 是 | 是（L2，沿用 3.5） |
+
+**結論**：
+
+- 只靠 Babel 時，第一版能確認的只有 `section()` 這種**可選的**明確綁定，而且前提是 frontmatter 擷取經 3.6.4 的實驗證明可靠。
+- 原生寫法要等 Core 能可信地分析模板（0.3 的解析器，本機以 service binding 執行；部署要另外核准）。
+- 不為了少一個 Worker 而放寬信任條件：擷取不可靠時，L1.5b 收窄到更嚴格的形式，或改為依賴解析器。
 
 #### 3.6.2 L1.5a 點選定位
 
-- **來源**：Astro 7 的編譯器選項 `annotateSourceFile` 會在每個元素上加 `data-astro-source-file` 與 `data-astro-source-loc`，標的是元素寫在哪個 `.astro` 檔。元件內的元素標元件自己的檔。目前 Astro 只在開發工具列開啟時打開這個選項（`astro/dist/core/compile/compile.js`），而預覽包裝設定為了安全關掉了工具列。
-- **【待驗】**：
-  - 能否在工具列關閉時打開標記：預覽包裝的 integration 能否影響這個編譯選項，或者開工具列但不注入它的 client；
-  - 工具列本身是否移除這些屬性（3.2 原本寫「會被工具列移除」，要以實際 DOM 確認）。
-  - 兩者都不成立時，L1.5a 改在預覽容器內以 Astro 自己的 `@astrojs/compiler-rs` 解析加上標記。這仍是提示，不需要可信解析器。
-- **bridge**：點選時讀最近的位置屬性，放進既有選取訊息的 `sourceFilePath` 與 `sourceLocation`（協定已有這兩個欄位）。編輯器切到 Code 並捲到該行。
-- **信任**：屬性來自預覽容器，只當導覽提示；不在這個 Theme 的檔案（`node_modules`、工作區外、平台檔）不開。
+- **來源**：Astro 7 的編譯器選項 `annotateSourceFile` 會在元素上加 `data-astro-source-file` 與 `data-astro-source-loc`，標的是元素寫在哪個 `.astro` 檔。目前只在開發工具列開啟時打開（`astro/dist/core/compile/compile.js`），而預覽包裝設定關掉了工具列。
+- **bridge**：點選時讀最近的位置屬性，放進既有選取訊息的 `sourceFilePath` 與 `sourceLocation`。編輯器切到 Code 並捲到該行。
+- **信任**：屬性來自預覽容器，只是導覽提示，不授予寫入。不在這個 Theme 的檔案（`node_modules`、工作區外、平台檔）不開。
 - **驗收**：
   - 點元件內的元素，跳到元件檔的正確行；
   - 點頁面上的元素，跳到頁面檔；
@@ -721,58 +729,84 @@ OCC）→ 該實例更新、其他實例不變**。
 
 #### 3.6.3 L1.5b 內容欄位編輯
 
-**作者寫法（第一版唯一支援的綁定）**：
+**支援目標與第一版**：
 
-```astro
----
-import Hero from "../components/Hero.astro";
-import { section } from "../morph/content";
-const hero = await section(Astro, "hero", Hero);
-const promo = await section(Astro, "promo", Hero); // 同一元件、另一個實例
-const { title } = hero;                            // 解構可以
----
-<Hero {...hero} />
-<Hero title={promo.title} image={promo.image} />  <!-- 逐欄可以 -->
-<h2>{title}</h2>
-```
+| 寫法 | 目標 | 第一版 |
+| --- | --- | --- |
+| `const hero = await section(Astro, "hero", Hero)`，模板中 spread、逐欄、解構 | 支援 | 支援，前提是 3.6.4 通過 |
+| `const { hero } = await morph.pages.get("/")`，模板 `<Hero title={hero.title} />` | 支援 | 需要可信模板分析；在那之前沒有欄位編輯，只有跳到 Code |
+| 原生寫法的解構與逐欄 props | 支援 | 同上 |
+| 綁定寫在模板內、動態元件、非字面的 slot id | 待評估 | 沒有欄位編輯 |
 
-- **`section(Astro, slot, Component)`**：Morph 為 Astro 提供的內容讀取（Start 的 `content(slot)` 的對應）。從 `x-morph-content-origin` 讀這個路徑的內容，回傳 slot 的 props。模板怎麼使用回傳值不限。
+- **`section(Astro, slot, Component)` 是可選的明確出口**，不是必填寫法。它的作用是把「這份內容由哪個元件使用」寫在 frontmatter，讓 Core 不必分析模板。作者不用它時，Theme 照樣能存、預覽與建置，只是這一處在第一版沒有欄位編輯。
 - **實例識別**：(文件範圍, slot id)。
-  - 頁面：`src/pages/...` 由 `astroRouteRegistry`（A3）對到路由路徑，再走 Core 現有「路由擁有的文件或依 template 類型」的對應；
-  - layout：layout 元件的 frontmatter 以同樣方式綁定 layout 文件的 slot；
-  - 同一元件兩次是兩個 slot，各自的 id；同一個 slot 呼叫兩次是同一個實例。
-- **Core 端的可信鏈**：沿用 `resolveSectionSourceComponent` 的形態，新增 Astro 分支。
-  1. 取文件擁有的 `.astro` 檔。
-  2. 取出 frontmatter。嚴格規則：檔案第一行是 `---`，到下一個整行只有 `---` 為止；不符合就是 unconfirmed。
-  3. 以 Babel 解析成 TypeScript，找 `section(Astro, "<字面 slot>", <識別字>)`。識別字必須是 frontmatter 中、從相對路徑 default import 的 `.astro` 或 `.tsx` 元件。
-  4. 元件原始檔 → 同名 `.fields.ts`。`.fields.ts` 的規則（`contentFieldsSidecarPath`）目前只認 `.tsx` 與 `.jsx`，要擴充到 `.astro`，仍是同一條共用規則。
-  5. 既有的欄位驗證、所有權與 OCC。
-  - 任一步無法確認就拒絕（fail closed）。manifest 只作為既有的相容來源，不是必經路徑。
-- **為何只解析 frontmatter 也可信**：切錯 frontmatter 的結果是 Babel 解析失敗，或找不到綁定，兩者都拒絕。即使綁定被誤判，寫入範圍仍受 `.fields.ts` 的宣告與 OCC 限制，而且只寫入作者自己的草稿。模板不參與寫入判斷。
-- **預覽中的區塊標記**（選取需要 `data-storefront-section-id`）——**待決，請使用者選**：
-  - **A（建議）預覽編譯時加標記**：預覽容器內以 Astro 自己的編譯器，在使用 `section()` 回傳值的元件呼叫處包一層 `display: contents` 的標記，比照 TSX 的 wrapper 規則。作者不必多寫任何東西；標記只是提示，錯了只會選錯位置。需要在容器內解析模板，這是預覽專用的轉換，不是可信解析。
-  - **B 作者包裝**：作者寫 `<Section of={hero}><Hero {...hero} /></Section>`，建置時不輸出包裝。不需要任何模板解析，但每個 section 都要作者多寫一層。
+  - 頁面：`src/pages/...` 由 `astroRouteRegistry`（A3）對到路由路徑，再走 Core 現有的文件對應；
+  - layout：layout 元件的 frontmatter；
+  - 同一元件兩次是兩個 slot；同一個 slot 呼叫兩次是同一個實例。
+- **Core 端的確認**（第一版，沿用 `resolveSectionSourceComponent` 的形態，新增 Astro 分支）：
+  1. 由 Core 從文件擁有的 `.astro` 原始碼擷取 frontmatter（3.6.4）。不採用容器回傳的任何擷取結果。
+  2. 以 Babel 解析，找 `section(Astro, "<字面 slot>", <識別字>)`。識別字必須是 frontmatter 中、從相對路徑 default import 的 `.astro` 或 `.tsx` 元件。
+  3. 元件原始檔 → 同名 `.fields.ts`。`contentFieldsSidecarPath` 擴充到 `.astro`，仍是同一條共用規則。
+  4. 既有的欄位驗證、所有權與 OCC。
+  - 任一步無法確認：這一處沒有欄位編輯（unconfirmed），不寫入。儲存與建置不受影響。
+- **標記的定位**：預覽中的區塊邊界標記**只提出選取候選，不足以單獨確認內容綁定**。
+  - 權限與 OCC 能擋下越權與過時的寫入，但不能證明使用者點到的畫面確實對應那個欄位。
+  - 緩解：
+    - 預覽轉換先移除作者自己寫的同名標記，再加上自己的；
+    - Inspector 只顯示 Core 對 (文件, slot) 確認過的欄位，標記上的 slot 沒被確認就沒有欄位；
+    - 3.6.5 的驗收包含偽造與失效標記。
+  - 剩下的風險：標記錯置時，可能顯示同一文件中另一個已確認 slot 的欄位。第一版接受這個風險，並在驗收中量測；要消除它需要確認渲染位置，屬於 L2。
 - **內容更新**：存好 → 同步 → 確認 → 重新載入（A6b-1、A6c 已有伺服器端；A6b-2 接線）。
-- **驗收**（用真正的 `.astro` 頁面與元件，不用帶著 Start TSX 的網站）：
-  - 同一元件兩個實例，各自編輯，互不影響；
-  - spread、逐欄、解構三種寫法都能編輯；
-  - layout 的區塊；
-  - fail-closed：模板內綁定、動態元件、非字面 slot、沒有 `.fields.ts`，各自被拒且不寫入；
-  - 重新載入後恢復選取（6.1）。
 
-#### 3.6.4 開始實作前要先做的小實驗
+#### 3.6.4 frontmatter 的可信擷取（L1.5b 的閘門）
 
-1. `annotateSourceFile` 能否在工具列關閉時打開，以及屬性在 DOM 中是否保留（L1.5a 的閘門）。
-2. 預覽容器內以 `@astrojs/compiler-rs` 加區塊標記是否可行，以及 HMR 與 `full-reload` 下是否穩定（若選 A）。
-3. frontmatter 擷取規則是否與 Astro 編譯器一致：以官方 fixture 與邊界案例比對，例如字串中含 `---`，以及檔案開頭有註解。
+- **由 Core 從原始碼擷取，不信任容器**；不能只切 `---`。
+- **規則草案**：
+  - 檔案開頭是 frontmatter 的開頭 fence（容許的前置內容，例如 BOM、空白，以實驗結果為準，其餘一律不接受）；
+  - 對之後每一行「只含 `---`」的候選，取開頭到候選之間的文字給 Babel 完整解析，**第一個能完整解析的候選**才是結尾；
+  - 落在字串、模板字串、區塊註解中的 `---` 會讓前段解析失敗，因而被排除。
+  - 擷取結果必須與 Astro 自己的編譯器一致（下面的差分實驗）；不一致的形式一律 unconfirmed。
+- **差分實驗**：以 `@astrojs/compiler-rs` 的解析結果為對照，比對 Core 的擷取。案例至少包括：
+  - 官方 fixture 與 Starter；
+  - 模板字串、字串、區塊註解、續行反斜線中的 `---`；
+  - `---` 後有空白、CRLF、BOM、檔案開頭有空白或註解；
+  - 沒有結尾 fence、多個 frontmatter 樣式的區塊；
+  - 模板中出現 `---`（例如 Markdown 或 `<pre>`）；
+  - frontmatter 內有 JSX 或 TypeScript 專屬語法；
+  - 刻意構造、讓「前段能解析」卻不是 Astro 認定結尾的輸入。
+- **判定**：
+  - 全部一致：L1.5b 第一版成立；
+  - 有不一致：先收窄（只接受最嚴格的形式），收窄後仍不可靠，就改為依賴解析器，不放寬。
 
-#### 3.6.5 完整編輯驗收的前提（使用者 2026-10-10 要求追蹤，不因 CI 綠燈結案）
+#### 3.6.5 預覽中的自動區塊標記（使用者選 A）
+
+- **做法**：預覽容器內以 Astro 自己的編譯器處理 `.astro`。在使用 `section()` 回傳值、或（日後）經確認的原生綁定的元件呼叫處，前後插入**邊界註解**（例如 `<!--morph:section hero-->` 與結束註解）。bridge 以兩個註解之間的節點作為該實例的範圍。
+- **不新增元素**：不用 wrapper，不改排版、不改元件行為；多根節點的元件，範圍涵蓋所有根。
+- **待實驗確認**：
+  - Astro 的 HTML 輸出（含 `compressHTML`）是否保留這些註解；
+  - 註解對 CSS 選擇器（`:first-child`、`:empty`、`>`、`+`）與元件行為是否沒有影響；
+  - HMR 與 `full-reload` 後是否穩定。
+- **只在預覽**：不寫回作者的原始碼，建置與發布不經過這個轉換。
+- **驗收**：
+  - 不增加任何元素，排版與元件行為不變（同一頁有無標記的 DOM 元素與樣式比對）；
+  - 多根節點、同一元件兩個實例、巢狀元件，選取範圍不互相串用；
+  - 標記只存在於預覽的輸出，作者原始碼與建置產物中沒有；
+  - 偽造標記（作者手寫、或在頁面上以腳本加入）不能讓 Core 接受任何未確認的寫入；
+  - 失效標記（slot 已改名或刪除）不觸發錯誤寫入，只是沒有欄位。
+
+#### 3.6.6 開始實作前的實驗
+
+1. `annotateSourceFile` 能否在工具列關閉時打開，以及屬性在 DOM 中是否保留（L1.5a）。
+2. frontmatter 擷取的差分實驗，包含惡意與歧義案例（3.6.4，L1.5b 的閘門）。
+3. 邊界註解在 Astro 輸出中的保留、CSS 影響與 HMR 穩定性（3.6.5）。
+
+#### 3.6.7 完整編輯驗收的前提（使用者 2026-10-10 要求追蹤，不因 CI 綠燈結案）
 
 1. **防抖期間離開會丟失編輯**：#189 只修了測試，產品端的修正另有負責人，仍待完成。
 2. **並行同步後的平台中斷**（6.7）：需要有結論，或明確的停止條件；它直接影響 L1.5b 的內容刷新。
 3. **`content-module-restore.spec.ts` 偶發失敗**：保留為未解紀錄，不以重跑當成修好。
 
-可以先寫設計與做 3.6.4 的實驗；L1.5b 的完整編輯驗收要等這三項受控之後。
+可以先修訂設計並做 3.6.6 的實驗；L1.5b 的完整編輯驗收要等這三項受控之後。
 
 ## 4. 內容
 
