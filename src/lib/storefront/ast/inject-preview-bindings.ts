@@ -64,7 +64,69 @@ export type PreviewBindingsResult = Readonly<{
   warnings: ReadonlyArray<{ path: string; message: string }>;
 }>;
 
-type Insertion = { at: number; text: string };
+/**
+ * Text spliced into the source at one offset. A wrapper's two halves carry the
+ * span they enclose, because several insertions can share an offset and only
+ * the span says which order keeps the tags nested.
+ */
+type Insertion = {
+  at: number;
+  text: string;
+  wrapper?: Readonly<{
+    side: "open" | "close";
+    kind: WrapperKind;
+    start: number;
+    end: number;
+  }>;
+};
+
+type WrapperKind = "row" | "section" | "content";
+
+/**
+ * Which wrapper goes outside when two enclose exactly the same element. A row
+ * wrapper is outermost because it is the array child and carries the row's
+ * key; a section sits inside the row it was rendered for. A content wrapper
+ * never shares an element with either — both already wrap it — but has a
+ * place here so the order never rests on which was recorded first.
+ */
+const WRAPPER_NESTING: Readonly<Record<WrapperKind, number>> = {
+  row: 0,
+  section: 1,
+  content: 2,
+};
+
+/**
+ * Left-to-right order of the insertions that share an offset. Wrappers closing
+ * there come first, innermost first, then anything else, then wrappers opening
+ * there, outermost first. Sections written back to back share an offset: the
+ * first one's `</div>` and the next one's opening tag. In the other order the
+ * second section would render inside the first one's wrapper and the editor
+ * would credit its fields to the wrong section. Of two wrappers around the
+ * same element, `WRAPPER_NESTING` decides which is outside; they close in the
+ * reverse of the order they open.
+ */
+function compareInsertions(
+  a: Insertion & { order: number },
+  b: Insertion & { order: number },
+): number {
+  if (a.at !== b.at) return a.at - b.at;
+  const rank = (insertion: Insertion) =>
+    insertion.wrapper?.side === "close"
+      ? 0
+      : insertion.wrapper?.side === "open"
+        ? 2
+        : 1;
+  const byRank = rank(a) - rank(b);
+  // Plain insertions never share an offset with each other in practice; the
+  // recorded order only keeps the sort total.
+  if (byRank !== 0 || !a.wrapper || !b.wrapper)
+    return byRank || a.order - b.order;
+  const outerFirst =
+    b.wrapper.end - a.wrapper.end ||
+    a.wrapper.start - b.wrapper.start ||
+    WRAPPER_NESTING[a.wrapper.kind] - WRAPPER_NESTING[b.wrapper.kind];
+  return a.wrapper.side === "open" ? outerFirst : -outerFirst;
+}
 
 /** One `.map()` callback's row and index variable names. */
 type RowScope = Readonly<{ item: string | null; index: string | null }>;
@@ -613,6 +675,24 @@ export function injectPreviewBindings(
     const usedIdentifierNames = identifierNames(ast);
     const pageVariables = collectPageVariables(ast);
     const insertions: Insertion[] = [];
+    const wrap = (
+      kind: WrapperKind,
+      start: number,
+      end: number,
+      open: string,
+      close: string,
+    ) => {
+      insertions.push({
+        at: start,
+        text: open,
+        wrapper: { side: "open", kind, start, end },
+      });
+      insertions.push({
+        at: end,
+        text: close,
+        wrapper: { side: "close", kind, start, end },
+      });
+    };
     const slotIds: string[] = [];
     // Component rows the repeated-field branch has already wrapped. The row is
     // reached a second time as an element in its own right, and wrapping it
@@ -701,11 +781,13 @@ export function injectPreviewBindings(
             // The row is a component, and an attribute put on one becomes a
             // prop it is free to ignore — it would never reach the page. Same
             // answer as a section: wrap it in something taken out of layout.
-            insertions.push({
-              at: row.start,
-              text: `<div${readKeyAttributeSource(row, file.content) ?? ""}${attributes} ${PREVIEW_ROW_WRAPPER_ATTRIBUTE}="" style={{ display: "contents" }}>`,
-            });
-            insertions.push({ at: row.end, text: "</div>" });
+            wrap(
+              "row",
+              row.start,
+              row.end,
+              `<div${readKeyAttributeSource(row, file.content) ?? ""}${attributes} ${PREVIEW_ROW_WRAPPER_ATTRIBUTE}="" style={{ display: "contents" }}>`,
+              "</div>",
+            );
             wrappedRows.add(row.start);
           }
         }
@@ -732,11 +814,13 @@ export function injectPreviewBindings(
         const slotId = readSectionSlotId(opening, pageVariables);
         if (slotId && node.start != null && node.end != null) {
           slotIds.push(slotId);
-          insertions.push({
-            at: node.start,
-            text: `<div ${SECTION_ID_ATTRIBUTE}="${escapeAttribute(slotId)}" style={{ display: "contents" }}>`,
-          });
-          insertions.push({ at: node.end, text: "</div>" });
+          wrap(
+            "section",
+            node.start,
+            node.end,
+            `<div ${SECTION_ID_ATTRIBUTE}="${escapeAttribute(slotId)}" style={{ display: "contents" }}>`,
+            "</div>",
+          );
         }
 
         if (
@@ -844,11 +928,13 @@ export function injectPreviewBindings(
               (arrayPath && scope.item
                 ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
                 : "");
-            insertions.push({
-              at: node.start,
-              text: `<span${readKeyAttributeSource(node, file.content) ?? ""}${attributes} style={{ display: "contents" }}>`,
-            });
-            insertions.push({ at: node.end, text: "</span>" });
+            wrap(
+              "content",
+              node.start,
+              node.end,
+              `<span${readKeyAttributeSource(node, file.content) ?? ""}${attributes} style={{ display: "contents" }}>`,
+              "</span>",
+            );
             contentWrappers += 1;
             count += 1;
           }
@@ -880,15 +966,18 @@ export function injectPreviewBindings(
     sections[file.path] = slotIds;
     if (insertions.length === 0) return file;
 
-    // Applied last-first so an earlier offset is never shifted by a later one.
-    insertions.sort((a, b) => b.at - a.at);
-    let content = file.content;
-    for (const insertion of insertions) {
-      content =
-        content.slice(0, insertion.at) +
-        insertion.text +
-        content.slice(insertion.at);
+    // Every offset refers to the original source, so the pieces are joined in
+    // one pass rather than spliced one at a time.
+    const ordered = insertions
+      .map((insertion, order) => ({ ...insertion, order }))
+      .sort(compareInsertions);
+    let content = "";
+    let copied = 0;
+    for (const insertion of ordered) {
+      content += file.content.slice(copied, insertion.at) + insertion.text;
+      copied = insertion.at;
     }
+    content += file.content.slice(copied);
     annotated[file.path] = count;
     return { path: file.path, content };
   });
