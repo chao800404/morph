@@ -47,6 +47,8 @@ export const LOCAL_PREVIEW_SIDECAR_PATHS = {
    * (docs/astro-theme-plan.md 6.5).
    */
   writeContent: "/writeContent",
+  /** The confirmation alone, for a sync whose answer was lost (6.6). */
+  confirmContent: "/confirmContent",
   /**
    * A transport preparation step of `start`, not an operation of its own:
    * one binary file's bytes, raw, sent before the start that names them. The
@@ -143,6 +145,10 @@ export type LocalPreviewSidecarOperations = Readonly<{
   }>;
   writeContent: Readonly<{
     request: LocalPreviewSidecarWriteContentRequest;
+    response: PreviewContentWriteResult;
+  }>;
+  confirmContent: Readonly<{
+    request: { previewId: string; ticket: number };
     response: PreviewContentWriteResult;
   }>;
   /** Raw bytes in the body; which file they are is in the headers above. */
