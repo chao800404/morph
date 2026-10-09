@@ -50,6 +50,9 @@ async function main() {
 }
 
 main().catch((error) => {
+  // The whole stack, into the start's log: the message alone does not say
+  // which part of the dev server failed.
+  console.error(error instanceof Error ? (error.stack ?? error.message) : error);
   process.send?.({
     type: "error",
     message: error instanceof Error ? error.message : String(error),

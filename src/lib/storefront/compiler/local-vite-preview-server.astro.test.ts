@@ -65,7 +65,15 @@ beforeAll(async () => {
     astroThemes: true,
     previewContent: previewContent as never,
   });
-  if (!started.ok) throw new Error(`${started.stage}: ${started.errorMessage}`);
+  if (!started.ok) {
+    // The dev server's own last lines say which part of it failed.
+    throw new Error(
+      [
+        `${started.stage}: ${started.errorMessage}`,
+        ...(started.logs ?? []).slice(-40),
+      ].join("\n"),
+    );
+  }
   origin = new URL(started.url).origin;
   expect(started.url).toBe(`${origin}/`);
 }, 180_000);
