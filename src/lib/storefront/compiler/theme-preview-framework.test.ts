@@ -64,7 +64,7 @@ describe("a Live Preview of a framework Morph cannot preview", () => {
     );
   });
 
-  it("is refused by the Sandbox transport for Astro even with the switch, until it starts astro dev", async () => {
+  it("reaches for a container for Astro only with the switch", async () => {
     let acquired = 0;
     const server = new CloudflareSandboxVitePreviewServer({
       sandboxProvider: {
@@ -75,18 +75,8 @@ describe("a Live Preview of a framework Morph cannot preview", () => {
       },
     });
 
-    const result = await server.start(
-      input({ framework: "astro", astroThemes: true }),
-    );
-
-    expect(result).toMatchObject({
-      ok: false,
-      stage: "preview-framework",
-      errorMessage: expect.stringMatching(
-        /^THEME_FRAMEWORK_UNAVAILABLE: The container Live Preview cannot start/,
-      ),
-    });
-    expect(acquired).toBe(0);
+    await server.start(input({ framework: "astro", astroThemes: true }));
+    expect(acquired).toBe(1);
   });
 
   it("reaches the transport's own checks for Astro with the switch on the local transport", async () => {

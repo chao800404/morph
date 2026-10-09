@@ -5,6 +5,8 @@ import { isDirtyWorkspaceMarker } from "./theme-workspace-path";
 import { planFencedStart, planFencedWrite } from "./preview-write-fence";
 import {
   applyFencedRequest,
+  applyPreviewContentRequest,
+  type PreviewContentRequest,
   PREVIEW_FENCE_LEDGER_PATH,
   PREVIEW_START_STAGING_PREFIX,
   runFencedWriteInSandbox,
@@ -23,6 +25,8 @@ import {
   START_TOOLCHAIN,
   answerToolchainCommand,
 } from "./sandbox-toolchain.test-support";
+import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtures";
+import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
 
 type Harness = {
   session: PreviewServerSession;
@@ -32,6 +36,7 @@ type Harness = {
   deletedPaths: string[];
   commands: string[];
   envs: Array<Record<string, string> | undefined>;
+  cwds: Array<string | undefined>;
   exposed: Array<{ port: number; hostname: string }>;
   unexposed: number[];
   killed: Array<string | undefined>;
@@ -52,6 +57,7 @@ const createSession = (
   const deletedPaths: string[] = [];
   const commands: string[] = [];
   const envs: Array<Record<string, string> | undefined> = [];
+  const cwds: Array<string | undefined> = [];
   const exposed: Array<{ port: number; hostname: string }> = [];
   const unexposed: number[] = [];
   const killed: Array<string | undefined> = [];
@@ -120,6 +126,7 @@ const createSession = (
     async startProcess(command, options) {
       commands.push(command);
       envs.push(options?.env);
+      cwds.push(options?.cwd);
       onOutput = options?.onOutput;
       onExit = options?.onExit;
       if (behaviour === "log-ready") {
@@ -176,20 +183,24 @@ const createSession = (
       }
       const fenced = /^node (\S+) (\S+)$/.exec(command);
       if (!fenced) throw new Error(`Unexpected command: ${command}`);
-      const request = JSON.parse(
-        written.get(fenced[2]!)!,
-      ) as FencedWriteRequest;
+      const request = JSON.parse(written.get(fenced[2]!)!) as
+        | FencedWriteRequest
+        | PreviewContentRequest;
       written.delete(fenced[1]!);
       written.delete(fenced[2]!);
-      const result = applyFencedRequest(
-        io,
-        PREVIEW_FENCE_LEDGER_PATH,
-        request,
-        {
-          planFencedWrite,
-          planFencedStart,
-        },
-      );
+      const result =
+        request.op === "content" || request.op === "stamp"
+          ? applyPreviewContentRequest(
+              {
+                ...io,
+                renameInto: (from, to) => io.moveFile(from, to),
+              },
+              request,
+            )
+          : applyFencedRequest(io, PREVIEW_FENCE_LEDGER_PATH, request, {
+              planFencedWrite,
+              planFencedStart,
+            });
       return {
         success: true,
         exitCode: 0,
@@ -201,6 +212,7 @@ const createSession = (
 
   return {
     session,
+    cwds,
     written,
     encodings,
     writePaths,
@@ -342,6 +354,39 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(
       harness.commands.some((command) => command.includes("/.bin/vite")),
     ).toBe(false);
+  });
+
+  it("starts an Astro site's own dev server, stamped, in its workspace (A6c)", async () => {
+    const harness = createSession("ready");
+    const result = await startWith(harness, {
+      framework: "astro",
+      astroThemes: true,
+      files: astroThemeFiles(),
+      entry: "",
+      previewContent: { templates: {}, pages: {}, contentTicket: 3 },
+    });
+    expect(result.ok, !result.ok ? result.errorMessage : "").toBe(true);
+    const astro = themeToolchainForFramework("astro");
+    expect(harness.commands).toContain(
+      `${astro.root}/node_modules/.bin/astro dev --config .morph/astro.preview.config.mjs --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT}`,
+    );
+    expect(harness.cwds.at(-1)).toBe("/workspace");
+    expect(harness.envs.at(-1)).toMatchObject({
+      NODE_ENV: "development",
+      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: ".morph/wrangler.preview.json",
+      ASTRO_TELEMETRY_DISABLED: "1",
+    });
+    // Ready when the Worker answers its probe, not a page path.
+    expect(harness.waitedPorts).toEqual([
+      { port: THEME_PREVIEW_SERVER_PORT, path: "/_morph/preview-health" },
+    ]);
+    // Stamped before it started: the instance beside the lock, and on the
+    // content file the Worker reads.
+    const instance = harness.written.get("/tmp/morph-preview-instance");
+    expect(instance).toMatch(/^[0-9a-f-]{36}$/);
+    expect(
+      JSON.parse(harness.written.get("/workspace/.morph-preview-content.json")!),
+    ).toMatchObject({ contentTicket: 3, previewInstance: instance });
   });
 
   it("starts the preview with its framework's toolchain from the registry", async () => {
