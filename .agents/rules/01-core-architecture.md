@@ -361,7 +361,8 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
   - 編輯器的靜態模型（`deriveThemeRouteSections`、`inject-preview-bindings`、Inspector）假設
     `content("x")` 就是 Document 中 slot `x` 的值。Inspector 對選取中的文字欄位，顯示的是畫布上渲染
     後的文字（從預覽 DOM 讀出），不是 Document 的儲存值；作者讓 `content()` 轉換值時，從 Inspector
-    編輯會把轉換後的文字寫回 Document（已在瀏覽器重現，屬資料完整性問題，另案修正）。
+    編輯會把轉換後的文字寫回 Document（已在瀏覽器以重新載入後的雙重轉換間接重現；直接讀回 Document
+    的證據由修正案補上。屬資料完整性問題，另案修正）。
     `confirmThemeContentModuleFunctionExport` 只確認語法上是函式，不擋這類語意改變。
   - 即時編輯時，預覽 bridge 直接把輸入值寫進 DOM，繞過作者的 `content()`；要重新載入才看得到作者
     轉換後的結果（已在瀏覽器重現）。
