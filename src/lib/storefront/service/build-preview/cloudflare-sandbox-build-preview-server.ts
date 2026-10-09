@@ -1,6 +1,7 @@
-import type {
-  BuildPreviewInstanceStart,
-  BuildPreviewServer,
+import {
+  BuildPreviewInstanceUnavailableError,
+  type BuildPreviewInstanceStart,
+  type BuildPreviewServer,
 } from "./build-preview-server.types";
 import { bytesToBase64 } from "./build-preview-wire";
 import { SANDBOX_PLATFORM_WRANGLER_BIN } from "@/lib/storefront/theme-framework/theme-toolchains";
@@ -94,6 +95,8 @@ export class CloudflareSandboxBuildPreviewServer implements BuildPreviewServer {
       provider: BuildPreviewSandboxProvider;
       readyTimeoutMs?: number;
       sleepAfter?: string;
+      /** Before asking a container that failed to start a second time. */
+      startRetryDelayMs?: number;
     }>,
   ) {}
 
@@ -103,8 +106,36 @@ export class CloudflareSandboxBuildPreviewServer implements BuildPreviewServer {
     );
   }
 
+  /**
+   * The first call to reach the container, so the one that starts it. The
+   * platform's start can fail transiently — a local run saw "Container failed
+   * to start" three seconds in, and the very next request started the same
+   * container without trouble — so it is asked once more before the request
+   * is told the instance is unavailable. Listing is a read; asking twice
+   * changes nothing.
+   */
+  private async listProcesses(session: BuildPreviewSandboxSession) {
+    try {
+      return await session.listProcesses();
+    } catch {
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.options.startRetryDelayMs ?? 1_000),
+      );
+    }
+    try {
+      return await session.listProcesses();
+    } catch (error) {
+      throw new BuildPreviewInstanceUnavailableError(
+        `BUILD_PREVIEW_CONTAINER_UNAVAILABLE: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+  }
+
   private async running(session: BuildPreviewSandboxSession) {
-    const processes = await session.listProcesses();
+    const processes = await this.listProcesses(session);
     return processes.some(
       (process) =>
         process.command === BUILD_PREVIEW_CONTAINER_COMMAND &&

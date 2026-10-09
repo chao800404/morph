@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BuildPreviewArtifact } from "./build-preview-artifact";
+import { BuildPreviewInstanceUnavailableError } from "./build-preview-server.types";
 import {
   BUILD_PREVIEW_CONTAINER_COMMAND,
   BUILD_PREVIEW_CONTAINER_PORT,
@@ -112,6 +113,7 @@ function server(session: BuildPreviewSandboxSession) {
     server: new CloudflareSandboxBuildPreviewServer({
       provider: { getSandbox },
       readyTimeoutMs: 1_000,
+      startRetryDelayMs: 0,
     }),
   };
 }
@@ -232,6 +234,51 @@ describe("the container Build Preview transport", () => {
     expect(session.containerFetch).toHaveBeenCalledWith(
       request,
       BUILD_PREVIEW_CONTAINER_PORT,
+    );
+  });
+
+  it("asks a container that failed to start once more", async () => {
+    const { session } = fakeSession({ running: true });
+    session.listProcesses.mockRejectedValueOnce(
+      new Error("Container failed to start"),
+    );
+    const { server: target } = server(session as never);
+    const response = await target.fetch(
+      "cap-1",
+      new Request("https://bp-x.preview.example.test/"),
+    );
+    expect(await response?.text()).toBe("from-container");
+    expect(session.listProcesses).toHaveBeenCalledTimes(2);
+  });
+
+  it("calls a container that fails to start twice unavailable, not broken", async () => {
+    const { session } = fakeSession();
+    session.listProcesses.mockRejectedValue(
+      new Error("Container failed to start"),
+    );
+    const { server: target } = server(session as never);
+    const failure = target.fetch(
+      "cap-1",
+      new Request("https://bp-x.preview.example.test/"),
+    );
+    await expect(failure).rejects.toBeInstanceOf(
+      BuildPreviewInstanceUnavailableError,
+    );
+    await expect(failure).rejects.toThrow(
+      "BUILD_PREVIEW_CONTAINER_UNAVAILABLE: Container failed to start",
+    );
+    await expect(start(target)).rejects.toBeInstanceOf(
+      BuildPreviewInstanceUnavailableError,
+    );
+    expect(session.containerFetch).not.toHaveBeenCalled();
+    expect(session.startProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not call a build whose own process fails unavailable", async () => {
+    const { session } = fakeSession({ ready: false });
+    const { server: target } = server(session as never);
+    await expect(start(target)).rejects.not.toBeInstanceOf(
+      BuildPreviewInstanceUnavailableError,
     );
   });
 
