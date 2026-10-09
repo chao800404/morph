@@ -293,6 +293,8 @@ function Home() {
         path: "src/components/sections/Promo.tsx",
         content: "export default function Promo(){return null;}",
       },
+      // The binding writes an import of it, so it has to exist.
+      { path: "src/morph/content.ts", content: "export function content() {}" },
     ];
     const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
       .unboundSections[0]!;
@@ -429,6 +431,8 @@ function Home() {
         path: "src/components/sections/Promo.tsx",
         content: "export default function Promo(){return null;}",
       },
+      // The binding writes an import of it, so it has to exist.
+      { path: "src/morph/content.ts", content: "export function content() {}" },
     ];
     const candidate = deriveThemeRouteSections(files, "src/routes/index.tsx")
       .unboundSections[0]!;
@@ -1004,5 +1008,136 @@ async function Home() {
     );
     expect(removed.code).toContain('<Promo {...home["promo-slot"]} />');
     expect(removed.code).not.toContain("<Hero");
+  });
+});
+
+describe("the author's content module", () => {
+  const routePath = "src/routes/index.tsx";
+  const bare = `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return (
+    <main>
+      <p>existing</p>
+    </main>
+  );
+}`;
+  const promo = {
+    path: "src/components/sections/Promo.tsx",
+    content: "export default function Promo(){return null;}",
+  };
+  const option = {
+    componentRef: promo.path,
+    sectionType: "promo",
+    componentName: "Promo",
+    componentSourcePath: promo.path,
+  };
+  const pagesOnlyModule = {
+    path: "src/morph/content.ts",
+    content: "export const morph = { pages: { async get() { return { _hidden: [] }; } } };",
+  };
+  const add = (moduleFiles: ReadonlyArray<{ path: string; content: string }>) =>
+    addThemeRouteSection({
+      source: bare,
+      files: [...moduleFiles, promo, { path: routePath, content: bare }],
+      routeSourcePath: routePath,
+      option,
+      slotId: "promo-1",
+    });
+
+  it("does not add a section, or write an import, when the module is missing", () => {
+    const result = add([]);
+
+    expect(result.changed).toBe(false);
+    expect(result.code).toBe(bare);
+    expect(result.diagnostic).toContain("src/morph/content.ts is missing");
+    expect(result.diagnostic).toContain("Theme: Restore Starter Content Module");
+  });
+
+  it("does not add a section when the module has no content export", () => {
+    const result = add([pagesOnlyModule]);
+
+    expect(result.changed).toBe(false);
+    expect(result.code).toBe(bare);
+    expect(result.diagnostic).toContain("does not export content()");
+  });
+
+  it("does not add a section when content is exported but is not a function", () => {
+    const result = add([
+      { path: "src/morph/content.ts", content: "export const content = 123;" },
+    ]);
+
+    expect(result.changed).toBe(false);
+    expect(result.code).toBe(bare);
+    expect(result.diagnostic).toContain("not as a function");
+  });
+
+  it("does not bind a section when the module is missing", () => {
+    const nativeRoute = `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Promo title="x" /></main>;
+}`;
+    const routeFiles = [promo, { path: routePath, content: nativeRoute }];
+    const candidate = deriveThemeRouteSections(routeFiles, routePath)
+      .unboundSections[0]!;
+    expect(candidate.canBind).toBe(true);
+
+    const result = bindThemeRouteSection({
+      source: nativeRoute,
+      files: routeFiles,
+      routeSourcePath: routePath,
+      candidate,
+      slotId: "promo",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.code).toBe(nativeRoute);
+    expect(result.diagnostic).toContain("Cannot bind this section");
+  });
+
+  it("keeps every other edit on a page read through morph.pages.get alone", () => {
+    const pageRoute = `import { createFileRoute } from "@tanstack/react-router";
+import { morph } from "../morph/content";
+import Promo from "../components/sections/Promo";
+
+export const Route = createFileRoute("/")({ component: Home });
+async function Home() {
+  const home = await morph.pages.get("/home");
+  return (
+    <main>
+      <Promo {...home["promo-a"]} />
+      <Promo {...home["promo-b"]} />
+    </main>
+  );
+}`;
+    const routeFiles = [
+      pagesOnlyModule,
+      promo,
+      { path: routePath, content: pageRoute },
+    ];
+
+    const derived = deriveThemeRouteSections(routeFiles, routePath);
+    expect(derived.diagnostics).toEqual([]);
+    expect(derived.sections.map((section) => section.slotId)).toEqual([
+      "promo-a",
+      "promo-b",
+    ]);
+    const reordered = reorderThemeRouteSections(
+      pageRoute,
+      routeFiles,
+      routePath,
+      ["promo-b", "promo-a"],
+    );
+    expect(reordered.diagnostic).toBeUndefined();
+    expect(reordered.changed).toBe(true);
+    const removed = removeThemeRouteSection(
+      pageRoute,
+      routeFiles,
+      routePath,
+      "promo-a",
+    );
+    expect(removed.diagnostic).toBeUndefined();
+    expect(removed.changed).toBe(true);
   });
 });

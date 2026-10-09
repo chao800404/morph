@@ -1,5 +1,9 @@
 import { parse } from "@babel/parser";
-import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
+import {
+  THEME_CONTENT_SLOT_HELPER,
+  isValidThemeContentSlotId,
+} from "@/lib/storefront/theme-content-slots";
+import { confirmThemeContentModuleFunctionExport } from "@/lib/storefront/ast/theme-content-module";
 import {
   listThemeSectionEntries,
   readThemePageSectionEntry,
@@ -1649,6 +1653,14 @@ export function bindThemeRouteSection(args: {
         "This section cannot be bound safely from the current route.",
     };
   }
+  const moduleCheck = confirmThemeContentModuleFunctionExport(
+    args.files,
+    THEME_CONTENT_SLOT_HELPER,
+    "bind this section",
+  );
+  if (!moduleCheck.ok) {
+    return { code: args.source, changed: false, diagnostic: moduleCheck.message };
+  }
   const binding = contentBindingImport(ast, args.files, args.routeSourcePath);
   const inserted = insertContentSpread(
     args.source,
@@ -1749,6 +1761,14 @@ export function addThemeRouteSection(args: {
   while (!existingComponentName && usedNames.has(componentName)) {
     componentName = `${args.option.componentName}${suffix}`;
     suffix += 1;
+  }
+  const moduleCheck = confirmThemeContentModuleFunctionExport(
+    sourceFiles,
+    THEME_CONTENT_SLOT_HELPER,
+    "add a section",
+  );
+  if (!moduleCheck.ok) {
+    return { code: args.source, changed: false, diagnostic: moduleCheck.message };
   }
   const contentBinding = contentBindingImport(
     ast,

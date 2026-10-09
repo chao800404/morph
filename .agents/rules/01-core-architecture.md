@@ -331,6 +331,44 @@ Manifest 不得變成另一份 presentation SSOT。
 Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服器驗證必須用**同一個解析器**，
 否則會出現「表單顯示得了、存檔卻被丟掉」的分歧。
 
+**內容模組 `src/morph/content.ts` 屬於作者。** Morph 植入它，Starter 升級只替換逐位元組等於
+已知舊版的副本（§4.5）；作者可以修改或刪除，伺服器不拒絕這個路徑的寫入或刪除。允許修改它不會帶來
+它原本沒有的權限：它在 Theme Worker 中執行，能力與任何作者路由相同；`/_morph/content` 的授權、來源
+控制與執行環境限制照常適用。
+
+- **資料接口**（平台契約）：Theme 伺服器端從 Core 設定的 `x-morph-content-origin` 取得 origin，呼叫
+  `GET <origin>/_morph/content?path=`。不要求任何特定檔案或 export。
+- **Design 相容能力**（逐項、依功能）：會在路由寫出程式碼的 Design 操作，寫入前以
+  `confirmThemeContentModuleFunctionExport`（`src/lib/storefront/ast/theme-content-module.ts`，只解析、不執行）
+  確認它需要的 export。目前只有新增／綁定區塊需要 `content`。它確認的是**語法上的形狀，不是模組
+  行為**：同檔宣告的函式（`export function`、以箭頭或 function 運算式初始化的 const，可包 `as`／
+  `satisfies`／`!`）可確認；明確的非函式值拒絕；工廠結果、跨檔 re-export、`export *` 等一律「無法
+  確認」。缺檔、拒絕或無法確認時，只停止該操作並說明原因，不寫出壞掉的 import，不影響存檔、建置與
+  Code 模式。不得要求自訂模組具備全部 Starter export，例如只用 `morph.pages.get` 的路由不因缺少
+  `content` 而失去其他內容編輯。所有 Starter 版本都以 `export function content` 宣告（測試釘住）；
+  若 Starter 改用其他寫法，必須另加窄範圍、可證明的判斷，不得只比對名稱。
+- **還原只由作者明確觸發**：Code 模式命令「Theme: Restore Starter Content Module」只在檔案不存在時
+  以 `expectMissing` 與 `expectedSourceGeneration` 走一般檔案寫入建立 Starter 版本；不得覆寫作者的
+  版本，也不得在新增區塊或升級時自動補回（source-first 工作區缺少它即視為作者刪除）。還原只建立這一個
+  檔案，不修改路由、元件或依賴；作者已改用其他接口的引用不會因此修正。
+- **畫布執行作者的模組**：Visual Editor 畫布就是 Live Preview，在隔離容器中執行作者的
+  `src/morph/content.ts`；草稿內容只經資料接口提供（SSR 由預覽 Worker 設定 `x-morph-content-origin`，
+  client 端攔截同源 `/_morph/content`）。相容性直譯器中以平台實作代替這個模組的分支只剩已走不到的舊
+  preview route 會用到，隨直譯器一併刪除（另案）。
+- **仍存在的差異（未解決，不得宣稱已保護）**：
+  - Live Preview 只透過資料接口提供草稿內容；寫死 origin 或改用其他 endpoint 的模組，在預覽中會被
+    對外連線規則拒絕或得到 404。
+  - 編輯器的靜態模型（`deriveThemeRouteSections`、`inject-preview-bindings`、Inspector）假設
+    `content("x")` 就是 Document 中 slot `x` 的值。Inspector 對選取中的文字欄位，顯示的是畫布上渲染
+    後的文字（從預覽 DOM 讀出），不是 Document 的儲存值；作者讓 `content()` 轉換值時，從 Inspector
+    編輯會把轉換後的文字寫回 Document（已在瀏覽器以重新載入後的雙重轉換間接重現；直接讀回 Document
+    的證據由修正案補上。屬資料完整性問題，另案修正）。
+    `confirmThemeContentModuleFunctionExport` 只確認語法上是函式，不擋這類語意改變。
+  - 即時編輯時，預覽 bridge 直接把輸入值寫進 DOM，繞過作者的 `content()`；要重新載入才看得到作者
+    轉換後的結果（已在瀏覽器重現）。
+  - 作者在模組層自行快取時，預覽中的即時編輯可能要重新載入才看得到；正式網站是否顯示過期內容、是否
+    跨請求或跨內容發布保留，取決於作者的快取方式。
+
 ### 4.5 Starter Workspace 升級
 
 既有 Theme 的升級由 `STOREFRONT_STARTER_TEMPLATE_VERSION` 閘門控制。
