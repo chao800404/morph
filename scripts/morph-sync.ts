@@ -31,7 +31,9 @@ import {
 } from "../src/lib/storefront/local-dev/theme-sync/sync-session";
 
 const POLL_ACTIVE_MS = 3_000;
-const POLL_IDLE_MAX_MS = 30_000;
+// Ten, not thirty: a Design edit waited about forty seconds to come down at
+// thirty, which reads as broken while someone is working in Morph.
+const POLL_IDLE_MAX_MS = 10_000;
 const LOCAL_DEBOUNCE_MS = 400;
 
 const { values: flags, positionals } = parseArgs({
@@ -41,6 +43,7 @@ const { values: flags, positionals } = parseArgs({
     origin: { type: "string" },
     keep: { type: "string" },
     yes: { type: "boolean", default: false },
+    "allow-mass-delete": { type: "boolean", default: false },
   },
 });
 const command = positionals[0] ?? "start";
@@ -157,11 +160,15 @@ function sessionFor(state: SyncState, client: ReturnType<typeof createThemeSyncC
     confirm: async (summary, why) => {
       printSummary(summary);
       if (dryRun) return false;
-      if (flags.yes) return true;
+      // --yes accepts what changed while sync was not running. Deleting en
+      // masse is never accepted by it: that is what an emptied folder or a
+      // branch switch looks like, and it needs its own explicit flag.
+      if (why === "startup" && flags.yes) return true;
+      if (why === "mass-deletion" && flags["allow-mass-delete"]) return true;
       if (!process.stdin.isTTY) {
         log(why === "startup"
           ? "Changes made while sync was not running need confirming; rerun with --yes or in a terminal."
-          : "Not applied. Rerun with --yes if this is intended.");
+          : "Not applied. Rerun with --allow-mass-delete if this is intended.");
         return false;
       }
       const answer = await ask(why === "startup" ? "Apply these changes? [y/N] " : "Apply this anyway? [y/N] ");
