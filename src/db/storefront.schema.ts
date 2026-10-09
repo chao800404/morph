@@ -160,6 +160,14 @@ export const storefrontThemes = sqliteTable(
     sourceIndexStatus: text("source_index_status"),
     sourceIndex: text("source_index", { mode: "json" }).$type<JsonValue>(),
     releaseGeneration: integer("release_generation").notNull().default(1),
+    /**
+     * The framework the site is a project of (docs/astro-theme-plan.md 2.1),
+     * recorded once and never converted. Each build freezes it into its own
+     * record. NULL is every site from before it was recorded, and reads as
+     * TanStack Start; nothing in the product sets it yet (multi-runtime
+     * step 6 chooses it when a site is created).
+     */
+    framework: text("framework"),
     metadata: metadata(),
     ...timestamps,
   },

@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_themes` ADD `framework` text;

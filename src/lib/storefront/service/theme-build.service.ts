@@ -20,10 +20,32 @@ import {
 } from "@/lib/storefront/storage/theme-storage.server";
 import type { ThemeRevisionStore } from "@/lib/storefront/storage/theme-storage.types";
 import {
+  THEME_FRAMEWORK_IDS,
+  ThemeFrameworkUnavailableError,
   UNRECORDED_THEME_FRAMEWORK,
   type ThemeFrameworkId,
 } from "@/lib/storefront/theme-framework";
 import { themeToolchainForFramework } from "@/lib/storefront/theme-framework/theme-toolchains";
+
+/**
+ * The framework a new build records, from the site's record: none (or no
+ * such site, which `createBuild` then refuses) is TanStack Start; a value
+ * that names no framework is refused before any build is created.
+ */
+function recordedThemeFramework(
+  recorded: string | null | undefined,
+): ThemeFrameworkId {
+  if (recorded === null || recorded === undefined) {
+    return UNRECORDED_THEME_FRAMEWORK;
+  }
+  if (!(THEME_FRAMEWORK_IDS as readonly string[]).includes(recorded)) {
+    throw new ThemeFrameworkUnavailableError(
+      "THEME_FRAMEWORK_UNKNOWN",
+      recorded,
+    );
+  }
+  return recorded as ThemeFrameworkId;
+}
 
 export type RequestPreviewBuildOptions = {
   storefrontId: string;
@@ -43,11 +65,6 @@ export type RequestPreviewBuildOptions = {
   dependencies?: Readonly<Record<string, string>>;
   /** Existing, sealed content publication; never client-supplied documents. */
   contentPublicationId?: string;
-  /**
-   * The framework the site records, frozen into the build. Absent records
-   * nothing, which reads as TanStack Start; nothing records another yet.
-   */
-  framework?: ThemeFrameworkId;
 };
 
 export class ThemeBuildService {
@@ -83,9 +100,13 @@ export class ThemeBuildService {
   ): Promise<StorefrontThemeBuildDTO> {
     const reuseExisting = options.reuseExisting ?? false;
     // Recorded once, here, and read back from the record by every later step:
-    // the framework (TanStack Start when none is named, as before), hash
-    // format 2, and that framework's toolchain from the registry.
-    const framework = options.framework ?? UNRECORDED_THEME_FRAMEWORK;
+    // the framework the site records (TanStack Start when it records none, as
+    // before), hash format 2, and that framework's toolchain from the
+    // registry. Whether this server builds that framework is the
+    // materializer's and the runner's check, made against the record.
+    const framework = recordedThemeFramework(
+      await this.dal.readThemeFramework(options.storefrontId, options.themeId),
+    );
     const recordedIdentity = {
       framework,
       inputHashFormat: 2 as const,

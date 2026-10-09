@@ -22,6 +22,12 @@ export interface StorefrontThemeEditorDTO {
     name: string;
     status: StorefrontThemeStatus;
     releaseGeneration: number;
+    /**
+     * The framework the site records (`storefront_themes.framework`), as
+     * stored; NULL reads as TanStack Start. Live Preview is started for it,
+     * and refuses one it cannot serve.
+     */
+    framework: string | null;
     activeRelease: {
       id: string;
       sourceRevisionId: string;

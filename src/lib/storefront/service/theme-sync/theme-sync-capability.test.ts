@@ -38,7 +38,7 @@ beforeEach(() => {
       ('theme-b', 'store-b', NULL);
   `);
   sqlite.exec(
-    readFileSync(resolve("drizzle/0077_theme_sync_capabilities.sql"), "utf8")
+    readFileSync(resolve("drizzle/0078_theme_sync_capabilities.sql"), "utf8")
       .split("--> statement-breakpoint")
       .join("\n"),
   );

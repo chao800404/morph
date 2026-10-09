@@ -31,6 +31,9 @@ export const EDITOR_SHARDS = [
     "native-content-dependency.spec.ts",
     // Container transport only, like the three above: skipped on every CI shard.
     "source-asset-publish.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only: skipped on every CI
+    // shard, like the container-only files above.
+    "astro-publish-acceptance.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -45,6 +48,8 @@ export const EDITOR_SHARDS = [
     // Unmeasured too, and on the same shard for the same reason. Its Build
     // Preview steps run only with the container transport.
     "starter-upgrade.spec.ts",
+    // Unmeasured; a few server function calls and no editor, so seconds.
+    "theme-path-refused.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

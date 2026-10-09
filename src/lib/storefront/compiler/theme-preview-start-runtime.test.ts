@@ -24,6 +24,7 @@ import {
   themePreviewStartWorkerSource,
 } from "./theme-preview-start-runtime";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
+import { normalizeRevisionSnapshot } from "./theme-build-materializer";
 
 const plan = (
   previewRuntime?: ThemePreviewRuntime,
@@ -264,6 +265,70 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(source).toContain(
       'import startEntry from "@tanstack/react-start/server-entry"',
     );
+  });
+});
+
+/**
+ * A Theme saved before the server refused these paths may still hold one.
+ * Its copy must never be what runs: a preview start lays the platform's
+ * version over it (or loads nothing from it), and a build or a Live Preview
+ * sync refuses the Theme outright until the file is deleted.
+ */
+describe("a stale platform file in Theme source", () => {
+  const STALE = 'throw new Error("STALE_THEME_COPY");';
+  const stale = [
+    "__entry.tsx",
+    THEME_PREVIEW_START_WORKER_PATH,
+    THEME_PREVIEW_START_CLIENT_PATH,
+  ].map((path) => ({ path, content: STALE }));
+
+  it("is replaced by the platform's files in a Start preview, whose document never loads __entry.tsx", () => {
+    const { files } = plan("start", "preview-server", stale);
+    expect(files.get(`/workspace/${THEME_PREVIEW_START_WORKER_PATH}`)).toBe(
+      themePreviewStartWorkerSource(
+        "start-preview-test",
+        "@tanstack/react-start/server-entry",
+      ),
+    );
+    expect(files.get(`/workspace/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBe(
+      themePreviewStartClientSource(),
+    );
+    expect(JSON.parse(files.get("/workspace/wrangler.json")!).main).toBe(
+      `./${THEME_PREVIEW_START_WORKER_PATH}`,
+    );
+    expect(files.has("/workspace/index.html")).toBe(false);
+    for (const [path, content] of files) {
+      if (path !== "/workspace/__entry.tsx") {
+        expect(content).not.toContain("__entry");
+      }
+    }
+  });
+
+  it("is replaced by the platform's bootstrap in a client preview", () => {
+    const { files } = plan("client", "preview-server", stale);
+    expect(files.get("/workspace/__entry.tsx")).not.toContain(
+      "STALE_THEME_COPY",
+    );
+    expect(files.get("/workspace/index.html")).toContain(
+      '<script type="module" src="/__entry.tsx"></script>',
+    );
+  });
+
+  it("stops a build and a Live Preview sync instead of being used", () => {
+    for (const file of stale) {
+      expect(() =>
+        normalizeRevisionSnapshot(
+          [
+            { path: "src/index.tsx", content: "export default () => null;" },
+            file,
+          ],
+          "rev-stale-platform-file",
+        ),
+      ).toThrow(/PLATFORM_OWNED_THEME_BUILD_PATH/);
+      expect(refuseThemeWorkspacePath(file.path)).toMatch(
+        /^RESERVED_THEME_BUILD_PATH/,
+      );
+    }
   });
 });
 

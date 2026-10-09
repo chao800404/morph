@@ -50,6 +50,14 @@ export type ThemeWorkerDeploymentPlan = Readonly<{
   assets: readonly ThemeWorkerAsset[];
   compatibilityDate: string;
   compatibilityFlags: readonly string[];
+  /**
+   * The name the Worker reads its own static assets through
+   * (`assets.binding` in the build's Worker config), when it names one.
+   * Astro's entry falls back to `env.ASSETS` for every path it does not
+   * route, so without it an unknown path is a 500 rather than a 404. It
+   * reaches the Worker's own assets only, nothing of the platform's.
+   */
+  assetsBinding?: string;
 }>;
 
 export type ThemeWorkerDeploymentPlanFailureReason =
@@ -81,6 +89,9 @@ const ASSET_EXCLUSIONS = new Set([
   "_headers",
   "_redirects",
 ]);
+
+/** What Wrangler accepts as a binding name. */
+const ASSETS_BINDING_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -198,6 +209,21 @@ export function planThemeWorkerDeployment(args: {
       )
     : [];
 
+  const assetsConfig = args.workerConfig.assets;
+  const assetsBinding = isRecord(assetsConfig)
+    ? assetsConfig.binding
+    : undefined;
+  if (
+    assetsBinding !== undefined &&
+    (typeof assetsBinding !== "string" ||
+      !ASSETS_BINDING_NAME.test(assetsBinding))
+  ) {
+    return fail(
+      "INVALID_WORKER_CONFIG",
+      "Generated Worker config names an assets binding that is not a binding name.",
+    );
+  }
+
   const modules: ThemeWorkerModule[] = [];
   const assets: ThemeWorkerAsset[] = [];
 
@@ -252,6 +278,7 @@ export function planThemeWorkerDeployment(args: {
       assets,
       compatibilityDate,
       compatibilityFlags,
+      ...(assetsBinding ? { assetsBinding } : {}),
     },
   };
 }

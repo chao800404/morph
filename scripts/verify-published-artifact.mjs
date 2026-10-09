@@ -173,6 +173,15 @@ async function writeWorkerConfig(root, manifest, scriptName) {
     root,
     path.posix.join(serverDirectory, "wrangler.json"),
   );
+  // The one part taken from the artifact's own Worker config, as
+  // `planThemeWorkerDeployment` takes it: the name the Worker reads its own
+  // assets through (Astro's entry falls back to `env.ASSETS`).
+  const own = await readFile(configPath, "utf8").then(
+    (text) => JSON.parse(text),
+    () => null,
+  );
+  const assetsBinding =
+    typeof own?.assets?.binding === "string" ? own.assets.binding : undefined;
 
   await writeFile(
     configPath,
@@ -185,6 +194,7 @@ async function writeWorkerConfig(root, manifest, scriptName) {
         // Relative to the config's own directory, the way the deployer writes it.
         assets: {
           directory: path.posix.relative(serverDirectory, clientDirectory),
+          ...(assetsBinding ? { binding: assetsBinding } : {}),
         },
       },
       null,
