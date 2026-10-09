@@ -1119,7 +1119,7 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
 **從 fixture 得出的缺口**（依影響排序，都還沒有處理）：
 
 1. Morph 要求 Wrangler 設定，但 adapter 14 沒有設定檔也能建置；**已處理（5.2.4）**
-2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；**儲存與建置已處理，入口未開（5.2.5）**
+2. `src/` 下的二進位檔（Astro 的圖片管線）存不進原始碼版本；**已處理，入口已開，真實容器驗收通過（5.2.5）**
 3. Cloudflare 官方範本附的 `public/.assetsignore` 被 `public/` 規則拒絕；
 4. 常見的官方 integration（mdx、sitemap、rss）不在 Astro 工具鏈中；
 5. adapter 預設的 `SESSION`（已知，5.2）；**已決定（2026-10-09，使用者）：維持建置時拒絕，以 `session: false` 作為明確的替代方案（5.2.6）**。
@@ -1245,7 +1245,16 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
   - 同一個入口對 `src/` 下的 SVG 回 422；
   - 結束時把 hero 改回原狀。
 
-**還沒做的**：經過 Build Preview、發布、回滾的真實容器驗收（`MORPH_E2E_TRANSPORT=cloudflare-sandbox`），在本機另外執行。
+**真實容器驗收（2026-10-09，本機一次通過）。** `e2e/source-asset-publish.spec.ts`，只在 `MORPH_E2E_TRANSPORT=cloudflare-sandbox` 與本機部署器下執行，CI 的各分片都會略過（放在第 1 個分片，和其他只用容器傳輸的檔案一起）：
+
+1. 經 Code 寫入一個 Start 路由，它 import `src/assets/e2e-source-asset.png`；圖片 v1 經同一個上傳入口放入。
+2. 發布，在 Sandbox 容器中從封存的版本建置：
+   - 該 release 的 Build Preview 在它自己的主機上回傳的圖片位元組與 v1 相同；
+   - 店面（本機部署器從這次執行的 R2 讀回 release 的產物）回傳的位元組也與 v1 相同，頁面上的網址不含原始碼路徑。
+3. 以檔案的 `expectedVersion` 取代成 v2（OCC），再發布：店面回傳 v2。
+4. 以 `expectedActiveReleaseId` 回滾到第一個 release：回到第一個 build，店面回傳 v1，讀的是原本的 blob。
+
+結果：3 個測試通過，6.0 分鐘。前一次執行在第二次編輯時失敗：重啟後的 Live Preview 畫布遇到 `OperationInterruptedError`（「platform was updating the sandbox runtime」），一直沒有載入。這個錯誤在先前許多容器執行中都出現過，不是這次的改動造成的。因為這份驗收要證明的是建置、發布與回滾，第二份草稿改用編輯器自己的草稿寫入，與 `native-publish-acceptance.spec.ts` 第 6 步相同。容器傳輸下 Live Preview 重新啟動後沒有回來，是另一個問題。
 
 ### 5.2.6 A5 結果（2026-10-09，本機真實容器；Cloudflare 未驗）
 
