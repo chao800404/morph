@@ -92,20 +92,31 @@ const title = page.hero.title.toUpperCase();
 
 初步盤點（`main` `149d185`，以 grep 找出，實作前須逐一確認）會改變或帶入 `enabled` 的伺服器路徑：
 
-| 路徑                                             | 入口                                                   | 對 `enabled` 的影響                            |
-| ------------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------- |
-| `storefrontThemeDal.updateSectionProps`          | `updateStorefrontThemeSectionProps`（`props.enabled`） | 直接設定，Design 的隱藏走這裡                  |
-| `storefrontPageDal.update`                       | `storefront-pages.serverFn.ts`                         | 寫入整份頁面 Document，`enabled` 由輸入決定    |
-| `storefrontPageDal.restoreRevision`              | `storefront-pages.serverFn.ts`                         | 還原舊版，帶回當時的 `enabled`                 |
-| `storefrontThemeDal.restoreFailedPublish`        | `storefront-themes.serverFn.ts`                        | 還原 Document                                  |
-| `reorderSections`、`renameSection`、文字升級寫入 | 各自的 server function                                 | 沿用既有區塊物件，理論上不改 `enabled`，需確認 |
+| 路徑                                             | 入口                                                   | 對 `enabled` 的影響                              |
+| ------------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------ |
+| `storefrontThemeDal.updateSectionProps`          | `updateStorefrontThemeSectionProps`（`props.enabled`） | 直接設定，Design 的隱藏走這裡                    |
+| `storefrontPageDal.update`                       | `storefront-pages.serverFn.ts`                         | 寫入整份頁面 Document，`enabled` 由輸入決定      |
+| `storefrontPageDal.restoreRevision`              | `storefront-pages.serverFn.ts`                         | 把舊版 Document 還原成草稿，帶回當時的 `enabled` |
+| `reorderSections`、`renameSection`、文字升級寫入 | 各自的 server function                                 | 沿用既有區塊物件，理論上不改 `enabled`，需確認   |
 
-能力檢查應放在這些路徑共用的 service／DAL 邊界，不只擋單一 server function，否則其他入口會繞過它。規則：
+不在此表、也不得套用本守衛的路徑：
 
-- **改成隱藏**（`enabled` 從 true 變 false）時，要求能力成立；
-- **取消隱藏**不需要能力；
-- **未改變隱藏狀態的寫入**（例如改文字、重新排序）不因既有的隱藏區塊失去能力而被拒絕，避免作者被鎖住；
-- **還原舊版**帶回的隱藏狀態，與「改成隱藏」同樣檢查，或明確標記為需要處理。
+- `storefrontThemeDal.restoreFailedPublish`：部署失敗時的補償，把 release 指標還原成發布前的狀態，不倒退草稿與 OCC 版本。它不寫入草稿；加上守衛會擋住失敗復原。
+- 回滾已發布的 release：恢復的是一組歷史 build 與內容版本，見下方「歷史版本」。
+
+能力檢查應放在上表路徑共用的 service／DAL 邊界，不只擋單一 server function，否則其他入口會繞過它。
+
+**檢查分兩個階段，規則不同：**
+
+| 階段           | 規則                                                                                                                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **編輯草稿**   | 改成隱藏（`enabled` 從 true 變 false）時要求能力成立。取消隱藏永遠允許。未改變隱藏狀態的寫入（改文字、重新排序等），不因既有隱藏區塊失去能力而被拒絕，避免作者被鎖住。 |
+| **建置與發布** | 檢查要發布的整份內容快照裡**所有**隱藏區塊，不只本次改動的。作者可能在隱藏之後修改了原始碼，所以編輯時通過，不代表發布時仍成立。                                       |
+
+**歷史版本：以當時的版本判斷，不用目前工作區：**
+
+- **還原 Document 到草稿**（`restoreRevision`）：結果是新的草稿，之後發布時照「建置與發布」階段檢查。還原本身可以標示「這個版本含有目前程式碼無法安全隱藏的區塊」，但不因此拒絕還原。
+- **回滾已發布的 release**：恢復的是當時的 build 與內容版本，能力應依那組 build 是否含有隱藏判斷來判斷，不能因為目前工作區的程式已經改變，就拒絕一次合法的回滾。若那組 build 本身不含判斷（見 §4.5「舊 build」），依舊 build 政策處理。
 
 ### 4.4 能力失效與恢復出口
 
@@ -116,7 +127,8 @@ const title = page.hero.title.toUpperCase();
 - **兩個恢復出口**：
   1. 取消隱藏（永遠允許）；
   2. 修正原始碼，讓實例重新可被安全處理，例如改回可辨識的寫法；修正後能力自動恢復。
-- **建置與發布**：發布前若該 release 的內容含有「隱藏但無能力」的區塊，拒絕發布並列出區塊與恢復出口，不得默默顯示。單純建置（Build Preview）不拒絕，只帶出同樣的診斷。
+- **發布**：要發布的內容快照若含有「隱藏但無能力」的區塊，拒絕發布，列出區塊與恢復出口，不得默默顯示。
+- **Build Preview**：仍可產生預覽讓作者檢視，但必須帶出同樣的診斷，而且**不宣稱這次建置可發布**，也不把先前成功的預覽當成這次的成功結果。
 
 ### 4.5 SSR、SSG 與舊 build
 
@@ -136,7 +148,8 @@ const title = page.hero.title.toUpperCase();
 2. 真的不顯示（不是改成顯示元件預設值）；
 3. 目前 release 的 `/_morph/content` 回應、SSR HTML、預先渲染 HTML 都不含被隱藏的內容；
 4. 取消隱藏後重新顯示原本的內容；
-5. 修改原始碼使實例失去能力後：Design 有提示、工作區可繼續操作、兩個恢復出口都有效、發布被拒絕並列出原因。
+5. 修改原始碼使實例失去能力後：Design 有提示、工作區可繼續操作、兩個恢復出口都有效、發布被拒絕並列出原因、Build Preview 不標示為可發布；
+6. 還原舊版草稿不被拒絕；回滾已發布的 release 依當時的 build 判斷，不受目前工作區影響；部署失敗補償（`restoreFailedPublish`）不受守衛影響。
 
 案例至少涵蓋：`content("x")`、`{...page.x}`、逐欄傳值、值經轉換、先在別處計算值（應不開放）、Start 與 `.astro` 頁面，以及每一條 §4.3 的寫入路徑。
 
