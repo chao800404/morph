@@ -204,6 +204,7 @@ import {
 } from "@/lib/storefront/ast/theme-content-fields-declaration";
 import {
   hasInlineTextDocumentTarget,
+  inlineTextMatchesStoredValue,
   isInlineTextEditCandidate,
 } from "@/lib/storefront/editor/inline-text-edit";
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
@@ -236,6 +237,7 @@ import {
 import { deriveThemeLayoutSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { swapArrayItemsAtFieldPaths } from "@/lib/storefront/editor/reorder-array-items";
 import {
+  getFieldPathValue,
   setFieldPathValue,
   type EditableDescendantField,
   type EditorSelectionDescriptor,
@@ -280,7 +282,10 @@ import {
   EditorSectionsPanel,
   type EditorEditableNodeDeleteResult,
 } from "./editor-sections-panel";
-import type { InspectorPropsChangeOptions } from "./editor-style-inspector";
+import type {
+  InspectorInlineTextCommit,
+  InspectorPropsChangeOptions,
+} from "./editor-style-inspector";
 import { resolveStylesSelectionTransition } from "./editor-styles-selection-mode";
 import {
   initialLivePreviewLifecycleState,
@@ -378,6 +383,17 @@ function borrowableTemplate<
     ? activeTemplate
     : (shared[0] ?? templates[0]);
 }
+
+/**
+ * Said when text on the canvas cannot be typed over: it is not the stored
+ * value (the Theme changed it on the way, or nothing is stored and a default
+ * renders), so the Inspector is where the field is edited.
+ */
+export const INLINE_TEXT_REFUSED_MESSAGE =
+  "This text can't be edited safely in place. Use the content fields on the right.";
+/** Said when an inline edit arrives after the stored value moved under it. */
+export const INLINE_TEXT_NOT_SAVED_MESSAGE =
+  "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
 
 /** A route's own document before its first write: no sections stored yet. */
 const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
@@ -549,7 +565,6 @@ export function createEditorSelectionDescriptor(
     elementKey: target.elementKey ?? null,
     fieldKey: target.fieldKey ?? null,
     fieldPath: target.fieldPath ?? target.fieldKey ?? null,
-    contentValue: null,
     descendantFields,
     className: "",
     isSection: target.isSection === true,
@@ -2955,8 +2970,17 @@ export function VisualEditorShell({
       fieldKey: string;
       fieldPath: string;
       value: string;
+      originalValue: string;
     }) => void
   >(() => {});
+  /**
+   * The last value an inline canvas edit wrote, for the Inspector.
+   *
+   * The Inspector shows stored values; this is one, written before the save
+   * and refetch that would otherwise bring it there.
+   */
+  const [inlineTextCommit, setInlineTextCommit] =
+    useState<InspectorInlineTextCommit | null>(null);
   const previewSelectionStyle = useCallback(
     (styles: Record<string, string>, targetElement: string) => {
       const selection = previewSelection.currentTarget();
@@ -6103,6 +6127,13 @@ export function VisualEditorShell({
         return;
       }
 
+      if (message.type === "morph:storefront-preview-inline-text-refused") {
+        toast.info(INLINE_TEXT_REFUSED_MESSAGE, {
+          id: "inline-text-refused",
+        });
+        return;
+      }
+
       if (message.type === "morph:storefront-preview-commit-section-reorder") {
         reportAuthenticatedUserActivity();
         void sectionSwapHandlerRef.current(
@@ -6212,7 +6243,6 @@ export function VisualEditorShell({
       const elementKey = message.elementKey;
       const fieldKey = message.fieldKey ?? message.field;
       const fieldPath = message.fieldPath ?? fieldKey;
-      const contentValue = message.contentValue ?? null;
       const descendantFields = message.descendantFields;
       const tagName = message.tagName;
       const role = message.role;
@@ -6247,7 +6277,6 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
-        contentValue,
         descendantFields,
         className,
         isSection: selectionIsSection,
@@ -7390,24 +7419,41 @@ export function VisualEditorShell({
         return;
       }
 
-      // Keep the Inspector's content control aligned with the value just
-      // committed in the canvas. The preview edits its DOM optimistically, so
-      // waiting for the debounced Document refetch would otherwise leave the
-      // right panel showing the previous value.
-      setActiveSelection((current) =>
-        current &&
-        current.sectionId === message.sectionId &&
-        current.fieldKey === message.fieldKey &&
-        current.fieldPath === message.fieldPath
-          ? { ...current, contentValue: message.value }
-          : current,
-      );
-
       const key = `${templateIdForSection(message.sectionId) ?? activeTemplate.id}:${message.sectionId}`;
       const currentProps = {
         ...sectionPropsSnapshot(message.sectionId),
         ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
       };
+      // Typing over text is an edit of the field only when the text was the
+      // stored value. The preview checks this before an edit begins; it is
+      // asked again here, against this editor's own copy of the field the
+      // selection above names, because the stored value may have moved since
+      // (another tab's save, a late message) and the preview may predate the
+      // rule. `originalValue` is the preview's claim and only ever refuses:
+      // what is written still goes through the server's authorization, field
+      // validation and draft generation check. Nothing is written back to
+      // the canvas: the preview already restored what the Theme rendered.
+      if (
+        !inlineTextMatchesStoredValue(
+          message.originalValue,
+          getFieldPathValue(currentProps, message.fieldPath),
+        )
+      ) {
+        toast.info(INLINE_TEXT_NOT_SAVED_MESSAGE, {
+          id: "inline-text-refused",
+        });
+        return;
+      }
+
+      // Keep the Inspector's content control aligned with the value just
+      // written: waiting for the debounced save and refetch would otherwise
+      // leave the right panel showing the previous value.
+      setInlineTextCommit((current) => ({
+        id: (current?.id ?? 0) + 1,
+        sectionId: message.sectionId,
+        fieldPath: message.fieldPath,
+        value: message.value,
+      }));
       handleSectionPropsChange(
         message.sectionId,
         setFieldPathValue(currentProps, message.fieldPath, message.value),
@@ -10016,6 +10062,7 @@ export function VisualEditorShell({
           onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
+          inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}

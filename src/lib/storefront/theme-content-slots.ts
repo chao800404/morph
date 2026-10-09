@@ -20,7 +20,12 @@ export const THEME_CONTENT_SLOT_HELPER = "content";
  */
 export const THEME_SECTION_HIDDEN_HELPER = "isSectionHidden";
 
-/** Path of the platform-owned module that provides the helper to a Theme. */
+/**
+ * Path of the module that provides the helper to a Theme. Morph seeds it, but
+ * it is the author's file: they may edit or delete it. Design operations that
+ * write against it check the export they need first
+ * (`confirmThemeContentModuleFunctionExport`).
+ */
 export const THEME_CONTENT_MODULE_PATH = "src/morph/content.ts";
 
 /**

@@ -173,6 +173,9 @@ import {
   type NewThemeFile,
 } from "@/lib/storefront/editor/new-theme-file";
 import { prepareNewThemeFolder } from "@/lib/storefront/editor/new-theme-folder";
+import { RESTORE_THEME_CONTENT_MODULE_COMMAND } from "@/lib/storefront/ast/theme-content-module";
+import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "@/lib/storefront/starter-theme-v3-files";
 import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
 import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffers";
 import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
@@ -3521,6 +3524,12 @@ const EditorCodeWorkspaceContent = forwardRef<
     [copiedPaths, copyMutation],
   );
 
+  const contentModuleExists =
+    binaryFileByPath.has(THEME_CONTENT_MODULE_PATH) ||
+    files.some((file) => file.path === THEME_CONTENT_MODULE_PATH);
+  const createPending = createMutation.isPending;
+  const createFile = createMutation.mutate;
+
   const editorCommands = useMemo<EditorCodeCommand[]>(
     () => [
       {
@@ -3569,6 +3578,25 @@ const EditorCodeWorkspaceContent = forwardRef<
         run: () => {
           setSideView("explorer");
           startCreatingFolder("");
+        },
+      },
+      {
+        id: "restore-content-module",
+        label: RESTORE_THEME_CONTENT_MODULE_COMMAND,
+        icon: FilePlus2,
+        // Only ever creates the file: an author's own module, edited or not,
+        // is theirs and is never replaced from here.
+        // The create precondition (`expectMissing`) and the accepted source
+        // generation make the server refuse it if another tab got there first.
+        disabled: contentModuleExists || createPending,
+        run: () => {
+          if (contentModuleExists || createPending) return;
+          setSideView("explorer");
+          createFile({
+            path: THEME_CONTENT_MODULE_PATH,
+            content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+            mimeType: "text/typescript",
+          });
         },
       },
       {
@@ -3624,6 +3652,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     [
       activeFilePath,
       activeFileIsGenerated,
+      contentModuleExists,
+      createFile,
+      createPending,
       dirtyPathSet,
       dirtyPaths.length,
       handleSaveAll,

@@ -46,7 +46,103 @@ export type ThemePreviewContentSnapshot = Readonly<{
    * path with nothing at all, so the shell rendered its defaults there.
    */
   shell?: StorefrontContentResult;
+  /**
+   * Where this snapshot stands among those written into one preview: the
+   * ticket it was built under (`storefrontPreviewContentTicketDal`). A
+   * preview keeps the highest it has been given. Absent is 0, every
+   * snapshot from before tickets.
+   */
+  contentTicket?: number;
+  /**
+   * SHA-256 of the content itself (`previewContentBody`), bound to the
+   * ticket: one ticket names exactly one content, and a preview refuses the
+   * same ticket with any other (docs/astro-theme-plan.md 6.6).
+   */
+  contentHash?: string;
+  /** The draft versions the content was read at, one consistent read. */
+  contentVersions?: string;
+  /**
+   * Which dev server this file was written for: a nonce the transport
+   * stamps when a server starts and on every content write. The preview's
+   * Worker names it beside the ticket, from the same read, so a content
+   * sync is confirmed only for the server it was written to, never by a
+   * report about another (docs/astro-theme-plan.md 6.6).
+   */
+  previewInstance?: string;
 }>;
+
+/** A snapshot's fields that describe it rather than being content. */
+const PREVIEW_CONTENT_META_KEYS = [
+  "contentTicket",
+  "contentHash",
+  "contentVersions",
+  "previewInstance",
+] as const;
+
+/** The snapshot text stamped with the dev server it is written for. */
+export function withPreviewInstance(text: string, instance: string): string {
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  return JSON.stringify({ ...parsed, previewInstance: instance });
+}
+
+/** The ticket a written snapshot carries; 0 for none, or one unreadable. */
+export function previewContentTicket(text: string | null): number {
+  if (text === null) return 0;
+  try {
+    const ticket = (JSON.parse(text) as { contentTicket?: unknown })
+      ?.contentTicket;
+    return typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0
+      ? ticket
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The snapshot as content alone: the same text without its ticket, hash and
+ * versions. Those order and identify writes; two snapshots that differ only
+ * in them describe the same workspace (`themeWorkspaceFingerprint`), and
+ * this is what the hash is taken over.
+ */
+export function previewContentWithoutTicket(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      PREVIEW_CONTENT_META_KEYS.some((key) => key in parsed)
+    ) {
+      const content = { ...parsed };
+      for (const key of PREVIEW_CONTENT_META_KEYS) delete content[key];
+      return JSON.stringify(content);
+    }
+  } catch {
+    // Not a snapshot this can read: counted as it is.
+  }
+  return text;
+}
+
+/** The content hash a written snapshot carries, or null for none. */
+export function previewContentHash(text: string | null): string | null {
+  if (text === null) return null;
+  try {
+    const hash = (JSON.parse(text) as { contentHash?: unknown })?.contentHash;
+    return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SHA-256 of a snapshot's content (`previewContentWithoutTicket`), in hex.
+ * Web Crypto, so Core in its Worker and the sidecar in Node take it alike.
+ */
+export async function previewContentDigest(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(previewContentWithoutTicket(text));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 const ROUTE_TEMPLATE_TYPES = [
   "index",
@@ -233,9 +329,7 @@ export function previewContentForPath(pathname) {
 }
 
 export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
-  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
-    (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
-  const content = previewContentForPath(pathname);
+  const content = currentPreviewContent();
   if (enabled === false) {
     delete content.slots[sectionId];
     if (!content.hiddenSlots.includes(sectionId)) content.hiddenSlots.push(sectionId);
@@ -250,6 +344,19 @@ export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
     for (const key of resetKeys) delete next[key];
     content.slots[sectionId] = next;
   }
+}
+
+// Below \`updatePreviewContent\`: the dev-server plugin copies the resolver
+// above it, and these read the browser's page.
+function currentPreviewContent() {
+  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
+    (window.location.pathname.startsWith(${JSON.stringify(THEME_PREVIEW_SERVER_BASE_PATH)}) ? "/" : window.location.pathname) || "/";
+  return previewContentForPath(pathname);
+}
+
+/** The values this page's content holds for one slot, as it renders from them. */
+export function previewSlotContent(sectionId) {
+  return currentPreviewContent().slots[sectionId];
 }
 
 const nativeFetch = window.fetch.bind(window);

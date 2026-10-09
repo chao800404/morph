@@ -24,8 +24,21 @@ import {
 import {
   materializeThemeSandboxWorkspace,
   type ThemePreviewRuntime,
+  type ThemeWorkspacePlanFile,
   type ThemeWorkspaceWriter,
 } from "./theme-sandbox-workspace";
+import {
+  previewContentDigest,
+  previewContentHash,
+  previewContentTicket,
+  withPreviewInstance,
+} from "./theme-preview-content";
+import type { PreviewContentWriteResult } from "./preview-content-write";
+import {
+  PREVIEW_CONTENT_TICKET_HEADER,
+  PREVIEW_INSTANCE_HEADER,
+} from "./theme-preview-start-runtime";
+import { START_PREVIEW_ADDRESS_PROBE_PATH } from "../service/preview-address-probe";
 import type {
   StartPreviewServerInput,
   StartPreviewServerResult,
@@ -33,6 +46,7 @@ import type {
 } from "./theme-preview-server.types";
 import {
   isWorkspaceGeneratedThemePath,
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
   refuseThemeWorkspacePath,
 } from "./theme-workspace-path";
@@ -135,7 +149,23 @@ type RunningPreview = Readonly<{
   url: string;
   origin: string;
   server: PreviewServerHandle;
+  /**
+   * Whether a Worker serves this preview and names the content snapshot it
+   * reads on the address probe (a Start or framework dev-server preview), so
+   * a content sync can be confirmed.
+   */
+  confirmsContent: boolean;
+  /**
+   * The nonce this dev server was started with, stamped into the content
+   * file (`previewInstance`); only a probe naming it confirms a content
+   * sync. Null for a preview that confirms nothing.
+   */
+  instance: string | null;
 }>;
+
+
+/** The draft content snapshot's path in a workspace (`/workspace/...`). */
+const CONTENT_DATA_PATH = `/workspace/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`;
 
 /** The forked child that serves one Start preview; see the child's header. */
 const START_PREVIEW_CHILD = fileURLToPath(
@@ -162,6 +192,27 @@ async function linkToolchainModules(root: string, modules: string): Promise<void
   if (existing && (await fs.readlink(link)) === modules) return;
   if (existing) await fs.unlink(link);
   await fs.symlink(modules, link, "dir");
+}
+
+/**
+ * Stamps the content file a workspace holds with the dev server about to
+ * serve it, by one rename. A workspace without one has nothing to stamp.
+ */
+async function stampPreviewInstance(root: string, instance: string): Promise<void> {
+  const target = path.join(root, THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH);
+  const text = await fs.readFile(target, "utf8").catch(() => null);
+  if (text === null) return;
+  const next = `${target}.next-${randomUUID()}`;
+  await fs.writeFile(next, withPreviewInstance(text, instance));
+  await fs.rename(next, target);
+}
+
+/** The draft content snapshot a plan lays out, or null when it has none. */
+function plannedContentText(
+  files: readonly ThemeWorkspacePlanFile[],
+): string | null {
+  const file = files.find((candidate) => candidate.path === CONTENT_DATA_PATH);
+  return file && "content" in file ? file.content : null;
 }
 
 /** The origin of a URL, or null when it is not one this can read. */
@@ -506,8 +557,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           existing &&
           existing.workspaceFingerprint === prepared.workspaceFingerprint
         ) {
-          // The files it names are the ones already there.
+          // The files it names are the ones already there. Its snapshot may
+          // differ only in its ticket, which orders it against content syncs:
+          // written under the same rule as one.
           recordLaidOut();
+          const plannedContent = plannedContentText(prepared.workspaceFiles);
+          if (plannedContent !== null) {
+            await this.writeContentNow(input.previewId, plannedContent);
+          }
           return {
             ok: true,
             url: existing.url,
@@ -560,9 +617,25 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             `/workspace/${THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH}`,
             "dirty",
           );
+          // A snapshot already here with a higher ticket was written by a
+          // content sync after this start read its drafts; it stays.
+          const onDisk = await fs
+            .readFile(path.join(root, THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH), "utf8")
+            .catch(() => null);
+          const plannedContent = plannedContentText(prepared.workspaceFiles);
+          const workspaceFiles =
+            onDisk !== null &&
+            plannedContent !== null &&
+            previewContentTicket(onDisk) > previewContentTicket(plannedContent)
+              ? prepared.workspaceFiles.map((file) =>
+                  file.path === CONTENT_DATA_PATH
+                    ? { path: file.path, content: onDisk }
+                    : file,
+                )
+              : prepared.workspaceFiles;
           await materializeThemeSandboxWorkspace(
             measured,
-            prepared.workspaceFiles,
+            workspaceFiles,
             {
               // Staged ahead of this start when it came over the sidecar, which
               // cannot carry a loader; handed in directly when run in-process.
@@ -614,6 +687,10 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         const devServer = framework.preview.devServer;
         if (input.previewRuntime === "start" || devServer) {
           try {
+            // Stamped into the content file before the server starts, so its
+            // Worker names this server and no earlier one on the probe.
+            const instance = randomUUID();
+            await stampPreviewInstance(root, instance);
             const child = await this.startChildServer(root, addLog, devServer);
             const origin = `http://${LOCAL_PREVIEW_HOST}:${child.port}`;
             const url = withPreviewServerBase(
@@ -627,6 +704,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               url,
               origin,
               server: child.handle,
+              confirmsContent: true,
+              instance,
             });
             return {
               ok: true,
@@ -736,6 +815,9 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               listening: () => server!.httpServer?.listening === true,
               close: () => this.closeServer(server!),
             },
+            // The client-only preview has no Worker to read a snapshot.
+            confirmsContent: false,
+            instance: null,
           });
 
           return {
@@ -995,6 +1077,127 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
       );
     }
     return bytes;
+  }
+
+  /**
+   * Writes a newer draft content snapshot into a running preview, then waits
+   * until the preview's Worker reads it (docs/astro-theme-plan.md 6.5, 6.6).
+   *
+   * `content` is the whole data file as Core built it, carrying its ticket
+   * and the hash of its content, which is checked here. Written only if its
+   * ticket is higher than the one on disk — a lower one arriving late is
+   * refused, never laid over a newer snapshot; the same ticket with other
+   * content is refused as a conflict; the same ticket with the same content
+   * is the same write, and is confirmed again — and by one rename, so a
+   * reader sees the old file or the new one. Applied means the Worker of
+   * the dev server running now has named this ticket or a later one on its
+   * address probe: only then may a page reload and expect it.
+   */
+  async writeContent(
+    previewId: string,
+    content: string,
+    options: Readonly<{ confirmTimeoutMs?: number }> = {},
+  ): Promise<PreviewContentWriteResult> {
+    const ticket = previewContentTicket(content);
+    if (ticket === 0) {
+      throw new Error(
+        "PREVIEW_CONTENT_INVALID: a content sync carries a snapshot with its ticket.",
+      );
+    }
+    if (previewContentHash(content) !== (await previewContentDigest(content))) {
+      throw new Error(
+        "PREVIEW_CONTENT_INVALID: the snapshot's hash is not the hash of its content.",
+      );
+    }
+    const written = await this.serialised(previewId, () =>
+      this.writeContentNow(previewId, content),
+    );
+    if (written.outcome === "superseded") {
+      return {
+        applied: false,
+        reason: "PREVIEW_CONTENT_SUPERSEDED",
+        ticket: written.ticket,
+      };
+    }
+    if (written.outcome === "conflict") {
+      return {
+        applied: false,
+        reason: "PREVIEW_CONTENT_TICKET_CONFLICT",
+        ticket: written.ticket,
+      };
+    }
+    const running = this.running.get(previewId);
+    if (!running?.confirmsContent || !running.instance) {
+      return {
+        applied: false,
+        reason: "PREVIEW_CONTENT_UNCONFIRMABLE",
+        ticket,
+      };
+    }
+    const deadline = Date.now() + (options.confirmTimeoutMs ?? 10_000);
+    let read = 0;
+    for (;;) {
+      try {
+        const probe = await fetch(
+          new URL(START_PREVIEW_ADDRESS_PROBE_PATH, running.origin),
+          { cache: "no-store", signal: AbortSignal.timeout(5_000) },
+        );
+        // A probe from any other server — one this preview ran before —
+        // says nothing about the snapshot this one reads.
+        read =
+          probe.headers.get(PREVIEW_INSTANCE_HEADER) === running.instance
+            ? Number(probe.headers.get(PREVIEW_CONTENT_TICKET_HEADER) ?? 0)
+            : 0;
+      } catch {
+        // Not answering yet; asked again until the deadline.
+      }
+      if (read >= ticket) return { applied: true, ticket: read };
+      if (Date.now() >= deadline) {
+        return {
+          applied: false,
+          reason: "PREVIEW_CONTENT_NOT_CONFIRMED",
+          ticket: read,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  /** The ticketed write itself; call only from the preview's queue. */
+  private async writeContentNow(
+    previewId: string,
+    content: string,
+  ): Promise<{
+    outcome: "written" | "same" | "superseded" | "conflict";
+    ticket: number;
+  }> {
+    const running = this.running.get(previewId);
+    if (!running) {
+      throw new Error(
+        `LOCAL_PREVIEW_NOT_RUNNING: There is no preview server for "${previewId}".`,
+      );
+    }
+    const target = path.join(running.root, THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH);
+    const onDisk = await fs.readFile(target, "utf8").catch(() => null);
+    const current = previewContentTicket(onDisk);
+    const ticket = previewContentTicket(content);
+    if (ticket < current) return { outcome: "superseded", ticket: current };
+    if (ticket === current) {
+      return {
+        outcome:
+          previewContentHash(onDisk) === previewContentHash(content)
+            ? "same"
+            : "conflict",
+        ticket: current,
+      };
+    }
+    const next = `${target}.next-${randomUUID()}`;
+    await fs.writeFile(
+      next,
+      running.instance ? withPreviewInstance(content, running.instance) : content,
+    );
+    await fs.rename(next, target);
+    return { outcome: "written", ticket };
   }
 
   async stop(previewId: string, _processId?: string): Promise<void> {

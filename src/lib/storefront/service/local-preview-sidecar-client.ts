@@ -1,3 +1,4 @@
+import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
 import type {
   StartPreviewServerInput,
   StartPreviewServerResult,
@@ -10,6 +11,7 @@ import {
   LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER,
   localPreviewSidecarPath,
   type LocalPreviewSidecarApplyFilesRequest,
+  type LocalPreviewSidecarWriteContentRequest,
   type LocalPreviewSidecarApplyFilesResult,
   type LocalPreviewSidecarOperation,
   type LocalPreviewSidecarOperations,
@@ -260,6 +262,15 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
     request: LocalPreviewSidecarApplyFilesRequest,
   ): Promise<LocalPreviewSidecarApplyFilesResult> {
     const call = await this.call("applyFiles", request);
+    if (!call.ok) throw new Error(call.reason);
+    return call.result;
+  }
+
+  /** Writes a newer draft content snapshot and waits for the Worker to read it. */
+  async writeContent(
+    request: LocalPreviewSidecarWriteContentRequest,
+  ): Promise<PreviewContentWriteResult> {
+    const call = await this.call("writeContent", request);
     if (!call.ok) throw new Error(call.reason);
     return call.result;
   }

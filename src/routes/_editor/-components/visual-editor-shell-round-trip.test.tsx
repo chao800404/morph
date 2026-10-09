@@ -9,7 +9,11 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  INLINE_TEXT_NOT_SAVED_MESSAGE,
+  INLINE_TEXT_REFUSED_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * The selection round trip through the shell, rather than through the rules.
@@ -160,7 +164,9 @@ const context = {
       name: "Home",
       document: {
         version: 1,
-        sections: [{ id: "hero", type: "hero" }],
+        sections: [
+          { id: "hero", type: "hero", props: { heading: "Welcome" } },
+        ],
       },
       draftGeneration: 1,
       version: 1,
@@ -245,18 +251,33 @@ const messagesOfType = (type: string) =>
  * re-checks the descriptor it already holds, then writes. So the harness only
  * has to select the node and send the commit.
  */
-async function commitInlineText(value = "Hello") {
+async function commitInlineText(value = "Hello", originalValue = "Welcome") {
+  await selectHeading();
+  sendInlineCommit(value, originalValue);
+}
+
+async function selectHeading() {
   fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
   });
+}
+
+function sendInlineCommit(
+  value: string,
+  originalValue: string,
+  field: { fieldKey: string; fieldPath: string } = {
+    fieldKey: "heading",
+    fieldPath: "heading",
+  },
+) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
-    fieldKey: "heading",
-    fieldPath: "heading",
+    ...field,
     value,
+    originalValue,
   });
 }
 
@@ -472,7 +493,7 @@ describe("a content save that fails", () => {
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
     // No answer is not "it did not land": it may have, so nothing goes again
     // on its own — not this write, and not the next edit either.
-    await commitInlineText("Hello again");
+    await commitInlineText("Hello again", "Hello");
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
@@ -877,6 +898,149 @@ describe("a style patch the source cannot answer", () => {
       expect(error).toHaveBeenCalledWith(
         `Cannot modify styles: syntax error in ${stylePatchTarget.filePath}. Fix TSX in Code mode.`,
       ),
+    );
+  });
+});
+
+/**
+ * Typing over text on the canvas is an edit of the field only when the text
+ * was the stored value. A Theme's `content()` may change a value on its way to
+ * the page; saving the typed text would store it changed, again on each pass.
+ */
+describe("an inline edit of text the Theme changed", () => {
+  const saved = () =>
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    } as never);
+
+  it("is not saved, and the canvas is left to what the Theme rendered", async () => {
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    posted.length = 0;
+
+    sendInlineCommit("TRANSFORMED:WELCOME!", "TRANSFORMED:WELCOME");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    // The preview already put back what the Theme rendered. Pushing the
+    // stored value onto the canvas here would show it without content().
+    expect(
+      messagesOfType("morph:storefront-preview-update-section-props"),
+    ).toEqual([]);
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+  });
+
+  it("is saved when the text was the stored value", async () => {
+    saved();
+    renderShell();
+
+    await commitInlineText("Welcome home", "Welcome");
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown> };
+    };
+    expect(sent.data.props).toEqual({ heading: "Welcome home" });
+  });
+
+  it("is not saved when another tab changed the field while it was typed", async () => {
+    saved();
+    vi.spyOn(toast, "info").mockImplementation(() => "");
+    const client = readyQueryClient();
+    const view = renderShell(client);
+    await selectHeading();
+
+    // Another tab's save reaches this editor while the canvas edit is open.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={
+            editorHolding({ heading: "Theirs" })
+              .data as unknown as StorefrontThemeEditorDTO
+          }
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    // The edit began from the value this tab saw.
+    sendInlineCommit("Welcome, mine", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // The control: an edit begun from the value now stored is saved, so the
+    // refusal above was about the moved value and nothing else.
+    sendInlineCommit("Theirs, edited", "Theirs");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown> };
+    };
+    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
+  });
+
+  it("is not saved when it names a field other than the one selected", async () => {
+    saved();
+    renderShell();
+    await selectHeading();
+
+    // A late commit from an edit of another field.
+    sendInlineCommit("Late", "Welcome", {
+      fieldKey: "subheading",
+      fieldPath: "subheading",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("is not saved when it comes from a window other than the preview", async () => {
+    saved();
+    renderShell();
+    await selectHeading();
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-commit-inline-text",
+            sectionId: "hero",
+            fieldKey: "heading",
+            fieldPath: "heading",
+            value: "Forged",
+            originalValue: "Welcome",
+            previewSession: PREVIEW_SESSION,
+          },
+          origin: PREVIEW_ORIGIN,
+          source: window,
+        }),
+      );
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("tells the author where to edit text the preview would not open", async () => {
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-refused",
+      sectionId: "hero",
+      fieldPath: "heading",
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_REFUSED_MESSAGE,
+      expect.anything(),
     );
   });
 });

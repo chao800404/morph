@@ -394,7 +394,6 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       field: "heading",
       fieldPath: "heading",
-      contentValue: "Current heading",
       selectionRevision: 4,
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       tagName: "h1",
@@ -411,16 +410,18 @@ describe("preview protocol", () => {
     expect(parsePreviewToEditorMessage(selection)).toMatchObject({
       kind: "text",
       styleRevision: 3,
-      contentValue: "Current heading",
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       selectionRevision: 4,
     });
+    // Rendered text is not a field's value: a Theme's content() may change
+    // it on the way to the page. The editor is not told it, so nothing can
+    // take it for the stored value.
     expect(
       parsePreviewToEditorMessage({
         ...selection,
-        contentValue: "x".repeat(10_001),
+        contentValue: "Rendered heading",
       }),
-    ).toBeNull();
+    ).not.toHaveProperty("contentValue");
     expect(
       parsePreviewToEditorMessage({
         ...selection,
@@ -477,6 +478,21 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("accepts a bounded notice that inline editing was refused", () => {
+    const message = {
+      type: "morph:storefront-preview-inline-text-refused",
+      sectionId: "hero",
+      fieldPath: "items.0.title",
+    };
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    expect(
+      parsePreviewToEditorMessage({ ...message, fieldPath: "" }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, sectionId: "x".repeat(101) }),
+    ).toBeNull();
+  });
+
   it("accepts only a bounded inline text commit", () => {
     const message = {
       type: "morph:storefront-preview-commit-inline-text",
@@ -484,9 +500,20 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       fieldPath: "content.heading",
       value: "Edited in the canvas",
+      originalValue: "Stored heading",
     };
 
     expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    // Without the text it started from, the editor cannot tell an edit of the
+    // field from typing over text the Theme changed on its way to the page.
+    const { originalValue: _originalValue, ...unanchored } = message;
+    expect(parsePreviewToEditorMessage(unanchored)).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        originalValue: "x".repeat(10_001),
+      }),
+    ).toBeNull();
     expect(
       parsePreviewToEditorMessage({ ...message, sectionId: "x".repeat(101) }),
     ).toBeNull();
