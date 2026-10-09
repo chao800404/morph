@@ -151,18 +151,38 @@ export function planSync(input: SyncPlanInput): SyncAction[] {
   return actions;
 }
 
+/** Deletions already applied in each direction within the guard's window. */
+export type RecentDeletions = Readonly<{ toWorkspace: number; toLocal: number }>;
+
+export const MASS_DELETION_THRESHOLD = Object.freeze({
+  /** This many deletions in one direction always need a yes. */
+  count: 20,
+  /** So does this share of the files, once there are at least `minimum`. */
+  share: 0.25,
+  minimum: 5,
+  /** How long applied deletions keep counting towards the next plan. */
+  windowMs: 15 * 60_000,
+});
+
 /**
- * Whether a plan looks like a folder or workspace vanishing rather than a
- * person deleting files, after Mutagen's safety checks: one side emptied
- * while the base still holds files, or more deletions than a person makes by
- * hand. Such a plan is not applied without the developer saying so.
+ * Whether a plan looks like a folder or workspace vanishing, or a branch
+ * switch, rather than a person deleting files — after Mutagen's safety
+ * checks: one side emptied while the base still holds files, or more
+ * deletions than a person makes by hand. Such a plan is not applied without
+ * the developer saying so.
+ *
+ * Counted with the deletions already applied in the last fifteen minutes, so
+ * a folder removed a few files at a time — a slow `rm -r`, a checkout that
+ * lands across two cycles, or one person deleting batch after batch — trips
+ * it as surely as one large plan does.
  */
 export function massDeletionWarning(input: {
   actions: readonly SyncAction[];
   baseCount: number;
   localCount: number;
   remoteTextCount: number;
-  threshold?: { count: number; share: number };
+  recent?: RecentDeletions;
+  threshold?: { count: number; share: number; minimum: number };
 }): string | null {
   if (input.baseCount === 0) return null;
   if (input.localCount === 0) {
@@ -171,13 +191,23 @@ export function massDeletionWarning(input: {
   if (input.remoteTextCount === 0) {
     return "The workspace holds no files that sync, but it did before.";
   }
-  const { count, share } = input.threshold ?? { count: 20, share: 0.25 };
+  const { count, share, minimum } = input.threshold ?? MASS_DELETION_THRESHOLD;
+  const recent = input.recent ?? { toWorkspace: 0, toLocal: 0 };
   for (const kind of ["delete-remote", "delete-local"] as const) {
-    const deletions = input.actions.filter((a) => a.kind === kind).length;
-    if (deletions >= count && deletions / input.baseCount >= share) {
-      return kind === "delete-remote"
-        ? `This would delete ${deletions} files from the workspace.`
-        : `This would delete ${deletions} local files.`;
+    const planned = input.actions.filter((a) => a.kind === kind).length;
+    if (planned === 0) continue;
+    const earlier = kind === "delete-remote" ? recent.toWorkspace : recent.toLocal;
+    const deletions = planned + earlier;
+    // Out of the files there were before the earlier deletions.
+    const before = input.baseCount + earlier;
+    if (
+      deletions >= count ||
+      (deletions >= minimum && deletions / before >= share)
+    ) {
+      const where = kind === "delete-remote" ? "from the workspace" : "locally";
+      return earlier > 0
+        ? `This would delete ${planned} more files ${where}, ${deletions} in the last 15 minutes.`
+        : `This would delete ${planned} files ${where}.`;
     }
   }
   return null;

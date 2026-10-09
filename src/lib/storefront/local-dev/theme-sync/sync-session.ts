@@ -2,6 +2,7 @@ import { ThemeSyncApiRefusal, type ThemeSyncClient } from "./sync-client";
 import { normalizeSyncText, syncContentHash } from "./sync-content";
 import { themeSyncPathExclusion } from "./sync-paths";
 import {
+  MASS_DELETION_THRESHOLD,
   massDeletionWarning,
   planSync,
   remoteChangedTextPaths,
@@ -32,6 +33,12 @@ export type SyncState = {
   /** The generation the base was taken at; null before the first cycle. */
   sourceGeneration: number | null;
   files: Record<string, SyncBaseEntry>;
+  /**
+   * Deletions applied without a developer's explicit yes, kept so that the
+   * mass-deletion check counts them against the next plan. Persisted: a
+   * restart in the middle of a slow deletion must not start the count over.
+   */
+  deletionLog?: Array<{ at: string; toWorkspace: number; toLocal: number }>;
 };
 
 export type LocalScanEntry = Readonly<{ text: string; hash: string }>;
@@ -82,6 +89,7 @@ export type SyncSessionOptions = Readonly<{
    * not running), and whenever it would delete files en masse.
    */
   confirm(summary: CyclePlanSummary, why: "startup" | "mass-deletion"): Promise<boolean>;
+  now?: () => Date;
 }>;
 
 function summarize(
@@ -125,9 +133,33 @@ export function createSyncSession(options: SyncSessionOptions) {
   const { client, folder } = options;
   const state = options.state;
   let firstCycle = true;
+  const now = () => options.now?.() ?? new Date();
 
   async function persist() {
     await options.saveState(state);
+  }
+
+  /** Deletions applied in the guard's window, oldest dropped. */
+  function recentDeletions() {
+    const since = now().getTime() - MASS_DELETION_THRESHOLD.windowMs;
+    state.deletionLog = (state.deletionLog ?? []).filter(
+      (entry) => Date.parse(entry.at) > since,
+    );
+    return state.deletionLog.reduce(
+      (sum, entry) => ({
+        toWorkspace: sum.toWorkspace + entry.toWorkspace,
+        toLocal: sum.toLocal + entry.toLocal,
+      }),
+      { toWorkspace: 0, toLocal: 0 },
+    );
+  }
+
+  function logDeletions(toWorkspace: number, toLocal: number) {
+    if (toWorkspace + toLocal === 0) return;
+    state.deletionLog = [
+      ...(state.deletionLog ?? []),
+      { at: now().toISOString(), toWorkspace, toLocal },
+    ];
   }
 
   /** Reads the workspace text files that moved, in bounded requests. */
@@ -200,11 +232,19 @@ export function createSyncSession(options: SyncSessionOptions) {
       baseCount: base.size,
       localCount: local.size,
       remoteTextCount: [...remote.values()].filter((file) => file.kind === "text").length,
+      recent: recentDeletions(),
     });
     const summary = summarize(actions, skipped, massDeletion);
 
-    if (massDeletion && !(await options.confirm(summary, "mass-deletion"))) {
-      return { status: "declined", summary };
+    // Approved deletions are the developer's own; the count starts over.
+    let deletionsApproved = false;
+    if (massDeletion) {
+      if (!(await options.confirm(summary, "mass-deletion"))) {
+        await persist();
+        return { status: "declined", summary };
+      }
+      deletionsApproved = true;
+      state.deletionLog = [];
     }
     const startup = firstCycle;
     firstCycle = false;
@@ -239,6 +279,7 @@ export function createSyncSession(options: SyncSessionOptions) {
           if (!(await unchangedSinceScan())) break;
           await folder.remove(action.path);
           delete state.files[action.path];
+          if (!deletionsApproved) logDeletions(0, 1);
           break;
         case "adopt":
           state.files[action.path] = action.entry;
@@ -306,6 +347,7 @@ export function createSyncSession(options: SyncSessionOptions) {
             delete state.files[action.path];
           }
         }
+        if (!deletionsApproved) logDeletions(removals.length, 0);
         await persist();
       }
     } catch (error) {

@@ -22,6 +22,7 @@ function setup(options: {
   local?: Record<string, string>;
   confirm?: (summary: CyclePlanSummary, why: string) => boolean;
   beforeRequest?: (url: URL, init: RequestInit) => void;
+  now?: () => Date;
 }) {
   const workspace = createFakeWorkspace(options.morph);
   const local = createMemoryFolder(options.local);
@@ -29,16 +30,22 @@ function setup(options: {
     options.confirm ? options.confirm(summary, why) : true,
   );
   const saved: SyncState[] = [];
-  const session = createSyncSession({
-    client: createHarnessClient(workspace, { beforeRequest: options.beforeRequest }),
-    folder: local.folder,
-    state: emptyState(),
-    saveState: async (state) => {
-      saved.push(structuredClone(state));
-    },
-    confirm,
-  });
-  return { workspace, local, session, confirm, saved };
+  const client = createHarnessClient(workspace, { beforeRequest: options.beforeRequest });
+  const open = (state: SyncState) =>
+    createSyncSession({
+      client,
+      folder: local.folder,
+      state,
+      saveState: async (current) => {
+        saved.push(structuredClone(current));
+      },
+      confirm,
+      now: options.now,
+    });
+  const session = open(emptyState());
+  /** The same folder after the CLI was stopped and started again. */
+  const restart = () => open(structuredClone(saved.at(-1)!));
+  return { workspace, local, session, confirm, saved, restart };
 }
 
 const morphText = (workspace: ReturnType<typeof createFakeWorkspace>, path: string) =>
@@ -202,6 +209,82 @@ describe("a local folder linked to a Theme", () => {
       "mass-deletion",
     );
     expect(workspace.files.size).toBe(30);
+  });
+
+  describe("deleting a little at a time", () => {
+    const morph = Object.fromEntries(
+      Array.from({ length: 60 }, (_, index) => [`src/f${String(index).padStart(2, "0")}.ts`, `f${index}`]),
+    );
+    const deleteLocally = (local: ReturnType<typeof createMemoryFolder>, from: number, count: number) => {
+      for (let index = from; index < from + count; index += 1) {
+        local.files.delete(`src/f${String(index).padStart(2, "0")}.ts`);
+      }
+    };
+
+    function clocked(confirmMass = false) {
+      let clock = new Date("2026-10-09T10:00:00.000Z").getTime();
+      const harness = setup({
+        morph,
+        confirm: (_summary, why) => why === "startup" || confirmMass,
+        now: () => new Date(clock),
+      });
+      return { ...harness, advance: (ms: number) => (clock += ms) };
+    }
+
+    it("stops once the deletions add up, though each batch was small", async () => {
+      const { workspace, local, session, confirm, advance } = clocked();
+      await session.runCycle();
+      // 4, 8, 12 of 60: each under a quarter.
+      for (const from of [0, 4, 8]) {
+        advance(60_000);
+        deleteLocally(local, from, 4);
+        expect((await session.runCycle()).status).toBe("applied");
+      }
+      expect(workspace.files.size).toBe(48);
+      // 16 of 60 is over a quarter, though this batch is only 4.
+      advance(60_000);
+      deleteLocally(local, 12, 4);
+      expect((await session.runCycle()).status).toBe("declined");
+      expect(confirm).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          massDeletion: expect.stringMatching(/4 more files from the workspace, 16 in the last 15 minutes/),
+        }),
+        "mass-deletion",
+      );
+      expect(workspace.files.size).toBe(48);
+    });
+
+    it("keeps counting across a restart", async () => {
+      const { workspace, local, session, restart } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 12);
+      expect((await session.runCycle()).status).toBe("applied");
+      const again = restart();
+      deleteLocally(local, 12, 4);
+      expect((await again.runCycle()).status).toBe("declined");
+      expect(workspace.files.size).toBe(48);
+    });
+
+    it("lets deletions older than the window go", async () => {
+      const { workspace, local, session, advance } = clocked();
+      await session.runCycle();
+      deleteLocally(local, 0, 12);
+      await session.runCycle();
+      advance(16 * 60_000);
+      deleteLocally(local, 12, 6);
+      expect((await session.runCycle()).status).toBe("applied");
+      expect(workspace.files.size).toBe(42);
+    });
+
+    it("starts the count over once the developer approves", async () => {
+      const { workspace, local, session } = clocked(true);
+      await session.runCycle();
+      deleteLocally(local, 0, 24);
+      expect((await session.runCycle()).status).toBe("applied");
+      expect(workspace.files.size).toBe(36);
+      deleteLocally(local, 24, 3);
+      expect((await session.runCycle()).status).toBe("applied");
+    });
   });
 
   it("applies nothing at startup when the developer declines", async () => {

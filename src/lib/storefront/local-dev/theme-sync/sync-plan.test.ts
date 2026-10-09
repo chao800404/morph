@@ -172,6 +172,52 @@ describe("the mass-deletion check", () => {
     ).toBeNull();
   });
 
+  it("counts deletions already applied in the window", () => {
+    expect(
+      massDeletionWarning({
+        actions: deletions("delete-remote", 5),
+        baseCount: 400,
+        localCount: 395,
+        remoteTextCount: 400,
+        recent: { toWorkspace: 15, toLocal: 0 },
+      }),
+    ).toMatch(/5 more files from the workspace, 20 in the last 15 minutes/);
+  });
+
+  it("does not mix the two directions", () => {
+    expect(
+      massDeletionWarning({
+        actions: deletions("delete-remote", 5),
+        baseCount: 400,
+        localCount: 395,
+        remoteTextCount: 400,
+        recent: { toWorkspace: 0, toLocal: 15 },
+      }),
+    ).toBeNull();
+  });
+
+  it("stops twenty deletions in a large project, whatever the share", () => {
+    expect(
+      massDeletionWarning({
+        actions: deletions("delete-local", 20),
+        baseCount: 1000,
+        localCount: 1000,
+        remoteTextCount: 980,
+      }),
+    ).toMatch(/delete 20 files locally/);
+  });
+
+  it("stops a quarter of a small project", () => {
+    expect(
+      massDeletionWarning({
+        actions: deletions("delete-remote", 5),
+        baseCount: 20,
+        localCount: 15,
+        remoteTextCount: 20,
+      }),
+    ).toMatch(/delete 5 files from the workspace/);
+  });
+
   it("has nothing to compare against before the first sync", () => {
     expect(
       massDeletionWarning({ actions: [], baseCount: 0, localCount: 0, remoteTextCount: 10 }),

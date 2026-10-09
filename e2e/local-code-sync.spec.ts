@@ -95,6 +95,120 @@ async function writeLocal(dir: string, path: string, text: string) {
   await writeFile(join(dir, path), text);
 }
 
+/** The editor issues the token: Code mode → Command Palette. */
+async function issueTokenFromEditor(page: Page) {
+  await openEditor(page);
+  await page.getByRole("button", { name: /^Code$/ }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "New file", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Command Palette" }).click();
+  await page.getByRole("option", { name: /Theme: Link Local Folder/ }).click();
+  await page.getByRole("button", { name: "Create token" }).click();
+  const tokenCode = page.locator("code").filter({ hasText: /^mts_[0-9a-f]{40}$/ });
+  await expect(tokenCode).toBeVisible();
+  const token = (await tokenCode.textContent())!.trim();
+  const origin = new URL(page.url()).origin;
+  await expect(page.locator("code").filter({ hasText: `--origin ${origin}` })).toBeVisible();
+  await page.keyboard.press("Escape");
+  return { token, origin };
+}
+
+const git = (dir: string, args: string[]) =>
+  new Promise<void>((resolve, reject) => {
+    const child = spawn("git", ["-c", "user.email=e2e@morph.invalid", "-c", "user.name=e2e", ...args], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`git ${args.join(" ")}: ${code}`))));
+  });
+
+async function morphPaths(page: Page, scope: ThemeScope, prefix: string) {
+  return page.evaluate(
+    async ({ module, scope, prefix }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      const listed = await fns.listStorefrontThemeFiles({ data: scope });
+      return (listed.data.files as Array<{ path: string }>)
+        .map((file) => file.path)
+        .filter((path) => path.startsWith(prefix));
+    },
+    { module: SERVER_FN_MODULE, scope, prefix },
+  );
+}
+
+test("deletions en masse stop sync until the developer says so, however they arrive", async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+  const marker = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const folder = `src/sync-probe-${marker}/`;
+  const probes = Array.from({ length: 40 }, (_, index) => `${folder}p${String(index).padStart(2, "0")}.ts`);
+  const home = await mkdtemp(join(tmpdir(), "morph-sync-home-"));
+  const dir = await mkdtemp(join(tmpdir(), "morph-sync-dir-"));
+  let cli: Cli | null = null;
+  const exited = (running: Cli) =>
+    new Promise<number>((resolve) =>
+      running.child.exitCode !== null
+        ? resolve(running.child.exitCode)
+        : running.child.once("exit", (code) => resolve(code ?? -1)),
+    );
+
+  try {
+    const { token, origin } = await issueTokenFromEditor(page);
+    expect(
+      await writeThemeFiles(page, scope, probes.map((path) => ({ path, content: `export const p = "${path}";\n` }))),
+    ).toMatchObject({ success: true });
+    const linked = await runCli(["link", "--dir", dir, "--origin", origin], cliEnv(home, token));
+    expect(linked.code).toBe(0);
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => readLocal(dir, probes[39]!), { timeout: 60_000 }).not.toBeNull();
+    await cli.stop();
+    cli = null;
+
+    // A branch switch that removes 20 files, under --yes, in a terminal that
+    // cannot be asked (stdin is not a TTY here).
+    await git(dir, ["init", "-q", "-b", "main"]);
+    await git(dir, ["add", "-A"]);
+    await git(dir, ["commit", "-q", "-m", "synced"]);
+    await git(dir, ["checkout", "-q", "-b", "without-probes"]);
+    await git(dir, ["rm", "-q", ...probes.slice(0, 20)]);
+    await git(dir, ["commit", "-q", "-m", "drop probes"]);
+    await git(dir, ["checkout", "-q", "main"]);
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => cli!.output(), { timeout: 30_000 }).toContain("Syncing");
+    await git(dir, ["checkout", "-q", "without-probes"]);
+    expect(await exited(cli)).toBe(1);
+    expect(cli.output()).toContain("delete 20 files from the workspace");
+    expect(cli.output()).toContain("Not applied. Rerun with --allow-mass-delete");
+    cli = null;
+    expect(await morphPaths(page, scope, folder)).toHaveLength(40);
+    await git(dir, ["checkout", "-q", "main"]);
+
+    // The same files deleted five at a time: each batch alone is small, the
+    // fourth makes 20 within the window, and the run stops there.
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => cli!.output(), { timeout: 30_000 }).toContain("Syncing");
+    for (const batch of [0, 1, 2]) {
+      const paths = probes.slice(batch * 5, batch * 5 + 5);
+      for (const path of paths) await rm(join(dir, path));
+      await expect
+        .poll(async () => (await morphPaths(page, scope, folder)).length, { timeout: 30_000 })
+        .toBe(40 - (batch + 1) * 5);
+    }
+    for (const path of probes.slice(15, 20)) await rm(join(dir, path));
+    expect(await exited(cli)).toBe(1);
+    expect(cli.output()).toMatch(/5 more files from the workspace, 20 in the last 15 minutes/);
+    cli = null;
+    expect(await morphPaths(page, scope, folder)).toHaveLength(25);
+  } finally {
+    await cli?.stop();
+    await removeThemeFiles(page, scope, probes);
+    await rm(home, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a local folder and the Theme's Code workspace stay in step both ways", async ({
   page,
 }) => {
@@ -107,22 +221,7 @@ test("a local folder and the Theme's Code workspace stay in step both ways", asy
   let cli: Cli | null = null;
 
   try {
-    // The editor issues the token: Code mode → Command Palette.
-    await openEditor(page);
-    await page.getByRole("button", { name: /^Code$/ }).focus();
-    await page.keyboard.press("Enter");
-    await expect(page.getByRole("button", { name: "New file", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Command Palette" }).click();
-    await page.getByRole("option", { name: /Theme: Link Local Folder/ }).click();
-    await page.getByRole("button", { name: "Create token" }).click();
-    const tokenCode = page.locator("code").filter({ hasText: /^mts_[0-9a-f]{40}$/ });
-    await expect(tokenCode).toBeVisible();
-    const token = (await tokenCode.textContent())!.trim();
-    const origin = new URL(page.url()).origin;
-    await expect(
-      page.locator("code").filter({ hasText: `--origin ${origin}` }),
-    ).toBeVisible();
-    await page.keyboard.press("Escape");
+    const { token, origin } = await issueTokenFromEditor(page);
 
     expect(
       await writeThemeFiles(page, scope, [{ path: probe, content: `export const v = "${marker}-1";\n` }]),
