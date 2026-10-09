@@ -144,7 +144,8 @@ function contentResolverSource(): string {
  * - `fetch` from Theme server code goes through `previewOutboundRefusal`.
  * - An HTML page gains the diagnostic script and the client module, first in
  *   `<head>`, so they run before the Theme's own scripts as the client-only
- *   preview's document ordered them.
+ *   preview's document ordered them; first in `<body>` for a document with
+ *   no `<head>`, and at the end of one with neither.
  *
  * The Worker is given no bindings: there is nothing in `env` to reach.
  */
@@ -210,10 +211,25 @@ export default {
     const response = await startEntry.fetch(new Request(request, { headers }), env, ctx);
     const type = response.headers.get("content-type") || "";
     if (!type.toLowerCase().startsWith("text/html")) return response;
+    // First in <head>; a document written without one (Astro adds none)
+    // gets them first in <body>, and one with neither at its end. Once per
+    // response either way.
+    let injected = false;
+    const first = {
+      element(element) {
+        if (injected) return;
+        injected = true;
+        element.prepend(HEAD_SCRIPTS, { html: true });
+      },
+    };
     return new HTMLRewriter()
-      .on("head", {
-        element(element) {
-          element.prepend(HEAD_SCRIPTS, { html: true });
+      .on("head", first)
+      .on("body", first)
+      .onDocument({
+        end(end) {
+          if (injected) return;
+          injected = true;
+          end.append(HEAD_SCRIPTS, { html: true });
         },
       })
       .transform(response);

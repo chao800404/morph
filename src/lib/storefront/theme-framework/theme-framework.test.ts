@@ -21,7 +21,10 @@ describe("the framework adapter boundary", () => {
       expect(Object.keys(framework).sort()).toEqual(
         ["build", "detect", "id", "planWorkspace", "preview"].sort(),
       );
-      expect(Object.keys(framework.preview)).toEqual(["framePath"]);
+      // A framework's own dev server, when it has one, is a framework concern.
+      expect(
+        Object.keys(framework.preview).filter((key) => key !== "devServer"),
+      ).toEqual(["framePath"]);
       expect(Object.keys(framework.build).sort()).toEqual(
         [
           "artifactEntry",

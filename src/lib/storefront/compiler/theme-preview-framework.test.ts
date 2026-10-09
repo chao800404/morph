@@ -64,6 +64,47 @@ describe("a Live Preview of a framework Morph cannot preview", () => {
     );
   });
 
+  it("is refused by the Sandbox transport for Astro even with the switch, until it starts astro dev", async () => {
+    let acquired = 0;
+    const server = new CloudflareSandboxVitePreviewServer({
+      sandboxProvider: {
+        getSandbox: async () => {
+          acquired += 1;
+          throw new Error("a container was acquired");
+        },
+      },
+    });
+
+    const result = await server.start(
+      input({ framework: "astro", astroThemes: true }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      stage: "preview-framework",
+      errorMessage: expect.stringMatching(
+        /^THEME_FRAMEWORK_UNAVAILABLE: The container Live Preview cannot start/,
+      ),
+    });
+    expect(acquired).toBe(0);
+  });
+
+  it("reaches the transport's own checks for Astro with the switch on the local transport", async () => {
+    // A checkout root with no Astro toolchain installed under it.
+    const server = new LocalVitePreviewServer({
+      workspacesRoot: path.join(os.tmpdir(), "morph-preview-framework-test"),
+      toolchainRoot: path.join(os.tmpdir(), "morph-no-toolchain"),
+    });
+    const result = await server.start(
+      input({ previewHostname: "127.0.0.1", framework: "astro", astroThemes: true }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      stage: "preview-toolchain",
+      errorMessage: expect.stringMatching(/^LOCAL_PREVIEW_TOOLCHAIN_MISSING: .*pnpm toolchain:astro/),
+    });
+  });
+
   it("reaches the transport's own checks when the Theme records TanStack Start, or nothing", async () => {
     const server = new LocalVitePreviewServer({
       workspacesRoot: path.join(os.tmpdir(), "morph-preview-framework-test"),

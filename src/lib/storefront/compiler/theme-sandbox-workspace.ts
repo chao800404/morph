@@ -19,6 +19,7 @@ import {
   THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES,
   THEME_PREVIEW_SERVER_BASE_PATH,
   THEME_PREVIEW_SERVER_HMR_PATH,
+  previewHttpHmrPluginSource,
   themePreviewFsAllowRoots,
   themePreviewServerSourcePluginSource,
 } from "./theme-preview-dev-server";
@@ -306,6 +307,34 @@ function packageRoot(specifier: string): string {
     return specifier.split("/").slice(0, 2).join("/");
   }
   return specifier.split("/")[0] ?? specifier;
+}
+
+/**
+ * Changes whenever any byte of a planned workspace changes. A binary file
+ * counts by its digest: the same bytes have the same one, and spelling them
+ * out here would put every image into the fingerprint. Every framework's
+ * preview workspace is fingerprinted by this one rule.
+ */
+export function themeWorkspaceFingerprint(
+  workspaceFiles: readonly ThemeWorkspacePlanFile[],
+): string {
+  return sha256(
+    JSON.stringify({
+      format: 1,
+      files: [...workspaceFiles]
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .map((file) => ({
+          path: file.path,
+          content: isBinaryWorkspaceFile(file)
+            ? {
+                type: "blob",
+                digest: file.binary.digest,
+                sizeBytes: file.binary.sizeBytes,
+              }
+            : { type: "text", value: file.content },
+        })),
+    }),
+  );
 }
 
 export function planThemeSandboxWorkspace({
@@ -761,76 +790,7 @@ const isStartRuntimeBuild =
 // but move the payload across an HTTP request on the already-isolated preview
 // origin. The browser still applies the native Vite/React Refresh payload, so
 // component state survives source edits.
-const previewHttpHmrPlugin = isLivePreview ? {
-  name: "morph-preview-http-hmr",
-  enforce: "post",
-  configureServer(server) {
-    let sequence = 0;
-    const entries = [];
-    const waiters = new Set();
-    let quietTimer = null;
-    const wakeAfterQuiet = () => {
-      if (quietTimer !== null) clearTimeout(quietTimer);
-      quietTimer = setTimeout(() => {
-        quietTimer = null;
-        for (const wake of waiters) wake();
-        waiters.clear();
-      }, 120);
-    };
-    const hot = server.environments.client.hot;
-    const send = hot.send.bind(hot);
-    hot.send = (payload, ...rest) => {
-      if (payload && typeof payload === "object" && payload.type !== "connected") {
-        sequence += 1;
-        entries.push({ sequence, payload });
-        if (entries.length > 100) entries.splice(0, entries.length - 100);
-        wakeAfterQuiet();
-      }
-      return send(payload, ...rest);
-    };
-    server.middlewares.use((req, res, next) => {
-      const url = new URL(req.url || "/", "http://preview.invalid");
-      if (
-        url.pathname !== "/__morph-theme-preview__/_morph/hmr" &&
-        url.pathname !== "/_morph/hmr"
-      ) return next();
-      const after = Number(url.searchParams.get("after") || "0");
-      const respond = () => {
-        if (res.writableEnded) return;
-        res.statusCode = 200;
-        res.setHeader("content-type", "application/json; charset=utf-8");
-        res.setHeader("cache-control", "no-store");
-        res.end(JSON.stringify({
-          sequence,
-          entries: entries.filter((entry) => entry.sequence > after),
-        }));
-      };
-      if (url.searchParams.has("cursor") || entries.some((entry) => entry.sequence > after)) {
-        setTimeout(respond, quietTimer === null ? 0 : 140);
-        return;
-      }
-      waiters.add(respond);
-      setTimeout(() => {
-        waiters.delete(respond);
-        respond();
-      }, 5_000);
-    });
-  },
-  transform(code, id) {
-    if (!id.replace(/\\\\/g, "/").endsWith("/vite/dist/client/client.mjs")) return null;
-    const connect = "transport.connect(createHMRHandler(handleMessage));";
-    if (!code.includes(connect)) {
-      throw new Error("MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED");
-    }
-    return {
-      code: code.replace(
-        connect,
-        "globalThis.__morphApplyViteHmrPayload = (payload) => handleMessage(payload);",
-      ),
-      map: null,
-    };
-  },
-} : null;
+const previewHttpHmrPlugin = isLivePreview ? ${previewHttpHmrPluginSource()} : null;
 
 // Vite's own HMR client and Refresh runtime, which only a dev server asks for.
 // Allowed while serving the Live Preview and refused during a build, so the
@@ -1112,25 +1072,7 @@ sourcemap: false,
         ? { path, content }
         : { path, binary: content },
   );
-  // A binary file counts by its digest: the same bytes have the same one,
-  // and spelling them out here would put every image into the fingerprint.
-  const workspaceFingerprint = sha256(
-    JSON.stringify({
-      format: 1,
-      files: [...workspaceFiles]
-        .sort((left, right) => left.path.localeCompare(right.path))
-        .map((file) => ({
-          path: file.path,
-          content: isBinaryWorkspaceFile(file)
-            ? {
-                type: "blob",
-                digest: file.binary.digest,
-                sizeBytes: file.binary.sizeBytes,
-              }
-            : { type: "text", value: file.content },
-        })),
-    }),
-  );
+  const workspaceFingerprint = themeWorkspaceFingerprint(workspaceFiles);
 
   return {
     ok: true,
