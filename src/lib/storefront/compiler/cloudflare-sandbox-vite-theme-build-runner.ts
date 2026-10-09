@@ -1,5 +1,6 @@
 import type { Sandbox } from "@cloudflare/sandbox";
 import {
+  NATIVE_PRERENDER_REFUSED_READS_PATH,
   createThemePrerenderContent,
   type NativePrerenderContent,
 } from "./theme-prerender-content";
@@ -20,7 +21,11 @@ import type {
 } from "./theme-build-runner.types";
 import { refuseThemeWorkspacePath } from "./theme-workspace-path";
 import { themePackageRoot } from "./theme-dependency-policy";
-import { resolveThemeFramework, themeFramework } from "../theme-framework";
+import {
+  resolveThemeFramework,
+  themeFramework,
+  type ThemeFrameworkOptions,
+} from "../theme-framework";
 import {
   shortToolchainId,
   themeToolchainById,
@@ -34,15 +39,12 @@ import {
 } from "./theme-sandbox-workspace";
 import { writeSandboxWorkspaceFile } from "./sandbox-file-writer";
 import type { ThemeBuildBinaryFile } from "@/lib/storefront/dto/storefront-theme-build.dto";
-import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
-import { THEME_START_TOOLCHAIN } from "./theme-start-toolchain";
 import {
   SANDBOX_START_BUDGET_MS,
   SandboxStartProbeError,
   startBuildSandbox,
   type SandboxStartProbeResult,
 } from "./sandbox-build-start";
-import { nativeAllowedPackages } from "../theme-framework/tanstack-start-native-build";
 import {
   nativeBuildFailureMessage,
   nativeBuildResult,
@@ -250,6 +252,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
   private readonly approvedDependencies: Set<string>;
   private readonly sandboxBinding?: unknown;
   private readonly sandboxProvider?: CloudflareSandboxProvider;
+  private readonly frameworks: ThemeFrameworkOptions;
 
   constructor(options: CloudflareSandboxViteRunnerOptions = {}) {
     this.id = options.id ?? "cloudflare-sandbox-vite-theme-build-runner";
@@ -288,6 +291,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     }
     this.sandboxBinding = options.sandboxBinding;
     this.sandboxProvider = options.sandboxProvider;
+    this.frameworks = { astroThemes: options.astroThemes === true };
   }
 
   async run(input: ThemeBuildRunnerInput): Promise<ThemeBuildRunnerResult> {
@@ -309,14 +313,56 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       `Starting Cloudflare Sandbox theme build for buildId: ${input.buildId}`,
     );
 
-    // Guard 0: Verify Compiler Identity. A native build is the project's own
-    // toolchain at the pinned Start version; a platform build is this runner's.
-    const expectedCompilerId =
-      input.buildMode === "native" ? NATIVE_START_COMPILER_ID : this.compilerId;
-    const expectedCompilerVersion =
+    // Guard 0: the framework the build records. One Morph cannot build — or
+    // one this runner was not given the switch for — is refused here, before
+    // any workspace exists, and never built as another.
+    const recordedFramework = resolveThemeFramework(
+      input.framework,
+      this.frameworks,
+    );
+    if (!recordedFramework.ok) {
+      addLog("error", recordedFramework.message);
+      return {
+        success: false,
+        errorMessage: recordedFramework.message,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: recordedFramework.message }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+    // A framework with no platform build is built natively or not at all.
+    if (
+      input.buildMode !== "native" &&
+      recordedFramework.framework.id === "astro"
+    ) {
+      const msg =
+        "THEME_FRAMEWORK_UNAVAILABLE: An Astro Theme is built with its own configuration only; it has no platform build.";
+      addLog("error", msg);
+      return {
+        success: false,
+        errorMessage: msg,
+        diagnosticsJson: {
+          stage: "framework",
+          errors: [{ severity: "error", message: msg }],
+        },
+        logs,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    // Guard 0b: Verify Compiler Identity. A native build is the project's own
+    // toolchain at its framework's pinned version; a platform build is this
+    // runner's.
+    const nativeIdentity =
       input.buildMode === "native"
-        ? THEME_START_TOOLCHAIN.reactStart
-        : this.compilerVersion;
+        ? recordedFramework.framework.build.native.compilerIdentity()
+        : null;
+    const expectedCompilerId = nativeIdentity?.id ?? this.compilerId;
+    const expectedCompilerVersion =
+      nativeIdentity?.version ?? this.compilerVersion;
     if (
       input.compilerId !== expectedCompilerId ||
       input.compilerVersion !== expectedCompilerVersion
@@ -329,23 +375,6 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
         diagnosticsJson: {
           stage: "compiler-identity",
           errors: [{ severity: "error", message: msg }],
-        },
-        logs,
-        durationMs: Date.now() - startTime,
-      };
-    }
-
-    // Guard 0b: the framework the build records. One Morph cannot build is
-    // refused here, before any workspace exists, and never built as another.
-    const recordedFramework = resolveThemeFramework(input.framework);
-    if (!recordedFramework.ok) {
-      addLog("error", recordedFramework.message);
-      return {
-        success: false,
-        errorMessage: recordedFramework.message,
-        diagnosticsJson: {
-          stage: "framework",
-          errors: [{ severity: "error", message: recordedFramework.message }],
         },
         logs,
         durationMs: Date.now() - startTime,
@@ -1010,11 +1039,12 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       startTime: number;
     },
   ): Promise<ThemeBuildRunnerResult> {
-    const registry = buildThemeRouteRegistry(input.files);
+    const native = themeFramework(input.framework, this.frameworks).build
+      .native;
     let passes = 0;
     return runNativeBuildPasses({
       input,
-      routeRegistry: registry.valid ? registry : null,
+      routeRegistry: native.routeRegistry(input.files),
       addLog: context.addLog,
       pass: async (prerenderContent) => {
         // A later pass starts from an empty workspace: nothing the earlier
@@ -1075,18 +1105,27 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       };
     };
 
-    const registry = buildThemeRouteRegistry(input.files);
-    const routeRegistry = registry.valid ? registry : null;
-    const plan = themeFramework(input.framework).build.native.plan(
-      input.files,
-      {
-        allowedPackages: nativeAllowedPackages(this.approvedDependencies),
-        prerenderContent,
-      },
-    );
+    const framework = themeFramework(input.framework, this.frameworks);
+    const native = framework.build.native;
+    const routeRegistry = native.routeRegistry(input.files);
+    // This pass's own: records the build leaves are accepted only with it.
+    const nonce = passNonce();
+    const plan = native.plan(input.files, {
+      allowedPackages: native.allowedPackages(this.approvedDependencies),
+      prerenderContent,
+      nonce,
+    });
     if (!plan.ok) return fail("native-plan", plan.message);
     const [command, ...args] = plan.command;
-    if (command !== "vite") {
+    // The command is a binary of the recorded toolchain, never a path the
+    // plan names; Vite's own log level is the runner's.
+    const commandLine =
+      command === "vite"
+        ? `${context.toolchain.root}/node_modules/.bin/vite ${args.join(" ")} --logLevel error`
+        : command === "astro"
+          ? `${context.toolchain.root}/node_modules/.bin/astro ${args.join(" ")}`
+          : null;
+    if (!commandLine) {
       return fail("native-plan", `NATIVE_COMMAND: unexpected "${command}".`);
     }
 
@@ -1113,11 +1152,9 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
     addLog(
       "info",
-      `Executing native Start build in Sandbox: vite ${args.join(" ")}`,
+      `Executing native ${framework.id} build in Sandbox: ${command} ${args.join(" ")}`,
     );
-    const built = await sandbox.exec(
-      `${context.toolchain.root}/node_modules/.bin/vite ${args.join(" ")} --logLevel error`,
-      {
+    const built = await sandbox.exec(commandLine, {
         cwd: root,
         timeout: this.maxDurationMs,
         timeoutMs: this.maxDurationMs,
@@ -1134,14 +1171,57 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
     );
     if (built.stdout) addLog("info", built.stdout);
     if (!(built.success ?? built.exitCode === 0)) {
-      return fail(
-        "sandbox-native-compiler",
-        nativeBuildFailureMessage(
+      const buildFailure = {
+        stage: "sandbox-native-compiler",
+        message: nativeBuildFailureMessage(
           built.stderr ||
             built.stdout ||
-            "vite build exited with a non-zero status",
+            `${command} build exited with a non-zero status`,
         ),
-      );
+      };
+      // A framework whose prerender stops the build on a refused read says so
+      // in its records: read that one record (bounded), not the workspace.
+      const records = new Map<string, Uint8Array>();
+      if (native.failedBuildCause) {
+        const refusedPath = `${root}/${NATIVE_PRERENDER_REFUSED_READS_PATH}`;
+        const sized = await sandbox.exec(`stat -c %s ${refusedPath}`, {
+          timeout: 10_000,
+          timeoutMs: 10_000,
+        });
+        const size = Number.parseInt((sized.stdout ?? "").trim(), 10);
+        if (
+          (sized.success ?? sized.exitCode === 0) &&
+          Number.isInteger(size) &&
+          size <= MAX_FAILED_BUILD_RECORD_BYTES
+        ) {
+          const read = await sandbox.readFile(refusedPath, { encoding: "none" });
+          const raw =
+            read && typeof read === "object" && "content" in read
+              ? read.content
+              : read;
+          records.set(
+            NATIVE_PRERENDER_REFUSED_READS_PATH,
+            await fileContentToUint8Array(raw),
+          );
+        }
+      }
+      return nativeBuildResult({
+        input,
+        outputs: records,
+        routeRegistry,
+        limits: {
+          maxOutputFiles: this.maxOutputFiles,
+          maxOutputSizeBytes: this.maxOutputSizeBytes,
+        },
+        mimeType: getMimeType,
+        isText: isTextMimeType,
+        logs,
+        addLog,
+        startTime,
+        nonce,
+        frameworks: this.frameworks,
+        buildFailure,
+      });
     }
 
     // Everything the build left in the workspace but the toolchain, bounded
@@ -1194,6 +1274,8 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       input,
       outputs,
       routeRegistry,
+      nonce,
+      frameworks: this.frameworks,
       limits: {
         maxOutputFiles: this.maxOutputFiles,
         maxOutputSizeBytes: this.maxOutputSizeBytes,
@@ -1205,4 +1287,14 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
       startTime,
     });
   }
+}
+
+/** A failed build's refused-read record larger than this is not read. */
+const MAX_FAILED_BUILD_RECORD_BYTES = 1024 * 1024;
+
+/** A build pass's nonce, from the Worker's own random source. */
+function passNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

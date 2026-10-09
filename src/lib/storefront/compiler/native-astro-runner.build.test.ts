@@ -216,6 +216,65 @@ const ok = z.string().parse("x");
   );
 
   it(
+    "is refused for a file outside the workspace",
+    BUILD,
+    async () => {
+      // From src/pages/ in the runner's workspace (.morph-builds/<pass>/),
+      // four levels up is this checkout's own package.json.
+      const page = `---
+import pkg from "../../../../package.json";
+export const prerender = true;
+---
+<p>{pkg.name}</p>
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-escape",
+          astroThemeFiles({
+            pages: [],
+            extra: [{ path: "src/pages/escape.astro", content: page }],
+          }),
+          null,
+        ),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain(
+          'WORKSPACE_PATH_ESCAPE: Import "../../../../package.json" resolves outside the Theme.',
+        );
+      }
+    },
+  );
+
+  it(
+    "lets Astro's own virtual modules through the import guard",
+    BUILD,
+    async () => {
+      const page = `---
+import { getImage } from "astro:assets";
+import { defineMiddleware } from "astro:middleware";
+export const prerender = true;
+const kinds = [typeof getImage, typeof defineMiddleware].join(",");
+---
+<p>virtual:{kinds}</p>
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-virtual",
+          astroThemeFiles({
+            pages: [],
+            extra: [{ path: "src/pages/virtual.astro", content: page }],
+          }),
+          null,
+        ),
+      );
+      expect(file(result, "runtime/client/virtual/index.html")).toContain(
+        "virtual:function,function",
+      );
+    },
+  );
+
+  it(
     "is refused without the server's Astro switch, before any workspace",
     BUILD,
     async () => {
