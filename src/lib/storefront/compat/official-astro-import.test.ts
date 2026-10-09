@@ -152,13 +152,23 @@ describe("official Astro fixtures, imported unchanged", () => {
   });
 
   describe("KNOWN GAP: the adapter's own fixtures", () => {
-    for (const name of ["adapter-compile-image-service", "adapter-with-react"]) {
-      it(`${name} has no Wrangler config, which Morph requires`, () => {
-        expect(() => materialize(fixture(name))).toThrow(
-          /^NATIVE_WRANGLER_CONFIG: The project has no wrangler\.jsonc/,
-        );
-      });
-    }
+    it.skipIf(!astroToolchainInstalled)(
+      "adapter-with-react builds with no Wrangler config, and is refused for the adapter's default SESSION",
+      { timeout: 300_000 },
+      async () => {
+        const result = await new LocalViteThemeBuildRunner({
+          maxDurationMs: 240_000,
+          astroThemes: true,
+        }).run(materialize(fixture("adapter-with-react")));
+        expect(result).toMatchObject({
+          success: false,
+          diagnosticsJson: { stage: "output-collection" },
+          errorMessage: expect.stringMatching(
+            /^ASTRO_SESSION_BINDING_UNSUPPORTED: /,
+          ),
+        });
+      },
+    );
 
     it("adapter-compile-image-service keeps its image under src/, where Morph holds only text", () => {
       // Astro's image pipeline reads images imported from src/; a Morph source

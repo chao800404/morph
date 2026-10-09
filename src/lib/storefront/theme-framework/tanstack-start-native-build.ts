@@ -11,6 +11,7 @@ import {
   collectNativeCloudflareArtifact,
   planNativeWranglerConfig,
   refuseNativeBuild,
+  refuseNativeReservedPaths,
   type NativeThemeArtifact,
   type NativeThemeBuildPlan,
 } from "./cloudflare-native-build";
@@ -112,6 +113,9 @@ export function planNativeStartBuild(
       `${viteConfigs[0]} passes configPath to the Cloudflare plugin; Morph cannot supply its deployment config to that build yet.`,
     );
   }
+
+  const reserved = refuseNativeReservedPaths(files);
+  if (reserved) return reserved;
 
   const wrangler = planNativeWranglerConfig(byPath);
   if (!wrangler.ok) return wrangler;

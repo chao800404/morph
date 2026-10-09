@@ -127,32 +127,36 @@ describe("planNativeStartBuild", () => {
     );
   });
 
-  it("replaces whatever the project keeps at Morph's own paths", () => {
+  it("replaces the sealed content file the project keeps at Morph's path", () => {
     const plan = planNativeStartBuild(
-      project({
-        ".morph/vite.config.ts": "export default { plugins: [] };",
-        ".morph-prerender-content.json": '{"forged":true}',
-        // Pre-seeding the record cannot decide a build either way.
-        ".morph/prerender-refused-reads.ndjson": "",
-        ".morph/native-build-hooks.mjs": "// the project's own",
-        ".morph/native-build-loader.mjs": "// the project's own",
-      }),
+      project({ ".morph-prerender-content.json": '{"forged":true}' }),
     );
     if (!plan.ok) throw new Error(plan.message);
     const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
     expect(byPath.get(NATIVE_WRAPPER_CONFIG_PATH)).toContain(
       "morph:native-import-guard",
     );
-    expect(byPath.get(NATIVE_BUILD_HOOKS_PATH)).not.toContain(
-      "the project's own",
-    );
-    expect(byPath.get(NATIVE_BUILD_LOADER_PATH)).not.toContain(
-      "the project's own",
-    );
+    expect(byPath.get(NATIVE_BUILD_HOOKS_PATH)).toBeDefined();
+    expect(byPath.get(NATIVE_BUILD_LOADER_PATH)).toBeDefined();
     expect(byPath.get(".morph-prerender-content.json")).not.toContain(
       "forged",
     );
-    expect(byPath.has(".morph/prerender-refused-reads.ndjson")).toBe(false);
+  });
+
+  it("refuses a project that carries files in Morph's or the tools' own directories", () => {
+    // Replacing only the files Morph writes would leave the rest in place —
+    // a pre-seeded record, Miniflare state a prerender would read — so the
+    // directories are refused whole (docs/astro-theme-plan.md 5.2.4).
+    for (const path of [
+      ".morph/vite.config.ts",
+      ".morph/prerender-refused-reads.ndjson",
+      ".morph/native-build-hooks.mjs",
+      ".wrangler/state/v3/kv/data.sqlite",
+    ]) {
+      expect(
+        planNativeStartBuild(project({ [path]: "the project's own" })),
+      ).toMatchObject({ ok: false, code: "NATIVE_RESERVED_PATH" });
+    }
   });
 
   it("removes editor markers from the built source, as Morph's own builds do", () => {
