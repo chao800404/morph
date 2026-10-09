@@ -27,6 +27,8 @@ import {
   previewSandboxBinding,
 } from "@/lib/storefront/service/preview-sandbox-binding";
 import { createThemePreviewContentSnapshot } from "@/lib/storefront/compiler/theme-preview-content";
+import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
+import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
 import { withSignedPreviewMedia } from "./preview-media-urls";
 import {
@@ -103,6 +105,21 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       return fail(selection.message, { error: selection.reason });
     }
 
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+    // Taken before the drafts are read, so this start's snapshot is ordered
+    // against every content sync into the same preview (6.5).
+    const contentTicket = await takePreviewContentTicket({
+      storefrontId,
+      themeId,
+      previewId,
+    });
+    if (contentTicket === null) {
+      return fail("Storefront theme not found", { error: "NOT_FOUND" });
+    }
     const editorContext = await storefrontThemeDal.findEditorContext(
       storefrontId,
       themeId,
@@ -155,19 +172,17 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       });
     }
 
-    const previewId = await deriveThemePreviewSessionId({
-      storefrontId,
-      themeId,
-      userId: context.user.id,
-    });
     // Library media is readable only with a session the preview page lacks,
     // so the snapshot carries signed addresses for it instead.
-    const previewContent = await withSignedPreviewMedia(
-      await createThemePreviewContentSnapshot({
-        templates: editorContext.templates,
-        pages,
-      }),
-    );
+    const previewContent = {
+      ...(await withSignedPreviewMedia(
+        await createThemePreviewContentSnapshot({
+          templates: editorContext.templates,
+          pages,
+        }),
+      )),
+      contentTicket,
+    };
 
     const server = selection.server;
     const started = await server.start({
@@ -244,6 +259,118 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,
     });
+  });
+
+/**
+ * The next content ticket for a preview of a theme this storefront has, or
+ * null when it has no such theme. Take it before reading the drafts a
+ * snapshot is built from (storefront.schema.ts,
+ * `storefrontThemePreviewContentTickets`).
+ */
+async function takePreviewContentTicket(input: {
+  storefrontId: string;
+  themeId: string;
+  previewId: string;
+}): Promise<number | null> {
+  if (
+    !(await storefrontThemeBuildDal.verifyThemeOwnership(
+      input.storefrontId,
+      input.themeId,
+    ))
+  ) {
+    return null;
+  }
+  return storefrontPreviewContentTicketDal.next(input);
+}
+
+/**
+ * Writes the author's current draft content into their running Live Preview,
+ * and answers once the preview's Worker reads it (docs/astro-theme-plan.md
+ * 6.5). For a page rendered on the server (Astro), which shows a content
+ * edit only by reloading: the editor reloads the page after this applies,
+ * never before, and never on a refusal.
+ *
+ * The snapshot is built here, from the saved drafts, as a start builds it —
+ * the page never supplies content. Its ticket is taken before the drafts are
+ * read, and the preview keeps the highest ticket it is given, so a sync
+ * arriving after a newer one changes nothing.
+ */
+export const syncThemePreviewContent = createServerFn({ method: "POST" })
+  .validator((data: unknown) => parseInput(themePreviewServerInputSchema, data))
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId } = input.data;
+
+    const selection = createServerThemePreviewServer(
+      env as unknown as Record<string, unknown>,
+    );
+    if (!selection.enabled) {
+      return fail(selection.message, { error: selection.reason });
+    }
+    if (!selection.writeContent) {
+      return fail(
+        "This Live Preview transport cannot take a content sync yet.",
+        { error: "PREVIEW_CONTENT_SYNC_UNAVAILABLE" },
+      );
+    }
+
+    const previewId = await deriveThemePreviewSessionId({
+      storefrontId,
+      themeId,
+      userId: context.user.id,
+    });
+    const contentTicket = await takePreviewContentTicket({
+      storefrontId,
+      themeId,
+      previewId,
+    });
+    if (contentTicket === null) {
+      return fail("Storefront theme not found", { error: "NOT_FOUND" });
+    }
+    const [editorContext, pages] = await Promise.all([
+      storefrontThemeDal.findEditorContext(storefrontId, themeId),
+      storefrontPageDal.listDraftDocuments(storefrontId),
+    ]);
+    if (!editorContext) {
+      return fail("Storefront theme not found", { error: "NOT_FOUND" });
+    }
+    const content = {
+      ...(await withSignedPreviewMedia(
+        await createThemePreviewContentSnapshot({
+          templates: editorContext.templates,
+          pages,
+        }),
+      )),
+      contentTicket,
+    };
+
+    let written: Awaited<ReturnType<NonNullable<typeof selection.writeContent>>>;
+    try {
+      written = await selection.writeContent({
+        previewId,
+        content: JSON.stringify(content),
+      });
+    } catch (error) {
+      return fail("Could not update the Live Preview content.", {
+        error: error instanceof Error ? error.message : "WRITE_FAILED",
+      });
+    }
+    logPreviewServerEvent("content-sync", {
+      previewId,
+      ticket: contentTicket,
+      applied: written.applied,
+      ...(written.applied ? {} : { reason: written.reason, held: written.ticket }),
+    });
+    if (!written.applied) {
+      return {
+        ...fail("The Live Preview is not showing the latest content yet.", {
+          error: written.reason,
+        }),
+        ticket: written.ticket,
+      };
+    }
+    return ok("Live Preview content applied", { ticket: written.ticket });
   });
 
 export const stopThemePreviewServer = createServerFn({ method: "POST" })

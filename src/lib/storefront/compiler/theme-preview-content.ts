@@ -46,7 +46,46 @@ export type ThemePreviewContentSnapshot = Readonly<{
    * path with nothing at all, so the shell rendered its defaults there.
    */
   shell?: StorefrontContentResult;
+  /**
+   * Where this snapshot stands among those written into one preview: the
+   * ticket it was built under (`storefrontPreviewContentTicketDal`). A
+   * preview keeps the highest it has been given. Absent is 0, every
+   * snapshot from before tickets.
+   */
+  contentTicket?: number;
 }>;
+
+/** The ticket a written snapshot carries; 0 for none, or one unreadable. */
+export function previewContentTicket(text: string | null): number {
+  if (text === null) return 0;
+  try {
+    const ticket = (JSON.parse(text) as { contentTicket?: unknown })
+      ?.contentTicket;
+    return typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0
+      ? ticket
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The snapshot as workspace content: the same text without its ticket. The
+ * ticket orders writes; two snapshots that differ only in it describe the
+ * same workspace (`themeWorkspaceFingerprint`).
+ */
+export function previewContentWithoutTicket(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && "contentTicket" in parsed) {
+      const { contentTicket: _ticket, ...content } = parsed;
+      return JSON.stringify(content);
+    }
+  } catch {
+    // Not a snapshot this can read: counted as it is.
+  }
+  return text;
+}
 
 const ROUTE_TEMPLATE_TYPES = [
   "index",

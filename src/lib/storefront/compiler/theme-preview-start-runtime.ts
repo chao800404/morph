@@ -6,10 +6,13 @@ import {
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
 import {
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_CONTENT_MODULE_PATH,
   THEME_PREVIEW_CONTENT_PATH,
-  THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH,
 } from "./theme-preview-content";
+
+/** The address probe's header naming the content snapshot the Worker reads. */
+export const PREVIEW_CONTENT_TICKET_HEADER = "x-morph-content-ticket";
 
 /**
  * The Live Preview that runs TanStack Start itself (PROTOTYPE).
@@ -163,9 +166,11 @@ let snapshot = { templates: {}, pages: {} };
 ${contentResolverSource()}
 
 async function readSnapshot() {
-  // Re-imported on each content request, so a newer snapshot written by a
-  // preview start is picked up by the module runner without a restart.
-  const module = await import("./${THEME_PREVIEW_CONTENT_SNAPSHOT_MODULE_PATH}");
+  // The data file itself, the one the dev server's content endpoint reads
+  // too, re-imported on each read: a newer snapshot written by a start or a
+  // content sync is picked up by the module runner without a restart, and
+  // the two readers never disagree about which one is current.
+  const module = await import("./${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}");
   snapshot = JSON.parse(JSON.stringify(module.default ?? { templates: {}, pages: {} }));
 }
 
@@ -201,9 +206,22 @@ export default {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return new Response(null, { status: 405, headers: { Allow: "GET, HEAD", "cache-control": "no-store" } });
       }
+      // The ticket of the snapshot this Worker reads now: what a content
+      // sync waits for before the page may reload.
+      let ticket = 0;
+      try {
+        await readSnapshot();
+        ticket = Number.isSafeInteger(snapshot.contentTicket) ? snapshot.contentTicket : 0;
+      } catch {
+        // Unreadable: the probe still answers, naming no snapshot.
+      }
       return new Response(null, {
         status: 204,
-        headers: { "cache-control": "no-store", ${JSON.stringify(START_PREVIEW_ID_HEADER)}: ${JSON.stringify(previewId)} },
+        headers: {
+          "cache-control": "no-store",
+          ${JSON.stringify(START_PREVIEW_ID_HEADER)}: ${JSON.stringify(previewId)},
+          ${JSON.stringify(PREVIEW_CONTENT_TICKET_HEADER)}: String(ticket),
+        },
       });
     }
     const headers = new Headers(request.headers);
