@@ -331,7 +331,6 @@ export type PreviewSelectionMessage = {
   fieldKey: string | null;
   field: string | null;
   fieldPath: string | null;
-  contentValue?: string | null;
   /** Monotonically increasing editor intent, used to reject stale replies. */
   selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
@@ -481,6 +480,22 @@ export type PreviewToEditorMessage =
       fieldKey: string;
       fieldPath: string;
       value: string;
+      /**
+       * The text the edit started from. The editor saves the value only when
+       * this is the stored value: rendered text that differs from it was
+       * changed on the way to the page, and typing over it is not an edit of
+       * the field.
+       */
+      originalValue: string;
+    }
+  | {
+      /**
+       * A double click on text bound to a field that is not the stored value,
+       * so it was not opened for typing. The editor says where to edit it.
+       */
+      type: "morph:storefront-preview-inline-text-refused";
+      sectionId: string;
+      fieldPath: string;
     }
   | {
       type: "morph:storefront-preview-commit-sibling-reorder";
@@ -1168,8 +1183,6 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
         !isNullableBoundedString(value.fieldPath, 500) ||
-        (value.contentValue !== undefined &&
-          !isNullableBoundedString(value.contentValue, 10_000)) ||
         (value.selectionRevision !== undefined &&
           !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
@@ -1207,7 +1220,6 @@ export function parsePreviewToEditorMessage(
         fieldKey: value.fieldKey,
         field: value.field,
         fieldPath: value.fieldPath,
-        contentValue: value.contentValue ?? null,
         ...(value.selectionRevision === undefined
           ? {}
           : { selectionRevision: value.selectionRevision }),
@@ -1238,13 +1250,26 @@ export function parsePreviewToEditorMessage(
         value.fieldKey.length > 0 &&
         isBoundedString(value.fieldPath, 500) &&
         value.fieldPath.length > 0 &&
-        isBoundedString(value.value, 10_000)
+        isBoundedString(value.value, 10_000) &&
+        isBoundedString(value.originalValue, 10_000)
         ? {
             type: value.type,
             sectionId: value.sectionId,
             fieldKey: value.fieldKey,
             fieldPath: value.fieldPath,
             value: value.value,
+            originalValue: value.originalValue,
+          }
+        : null;
+    case "morph:storefront-preview-inline-text-refused":
+      return isBoundedString(value.sectionId, 100) &&
+        value.sectionId.length > 0 &&
+        isBoundedString(value.fieldPath, 500) &&
+        value.fieldPath.length > 0
+        ? {
+            type: value.type,
+            sectionId: value.sectionId,
+            fieldPath: value.fieldPath,
           }
         : null;
     case "morph:storefront-preview-commit-sibling-reorder":

@@ -1,5 +1,6 @@
 import {
   INLINE_TEXT_EDIT_MAX_LENGTH,
+  inlineTextMatchesStoredValue,
   isInlineTextEditCandidate,
   normalizeInlineTextEditValue,
   shouldNormalizeInlineTextInput,
@@ -35,6 +36,8 @@ export type InlineTextCommit = Readonly<{
   fieldKey: string;
   fieldPath: string;
   value: string;
+  /** The text the edit started from, which `begin` matched to the stored value. */
+  originalValue: string;
 }>;
 
 export type InlineTextEditor = Readonly<{
@@ -52,26 +55,78 @@ export type InlineTextEditor = Readonly<{
 export function createInlineTextEditor({
   onCommit,
   onLayoutChanged,
+  storedValue,
+  onRefused,
 }: {
   onCommit: (commit: InlineTextCommit) => void;
   /** Editing changes how much room the text takes; overlays follow it. */
   onLayoutChanged: () => void;
+  /**
+   * The value the page's content holds for the target's field, as the page
+   * was rendered from it. Editing starts only when the text on the canvas is
+   * exactly that value (`inlineTextMatchesStoredValue`). A caller that cannot
+   * say gets no inline editing at all.
+   */
+  storedValue?: (target: InlineEditTarget) => unknown;
+  /**
+   * A double click landed on text bound to a field, and it is not the stored
+   * value, so it cannot be typed over. The author is told where to edit it.
+   */
+  onRefused?: (target: InlineEditTarget) => void;
 }): InlineTextEditor {
   let inlineTextEdit: {
     element: HTMLElement;
     item: InlineEditTarget;
     originalValue: string;
+    /**
+     * The nodes the page rendered, by reference, with each text node's data.
+     *
+     * Put back when the edit ends, so the framework that rendered them still
+     * owns what is on the page: replacing them with copies or a fresh text
+     * node leaves it updating nodes that are no longer attached, and the
+     * canvas keeps the edited text whatever the content renders next.
+     */
     originalChildren: Node[];
+    originalTexts: Map<Node, string>;
     previousContentEditable: string | null;
     previousSpellcheck: string | null;
     isComposing: boolean;
     abortController: AbortController;
   } | null = null;
 
+  /**
+   * The element's text as the DOM holds it.
+   *
+   * Not `innerText`: that applies CSS, so an `uppercase` heading reads in
+   * capitals. It would never match the stored value, and an edit would store
+   * the capitals. Line breaks typed while editing still count: a `br` that is
+   * not the last thing in its line, and a block the browser wrapped a line in.
+   */
+  const plainText = (element: HTMLElement): string => {
+    let text = "";
+    const walk = (parent: Node) => {
+      const children = Array.from(parent.childNodes);
+      children.forEach((child, index) => {
+        if (child.nodeType === 3) {
+          text += child.textContent ?? "";
+        } else if (child.nodeName === "BR") {
+          if (index < children.length - 1) text += "\n";
+        } else {
+          if (
+            (child.nodeName === "DIV" || child.nodeName === "P") &&
+            text !== ""
+          ) {
+            text += "\n";
+          }
+          walk(child);
+        }
+      });
+    };
+    walk(element);
+    return text;
+  };
   const editableElementText = (element: HTMLElement) =>
-    normalizeInlineTextEditValue(
-      element.innerText ?? element.textContent ?? "",
-    );
+    normalizeInlineTextEditValue(plainText(element));
 
   const finish = (commit: boolean) => {
     const edit = inlineTextEdit;
@@ -79,14 +134,28 @@ export function createInlineTextEditor({
     inlineTextEdit = null;
     edit.abortController.abort();
 
+    // The page rendered again under the edit (a hot update, a route reload,
+    // a remount) and the element left it. What is on the page now is the
+    // framework's: putting the old nodes back would hide it, and what was
+    // typed belongs to a rendering that no longer exists. Nothing is saved.
+    if (!edit.element.isConnected) {
+      onLayoutChanged();
+      return;
+    }
+
     const editedValue = editableElementText(edit.element);
     const value = commit ? editedValue : edit.originalValue;
-    if (!commit && editedValue !== edit.originalValue) {
+    const childNodes = Array.from(edit.element.childNodes);
+    const childrenReplaced =
+      childNodes.length !== edit.originalChildren.length ||
+      childNodes.some((node, index) => node !== edit.originalChildren[index]);
+    // The page goes back to what it rendered, committed or not. A committed
+    // value reaches the page the way every content change does, through the
+    // Theme's own rendering: the text typed here is not what `content()` may
+    // make of it, and the editor may still refuse the write.
+    if (editedValue !== edit.originalValue || childrenReplaced) {
+      for (const [node, data] of edit.originalTexts) node.textContent = data;
       edit.element.replaceChildren(...edit.originalChildren);
-    } else if (commit && value !== edit.originalValue) {
-      // The persisted contract is text, never the browser-created editing
-      // markup (`div`, `br`, or pasted HTML in older engines).
-      edit.element.textContent = value;
     }
     edit.element.removeAttribute("data-storefront-editor-inline-editing");
     if (edit.previousContentEditable === null) {
@@ -116,6 +185,7 @@ export function createInlineTextEditor({
         fieldKey: edit.item.fieldKey,
         fieldPath: edit.item.fieldPath,
         value,
+        originalValue: edit.originalValue,
       });
     }
   };
@@ -134,8 +204,14 @@ export function createInlineTextEditor({
   };
 
   const normalizeEditableElement = (element: HTMLElement) => {
-    const value = editableElementText(element);
-    if ((element.innerText ?? element.textContent ?? "") !== value) {
+    const raw = plainText(element);
+    const value = normalizeInlineTextEditValue(raw);
+    // The persisted contract is text, never the markup a browser invents
+    // while editing (`div`, `br`, or pasted HTML in older engines).
+    const hasMarkup = Array.from(element.childNodes).some(
+      (node) => node.nodeType !== 3,
+    );
+    if (raw !== value || hasMarkup) {
       element.textContent = value;
       const selection = window.getSelection();
       const range = document.createRange();
@@ -165,17 +241,32 @@ export function createInlineTextEditor({
     ) {
       return false;
     }
+    // Rendered text that is not the stored value cannot be typed over: what
+    // was typed would be saved in its place (see the predicate).
+    if (
+      !inlineTextMatchesStoredValue(
+        editableElementText(item.element),
+        storedValue?.(item),
+      )
+    ) {
+      onRefused?.(item);
+      return false;
+    }
 
     finish(false);
     const element = item.element;
     const originalValue = editableElementText(element);
     const abortController = new AbortController();
+    const originalChildren = Array.from(element.childNodes);
     inlineTextEdit = {
       element,
       item,
       originalValue,
-      originalChildren: Array.from(element.childNodes, (node) =>
-        node.cloneNode(true),
+      originalChildren,
+      originalTexts: new Map(
+        originalChildren
+          .filter((node) => node.nodeType === 3)
+          .map((node): [Node, string] => [node, node.textContent ?? ""]),
       ),
       previousContentEditable: element.getAttribute("contenteditable"),
       previousSpellcheck: element.getAttribute("spellcheck"),

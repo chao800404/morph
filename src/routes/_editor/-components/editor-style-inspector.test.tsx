@@ -209,14 +209,20 @@ describe("code-authored text content", () => {
           elementKey: "label",
           fieldKey: "label",
           fieldPath: "label",
-          contentValue: "Why we choose differently",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
       />,
     );
 
-    const label = screen.getByDisplayValue("Why we choose differently");
+    // Nothing is stored for it, so the field starts empty: the text the canvas
+    // shows is a rendering, not a value of this field.
+    const label = screen.getByPlaceholderText(
+      "Section label...",
+    ) as HTMLInputElement;
+    expect(label.value).toBe("");
+    fireEvent.blur(label);
+    expect(onPropsChange).not.toHaveBeenCalled();
     fireEvent.input(label, { target: { value: "Designed with purpose" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
       "label",
@@ -284,7 +290,6 @@ describe("code-authored text content", () => {
           elementKey: "heading",
           fieldKey: "heading",
           fieldPath: "heading",
-          contentValue: "A thoughtful default",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
@@ -423,7 +428,6 @@ describe("code-authored text content", () => {
           elementKey: "nn",
           fieldKey: "nn",
           fieldPath: "nn",
-          contentValue: "t",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
@@ -570,7 +574,6 @@ describe("EditorStyleInspector selection content", () => {
         tagName: "img",
         elementKey: "image",
         fieldKey: "imageSrc",
-        contentValue: "/image.png",
       }),
     };
     const content = render(<EditorStyleInspector view="content" {...props} />);
@@ -619,9 +622,6 @@ describe("EditorStyleInspector selection content", () => {
           tagName: "img",
           elementKey: "image",
           fieldKey: "imageSrc",
-          // The preview selection can still carry the previous rendered value
-          // while the debounced Document write is being applied.
-          contentValue: "/previous-image.png",
         })}
       />,
     );
@@ -913,7 +913,6 @@ describe("EditorStyleInspector selection content", () => {
       elementKey: "heading",
       fieldKey: "heading",
       fieldPath: "heading",
-      contentValue: "Original heading",
     });
     const { rerender } = render(
       <EditorStyleInspector
@@ -926,17 +925,93 @@ describe("EditorStyleInspector selection content", () => {
 
     expect(screen.getByDisplayValue("Original heading")).toBeTruthy();
 
+    // The stored props have not been refetched yet; the commit carries the
+    // value the canvas edit is writing.
     rerender(
       <EditorStyleInspector
         view="content"
         {...common}
         section={section}
-        selection={{ ...selection, contentValue: "Edited in preview" }}
+        selection={selection}
+        inlineTextCommit={{
+          id: 1,
+          sectionId: "section-1",
+          fieldPath: "heading",
+          value: "Edited in preview",
+        }}
       />,
     );
 
     expect(screen.getByDisplayValue("Edited in preview")).toBeTruthy();
     expect(screen.queryByDisplayValue("Original heading")).toBeNull();
+  });
+
+  it("leaves a commit to another section's field alone", () => {
+    const section = baseSection("hero", { heading: "Hero heading" });
+    const selection = selectionDescriptor({
+      kind: "heading",
+      tagName: "h1",
+      elementKey: "heading",
+      fieldKey: "heading",
+      fieldPath: "heading",
+    });
+    const { rerender } = render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={section}
+        selection={selection}
+      />,
+    );
+
+    // The same component on the page twice: an edit of the other instance
+    // must not show up as this one's value.
+    rerender(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={section}
+        selection={selection}
+        inlineTextCommit={{
+          id: 1,
+          sectionId: "section-2",
+          fieldPath: "heading",
+          value: "Other instance",
+        }}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Hero heading")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Other instance")).toBeNull();
+  });
+
+  it("does not apply a commit it was mounted with a second time", () => {
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        onPropsChange={onPropsChange}
+        // Refetched since: the stored value is newer than the commit.
+        section={baseSection("hero", { heading: "Stored after commit" })}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+        })}
+        inlineTextCommit={{
+          id: 3,
+          sectionId: "section-1",
+          fieldPath: "heading",
+          value: "Older inline value",
+        }}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Stored after commit")).toBeTruthy();
+    expect(onPropsChange).not.toHaveBeenCalled();
   });
 
   it("shows and edits only the bound child fields when a parent component is selected", () => {

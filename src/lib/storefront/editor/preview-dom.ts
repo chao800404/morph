@@ -2,7 +2,6 @@ import {
   selectionKindFromElement,
   type EditableDescendantField,
 } from "./selection-taxonomy";
-import { readSelectionContentValue } from "./selection-content-value";
 import type {
   PreviewEditableNode,
   PreviewSelectionRestoreTarget,
@@ -578,10 +577,6 @@ export const selectionMetadata = (item: SelectableInfo) => {
     role: item.role,
     inputType: item.inputType,
     fieldPath: item.fieldPath,
-    contentValue:
-      item.descendantFields.length === 0 && item.fieldKey
-        ? readSelectionContentValue(item.element)
-        : null,
   };
 };
 

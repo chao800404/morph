@@ -55,6 +55,10 @@ export const EDITOR_SHARDS = [
     "theme-path-refused.spec.ts",
     // Unmeasured; two editor opens and one right-click on a throwaway Theme.
     "code-tree-context-menu.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest tests. Four tests on a throwaway Theme, each loading the editor
+    // two or three times.
+    "content-module-transform.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
