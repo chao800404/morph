@@ -28,6 +28,8 @@ import {
   rollbackFileOf,
 } from "../editor/theme-rollback-plan";
 import { CloudflareR2ThemeSourceBlobStore } from "./cloudflare-r2-theme-source-blob-store";
+import { THEME_PUBLIC_LIMITS } from "../theme-public-files";
+import { declaredPng, solidPng } from "../theme-image.test-support";
 import {
   createD1ThemeRevisionStore,
   d1ThemeSourceStore,
@@ -1527,6 +1529,217 @@ describe("the check before a publish activates a revision", () => {
     await expect(
       assertPublishPublicFiles(deps, "00000000-0000-4000-8000-000000000000"),
     ).rejects.toThrow("PUBLISH_PUBLIC_FILE_REFUSED");
+  });
+});
+
+describe("binary files under src/ (docs/astro-theme-plan.md 5.2.5)", () => {
+  const source = (
+    path: string,
+    bytes: Uint8Array,
+    expectedSourceGeneration = generation(),
+    extra: { expectedFileId?: string; expectedVersion?: number } = {},
+  ) =>
+    d1ThemeSourceStore.saveBinaryFile(
+      STORE,
+      THEME,
+      {
+        path,
+        bytes,
+        ...(extra.expectedFileId
+          ? extra
+          : { expectMissing: true }),
+      },
+      { expectedSourceGeneration, allowSourceAssets: true },
+    );
+  /** A binary row as a write would leave it, without the write: for quotas. */
+  const seedBinary = (path: string, sizeBytes: number) =>
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, encoding, blob_digest, size_bytes, mime_type, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, '', 'binary', ?, ?, 'image/png', 1, 'now', 'now')`,
+      )
+      .run(`seed-${path}`, STORE, THEME, path, "c".repeat(64), sizeBytes);
+
+  it("are refused by every caller that has not opted in, as before", async () => {
+    seedSource();
+    await expect(upload("src/assets/hero.png", solidPng(4, 4))).rejects.toThrow(
+      "THEME_PUBLIC_FILE_REFUSED: src/assets/hero.png: Only files under public/",
+    );
+    expect(r2.objects.size).toBe(0);
+    expect(generation()).toBe(1);
+  });
+
+  it("are stored by reference for a caller that has, and carried into the revision and the build", async () => {
+    seedSource();
+    const bytes = solidPng(16, 9);
+    const saved = await source("src/assets/hero.png", bytes);
+    expect(saved).toMatchObject({
+      encoding: "binary",
+      blobDigest: sha256(bytes),
+      mimeType: "image/png",
+    });
+    expect(r2.objects.get(`theme-source/${sha256(bytes)}`)).toEqual(bytes);
+    const revision = await revisions().materializeRevision(
+      STORE,
+      THEME,
+      (
+        sqlite
+          .prepare(
+            "SELECT id FROM storefront_theme_revisions ORDER BY revision_number DESC LIMIT 1",
+          )
+          .get() as { id: string }
+      ).id,
+    );
+    const input = normalizeRevisionSnapshot(revision!.snapshot, revision!.id);
+    expect(input.binaryFiles).toEqual([
+      expect.objectContaining({ path: "src/assets/hero.png", digest: sha256(bytes) }),
+    ]);
+  });
+
+  it("refuses SVG, other formats, oversized images and unreadable headers, and writes nothing", async () => {
+    seedSource();
+    const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    await expect(source("src/assets/logo.svg", svg)).rejects.toThrow("keep them in public/");
+    await expect(source("src/assets/clip.mp4", png())).rejects.toThrow("Under src/, only PNG");
+    await expect(
+      source("src/assets/bomb.png", declaredPng(20_000, 20_000)),
+    ).rejects.toThrow("16383 pixels a side");
+    await expect(source("src/assets/bad.png", png())).rejects.toThrow(
+      "dimensions could not be read",
+    );
+    await expect(source("src/.cache/x.png", solidPng(2, 2))).rejects.toThrow(
+      "THEME_PUBLIC_FILE_REFUSED",
+    );
+    expect(r2.objects.size).toBe(0);
+    expect(generation()).toBe(1);
+  });
+
+  it("share public/'s quota: count and total", async () => {
+    seedSource();
+    for (let index = 0; index < THEME_PUBLIC_LIMITS.maxFiles - 1; index++) {
+      seedBinary(`public/seed/${index}.png`, 1);
+    }
+    await source("src/assets/last.png", solidPng(2, 2));
+    await expect(source("src/assets/over.png", solidPng(2, 2))).rejects.toThrow(
+      "public/ and src/ hold at most 200 binary files together",
+    );
+
+    sqlite.exec("DELETE FROM storefront_theme_files WHERE id LIKE 'seed-%'");
+    seedBinary("public/big.png", THEME_PUBLIC_LIMITS.maxTotalBytes - 10);
+    await expect(source("src/assets/more.png", solidPng(8, 8))).rejects.toThrow(
+      "MB of binary files together",
+    );
+  });
+
+  it("let only one of two writes from the same generation land", async () => {
+    seedSource();
+    for (let index = 0; index < THEME_PUBLIC_LIMITS.maxFiles - 1; index++) {
+      seedBinary(`public/seed/${index}.png`, 1);
+    }
+    // Each fits the quota on its own; together they would exceed it.
+    const from = generation();
+    const results = await Promise.allSettled([
+      source("src/assets/a.png", solidPng(3, 3), from),
+      source("src/assets/b.png", solidPng(4, 4), from),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM storefront_theme_files WHERE encoding = 'binary' AND deleted_at IS NULL",
+        )
+        .get(),
+    ).toEqual({ n: THEME_PUBLIC_LIMITS.maxFiles });
+    expect(generation()).toBe(from + 1);
+  });
+
+  it("keep OCC: a replace from a stale version changes nothing", async () => {
+    seedSource();
+    const first = await source("src/assets/hero.png", solidPng(4, 4));
+    const second = await source("src/assets/hero.png", solidPng(5, 5), generation(), {
+      expectedFileId: first.id,
+      expectedVersion: first.version,
+    });
+    expect(second.version).toBe(first.version + 1);
+    // Another tab still holds the first version.
+    await expect(
+      source("src/assets/hero.png", solidPng(6, 6), generation(), {
+        expectedFileId: first.id,
+        expectedVersion: first.version,
+      }),
+    ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+    expect(fileRow("src/assets/hero.png")?.blob_digest).toBe(sha256(solidPng(5, 5)));
+  });
+
+  it("pass the publish check by path, unread, and are refused there when the rules refuse them", async () => {
+    seedSource();
+    await source("src/assets/hero.png", solidPng(4, 4));
+    const revisionId = (
+      sqlite
+        .prepare(
+          "SELECT id FROM storefront_theme_revisions ORDER BY revision_number DESC LIMIT 1",
+        )
+        .get() as { id: string }
+    ).id;
+    let reads = 0;
+    const deps = {
+      getRevision: (id: string) => revisions().getRevision(STORE, THEME, id),
+      readBlob: (digest: string) => {
+        reads += 1;
+        return d1ThemeSourceStore.readBinaryFile(digest);
+      },
+    };
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([]);
+    expect(reads).toBe(0);
+
+    // A revision stored under other rules: a binary SVG under src/.
+    const row = sqlite
+      .prepare("SELECT source_manifest FROM storefront_theme_revisions WHERE id = ?")
+      .get(revisionId) as { source_manifest: string };
+    const manifest = JSON.parse(row.source_manifest) as ThemeSourceRevisionManifest;
+    manifest.files.push({
+      path: "src/assets/logo.svg",
+      digest: "d".repeat(64),
+      sizeBytes: 10,
+      mimeType: "image/svg+xml",
+      isEntry: false,
+      encoding: "binary",
+    });
+    sqlite
+      .prepare("UPDATE storefront_theme_revisions SET source_manifest = ? WHERE id = ?")
+      .run(JSON.stringify(manifest), revisionId);
+    expect(await findPublishPublicFileProblems(deps, revisionId)).toEqual([
+      "src/assets/logo.svg: SVG files are not accepted under src/; keep them in public/.",
+    ]);
+  });
+
+  it("keep history: an earlier revision reads its own bytes, and rollback restores them", async () => {
+    seedSource();
+    const original = solidPng(4, 4, [10, 20, 30]);
+    const saved = await source("src/assets/hero.png", original);
+    const atOriginal = (
+      sqlite
+        .prepare("SELECT MAX(revision_number) AS n FROM storefront_theme_revisions")
+        .get() as { n: number }
+    ).n;
+    await source("src/assets/hero.png", solidPng(4, 4, [200, 200, 200]), generation(), {
+      expectedFileId: saved.id,
+      expectedVersion: saved.version,
+    });
+
+    const earlier = await revisions().materializeRevisionByNumber(STORE, THEME, atOriginal);
+    const entry = earlier.snapshot.find((file) => file.path === "src/assets/hero.png") as
+      | { blobDigest: string }
+      | undefined;
+    expect(entry?.blobDigest).toBe(sha256(original));
+    expect(await d1ThemeSourceStore.readBinaryFile(sha256(original))).toEqual(original);
+
+    await revisions().rollbackToRevision(STORE, THEME, atOriginal, {
+      expectedSourceGeneration: generation(),
+    });
+    expect(fileRow("src/assets/hero.png")?.blob_digest).toBe(sha256(original));
   });
 });
 

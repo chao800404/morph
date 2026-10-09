@@ -17,6 +17,7 @@ import {
   readThemeBinaryFile,
 } from "./d1-theme-storage";
 import { START_TOOLCHAIN } from "../compiler/sandbox-toolchain.test-support";
+import { noisyPng } from "../theme-image.test-support";
 
 /**
  * Binary Theme files through the storage layer, against real SQLite with the
@@ -469,6 +470,73 @@ describe("building the starter Theme with a binary file, locally", () => {
         expect(emitted.byteLength, artifact.path).toBe(bytes.byteLength);
         expect(sha256(emitted), artifact.path).toBe(sha256(bytes));
       }
+    },
+  );
+
+  it(
+    "bundles an image the Theme imports from src/, with its stored bytes",
+    { timeout: 300_000 },
+    async () => {
+      // docs/astro-theme-plan.md 5.2.5: a binary file kept with the source,
+      // imported by a route, reaches the client output through the bundler.
+      seedStarter();
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_files
+            (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+           VALUES ('gallery', ?, ?, 'src/routes/gallery.tsx', ?, 'text/typescript', 1, 'now', 'now')`,
+        )
+        .run(
+          STORE,
+          THEME,
+          'import { createFileRoute } from "@tanstack/react-router";\n' +
+            'import hero from "../assets/hero.png";\n' +
+            'export const Route = createFileRoute("/gallery")({ component: Gallery });\n' +
+            'function Gallery() { return <img src={hero} alt="hero" />; }\n',
+        );
+      // Larger than Vite's inline limit, so it is emitted as a file.
+      const bytes = noisyPng(64, 48);
+      expect(bytes.byteLength).toBeGreaterThan(4096);
+      await d1ThemeSourceStore.saveBinaryFile(
+        STORE,
+        THEME,
+        { path: "src/assets/hero.png", bytes, expectMissing: true },
+        { expectedSourceGeneration: 1, allowSourceAssets: true },
+      );
+      const revision = await revisions().materializeRevisionByNumber(
+        STORE,
+        THEME,
+        1,
+      );
+      const input = materializeThemeBuildInput({
+        build: queuedBuild(revision.id),
+        revision,
+      });
+      expect(input.binaryFiles?.map((file) => file.path)).toEqual([
+        "src/assets/hero.png",
+      ]);
+
+      const store = blobStore();
+      const result = await new LocalViteThemeBuildRunner({
+        workDirPrefix: ".morph-builds/binary-source-gate",
+        maxDurationMs: 280_000,
+      }).run({
+        ...input,
+        readBinaryFile: (digest) => readThemeBinaryFile(store, digest),
+      });
+      expect(result.success, result.success ? undefined : result.errorMessage).toBe(true);
+      if (!result.success) return;
+      // Bundled: a hashed asset under the client output, never the source path.
+      const emitted = result.artifacts.filter(
+        (artifact) =>
+          artifact.path.startsWith("runtime/client/") &&
+          /hero[-.][\w-]+\.png$/.test(artifact.path),
+      );
+      expect(emitted.length, result.artifacts.map((a) => a.path).join("\n")).toBe(1);
+      expect(sha256(emitted[0]!.content as Uint8Array)).toBe(sha256(bytes));
+      expect(
+        result.artifacts.some((artifact) => artifact.path.endsWith("src/assets/hero.png")),
+      ).toBe(false);
     },
   );
 

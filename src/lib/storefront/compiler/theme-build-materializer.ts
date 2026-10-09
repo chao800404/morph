@@ -23,6 +23,7 @@ import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contra
 import {
   checkThemePublicFiles,
   describeThemePublicProblem,
+  isThemeBinaryPath,
   isThemePublicPath,
 } from "../theme-public-files";
 
@@ -109,14 +110,16 @@ export function normalizeRevisionSnapshot(
       );
       if (
         !binaryPath.success ||
-        !isThemePublicPath(binaryPath.data) ||
+        // public/ files, served as they are, and src/ assets the build
+        // bundles; the set check below holds both to the contract.
+        !isThemeBinaryPath(binaryPath.data) ||
         typeof raw.blobDigest !== "string" ||
         !SHA256_DIGEST.test(raw.blobDigest) ||
         !Number.isInteger(raw.sizeBytes) ||
         raw.sizeBytes < 0
       ) {
         throw new Error(
-          `CORRUPT_REVISION_FILE_ENTRY: Binary file "${raw.path}" in source revision ${sourceRevisionId} is not a well-formed public/ reference.`,
+          `CORRUPT_REVISION_FILE_ENTRY: Binary file "${raw.path}" in source revision ${sourceRevisionId} is not a well-formed binary file reference under public/ or src/.`,
         );
       }
       if (binaryMap.has(binaryPath.data) || fileMap.has(binaryPath.data)) {

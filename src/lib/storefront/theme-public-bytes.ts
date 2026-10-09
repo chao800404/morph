@@ -3,10 +3,16 @@ import { SaxesParser } from "saxes";
 
 import {
   isThemePublicSvgPath,
+  isThemeSourceAssetPath,
   THEME_PUBLIC_LIMITS,
+  THEME_SOURCE_IMAGE_LIMITS,
   themePublicBytesMatch,
   themePublicTextMimeType,
 } from "./theme-public-files";
+import {
+  isMeasurableImageExtension,
+  readImageDimensions,
+} from "./theme-image-dimensions";
 
 /**
  * Whether bytes may be stored at a `public/` path: the one check every write
@@ -126,10 +132,37 @@ export function checkThemePublicBytes(
       ? { ok: true }
       : { ok: false, message: describeSvgRefusal(verdict) };
   }
-  return themePublicBytesMatch(path, bytes)
-    ? { ok: true }
-    : {
-        ok: false,
-        message: "The file's content is not the format its name says.",
-      };
+  if (!themePublicBytesMatch(path, bytes)) {
+    return {
+      ok: false,
+      message: "The file's content is not the format its name says.",
+    };
+  }
+  // An image under src/ may be decoded and resized by the build: what that
+  // costs is set by its declared dimensions, which a matching signature says
+  // nothing about. One whose dimensions cannot be read is not admitted.
+  if (isThemeSourceAssetPath(path)) {
+    const extension = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+    if (isMeasurableImageExtension(extension)) {
+      const dimensions = readImageDimensions(extension, bytes);
+      if (!dimensions) {
+        return {
+          ok: false,
+          message: "The image's dimensions could not be read from its header.",
+        };
+      }
+      const { maxDimension, maxPixels } = THEME_SOURCE_IMAGE_LIMITS;
+      if (
+        dimensions.width > maxDimension ||
+        dimensions.height > maxDimension ||
+        dimensions.width * dimensions.height > maxPixels
+      ) {
+        return {
+          ok: false,
+          message: `Images under src/ are limited to ${maxDimension} pixels a side and ${maxPixels / 1_000_000} megapixels (this one declares ${dimensions.width} × ${dimensions.height}).`,
+        };
+      }
+    }
+  }
+  return { ok: true };
 }

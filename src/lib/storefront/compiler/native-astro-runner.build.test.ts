@@ -1,5 +1,7 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { noisyPng } from "../theme-image.test-support";
 import type { StorefrontThemeBuildDTO } from "../dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "../dto/storefront-theme-file.dto";
 import {
@@ -26,13 +28,36 @@ const BUILD = { timeout: 300_000 };
 
 type Files = ReturnType<typeof astroThemeFiles>;
 
+/** Binary files as a revision holds them: by digest, apart from the source. */
+function binarySnapshot(binaries: readonly { path: string; bytes: Uint8Array }[]) {
+  const byDigest = new Map<string, Uint8Array>();
+  const entries = binaries.map(({ path, bytes }) => {
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    byDigest.set(digest, bytes);
+    return {
+      path,
+      encoding: "binary",
+      blobDigest: digest,
+      sizeBytes: bytes.byteLength,
+      mimeType: "image/png",
+      isEntry: false,
+    };
+  });
+  return {
+    entries,
+    readBinaryFile: async (digest: string) => byDigest.get(digest)!,
+  };
+}
+
 function astroInput(
   id: string,
   files: Files,
   sealed: readonly string[] | null,
+  binaries: readonly { path: string; bytes: Uint8Array }[] = [],
 ) {
   const snapshot = sealed ? sealedSnapshot(sealed) : undefined;
-  return materializeThemeBuildInput({
+  const binary = binarySnapshot(binaries);
+  const input = materializeThemeBuildInput({
     build: {
       id,
       storefrontId: "store",
@@ -52,7 +77,10 @@ function astroInput(
       storefrontId: "store",
       themeId: "theme",
       revisionNumber: 1,
-      snapshot: files.map((file) => ({ path: file.path, content: file.content })),
+      snapshot: [
+        ...files.map((file) => ({ path: file.path, content: file.content })),
+        ...binary.entries,
+      ],
     } as unknown as StorefrontThemeRevisionDTO,
     ...(snapshot
       ? {
@@ -65,6 +93,7 @@ function astroInput(
       : {}),
     astroThemes: true,
   });
+  return { ...input, readBinaryFile: binary.readBinaryFile };
 }
 
 const run = (
@@ -212,6 +241,56 @@ const ok = z.string().parse("x");
           'UNAPPROVED_DEPENDENCY: Theme imports "zod"',
         );
       }
+    },
+  );
+
+  it(
+    "processes an image kept under src/ with imageService \"compile\"",
+    BUILD,
+    async () => {
+      // docs/astro-theme-plan.md 5.2.5: the build-time image pipeline 5.2
+      // could not verify while a revision had nowhere to keep the image.
+      const config = `import { defineConfig } from "astro/config";
+import cloudflare from "@astrojs/cloudflare";
+export default defineConfig({
+  output: "server",
+  adapter: cloudflare({ imageService: "compile" }),
+  session: false,
+  devToolbar: { enabled: false },
+  telemetry: false,
+});
+`;
+      const page = `---
+import { Image } from "astro:assets";
+import hero from "../assets/hero.png";
+export const prerender = true;
+---
+<html><body><Image src={hero} alt="hero" width={32} height={24} /></body></html>
+`;
+      const result = await run(
+        astroInput(
+          "astro-runner-compile-image",
+          astroThemeFiles({
+            config,
+            pages: [],
+            extra: [{ path: "src/pages/photo.astro", content: page }],
+          }),
+          null,
+          [{ path: "src/assets/hero.png", bytes: noisyPng(64, 48) }],
+        ),
+      );
+      if (!result.success) throw new Error(result.errorMessage);
+      const variants = result.artifacts
+        .map((artifact) => artifact.path)
+        .filter((path) => /^runtime\/client\/_astro\/hero\.[\w-]+\.webp$/.test(path));
+      expect(variants.length, result.artifacts.map((a) => a.path).join("\n")).toBeGreaterThan(0);
+      const html = file(result, "runtime/client/photo/index.html");
+      expect(html).toMatch(/<img[^>]+src="\/_astro\/hero\.[\w-]+\.webp"/);
+      expect(html).toContain('width="32"');
+      // The source image is the build's input, never part of what it serves.
+      expect(
+        result.artifacts.some((artifact) => artifact.path.includes("src/assets")),
+      ).toBe(false);
     },
   );
 

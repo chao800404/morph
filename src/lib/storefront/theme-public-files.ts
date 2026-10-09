@@ -151,8 +151,105 @@ const PLATFORM_FILE_NAMES = new Set([
   "404.html",
 ]);
 
+/**
+ * Binary files a Theme keeps with its source, under `src/`: images and fonts
+ * its code imports, which the framework's build bundles (Vite asset imports;
+ * Astro's image pipeline). The same storage, quota and checks as `public/`,
+ * with three differences:
+ *
+ * - Morph adds no CMS entry of its own that serves them, and checks no route
+ *   against them. That does not make them private: once a page uses one, the
+ *   framework's build decides how it is served — a hashed asset, a processed
+ *   variant, or inlined into the page — so nothing secret belongs here.
+ * - No SVG: an imported SVG can be inlined into a page as markup, where the
+ *   isolation `public/` SVG is served with does not apply. SVG belongs in
+ *   `public/`.
+ * - An image's declared dimensions are bounded too
+ *   (`THEME_SOURCE_IMAGE_LIMITS`): a build may decode and resize it, and the
+ *   cost of that is set by its pixels, not its bytes.
+ */
+export const THEME_SOURCE_ASSET_DIRECTORY = "src/";
+
+const SOURCE_ASSET_EXTENSIONS: ReadonlySet<string> = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "avif",
+  "woff",
+  "woff2",
+]);
+
+/** The extensions `src/` accepts as binary files, as a picker's `accept` list. */
+export const THEME_SOURCE_ASSET_ACCEPT = [...SOURCE_ASSET_EXTENSIONS]
+  .map((extension) => `.${extension}`)
+  .join(",");
+
+export const THEME_SOURCE_IMAGE_LIMITS = {
+  /** About 40 megapixels: a 7680 × 5120 image fits, a decompression bomb does not. */
+  maxPixels: 40_000_000,
+  /**
+   * WebP's own limit, the format Astro's image service writes by default.
+   * Measured (docs/astro-theme-plan.md 5.2.5): at 16 384 px the full-size
+   * variant could not be encoded, and the build emitted the PNG's bytes under
+   * a `.webp` name.
+   */
+  maxDimension: 16_383,
+} as const;
+
+/** Whether a binary file at this path is a source asset rather than a public one. */
+export function isThemeSourceAssetPath(path: string): boolean {
+  return path.startsWith(THEME_SOURCE_ASSET_DIRECTORY);
+}
+
+/** Whether a path is one a binary file may be stored at, by its directory. */
+export function isThemeBinaryPath(path: string): boolean {
+  return isThemePublicPath(path) || isThemeSourceAssetPath(path);
+}
+
+/** Whether a binary file may be kept at this `src/` path, and as which type. */
+export function checkThemeSourceAssetPath(
+  path: string,
+):
+  | Readonly<{ ok: true; mimeType: string }>
+  | Readonly<{ ok: false; reason: ThemePublicPathRefusal }> {
+  if (!isThemeSourceAssetPath(path)) {
+    return { ok: false, reason: "not-binary-location" };
+  }
+  if (!safeThemeFilePathSchema.safeParse(path).success) {
+    return { ok: false, reason: "unsafe-path" };
+  }
+  if (path.split("/").some((segment) => segment.startsWith("."))) {
+    return { ok: false, reason: "hidden-file" };
+  }
+  const extension = extensionOf(path);
+  if (extension === "svg" || extension === "svgz") {
+    return { ok: false, reason: "source-svg-not-allowed" };
+  }
+  if (!SOURCE_ASSET_EXTENSIONS.has(extension)) {
+    return { ok: false, reason: "unsupported-source-format" };
+  }
+  return { ok: true, mimeType: FORMATS[extension]!.mimeType };
+}
+
+/** The path check for a binary file wherever it is kept. */
+export function checkThemeBinaryPath(
+  path: string,
+  routePaths: readonly string[] = [],
+):
+  | Readonly<{ ok: true; mimeType: string }>
+  | Readonly<{ ok: false; reason: ThemePublicPathRefusal }> {
+  if (isThemePublicPath(path)) return checkThemePublicPath(path, routePaths);
+  if (isThemeSourceAssetPath(path)) return checkThemeSourceAssetPath(path);
+  return { ok: false, reason: "not-binary-location" };
+}
+
 export type ThemePublicPathRefusal =
   | "not-public"
+  | "not-binary-location"
+  | "source-svg-not-allowed"
+  | "unsupported-source-format"
   | "unsafe-path"
   | "hidden-file"
   | "platform-file"
@@ -269,10 +366,11 @@ export type ThemePublicSetProblem = Readonly<{
 }>;
 
 /**
- * Checks everything `public/` would hold after a change, as a whole: each
- * path, each size, the count, the total, and paths that differ only in case.
- * The limits hold for the result, so the same answer applies to an upload,
- * an import or a publish.
+ * Checks every binary file the Theme would hold after a change, as a whole —
+ * `public/` and `src/` together, which share one quota: each path, each
+ * size, the count, the total, and paths that differ only in case. The limits
+ * hold for the result, so the same answer applies to an upload, an import or
+ * a publish.
  */
 export function checkThemePublicFiles(
   files: readonly Readonly<{ path: string; size: number }>[],
@@ -284,7 +382,7 @@ export function checkThemePublicFiles(
   const seen = new Map<string, string>();
   let totalBytes = 0;
   for (const file of files) {
-    const check = checkThemePublicPath(file.path, routePaths);
+    const check = checkThemeBinaryPath(file.path, routePaths);
     if (!check.ok) problems.push({ path: file.path, reason: check.reason });
     if (file.size > THEME_PUBLIC_LIMITS.maxFileBytes) {
       problems.push({ path: file.path, reason: "file-too-large" });
@@ -343,8 +441,14 @@ export function describeThemePublicProblem(
     case "case-collision":
       return "Another file has the same path apart from letter case.";
     case "too-many-files":
-      return `public/ holds at most ${THEME_PUBLIC_LIMITS.maxFiles} files.`;
+      return `public/ and src/ hold at most ${THEME_PUBLIC_LIMITS.maxFiles} binary files together.`;
     case "total-too-large":
-      return `public/ holds at most ${THEME_PUBLIC_LIMITS.maxTotalBytes / 1024 / 1024} MB in total.`;
+      return `public/ and src/ hold at most ${THEME_PUBLIC_LIMITS.maxTotalBytes / 1024 / 1024} MB of binary files together.`;
+    case "not-binary-location":
+      return "Binary files are kept under public/ or src/.";
+    case "source-svg-not-allowed":
+      return "SVG files are not accepted under src/; keep them in public/.";
+    case "unsupported-source-format":
+      return "Under src/, only PNG, JPEG, WebP, GIF, AVIF, WOFF and WOFF2 are supported.";
   }
 }
