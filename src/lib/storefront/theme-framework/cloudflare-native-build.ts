@@ -76,6 +76,73 @@ export const refuseNativeBuild = (
 });
 
 /**
+ * The bindings a Wrangler config — the project's, or the one a build wrote —
+ * declares that Morph cannot map yet. Top level and `previews` alike: both
+ * come from the same author setting.
+ */
+export function unmappedBindings(
+  config: Readonly<Record<string, unknown>>,
+): readonly string[] {
+  const sections = [
+    config,
+    ...(config.previews && typeof config.previews === "object"
+      ? [config.previews as Record<string, unknown>]
+      : []),
+  ];
+  return BINDING_KEYS.filter((key) =>
+    sections.some((section) => declaresSomething(section[key])),
+  );
+}
+
+/**
+ * Whether a binding field holds anything. Wrangler writes its normalised
+ * config with every field present and empty (`durable_objects: { bindings:
+ * [] }`, `queues: { producers: [], consumers: [] }`), so presence is not
+ * declaration: an array declares something when it has an entry, an object
+ * when any of its values does or is a plain value (`ai: { binding: "AI" }`).
+ */
+function declaresSomething(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") {
+    return Object.values(value).some(
+      (inner) =>
+        inner !== undefined &&
+        inner !== null &&
+        (typeof inner !== "object" || declaresSomething(inner)),
+    );
+  }
+  return true;
+}
+
+/**
+ * Directories a native build's tools and Morph write in the workspace. A
+ * project's source never supplies them: `.wrangler/` holds the Cloudflare
+ * plugin's record of what it built (which the artifact is collected from) and
+ * Miniflare's local state (which a prerender would read as its KV, D1 and
+ * R2), and `.morph/` holds Morph's wrapper and the build's records.
+ */
+const NATIVE_RESERVED_DIRECTORIES = [".wrangler/", ".morph/"] as const;
+
+export function refuseNativeReservedPaths(
+  files: readonly Readonly<{ path: string }>[],
+): NativeBuildRefusal | null {
+  const reserved = files
+    .map((file) => file.path)
+    .filter((path) =>
+      NATIVE_RESERVED_DIRECTORIES.some((directory) =>
+        path.toLowerCase().startsWith(directory),
+      ),
+    );
+  return reserved.length > 0
+    ? refuseNativeBuild(
+        "NATIVE_RESERVED_PATH",
+        `The project carries ${reserved.slice(0, 5).join(", ")}${reserved.length > 5 ? ", …" : ""}; .wrangler/ and .morph/ are written by the build itself and cannot come from the Theme's source.`,
+      )
+    : null;
+}
+
+/**
  * Morph's copy of the project's Wrangler config, the file the Cloudflare
  * plugin is pointed at, or why the project's config cannot be supplied.
  *
@@ -109,12 +176,7 @@ export function planNativeWranglerConfig(
       `${wranglerConfigs[0]} could not be read (${error instanceof Error ? error.message : "invalid"}).`,
     );
   }
-  const declaredBindings = BINDING_KEYS.filter((key) => {
-    const value = wrangler[key];
-    return Array.isArray(value)
-      ? value.length > 0
-      : value !== undefined && value !== null;
-  });
+  const declaredBindings = unmappedBindings(wrangler);
   if (declaredBindings.length > 0) {
     return refuseNativeBuild(
       "NATIVE_BINDINGS_UNMAPPED",

@@ -9,6 +9,8 @@ import {
   collectNativeCloudflareArtifact,
   planNativeWranglerConfig,
   refuseNativeBuild,
+  refuseNativeReservedPaths,
+  unmappedBindings,
   type NativeThemeArtifact,
   type NativeThemeBuildPlan,
 } from "./cloudflare-native-build";
@@ -141,13 +143,31 @@ export function planNativeAstroBuild(
     );
   }
 
-  const wrangler = planNativeWranglerConfig(byPath);
-  if (!wrangler.ok) return wrangler;
+  const reserved = refuseNativeReservedPaths(files);
+  if (reserved) return reserved;
+
+  // The adapter reads a wrangler.toml as readily as a .jsonc, and Morph reads
+  // no TOML: its bindings would reach the build unchecked.
+  if (byPath.has("wrangler.toml")) {
+    return refuseNativeBuild(
+      "NATIVE_WRANGLER_CONFIG",
+      "The project has a wrangler.toml, which Morph cannot read; write it as wrangler.jsonc, or remove it to use the adapter's defaults.",
+    );
+  }
+  // A Wrangler config is optional for Astro: without one the adapter writes
+  // its own defaults, as it does outside Morph. Either way the Worker config
+  // the build writes is held to the same rules (collectNativeAstroArtifact).
+  const hasOwnWranglerConfig =
+    byPath.has("wrangler.jsonc") || byPath.has("wrangler.json");
+  const wrangler = hasOwnWranglerConfig
+    ? planNativeWranglerConfig(byPath)
+    : null;
+  if (wrangler && !wrangler.ok) return wrangler;
 
   const workspaceFiles: SourceFile[] = files.filter(
     (file) => !MORPH_OWNED.has(file.path),
   );
-  workspaceFiles.push(wrangler.file);
+  if (wrangler) workspaceFiles.push(wrangler.file);
   workspaceFiles.push(
     ...astroPrerenderWorkspaceFiles({
       themeConfigPath: configs[0]!,
@@ -169,7 +189,9 @@ export function planNativeAstroBuild(
     ok: true,
     workspaceFiles,
     env: {
-      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH,
+      ...(wrangler
+        ? { CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: NATIVE_WRANGLER_CONFIG_PATH }
+        : {}),
       NODE_OPTIONS: NATIVE_BUILD_NODE_OPTIONS,
       ASTRO_TELEMETRY_DISABLED: "1",
     },
@@ -266,6 +288,16 @@ export function collectNativeAstroArtifact(
       const worker = parseJsonc(text(serverConfig));
       if (worker && typeof worker === "object" && !Array.isArray(worker)) {
         refuseAstroWorkerConfig(worker as WorkerConfig);
+        // Whatever wrote it — the project's config, or the adapter's defaults
+        // when there is none — the Worker config the build produced declares
+        // no binding Morph cannot map. Checked here, on the build's output,
+        // because the adapter can add bindings the project never wrote.
+        const bindings = unmappedBindings(worker as WorkerConfig);
+        if (bindings.length > 0) {
+          throw new Error(
+            `NATIVE_BINDINGS_UNMAPPED: The Worker config the build wrote declares ${bindings.join(", ")}, which Morph cannot map to its own resources yet.`,
+          );
+        }
       }
     }
   }
@@ -279,6 +311,11 @@ export function collectNativeAstroArtifact(
     if (path.startsWith("runtime/server/") && text(content).includes(ASTRO_PRERENDER_SHIM_MARKER)) {
       throw new Error(
         `NATIVE_PRERENDER_SHIM_LEAKED: Morph's prerender wrapper is in the deployable Worker (${path}).`,
+      );
+    }
+    if (path.includes(".wrangler/")) {
+      throw new Error(
+        `NATIVE_ARTIFACT_TOOL_STATE: the build's tool state is in the artifact (${path}).`,
       );
     }
     if (path.includes(".morph/")) {
