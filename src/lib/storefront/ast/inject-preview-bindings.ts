@@ -9,6 +9,11 @@ import {
   readPageBindingKey,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import type { ThemeContentFieldDefinition } from "@/lib/storefront/theme-content-capabilities";
+import {
+  resolveLocalModulePathFromFiles,
+  resolveRowFields,
+} from "@/lib/storefront/theme-content-capability-resolver";
 
 /**
  * Writes the editor's identity attributes into a Theme before a real React
@@ -413,11 +418,19 @@ function hasParenthesizedParams(source: string, itemParamEnd: number) {
  * the sibling `<Name>.fields.ts` by the same rule the capability resolver uses,
  * so the canvas marks exactly the fields the Inspector offers.
  */
-function declaredFields(file: {
-  path: string;
-  content: string;
-  sidecar?: string | null;
-}): {
+function declaredFields(
+  file: {
+    path: string;
+    content: string;
+    sidecar?: string | null;
+  },
+  /**
+   * The row fields an `of: "./Card"` reference resolves to, read by the
+   * capability resolver's own rule. Without it a row declared by reference
+   * has no known shape, and nothing in it is marked.
+   */
+  rowFieldsOf?: (specifier: string) => ReadonlySet<string> | null,
+): {
   top: ReadonlySet<string>;
   rows: ReadonlyMap<string, ReadonlySet<string>>;
 } | null {
@@ -434,9 +447,309 @@ function declaredFields(file: {
     const nested = (definition as { fields?: Record<string, unknown> }).fields;
     if (nested && typeof nested === "object") {
       rows.set(key, new Set(Object.keys(nested)));
+      continue;
+    }
+    // Inline `fields` win over `of`, as they do in the resolver.
+    const reference = definition as { type?: unknown; of?: unknown };
+    if (
+      reference.type === "array" &&
+      typeof reference.of === "string" &&
+      rowFieldsOf
+    ) {
+      const resolved = rowFieldsOf(reference.of);
+      if (resolved && resolved.size > 0) rows.set(key, resolved);
     }
   }
   return { top, rows };
+}
+
+/**
+ * The prop a row's own component receives its row through.
+ *
+ * Real React has no way to tell a component it was rendered as one row of a
+ * list: by the time `<Card {...item} />` runs, `title` is just a prop. The
+ * interpreter carried the row in its environment; the preview carries it the
+ * way React carries anything, as a prop the compiler adds on both sides — the
+ * list passes it, and the component's own parameter takes it, so it never
+ * reaches a `...rest` the component spreads onto the page. A build adds
+ * neither.
+ */
+const ROW_PROP = "__morphRow";
+
+/** What a row's component is told about the row it renders. */
+type RowThread = Readonly<{
+  /** The component module the row renders, and the export it uses. */
+  componentPath: string;
+  exportName: string;
+  /**
+   * The component's prop names whose value is, provably, the row's field of
+   * the given name. Anything not listed is not this row's content.
+   */
+  fields: Readonly<Record<string, string>>;
+}>;
+
+/** `item.title`, exactly: the one form whose value is the stored field. */
+function readDirectRowField(expression: any, item: string): string | null {
+  let current = expression;
+  while (
+    current?.type === "TSAsExpression" ||
+    current?.type === "TSNonNullExpression"
+  ) {
+    current = current.expression;
+  }
+  if (
+    (current?.type !== "MemberExpression" &&
+      current?.type !== "OptionalMemberExpression") ||
+    current.computed ||
+    current.object?.type !== "Identifier" ||
+    current.object.name !== item ||
+    current.property?.type !== "Identifier"
+  ) {
+    return null;
+  }
+  return current.property.name;
+}
+
+/** Which module and export a JSX name was imported as, when it was. */
+function readImportBinding(
+  ast: any,
+  localName: string,
+): { specifier: string; exportName: string } | null {
+  for (const statement of ast?.program?.body ?? []) {
+    if (
+      statement?.type !== "ImportDeclaration" ||
+      statement.importKind === "type" ||
+      typeof statement.source?.value !== "string"
+    ) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (specifier?.local?.name !== localName) continue;
+      if (specifier.type === "ImportDefaultSpecifier") {
+        return { specifier: statement.source.value, exportName: "default" };
+      }
+      if (specifier.type === "ImportSpecifier") {
+        const imported = specifier.imported;
+        const exportName =
+          imported?.type === "Identifier" ? imported.name : imported?.value;
+        return typeof exportName === "string"
+          ? { specifier: statement.source.value, exportName }
+          : null;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function isFunctionNode(node: any): boolean {
+  return (
+    node?.type === "FunctionDeclaration" ||
+    node?.type === "ArrowFunctionExpression" ||
+    node?.type === "FunctionExpression"
+  );
+}
+
+/**
+ * The function an export names, when it is a plain function component.
+ *
+ * `memo(...)`, `forwardRef(...)` and anything computed are not followed: the
+ * function React calls is then not one this can point at with certainty.
+ */
+function findExportedFunction(ast: any, exportName: string): any {
+  const body: any[] = ast?.program?.body ?? [];
+  const declaredFunction = (declaration: any, name: string): any => {
+    if (
+      declaration?.type === "FunctionDeclaration" &&
+      declaration.id?.name === name
+    ) {
+      return declaration;
+    }
+    if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations ?? []) {
+        if (
+          declarator.id?.type === "Identifier" &&
+          declarator.id.name === name &&
+          (declarator.init?.type === "ArrowFunctionExpression" ||
+            declarator.init?.type === "FunctionExpression")
+        ) {
+          return declarator.init;
+        }
+      }
+    }
+    return null;
+  };
+  const localFunction = (name: string): any => {
+    for (const statement of body) {
+      const found =
+        declaredFunction(statement, name) ??
+        (statement?.type === "ExportNamedDeclaration"
+          ? declaredFunction(statement.declaration, name)
+          : null);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  for (const statement of body) {
+    if (
+      exportName === "default" &&
+      statement?.type === "ExportDefaultDeclaration"
+    ) {
+      const declaration = statement.declaration;
+      if (isFunctionNode(declaration)) return declaration;
+      if (declaration?.type === "Identifier") {
+        return localFunction(declaration.name);
+      }
+      return null;
+    }
+    if (statement?.type !== "ExportNamedDeclaration" || statement.source) {
+      continue;
+    }
+    const declared = declaredFunction(statement.declaration, exportName);
+    if (declared) return declared;
+    for (const specifier of statement.specifiers ?? []) {
+      const exported = specifier?.exported;
+      const name =
+        exported?.type === "Identifier" ? exported.name : exported?.value;
+      if (name === exportName && specifier.local?.type === "Identifier") {
+        return localFunction(specifier.local.name);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The destructured props a component can take its row through.
+ *
+ * Only an object pattern: adding the row there keeps it out of any `...rest`
+ * the component passes on. A component that takes `props` whole could hand the
+ * row to a DOM element, so it is not given one, and its fields stay
+ * unreachable inside a list rather than guessed.
+ */
+function threadablePropsPattern(fn: any): any {
+  const first = fn?.params?.[0];
+  const pattern = first?.type === "AssignmentPattern" ? first.left : first;
+  if (pattern?.type !== "ObjectPattern") return null;
+  const taken = (pattern.properties ?? []).some(
+    (property: any) =>
+      property?.type === "ObjectProperty" &&
+      ((property.key?.type === "Identifier" &&
+        property.key.name === ROW_PROP) ||
+        (property.key?.type === "StringLiteral" &&
+          property.key.value === ROW_PROP)),
+  );
+  return taken ? null : pattern;
+}
+
+/**
+ * The elements a component returns directly: the ones that are the row, as
+ * the starter's own `<li data-storefront-field-path="items.0">` is.
+ */
+function componentRootStarts(fn: any): ReadonlySet<number> {
+  const roots = new Set<number>();
+  const add = (expression: any) => {
+    if (expression?.type === "JSXElement" && expression.start != null) {
+      roots.add(expression.start);
+    } else if (expression?.type === "JSXFragment") {
+      for (const child of expression.children ?? []) {
+        if (child?.type === "JSXElement" && child.start != null) {
+          roots.add(child.start);
+        }
+      }
+    }
+  };
+  if (fn?.body?.type === "BlockStatement") {
+    for (const statement of fn.body.body ?? []) {
+      if (statement?.type === "ReturnStatement") add(statement.argument);
+    }
+  } else {
+    add(fn?.body);
+  }
+  return roots;
+}
+
+/**
+ * Which of a row component's props carry which of the row's fields.
+ *
+ * Proved from the call site alone: `{...item}` hands over every row field
+ * under its own name, `heading={item.title}` hands over one under another.
+ * Anything else that sets a prop — a literal, another expression, a spread of
+ * something else — makes that prop not the row's, because the value on the
+ * page would then not be the value an edit writes.
+ */
+function readRowFieldsByProp(
+  row: any,
+  item: string | null,
+  rowFields: ReadonlySet<string>,
+): Record<string, string> | null {
+  const fields: Record<string, string> = {};
+  const notTheRow = new Set<string>();
+  let foreignSpread = false;
+  for (const attribute of row.openingElement?.attributes ?? []) {
+    if (attribute?.type === "JSXSpreadAttribute") {
+      if (
+        item &&
+        attribute.argument?.type === "Identifier" &&
+        attribute.argument.name === item
+      ) {
+        for (const field of rowFields) {
+          if (!notTheRow.has(field)) fields[field] = field;
+        }
+      } else {
+        foreignSpread = true;
+      }
+      continue;
+    }
+    if (
+      attribute?.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier"
+    ) {
+      continue;
+    }
+    const name = attribute.name.name;
+    if (name === "key") continue;
+    // The author's own prop of that name; theirs, so nothing is threaded.
+    if (name === ROW_PROP) return null;
+    const field =
+      item && attribute.value?.type === "JSXExpressionContainer"
+        ? readDirectRowField(attribute.value.expression, item)
+        : null;
+    if (field && rowFields.has(field)) {
+      fields[name] = field;
+      notTheRow.delete(name);
+    } else {
+      delete fields[name];
+      notTheRow.add(name);
+    }
+  }
+  // A spread of anything else may set any prop, and which ones is only known
+  // when it runs.
+  return foreignSpread ? {} : fields;
+}
+
+/**
+ * The attributes a row component's field element carries.
+ *
+ * Rendered as a row, the element names the row's field and its full path —
+ * or, for a prop the call site did not prove is the row's, an empty field:
+ * present, so a click selects this element rather than the row around it,
+ * and naming nothing, so there is no content to edit on it. Rendered anywhere
+ * else, it is the component's own field, as before.
+ */
+function threadedFieldAttributes(
+  local: string,
+  field: string,
+  withPath: boolean,
+): string {
+  const key = JSON.stringify(field);
+  return (
+    ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? "") : ${key}}` +
+    (withPath
+      ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+      : "")
+  );
 }
 
 /**
@@ -648,33 +961,186 @@ export function injectPreviewBindings(
   const skipped: Array<{ path: string; reason: string }> = [];
   const warnings: Array<{ path: string; message: string }> = [];
   const contentByPath = new Map(files.map((file) => [file.path, file.content]));
+  const filePaths = new Set(contentByPath.keys());
+
+  const sidecarOf = (path: string) => {
+    const sidecarPath = contentFieldsSidecarPath(path);
+    return sidecarPath ? contentByPath.get(sidecarPath) : undefined;
+  };
+  // A module's own valid declaration, which is all a row reference resolves
+  // against — the same input the capability resolver's expansion reads.
+  const ownFieldsCache = new Map<
+    string,
+    Record<string, ThemeContentFieldDefinition> | null
+  >();
+  const ownFields = (path: string) => {
+    if (!ownFieldsCache.has(path)) {
+      const content = contentByPath.get(path);
+      const parsed =
+        content === undefined
+          ? null
+          : readComponentContentFields({
+              path,
+              source: content,
+              sidecar: sidecarOf(path),
+            });
+      ownFieldsCache.set(
+        path,
+        parsed?.declaration === "valid" ? (parsed.fields ?? {}) : null,
+      );
+    }
+    return ownFieldsCache.get(path);
+  };
+  const declaredFor = (file: PreviewBindingFile) =>
+    declaredFields({ ...file, sidecar: sidecarOf(file.path) }, (specifier) => {
+      const fields = resolveRowFields(file.path, specifier, ownFields);
+      return fields ? new Set(Object.keys(fields)) : null;
+    });
+
+  const asts = new Map<string, any>();
+  for (const file of files) {
+    if (!JSX_FILE.test(file.path)) continue;
+    try {
+      asts.set(
+        file.path,
+        parse(file.content, {
+          sourceType: "module",
+          plugins: ["jsx", "typescript"],
+        }),
+      );
+    } catch {
+      // Reported where the file itself is handled, below.
+    }
+  }
+
+  // Rows rendered by a component of their own, found before any file is
+  // written: the list passes the row and the component takes it, and those
+  // are two files that have to agree.
+  const rowThreads = new Map<string, RowThread>();
+  const threadedExports = new Map<string, Set<string>>();
+  for (const file of files) {
+    const ast = asts.get(file.path);
+    if (!ast) continue;
+    const declared = declaredFor(file);
+    if (!declared || declared.rows.size === 0) continue;
+    const visitForRows = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) visitForRows(child);
+        return;
+      }
+      const mapCall = readMapCall(node);
+      const row = mapCall?.rowElement;
+      const rowFields = mapCall ? declared.rows.get(mapCall.arrayPath) : null;
+      const name = row?.openingElement?.name;
+      if (
+        mapCall &&
+        rowFields &&
+        row.start != null &&
+        name?.type === "JSXIdentifier" &&
+        /^[A-Z]/.test(name.name ?? "")
+      ) {
+        const binding = readImportBinding(ast, name.name);
+        const componentPath =
+          binding && binding.specifier.startsWith(".")
+            ? resolveLocalModulePathFromFiles(
+                file.path,
+                binding.specifier,
+                filePaths,
+              )
+            : null;
+        const fields = readRowFieldsByProp(row, mapCall.scope.item, rowFields);
+        if (
+          binding &&
+          componentPath &&
+          componentPath !== file.path &&
+          JSX_FILE.test(componentPath) &&
+          fields &&
+          threadablePropsPattern(
+            findExportedFunction(asts.get(componentPath), binding.exportName),
+          )
+        ) {
+          rowThreads.set(`${file.path}:${row.start}`, {
+            componentPath,
+            exportName: binding.exportName,
+            fields,
+          });
+          const exports = threadedExports.get(componentPath) ?? new Set();
+          exports.add(binding.exportName);
+          threadedExports.set(componentPath, exports);
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "leadingComments") continue;
+        visitForRows(value);
+      }
+    };
+    visitForRows(ast.program);
+  }
 
   const out = files.map((file) => {
     if (!JSX_FILE.test(file.path)) return file;
 
-    let ast: any;
-    try {
-      ast = parse(file.content, {
-        sourceType: "module",
-        plugins: ["jsx", "typescript"],
-      });
-    } catch {
+    const ast = asts.get(file.path);
+    if (!ast) {
       // The author's own error to see and fix. Annotating a guess at what they
       // meant would only change which error they get.
       skipped.push({ path: file.path, reason: "Source could not be parsed." });
       return file;
     }
 
-    const sidecarPath = contentFieldsSidecarPath(file.path);
-    const declared = declaredFields({
-      ...file,
-      sidecar: sidecarPath ? contentByPath.get(sidecarPath) : undefined,
-    });
+    const declared = declaredFor(file);
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
     const pageVariables = collectPageVariables(ast);
     const insertions: Insertion[] = [];
+
+    // This module's components that render some list's rows: each takes the
+    // row through its own props, under a name nothing in the module uses.
+    const threadedFunctions: Array<{
+      start: number;
+      end: number;
+      local: string;
+      roots: ReadonlySet<number>;
+    }> = [];
+    for (const exportName of threadedExports.get(file.path) ?? []) {
+      const fn = findExportedFunction(ast, exportName);
+      const pattern = threadablePropsPattern(fn);
+      if (
+        !pattern ||
+        threadedFunctions.some((threaded) => threaded.start === fn.start)
+      ) {
+        continue;
+      }
+      let local = "__morphRowContext";
+      for (let suffix = 0; usedIdentifierNames.has(local); suffix += 1) {
+        local = `__morphRowContext${suffix}`;
+      }
+      usedIdentifierNames.add(local);
+      const properties: any[] = pattern.properties ?? [];
+      const last = properties.at(-1);
+      if (last?.type === "RestElement") {
+        insertions.push({ at: last.start, text: `${ROW_PROP}: ${local}, ` });
+      } else if (last) {
+        insertions.push({ at: last.end, text: `, ${ROW_PROP}: ${local}` });
+      } else {
+        insertions.push({
+          at: pattern.start + 1,
+          text: ` ${ROW_PROP}: ${local} `,
+        });
+      }
+      threadedFunctions.push({
+        start: fn.start,
+        end: fn.end,
+        local,
+        roots: componentRootStarts(fn),
+      });
+    }
+    const threadAt = (position: number) =>
+      threadedFunctions.find(
+        (threaded) => threaded.start <= position && position < threaded.end,
+      ) ?? null;
     const wrap = (
       kind: WrapperKind,
       start: number,
@@ -789,6 +1255,16 @@ export function injectPreviewBindings(
               "</div>",
             );
             wrappedRows.add(row.start);
+            // The wrapper says which row this is, but only to the editor:
+            // the component inside cannot see it, and names its fields as its
+            // own. Passing the row is what lets them name the row's instead.
+            const thread = rowThreads.get(`${file.path}:${row.start}`);
+            if (thread && row.openingElement?.name?.end != null) {
+              insertions.push({
+                at: row.openingElement.name.end,
+                text: ` ${ROW_PROP}={{ field: ${JSON.stringify(mapCall.arrayPath)}, path: \`${path}\`, fields: ${JSON.stringify(thread.fields)} }}`,
+              });
+            }
           }
         }
         // Rows of an array field are addressed by the array they came from,
@@ -863,9 +1339,35 @@ export function injectPreviewBindings(
               ? (declared.rows.get(arrayPath)?.has(field ?? "") ?? false)
               : declared.top.has(field ?? "")
             : false;
+          // Inside a component some list renders as its row. Its own `.map()`
+          // is left as it was: a row holds no list, so nothing in one is the
+          // outer row's content, and the editor refuses it there.
+          const thread =
+            !arrayPath && node.start != null ? threadAt(node.start) : null;
 
           if (field && allowed && !hasAttribute(opening, FIELD_ATTRIBUTE)) {
-            parts.push(` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"`);
+            parts.push(
+              thread
+                ? threadedFieldAttributes(
+                    thread.local,
+                    field,
+                    !hasAttribute(opening, FIELD_PATH_ATTRIBUTE),
+                  )
+                : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"`,
+            );
+          } else if (
+            thread &&
+            thread.roots.has(node.start) &&
+            !(field && allowed) &&
+            !hasAttribute(opening, FIELD_ATTRIBUTE) &&
+            !hasAttribute(opening, FIELD_PATH_ATTRIBUTE)
+          ) {
+            // The element the component returns is the row itself, the way an
+            // inline row's `<li>` is: what the tree lists and a reorder moves.
+            parts.push(
+              ` ${FIELD_ATTRIBUTE}={${thread.local}?.field}` +
+                ` ${FIELD_PATH_ATTRIBUTE}={${thread.local}?.path}`,
+            );
           }
           if (
             field &&
@@ -919,15 +1421,17 @@ export function injectPreviewBindings(
               ? (declared.rows.get(arrayPath)?.has(field ?? "") ?? false)
               : declared.top.has(field ?? "")
             : false;
+          const thread = !arrayPath ? threadAt(node.start) : null;
           if (field && allowed) {
-            const attributes =
-              ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
-              (arrayPath && scope.index
-                ? ` ${FIELD_PATH_ATTRIBUTE}={\`${arrayPath}.\${${scope.index}}.${field}\`}`
-                : "") +
-              (arrayPath && scope.item
-                ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
-                : "");
+            const attributes = thread
+              ? threadedFieldAttributes(thread.local, field, true)
+              : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
+                (arrayPath && scope.index
+                  ? ` ${FIELD_PATH_ATTRIBUTE}={\`${arrayPath}.\${${scope.index}}.${field}\`}`
+                  : "") +
+                (arrayPath && scope.item
+                  ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
+                  : "");
             wrap(
               "content",
               node.start,

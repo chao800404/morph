@@ -132,8 +132,22 @@ export function resolvePreviewSelectionRestoreElement(
       : null,
   ].filter((selector): selector is string => selector !== null);
   for (const selector of identitySelectors) {
-    const match = section.querySelector<HTMLElement>(selector);
-    if (match) return match;
+    // A row a component renders has its path twice: on the element the
+    // component returns, and on the preview's own wrapper around it, which
+    // takes no space and would leave the selection with nothing to outline.
+    // A field the editor refused is never restored onto at all.
+    let wrapper: HTMLElement | null = null;
+    for (const match of section.querySelectorAll<HTMLElement>(selector)) {
+      if (
+        match.hasAttribute("data-storefront-field") &&
+        !previewFieldBinding(match)?.fieldKey
+      ) {
+        continue;
+      }
+      if (!match.matches(PREVIEW_ROW_WRAPPER_SELECTOR)) return match;
+      wrapper ??= match;
+    }
+    if (wrapper) return wrapper;
   }
 
   // A source location is the explicit identity sent by a tree row. Prefer it
@@ -250,6 +264,81 @@ export function previewSectionSelector(sectionId: string): string {
   ].join(",");
 }
 
+/**
+ * The content field an element is bound to, or `null` when it names none the
+ * editor can prove.
+ *
+ * Every reading of an element's field goes through here — the tree, a click
+ * and the descendants a selection offers — so the three cannot disagree.
+ *
+ * The one refusal: inside a row a component renders, a field must address
+ * that row. The component names its own props, and a prop is the row's only
+ * when the list's call site proved it and the compiler said so with a path
+ * under the row's. Anything else there — a prop the list set from elsewhere, a
+ * list the component keeps of its own — names a field of the component, not
+ * of the section, and reading it as the section's would write to a field the
+ * section never declared.
+ */
+export function previewFieldBinding(
+  element: HTMLElement,
+): { fieldKey: string | null; fieldPath: string | null } | null {
+  const fieldKey = element.dataset.storefrontField || null;
+  const fieldPath = element.dataset.storefrontFieldPath || null;
+  if (!fieldKey && !fieldPath) return null;
+  const row = enclosingComponentRow(element);
+  if (row) {
+    const rowPath = row.dataset.storefrontFieldPath;
+    if (
+      !rowPath ||
+      !fieldPath ||
+      (fieldPath !== rowPath && !fieldPath.startsWith(`${rowPath}.`))
+    ) {
+      return null;
+    }
+  }
+  return { fieldKey, fieldPath };
+}
+
+/**
+ * The preview's wrapper around a row a component renders, when `element` is
+ * inside one in the same section.
+ */
+function enclosingComponentRow(element: HTMLElement): HTMLElement | null {
+  const row = element.parentElement?.closest<HTMLElement>(
+    PREVIEW_ROW_WRAPPER_SELECTOR,
+  );
+  return row &&
+    closestPreviewSectionRoot(row) === closestPreviewSectionRoot(element)
+    ? row
+    : null;
+}
+
+/**
+ * Whether an element's content is one the editor must not name.
+ *
+ * A field marker it refused, and inside a component's row any element with no
+ * proven field: the names a selection otherwise falls back to (the element's
+ * `data-morph-element`, its tag) are guesses at a top-level field, and a row
+ * has none.
+ */
+function isRefusedContent(element: HTMLElement): boolean {
+  if (previewFieldBinding(element)?.fieldKey) return false;
+  return (
+    element.hasAttribute("data-storefront-field") ||
+    enclosingComponentRow(element) !== null
+  );
+}
+
+/** Whether something inside `element` is a field the editor can prove. */
+function hasBoundDescendantField(element: HTMLElement): boolean {
+  for (const candidate of element.querySelectorAll<HTMLElement>(
+    "[data-storefront-field]",
+  )) {
+    if (previewFieldBinding(candidate)?.fieldKey) return true;
+  }
+  return false;
+}
+
 function previewEditableNodeLabel(element: HTMLElement): string {
   // `Div#hero-content`, or `Div` when the element was never named: the tag says
   // what it is and the id says which one. Written this way round rather than
@@ -328,7 +417,7 @@ export function collectPreviewEditableNodes(root: {
     const sourceLocationCounts = new Map<string, number>();
     for (const candidate of candidates) {
       const morphNode = candidate.dataset.morphNode;
-      const fieldKey = candidate.dataset.storefrontField;
+      const fieldKey = previewFieldBinding(candidate)?.fieldKey;
       const sourceLocation = candidate.dataset.morphLoc;
       if (sourceLocation) {
         sourceLocationCounts.set(
@@ -351,8 +440,9 @@ export function collectPreviewEditableNodes(root: {
     for (const candidate of candidates) {
       if (nodes.length >= 500) return nodes;
       const nodeId = candidate.dataset.morphNode;
-      const fieldPath = candidate.dataset.storefrontFieldPath;
-      const fieldKey = candidate.dataset.storefrontField;
+      const binding = previewFieldBinding(candidate);
+      const fieldPath = binding?.fieldPath ?? undefined;
+      const fieldKey = binding?.fieldKey ?? undefined;
       const elementKey = candidate.dataset.morphElement;
       const itemId = candidate.closest<HTMLElement>("[data-storefront-item-id]")
         ?.dataset.storefrontItemId;
@@ -464,10 +554,10 @@ export function collectEditableDescendantFields(
   );
 
   for (const candidate of candidates) {
-    if (candidate.querySelector("[data-storefront-field]")) continue;
-    const fieldKey = candidate.dataset.storefrontField;
-    if (!fieldKey) continue;
-    const fieldPath = candidate.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(candidate);
+    if (!binding?.fieldKey || hasBoundDescendantField(candidate)) continue;
+    const fieldKey = binding.fieldKey;
+    const fieldPath = binding.fieldPath ?? fieldKey;
     const sectionId = previewSectionIdOf(
       closestPreviewSectionRoot(candidate) ?? candidate,
     );
@@ -488,7 +578,11 @@ export function collectEditableDescendantFields(
 export function closestPreviewFieldElement(
   element: HTMLElement,
 ): HTMLElement | null {
-  return element.closest<HTMLElement>("[data-storefront-field]");
+  const field = element.closest<HTMLElement>("[data-storefront-field]");
+  // A field the editor cannot prove is not passed over for an outer one
+  // either: the click is on that element, which is then selected as an
+  // element, with no content of its own to edit.
+  return field && previewFieldBinding(field)?.fieldKey ? field : null;
 }
 
 export type SelectableInfo = {
@@ -624,11 +718,10 @@ export const resolveSelectable = (
   if (fieldEl) {
     const sectionEl = closestPreviewSectionRoot(fieldEl);
     const descendantFields = collectEditableDescendantFields(fieldEl);
+    const binding = previewFieldBinding(fieldEl);
     const fieldKey =
-      descendantFields.length > 0
-        ? null
-        : (fieldEl.dataset.storefrontField ?? null);
-    const fieldPath = fieldEl.dataset.storefrontFieldPath ?? fieldKey;
+      descendantFields.length > 0 ? null : (binding?.fieldKey ?? null);
+    const fieldPath = binding?.fieldPath ?? fieldKey;
     const elementKey = fieldEl.dataset.morphElement ?? null;
     const selectableType =
       fieldEl.dataset.storefrontComponent ??
@@ -676,10 +769,14 @@ export const resolveSelectable = (
     const nodeId = morphEl.dataset.morphNode ?? null;
     const elementKey = morphEl.dataset.morphElement ?? null;
     const descendantFields = collectEditableDescendantFields(morphEl);
+    const binding = previewFieldBinding(morphEl);
+    // A field marker the editor refused stays refused: the element-name
+    // fallback below is for elements that carry none.
+    const refused = isRefusedContent(morphEl);
     const fieldKey =
-      descendantFields.length > 0
+      descendantFields.length > 0 || refused
         ? null
-        : (morphEl.dataset.storefrontField ??
+        : (binding?.fieldKey ??
           (elementKey
             ? elementKey === "action"
               ? "actionLabel"
@@ -687,7 +784,7 @@ export const resolveSelectable = (
                 ? "imageSrc"
                 : elementKey
             : null));
-    const fieldPath = morphEl.dataset.storefrontFieldPath ?? fieldKey;
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const selectableType =
       elementKey ?? nodeId ?? morphEl.tagName.toLowerCase();
 
@@ -718,8 +815,10 @@ export const resolveSelectable = (
     const compType =
       componentEl.dataset.storefrontComponent ??
       componentEl.tagName.toLowerCase();
-    const fieldKey = componentEl.dataset.storefrontField ?? null;
-    const fieldPath = componentEl.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(componentEl);
+    const refused = isRefusedContent(componentEl);
+    const fieldKey = binding?.fieldKey ?? null;
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const elementKey =
       componentEl.dataset.morphElement ??
       (compType === "heading" ||
@@ -739,7 +838,7 @@ export const resolveSelectable = (
       label: getComponentDisplayName(compType),
       elementKey,
       fieldKey,
-      field: fieldKey ?? elementKey,
+      field: fieldKey ?? (refused ? null : elementKey),
       fieldPath,
       descendantFields,
       tagName: componentEl.tagName.toLowerCase(),
@@ -821,14 +920,17 @@ export const resolveSelectable = (
                                                           ? "card"
                                                           : tag;
 
-    const fieldKey =
-      elementEl.dataset.storefrontField ??
-      (compType === "action"
-        ? "actionLabel"
-        : compType === "image"
-          ? "imageSrc"
-          : compType);
-    const fieldPath = elementEl.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(elementEl);
+    const refused = isRefusedContent(elementEl);
+    const fieldKey = refused
+      ? null
+      : (binding?.fieldKey ??
+        (compType === "action"
+          ? "actionLabel"
+          : compType === "image"
+            ? "imageSrc"
+            : compType));
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const descendantFields = collectEditableDescendantFields(elementEl);
 
     return {

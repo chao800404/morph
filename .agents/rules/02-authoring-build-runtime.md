@@ -605,6 +605,12 @@ Visual Editor 必須能識別 customer 自己撰寫的元件，**且不得要求
   最外層吸收全部內容。只有 Document section 之間才需要扁平化。
 - source position 只在該位置唯一時可用；重複（例如 `.map()` 產生的列表）必須跳過，
   不得任選一個。
+- **列由元件渲染時（`items.map((item) => <Card {...item} />)`），列身分靠編譯器傳遞，
+  不靠 DOM 猜測組合。** `injectPreviewBindings` 只在列表呼叫端能證明某個 prop 原樣就是該列
+  欄位時（`{...item}`，或 `heading={item.title}`），才透過 `__morphRow` 把列路徑交給該元件
+  自己的參數，元件元素因而直接帶 `items.N.title`。證明不了的（設成其他值、其他 spread、
+  整包取 `props`、`memo()`）一律不可編輯。`previewFieldBinding` 另外拒絕元件列內所有
+  路徑不在該列之下的欄位，不得退回頂層的同名欄位 —— 那是 List 從未宣告的欄位。
 - 右側 Inspector 不得要求存在 Document section 才能運作。樣式編輯寫回 Theme Source，
   與 Document 無關；沒有 Document section 時仍應可檢視與改樣式，只是內容欄位為空，
   且不得對不存在的 section 寫入內容值。

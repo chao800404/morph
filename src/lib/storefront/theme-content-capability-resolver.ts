@@ -119,7 +119,7 @@ function readReExportedContentFieldsSpecifier(source: string): string | null {
   return null;
 }
 
-function resolveLocalModulePathFromFiles(
+export function resolveLocalModulePathFromFiles(
   declaringPath: string,
   specifier: string,
   filePaths: ReadonlySet<string>,
@@ -144,16 +144,22 @@ function resolveLocalModulePathFromFiles(
  * Only scalar fields are taken: a row component that itself declares a list
  * would make the row a list of lists, which the schema rejects for the same
  * reason Sanity does — an editor cannot tell which level they are editing.
+ *
+ * Exported for the Live Preview's field binding, which has to mark exactly the
+ * row fields the Inspector offers: `fieldsForPath` is how each caller reads a
+ * module's own declaration.
  */
-function resolveRowFields(
+export function resolveRowFields(
   declaringPath: string,
   specifier: string,
-  declared: ReadonlyMap<string, Record<string, ThemeContentFieldDefinition>>,
+  fieldsForPath: (
+    path: string,
+  ) => Record<string, ThemeContentFieldDefinition> | null | undefined,
 ): Record<string, ThemeScalarContentFieldDefinition> | null {
   const base = resolveRowComponentPath(declaringPath, specifier);
   if (!base) return null;
   for (const extension of ROW_COMPONENT_EXTENSIONS) {
-    const fields = declared.get(`${base}${extension}`);
+    const fields = fieldsForPath(`${base}${extension}`);
     if (!fields) continue;
     const scalars: Record<string, ThemeScalarContentFieldDefinition> = {};
     for (const [key, definition] of Object.entries(fields)) {
@@ -299,7 +305,9 @@ function expandRowReferences({
       }
       const specifier = definition.of;
       const rowFields = specifier
-        ? resolveRowFields(path, specifier, declared)
+        ? resolveRowFields(path, specifier, (candidate) =>
+            declared.get(candidate),
+          )
         : null;
       if (!rowFields) {
         // Dropped rather than left shapeless: an editor offering a list whose

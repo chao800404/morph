@@ -974,30 +974,59 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [themeFiles],
   );
 
-  const themeContentCapability = useMemo(() => {
-    // Resolved from the workspace rather than the manifest alone so a component
-    // that declares its own `contentFields` is editable without being
-    // registered anywhere. Server validation resolves the same way, so the form
-    // and what the server accepts cannot diverge.
-    if (!themeFiles) return null;
-    const { capabilities } =
-      resolveThemeContentCapabilitiesFromFiles(themeFiles);
-    // Falls back to the component's own source path so a component that was
-    // never registered anywhere — the case co-located declaration exists to
-    // support — still resolves what it declares.
-    return (
-      (section.componentRef ? capabilities[section.componentRef] : null) ??
-      (componentPath ? capabilities[componentPath] : null) ??
+  const { capability: themeContentCapability, sourcePath: contentSourcePath } =
+    useMemo(() => {
+      // Resolved from the workspace rather than the manifest alone so a
+      // component that declares its own `contentFields` is editable without
+      // being registered anywhere. Server validation resolves the same way, so
+      // the form and what the server accepts cannot diverge.
+      if (!themeFiles) return { capability: null, sourcePath: componentPath };
+      const { capabilities } =
+        resolveThemeContentCapabilitiesFromFiles(themeFiles);
+      const fromRef = section.componentRef
+        ? capabilities[section.componentRef]
+        : null;
+      if (fromRef) {
+        return {
+          capability: fromRef,
+          sourcePath: sectionComponentPath ?? componentPath,
+        };
+      }
+      // Falls back to the component's own source path so a component that was
+      // never registered anywhere — the case co-located declaration exists to
+      // support — still resolves what it declares.
+      const fromSelection = componentPath ? capabilities[componentPath] : null;
+      if (fromSelection) {
+        return { capability: fromSelection, sourcePath: componentPath };
+      }
       // Last, the section's own component. `componentPath` follows the
       // selection, so clicking a button rendered by a shared link component
       // asks that shared file what this section may edit — and it declares
       // nothing, because the fields belong to the section's component. Without
       // this the panel fell back to guessing fields from default props and the
       // declared link never appeared.
-      (sectionComponentPath ? capabilities[sectionComponentPath] : null) ??
-      null
-    );
-  }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
+      const fromSection = sectionComponentPath
+        ? capabilities[sectionComponentPath]
+        : null;
+      return fromSection
+        ? { capability: fromSection, sourcePath: sectionComponentPath }
+        : { capability: null, sourcePath: componentPath };
+    }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
+  /**
+   * The source the content's defaults are read from: the component whose
+   * declaration answered above, not necessarily the clicked one.
+   *
+   * They differ when a row is rendered by a component of its own. The click
+   * lands in the row's component, which is right for styling it, but the rows
+   * a section shows before anything is stored are the list's own defaults —
+   * read from the row's component, the list had "No entries yet" beside a
+   * canvas showing two.
+   */
+  const contentMeta = useMemo(() => {
+    if (contentSourcePath === componentPath) return parsedMeta;
+    const file = themeFiles?.find((f) => f.path === contentSourcePath);
+    return file?.content ? parseComponentSource(file.content, file.path) : null;
+  }, [componentPath, contentSourcePath, parsedMeta, themeFiles]);
   const resolvedContentFields = useMemo<
     Record<string, ThemeContentFieldDefinition>
   >(() => {
@@ -1009,7 +1038,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // concrete editing contract: the source patcher can update exactly the
     // same literals, so the Inspector does not have to render an empty panel.
     return Object.fromEntries(
-      Object.keys(parsedMeta?.defaultProps ?? {}).map((fieldKey) => [
+      Object.keys(contentMeta?.defaultProps ?? {}).map((fieldKey) => [
         fieldKey,
         {
           type: "text" as const,
@@ -1020,7 +1049,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         },
       ]),
     ) as Record<string, ThemeContentFieldDefinition>;
-  }, [parsedMeta?.defaultProps, themeContentCapability?.fields]);
+  }, [contentMeta?.defaultProps, themeContentCapability?.fields]);
   /**
    * Whether a field can be saved where this section's content is stored.
    *
@@ -1231,9 +1260,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // it. Falling back to the empty string for every type showed a list field
     // as "no entries" beside a page rendering the component's own — and the
     // first edit then saved that emptiness.
-    const declared = parsedMeta?.defaultPropValues[fieldKey];
+    const declared = contentMeta?.defaultPropValues[fieldKey];
     if (declared !== undefined) return declared;
-    return parsedMeta?.defaultProps[fieldKey] ?? "";
+    return contentMeta?.defaultProps[fieldKey] ?? "";
   };
   /**
    * The default the component renders when this page stores nothing, when the
@@ -1242,8 +1271,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    */
   const [resetEpoch, setResetEpoch] = useState(0);
   const codeDefaultFor = (fieldKey: string): unknown =>
-    parsedMeta?.defaultPropValues[fieldKey] ??
-    parsedMeta?.defaultProps[fieldKey];
+    contentMeta?.defaultPropValues[fieldKey] ??
+    contentMeta?.defaultProps[fieldKey];
   const resetHandlerFor = (fieldKey: string): (() => void) | undefined => {
     if (
       !onResetContentFields ||
