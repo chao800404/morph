@@ -1,3 +1,4 @@
+import { SOURCE_SAVED_ELSEWHERE } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { astroThemesEnabled } from "@/lib/storefront/service/theme-build-service.factory";
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
@@ -612,7 +613,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     if (!result.ok) {
       return {
         ...fail(
-          "Another tab has saved newer versions of these files; this tab's copy is out of date.",
+          `Newer versions of these files were saved from ${SOURCE_SAVED_ELSEWHERE}; this tab's copy is out of date.`,
           { error: "PREVIEW_SOURCE_STALE" },
         ),
         stalePaths: result.stalePaths,
