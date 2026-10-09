@@ -276,6 +276,13 @@ export type StartPreviewServerInput = Readonly<{
    * framework is refused too (`THEME_FRAMEWORK_UNKNOWN`).
    */
   framework?: string | null;
+  /**
+   * Whether this server previews Astro (`MORPH_ASTRO_THEMES=1`, never in
+   * production; `astroThemesEnabled`). Decided by the Worker that starts the
+   * preview, the policy point for both transports; absent, Astro is refused
+   * as before (`THEME_FRAMEWORK_UNAVAILABLE`).
+   */
+  astroThemes?: boolean;
 }>;
 
 /** Where a preview of this framework and runtime is framed, on the exposed origin. */
@@ -592,7 +599,9 @@ export class CloudflareSandboxVitePreviewServer {
     const previewHost = host.hostname;
     // Before any container is acquired: a framework Morph cannot preview
     // costs nothing and changes nothing.
-    const recordedFramework = resolveThemeFramework(input.framework);
+    const recordedFramework = resolveThemeFramework(input.framework, {
+      astroThemes: input.astroThemes === true,
+    });
     if (!recordedFramework.ok) {
       return {
         ok: false,
@@ -602,6 +611,18 @@ export class CloudflareSandboxVitePreviewServer {
       };
     }
     const framework = recordedFramework.framework;
+    // A framework's own dev server (`astro dev`) runs on the local transport
+    // only so far; this transport starts Vite with the generated
+    // `vite.config.ts`, which such a workspace does not have. Refused by name
+    // until it starts one (docs/astro-theme-plan.md A6), before any container.
+    if (framework.preview.devServer) {
+      return {
+        ok: false,
+        stage: "preview-framework",
+        errorMessage: `THEME_FRAMEWORK_UNAVAILABLE: The container Live Preview cannot start a "${framework.id}" dev server yet; it runs on the local transport only (docs/astro-theme-plan.md A6).`,
+        logs,
+      };
+    }
     // A preview has no build record; it uses the registry's toolchain for its
     // framework, checked against the container's manifest before it starts.
     const toolchain = themeToolchainForFramework(framework.id);

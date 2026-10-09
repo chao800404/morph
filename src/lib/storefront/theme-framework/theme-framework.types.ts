@@ -31,6 +31,17 @@ export type ThemeFrameworkId = (typeof THEME_FRAMEWORK_IDS)[number];
  */
 export const UNRECORDED_THEME_FRAMEWORK: ThemeFrameworkId = "tanstack-start";
 
+/**
+ * A framework's own dev server for its Live Preview: `astro dev` with the
+ * wrapper config at `configPath` (workspace-relative), in the workspace
+ * root, with `env` added to the process's otherwise empty environment.
+ */
+export type ThemePreviewDevServer = Readonly<{
+  kind: "astro-dev";
+  configPath: string;
+  env: Readonly<Record<string, string>>;
+}>;
+
 export type ThemeFrameworkSourceFile = Readonly<{
   path: string;
   content?: string | null;
@@ -68,6 +79,12 @@ export type ThemeFrameworkAdapter = Readonly<{
   preview: Readonly<{
     /** Path on the preview's own origin where the editor frames it. */
     framePath(runtime: ThemePreviewRuntime | undefined): string;
+    /**
+     * How the dev server is started, when it is not Vite reading the
+     * workspace's generated `vite.config.ts` (the default). Both transports
+     * read it, so a container and the local sidecar start the same server.
+     */
+    devServer?: ThemePreviewDevServer;
   }>;
   build: Readonly<{
     /** The artifact file a preview of the build opens. */

@@ -63,11 +63,20 @@ describe("the Astro switch", () => {
     );
   });
 
-  it("has no Live Preview or platform build behind it yet", () => {
+  it("has no platform build behind it, and lays out only a Live Preview", () => {
     const astro = themeFramework("astro", { astroThemes: true });
-    expect(() => astro.planWorkspace({} as never)).toThrow(
-      /^THEME_FRAMEWORK_UNAVAILABLE: A Live Preview/,
-    );
+    expect(
+      astro.planWorkspace({
+        files: [],
+        entry: "",
+        buildId: "b",
+        approvedDependencies: new Set(),
+        mode: "build",
+      }),
+    ).toMatchObject({
+      ok: false,
+      errorMessage: expect.stringMatching(/^THEME_FRAMEWORK_UNAVAILABLE: /),
+    });
     expect(() => astro.build.artifactEntry(null)).toThrow(
       /^THEME_FRAMEWORK_UNAVAILABLE: A platform build/,
     );

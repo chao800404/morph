@@ -1353,6 +1353,37 @@ relay 的 `applied` 表示「游標之後有 payload，而且都已套用」，�
   都載入。重新載入期間，畫面上保留目前的內容。
 - 之後可以改成片段替換或 server islands，屆時只改 adapter 的宣告與 bridge 的對應分支。
 
+### 6.4 A6a 結果（2026-10-09，本機 sidecar；容器未做）
+
+A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6c 容器與經過真實編輯器的驗收。這是 A6a。
+
+**工作區**（`astro-preview-workspace.ts`，`astroFramework.planWorkspace`）：
+
+- 作者的檔案原樣放入，不跑任何檔案語言處理（L1.5、L2 之前，`.astro` 沒有編輯器識別）。
+- `.morph/astro.preview.config.mjs`：import 作者的 `astro.config.*`，換成 Morph 自己的 `cloudflare({ inspectorPort: false, persistState: false, remoteBindings: false })`，關掉開發工具列，最後加上 Morph 的 integration。建置不經過這個檔案，照作者的 adapter 設定執行。
+- Morph 的 integration：與其他 Live Preview 相同的 Vite plugin（HTTP HMR relay、伺服器原始碼邊界、SVG 隔離、草稿內容端點），以實際解析位置判斷的匯入防護（建置的規則，加上預先打包的依賴依原本要求的套件判斷），`server.fs` 只允許工作區與工具鏈，watch、HMR 路徑。
+- Vite 的快取目錄指定為工作區自己的 `.vite/`。工作區的 `node_modules` 是連到共用工具鏈的連結，預設的快取會被所有預覽共用，而且寫進工具鏈目錄；這是第一次全套測試時並行失敗發現的。
+- `.morph/wrangler.preview.json` 的 `main` 是預覽 Worker entry，包住 `@astrojs/cloudflare/entrypoints/server`（2.5 的首選，R3），以 `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` 提供，沒有任何綁定。
+- Astro 版 client module：在 `DOMContentLoaded` 之後載入內容模組與 bridge，不設定 router。
+- Adapter 的 `preview.devServer` 宣告由 `astro dev` 啟動（設定檔路徑與環境變數，含 `ASTRO_TELEMETRY_DISABLED=1`），兩種傳輸讀同一份宣告。
+- 作者的 `cloudflare()` 若帶 `imageService` 等 2.4 列出的選項，預覽回報「這些設定在預覽中不套用」的警告；以 AST 帶入列為之後的工作。
+
+**Worker entry 的注入補上沒有 `<head>` 的文件**：Astro 不會自動補 `<head>`，作者的頁面可以只寫 `<html><body>`，原本的注入只插在 `<head>`，這樣的頁面完全沒有 bridge。現在依序是 `<head>` 最前面、`<body>` 最前面、文件結尾，每個回應一次。Start 的頁面一定有 `<head>`，行為不變。
+
+**開關**：Live Preview 也受 `MORPH_ASTRO_THEMES` 控制。由啟動預覽的 Worker 判斷（`astroThemesEnabled`）後放進啟動參數 `astroThemes`，兩種傳輸照它解析框架；沒有開關時照舊以 `THEME_FRAMEWORK_UNAVAILABLE` 拒絕。
+
+**本機 sidecar**：沿用 Start 預覽的子行程模式。工作區的 `node_modules` 連到 `sandbox/toolchains/astro-7.3`（`pnpm toolchain:astro`），子行程從那裡 import Astro 的 `dev()`，所以本機跑的是容器的同一套套件；沒有安裝時以 `LOCAL_PREVIEW_TOOLCHAIN_MISSING` 拒絕。
+
+**容器傳輸**：還沒有啟動 `astro dev`，在取得容器之前以 `THEME_FRAMEWORK_UNAVAILABLE` 明確拒絕（A6c）。
+
+**測試**：
+
+- 工作區規劃：作者檔案原樣、包裝設定只換 adapter、Wrangler 副本指向預覽 entry、client module 不用 router、匯入防護與快取目錄、沒有或多個設定檔與建置模式被拒、作者檔案不能佔用 Morph 的路徑、未帶入的 adapter 選項有警告、指紋隨內容改變。
+- 本機真實預覽（`local-vite-preview-server.astro.test.ts`，經過 `LocalVitePreviewServer`）：位址探測回 204 與這次的 id；草稿內容出現，腳本在 `<head>` 最前面；沒有 `<head>` 的頁面與預先渲染的頁面也有注入；工作區沒有 `.wrangler`；`/@fs/etc/passwd` 被拒；寫入 `.astro` 後 relay 送出 `full-reload`，頁面是新內容；沒有開關時拒絕。連續執行兩次都通過。
+- 冷啟動：本機約 6 秒就緒（一次手動量測，不是比較結論；與 Start 的比較在 A6c 做）。
+
+**還沒做**（A6b、A6c）：內容更新改成重新載入整頁、`set-route` 改用 `location.assign`、重新載入後恢復選取、編輯器處理「`applied` 之後的 `preview-ready`」；容器啟動與程序識別、經過真實 `preview.tsx` 的驗收、第 7 節的監聽 socket 與外連政策記錄、冷啟動比較、L1.5 點選定位。
+
 ## 7. 安全預設
 
 `@astrojs/cloudflare` 與 Cloudflare Vite plugin 的預設，是為作者自己的電腦設計的。在 Morph 的預覽與建置中：
