@@ -196,11 +196,13 @@ describe("prepareNewThemeFile", () => {
     }
   });
 
-  it("refuses replacing the platform-provided content module", () => {
+  it("sends a missing content module to the explicit restore command", () => {
+    // Created as a blank file it would be one Design cannot bind through;
+    // restoring writes the Starter module instead.
     const result = prepareNewThemeFile("src/morph/content.ts", existing);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toContain("provided by Morph");
+    expect(result.message).toContain("Theme: Restore Starter Content Module");
   });
 
   it("refuses traversal and unsafe paths", () => {

@@ -1384,6 +1384,52 @@ A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6
 
 **還沒做**（A6b、A6c）：內容更新改成重新載入整頁、`set-route` 改用 `location.assign`、重新載入後恢復選取、編輯器處理「`applied` 之後的 `preview-ready`」；容器啟動與程序識別、經過真實 `preview.tsx` 的驗收、第 7 節的監聽 socket 與外連政策記錄、冷啟動比較、L1.5 點選定位。
 
+### 6.5 A6b-1：草稿內容同步到預覽伺服器（2026-10-09，本機 sidecar）
+
+**問題**：Start 的即時內容更新只在瀏覽器端（bridge 更新頁面內的快照，router 重新跑 loader），預覽伺服器上的快照只在啟動時寫入。Astro 頁面在伺服器渲染，6.3 計畫的「內容更新時重新載入整頁」會讀到啟動時的舊快照，剛改的內容會消失。
+
+**決定（2026-10-09，使用者）**：由編輯器經過現有、已驗證身分的預覽寫入路徑，把 Core 從草稿產生的快照寫進預覽；不讓 bridge 或 Theme 成為草稿內容的來源。使用者同時要求的四個條件與做法：
+
+1. **先確認套用，再重新載入**：預覽 Worker 的位址探測回報它這時讀到的快照序號（`x-morph-content-ticket`），探測本身就經過 Worker 讀快照的同一條路徑。寫入後輪詢，Worker 回報的序號達到這次的序號才算已套用；逾時回報 `PREVIEW_CONTENT_NOT_CONFIRMED`。Worker 每次讀都重新 import 資料檔這件事是實測，不是推論。
+2. **快照帶版本與預覽身分**：D1 的 `storefront_theme_preview_content_tickets`（migration 0079，只在本機套用）以預覽 session id 為鍵，每次啟動與每次同步都先以一個陳述式取下一個序號，**之後**才讀草稿。同步只在對應的修改存好之後送出，所以序號較大的快照包含序號較小者看到的每個修改；預覽只接受比手上更大的序號，晚到的舊快照以 `PREVIEW_CONTENT_SUPERSEDED` 拒絕，什麼都不寫。寫入只到這個預覽 id 的工作區。
+3. **資料與模組一致**：伺服器端的兩個讀取點（預覽 Worker 與 Vite 的內容端點）都讀同一個資料檔 `.morph-preview-content.json`，同步也只寫這一個檔案，先寫到旁邊再以 rename 替換，讀者只會看到舊檔或新檔。瀏覽器端的快照模組不變，Start 的瀏覽器行為不受影響。
+4. **失敗不假裝成功**：沒有確認就回報失敗，不回報已套用；草稿已經存在 D1，最新修改不會遺失；不重啟預覽。編輯器端的顯示與「不刷新到舊內容」在 A6b-2。
+
+**啟動也遵守同一個順序**：啟動取得的序號寫在它的資料檔中。磁碟上已有序號更高的快照時，重新佈置會保留它；沿用原伺服器時，以同一個規則寫入。序號只用來排序，不算工作區內容，工作區指紋計算時排除它，所以每次啟動取新序號不會讓預覽重啟。
+
+**範圍**：本機 sidecar（`writeContent`，sidecar 協定新增同名端點）。容器端的同步與確認要和容器中的 Astro 預覽一起在 A6c 做；`syncThemePreviewContent` 在容器傳輸上回 `PREVIEW_CONTENT_SYNC_UNAVAILABLE`。
+
+**測試**：
+
+- 真實的本機 Astro 預覽（經過 `LocalVitePreviewServer`）：A（101）、C（103）依序套用並經 Worker 確認，頁面依序顯示 A、C；之後 B（102）晚到，以 `PREVIEW_CONTENT_SUPERSEDED` 拒絕，之後連續五次重新載入都是 C；以較舊序號（102）重新啟動，C 仍然保留；以較新序號（104）重新啟動，顯示 D。沒有序號的快照被拒絕。連續執行兩次都通過。
+- 序號 DAL（真實 SQLite 加 migration）：每個預覽從 1 開始遞增；10 個並行呼叫拿到 10 個不同的序號；主題刪除時一起刪除。
+- 序號的讀取、指紋排除序號（只限資料檔）、Worker 讀資料檔並在探測回報序號、sidecar 協定多一個端點。
+- Start 的伺服器預覽相關的真實測試（4 個檔案、98 個測試）照常通過。
+
+### 6.6 快照一致性與實例確認（2026-10-09，使用者審閱 6.5 後要求；本機 sidecar）
+
+使用者指出：序號代表更新順序，不保證快照內容一致；確認訊號要屬於當前的預覽實例。做法：
+
+- **一致讀取**（`readConsistentPreviewContent`）：快照要讀 template 與頁面草稿，不止一次讀取，中間可能有寫入。讀內容前後各讀一次所有草稿的版本（`readDraftVersions`：每個 template 的 `draftGeneration` 與 `draftRevisionId`，每個頁面的 `draftRevisionId` 與 `updatedAt`；每次內容寫入都會改變其中之一），兩次一致才採用，否則重讀；三次都不一致就以 `PREVIEW_CONTENT_UNSTABLE` 拒絕，不寫入。啟動與同步都用這個讀取。
+- **序號、雜湊與版本綁在一起**：快照帶 `contentTicket`、`contentHash`（內容本身的 SHA-256，不含這些中繼欄位）與 `contentVersions`。預覽收到同一個序號時，內容雜湊相同視為同一次寫入，重新確認（回應遺失後重送不會被當成新寫入）；雜湊不同以 `PREVIEW_CONTENT_TICKET_CONFLICT` 拒絕。sidecar 重算雜湊，與快照宣稱的不符就拒絕。中繼欄位不算內容，也不算工作區指紋。
+- **確認屬於當前實例**：傳輸層每次啟動 dev server 都產生一個實例識別碼，蓋在資料檔上（`previewInstance`），之後每次內容寫入也一樣。Worker 在位址探測同時回報序號與實例，兩者來自同一次讀取；確認時兩者都要對上，另一個伺服器寫的檔案或回報不算確認。
+
+**實例放在資料檔，不另外放一個檔案**：第一版把實例放在獨立的 `.morph-preview-instance.json`，由 Worker 另外 import。這讓下面的時序衝突在本機必然發生，所以改為資料檔的欄位，Worker 不必多 import 任何東西。
+
+**`deps_ssr` 失敗：已找到來源，未修復**（6.5 的 CI 失敗）：
+
+- 診斷輸出的堆疊在 Cloudflare plugin 的 `getWorkerEntryExportTypes`（`workers/runner-worker`）：dev server 啟動時，plugin 在 workerd 中執行 Worker entry 取得它的 export 類型，模組載入去讀 `.vite/deps_ssr`。
+- Vite 的除錯輸出顯示，這時 ssr 的第一次依賴最佳化還在進行（暫存目錄已建立，還沒改名為 `deps_ssr`），整個 dev server 因此啟動失敗。
+- Worker entry 多一個動態 import（上面的實例檔）時，掃描時間從約 0.18 秒變成約 0.83 秒，本機每次都失敗；拿掉之後連跑三次都通過。原本的 Worker entry 也有同樣的時序窗口，只是窄，CI 高負載下才碰到。
+- 依使用者指示，不加重試掩蓋。這是 Cloudflare plugin 與 Vite 第一次 ssr 最佳化之間的時序問題，要在 A6c 或之後另外處理（例如確認最佳化完成之後才讓 plugin 執行 entry），在那之前標為已定位、未修復，診斷保留。
+
+**測試**：
+
+- 一致讀取：沒有寫入時讀一次就採用；讀取途中另一個請求修改了兩份草稿，第一次讀到「template 舊、頁面新」的組合被丟棄，重讀後兩者一致；一直在變就拒絕，不產生快照。
+- 草稿版本（真實 SQLite）：沒有寫入時不變；template 的草稿寫入、頁面的草稿寫入、頁面刪除都會改變版本。
+- 真實的本機 Astro 預覽：6.5 的排序測試照常通過；同一序號同一內容重送時重新確認、同一序號不同內容被拒；Worker 讀到的資料檔標著另一個伺服器時，重送不算確認（`PREVIEW_CONTENT_NOT_CONFIRMED`），之後由這個伺服器的傳輸寫入的下一份快照照常確認；雜湊與內容不符的快照被拒。連續執行三次都通過。
+- 雜湊只取內容，不受序號、版本、實例影響；指紋同樣不受影響。
+
 ## 7. 安全預設
 
 `@astrojs/cloudflare` 與 Cloudflare Vite plugin 的預設，是為作者自己的電腦設計的。在 Morph 的預覽與建置中：

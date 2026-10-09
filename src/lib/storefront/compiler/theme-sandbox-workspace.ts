@@ -67,6 +67,7 @@ import {
   themePreviewContentModuleSource,
   themePreviewContentPluginSource,
   themePreviewContentSnapshotModuleSource,
+  previewContentWithoutTicket,
   type ThemePreviewContentSnapshot,
 } from "./theme-preview-content";
 
@@ -318,6 +319,7 @@ function packageRoot(specifier: string): string {
 export function themeWorkspaceFingerprint(
   workspaceFiles: readonly ThemeWorkspacePlanFile[],
 ): string {
+  const contentPath = `/workspace/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`;
   return sha256(
     JSON.stringify({
       format: 1,
@@ -331,7 +333,14 @@ export function themeWorkspaceFingerprint(
                 digest: file.binary.digest,
                 sizeBytes: file.binary.sizeBytes,
               }
-            : { type: "text", value: file.content },
+            : {
+                type: "text",
+                // A snapshot's ticket orders writes; it is not content.
+                value:
+                  file.path === contentPath
+                    ? previewContentWithoutTicket(file.content)
+                    : file.content,
+              },
         })),
     }),
   );

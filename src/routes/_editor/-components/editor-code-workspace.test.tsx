@@ -11,6 +11,9 @@ import type {
 import { toast } from "sonner";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { THEME_SOURCE_ASSET_ACCEPT } from "@/lib/storefront/theme-public-files";
+import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots";
+import { RESTORE_THEME_CONTENT_MODULE_COMMAND } from "@/lib/storefront/ast/theme-content-module";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "@/lib/storefront/starter-theme-v3-files";
 import {
   applyThemeManifestMigrationServerFn,
   deleteStorefrontThemeFile,
@@ -1198,6 +1201,98 @@ describe("EditorCodeWorkspace file creation", () => {
       expect.objectContaining({ path: "src/components/Hero.tsx" }),
     ]);
     promptSpy.mockRestore();
+  });
+
+  describe("restoring the Starter content module", () => {
+    const scope = { storefrontId: "store-1", themeId: "theme-1" };
+    const contentModule: StorefrontThemeFileDTO = {
+      ...file,
+      id: "file-content",
+      path: THEME_CONTENT_MODULE_PATH,
+      content: "export const content = () => ({}); // the author's own",
+      isEntry: false,
+    };
+
+    function openRestoreCommand() {
+      fireEvent.click(screen.getByTitle("Command Palette (Ctrl+Shift+P)"));
+      return screen.getByRole("option", {
+        name: RESTORE_THEME_CONTENT_MODULE_COMMAND,
+      });
+    }
+
+    it("creates the missing module from the Starter source with the create precondition and accepted generation", async () => {
+      vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: { ...contentModule, content: STARTER_THEME_CONTENT_MODULE_SOURCE, sourceGeneration: 6 },
+      } as never);
+      renderTree();
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(5, scope);
+
+      fireEvent.click(openRestoreCommand());
+
+      await waitFor(() => {
+        expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+      });
+      expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+      expect(vi.mocked(saveStorefrontThemeFile).mock.calls[0]![0]).toEqual({
+        data: {
+          storefrontId: "store-1",
+          themeId: "theme-1",
+          path: THEME_CONTENT_MODULE_PATH,
+          content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+          mimeType: "text/typescript",
+          expectMissing: true,
+          expectedSourceGeneration: 5,
+        },
+      });
+      await waitFor(() => {
+        expect(
+          useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+        ).toBe(6);
+      });
+    });
+
+    it("never offers to replace a module the author has, edited or not", () => {
+      renderTree([file, contentModule]);
+
+      const command = openRestoreCommand();
+      expect(command.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(command);
+
+      expect(saveStorefrontThemeFile).not.toHaveBeenCalled();
+      expect(saveStorefrontThemeFilesBatch).not.toHaveBeenCalled();
+    });
+
+    it("reports a generation conflict from another tab and records nothing as saved", async () => {
+      const toastError = vi
+        .spyOn(toast, "error")
+        .mockImplementation(() => "toast");
+      vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+        success: false,
+        message: "Remote source changes detected (current generation: 6)",
+        error: "SOURCE_GENERATION_CONFLICT",
+      } as never);
+      renderTree();
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(5, scope);
+
+      fireEvent.click(openRestoreCommand());
+
+      await waitFor(() => {
+        expect(toastError).toHaveBeenCalledWith(
+          expect.stringContaining("Remote source changes detected"),
+        );
+      });
+      expect(
+        useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+      ).toBe(5);
+      expect(
+        useThemeWorkspaceStore.getState().getWorkspaceFiles("store-1", "theme-1")[
+          THEME_CONTENT_MODULE_PATH
+        ],
+      ).toBeUndefined();
+      toastError.mockRestore();
+    });
   });
 });
 

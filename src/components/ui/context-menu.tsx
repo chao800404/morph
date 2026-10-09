@@ -6,6 +6,24 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Radix menu items select on a `pointerup` that had no matching `pointerdown`
+ * (press-drag-release from the trigger), whatever the button. Chromium (seen
+ * on Linux) opens the context menu on the right button's press, so its
+ * release can land on an item of a menu collision moved under the pointer
+ * (rows near the viewport bottom open the menu upward) and activate it.
+ * Only the primary button may select by release; preventing the default makes
+ * Radix's composed handler skip the synthetic click.
+ */
+function ignoreSecondaryButtonRelease(
+  onPointerUp: React.PointerEventHandler<HTMLDivElement> | undefined
+): React.PointerEventHandler<HTMLDivElement> {
+  return (event) => {
+    onPointerUp?.(event)
+    if (event.button !== 0) event.preventDefault()
+  }
+}
+
 function ContextMenu({
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
@@ -115,6 +133,7 @@ function ContextMenuItem({
   className,
   inset,
   variant = "default",
+  onPointerUp,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
   inset?: boolean
@@ -125,6 +144,7 @@ function ContextMenuItem({
       data-slot="context-menu-item"
       data-inset={inset}
       data-variant={variant}
+      onPointerUp={ignoreSecondaryButtonRelease(onPointerUp)}
       className={cn(
         "text-xs cursor-pointer relative flex items-center gap-2 rounded-sm px-2 py-1.5 outline-hidden select-none",
         "focus:bg-zinc-200 dark:focus:bg-zinc-700/40 focus:text-accent-foreground",
@@ -142,11 +162,13 @@ function ContextMenuCheckboxItem({
   className,
   children,
   checked,
+  onPointerUp,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.CheckboxItem>) {
   return (
     <ContextMenuPrimitive.CheckboxItem
       data-slot="context-menu-checkbox-item"
+      onPointerUp={ignoreSecondaryButtonRelease(onPointerUp)}
       className={cn(
         "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
@@ -167,11 +189,13 @@ function ContextMenuCheckboxItem({
 function ContextMenuRadioItem({
   className,
   children,
+  onPointerUp,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.RadioItem>) {
   return (
     <ContextMenuPrimitive.RadioItem
       data-slot="context-menu-radio-item"
+      onPointerUp={ignoreSecondaryButtonRelease(onPointerUp)}
       className={cn(
         "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className

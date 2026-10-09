@@ -150,6 +150,11 @@ describe("Starter upgrade on a source-first workspace", () => {
     for (const path of OLD_PATH_COMPONENTS) expect(paths).not.toContain(path);
   });
 
+  it("does not bring back a content module the author deleted", () => {
+    // Restoring it is the author's explicit command, not an upgrade side effect.
+    expect(plannedPaths(sourceFirst(without(CONTENT)))).not.toContain(CONTENT);
+  });
+
   it("does not bring back a Starter route the author removed", () => {
     expect(
       plannedPaths(sourceFirst(without("src/routes/account.tsx"))),

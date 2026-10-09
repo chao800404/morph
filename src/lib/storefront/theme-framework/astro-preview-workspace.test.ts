@@ -106,7 +106,10 @@ describe("an Astro Live Preview workspace", () => {
     expect(integration).toContain("fs: { strict: true, allow: [");
     expect(integration).toContain('"astro"');
     // Never the shared toolchain's own cache.
-    expect(integration).toContain('cacheDir: path.join(workspaceRoot, ".vite")');
+    expect(integration).toContain(
+      'const depsCacheDir = path.join(workspaceRoot, ".vite");',
+    );
+    expect(integration).toContain("cacheDir: depsCacheDir,");
   });
 
   it("is refused without exactly one Astro config, and for a build", () => {

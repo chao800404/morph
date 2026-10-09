@@ -48,10 +48,16 @@ export const EDITOR_SHARDS = [
     // Unmeasured too, and on the same shard for the same reason. Its Build
     // Preview steps run only with the container transport.
     "starter-upgrade.spec.ts",
+    // Unmeasured until the next rebalance; placed here with the other
+    // unmeasured files. Three tests, about 3 minutes locally.
+    "content-module-restore.spec.ts",
     // Unmeasured; a few server function calls and no editor, so seconds.
     "theme-path-refused.spec.ts",
+    // Unmeasured; two editor opens and one right-click on a throwaway Theme.
+    "code-tree-context-menu.spec.ts",
     // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest tests. Three tests, each loading the editor two or three times.
+    // fewest tests. Four tests on a throwaway Theme, each loading the editor
+    // two or three times.
     "content-module-transform.spec.ts",
   ],
   [

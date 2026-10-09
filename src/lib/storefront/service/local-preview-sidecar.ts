@@ -312,6 +312,22 @@ export async function startLocalPreviewSidecar(
         respond(response, 200, {});
         return;
       }
+      case "writeContent": {
+        const writeInput = input as { previewId?: unknown; content?: unknown };
+        if (
+          typeof writeInput.previewId !== "string" ||
+          typeof writeInput.content !== "string"
+        ) {
+          respond(response, 400, { error: "LOCAL_PREVIEW_SIDECAR_BAD_REQUEST" });
+          return;
+        }
+        respond(
+          response,
+          200,
+          await previews.writeContent(writeInput.previewId, writeInput.content),
+        );
+        return;
+      }
       case "applyFiles": {
         const applyInput = input as {
           previewId: string;
