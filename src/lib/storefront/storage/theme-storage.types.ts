@@ -111,6 +111,14 @@ export type SaveThemeBinaryFileInput = Readonly<{
 export type SaveThemeBinaryFileOptions = Readonly<{
   expectedSourceGeneration: number;
   createdBy?: string;
+  /**
+   * Whether this write may put a binary file under `src/`
+   * (`THEME_SOURCE_ASSET_DIRECTORY`). Off, only `public/` is accepted, as
+   * before. Storage and builds hold such files already; no user-facing entry
+   * passes this until the Live Preview and Code mode handle them too
+   * (docs/astro-theme-plan.md 5.2.5).
+   */
+  allowSourceAssets?: boolean;
 }>;
 
 export interface ThemeSourceStore {

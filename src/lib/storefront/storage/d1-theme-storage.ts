@@ -20,9 +20,10 @@ import {
 import { calculateThemeSourceSha256 } from "./cloudflare-r2-theme-source-blob-store";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  checkThemeBinaryPath,
   checkThemePublicFiles,
-  checkThemePublicPath,
   describeThemePublicProblem,
+  isThemeBinaryPath,
   isThemePublicPath,
 } from "@/lib/storefront/theme-public-files";
 import { checkThemePublicBytes } from "@/lib/storefront/theme-public-bytes";
@@ -267,7 +268,13 @@ export async function saveThemeBinaryFile(
     (route) => route.path,
   );
 
-  const pathCheck = checkThemePublicPath(file.path, routePaths);
+  // `public/` always; `src/` only for a caller that opted in, until every
+  // reader of a workspace — the Live Preview and Code mode among them — holds
+  // such files (docs/astro-theme-plan.md 5.2.5).
+  const pathCheck =
+    isThemePublicPath(file.path) || options.allowSourceAssets === true
+      ? checkThemeBinaryPath(file.path, routePaths)
+      : ({ ok: false, reason: "not-public" } as const);
   if (!pathCheck.ok) {
     throw new Error(
       `THEME_PUBLIC_FILE_REFUSED: ${file.path}: ${describeThemePublicProblem(pathCheck.reason)}`,
@@ -283,9 +290,13 @@ export async function saveThemeBinaryFile(
     [
       ...entries
         .filter(
+          // Every binary file, wherever kept: public/ and src/ share one
+          // quota. Read at the generation this write requires
+          // (`expectedSourceGeneration`), so two writes cannot both pass
+          // against the same state and together exceed it.
           (entry) =>
             isBinaryThemeFile(entry) &&
-            isThemePublicPath(entry.path) &&
+            isThemeBinaryPath(entry.path) &&
             entry.path !== file.path,
         )
         .map((entry) => ({

@@ -66,9 +66,11 @@ describe("normalizeRevisionSnapshot with binary files", () => {
     ]);
   });
 
-  it("refuses a reference that is not a well-formed public/ file", () => {
+  it("refuses a reference that is not a well-formed binary file", () => {
     for (const bad of [
-      binary({ path: "src/images/hero.png" }),
+      // Bytes live under public/ or src/ (docs/astro-theme-plan.md 5.2.5).
+      binary({ path: "assets/images/hero.png" }),
+      binary({ path: ".wrangler/state/hero.png" }),
       binary({ blobDigest: "A".repeat(64) }),
       binary({ blobDigest: "../x" }),
       binary({ sizeBytes: -1 }),
@@ -77,7 +79,14 @@ describe("normalizeRevisionSnapshot with binary files", () => {
         normalizeRevisionSnapshot([...source(false), bad], "rev-1"),
       ).toThrow("CORRUPT_REVISION_FILE_ENTRY");
     }
-    // Text and bytes at one path. Bytes only live under public/, and text
+    // Under src/, the contract's own rules: no SVG there.
+    expect(() =>
+      normalizeRevisionSnapshot(
+        [...source(false), binary({ path: "src/images/logo.svg" })],
+        "rev-1",
+      ),
+    ).toThrow("SVG files are not accepted under src/");
+    // Text and bytes at one path. Bytes live under public/ (or src/), and text
     // there is refused before the duplicate is reached, so this is now
     // refused as text in public/ rather than as CORRUPT_REVISION_SNAPSHOT;
     // either way the revision does not build.

@@ -2,9 +2,10 @@ import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront
 import { calculateThemeSourceSha256 } from "@/lib/storefront/storage/cloudflare-r2-theme-source-blob-store";
 import { checkThemePublicBytes } from "@/lib/storefront/theme-public-bytes";
 import {
-  checkThemePublicPath,
+  checkThemeBinaryPath,
   describeThemePublicProblem,
   isThemePublicPath,
+  isThemeSourceAssetPath,
   isThemePublicSvgPath,
   THEME_PUBLIC_LIMITS,
   themePublicTextMimeType,
@@ -70,7 +71,14 @@ function publicEntriesOf(
             sizeBytes: file.content.length,
           },
     );
-  return entries.filter((entry) => isThemePublicPath(entry.path));
+  return entries.filter(
+    (entry) =>
+      isThemePublicPath(entry.path) ||
+      // Binary files kept with the source: their path is re-checked against
+      // the contract as it stands; their bytes, raster and font only, are not
+      // re-read (see above). Source text under src/ is not this check's.
+      (entry.encoding === "binary" && isThemeSourceAssetPath(entry.path)),
+  );
 }
 
 /** Every problem with the revision's public/ files, one line each. */
@@ -90,7 +98,7 @@ export async function findPublishPublicFileProblems(
       );
       continue;
     }
-    const pathCheck = checkThemePublicPath(entry.path);
+    const pathCheck = checkThemeBinaryPath(entry.path);
     if (!pathCheck.ok) {
       problems.push(
         `${entry.path}: ${describeThemePublicProblem(pathCheck.reason)}`,
