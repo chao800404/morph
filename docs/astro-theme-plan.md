@@ -1222,10 +1222,16 @@ clientAssetsDirectory, routes }`，沒有 `previewEntry`。
   - Astro 以 `imageService: "compile"` 處理 `src/assets/hero.png`，產出 `/_astro/hero.*.webp`，頁面的 `<img>` 指向它；
   - 兩者的產物中都沒有原始碼路徑。
 
-**還沒做的**（PR 2、PR 3 以及驗收）：
+**PR 2：兩種 Live Preview 傳輸（2026-10-09）。** 不需要改產品程式。兩種傳輸啟動時都以參照與 `loadBinary` 取得二進位檔，寫入工作區時用共用的 `materializeThemeSandboxWorkspace` 或本機的同一套寫入流程，兩者都沒有限定 `public/`。這次補上證明：
 
-- 兩種 Live Preview 傳輸；
-- Code mode 的上傳、取代、刪除；
+- 本機傳輸（`local-vite-preview-server.source-asset.test.ts`，真實的 Start Live Preview）：路由匯入 `src/assets/hero.png`，`/gallery` 正常渲染，頁面 `<img>` 指向的網址回傳的位元組與儲存的相同。
+- Sandbox 傳輸（`cloudflare-sandbox-vite-preview-server.test.ts`，假容器）：圖片先暫存，再由受 fence 保護的啟動流程移到 `/workspace/src/assets/hero.png`，內容是位元組的 base64，以 base64 寫入。真實容器要在最後的端到端驗收中確認。
+
+編輯中替換 `src/` 的圖片後，預覽要重新啟動，這和 `public/` 一樣，是 Code mode 那一側的工作（PR 3）。
+
+**還沒做的**（PR 3 以及驗收）：
+
+- Code mode 的上傳、取代、刪除，以及替換後重新啟動預覽；
 - 經過預覽、建置、發布、回滾的真實容器端到端驗收。
 
 ### 5.3 Build Preview、發布、回滾
