@@ -12,6 +12,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
 import {
   createDefaultStorefrontHomeDocument,
   createDefaultStorefrontLayoutDocument,
@@ -193,6 +194,75 @@ describe("a link component shared from outside components/", () => {
 
     // The address that leaves the store keeps its own target and rel; the
     // pages of this store go through the router.
+    expect(nav).toContain('href="https://example.com/contact"');
+    expect(nav).toContain('href="/products"');
+  });
+});
+
+/**
+ * The same pattern in real React. Forwarding is the component's own code
+ * here rather than a capability of the renderer, so what these hold is that
+ * the editor's markers survive the Live Preview's source pass and land on the
+ * element the canvas selects.
+ */
+describe("a link component shared from outside components/, in real React", () => {
+  async function renderLive(linkSource = THEME_LINK_SOURCE): Promise<string> {
+    const layout = createDefaultStorefrontLayoutDocument();
+    const { html } = await renderLivePreviewRoute({
+      files: [
+        ...STARTER_THEME_FILES.map((file) =>
+          file.path === "src/components/Header.tsx"
+            ? { path: file.path, content: HEADER_SOURCE }
+            : { path: file.path, content: file.content },
+        ).filter((file) => file.path !== "src/morph/link.tsx"),
+        { path: "src/morph/link.tsx", content: linkSource },
+      ],
+      documents: {
+        index: createDefaultStorefrontHomeDocument(),
+        layout: {
+          ...layout,
+          sections: [{ ...layout.sections[0]!, props: {} }],
+        },
+      },
+    });
+    return html;
+  }
+
+  it("renders at all", async () => {
+    expect(await renderLive()).toContain("Storefront navigation");
+  });
+
+  it("forwards the editor's field markers to the real element", async () => {
+    const html = await renderLive();
+
+    expect(html).toMatch(
+      /<a [^>]*data-storefront-field-path="items\.0\.label"/,
+    );
+    expect(html).toMatch(
+      /<a [^>]*data-storefront-field-path="items\.2\.label"/,
+    );
+    expect(html).toMatch(/<a [^>]*data-storefront-field="cartLabel"/);
+  });
+
+  it("would notice a link component that stopped forwarding them", async () => {
+    const swallowing = THEME_LINK_SOURCE.replaceAll("{...rest}", "");
+    expect(swallowing).not.toContain("{...rest}");
+
+    const html = await renderLive(swallowing);
+    expect(html).toContain("Storefront navigation");
+    expect(html).not.toContain('data-storefront-field-path="items.0.label"');
+  });
+
+  it("forwards the className it is given", async () => {
+    expect(await renderLive()).toMatch(
+      /<a [^>]*class="hover:text-neutral-950"/,
+    );
+  });
+
+  it("picks the element per entry rather than for the whole list", async () => {
+    const html = await renderLive();
+    const nav = html.slice(html.indexOf("<nav"), html.indexOf("</nav>"));
+
     expect(nav).toContain('href="https://example.com/contact"');
     expect(nav).toContain('href="/products"');
   });

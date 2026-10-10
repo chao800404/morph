@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { buildThemeRouteRegistry } from "./compiler/theme-route-registry";
@@ -154,6 +155,63 @@ describe("starter catalog source", () => {
     expect(
       renderToStaticMarkup(createElement("div", null, missing.node)),
     ).toContain("Product not found");
+  });
+  it("renders actual catalog source with its own loader in the real React Live Preview", async () => {
+    // The canvas answers the Theme's own catalog requests (the editor proxies
+    // them); here the same answers come from fixtures, and everything between
+    // the request and the markup is the Theme's code.
+    const files = [...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES].map(
+      (file) => ({ path: file.path, content: file.content }),
+    );
+    const requested: string[] = [];
+    const respond = (url: URL) => {
+      requested.push(url.pathname + url.search);
+      if (url.pathname === "/api/store/products") {
+        return new Response(JSON.stringify(list));
+      }
+      if (url.pathname === "/api/store/products/cup") {
+        return new Response(JSON.stringify({ product }));
+      }
+      if (url.pathname === "/api/store/products/missing") {
+        return new Response("{}", { status: 404 });
+      }
+      return undefined;
+    };
+
+    const listing = await renderLivePreviewRoute({
+      files,
+      routeFile: "src/routes/products.index.tsx",
+      path: "/products/",
+      pathname: "/products/?page=2",
+      respond,
+    });
+    expect(listing.html).toContain("Cup");
+    expect(listing.html).toContain("page=3");
+    expect(listing.html).toContain("cup%20%2F%E8%8C%B6%3F");
+
+    const detail = await renderLivePreviewRoute({
+      files,
+      routeFile: "src/routes/products.$slug.tsx",
+      path: "/products/$slug",
+      pathname: "/products/cup",
+      respond,
+    });
+    expect(detail.html).toContain("$12.50");
+
+    const missing = await renderLivePreviewRoute({
+      files,
+      routeFile: "src/routes/products.$slug.tsx",
+      path: "/products/$slug",
+      pathname: "/products/missing",
+      respond,
+    });
+    expect(missing.html).toContain("Product not found");
+
+    expect(requested).toEqual([
+      "/api/store/products?page=2&limit=12",
+      "/api/store/products/cup",
+      "/api/store/products/missing",
+    ]);
   });
   it("parses every independent TS/TSX source and has unique source markers", () => {
     expect(STARTER_THEME_CATALOG_FILES).toHaveLength(5);
