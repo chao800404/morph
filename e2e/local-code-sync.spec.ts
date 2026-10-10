@@ -90,6 +90,10 @@ async function morphFile(page: Page, scope: ThemeScope, path: string) {
 const readLocal = (dir: string, path: string) =>
   readFile(join(dir, path), "utf8").catch(() => null);
 
+/** Whether the folder's sync state still holds a refused deletion. */
+const holdsDeletion = async (dir: string) =>
+  "deletionHold" in JSON.parse((await readLocal(dir, ".morph/sync-state.json")) ?? "{}");
+
 async function writeLocal(dir: string, path: string, text: string) {
   await mkdir(dirname(join(dir, path)), { recursive: true });
   await writeFile(join(dir, path), text);
@@ -189,12 +193,17 @@ test("deletions en masse stop sync until the developer says so, however they arr
     }
     cli = null;
     expect(await morphPaths(page, scope, folder)).toHaveLength(40);
+    expect(await holdsDeletion(dir), "the refused deletion is held").toBe(true);
     await git(dir, ["checkout", "-q", "main"]);
 
     // The same files deleted five at a time: each batch alone is small, the
     // fourth makes 20 within the window, and the run stops there.
     cli = startCli(dir, cliEnv(home));
     await expect.poll(() => cli!.output(), { timeout: 30_000 }).toContain("Syncing");
+    // "Syncing" is printed before the first cycle has read the folder. Only
+    // that cycle, finding the 20 files back, lifts the hold; a batch removed
+    // before then is still the held deletion, and stops the run.
+    await expect.poll(() => holdsDeletion(dir), { timeout: 30_000 }).toBe(false);
     for (const batch of [0, 1, 2]) {
       const paths = probes.slice(batch * 5, batch * 5 + 5);
       for (const path of paths) await rm(join(dir, path));
