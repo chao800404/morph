@@ -1,3 +1,4 @@
+import { missingSectionComponentPath } from "@/lib/storefront/editor/preview-compile-failure";
 import {
   DEFAULT_ELEMENT_TARGET_KEY,
   resolveElementMeta,
@@ -811,6 +812,16 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     themeFiles?.some((file) => file.path === selection.sourceFilePath)
       ? selection.sourceFilePath
       : null) ?? sectionComponentPath;
+  // Told apart from CMS-only, so the author is pointed at the missing file
+  // instead of told there never was one.
+  const missingComponentPath = useMemo(
+    () =>
+      missingSectionComponentPath(
+        section.componentRef,
+        themeFiles ? new Set(themeFiles.map((file) => file.path)) : undefined,
+      ),
+    [section.componentRef, themeFiles],
+  );
   const activeSourceLocation = selection?.sourceLocation ?? null;
   const propString = (key: string): string | undefined =>
     typeof props[key] === "string" ? props[key] : undefined;
@@ -2307,6 +2318,21 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 {componentPath.split("/").pop()}
               </span>
             </Button>
+          ) : missingComponentPath ? (
+            <div
+              className="w-full flex items-center justify-between gap-2 rounded-md border border-dashed border-destructive/40 px-2 py-1 text-[11px] text-destructive"
+              title={`${missingComponentPath} is not in this Theme, so the section cannot render.`}
+            >
+              <span className="min-w-0 truncate">
+                Missing{" "}
+                <span className="font-mono">
+                  {missingComponentPath.split("/").pop()}
+                </span>
+              </span>
+              <span className="shrink-0 font-mono text-[10px] bg-destructive/10 px-1.5 py-0.5 rounded">
+                Cannot render
+              </span>
+            </div>
           ) : (
             <div className="w-full flex items-center justify-between rounded-md border border-dashed px-2 py-1 text-[11px] text-muted-foreground">
               <span>Section has no source file</span>
