@@ -266,6 +266,16 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
     return call.result;
   }
 
+  /** Waits for the Worker to read `ticket` or later, writing nothing. */
+  async confirmContent(request: {
+    previewId: string;
+    ticket: number;
+  }): Promise<PreviewContentWriteResult> {
+    const call = await this.call("confirmContent", request);
+    if (!call.ok) throw new Error(call.reason);
+    return call.result;
+  }
+
   /** Writes a newer draft content snapshot and waits for the Worker to read it. */
   async writeContent(
     request: LocalPreviewSidecarWriteContentRequest,

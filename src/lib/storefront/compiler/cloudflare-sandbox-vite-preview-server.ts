@@ -28,13 +28,16 @@ import { resolveThemePreviewServerHost } from "@/lib/storefront/service/theme-pr
 import {
   isDirtyWorkspaceMarker,
   newDirtyWorkspaceMarker,
+  THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
   THEME_PREVIEW_WORKSPACE_FINGERPRINT_RELATIVE_PATH,
   THEME_PREVIEW_WORKSPACE_MANIFEST_RELATIVE_PATH,
 } from "./theme-workspace-path";
 import { verifyWorkspaceOnDisk } from "./theme-workspace-verification";
 import {
+  PREVIEW_INSTANCE_PATH,
   PREVIEW_START_STAGING_PREFIX,
   runFencedWriteInSandbox,
+  runPreviewContentRequestInSandbox,
   type FenceSandbox,
 } from "./preview-write-fence-sandbox";
 import type { ThemePreviewContentSnapshot } from "./theme-preview-content";
@@ -89,10 +92,14 @@ function safeHostname(url: string | null | undefined): string | null {
   }
 }
 
-/** Any registered toolchain's Vite: what a running preview server is. */
-const PREVIEW_VITE_BINS = registeredThemeToolchains().map(
-  (toolchain) => `${toolchain.root}/node_modules/.bin/vite`,
-);
+/**
+ * Any registered toolchain's Vite or Astro dev server: what a running preview
+ * server is.
+ */
+const PREVIEW_VITE_BINS = registeredThemeToolchains().flatMap((toolchain) => [
+  `${toolchain.root}/node_modules/.bin/vite`,
+  `${toolchain.root}/node_modules/.bin/astro dev`,
+]);
 function isPreviewViteCommand(command: string | undefined): boolean {
   return Boolean(
     command && PREVIEW_VITE_BINS.some((bin) => command.includes(bin)),
@@ -182,6 +189,7 @@ export type PreviewServerSession = Omit<ThemeWorkspaceWriter, "writeFile"> &
       command: string,
       options?: {
         env?: Record<string, string>;
+        cwd?: string;
         onOutput?: (stream: "stdout" | "stderr", data: string) => void;
         onExit?: (code: number | null) => void;
       },
@@ -611,18 +619,9 @@ export class CloudflareSandboxVitePreviewServer {
       };
     }
     const framework = recordedFramework.framework;
-    // A framework's own dev server (`astro dev`) runs on the local transport
-    // only so far; this transport starts Vite with the generated
-    // `vite.config.ts`, which such a workspace does not have. Refused by name
-    // until it starts one (docs/astro-theme-plan.md A6), before any container.
-    if (framework.preview.devServer) {
-      return {
-        ok: false,
-        stage: "preview-framework",
-        errorMessage: `THEME_FRAMEWORK_UNAVAILABLE: The container Live Preview cannot start a "${framework.id}" dev server yet; it runs on the local transport only (docs/astro-theme-plan.md A6).`,
-        logs,
-      };
-    }
+    // A framework's own dev server (`astro dev`), when its adapter names one;
+    // otherwise Vite with the generated `vite.config.ts`.
+    const devServer = framework.preview.devServer;
     // A preview has no build record; it uses the registry's toolchain for its
     // framework, checked against the container's manifest before it starts.
     const toolchain = themeToolchainForFramework(framework.id);
@@ -928,6 +927,16 @@ export class CloudflareSandboxVitePreviewServer {
             expected: existingWorkspaceFingerprint,
           },
           commit: startCommit,
+          // Content syncs reach a framework's own dev server only (6.5), so
+          // only there is a newer snapshot kept and the server stamped.
+          ...(devServer
+            ? {
+                content: {
+                  path: THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH,
+                  instancePath: PREVIEW_INSTANCE_PATH,
+                },
+              }
+            : {}),
         },
       ).catch(async (error: unknown) => {
         await this.discardStaging(session!, stagedStart.staging);
@@ -1136,14 +1145,34 @@ export class CloudflareSandboxVitePreviewServer {
         runningProcessId: alreadyServing?.id ?? null,
         processId: null,
       };
+      // Stamped before the server starts, so its Worker names this server
+      // and no earlier one on the address probe (docs/astro-theme-plan.md
+      // 6.6); kept in /tmp, which a restarted container does not keep. Only
+      // a framework's own dev server takes content syncs to confirm.
+      if (devServer) {
+        await runPreviewContentRequestInSandbox(
+          session as unknown as FenceSandbox,
+          {
+            op: "stamp",
+            path: `${prepared.workspaceRoot}/${THEME_PREVIEW_CONTENT_DATA_RELATIVE_PATH}`,
+            instancePath: PREVIEW_INSTANCE_PATH,
+            instance: crypto.randomUUID(),
+          },
+        );
+      }
       const process = await session.startProcess(
-        // --strictPort so the server cannot quietly land on another port and
-        // leave the exposed URL pointing at nothing.
-        `${toolchain.root}/node_modules/.bin/vite --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`,
+        // A strict port so the server cannot quietly land on another one and
+        // leave the exposed URL pointing at nothing (`--strictPort` for
+        // Vite; the Astro wrapper config sets `server.strictPort`).
+        devServer
+          ? `${toolchain.root}/node_modules/.bin/astro dev --config ${devServer.configPath} --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT}`
+          : `${toolchain.root}/node_modules/.bin/vite --config ${prepared.workspaceRoot}/vite.config.ts --host 0.0.0.0 --port ${THEME_PREVIEW_SERVER_PORT} --strictPort`,
         {
           // Nothing from Morph's own environment. The preview holds no
-          // credential, and its capability is the preview URL alone.
-          env: { NODE_ENV: "development" },
+          // credential, and its capability is the preview URL alone; a
+          // framework's dev server gets only what its adapter declares.
+          env: { NODE_ENV: "development", ...devServer?.env },
+          ...(devServer ? { cwd: prepared.workspaceRoot } : {}),
           onOutput: (_stream, data) => {
             addLog(data);
             if (data.includes(READY_MARKER)) resolveLogOrExit("ready");
@@ -1162,8 +1191,10 @@ export class CloudflareSandboxVitePreviewServer {
         ? process
             .waitForPort(THEME_PREVIEW_SERVER_PORT, {
               // Readiness is platform-owned and never runs a Theme loader.
+              // A Worker-served preview (Start's, or a framework's own dev
+              // server) answers the address probe itself.
               path:
-                input.previewRuntime === "start"
+                input.previewRuntime === "start" || devServer
                   ? START_PREVIEW_ADDRESS_PROBE_PATH
                   : THEME_PREVIEW_SERVER_BASE_PATH,
             })

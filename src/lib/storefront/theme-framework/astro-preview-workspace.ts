@@ -238,6 +238,9 @@ export function morphAstroPreview() {
               importGuard,
             ],
             server: {
+              // The port the transport exposes, or none: never another one
+              // the exposed address does not point at.
+              strictPort: true,
               // Only the workspace and the pinned toolchain are readable over
               // HTTP.
               fs: { strict: true, allow: ${JSON.stringify(options.fsAllow)} },
