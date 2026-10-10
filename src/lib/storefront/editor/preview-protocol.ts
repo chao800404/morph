@@ -227,6 +227,15 @@ export type EditorToPreviewMessage =
     }
   | { type: "morph:storefront-preview-request-structure" }
   | {
+      /**
+       * Ends the text being typed into on the canvas: kept (`commit`), which
+       * sends it as an ordinary inline commit, or put back as it was. Asked
+       * by the editor before it leaves the page, after the author chose.
+       */
+      type: "morph:storefront-preview-finish-inline-text";
+      commit: boolean;
+    }
+  | {
       type: "morph:storefront-preview-request-selection-style";
       styleRevision?: number;
     }
@@ -487,6 +496,16 @@ export type PreviewToEditorMessage =
        * the field.
        */
       originalValue: string;
+    }
+  | {
+      /**
+       * Text on the canvas was opened for typing (`editing: true`), or the
+       * edit ended, committed or not. While one is open the typed text lives
+       * only in the preview, so the editor counts it as unsaved and asks the
+       * author before leaving. Sent after any commit of the same edit.
+       */
+      type: "morph:storefront-preview-inline-text-editing";
+      editing: boolean;
     }
   | {
       /**
@@ -845,6 +864,10 @@ export function parseEditorToPreviewMessage(
         : null;
     case "morph:storefront-preview-request-structure":
       return { type: value.type };
+    case "morph:storefront-preview-finish-inline-text":
+      return typeof value.commit === "boolean"
+        ? { type: value.type, commit: value.commit }
+        : null;
     case "morph:storefront-preview-request-selection-style":
       return value.styleRevision === undefined ||
         isSafeRevision(value.styleRevision)
@@ -1260,6 +1283,10 @@ export function parsePreviewToEditorMessage(
             value: value.value,
             originalValue: value.originalValue,
           }
+        : null;
+    case "morph:storefront-preview-inline-text-editing":
+      return typeof value.editing === "boolean"
+        ? { type: value.type, editing: value.editing }
         : null;
     case "morph:storefront-preview-inline-text-refused":
       return isBoundedString(value.sectionId, 100) &&

@@ -325,3 +325,125 @@ describe("classifyEditorNavigation", () => {
     ).toBeNull();
   });
 });
+
+describe("text still open for typing on the page", () => {
+  function withOpenEdit() {
+    let open = true;
+    let pending = false;
+    const finishes: Array<{
+      commit: boolean;
+      answer: ReturnType<typeof deferred<boolean>>;
+    }> = [];
+    const prompts: Array<EditorLeavePrompt | null> = [];
+    const flushes: Array<ReturnType<typeof deferred<EditorLeaveFlush>>> = [];
+    const discard = vi.fn();
+    const guard = createEditorLeaveGuard({
+      hasPendingWrites: () => pending,
+      hasOpenEdit: () => open,
+      finishOpenEdit: (commit) => {
+        const answer = deferred<boolean>();
+        finishes.push({ commit, answer });
+        return answer.promise;
+      },
+      flush: () => {
+        const next = deferred<EditorLeaveFlush>();
+        flushes.push(next);
+        return next.promise;
+      },
+      onPrompt: (prompt) => prompts.push(prompt),
+      discard,
+      promptDelayMs: 400,
+    });
+    return {
+      guard,
+      finishes,
+      flushes,
+      prompts,
+      discard,
+      /** The preview ended the edit, having committed `typed` (or not). */
+      closeEdit: (committed: boolean) => {
+        open = false;
+        pending = committed;
+      },
+      setPending: (value: boolean) => {
+        pending = value;
+      },
+      lastPrompt: () => prompts.at(-1),
+    };
+  }
+
+  it("asks first, and sends nothing until the author says", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("leave-editor").then((value) => (blocked = value));
+    await settle();
+
+    expect(h.lastPrompt()).toEqual({ phase: "open-edit", kind: "leave-editor" });
+    expect(h.finishes).toEqual([]);
+    expect(h.flushes).toEqual([]);
+    expect(blocked).toBeUndefined();
+  });
+
+  it("finishes the edit, saves what it committed, then goes", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("leave-editor").then((value) => (blocked = value));
+
+    h.guard.finishEdit();
+    expect(h.finishes.map((finish) => finish.commit)).toEqual([true]);
+
+    // The commit reaches the editor as an ordinary edit before the close is
+    // reported; it is not the author typing again.
+    h.guard.noteInput();
+    h.closeEdit(true);
+    h.finishes[0]!.answer.resolve(true);
+    await settle();
+    expect(blocked).toBeUndefined();
+    expect(h.flushes).toHaveLength(1);
+
+    h.setPending(false);
+    h.flushes[0]!.resolve({ saved: true });
+    await settle();
+    expect(blocked).toBe(false);
+  });
+
+  it("stays, with the text still open, when the author stays", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("switch-page").then((value) => (blocked = value));
+
+    h.guard.stay();
+    await settle();
+
+    expect(blocked).toBe(true);
+    expect(h.finishes).toEqual([]);
+  });
+
+  it("puts the text back, not sends it, when the author discards it", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("leave-editor").then((value) => (blocked = value));
+
+    h.guard.leave();
+    await settle();
+
+    expect(h.finishes.map((finish) => finish.commit)).toEqual([false]);
+    expect(h.discard).toHaveBeenCalledWith("leave-editor");
+    expect(h.flushes).toEqual([]);
+    expect(blocked).toBe(false);
+  });
+
+  it("says so, and does not go, when the page does not finish the edit", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("leave-editor").then((value) => (blocked = value));
+
+    h.guard.finishEdit();
+    h.finishes[0]!.answer.resolve(false);
+    await settle();
+
+    expect(blocked).toBeUndefined();
+    expect(h.lastPrompt()).toMatchObject({ phase: "not-saved" });
+    expect(h.flushes).toEqual([]);
+  });
+});

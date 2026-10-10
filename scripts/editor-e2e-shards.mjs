@@ -74,7 +74,7 @@ export const EDITOR_SHARDS = [
     // fewest files. Two tests, about 4 minutes locally.
     "local-code-sync.spec.ts",
     // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files. Two tests, each opening the editor twice.
+    // fewest files. Three tests, each opening the editor twice.
     "leave-before-save.spec.ts",
   ],
 ];

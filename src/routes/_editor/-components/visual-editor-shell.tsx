@@ -629,6 +629,8 @@ const previewDefaultHeights = {
   mobile: 844,
 } as const;
 
+/** How long the preview may take to end an open inline edit when asked. */
+const INLINE_EDIT_FINISH_TIMEOUT_MS = 2_000;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
 /** A ready iframe must keep answering while its sandbox port is alive. */
@@ -1206,6 +1208,8 @@ export function VisualEditorShell({
   );
   const leavePortsRef = useRef<{
     hasPendingWrites: (kind: EditorLeaveKind) => boolean;
+    hasOpenEdit: () => boolean;
+    finishOpenEdit: (commit: boolean) => Promise<boolean>;
     flush: (kind: EditorLeaveKind) => Promise<EditorLeaveFlush>;
     discard: (kind: EditorLeaveKind) => void;
     onBlocked: (
@@ -1214,6 +1218,8 @@ export function VisualEditorShell({
     ) => void;
   }>({
     hasPendingWrites: () => false,
+    hasOpenEdit: () => false,
+    finishOpenEdit: async () => true,
     flush: async () => ({ saved: true }),
     discard: () => {},
     onBlocked: () => {},
@@ -1221,6 +1227,8 @@ export function VisualEditorShell({
   const [leaveGuard] = useState(() =>
     createEditorLeaveGuard({
       hasPendingWrites: (kind) => leavePortsRef.current.hasPendingWrites(kind),
+      hasOpenEdit: () => leavePortsRef.current.hasOpenEdit(),
+      finishOpenEdit: (commit) => leavePortsRef.current.finishOpenEdit(commit),
       flush: (kind) => leavePortsRef.current.flush(kind),
       onPrompt: setLeavePrompt,
       discard: (kind) => leavePortsRef.current.discard(kind),
@@ -1836,6 +1844,27 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  /**
+   * Text is being typed on the canvas. It lives only in the preview until it
+   * is committed, so it counts as unsaved and leaving asks the author first.
+   * Kept in a ref too, for the leave check and the unload warning, which run
+   * outside a render.
+   */
+  const [inlineEditOpen, setInlineEditOpen] = useState(false);
+  const inlineEditOpenRef = useRef(false);
+  /** Waiting for the open edit to end; see `finishOpenEdit`. */
+  const inlineEditEndedRef = useRef(new Set<() => void>());
+  const reportInlineEdit = useCallback((editing: boolean) => {
+    inlineEditOpenRef.current = editing;
+    setInlineEditOpen(editing);
+    if (editing) return;
+    for (const ended of inlineEditEndedRef.current) ended();
+    inlineEditEndedRef.current.clear();
+  }, []);
+  // A new preview document has no edit open, whatever the last one said.
+  useEffect(() => {
+    reportInlineEdit(false);
+  }, [previewKey, reportInlineEdit]);
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
 
@@ -4990,6 +5019,7 @@ export function VisualEditorShell({
       Object.keys(themeFileSaveErrors).length > 0,
     unsaved:
       fieldDraft ||
+      inlineEditOpen ||
       contentWrites.pending ||
       unconfirmedContentCount > 0 ||
       monacoDirtyFiles.length > 0 ||
@@ -5002,6 +5032,26 @@ export function VisualEditorShell({
   // Everything goes through the save paths the edits would have used anyway;
   // nothing here is a second way to write.
   leavePortsRef.current = {
+    hasOpenEdit: () => inlineEditOpenRef.current,
+    finishOpenEdit: (commit) => {
+      if (!inlineEditOpenRef.current) return Promise.resolve(true);
+      return new Promise<boolean>((resolve) => {
+        // A preview that never answers must not hold the author here.
+        const timer = setTimeout(() => {
+          inlineEditEndedRef.current.delete(ended);
+          resolve(false);
+        }, INLINE_EDIT_FINISH_TIMEOUT_MS);
+        const ended = () => {
+          clearTimeout(timer);
+          resolve(true);
+        };
+        inlineEditEndedRef.current.add(ended);
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-finish-inline-text",
+          commit,
+        });
+      });
+    },
     hasPendingWrites: (kind) => {
       const files = Object.values(
         useThemeWorkspaceStore
@@ -5193,7 +5243,14 @@ export function VisualEditorShell({
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       commitFocusedField();
-      if (!leavePortsRef.current.hasPendingWrites("leave-editor")) return;
+      // Text still open on the canvas cannot be committed from here: the
+      // preview would answer after this page is gone. It is warned about.
+      if (
+        !inlineEditOpenRef.current &&
+        !leavePortsRef.current.hasPendingWrites("leave-editor")
+      ) {
+        return;
+      }
       event.preventDefault();
       event.returnValue = "";
     };
@@ -6448,6 +6505,11 @@ export function VisualEditorShell({
       if (message.type === "morph:storefront-preview-commit-inline-text") {
         reportAuthenticatedUserActivity();
         inlineTextCommitHandlerRef.current(message);
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-inline-text-editing") {
+        reportInlineEdit(message.editing);
         return;
       }
 
@@ -9746,6 +9808,7 @@ export function VisualEditorShell({
         prompt={leavePrompt}
         onStay={leaveGuard.stay}
         onLeave={leaveGuard.leave}
+        onFinishEdit={leaveGuard.finishEdit}
       />
       {/* Separate notices, never merged: signing in again does not settle
           a Theme that moved on, a dropped connection says nothing about
@@ -9934,6 +9997,9 @@ export function VisualEditorShell({
             onRestartPreview={retryLivePreview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
+            // Typing in Code while a navigation waits on a save cancels it,
+            // as typing in the Inspector does.
+            onAuthorInput={leaveGuard.noteInput}
             onSaveFile={handleUnifiedSaveFile}
             onPreviewFilesChange={(files, options) =>
               postPreviewThemeFiles(files, {

@@ -243,6 +243,12 @@ type EditorCodeWorkspaceProps = {
     /** The author asked for this save; see `saveThemeFileSequentially`. */
     options?: { confirmed?: boolean },
   ) => Promise<StorefrontThemeFileDTO | null>;
+  /**
+   * The author typed in a file. Called for their edits only, not for a
+   * model the workspace rewrote itself, and without the content: whoever
+   * listens needs to know someone is still editing, not what was typed.
+   */
+  onAuthorInput?: () => void;
   /** Applies transient Monaco buffers to the running React preview. */
   onPreviewFilesChange?: (
     files: Array<{ path: string; content: string }>,
@@ -496,6 +502,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     onThemeFilesMoved,
     onDirtyFilesChange,
     onSaveFile,
+    onAuthorInput,
     onPreviewFilesChange: onSourcePreviewFilesChange,
     onBuildPreview,
     externalDiagnostics,
@@ -2863,6 +2870,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (value === undefined) return;
     if (suppressModelChangeRef.current) return;
     if (activeFileIsGenerated) return;
+    onAuthorInput?.();
 
     const path = activeFilePath;
     draftContentsRef.current[path] = value;

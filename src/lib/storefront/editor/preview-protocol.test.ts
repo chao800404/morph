@@ -1067,3 +1067,19 @@ describe("opening a deleted file's history from the canvas", () => {
     ).toBeNull();
   });
 });
+
+describe("an inline edit left open on the page", () => {
+  it("is reported open or closed, and nothing else", () => {
+    const open = { type: "morph:storefront-preview-inline-text-editing", editing: true };
+    expect(parsePreviewToEditorMessage(open)).toEqual(open);
+    expect(
+      parsePreviewToEditorMessage({ ...open, editing: "yes" }),
+    ).toBeNull();
+  });
+
+  it("is ended at the editor's request, kept or put back", () => {
+    const finish = { type: "morph:storefront-preview-finish-inline-text", commit: false };
+    expect(parseEditorToPreviewMessage(finish)).toEqual(finish);
+    expect(parseEditorToPreviewMessage({ ...finish, commit: 1 })).toBeNull();
+  });
+});

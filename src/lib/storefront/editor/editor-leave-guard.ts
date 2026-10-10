@@ -70,12 +70,26 @@ export type EditorLeaveFlush =
   | { saved: false; reason: string };
 
 export type EditorLeavePrompt =
+  /**
+   * Text is still being typed somewhere the editor cannot send from (the
+   * canvas). The author finishes it, stays, or discards it; nothing is
+   * decided for them.
+   */
+  | { phase: "open-edit"; kind: EditorLeaveKind }
   /** Sending, and taking longer than a glance. */
   | { phase: "saving"; kind: EditorLeaveKind }
   | { phase: "not-saved"; kind: EditorLeaveKind; reason: string };
 
 export type EditorLeaveGuardPorts = {
   hasPendingWrites: (kind: EditorLeaveKind) => boolean;
+  /** Whether an edit is open whose text the save paths do not have yet. */
+  hasOpenEdit?: () => boolean;
+  /**
+   * Ends the open edit, keeping its text (`commit`) — which hands it to the
+   * save paths — or putting it back. Resolves true once it has ended, false
+   * when it did not answer.
+   */
+  finishOpenEdit?: (commit: boolean) => Promise<boolean>;
   /** Sends what is waiting, now, and says whether all of it is stored. */
   flush: (kind: EditorLeaveKind) => Promise<EditorLeaveFlush>;
   /** Shows, replaces or (with null) closes the question to the author. */
@@ -103,14 +117,23 @@ export type EditorLeaveGuard = {
   request: (kind: EditorLeaveKind) => Promise<boolean>;
   /** The author stays: the navigation is dropped. */
   stay: () => void;
-  /** The author goes without waiting for, or despite, the save. */
+  /**
+   * The author goes without waiting for, or despite, the save. A request
+   * already sent is not recalled and may still land; leaving only means
+   * nothing more is sent for them.
+   */
   leave: () => void;
+  /** The author keeps the open edit's text; the navigation then saves it. */
+  finishEdit: () => void;
   /** The author edited something; a waiting navigation is cancelled. */
   noteInput: () => void;
   readonly waiting: boolean;
 };
 
 export const EDITOR_LEAVE_PROMPT_DELAY_MS = 400;
+
+const OPEN_EDIT_NO_ANSWER =
+  "The text being edited on the page did not finish. It is still there; finish it, or stay and try again.";
 
 const CHANGED_WHILE_SAVING =
   "Something changed while it was being saved. Your changes are kept.";
@@ -128,6 +151,10 @@ export function createEditorLeaveGuard(
     kind: EditorLeaveKind;
     resolve: (block: boolean) => void;
     promptTimer: ReturnType<typeof setTimeout> | null;
+    /** Ending the open edit; the commit that produces is not new input. */
+    finishingEdit: boolean;
+    /** Waiting on the author about an open edit. */
+    askingAboutEdit: boolean;
   };
   let current: Attempt | null = null;
 
@@ -153,45 +180,89 @@ export function createEditorLeaveGuard(
     ports.onPrompt({ phase: "not-saved", kind: attempt.kind, reason });
   };
 
+  /** Sends what is waiting for this attempt, and goes once it is stored. */
+  const save = (attempt: Attempt) => {
+    const { kind } = attempt;
+    attempt.promptTimer = timers.set(() => {
+      attempt.promptTimer = null;
+      if (current === attempt) ports.onPrompt({ phase: "saving", kind });
+    }, promptDelayMs);
+
+    let flushing: Promise<EditorLeaveFlush>;
+    try {
+      flushing = ports.flush(kind);
+    } catch (error) {
+      flushing = Promise.reject(error);
+    }
+    flushing.then(
+      (result) => {
+        if (!result.saved) return notSaved(attempt, result.reason);
+        // Stored is judged by what is still held now, not by the answer:
+        // an edit made since is not covered by it.
+        if (ports.hasPendingWrites(kind)) {
+          return notSaved(attempt, CHANGED_WHILE_SAVING);
+        }
+        settle(attempt, false);
+      },
+      (error: unknown) =>
+        notSaved(
+          attempt,
+          error instanceof Error && error.message
+            ? error.message
+            : "Your changes could not be saved.",
+        ),
+    );
+  };
+
   return {
     request: (kind) => {
       // A newer navigation replaces one still waiting; only one may go.
       if (current) settle(current, true, "superseded");
-      if (!ports.hasPendingWrites(kind)) return Promise.resolve(false);
+      const openEdit = ports.hasOpenEdit?.() ?? false;
+      if (!openEdit && !ports.hasPendingWrites(kind)) {
+        return Promise.resolve(false);
+      }
 
       return new Promise<boolean>((resolve) => {
-        const attempt: Attempt = { kind, resolve, promptTimer: null };
+        const attempt: Attempt = {
+          kind,
+          resolve,
+          promptTimer: null,
+          finishingEdit: false,
+          askingAboutEdit: openEdit,
+        };
         current = attempt;
-        attempt.promptTimer = timers.set(() => {
-          attempt.promptTimer = null;
-          if (current === attempt) ports.onPrompt({ phase: "saving", kind });
-        }, promptDelayMs);
-
-        let flushing: Promise<EditorLeaveFlush>;
-        try {
-          flushing = ports.flush(kind);
-        } catch (error) {
-          flushing = Promise.reject(error);
+        // An open edit is asked about first: its text is not in the save
+        // paths yet, so there is nothing to send until the author says.
+        if (openEdit) {
+          ports.onPrompt({ phase: "open-edit", kind });
+          return;
         }
-        flushing.then(
-          (result) => {
-            if (!result.saved) return notSaved(attempt, result.reason);
-            // Stored is judged by what is still held now, not by the answer:
-            // an edit made since is not covered by it.
-            if (ports.hasPendingWrites(kind)) {
-              return notSaved(attempt, CHANGED_WHILE_SAVING);
-            }
-            settle(attempt, false);
-          },
-          (error: unknown) =>
-            notSaved(
-              attempt,
-              error instanceof Error && error.message
-                ? error.message
-                : "Your changes could not be saved.",
-            ),
-        );
+        save(attempt);
       });
+    },
+    finishEdit: () => {
+      const attempt = current;
+      if (!attempt || !attempt.askingAboutEdit) return;
+      attempt.askingAboutEdit = false;
+      attempt.finishingEdit = true;
+      const finishing = ports.finishOpenEdit?.(true) ?? Promise.resolve(true);
+      finishing.then(
+        (ended) => {
+          if (current !== attempt) return;
+          attempt.finishingEdit = false;
+          if (!ended) return notSaved(attempt, OPEN_EDIT_NO_ANSWER);
+          ports.onPrompt(null);
+          if (!ports.hasPendingWrites(attempt.kind)) {
+            return settle(attempt, false);
+          }
+          save(attempt);
+        },
+        () => {
+          attempt.finishingEdit = false;
+          notSaved(attempt, OPEN_EDIT_NO_ANSWER);
+        },
+      );
     },
     stay: () => {
       if (current) settle(current, true, "stayed");
@@ -199,11 +270,17 @@ export function createEditorLeaveGuard(
     leave: () => {
       const attempt = current;
       if (!attempt) return;
+      // The open edit's text is put back, not sent: leaving was the choice.
+      if (attempt.askingAboutEdit) void ports.finishOpenEdit?.(false);
       ports.discard(attempt.kind);
       settle(attempt, false);
     },
     noteInput: () => {
-      if (current) settle(current, true, "kept-editing");
+      // The open edit's own commit, arriving because the author chose to
+      // finish it, is not the author editing again.
+      if (current && !current.finishingEdit) {
+        settle(current, true, "kept-editing");
+      }
     },
     get waiting() {
       return current !== null;

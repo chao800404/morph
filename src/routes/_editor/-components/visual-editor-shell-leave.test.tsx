@@ -7,6 +7,7 @@ import type { EditorLeaveKind } from "@/lib/storefront/editor/editor-leave-guard
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
+import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   VisualEditorShell,
@@ -411,7 +412,7 @@ describe("navigating before the debounce fired", () => {
     );
 
     act(() => {
-      screen.getByRole("button", { name: "Leave without saving" }).click();
+      screen.getByRole("button", { name: "Leave without waiting" }).click();
     });
     await tick();
     expect(outcome.blocked).toBe(false);
@@ -428,6 +429,103 @@ describe("navigating before the debounce fired", () => {
     await tick(0);
     expect(outcome.blocked).toBe(false);
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("text still open for typing on the canvas", () => {
+  const finishRequests = () =>
+    vi
+      .mocked(postEditorToPreviewMessage)
+      .mock.calls.map(([, message]) => message as { type: string; commit?: boolean })
+      .filter((message) => message.type === "morph:storefront-preview-finish-inline-text");
+
+  /** Opens an inline edit on the heading, as the preview reports one. */
+  async function openInlineEdit() {
+    const shell = renderShell();
+    await selectHeading();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    await tick(0);
+    return shell;
+  }
+
+  it("counts as unsaved, and is warned about on reload", async () => {
+    await openInlineEdit();
+
+    expect(saveStatus()).toBe("Unsaved");
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("is finished on the author's say-so, saved, and only then navigated from", async () => {
+    const write = deferred<unknown>();
+    updateSectionProps.mockReturnValue(write.promise);
+    const { navigate } = await openInlineEdit();
+
+    const outcome = navigate("leave-editor");
+    await tick();
+    // Asked, not decided: nothing ended, nothing sent.
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "You are still editing text on the page",
+    );
+    expect(finishRequests()).toEqual([]);
+
+    act(() => {
+      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+    });
+    await tick(0);
+    expect(finishRequests()).toEqual([
+      { type: "morph:storefront-preview-finish-inline-text", commit: true },
+    ]);
+
+    // The preview answers as it does: the commit, then the close.
+    typeHeading("Typed on the canvas", "Welcome");
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    await tick();
+
+    // Not cancelled by its own commit, and sent at once.
+    expect(sentHeadings()).toEqual(["Typed on the canvas"]);
+    expect(outcome.blocked).toBeUndefined();
+
+    write.resolve(SAVED);
+    await tick();
+    expect(outcome.blocked).toBe(false);
+  });
+
+  it("is put back, not sent, when the author discards it", async () => {
+    updateSectionProps.mockResolvedValue(SAVED);
+    const { navigate } = await openInlineEdit();
+
+    const outcome = navigate("leave-editor");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Discard text and leave" }).click();
+    });
+    await tick(1_000);
+
+    expect(finishRequests()).toEqual([
+      { type: "morph:storefront-preview-finish-inline-text", commit: false },
+    ]);
+    expect(outcome.blocked).toBe(false);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("stays when the page does not finish the edit", async () => {
+    const { navigate } = await openInlineEdit();
+
+    const outcome = navigate("switch-page");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+    });
+    // The preview never answers.
+    await tick(2_000);
+
+    expect(outcome.blocked).toBeUndefined();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "did not finish",
+    );
   });
 });
 

@@ -116,6 +116,15 @@ const inlineEditor = createInlineTextEditor({
       channel,
     );
   },
+  // Typed text lives only here until it is committed, so the editor is told
+  // an edit is open: it counts as unsaved, and leaving asks first.
+  onEditingChange: (editing) => {
+    if (!channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-inline-text-editing", editing },
+      channel,
+    );
+  },
   // Typing changes how much room the text takes, so the rings follow it.
   onLayoutChanged: () => drawOverlays(),
   // What this page rendered the field from. The Theme's content() may change
@@ -985,6 +994,10 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-finish-inline-text") {
+      // The author chose, in the editor, what happens to the open edit.
+      inlineEditor.finish(message.commit);
     }
     if (message?.type === "morph:storefront-preview-update-theme-files") {
       // The files themselves are not taken from here: Morph writes them into

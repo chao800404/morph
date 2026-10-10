@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
-import { EDITOR_PATH, openEditor } from "./helpers";
+import {
+  EDITOR_PATH,
+  enableSelection,
+  openEditor,
+  previewFrame,
+} from "./helpers";
 import {
   heroContentField,
   isServerFn,
@@ -131,6 +136,68 @@ test("reloading right after an edit warns, and staying lets it save", async ({
     // With nothing unsaved, a reload is not interrupted.
     await page.reload({ waitUntil: "domcontentloaded" });
     expect(dialogs).toEqual(["beforeunload"]);
+  } finally {
+    page.removeAllListeners("dialog");
+    await openEditor(page);
+    await writeHeroField(page, 0, original);
+  }
+});
+
+test("text typed on the canvas is warned about on reload, and saved once finished", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  const field = await heroContentField(page, 0);
+  const original = await field.inputValue();
+  // Stored first: the canvas opens text for typing only when it is the
+  // stored value.
+  const base = `inline-base ${Date.now()}`;
+
+  try {
+    await writeHeroField(page, 0, base);
+    const text = previewFrame(page).getByText(base, { exact: true });
+    await expect(text).toBeVisible({ timeout: 30_000 });
+    const enable = page.getByRole("button", {
+      name: "Enable section selection",
+    });
+    if (await enable.isVisible()) await enableSelection(page);
+    await expect(
+      previewFrame(page).locator(
+        "html[data-storefront-editor-selection-enabled]",
+      ),
+    ).toBeAttached({ timeout: 45_000 });
+    const box = await text.boundingBox();
+    expect(box, "no box for the hero text").not.toBeNull();
+    await page.mouse.dblclick(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    const editing = previewFrame(page).locator(
+      "[data-storefront-editor-inline-editing]",
+    );
+    await expect(editing).toBeVisible({ timeout: 10_000 });
+    await page.keyboard.press("End");
+    await page.keyboard.type(" typed");
+
+    // Typed, not committed: only the preview has it.
+    const status = page.locator("[data-editor-save-status]");
+    await expect(status).toHaveAttribute("data-save-state", "unsaved");
+
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.type());
+      void dialog.dismiss();
+    });
+    await page
+      .reload({ waitUntil: "domcontentloaded", timeout: 10_000 })
+      .catch(() => {});
+    expect(dialogs).toEqual(["beforeunload"]);
+
+    // Stayed, with the text still open; finishing it saves it.
+    await expect(editing).toContainText(`${base} typed`);
+    await page.keyboard.press("Enter");
+    await expect(status).toHaveAttribute("data-save-state", "saved", {
+      timeout: 30_000,
+    });
+    expect(await storedDocumentsHold(page, `${base} typed`)).toBe(true);
   } finally {
     page.removeAllListeners("dialog");
     await openEditor(page);

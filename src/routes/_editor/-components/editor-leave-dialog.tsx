@@ -8,29 +8,66 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import type { EditorLeavePrompt } from "@/lib/storefront/editor/editor-leave-guard";
 import { LoaderCircle } from "lucide-react";
 
 /**
  * The question a navigation asks while it waits on unsaved edits.
  *
- * Two promises it keeps: the author is never stuck — staying and going are
- * both always offered — and it never says the edits will be saved. Going
- * from a page switch keeps them in this tab; going from the editor loses
- * whatever was not stored, and says so.
+ * Three promises it keeps: the author is never stuck — staying and going are
+ * both always offered; it never says the edits will be saved; and it never
+ * says a save already sent was not — going without waiting does not recall a
+ * request, which may still be stored after the author left.
  */
 export function EditorLeaveDialog({
   prompt,
   onStay,
   onLeave,
+  onFinishEdit,
 }: {
   prompt: EditorLeavePrompt | null;
   onStay: () => void;
   onLeave: () => void;
+  onFinishEdit: () => void;
 }) {
   const leaving = prompt?.kind === "leave-editor";
-  const saving = prompt?.phase === "saving";
+  const phase = prompt?.phase;
+
+  const title =
+    phase === "open-edit"
+      ? "You are still editing text on the page"
+      : phase === "saving"
+        ? "Saving your changes…"
+        : "Your changes were not saved";
+
+  const description =
+    phase === "open-edit"
+      ? "Finish it to save it before going on, stay to keep editing, or discard what you typed there."
+      : phase === "saving"
+        ? leaving
+          ? "You will leave as soon as they are saved. If you leave now, a save already sent may still be stored, but nothing more is sent; anything not sent yet is lost."
+          : "The page will switch as soon as they are saved. If you switch now, the save already sent goes on, and anything not sent yet stays unsaved in this tab."
+        : prompt?.phase === "not-saved"
+          ? `${prompt.reason} ${
+              leaving
+                ? "If you leave now, they are lost."
+                : "If you switch now, they stay unsaved in this tab."
+            }`
+          : null;
+
+  const leaveLabel =
+    phase === "open-edit"
+      ? leaving
+        ? "Discard text and leave"
+        : "Discard text and switch"
+      : phase === "saving"
+        ? leaving
+          ? "Leave without waiting"
+          : "Switch without waiting"
+        : leaving
+          ? "Leave and discard"
+          : "Switch anyway";
 
   return (
     <AlertDialog
@@ -41,52 +78,39 @@ export function EditorLeaveDialog({
       }}
     >
       <AlertDialogContent
-        data-editor-leave-prompt={prompt?.phase}
+        data-editor-leave-prompt={phase}
         data-editor-leave-kind={prompt?.kind}
       >
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
-            {saving ? (
-              <>
-                <LoaderCircle
-                  className="size-4 animate-spin text-primary"
-                  aria-hidden="true"
-                />
-                Saving your changes…
-              </>
-            ) : (
-              "Your changes were not saved"
-            )}
+            {phase === "saving" ? (
+              <LoaderCircle
+                className="size-4 animate-spin text-primary"
+                aria-hidden="true"
+              />
+            ) : null}
+            {title}
           </AlertDialogTitle>
-          <AlertDialogDescription>
-            {saving
-              ? leaving
-                ? "You will leave as soon as they are saved. Leaving now loses whatever has not been saved yet."
-                : "The page will switch as soon as they are saved."
-              : prompt?.phase === "not-saved"
-                ? `${prompt.reason} ${
-                    leaving
-                      ? "If you leave now, they are lost."
-                      : "If you switch now, they stay unsaved in this tab."
-                  }`
-                : null}
-          </AlertDialogDescription>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onStay}>Stay here</AlertDialogCancel>
+          {phase === "open-edit" ? (
+            // Not an AlertDialogAction: it must not close the dialog, which
+            // goes on to show the save that finishing starts.
+            <Button type="button" onClick={onFinishEdit}>
+              Finish editing and continue
+            </Button>
+          ) : null}
           <AlertDialogAction
             className={
-              leaving ? buttonVariants({ variant: "destructive" }) : undefined
+              leaving || phase === "open-edit"
+                ? buttonVariants({ variant: "destructive" })
+                : undefined
             }
             onClick={onLeave}
           >
-            {leaving
-              ? saving
-                ? "Leave without saving"
-                : "Leave and discard"
-              : saving
-                ? "Switch without waiting"
-                : "Switch anyway"}
+            {leaveLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
