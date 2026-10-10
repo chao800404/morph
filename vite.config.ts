@@ -11,6 +11,7 @@ import {
   DEV_PREVIEW_PASSTHROUGH_PATH,
   isDevPreviewHost,
 } from "./src/server/dev-preview-passthrough";
+import { e2eWorkerConfig } from "./src/server/e2e-container-isolation";
 
 /**
  * Workaround for upstream TanStack Start bug (TanStack/router#6609):
@@ -215,13 +216,12 @@ const config = defineConfig({
       // `pnpm dev` dies on `EADDRINUSE` before it serves anything. An
       // end-to-end run has nothing to attach a debugger to, so it goes without.
       inspectorPort: process.env.MORPH_E2E_STATE_DIR ? false : undefined,
-      // A container end-to-end run names its worker (`morph-e2e-<id>`) so the
-      // containers its dev server starts are named after it and can be told
-      // from anyone else's (`scripts/run-editor-e2e.mjs`, `containerPrefix`).
-      // Unset everywhere else, so `pnpm dev` and builds keep `morph`.
-      config: process.env.MORPH_E2E_WORKER_NAME
-        ? { name: process.env.MORPH_E2E_WORKER_NAME }
-        : undefined,
+      // A container end-to-end run (`MORPH_E2E_WORKER_NAME=morph-e2e-<id>`)
+      // gets a Worker name and Sandbox images of its own, so its containers can
+      // be told from anyone else's by name and by image; see
+      // `src/server/e2e-container-isolation.ts`. Unset everywhere else, so
+      // `pnpm dev` and builds keep `morph` and the shared image.
+      config: e2eWorkerConfig(process.env.MORPH_E2E_WORKER_NAME),
     }),
     tailwindcss(),
     tanstackStart(),
