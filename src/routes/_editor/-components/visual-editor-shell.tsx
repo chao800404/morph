@@ -35,6 +35,7 @@ import {
 } from "@/lib/storefront/editor/send-editor-write";
 import {
   conflictingListKeys,
+  heldContentMessage,
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
@@ -841,6 +842,8 @@ export function VisualEditorShell({
   const [listConflicts, setListConflicts] = useState<
     Record<string, { templateId: string; sectionId: string; lists: string[] }>
   >({});
+  const listConflictsRef = useRef(listConflicts);
+  listConflictsRef.current = listConflicts;
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   // A discard waiting on the latest version: one at a time, and the button
   // that starts one is not offered meanwhile.
@@ -1710,7 +1713,10 @@ export function VisualEditorShell({
         // message names the action that resolves it.
         throw new Error(
           Object.keys(contentConflictsRef.current).length > 0
-            ? "Content is out of date with the document. Load the latest version and keep your changes before continuing."
+            ? heldContentMessage({
+                hasListConflict:
+                  Object.keys(listConflictsRef.current).length > 0,
+              })
             : "Content changed while saving. Retry before continuing.",
         );
       }

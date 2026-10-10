@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   conflictingListKeys,
+  heldContentMessage,
   rebaseContentProps,
   sameContentValue,
 } from "./content-rebase";
@@ -198,5 +199,21 @@ describe("telling a list change from an id repair, three ways", () => {
         incoming: { heading: "H", items: [{ id: "x", title: "Theirs" }] },
       }),
     ).toEqual(["items"]);
+  });
+});
+
+describe("what an author whose content is held is told", () => {
+  it("points a list conflict at the way out that resolves it", () => {
+    // "Keep mine" will not save a list both sides changed; naming it would
+    // send the author round in a circle.
+    const message = heldContentMessage({ hasListConflict: true });
+    expect(message).toMatch(/Discard mine/);
+    expect(message).not.toMatch(/keep your changes before continuing/);
+  });
+
+  it("keeps pointing any other conflict at loading the latest and keeping mine", () => {
+    expect(heldContentMessage({ hasListConflict: false })).toMatch(
+      /Load the latest version and keep your changes/,
+    );
   });
 });

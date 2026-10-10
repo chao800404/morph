@@ -85,6 +85,26 @@ export function conflictingListKeys({
   );
 }
 
+/**
+ * What to tell an author whose content is held by a conflict, before
+ * something that needs it saved (publishing, building, leaving) can go on.
+ *
+ * One answer for every place that asks. A list both sides changed is not
+ * saved by "Load latest, keep mine" — that is the point of stopping it — so
+ * pointing the author at that button would send them round in a circle; the
+ * way out for it is "Discard mine", or staying with the draft kept.
+ */
+export function heldContentMessage({
+  hasListConflict,
+}: {
+  /** A section held because a list in it was changed on both sides. */
+  hasListConflict: boolean;
+}): string {
+  return hasListConflict
+    ? "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept; use Discard mine to load the latest version, then make your change again."
+    : "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
+}
+
 export function rebaseContentProps({
   incoming,
   baseline,
