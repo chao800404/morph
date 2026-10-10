@@ -1,8 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Connect, ViteDevServer } from "vite";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import {
   isPreviewDevInfrastructureSpecifier,
+  previewHttpHmrPluginSource,
+  THEME_PREVIEW_HMR_FAILED_EVENT,
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
   THEME_PREVIEW_DEP_OPTIMIZE_EXCLUDES,
@@ -161,5 +166,60 @@ describe("preview dev infrastructure allowance", () => {
   it("keeps Theme assets and HMR out of the outer Morph Vite namespace", () => {
     expect(THEME_PREVIEW_SERVER_BASE_PATH).toBe("/__morph-theme-preview__/");
     expect(THEME_PREVIEW_SERVER_HMR_PATH).toBe("hmr");
+  });
+});
+
+describe("the HTTP HMR relay's edit to Vite's client", () => {
+  const relayPlugin = () =>
+    new Function(`return ${previewHttpHmrPluginSource()};`)() as {
+      transform(code: string, id: string): { code: string } | null;
+    };
+  const viteClient = () => {
+    const require = createRequire(import.meta.url);
+    const root = dirname(require.resolve("vite/package.json"));
+    const id = join(root, "dist/client/client.mjs");
+    return { id, code: readFileSync(id, "utf8") };
+  };
+
+  it("applies to the pinned Vite client, and has it say when a hot update failed", () => {
+    const { id, code } = viteClient();
+    const transformed = relayPlugin().transform(code, id)!.code;
+
+    expect(transformed).toContain("globalThis.__morphApplyViteHmrPayload");
+    expect(transformed).toContain(
+      `warnFailedUpdate(err, path) { try { globalThis.dispatchEvent(new Event(${JSON.stringify(THEME_PREVIEW_HMR_FAILED_EVENT)})); } catch {}`,
+    );
+  });
+
+  it("refuses a client it no longer recognises rather than serve it unedited", () => {
+    const { id, code } = viteClient();
+    for (const changed of [
+      code.replace("warnFailedUpdate(err, path) {", "warnFailedUpdate(e, p) {"),
+      code.replace(
+        "transport.connect(createHMRHandler(handleMessage));",
+        "transport.connect(handleMessage);",
+      ),
+    ]) {
+      expect(() => relayPlugin().transform(changed, id)).toThrow(
+        "MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED",
+      );
+    }
+  });
+
+  it("refuses a client where an edit would have two places to land", () => {
+    const { id, code } = viteClient();
+    expect(() =>
+      relayPlugin().transform(
+        `${code}
+class Other { warnFailedUpdate(err, path) {} }`,
+        id,
+      ),
+    ).toThrow("MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED");
+  });
+
+  it("leaves every other module alone", () => {
+    expect(
+      relayPlugin().transform("warnFailedUpdate(err, path) {}", "/src/x.ts"),
+    ).toBeNull();
   });
 });

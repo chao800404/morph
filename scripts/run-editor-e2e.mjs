@@ -31,6 +31,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  DEFAULT_LOCK_FILE,
+  createMachineLock,
+  flockAvailable,
+} from "./e2e-machine-lock.mjs";
 
 /** Whether an exit has already been chosen. See `exitAfterFlush` below. */
 let exiting = false;
@@ -169,15 +174,21 @@ const HANDOFF_FILE = "publish-handoff.json";
 const THEME_WORKER_PORT = 8799;
 
 /**
- * Containers that existed before this run, so the ones it adds can be told apart.
+ * This run's own container names, for the container transport.
  *
- * Captured as ids rather than names or images. A developer's own `pnpm dev`
- * starts a container whose name has the same shape as the suite's
- * (`workerd-morph-Sandbox-<hash>-proxy`), so removing by name destroys their
- * sandbox session along with the leftovers — which is not hypothetical, it is how
- * this was found.
+ * The dev server gets a worker name of this run's own (`morph-e2e-<id>`).
+ * miniflare keys a Durable Object namespace `<worker>-<class>` and workerd
+ * names a container after it, so every container this run's dev server starts
+ * is called `workerd-morph-e2e-<id>-<class>-<object id>`, its proxy likewise.
+ * A container with this prefix is this run's and no one else's: a developer's
+ * own `pnpm dev` is `workerd-morph-…`, and another run has an id of its own.
+ *
+ * It replaces a before/after `docker ps` difference, which named whatever
+ * appeared during the run — another session's sandbox included — and so could
+ * only report, never safely remove.
  */
-let containersBefore = null;
+let containerWorkerName = null;
+let containerPrefix = null;
 
 /** Children to stop, newest first, however the run ends. */
 const started = [];
@@ -192,6 +203,13 @@ const started = [];
  */
 const buildTimings = [];
 let stateDir = null;
+/**
+ * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
+ * port check until teardown is done, so the next run starts on a machine this
+ * one has left.
+ * @type {ReturnType<typeof createMachineLock> | null}
+ */
+let machineLock = null;
 
 function log(message) {
   console.log(`[e2e] ${message}`);
@@ -261,6 +279,7 @@ async function runWhileServing(name, command, args, env = {}) {
     env: { ...process.env, ...env },
     detached: true,
   });
+  machineLock?.track(child.pid);
   const result = new Promise((resolve) => {
     child.once("exit", (code) => resolve(code));
     // A command that could not be started at all has no `exit`. `spawnSync`
@@ -299,6 +318,9 @@ function start(name, command, args, env, onLine) {
     // explicitly, which is the same path a normal run takes.
     detached: true,
   });
+  // Should this runner die without tearing down, the lock's holder stops
+  // this group before letting the next run in.
+  machineLock?.track(child.pid);
   if (onLine) {
     for (const stream of [child.stdout, child.stderr]) {
       let pending = "";
@@ -353,71 +375,52 @@ async function waitForOk(url, label) {
   }
 }
 
-/**
- * Container ids currently running, or null when Docker cannot be asked.
- *
- * Silent on failure: Docker is a requirement of the container transport, not of
- * this bookkeeping, and a sidecar run should not report a Docker problem.
- */
-function runningContainers() {
-  const result = spawnSync("docker", ["ps", "-q"], { encoding: "utf8" });
+/** This run's container ids, or null when Docker cannot be asked. */
+function ownContainers() {
+  const result = spawnSync(
+    "docker",
+    ["ps", "-aq", "--filter", `name=^${containerPrefix}`],
+    { encoding: "utf8" },
+  );
   if (result.status !== 0 || typeof result.stdout !== "string") return null;
-  return new Set(result.stdout.split(/\s+/).filter(Boolean));
+  return result.stdout.split(/\s+/).filter(Boolean);
 }
 
 /**
- * Reports the containers this run added and did not release, removing them only
- * when asked.
+ * Removes this run's containers, after its dev server has stopped, and says
+ * whether Docker then reports none left.
  *
- * Every run of this suite leaves a `workerd-morph-Sandbox-<hash>-proxy` behind:
- * the runner stops the dev server, and containers workerd started through the
- * Sandbox binding outlive it. Ten accumulated in one session, after which the
- * machine's load average reached 57 and every run stalled in `openEditor` at
- * "preview frame" — so this is not housekeeping, it is the difference between a
- * suite that keeps working and one that degrades until its timings mean nothing.
+ * Every container run used to leave a `…-proxy` container behind: workerd's
+ * containers outlive the dev server that started them. Ten accumulated in one
+ * session, after which the load average reached 57 and every run stalled in
+ * `openEditor` at "preview frame". They were only reported, because the old
+ * before/after difference could not tell whose they were. The name prefix can,
+ * so they are removed — this run's, and nothing else.
  *
- * Reporting rather than removing, by default, because the difference cannot tell
- * whose container it is. A developer running their own dev server beside this one
- * — which `MORPH_E2E_PORT` exists to allow — may have started a sandbox session
- * mid-run, and it would appear in exactly the same difference. Leaving a
- * container costs disk and some load; destroying the session someone is working
- * in costs them their state. `MORPH_E2E_REAP_CONTAINERS=1` opts into removal for
- * an unattended machine, where nothing else is holding a session.
+ * False when Docker cannot be asked or they will not go: teardown then leaves
+ * the slot to the lock's guardian, which keeps it until they are gone, rather
+ * than letting the next run in beside them.
  */
-async function reportLeakedContainers() {
-  if (!containersBefore) return;
-  const candidates = runningContainers();
-  if (!candidates) return;
-  const added = [...candidates].filter((id) => !containersBefore.has(id));
-  if (added.length === 0) return;
-
-  // Waited on, and re-checked. A stopping dev server releases its containers a
-  // moment after it exits, so an immediate difference named two ids that were
-  // gone by the next command — advice to remove containers that no longer
-  // existed. Not every run leaks; the ones that do are what this is for.
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  const stillRunning = runningContainers();
-  if (!stillRunning) return;
-  const leaked = added.filter((id) => stillRunning.has(id));
-  if (leaked.length === 0) {
-    log("every container this run started has exited");
-    return;
+async function removeOwnContainers() {
+  if (!containerPrefix) return true;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const ids = ownContainers();
+    if (ids === null) break;
+    if (ids.length === 0) {
+      log(
+        attempt === 0
+          ? `this run left no containers (${containerPrefix}*)`
+          : `removed this run's containers (${containerPrefix}*)`,
+      );
+      return true;
+    }
+    spawnSync("docker", ["rm", "-f", ...ids], { encoding: "utf8" });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-
-  if (process.env.MORPH_E2E_REAP_CONTAINERS !== "1") {
-    log(
-      `this run left ${leaked.length} container(s) running: ${leaked.join(" ")}. Remove them with \`docker rm -f ${leaked.join(" ")}\`, or set MORPH_E2E_REAP_CONTAINERS=1 on a machine where nothing else holds a sandbox session. Do not filter by name: a developer's own dev server uses the same shape.`,
-    );
-    return;
-  }
-  const removed = spawnSync("docker", ["rm", "-f", ...leaked], {
-    encoding: "utf8",
-  });
   log(
-    removed.status === 0
-      ? `removed ${leaked.length} container(s) this run started`
-      : `could not remove ${leaked.join(" ")}: ${(removed.stderr ?? "").trim().slice(0, 120)}`,
+    `could not confirm this run's containers (${containerPrefix}*) are gone`,
   );
+  return false;
 }
 
 /**
@@ -541,7 +544,7 @@ let teardown = null;
  *
  * What it replaces was not a leak. Two concurrent calls each ran `stop` for
  * every child, which measured as each `stopped <name>` line printed twice for a
- * single process, plus a second `reportLeakedContainers` round. The outcome was
+ * single process, plus a second round of container bookkeeping. The outcome was
  * still correct — both invocations do the same idempotent work, and the first to
  * finish implies the group is already empty — so the cost was duplicated work
  * and duplicated evidence, not a surviving process. `stopped` is the line this
@@ -562,11 +565,22 @@ async function runTeardown() {
   // to release is not counted as leaked. That ordering was only a comment
   // before: the loop above returned before the servers had stopped, so this
   // counted containers the run had in fact released.
-  await reportLeakedContainers();
+  const containersGone = await removeOwnContainers();
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
     stateDir = null;
+  }
+  // Last: the slot is free only once this run has left the machine. Also
+  // stops a wait still in progress when the run was interrupted while waiting.
+  if (machineLock) {
+    await machineLock.release({ handOver: !containersGone });
+    machineLock = null;
+    log(
+      containersGone
+        ? "released the machine's E2E slot"
+        : "left the machine's E2E slot to the lock's guardian, which keeps it until this run's containers are gone",
+    );
   }
 }
 
@@ -824,6 +838,23 @@ async function main() {
     );
   }
 
+  // After every check that needs nothing shared, so a run that is refused
+  // anyway does not wait for a slot first; before the port check, which would
+  // otherwise refuse a run because the one ahead of it is still using it.
+  if (process.env.MORPH_E2E_LOCK === "0") {
+    log("machine lock off (MORPH_E2E_LOCK=0): this run may overlap another");
+  } else if (!flockAvailable()) {
+    log("machine lock unavailable (no flock on this system): this run may overlap another");
+  } else {
+    machineLock = createMachineLock({
+      lockFile: process.env.MORPH_E2E_LOCK_FILE ?? DEFAULT_LOCK_FILE,
+      log,
+      args: process.argv.slice(2).join(" ") || "(full suite)",
+    });
+    await machineLock.acquire();
+    log("holding the machine's E2E slot");
+  }
+
   if (await portInUse(DEV_PORT)) {
     throw new Error(
       `PORT_IN_USE: something already listens on ${DEV_PORT}. Stop it first, or set MORPH_E2E_PORT to run beside it — a run that attached to a developer's own dev server would exercise their database and still pass.`,
@@ -885,11 +916,14 @@ async function main() {
     log("no sidecar — the preview comes from a container");
   }
 
-  // Snapshotted before anything can start a container, so the difference is this
-  // run's and nothing earlier is ever a candidate for removal.
-  containersBefore = runningContainers();
-  if (containersBefore)
-    log(`${containersBefore.size} container(s) already running`);
+  // Before anything can start a container: every one this run's dev server
+  // starts carries this prefix (see `containerPrefix`).
+  if (!USES_SIDECAR) {
+    containerWorkerName = `morph-e2e-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    containerPrefix = `workerd-${containerWorkerName}-`;
+    machineLock?.trackContainers(containerPrefix);
+    log(`this run's containers are named ${containerPrefix}*`);
+  }
 
   log(`starting the dev server on ${DEV_PORT}`);
   start(
@@ -901,6 +935,9 @@ async function main() {
       // as far as the plugin is concerned.
       ...(WRANGLER_ENV ? { CLOUDFLARE_ENV: WRANGLER_ENV } : {}),
       MORPH_E2E_STATE_DIR: stateDir,
+      ...(containerWorkerName
+        ? { MORPH_E2E_WORKER_NAME: containerWorkerName }
+        : {}),
     },
     (line) => {
       if (!line.includes("storefront.theme.build.timings")) return;
