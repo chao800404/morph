@@ -34,6 +34,8 @@ export const EDITOR_SHARDS = [
     // Container transport and MORPH_ASTRO_THEMES=1 only: skipped on every CI
     // shard, like the container-only files above.
     "astro-publish-acceptance.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only, like the one above.
+    "astro-preview-container.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -76,6 +78,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Three tests, each opening the editor twice.
     "leave-before-save.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
+    "preview-error-recovery.spec.ts",
   ],
 ];
 
