@@ -59,16 +59,21 @@ so the run can remove exactly its own:
   stopping processes, removing containers, or Docker not answering (and since
   when).
 
-**Not isolated yet: the Cloudflare plugin's own teardown.** When any dev server
-stops, `@cloudflare/vite-plugin` removes containers by
+**A container run's images are its own too.** When any dev server stops,
+`@cloudflare/vite-plugin` removes containers by
 `docker ps --filter ancestor=<its image tag>`. Each session's tag is random,
 but identical builds share one image id, and Docker resolves `ancestor` to that
-id — so stopping one dev server or E2E run removes every session's Sandbox
-containers built from the same image (checked on 2026-10-10 with a stopped
-container of our own: `ancestor=` another session's tag matched it; an image
-differing only by a `LABEL` did not). The runner's naming does not change
-this. Until E2E runs build an image of their own, a container-transport run is
-not safe beside another session's sandbox.
+id, so stopping one dev server removes every session's Sandbox containers built
+from the same image. A container run therefore builds its Sandbox images with
+its id as `MORPH_DEV_IMAGE_RUN`, which `Dockerfile.sandbox` writes into a label:
+same layers, an image id of its own, so neither the run's teardown nor anyone
+else's reaches the other (`src/server/e2e-container-isolation.ts`). Anything
+unexpected — a malformed id, no containers, a pulled image — stops the run
+rather than falling back to the shared image.
+
+This keeps E2E runs apart from everything else. It does not make plain
+`pnpm dev` sessions safe beside each other: they still share one image, and
+stopping one still removes the others' Sandbox containers.
 
 - `MORPH_E2E_LOCK=0` bypasses the protection entirely. Use it only for an
   isolated diagnosis with no other E2E run on the machine. It stops nothing.
