@@ -15,7 +15,14 @@ import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme
 import { deriveThemeRouteSections } from "@/lib/storefront/compiler/theme-route-sections";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { createDefaultStorefrontHomeDocument } from "@/lib/storefront/default-storefront-document";
-import { collectPreviewEditableNodes } from "../store/$storefrontId/themes/$themeId/preview";
+import { collectPreviewEditableNodes } from "@/lib/storefront/editor/preview-dom";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import {
+  livePreviewPlatformFiles,
+  mountLivePreview,
+  renderLivePreviewRoute,
+  type LivePreviewDocuments,
+} from "@/lib/test-utils/live-preview-render";
 
 type File = { path: string; content: string };
 
@@ -342,6 +349,300 @@ describe("the starter Theme every new store begins from", () => {
     expectEveryDeclaredFieldReachable(
       files,
       createDefaultStorefrontHomeDocument(),
+    );
+  });
+});
+
+/**
+ * The same contract, held by the real React Live Preview the canvas runs.
+ *
+ * Above, the interpreter produced the DOM; here the Theme's own modules do,
+ * after the source pass the preview workspace runs, with content served
+ * through the Theme's own `src/morph/content.ts`. The editor-side half,
+ * `collectPreviewEditableNodes`, is the same code the canvas bridge runs.
+ */
+describe("declared content fields are reachable in the real React Live Preview", () => {
+  const livePlatform: File[] = livePreviewPlatformFiles();
+
+  async function liveReachableFields(
+    files: File[],
+    documents: LivePreviewDocuments,
+    // Applied to the rendered markup before the editor reads it, so a test
+    // can show the check notices a binding the compiler stopped emitting.
+    tamper: (html: string) => string = (html) => html,
+  ) {
+    const { html, prepared } = await renderLivePreviewRoute({
+      files,
+      documents,
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    const root = mountLivePreview(tamper(html));
+    const reachable = new Map<string, Set<string>>();
+    for (const node of collectPreviewEditableNodes(root)) {
+      const key = node.target.fieldKey;
+      if (!key) continue;
+      const forSection = reachable.get(node.sectionId) ?? new Set<string>();
+      forSection.add(key);
+      reachable.set(node.sectionId, forSection);
+    }
+    return reachable;
+  }
+
+  /** Declared fields the editor cannot reach, per section; empty when all are. */
+  async function unreachableLiveFields(
+    files: File[],
+    documents: LivePreviewDocuments,
+    tamper?: (html: string) => string,
+  ) {
+    const declared = declaredFields(files, "src/routes/index.tsx");
+    const reachable = await liveReachableFields(files, documents, tamper);
+    expect(declared.size).toBeGreaterThan(0);
+    const unreachable: Record<string, string[]> = {};
+    for (const [sectionId, keys] of declared) {
+      const found = reachable.get(sectionId) ?? new Set<string>();
+      const missing = [...keys].filter(
+        (key) => !found.has(key) && !SECTION_LEVEL_ONLY_FIELDS.has(key),
+      );
+      if (missing.length) unreachable[sectionId] = missing;
+    }
+    return unreachable;
+  }
+
+  async function expectEveryDeclaredFieldLiveReachable(
+    files: File[],
+    documents: LivePreviewDocuments,
+  ) {
+    expect(await unreachableLiveFields(files, documents)).toEqual({});
+  }
+
+  const promo: File = {
+    path: "src/components/Promo.tsx",
+    content: `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+};
+export default function Promo({ heading = "Promo" }) {
+  return <section><h2>{heading}</h2></section>;
+}`,
+  };
+  /**
+   * A route rendering one Promo per slot, each on its own line as an author
+   * (or a formatter) writes them. `separator: ""` writes them back to back.
+   */
+  const promoRoute = (
+    slots: readonly string[],
+    separator = "\n      ",
+  ): File => ({
+    path: "src/routes/index.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: HomeRoute });
+export function HomeRoute() {
+  return (
+    <main>${separator}${slots.map((slot) => `<Promo {...content("${slot}")} />`).join(separator)}${separator}</main>
+  );
+}`,
+  });
+  const twoPromoDocuments: LivePreviewDocuments = {
+    index: {
+      version: 1,
+      sections: [
+        {
+          id: "promo-a",
+          type: "promo-a",
+          enabled: true,
+          props: { heading: "A" },
+        },
+        {
+          id: "promo-b",
+          type: "promo-b",
+          enabled: true,
+          props: { heading: "B" },
+        },
+      ],
+    },
+  };
+  const section = (
+    id: string,
+    props: StorefrontPageDocument["sections"][number]["props"],
+  ): StorefrontPageDocument["sections"][number] => ({
+    id,
+    type: id,
+    enabled: true,
+    props,
+  });
+
+  it("reaches a component that has never been edited", async () => {
+    await expectEveryDeclaredFieldLiveReachable(
+      [...livePlatform, promo, promoRoute(["promo"])],
+      {},
+    );
+  });
+
+  it("notices a field whose binding never reached the page", async () => {
+    // The check has to be able to fail. With the compiler's field binding
+    // stripped from the output, the same Theme must report `heading` missing.
+    expect(
+      await unreachableLiveFields(
+        [...livePlatform, promo, promoRoute(["promo"])],
+        {},
+        (html) => html.replaceAll(' data-storefront-field="heading"', ""),
+      ),
+    ).toEqual({ promo: ["heading"] });
+  });
+
+  it("reaches a component that carries no Morph markers at all", async () => {
+    await expectEveryDeclaredFieldLiveReachable(
+      [
+        ...livePlatform,
+        {
+          path: "src/components/Hero.tsx",
+          content: `export const contentFields = {
+  eyebrow: { type: "text" },
+  heading: { type: "text" },
+  imageSrc: { type: "url" },
+};
+export default function Hero({
+  eyebrow = "New",
+  heading = "Title",
+  imageSrc = "/a.png",
+}) {
+  return (
+    <section>
+      <p>{eyebrow}</p>
+      <h1>{heading}</h1>
+      <img src={imageSrc} alt="" />
+    </section>
+  );
+}`,
+        },
+        {
+          path: "src/routes/index.tsx",
+          content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: HomeRoute });
+export function HomeRoute() {
+  return <main><Hero {...content("hero")} /></main>;
+}`,
+        },
+      ],
+      {},
+    );
+  });
+
+  /** Each instance reachable on its own, showing its own stored value. */
+  async function expectTwoPromosApart(separator?: string) {
+    const reachable = await liveReachableFields(
+      [...livePlatform, promo, promoRoute(["promo-a", "promo-b"], separator)],
+      twoPromoDocuments,
+    );
+
+    expect([...reachable.keys()].sort()).toEqual(["promo-a", "promo-b"]);
+    expect([...(reachable.get("promo-a") ?? [])]).toEqual(["heading"]);
+    expect([...(reachable.get("promo-b") ?? [])]).toEqual(["heading"]);
+    const heading = (id: string) =>
+      document.querySelector(`[data-storefront-section-id="${id}"] h2`)
+        ?.textContent;
+    expect([heading("promo-a"), heading("promo-b")]).toEqual(["A", "B"]);
+  }
+
+  it("keeps two instances of one component separately reachable", async () => {
+    await expectTwoPromosApart();
+  });
+
+  // Written back to back (`<Promo/><Promo/>`), the first section's closing
+  // wrapper and the second's opening one land on the same source offset.
+  // `injectPreviewBindings` once spliced the opening tag first, which put the
+  // second section inside the first (found while porting this file from the
+  // interpreter); it now closes one wrapper before the next opens.
+  it("keeps two instances apart when they are written back to back", async () => {
+    await expectTwoPromosApart("");
+  });
+
+  // KNOWN DIVERGENCE from the interpreter, found while porting this file.
+  // The interpreter carried the row through the component boundary and wrote
+  // `items.0.title` on Card's own elements. The real preview wraps each row
+  // (`data-storefront-field-path="items.0"`) but Card's fields are named only
+  // `title`/`body`, so the editor drops them as ambiguous between rows and a
+  // click resolves to a top-level `title` the List never declared.
+  it.fails(
+    "reaches every row field of a repeated list declared by reference",
+    async () => {
+      const reachable = await liveReachableFields(
+        [
+          ...livePlatform,
+          {
+            path: "src/components/Card.tsx",
+            content: `export const contentFields = {
+  title: { type: "text" },
+  body: { type: "textarea" },
+};
+export default function Card({ title = "", body = "" }) {
+  return <article><h3>{title}</h3><p>{body}</p></article>;
+}`,
+          },
+          {
+            path: "src/components/List.tsx",
+            content: `import Card from "./Card";
+export const contentFields = {
+  label: { type: "text" },
+  items: { type: "array", of: "./Card" },
+};
+export default function List({ label = "L", items = [] }) {
+  return (
+    <section>
+      <p>{label}</p>
+      {items.map((item, index) => (
+        <Card key={item.id ?? index} {...item} />
+      ))}
+    </section>
+  );
+}`,
+          },
+          {
+            path: "src/routes/index.tsx",
+            content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import List from "../components/List";
+export const Route = createFileRoute("/")({ component: HomeRoute });
+export function HomeRoute() {
+  return <main><List {...content("list")} /></main>;
+}`,
+          },
+        ],
+        {
+          index: {
+            version: 1,
+            sections: [
+              section("list", {
+                label: "Why",
+                items: [
+                  { id: "r1", title: "T1", body: "B1" },
+                  { id: "r2", title: "T2", body: "B2" },
+                ],
+              }),
+            ],
+          },
+        },
+      );
+
+      expect([...(reachable.get("list") ?? [])].sort()).toEqual([
+        "body",
+        "items",
+        "label",
+        "title",
+      ]);
+    },
+  );
+
+  it("leaves no declared field of the starter Theme unreachable", async () => {
+    await expectEveryDeclaredFieldLiveReachable(
+      STARTER_THEME_FILES.map((file) => ({
+        path: file.path,
+        content: file.content,
+      })),
+      { index: createDefaultStorefrontHomeDocument() },
     );
   });
 });

@@ -38,6 +38,10 @@ export const EDITOR_SHARDS = [
     "astro-preview-container.spec.ts",
     // Container transport and MORPH_ASTRO_THEMES=1 only, like the two above.
     "astro-island-hmr.spec.ts",
+    // Unmeasured until the next rebalance; the other two shards already hold
+    // several unmeasured files. One test on a throwaway Theme, two editor
+    // opens.
+    "starter-shell-content.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -77,6 +81,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Two tests, about 4 minutes locally.
     "local-code-sync.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Three tests, each opening the editor twice.
+    "leave-before-save.spec.ts",
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
     "preview-error-recovery.spec.ts",
