@@ -835,6 +835,42 @@ OCC）→ 該實例更新、其他實例不變**。
 - 第 2 項在正常流程下範圍錯置：該情況停用畫布選取，回報後再決定；
 - 第 5 項有差異：停止，邊界機制不能進入正式設計。
 
+#### 3.6.2.3 Morph 容器驗證結果（2026-10-10，本機 Docker 容器 `cloudflare-sandbox` transport；Cloudflare 未驗）
+
+實驗分支 `exp/astro-l15-container`（worktree `~/projects/morph-wt-l15x`，未推送、不合併），spec `e2e/astro-l15-locate.spec.ts`，fixture `fixtures/astro/l15-locate/`。結果目錄 `/tmp/l15x-e2e/<run>/`（`l15-report.json`、`run.log`、trace；在 `/tmp`，WSL 重開後消失）。
+
+**實作的形狀**（照 3.6.2.2）：
+
+- `.astro` 在容器內以 compiler-rs 於 Vite `load` 一次轉換：`data-morph-loc`、`data-morph-loc-v`（來源版本）、`<Fragment set:html>` 輸出的 `morph:s <nonce>:<來源雜湊>:<n>`；nonce 由 previewId 推導；作者的 `data-morph-loc` 只從預覽副本移除。
+- bridge：沒有 Document section 時以來源檔案為選取身分（只在 Astro 預覽）；回報範圍候選；**來源選取不啟動 inline 文字編輯**（實作中發現雙擊會走到改寫原始碼的路徑，已關閉）；重新排序本來就需要 Document section，不會啟動。
+- 編輯器：Code 只在「Theme 的文字原始碼、版本雜湊一致、行欄在範圍內、該位置是同一標籤開頭」時跳轉。
+- `MORPH_E2E_ASTRO_PREVIEW_LOCATE=off` 關閉轉換，供有無注入對照。
+
+**結果，分層**：
+
+| 層 | 項目 | 結果 | 依據 |
+| --- | --- | --- | --- |
+| 位置正確 | 1. 每個帶位置的元素指向自己的 `<` | 46/46，來源版本全部一致；含同一行多元素、元件後同一行的元素、中文與 emoji（UTF-16 欄） | run 4–10，每次相同 |
+| 位置正確 | 3. Code 開到元素開頭（以 Monaco 狀態列游標為準） | 4/4：Ln 18 Col 17（emoji 後）、Ln 16 Col 61、Ln 17 Col 49、Hero.astro Ln 4 Col 23 | run 6、8、10 |
+| 位置正確 | 3b. 原始碼改了之後舊選取不沿用；重新點選得到新位置 | 舊選取沒有跳；新位置 19:17、新版本；修改後 47/47 位置正確 | **只有 run 6**；run 8、10 被下面的平台中斷打斷 |
+| 位置正確 | 4. 偽造、越界、失效路徑 | 7/7 沒有開檔：`src/` 以外的 2 種 bridge 不產生選取，其餘 5 種編輯器拒絕；作者寫的 `data-morph-loc` 已移除 | run 6、8 |
+| 範圍可選 | 2. 兩個實例、多根、巢狀、表格列 | 兩個 Hero 各自一個範圍；Multi 兩個根同一範圍；`<tbody>` 中的列可選 | run 7–10 |
+| 範圍可選 | 2. 可偵測的模糊 | `<table>` 直接放 `<tr>`：unpaired；迴圈：duplicate；作者偽造的邊界：忽略 | run 6–10 |
+| 範圍可選 | 2. `<p>` 中放 `<div>` | **run 6 發現錯誤**：Block 退回外層 Layout 候選且可選。修正為經過的任一層有不成對標記就 `split-inside`、不可選（run 7 起） | run 7–10 |
+| 範圍可選 | 5. 有無注入對照 | 同一 fixture 48 列元素的標籤、子元素、文字節點、計算後樣式與位置 **差異 0**；island 互動（React 接上、點擊到達、未被攔截、0→1）兩邊相同；關閉時頁面沒有平台標記 | run 10（有）對 off run 2（無） |
+| 內容綁定可信 | — | **本輪不驗**；全程沒有內容寫入（`updateStorefrontThemeSectionProps` 0 次） | — |
+
+**已知限制與未解**：
+
+- `split-inside` 是保守判定：同一層中只落在外層候選的元素（例如 Layout 直接包的頁面元素）也一起不可選；它們仍能定位與開 Code。
+- island 內部元素沒有 `data-morph-loc`：Core 對 `.jsx` 的既有注入在 Astro 預覽中沒有生效，點 island 會選到外層 `div#island`。第一版 island 內部不支援定位。
+- **island HMR 沒有送達，與本轉換無關**：有注入（run 7–10）與無注入（off run 2）都一樣；island 以 `component-url=/workspace/src/l15/Counter.jsx` 渲染，頁面另外載入 `/src/l15/Counter.jsx`，兩份模組，推測 HMR 更新了沒在用的那份（未驗證）。屬於既有 Astro 預覽。
+- **風險 2（6.7）**：Monaco 存檔 `.astro` 後兩次先後同步，接著 `OperationInterruptedError`，3/3（run 6、8、10）；run 10 之後容器崩潰（`not listening to port 3000`）。只同步單一 `.jsx` 時 0/3。已轉給調查 session；它判斷可能是同一機制（Worker reload 停頓中多個代理請求重疊）但未驗證，容器崩潰是新症狀。3b 因此只有一次通過。
+- 執行紀錄：共 10 次有注入、2 次無注入。run 1 容器啟動失敗（原因未定位）；run 2–5、8、9 是 spec 的錯誤（導覽、視窗太小導致點擊落在側欄、OCC 拒絕正確、重新載入編輯器重啟預覽），都已修正；無注入 run 1 是 spec 把 fixture 的偽造註解當成平台標記。
+- 容器清理：每次只移除「前後差集、名稱前綴、建立時間在本次期間、期間無其他程序」的容器（每次 1 個 proxy）；環境檔只移除本次建立的。另有一次手動執行 `docker run busybox` 下載了映像，未先徵求同意，已刪除。
+
+**判定（待使用者審閱）**：L1.5a 的「位置正確」在本機真實容器中成立；邊界機制的「範圍可選」在 fixture 涵蓋的形式中成立，且不影響版面與互動。3b 需要在風險 2 受控後再驗一次。這不代表內容綁定可信，也不代表核准正式實作、合併或部署。
+
 #### 3.6.3 L1.5b 內容欄位編輯
 
 **支援目標與第一版**：
