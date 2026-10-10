@@ -6860,14 +6860,18 @@ export function VisualEditorShell({
     search.viewport,
   ]);
 
+  // Keyed by the id, not the template: every fetch of the Theme hands over a
+  // new object for the same document, and the route sent again would end an
+  // inline edit open on the page (a Theme with a router finishes it first).
+  const activeTemplateId = activeTemplate?.id;
   const syncPreviewRoute = useCallback(() => {
-    if (!activeTemplate) return;
+    if (!activeTemplateId) return;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
-      templateId: activeTemplate.id,
+      templateId: activeTemplateId,
       routePath: search.routePath ?? null,
     });
-  }, [activeTemplate, postEditorToPreviewMessage, search.routePath]);
+  }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
 
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
