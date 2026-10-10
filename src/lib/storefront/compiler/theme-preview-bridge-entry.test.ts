@@ -203,6 +203,16 @@ describe("applying document changes to the real React preview", () => {
     );
   });
 
+  it("hides a hidden section's display: contents wrapper without the Theme's help", () => {
+    // The wrapper's inline display: contents beats the browser's [hidden]
+    // rule; only Tailwind's preflight used to override it. The rule has to
+    // be in the editor's own stylesheet. A browser checks the cascade in
+    // e2e/layout-section-visibility.spec.ts.
+    expect(BRIDGE).toMatch(
+      /\[data-storefront-section-id\]\[hidden\] \{\s*display: none !important;\s*\}/,
+    );
+  });
+
   it("refreshes hydrated route content once per frame, then reports the new DOM", async () => {
     const source = BRIDGE.slice(
       BRIDGE.indexOf("let contentRefreshScheduled = false;"),

@@ -1,5 +1,6 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import { stripDerivableMarkers } from "./ast/strip-derivable-markers";
+import { confirmThemeContentModuleFunctionExport } from "./ast/theme-content-module";
 import { STARTER_THEME_CATALOG_FILES } from "./starter-theme-catalog-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
@@ -26,6 +27,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
@@ -1499,6 +1501,12 @@ export function createStarterThemeWorkspaceUpgrade(
     readonly path: string;
     readonly legacy: readonly string[];
     readonly current: string;
+    /**
+     * Content-module functions `current` imports. The module is the author's
+     * (rule 01 §4.4), so a replacement that would import one it cannot be
+     * shown to declare is left for the author rather than breaking the build.
+     */
+    readonly contentModuleImports?: readonly string[];
   }> = [
     {
       path: "src/components/Hero.tsx",
@@ -1623,8 +1631,12 @@ export function createStarterThemeWorkspaceUpgrade(
         LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
         STARTER_THEME_INDEX_SOURCE,
         LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
+        // Slot-bound but always visible: a hidden Header or Footer still
+        // rendered, with the component's defaults in place of the author's.
+        LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
       ],
       current: STARTER_THEME_LAYOUT_SOURCE,
+      contentModuleImports: ["content", "isSectionHidden"],
     },
   ];
 
@@ -1633,11 +1645,32 @@ export function createStarterThemeWorkspaceUpgrade(
     (existingLegacyPage.content === STARTER_THEME_INDEX_SOURCE ||
       existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
   );
+  // The content module as this plan leaves it: an untouched copy replaced
+  // above, otherwise whatever the author has.
+  const contentModuleAfterPlan =
+    upgrades.find((file) => file.path === "src/morph/content.ts") ??
+    existingByPath.get("src/morph/content.ts");
+  const contentModuleWillDeclare = (exportNames: readonly string[]) =>
+    Boolean(contentModuleAfterPlan) &&
+    exportNames.every(
+      (exportName) =>
+        confirmThemeContentModuleFunctionExport(
+          [contentModuleAfterPlan!],
+          exportName,
+          "upgrade the Starter layout",
+        ).ok,
+    );
   for (const replacement of exactLegacyReplacements) {
     const existing = existingByPath.get(replacement.path);
     if (!existing) continue;
     const isLegacy = replacement.legacy.includes(existing.content);
     if (!isLegacy) continue;
+    if (
+      replacement.contentModuleImports &&
+      !contentModuleWillDeclare(replacement.contentModuleImports)
+    ) {
+      continue;
+    }
     upgrades.push({
       path: replacement.path,
       content: replacement.current,
