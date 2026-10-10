@@ -85,6 +85,14 @@ export type ThemeFrameworkAdapter = Readonly<{
      * read it, so a container and the local sidecar start the same server.
      */
     devServer?: ThemePreviewDevServer;
+    /**
+     * Whether a Live Preview starts from the Theme's entry file (the source
+     * file the Theme marks `isEntry`). `required`: a Theme without one is
+     * refused before anything starts (`THEME_ENTRY_MISSING`). `unused`: the
+     * framework's own dev server finds the project from its config, and the
+     * workspace is planned without one.
+     */
+    entryFile: "required" | "unused";
   }>;
   build: Readonly<{
     /** The artifact file a preview of the build opens. */
