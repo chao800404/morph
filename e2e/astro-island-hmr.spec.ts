@@ -203,12 +203,6 @@ test.describe("an Astro island edited in Code", () => {
     ).toEqual(FILES.map((file) => file.path).sort());
     const button = frame.locator("#island .counter");
     await expect(button).toHaveText("count 0");
-    // The editor may open its page search on its own; over the canvas it
-    // takes the clicks meant for the island.
-    await expect(async () => {
-      if (await page.getByRole("dialog").count()) await page.keyboard.press("Escape");
-      await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 1_000 });
-    }).toPass({ timeout: 30_000 });
 
     // State the edit must not reset: a count other than the initial one.
     for (let click = 0; click < 3; click++) await button.click();
