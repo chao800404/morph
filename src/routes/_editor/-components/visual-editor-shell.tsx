@@ -192,6 +192,12 @@ import { resolveBuildRunOwnership } from "@/lib/storefront/editor/build-run-owne
 import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-plan";
 import { previewLoadWasInterrupted } from "@/lib/storefront/service/preview-runtime-interruption";
 import {
+  readPreviewCompileFailure,
+  type PreviewSourceCopy,
+} from "@/lib/storefront/editor/preview-compile-failure";
+import { createPreviewCompileRecovery } from "@/lib/storefront/editor/preview-compile-recovery";
+import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
+import {
   describeThemeSourceChanges,
   describeUnpublishedChanges,
   publishedFileStates,
@@ -757,6 +763,27 @@ export function VisualEditorShell({
     reduceLivePreviewLifecycle,
     initialLivePreviewLifecycleState,
   );
+  const previewLifecycleRef = useRef(previewLifecycle);
+  previewLifecycleRef.current = previewLifecycle;
+  /**
+   * A Theme that did not compile comes back in a new frame, loaded once
+   * source that may fix it has been written into the preview. The page that
+   * failed cannot do it: nothing of the Theme runs there to take an update,
+   * and nothing reloads it when Vite has one. How often is the recovery
+   * gate's to say — at most once per landed write — so a Theme that still
+   * does not compile fails once more and waits for the next one. Replacing
+   * the frame touches nothing but the frame: drafts live in the workspace
+   * store and are sent to the new frame by its first sync.
+   */
+  const previewCompileRecoveryRef = useRef(createPreviewCompileRecovery());
+  const reloadFrameAfterCompileFailure = useCallback((key: string | null) => {
+    const lifecycle = previewLifecycleRef.current;
+    if (!key || lifecycle.phase !== "theme-error" || lifecycle.key !== key) {
+      return;
+    }
+    if (!previewCompileRecoveryRef.current.takeReload(key)) return;
+    setPreviewRevision((revision) => revision + 1);
+  }, []);
   // Asks the server whether the loading frame's address still answers.
   const previewStaleProbeRef = useRef<PreviewStaleProbe | null>(null);
   // Each phase change, with why, so a slow or failed load reads as a sequence
@@ -1813,7 +1840,8 @@ export function VisualEditorShell({
   const isPreviewLoading = Boolean(
     activeTemplate &&
     previewLifecycle.phase !== "ready" &&
-    previewLifecycle.phase !== "failed",
+    previewLifecycle.phase !== "failed" &&
+    previewLifecycle.phase !== "theme-error",
   );
   const previewFrameHeight =
     previewContentSize?.key === previewKey
@@ -2859,6 +2887,14 @@ export function VisualEditorShell({
   // unsaved local content without recreating the iframe.
   const previewThemeFiles =
     activeWorkspaceKey === workspaceKey ? effectiveThemeFiles : themeFiles;
+  // The saved files, read by the frame's diagnostics, which must not
+  // resubscribe per keystroke.
+  const savedThemeFilesRef = useRef(themeFiles);
+  savedThemeFilesRef.current = themeFiles;
+  const previewThemeFilePaths = useMemo(
+    () => new Set(previewThemeFiles.map((file) => file.path)),
+    [previewThemeFiles],
+  );
 
   const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
@@ -3061,6 +3097,21 @@ export function VisualEditorShell({
   const lastStaleNoticeRef = useRef<string | null>(null);
   /** What this tab last wrote into the shared preview, by path. */
   const previewWrittenRef = useRef(new Map<string, string>());
+  /**
+   * What the editor knows the preview's workspace holds: what this tab wrote
+   * into it, and the saved files for the rest. Not the drafts: a diagnosis of
+   * the page has to be read from the source the page was built from.
+   */
+  const readPreviewSourceCopy = useCallback((): PreviewSourceCopy => {
+    const written = previewWrittenRef.current;
+    const saved = new Map(
+      savedThemeFilesRef.current.map((file) => [file.path, file.content]),
+    );
+    return {
+      paths: new Set([...saved.keys(), ...written.keys()]),
+      contentOf: (path) => written.get(path) ?? saved.get(path) ?? null,
+    };
+  }, []);
   /** The latest sync this tab sent for each path, to tell a retry is moot. */
   const previewSyncSequenceRef = useRef(0);
   const lastPreviewSyncByPathRef = useRef(new Map<string, number>());
@@ -3140,6 +3191,12 @@ export function VisualEditorShell({
             previewKey: targetPreviewKey,
             styleRevision,
           });
+          // Saved into the preview by a server-side authoring operation: new
+          // source there all the same.
+          if (options?.justSavedPaths?.length) {
+            previewCompileRecoveryRef.current.noteSourceWritten();
+            reloadFrameAfterCompileFailure(targetPreviewKey);
+          }
         }
         return styleRevision;
       }
@@ -3201,6 +3258,8 @@ export function VisualEditorShell({
               previewWrittenRef.current.set(file.path, file.content);
             }
             announceWritten();
+            previewCompileRecoveryRef.current.noteSourceWritten();
+            reloadFrameAfterCompileFailure(targetPreviewKey);
             return;
           }
           // Nothing was written: another tab has saved newer versions. The
@@ -3292,6 +3351,7 @@ export function VisualEditorShell({
       confirmPreviewStyleRevision,
       context.storefront.id,
       context.theme.id,
+      reloadFrameAfterCompileFailure,
       reportStalePreviewSync,
     ],
   );
@@ -3487,8 +3547,16 @@ export function VisualEditorShell({
   useEffect(() => {
     // Only while the author actually has a preview to keep. A failed or
     // starting one has nothing to renew, and renewing for an editor nobody is
-    // watching is how a container gets pinned awake for no reason.
-    if (previewLifecycle.phase !== "ready" || !previewLifecycle.key) return;
+    // watching is how a container gets pinned awake for no reason. A Theme
+    // that does not compile is still a preview the author is working on:
+    // its fix is about to be written into this sandbox.
+    if (
+      (previewLifecycle.phase !== "ready" &&
+        previewLifecycle.phase !== "theme-error") ||
+      !previewLifecycle.key
+    ) {
+      return;
+    }
     const key = previewLifecycle.key;
     let cancelled = false;
 
@@ -5972,14 +6040,29 @@ export function VisualEditorShell({
   // the frame is reconnected now instead of after the load watchdog's minute
   // of silence. The frame runs Theme JavaScript and can forge the report, but
   // all it buys is what stalling already buys: the same one bounded reconnect
-  // of its own preview, then the failure and Retry. A Theme's own failure —
-  // a compile error is Vite's 500 — is not this status and is left alone.
+  // of its own preview, then the failure and Retry.
+  //
+  // A Theme's own failure — a compile error is Vite's 500 — is not that
+  // status and is never reconnected. It is told to the author instead: the
+  // report may only name which of the Theme's own files failed, and what is
+  // wrong with that file is read from the editor's copy of it
+  // (preview-compile-failure.ts), so a forged one can point the editor at a
+  // Theme file and no further.
   useEffect(() => {
     if (!previewKey) return;
     const handlePreviewDiagnostic = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (message?.type !== "morph:storefront-preview-diagnostic") return;
       if (message.kind === "progress") {
+        // A document's first report: it starts loading the source the
+        // preview holds now. Later reports are a heartbeat, seconds on.
+        if (
+          message.reached.length === 1 &&
+          message.reached[0] === "script" &&
+          message.elapsedMs < 1_000
+        ) {
+          previewCompileRecoveryRef.current.noteDocumentStarted(previewKey);
+        }
         // Only the watchdog for this frame may be kept waiting by it.
         const loading = previewFrameLoadWatchdogRef.current;
         if (loading?.key === previewKey) loading.watchdog.progress(message);
@@ -6004,11 +6087,35 @@ export function VisualEditorShell({
         });
         return;
       }
+      const compileFailure = readPreviewCompileFailure(
+        message,
+        readPreviewSourceCopy(),
+      );
+      if (compileFailure) {
+        // Source landed after this document started loading: it failed on a
+        // version the preview no longer holds, so a new frame answers better
+        // than a reason read from source the page never compiled.
+        if (previewCompileRecoveryRef.current.takeReload(previewKey)) {
+          setPreviewRevision((revision) => revision + 1);
+          return;
+        }
+        dispatchPreviewLifecycle({
+          type: "frame-compile-failed",
+          key: previewKey,
+          failure: compileFailure,
+        });
+        return;
+      }
       previewStaleProbeRef.current?.hint();
     };
     window.addEventListener("message", handlePreviewDiagnostic);
     return () => window.removeEventListener("message", handlePreviewDiagnostic);
-  }, [parseLivePreviewMessage, previewKey]);
+  }, [parseLivePreviewMessage, previewKey, readPreviewSourceCopy]);
+
+  // A new frame starts a document on whatever the preview holds now.
+  useEffect(() => {
+    if (previewKey) previewCompileRecoveryRef.current.noteDocumentStarted(previewKey);
+  }, [previewKey]);
 
   useEffect(() => {
     if (!previewKey) return;
@@ -9637,6 +9744,7 @@ export function VisualEditorShell({
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
           sharedSectionIds={sectionModel.sharedSectionIds}
+          themeFilePaths={previewThemeFilePaths}
           sharedLayoutPaths={sharedLayoutPaths}
           detachableSectionIds={detachableSectionIds}
           sourceLayoutRoots={sourceLayoutRoots}
@@ -9941,6 +10049,15 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {previewLifecycle.phase === "theme-error" &&
+            previewLifecycle.compileFailure ? (
+              <PreviewCompileErrorAlert
+                failure={previewLifecycle.compileFailure}
+                files={previewThemeFiles}
+                onOpenFile={handleJumpToCode}
+              />
+            ) : null}
 
             {previewLifecycle.phase === "failed" && previewLifecycle.message ? (
               <div
