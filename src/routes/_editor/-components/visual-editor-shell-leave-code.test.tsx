@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,13 +16,6 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
-// Loaded with the file, not inside a test. The shell reaches the Code
-// workspace through `lazy()`, and its first load — a large module, compiled on
-// demand — counted against the first test's time and outran it under a full,
-// parallel run. Imported here it is compiled at collection; `lazy()` then
-// resolves to this same, already-loaded module, which the tests still mount
-// for real through the shell.
-import "./editor-code-workspace";
 
 /**
  * Leaving the editor with a Code draft, through the shell as it is wired.
@@ -206,9 +199,21 @@ async function openCode() {
   act(() => {
     screen.getByRole("button", { name: /^Code$/ }).click();
   });
-  await screen.findByRole("button", { name: /Hero\.tsx/ }, { timeout: 15_000 });
+  // The file's own row in the explorer, as an author clicks it. Looked for by
+  // its path, not by a button named after the file: the row is not a button,
+  // and a role query here matched something else and opened nothing.
+  const row = await waitFor(
+    () => {
+      const found = document.querySelector<HTMLElement>(
+        `[data-file-tree-file="${FILE_PATH}"] > div`,
+      );
+      expect(found, "the hero's row in the Code explorer").not.toBeNull();
+      return found!;
+    },
+    { timeout: 15_000 },
+  );
   act(() => {
-    screen.getAllByRole("button", { name: /Hero\.tsx/ })[0]!.click();
+    fireEvent.click(row);
   });
   const editor = await screen.findByRole(
     "textbox",
