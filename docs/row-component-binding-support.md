@@ -42,29 +42,41 @@
 
 - `normalizeDocumentRowIds` **只補缺少的 id、修正重複的 id**：任何非空字串的既有 id
   都原樣保留；重複時第一列保留，後面的列換新 id；以陣列為範圍。
-- 補上的 id 由「template＋section＋路徑＋索引＋內容」推導，**只套用在讀出來的文件上**
-  （`findEditorContext`），不在編輯後重算。`updateSectionProps` 以這份已補 id 的文件為底
-  寫入，所以第一次儲存後 id 就存進資料庫，之後改文字、重排都不再變動。
-- 預覽畫布的 template 內容同樣來自 `findEditorContext`，所以畫布上的 id 與 Inspector 一致。
-  頁面（`storefrontPageDal`）不經過這個修補，但頁面只在後台 Pages 編輯，不經 Visual Editor
-  的列寫入。
+- **id 一旦存進資料庫就不再改變。** `updateSectionProps` 以已補 id 的文件
+  （`findEditorContext` 讀出的版本）為底寫入，所以第一次成功儲存時 id 就隨整份文件存進去，
+  之後改文字、重排、新增列、undo／redo 都不會改到它。
+- **在第一次成功儲存之前，id 還沒有持久化。** 每次讀取都會由「template＋section＋路徑＋
+  索引＋內容」重新推導；如果這段期間儲存的內容或順序變了（例如未經編輯器修補的寫入、
+  migration），同一列重新讀出來的 id 就可能不同。這時先前的選取找不到原本的 id，一律
+  **失效並要求重新選取**（`row-lost`），不沿用舊索引。
+- 預覽畫布的 template 內容同樣來自 `findEditorContext`，所以同一次讀取裡畫布與 Inspector
+  的 id 一致。頁面（`storefrontPageDal`）不經過這個修補，但頁面只在後台 Pages 編輯，不經
+  Visual Editor 的列寫入。
 - 重排（`swapArrayItemsAtFieldPaths`）搬動整列，id 跟著走；新增列（`addArrayRowAtFieldPath`）
-  取新的 id；undo／redo 還原的是含 id 的 props 快照。這些由
-  `row-id-lifecycle.test.ts` 依序驗證。
+  取新的 id；undo／redo 還原的是含 id 的 props 快照。以上與「持久化前重新推導就失效」都由
+  `row-id-lifecycle.test.ts` 驗證。
 
 ## 尚未儲存、且程式碼預設列沒有 id 的列表
 
+**本階段的產品決策：先儲存整個列表，再從畫布逐列編輯。**
+
 - 畫布上這種列沒有 id，從畫布選取單一列時**不寫入**（不退回用索引猜）。
 - 但不會鎖死：Inspector 顯示整個列表供編輯，並提示「先儲存列表，才能從畫布逐列編輯」。
-  列表編輯器的寫入對應的是面板當下畫出的列，不是點擊時記下的索引。儲存後，編輯器讀回的
-  文件會補上 id，之後就能從畫布逐列編輯。
+  列表編輯器的寫入對應的是面板當下畫出的列，不是點擊時記下的索引。儲存成功後，編輯器
+  讀回的文件帶有 id，之後就能從畫布逐列編輯。
+- **整個列表的編輯同樣受版本保護。** 面板顯示的列表不一定是最新的：儲存一律帶該文件的
+  draft generation（OCC），遠端已更新時伺服器拒絕寫入，編輯器把該 section 標成
+  「Out of date」並保留作者的內容，不會自動重送。作者按「Load latest, keep mine」時：
+  - 作者沒改、或只有作者改的欄位照常合併；
+  - **同一個列表兩邊都改過時不送出**（`conflictingListKeys`），說明原因並維持
+    「Out of date」，不把舊面板的整份列表覆蓋到新版，也不按索引自動重套列的修改。
 - Starter 的預設列在「已儲存」與「未儲存（只顯示程式碼預設值）」兩種狀態下都有可確認的
   id（`starter-row-identity.live.test.tsx`），因此這條規則沒有讓 Starter 原本能逐列編輯的
   列變成不能編輯。
-- **待定的小範圍方案（尚未實作）**：首次編輯未儲存的預設列表時，由平台在既有的儲存與
-  OCC 流程中把預設列建立成 Document 裡有 id 的列（用 `createMorphItemId`，不用內容或
-  索引雜湊），成功後才開放從畫布逐列寫入。不改作者原始碼、不另建身分機制。需要另外設計
-  與驗證。
+- **後續改善（不在本 PR，也不是合併阻擋項）**：首次編輯未儲存的預設列表時，由平台在既有
+  的儲存與 OCC 流程中用 `createMorphItemId` 把預設列建立成 Document 裡有 id 的列（不用
+  內容或索引雜湊），成功後即可從畫布逐列寫入。不改作者原始碼、不另建身分機制，需要另外
+  設計與驗證。
 
 ## 支援現況
 

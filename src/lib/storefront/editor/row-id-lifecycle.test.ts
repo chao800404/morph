@@ -106,6 +106,46 @@ describe("a row's id across the editor's operations", () => {
     expect(final.changed).toBe(false);
   });
 
+  it("invalidates a selection whose derived id changed before the first save", () => {
+    // Until ids are stored, each read derives them again, from content and
+    // order. If what is stored changes in between — another writer's save
+    // that did not go through the editor's repair, a migration — the same
+    // row can come back with a different id. The selection taken against the
+    // first read must then be refused, not resolved by its old index.
+    const first = normalizeDocumentRowIds(
+      document([{ title: "A" }, { title: "B" }]),
+      "template",
+    ).value;
+    const selection = {
+      fieldPath: "items.1.title",
+      itemId: propsOf(first).items[1]!.id!,
+    };
+
+    const reordered = normalizeDocumentRowIds(
+      document([{ title: "B" }, { title: "A" }]),
+      "template",
+    ).value;
+    expect(
+      rebaseSelectedRowPath(
+        selection.fieldPath,
+        selection.itemId,
+        propsOf(reordered),
+      ),
+    ).toEqual({ fieldPath: null, refused: "row-lost" });
+
+    const retitled = normalizeDocumentRowIds(
+      document([{ title: "A" }, { title: "B changed" }]),
+      "template",
+    ).value;
+    expect(
+      rebaseSelectedRowPath(
+        selection.fieldPath,
+        selection.itemId,
+        propsOf(retitled),
+      ),
+    ).toEqual({ fieldPath: null, refused: "row-lost" });
+  });
+
   it("refuses rather than resolving an id taken from another list", () => {
     // Ids are scoped to their own list. A selection in `items` must not find
     // a row of `links` that happens to hold the same id.

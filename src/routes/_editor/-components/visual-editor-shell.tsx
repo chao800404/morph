@@ -33,7 +33,10 @@ import {
   reportEditorReadFailure,
   sendEditorWrite,
 } from "@/lib/storefront/editor/send-editor-write";
-import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
+import {
+  conflictingListKeys,
+  rebaseContentProps,
+} from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
 import { Button } from "@/components/ui/button";
@@ -1554,13 +1557,31 @@ export function VisualEditorShell({
         (entry) => entry.id === pending.sectionId,
       );
       const incoming = (section?.props as Record<string, unknown>) ?? {};
+      const baseline = pendingPropsBaselineRef.current.get(key) ?? {};
+
+      // A list both sides changed has no safe automatic answer: the author's
+      // copy is the whole array as their panel drew it, and sending it would
+      // overwrite the other writer's rows. Nothing is sent for this section;
+      // it stays out of date with the author's content kept, and they are
+      // told why rather than having either side's work replaced.
+      const listConflicts = conflictingListKeys({
+        incoming,
+        baseline,
+        local: pending.props,
+      });
+      if (listConflicts.length > 0) {
+        toast.error(
+          `${listConflicts.join(", ")} also changed elsewhere since you edited ${listConflicts.length === 1 ? "it" : "them"}, so your version was not written over theirs. Reload the editor to see the latest list, then make your change again.`,
+        );
+        continue;
+      }
 
       pendingPropsMapRef.current.set(key, {
         sectionId: pending.sectionId,
         routePath: pending.routePath,
         props: rebaseContentProps({
           incoming,
-          baseline: pendingPropsBaselineRef.current.get(key) ?? {},
+          baseline,
           local: pending.props,
         }),
       });

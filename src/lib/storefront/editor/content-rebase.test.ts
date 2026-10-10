@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { rebaseContentProps, sameContentValue } from "./content-rebase";
+import {
+  conflictingListKeys,
+  rebaseContentProps,
+  sameContentValue,
+} from "./content-rebase";
 
 /**
  * The rule two callers share.
@@ -92,5 +96,65 @@ describe("comparing stored content", () => {
     expect(sameContentValue({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true);
     // A missing key is not the same as a key holding undefined.
     expect(sameContentValue({ a: 1 }, { a: 1, b: undefined })).toBe(false);
+  });
+});
+
+describe("a list both sides changed", () => {
+  const rows = (...titles: string[]) =>
+    titles.map((title) => ({ id: title.toLowerCase(), title }));
+  const base = { heading: "H", items: rows("A", "B") };
+
+  it("is reported when the author and the other writer changed it differently", () => {
+    // The author edited B; the other writer added C in front. Sending the
+    // author's array would remove C and put B's edit where C now sits.
+    expect(
+      conflictingListKeys({
+        baseline: base,
+        local: {
+          ...base,
+          items: [rows("A")[0], { id: "b", title: "B edited" }],
+        },
+        incoming: { ...base, items: rows("C", "A", "B") },
+      }),
+    ).toEqual(["items"]);
+  });
+
+  it("is not reported when only one side changed it", () => {
+    expect(
+      conflictingListKeys({
+        baseline: base,
+        local: { ...base, items: rows("A", "B edited") },
+        incoming: base,
+      }),
+    ).toEqual([]);
+    expect(
+      conflictingListKeys({
+        baseline: base,
+        local: base,
+        incoming: { ...base, items: rows("C", "A", "B") },
+      }),
+    ).toEqual([]);
+  });
+
+  it("is not reported when both sides arrived at the same list", () => {
+    const same = rows("A", "B", "C");
+    expect(
+      conflictingListKeys({
+        baseline: base,
+        local: { ...base, items: same },
+        incoming: { ...base, items: same },
+      }),
+    ).toEqual([]);
+  });
+
+  it("leaves a single value both sides changed to the author's explicit choice", () => {
+    // "Keep mine" decides one value; only a list has rows to lose.
+    expect(
+      conflictingListKeys({
+        baseline: base,
+        local: { ...base, heading: "Mine" },
+        incoming: { ...base, heading: "Theirs" },
+      }),
+    ).toEqual([]);
   });
 });

@@ -56,6 +56,35 @@ export function sameContentValue(a: unknown, b: unknown): boolean {
  * are dropped too, unless the author changed them — an author's value outlives
  * a server key only because they are actively asserting it.
  */
+/**
+ * Lists that both the author and the other writer changed since the edit's
+ * baseline, to different results.
+ *
+ * `rebaseContentProps` lets the author's value of a key win. For one value
+ * that is the choice "keep mine" names. For a list it is not: the author's
+ * copy is the whole array as their panel last drew it, and writing it would
+ * remove the rows the other writer added, undo their reorder, and put the
+ * author's row edits back at indexes that may now hold other rows. There is no
+ * safe automatic answer, so such a list is reported and nothing is sent.
+ */
+export function conflictingListKeys({
+  incoming,
+  baseline,
+  local,
+}: {
+  incoming: ContentProps;
+  baseline: ContentProps;
+  local: ContentProps;
+}): string[] {
+  return Object.keys(local).filter(
+    (key) =>
+      [local[key], incoming[key], baseline[key]].some(Array.isArray) &&
+      !sameContentValue(local[key], baseline[key]) &&
+      !sameContentValue(incoming[key], baseline[key]) &&
+      !sameContentValue(local[key], incoming[key]),
+  );
+}
+
 export function rebaseContentProps({
   incoming,
   baseline,
