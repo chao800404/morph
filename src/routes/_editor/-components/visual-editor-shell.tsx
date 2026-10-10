@@ -1,14 +1,34 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
+import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
   commitPendingContent,
+  ObservedPendingContent,
+  sameContent,
   sectionContentLanded,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
+import { createDebouncedWrites } from "@/lib/storefront/editor/debounced-writes";
 import {
+  createEditorLeaveGuard,
+  type EditorLeaveFlush,
+  type EditorLeaveKind,
+  type EditorLeavePrompt,
+} from "@/lib/storefront/editor/editor-leave-guard";
+import {
+  editorSaveStatusLabel,
+  resolveEditorSaveState,
+} from "@/lib/storefront/editor/editor-save-status";
+import {
+  isRequestedInlineFinishCommit,
+  type InlineFinishRequest,
+} from "@/lib/storefront/editor/inline-finish-request";
+import {
+  EditorWritePaused,
+  editorWriteRefusal,
   isEditorWriteGatePaused,
   isEditorWritePaused,
   isEditorWriteRefusedEarlier,
@@ -357,6 +377,7 @@ import {
   EditorUnconfirmedSavesNotice,
   UNCONFIRMED_SAVE_HOLD,
 } from "./editor-unconfirmed-saves-notice";
+import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
   awaitsOwnSave,
@@ -590,6 +611,12 @@ type EditorShellProps = {
    * caller has no router to ask, in which case `search.routePath` stands in.
    */
   navigatingRoutePath?: string;
+  /**
+   * Filled in by the shell with what the router asks before leaving the page
+   * or switching to another one; see `createEditorLeaveGuard`. Optional
+   * because only the route has a router to block with.
+   */
+  navigationGuardRef?: React.MutableRefObject<EditorNavigationGuard | null>;
   currentUser?: {
     id?: string;
     name?: string;
@@ -597,6 +624,9 @@ type EditorShellProps = {
     image?: string | null;
   };
 };
+
+/** Resolves true when the navigation must not happen. */
+export type EditorNavigationGuard = (kind: EditorLeaveKind) => Promise<boolean>;
 
 const previewDefaultWidths = {
   desktop: 1440,
@@ -610,6 +640,8 @@ const previewDefaultHeights = {
   mobile: 844,
 } as const;
 
+/** How long the preview may take to end an open inline edit when asked. */
+const INLINE_EDIT_FINISH_TIMEOUT_MS = 2_000;
 /** Settling time before re-measuring, so a burst of edits measures once. */
 const PREVIEW_REMEASURE_DELAY_MS = 500;
 /** A ready iframe must keep answering while its sandbox port is alive. */
@@ -726,6 +758,7 @@ export function VisualEditorShell({
   search,
   onSearchChange,
   navigatingRoutePath,
+  navigationGuardRef,
   currentUser,
 }: EditorShellProps) {
   // The design surface owns the panel widths as CSS custom properties so a
@@ -1160,9 +1193,86 @@ export function VisualEditorShell({
   const pendingPropsTimersRef = useRef<
     Map<string, ReturnType<typeof setTimeout>>
   >(new Map());
+  /**
+   * Content held here, being sent, or refused, as the toolbar shows it. Three
+   * booleans, so typing re-renders the shell only when one of them flips and
+   * not on every keystroke.
+   */
+  const [contentWrites, setContentWrites] = useState({
+    pending: false,
+    sending: false,
+    failed: false,
+  });
+  /** Content commits begun and not yet answered, queued ones included. */
+  const contentSendingRef = useRef(0);
+  /** Keys whose last write was answered with a failure (not a conflict). */
+  const failedContentKeysRef = useRef(new Set<string>());
+  const syncContentWritesRef = useRef(() => {});
   const pendingPropsMapRef = useRef<Map<string, PendingContentEntry>>(
-    new Map(),
+    new ObservedPendingContent(() => syncContentWritesRef.current()),
   );
+  syncContentWritesRef.current = () => {
+    const pending = pendingPropsMapRef.current;
+    const next = {
+      pending: pending.size > 0,
+      sending: contentSendingRef.current > 0,
+      // Only while the failed edit is still held: one that landed since, or
+      // was found stored by a check, is no longer a failure.
+      failed: Array.from(failedContentKeysRef.current).some((key) =>
+        pending.has(key),
+      ),
+    };
+    setContentWrites((current) =>
+      current.pending === next.pending &&
+      current.sending === next.sending &&
+      current.failed === next.failed
+        ? current
+        : next,
+    );
+  };
+  /**
+   * Asked by the router before leaving the editor or switching pages; see
+   * `createEditorLeaveGuard`. Its ports are filled in further down, where
+   * the save paths they reach are defined.
+   */
+  const [leavePrompt, setLeavePrompt] = useState<EditorLeavePrompt | null>(
+    null,
+  );
+  const leavePortsRef = useRef<{
+    hasPendingWrites: (kind: EditorLeaveKind) => boolean;
+    hasOpenEdit: () => boolean;
+    finishOpenEdit: (commit: boolean) => Promise<boolean>;
+    flush: (kind: EditorLeaveKind) => Promise<EditorLeaveFlush>;
+    discard: (kind: EditorLeaveKind) => void;
+    onBlocked: (
+      kind: EditorLeaveKind,
+      why: "stayed" | "kept-editing" | "superseded",
+    ) => void;
+  }>({
+    hasPendingWrites: () => false,
+    hasOpenEdit: () => false,
+    finishOpenEdit: async () => true,
+    flush: async () => ({ saved: true }),
+    discard: () => {},
+    onBlocked: () => {},
+  });
+  const [leaveGuard] = useState(() =>
+    createEditorLeaveGuard({
+      hasPendingWrites: (kind) => leavePortsRef.current.hasPendingWrites(kind),
+      hasOpenEdit: () => leavePortsRef.current.hasOpenEdit(),
+      finishOpenEdit: (commit) => leavePortsRef.current.finishOpenEdit(commit),
+      flush: (kind) => leavePortsRef.current.flush(kind),
+      onPrompt: setLeavePrompt,
+      discard: (kind) => leavePortsRef.current.discard(kind),
+      onBlocked: (kind, why) => leavePortsRef.current.onBlocked(kind, why),
+    }),
+  );
+  /**
+   * Set only around handing on the commit an author-requested finish
+   * produced (see `isRequestedInlineFinishCommit`), so that one commit does
+   * not count as new input. Everything else does.
+   */
+  const requestedFinishCommitRef = useRef(false);
   /** Section props as they stood when the current debounce window opened. */
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
     new Map(),
@@ -1411,6 +1521,8 @@ export function VisualEditorShell({
           return next;
         });
 
+      contentSendingRef.current += 1;
+      syncContentWritesRef.current();
       try {
         const result = await commitPendingContent({
           key,
@@ -1462,14 +1574,22 @@ export function VisualEditorShell({
             : undefined,
         });
         clearConflict();
+        failedContentKeysRef.current.delete(key);
         return result;
       } catch (error) {
         // The payload is retained either way; what differs is what the author
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
           setContentConflicts((current) => ({ ...current, [key]: tid }));
+        } else if (!isEditorWritePaused(error)) {
+          // Kept per key, so another section's save landing later cannot
+          // make this one read as saved.
+          failedContentKeysRef.current.add(key);
         }
         throw error;
+      } finally {
+        contentSendingRef.current -= 1;
+        syncContentWritesRef.current();
       }
     },
     [
@@ -1762,6 +1882,37 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  /**
+   * Text is being typed on the canvas. It lives only in the preview until it
+   * is committed, so it counts as unsaved and leaving asks the author first.
+   * Kept in a ref too, for the leave check and the unload warning, which run
+   * outside a render.
+   */
+  const [inlineEditOpen, setInlineEditOpen] = useState(false);
+  const inlineEditOpenRef = useRef(false);
+  /** Called with true when the edit was finished, false when it was lost. */
+  const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
+  /** The finish this editor asked for and has not seen answered; one at most. */
+  const inlineFinishRequestRef = useRef<InlineFinishRequest | null>(null);
+  const inlineFinishSequenceRef = useRef(0);
+  const reportInlineEdit = useCallback(
+    (editing: boolean, finished = true) => {
+      inlineEditOpenRef.current = editing;
+      setInlineEditOpen(editing);
+      if (editing) return;
+      // The edit is over: a commit arriving now answers nothing.
+      inlineFinishRequestRef.current = null;
+      for (const ended of inlineEditEndedRef.current) ended(finished);
+      inlineEditEndedRef.current.clear();
+    },
+    [],
+  );
+  // A new preview document has no edit open, whatever the last one said.
+  // An edit that was open went with the old one, unfinished: a frame
+  // replaced while the author is finishing it must not read as finished.
+  useEffect(() => {
+    reportInlineEdit(false, false);
+  }, [previewKey, reportInlineEdit]);
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
 
@@ -2896,7 +3047,8 @@ export function VisualEditorShell({
     [previewThemeFiles],
   );
 
-  const pendingSaveTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  /** Source writes waiting out a debounce, kept with what they would send. */
+  const pendingSaveWritesRef = useRef(createDebouncedWrites());
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
@@ -3050,8 +3202,23 @@ export function VisualEditorShell({
     },
     [previewSelection],
   );
+  /**
+   * A text field is being typed in. Its value reaches the save path only on
+   * blur, so until then nothing is pending — but the edit is not stored
+   * either, and the toolbar must not say otherwise.
+   */
+  const [fieldDraft, setFieldDraft] = useState(false);
+  useEffect(() => {
+    if (!fieldDraft) return;
+    // After the field's own blur handler has committed it, if it changed.
+    const settle = () => setFieldDraft(false);
+    document.addEventListener("focusout", settle);
+    return () => document.removeEventListener("focusout", settle);
+  }, [fieldDraft]);
   const previewSelectionField = useCallback(
     (fieldKey: string, fieldPath: string | null, value: string) => {
+      setFieldDraft(true);
+      leaveGuard.noteInput();
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-field",
         fieldKey,
@@ -3060,7 +3227,7 @@ export function VisualEditorShell({
       });
       schedulePreviewRemeasureRef.current();
     },
-    [],
+    [leaveGuard],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
@@ -3126,7 +3293,7 @@ export function VisualEditorShell({
     const more =
       stalePaths.length > 3 ? ` and ${stalePaths.length - 3} more` : "";
     toast.warning(
-      `Another tab saved newer versions of ${names}${more}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
+      `Newer versions of ${names}${more} were saved elsewhere, possibly from ${POSSIBLE_SAVE_SOURCES}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
       { duration: 20_000 },
     );
   }, []);
@@ -4047,11 +4214,7 @@ export function VisualEditorShell({
           themeFiles.find((file) => file.path === filePath)?.content ??
           null);
       const opKey = getScopedOpKey(filePath);
-      const existingTimer = pendingSaveTimersRef.current.get(opKey);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        pendingSaveTimersRef.current.delete(opKey);
-      }
+      pendingSaveWritesRef.current.cancel(opKey);
 
       updateWorkspaceLocal(filePath, content, workspaceScope);
 
@@ -4580,12 +4743,9 @@ export function VisualEditorShell({
       if (layoutTemplate) await flushTemplatePendingProps(layoutTemplate.id);
 
       const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
-      for (const [opKey, timer] of Array.from(
-        pendingSaveTimersRef.current.entries(),
-      )) {
+      for (const opKey of pendingSaveWritesRef.current.keys()) {
         if (opKey.startsWith(scopedPrefix)) {
-          clearTimeout(timer);
-          pendingSaveTimersRef.current.delete(opKey);
+          pendingSaveWritesRef.current.cancel(opKey);
           const filePath = opKey.slice(scopedPrefix.length);
           const content = useThemeWorkspaceStore
             .getState()
@@ -4930,16 +5090,296 @@ export function VisualEditorShell({
     [queryClient, workspaceScope],
   );
 
-  // What is kept is in memory only, so leaving the page would lose it.
+  /**
+   * Whether the author's edits are stored, decided from what is held now —
+   * never from a response arriving, which may answer an older write. See
+   * `resolveEditorSaveState`. Shown apart from the publish state, which only
+   * means anything once this is "saved".
+   */
+  const saveState = resolveEditorSaveState({
+    saving:
+      contentWrites.sending ||
+      draftSaveState === "saving" ||
+      Object.values(workspaceFiles).some((file) => file.saveState === "saving"),
+    outOfDate: Object.keys(contentConflicts).length > 0,
+    failed:
+      draftSaveState === "error" ||
+      contentWrites.failed ||
+      Object.keys(themeFileSaveErrors).length > 0,
+    unsaved:
+      fieldDraft ||
+      inlineEditOpen ||
+      contentWrites.pending ||
+      unconfirmedContentCount > 0 ||
+      monacoDirtyFiles.length > 0 ||
+      Object.values(workspaceFiles).some(
+        (file) => file.dirty || file.saveState === "debouncing",
+      ),
+  });
+
+  // What leaving or switching pages has to wait for, and how it is sent.
+  // Everything goes through the save paths the edits would have used anyway;
+  // nothing here is a second way to write.
+  leavePortsRef.current = {
+    hasOpenEdit: () => inlineEditOpenRef.current,
+    finishOpenEdit: (commit) => {
+      if (!inlineEditOpenRef.current) return Promise.resolve(true);
+      const requestId = (inlineFinishSequenceRef.current += 1);
+      // What is being asked for, recorded here: the field the author is
+      // editing, in the document now framed. The answer is checked against
+      // this, not taken from the preview's word.
+      const target = previewSelection.currentTarget();
+      inlineFinishRequestRef.current =
+        commit &&
+        previewKeyRef.current &&
+        target?.sectionId &&
+        target.fieldKey &&
+        target.fieldPath
+          ? {
+              id: requestId,
+              previewKey: previewKeyRef.current,
+              sectionId: target.sectionId,
+              fieldKey: target.fieldKey,
+              fieldPath: target.fieldPath,
+            }
+          : null;
+      return new Promise<boolean>((resolve) => {
+        // A preview that never answers must not hold the author here.
+        const timer = setTimeout(() => {
+          inlineEditEndedRef.current.delete(ended);
+          inlineFinishRequestRef.current = null;
+          resolve(false);
+        }, INLINE_EDIT_FINISH_TIMEOUT_MS);
+        const ended = (finished: boolean) => {
+          clearTimeout(timer);
+          resolve(finished);
+        };
+        inlineEditEndedRef.current.add(ended);
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-finish-inline-text",
+          commit,
+          requestId,
+        });
+      });
+    },
+    hasPendingWrites: (kind) => {
+      const files = Object.values(
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId),
+      );
+      // Waiting out a debounce, or sent and not answered: what a page switch
+      // would race.
+      if (
+        contentSendingRef.current > 0 ||
+        pendingPropsTimersRef.current.size > 0 ||
+        pendingSaveWritesRef.current.size > 0 ||
+        files.some(
+          (file) =>
+            file.saveState === "debouncing" || file.saveState === "saving",
+        )
+      ) {
+        return true;
+      }
+      // Held, not waiting: a failed save, a conflict, an unanswered write, a
+      // paused one. Nothing here sends it, but the author is told before the
+      // page changes, as before leaving: the draft stays either way.
+      if (
+        pendingPropsMapRef.current.size > 0 ||
+        unconfirmedContentRef.current.size > 0 ||
+        files.some(
+          (file) =>
+            file.dirty ||
+            file.saveState === "conflict" ||
+            file.saveState === "error",
+        )
+      ) {
+        return true;
+      }
+      // Code drafts save themselves and stay across a page switch; leaving
+      // the editor takes them away. Read now: the dirty-path summary reaches
+      // the shell a render after a save.
+      if (kind === "switch-page") return false;
+      return editorCodeWorkspaceRef.current?.hasUnsavedDrafts() ?? false;
+    },
+    flush: async (kind) => {
+      const readFiles = () =>
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      // Paused: nothing may be sent, and leaving is not the author saying to.
+      const refusal = editorWriteRefusal(
+        editorWriteGateFor(
+          useEditorWriteGateStore.getState().gates,
+          workspaceScope,
+        ),
+        "theme",
+      );
+      if (refusal) {
+        return { saved: false, reason: new EditorWritePaused(refusal).message };
+      }
+      // An earlier save went unanswered: nothing more is sent until the
+      // author checks, and leaving is not checking.
+      if (
+        unconfirmedContentRef.current.size > 0 ||
+        unconfirmedPaths(readFiles()).length > 0
+      ) {
+        return { saved: false, reason: UNCONFIRMED_SAVE_HOLD };
+      }
+
+      const failures: string[] = [];
+      // Content waiting out its debounce goes now, through the same commit
+      // its timer would have run. Content held after a failure or a conflict
+      // is not sent again: that stays the author's call.
+      for (const [key, timer] of Array.from(pendingPropsTimersRef.current)) {
+        clearTimeout(timer);
+        pendingPropsTimersRef.current.delete(key);
+        const entry = pendingPropsMapRef.current.get(key);
+        const templateId = entry
+          ? templateIdOfPendingContentKey(key, entry.sectionId)
+          : null;
+        if (!templateId || key in contentConflictsRef.current) continue;
+        await commitSectionPending(templateId, key).catch((error: unknown) => {
+          failures.push(
+            error instanceof Error && error.message
+              ? error.message
+              : "Content could not be saved.",
+          );
+        });
+      }
+      // Content already sent: its answer, not a guess about it.
+      await Promise.all(
+        Array.from(templateMutationQueueRef.current.values(), (queued) =>
+          queued.catch(() => {}),
+        ),
+      );
+
+      const scopedPrefix = `${workspaceScope.storefrontId}:${workspaceScope.themeId}:`;
+      const flushedPaths = pendingSaveWritesRef.current
+        .keys()
+        .filter((key) => key.startsWith(scopedPrefix))
+        .map((key) => key.slice(scopedPrefix.length));
+      await pendingSaveWritesRef.current.flush((key) =>
+        key.startsWith(scopedPrefix),
+      );
+      await saveQueueRef.current
+        .pending(`${workspaceScope.storefrontId}:${workspaceScope.themeId}`)
+        ?.catch(() => {});
+      for (const path of flushedPaths) {
+        const file = readFiles()[path];
+        if (file && file.saveState !== "clean") {
+          failures.push(file.errorMessage ?? `${path} could not be saved.`);
+        }
+      }
+
+      // Code drafts save on their own after a pause; leaving the editor
+      // sends them now, as switching to Design does.
+      if (
+        kind === "leave-editor" &&
+        (editorCodeWorkspaceRef.current?.hasUnsavedDrafts() ?? false)
+      ) {
+        const flushed =
+          (await editorCodeWorkspaceRef.current?.flushPendingChanges()) ??
+          false;
+        if (!flushed) failures.push("Code changes could not be saved.");
+      }
+
+      if (failures.length > 0) return { saved: false, reason: failures[0]! };
+      if (leavePortsRef.current.hasPendingWrites(kind)) {
+        return {
+          saved: false,
+          reason:
+            Object.keys(contentConflictsRef.current).length > 0
+              ? "Some content is out of date with the document. Use Load latest, keep mine first."
+              : Object.values(readFiles()).some(
+                    (file) => file.saveState === "conflict",
+                  )
+                ? "A source file was changed elsewhere. Resolve the conflict first; your changes are kept."
+                : (Object.values(readFiles()).find((file) => file.errorMessage)
+                    ?.errorMessage ?? "Some changes have not been saved."),
+        };
+      }
+      return { saved: true };
+    },
+    discard: (kind) => {
+      // A page switch keeps the drafts in this tab; leaving takes them away,
+      // and nothing may be sent for an author who chose not to wait.
+      if (kind !== "leave-editor") return;
+      for (const timer of pendingPropsTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      pendingPropsTimersRef.current.clear();
+      for (const key of pendingSaveWritesRef.current.keys()) {
+        pendingSaveWritesRef.current.cancel(key);
+      }
+    },
+    onBlocked: (_kind, why) => {
+      // A newer navigation took over, and owns the pending route now.
+      if (why === "superseded") return;
+      // The switch asked for is not happening. Left pending, the route
+      // would be asked for again on a later render, and the author would be
+      // taken there after all.
+      setPendingRoutePath(null);
+      setPendingRouteSelection(null);
+      if (why === "kept-editing") {
+        toast.info("Stayed on this page because you kept editing.", {
+          id: "editor-leave-kept-editing",
+        });
+      }
+    },
+  };
+
+  /**
+   * Commits a text field the author is still typing in.
+   *
+   * Inspector fields hand their value to the save path on blur. A navigation
+   * or a reload does not blur them, so the typed text would be neither saved
+   * nor warned about. Blurring runs the field's own commit synchronously,
+   * which puts the edit in the pending writes before they are looked at.
+   */
+  const commitFocusedField = useCallback(() => {
+    const focused = document.activeElement;
+    if (
+      (focused instanceof HTMLInputElement ||
+        focused instanceof HTMLTextAreaElement) &&
+      focused.closest("[data-morph-editor]")
+    ) {
+      focused.blur();
+    }
+  }, []);
+
   useEffect(() => {
-    if (!writesPaused || pausedUnsavedCount === 0) return;
+    if (!navigationGuardRef) return;
+    navigationGuardRef.current = (kind) => {
+      commitFocusedField();
+      return leaveGuard.request(kind);
+    };
+    return () => {
+      navigationGuardRef.current = null;
+    };
+  }, [commitFocusedField, leaveGuard, navigationGuardRef]);
+
+  // Reloading or closing the tab cannot be held for a save, only warned
+  // about. Asked at the moment of leaving, so an edit made a moment earlier
+  // counts; and only when something is not stored. The browser's own words
+  // are shown, and they never claim anything will be saved.
+  useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
+      commitFocusedField();
+      // Text still open on the canvas cannot be committed from here: the
+      // preview would answer after this page is gone. It is warned about.
+      if (
+        !inlineEditOpenRef.current &&
+        !leavePortsRef.current.hasPendingWrites("leave-editor")
+      ) {
+        return;
+      }
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [pausedUnsavedCount, writesPaused]);
+  }, [commitFocusedField]);
 
   // Another tab can sign this browser out, or into another account, without
   // any request of this editor being refused — the other account may be
@@ -5518,29 +5958,24 @@ export function VisualEditorShell({
         relatedNext: string,
       ) => {
         if (relatedNext === relatedCurrent) return;
+        leaveGuard.noteInput();
         // Written without an entry of its own, so anything the history still
         // holds for this file describes a state this write has moved past.
         history.discardScope(themeFileHistoryScope(relatedPath));
         updateWorkspaceLocal(relatedPath, relatedNext, workspaceScope);
         const operationKey = getScopedOpKey(relatedPath);
         const revision = saveQueueRef.current.claimRevision(operationKey);
-        const pendingTimer = pendingSaveTimersRef.current.get(operationKey);
-        if (pendingTimer) clearTimeout(pendingTimer);
-        pendingSaveTimersRef.current.set(
-          operationKey,
-          setTimeout(() => {
-            pendingSaveTimersRef.current.delete(operationKey);
-            saveThemeFileSequentially(relatedPath, relatedNext, revision).catch(
-              (err) => {
-                toast.error(
-                  "Failed to save source file " +
-                    relatedPath +
-                    ": " +
-                    err.message,
-                );
-              },
-            );
-          }, 300),
+        pendingSaveWritesRef.current.schedule(operationKey, 300, () =>
+          saveThemeFileSequentially(relatedPath, relatedNext, revision).catch(
+            (err) => {
+              toast.error(
+                "Failed to save source file " +
+                  relatedPath +
+                  ": " +
+                  err.message,
+              );
+            },
+          ),
         );
         markWorkspaceDebouncing(relatedPath, workspaceScope);
       };
@@ -5666,6 +6101,7 @@ export function VisualEditorShell({
       }
 
       if (updatedContent !== targetCurrentSource) {
+        leaveGuard.noteInput();
         updateWorkspaceLocal(targetFilePath, updatedContent, workspaceScope);
 
         const previewFiles = effectiveThemeFiles.map((file) => ({
@@ -5724,7 +6160,7 @@ export function VisualEditorShell({
         const styleAfter = updatedContent;
         const stylePath = targetFilePath;
         scheduleDeferredWrite({
-          timers: pendingSaveTimersRef.current,
+          writes: pendingSaveWritesRef.current,
           key: opKey,
           delayMs: 300,
           record: () =>
@@ -5768,6 +6204,7 @@ export function VisualEditorShell({
       }
     },
     [
+      leaveGuard,
       getScopedOpKey,
       effectiveThemeFiles,
       markWorkspaceDebouncing,
@@ -6230,6 +6667,11 @@ export function VisualEditorShell({
       if (message.type === "morph:storefront-preview-commit-inline-text") {
         reportAuthenticatedUserActivity();
         inlineTextCommitHandlerRef.current(message);
+        return;
+      }
+
+      if (message.type === "morph:storefront-preview-inline-text-editing") {
+        reportInlineEdit(message.editing);
         return;
       }
 
@@ -7155,7 +7597,7 @@ export function VisualEditorShell({
   droppedContentHandlerRef.current = (droppedProps) => {
     const names = droppedProps.map((key) => `"${key}"`).join(", ");
     toast.warning(
-      `Not saved: ${names} ${droppedProps.length === 1 ? "is not an editable field" : "are not editable fields"} in the current Theme source, which may have changed in another tab. This tab has read it again.`,
+      `Not saved: ${names} ${droppedProps.length === 1 ? "is not an editable field" : "are not editable fields"} in the current Theme source, which may have been changed elsewhere, possibly from ${POSSIBLE_SAVE_SOURCES}. This tab has read it again.`,
       { duration: 20_000 },
     );
     void queryClient
@@ -7455,6 +7897,18 @@ export function VisualEditorShell({
 
       const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
       const mergedProps = { ...existingProps, ...nextProps };
+      // A real change means the author is still here, and a navigation
+      // waiting on the save is cancelled. A field re-emitting the value it
+      // already holds (on blur, say, as focus moves to the question) is not.
+      const heldProps = { ...sectionPropsSnapshot(sectionId), ...existingProps };
+      if (
+        !requestedFinishCommitRef.current &&
+        Object.entries(nextProps).some(
+          ([field, value]) => !sameContent(heldProps[field], value),
+        )
+      ) {
+        leaveGuard.noteInput();
+      }
       // The value to go back to is whatever was stored before this run of edits
       // began — not the previous keystroke. Captured once per debounce window so
       // typing a word is one undo, not one per character.
@@ -7481,6 +7935,7 @@ export function VisualEditorShell({
     },
     [
       commitSectionPending,
+      leaveGuard,
       sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -7560,10 +8015,24 @@ export function VisualEditorShell({
         fieldPath: message.fieldPath,
         value: message.value,
       }));
-      handleSectionPropsChange(
-        message.sectionId,
-        setFieldPathValue(currentProps, message.fieldPath, message.value),
+      // The commit the author asked for by finishing the edit is handed on
+      // without counting as new input — that one, once. Anything else that
+      // arrives, a repeat or a late one included, is input as usual.
+      const requestedFinish = isRequestedInlineFinishCommit(
+        inlineFinishRequestRef.current,
+        message,
+        previewKeyRef.current,
       );
+      if (requestedFinish) inlineFinishRequestRef.current = null;
+      requestedFinishCommitRef.current = requestedFinish;
+      try {
+        handleSectionPropsChange(
+          message.sectionId,
+          setFieldPathValue(currentProps, message.fieldPath, message.value),
+        );
+      } finally {
+        requestedFinishCommitRef.current = false;
+      }
     };
     return () => {
       inlineTextCommitHandlerRef.current = () => {};
@@ -9174,42 +9643,29 @@ export function VisualEditorShell({
         </div>
         <div className="flex min-w-0 items-center gap-1 justify-self-end">
           {(() => {
-            const isThemeSaving = Object.values(themeFileSaveStatus).some(
-              (s) => s === "saving",
-            );
             const firstThemeError = Object.values(themeFileSaveErrors)[0];
             const conflictCount = Object.keys(contentConflicts).length;
-            const hasError =
-              draftSaveState === "error" || Boolean(firstThemeError);
+            const hasError = saveState === "failed";
             const isSaving =
-              draftSaveState === "saving" ||
-              isThemeSaving ||
-              publishMutation.isPending;
-
-            const statusLabel = publishMutation.isPending
-              ? "Publishing…"
-              : isSaving
-                ? "Saving…"
-                : conflictCount > 0
-                  ? // Not "Save failed": the author's edit is intact, and the
-                    // word next to it says what happened to it.
-                    "Out of date"
-                  : hasError
-                    ? firstThemeError
-                      ? `Save failed: ${firstThemeError.slice(0, 30)}…`
-                      : "Save failed"
-                    : // One word each, and the same word stem, so the two states
-                      // read as a pair the eye can tell apart at a glance. The
-                      // longer phrasings sat beside four icon buttons and a
-                      // Publish button and read as a sentence in a toolbar.
-                      hasUnpublishedChanges
-                      ? "Unpublished"
-                      : "Published";
+              saveState === "saving" || publishMutation.isPending;
+            // The save state first; the publish state only once everything
+            // is stored. "Unpublished" used to stand beside an edit nothing
+            // had sent yet, and read as though it had been saved.
+            const statusLabel = editorSaveStatusLabel({
+              publishing: publishMutation.isPending,
+              saveState,
+              failure: firstThemeError,
+              hasUnpublishedChanges,
+            });
 
             return (
               <>
                 <span
                   data-editor-save-status
+                  data-save-state={saveState}
+                  data-publish-state={
+                    hasUnpublishedChanges ? "unpublished" : "published"
+                  }
                   className={cn(
                     // Below a wide viewport only the marker survives, because
                     // the toolbar overlaps on a 1024px laptop once the words
@@ -9226,6 +9682,13 @@ export function VisualEditorShell({
                     <LoaderCircle className="size-3.5 animate-spin text-primary" />
                   ) : hasError ? (
                     <CircleAlert className="size-3.5 text-destructive" />
+                  ) : saveState === "unsaved" ? (
+                    // Hollow: changed here, not stored yet. Filled dots are
+                    // for settled states only.
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 shrink-0 rounded-full border border-primary"
+                    />
                   ) : (
                     // A dot, not a tick. The settled states differ only by
                     // this marker and one word, and a tick beside
@@ -9256,7 +9719,7 @@ export function VisualEditorShell({
                   >
                     Load latest, keep mine
                   </Button>
-                ) : draftSaveState === "error" ? (
+                ) : draftSaveState === "error" || contentWrites.failed ? (
                   // Nothing was rebased and nothing is in the way — the write
                   // simply did not land, so sending it again is the whole fix.
                   <Button
@@ -9518,6 +9981,12 @@ export function VisualEditorShell({
           </Popover>
         </div>
       </header>
+      <EditorLeaveDialog
+        prompt={leavePrompt}
+        onStay={leaveGuard.stay}
+        onLeave={leaveGuard.leave}
+        onFinishEdit={leaveGuard.finishEdit}
+      />
       {/* Separate notices, never merged: signing in again does not settle
           a Theme that moved on, a dropped connection says nothing about
           either, and the reverse of each. */}
@@ -9705,6 +10174,9 @@ export function VisualEditorShell({
             onRestartPreview={retryLivePreview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
+            // Typing in Code while a navigation waits on a save cancels it,
+            // as typing in the Inspector does.
+            onAuthorInput={leaveGuard.noteInput}
             onSaveFile={handleUnifiedSaveFile}
             onPreviewFilesChange={(files, options) =>
               postPreviewThemeFiles(files, {
