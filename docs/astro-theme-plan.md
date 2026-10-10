@@ -928,7 +928,7 @@ OCC）→ 該實例更新、其他實例不變**。
 | island 畫布標籤 | **未量測**：不算通過，也不算產品失敗 |
 | Content／Styles 分頁的可編輯控制項 | **未量測**：不算通過，也不算產品失敗。下次直接記錄各分頁有哪些控制項、是否啟用（數量只作輔助，切換後一增一減時差值仍是零）；「操作後沒有寫入」的斷言仍是依據 |
 | island 內部定位 | 第一版不支援，介面標示；追蹤項目待 `inject-preview-bindings` 相關 session 合併後再開 |
-| island HMR | 失敗已定位為實驗流程缺少通知（3.6.2.5）。無注入時，真實 Code 路徑在容器中驗證可更新；**有注入的版本待下一輪正式驗收確認**，spec 已改走 Code 存檔 |
+| island HMR | 失敗已定位為實驗流程缺少通知（3.6.2.5）。無注入時，真實 Code 路徑在容器中驗證可更新；**有注入的版本未驗證**，待下一輪正式驗收確認。spec 改走 Code 存檔的修正在本機分支 `exp/astro-l15-container-codesave`（55c9eb9），**未執行，也未整合進實驗工作區**，由實驗負責人確認基底後整合 |
 
 下一次容器執行要由具體的修正或新假設驅動（例如中斷或 HMR 的修正、純 Astro Theme 的 fixture），屆時順便補量兩項未量測，不為了補量另佔時段，也不重跑碰運氣。
 
@@ -964,7 +964,7 @@ OCC）→ 該實例更新、其他實例不變**。
 **範圍與後續**：
 
 - 已證明的只有無注入的路徑；有注入的版本在下一輪正式驗收中確認，不為此追加重跑。
-- 實驗的 island 步驟改走 Code 存檔（`editAndSave`），**不**手動補通知：手動通知會再次繞過真實接線。
+- 實驗的 island 步驟改走 Code 存檔（`editAndSave`），**不**手動補通知：手動通知會再次繞過真實接線。修正只在本機分支 `exp/astro-l15-container-codesave`（55c9eb9），未執行；它只修好測試入口，不能據此把有注入的版本記為通過。
 - relay 500 是獨立風險，見 3.6.2.4 後的條件，不因此結案。
 - 補一支回歸 E2E（`e2e/astro-island-hmr.spec.ts`）：專屬的純 Astro Theme，走 Code 存檔，確認 island 文字更新、沒有整頁重新載入，並在計數 3 時保留 state（`count 3` → `clicks 3`）。這是新增的產品保證，不是針對 HMR 的修正。
 - **寫這支 E2E 時發現另一個缺口**：純 Astro Theme 根本無法啟動 Live Preview。`startThemePreviewServer` 要求一個標記 `isEntry` 的檔案（只有 `src/pages/index.tsx` 或 Starter 檔案會有），否則回 `THEME_ENTRY_MISSING`，但 Astro 預覽從不使用它。修正：由框架 adapter 宣告 `preview.entryFile`（Start `required`，Astro `unused`）；判斷依 Theme 記錄的框架，經既有的 `resolveThemeFramework`，無法解析的框架仍要求 entry；Start 的 planner 收到 `null` 也會拒絕；不替 Astro 產生假的 entry。先前的 A6c 與 L1.5 都是把 Astro 檔案加在 Start Starter 上，所以沒有遇到。
