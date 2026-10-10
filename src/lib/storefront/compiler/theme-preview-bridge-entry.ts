@@ -108,11 +108,29 @@ let selectedSectionId = null;
 const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
 
+/** The editor's finish request being answered, while finish runs. */
+let answeringFinishRequest = null;
+
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
     if (!channel) return;
     postPreviewToEditorMessage(
-      { type: "morph:storefront-preview-commit-inline-text", ...commit },
+      {
+        type: "morph:storefront-preview-commit-inline-text",
+        ...commit,
+        ...(answeringFinishRequest === null
+          ? {}
+          : { finishRequestId: answeringFinishRequest }),
+      },
+      channel,
+    );
+  },
+  // Typed text lives only here until it is committed, so the editor is told
+  // an edit is open: it counts as unsaved, and leaving asks first.
+  onEditingChange: (editing) => {
+    if (!channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-inline-text-editing", editing },
       channel,
     );
   },
@@ -985,6 +1003,16 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-finish-inline-text") {
+      // The author chose, in the editor, what happens to the open edit. The
+      // commit this produces names the request; any other does not.
+      answeringFinishRequest = message.requestId;
+      try {
+        inlineEditor.finish(message.commit);
+      } finally {
+        answeringFinishRequest = null;
+      }
     }
     if (message?.type === "morph:storefront-preview-update-theme-files") {
       // The files themselves are not taken from here: Morph writes them into

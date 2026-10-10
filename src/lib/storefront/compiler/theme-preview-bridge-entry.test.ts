@@ -355,10 +355,170 @@ describe("editing text in the page it is rendered on", () => {
     expect(observer).toContain("inlineEditor.finish(false);");
   });
 
-  it("sends what was typed through the commit message", () => {
-    expect(BRIDGE).toContain(
-      '{ type: "morph:storefront-preview-commit-inline-text", ...commit }',
-    );
+  /**
+   * The commit as it is actually posted, run from the bridge's own code.
+   *
+   * This used to pin the source text of the post. That proves nothing about
+   * what is sent, and broke on a rewrite that sent the same thing. The real
+   * `onCommit` handler and the real `finish-inline-text` block are cut out of
+   * the bridge here and run against a stand-in editor, so what is checked is
+   * the payload: the author's typed value, and the finish request's id only
+   * on the commit that answers it.
+   */
+  describe("sends what was typed through the commit message", () => {
+    type Node = { type?: string; start?: number; end?: number } & Record<
+      string,
+      unknown
+    >;
+
+    function bridgeCommitCode() {
+      const ast = parse(BRIDGE, {
+        sourceType: "module",
+        plugins: ["typescript"],
+      });
+      let onCommit: string | null = null;
+      let finishBlock: string | null = null;
+      const source = (node: Node) => BRIDGE.slice(node.start, node.end);
+      const visit = (value: unknown) => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+          return;
+        }
+        const node = value as Node;
+        const callee = node.callee as Node | undefined;
+        if (
+          node.type === "CallExpression" &&
+          callee?.type === "Identifier" &&
+          callee.name === "createInlineTextEditor"
+        ) {
+          const options = (node.arguments as Node[])[0];
+          const property = (options?.properties as Node[] | undefined)?.find(
+            (entry) => (entry.key as Node | undefined)?.name === "onCommit",
+          );
+          if (property) onCommit = source(property.value as Node);
+        }
+        const test = node.test as Node | undefined;
+        if (
+          node.type === "IfStatement" &&
+          (test?.right as Node | undefined)?.value ===
+            "morph:storefront-preview-finish-inline-text"
+        ) {
+          finishBlock = source(node.consequent as Node);
+        }
+        for (const [key, child] of Object.entries(node)) {
+          if (key !== "loc" && key !== "extra") visit(child);
+        }
+      };
+      visit(ast.program);
+      expect(onCommit, "the bridge's onCommit handler").not.toBeNull();
+      expect(finishBlock, "the bridge's finish-inline-text block").not.toBeNull();
+      return { onCommit: onCommit!, finishBlock: finishBlock! };
+    }
+
+    const typed = {
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    };
+
+    /**
+     * The two pieces, run together: an editor stand-in whose `finish(true)`
+     * commits `typed` through the real handler, as the inline editor does.
+     */
+    function runBridge(finishThrows = false) {
+      const { onCommit, finishBlock } = bridgeCommitCode();
+      const posted: Array<{ message: Record<string, unknown>; channel: unknown }> =
+        [];
+      const channel = { previewSession: "session" };
+      const build = new Function(
+        "postPreviewToEditorMessage",
+        "channel",
+        "typed",
+        "finishThrows",
+        `let answeringFinishRequest = null;
+        const onCommit = ${onCommit};
+        const inlineEditor = {
+          finish: (commit) => {
+            if (commit) onCommit(typed);
+            if (finishThrows) throw new Error("finish failed");
+          },
+        };
+        const handle = (message) => ${finishBlock};
+        return { onCommit, handle };`,
+      ) as (
+        post: (message: Record<string, unknown>, channel: unknown) => void,
+        channel: unknown,
+        typed: unknown,
+        finishThrows: boolean,
+      ) => {
+        onCommit: (commit: unknown) => void;
+        handle: (message: Record<string, unknown>) => void;
+      };
+      const bridge = build(
+        (message, to) => posted.push({ message, channel: to }),
+        channel,
+        typed,
+        finishThrows,
+      );
+      return { ...bridge, posted, channel };
+    }
+
+    const finish = (commit: boolean, requestId: number) => ({
+      type: "morph:storefront-preview-finish-inline-text",
+      commit,
+      requestId,
+    });
+
+    it("posts an ordinary commit with what was typed, naming no request", () => {
+      const bridge = runBridge();
+      bridge.onCommit(typed);
+
+      expect(bridge.posted).toEqual([
+        {
+          message: {
+            type: "morph:storefront-preview-commit-inline-text",
+            ...typed,
+          },
+          channel: bridge.channel,
+        },
+      ]);
+      expect(bridge.posted[0]!.message).not.toHaveProperty("finishRequestId");
+    });
+
+    it("names the finish request on the commit that answers it, and only that one", () => {
+      const bridge = runBridge();
+      bridge.handle(finish(true, 7));
+      bridge.onCommit(typed);
+
+      expect(bridge.posted.map(({ message }) => message)).toEqual([
+        {
+          type: "morph:storefront-preview-commit-inline-text",
+          ...typed,
+          finishRequestId: 7,
+        },
+        { type: "morph:storefront-preview-commit-inline-text", ...typed },
+      ]);
+    });
+
+    it("posts nothing for a finish that puts the text back", () => {
+      const bridge = runBridge();
+      bridge.handle(finish(false, 8));
+
+      expect(bridge.posted).toEqual([]);
+    });
+
+    it("stops naming the request even when finishing throws", () => {
+      const bridge = runBridge(true);
+      expect(() => bridge.handle(finish(true, 9))).toThrow("finish failed");
+      bridge.onCommit(typed);
+
+      expect(bridge.posted.map(({ message }) => message.finishRequestId)).toEqual(
+        [9, undefined],
+      );
+    });
   });
 });
 
