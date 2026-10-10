@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createMachineLock, flockAvailable, holderNoteFor } from "./e2e-machine-lock.mjs";
+import { createMachineLock, flockAvailable, holderNoteFor, statusFileFor } from "./e2e-machine-lock.mjs";
 
 const MODULE = fileURLToPath(new URL("./e2e-machine-lock.mjs", import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -322,15 +322,22 @@ esac
       await writeFile(path.join(docker, "down"), "");
       owner.kill("SIGKILL");
 
-      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
+      const said = [];
+      const next = createMachineLock({ lockFile, log: (line) => said.push(line), args: "next", remindMs: 500 });
       let nextHeld = false;
       const waiting = next.acquire().then(() => (nextHeld = true));
       await sleep(4000);
       assert.equal(nextHeld, false, "an unconfirmed cleanup must not let the next run in");
+      assert.match(
+        said.join("\n"),
+        /cleaning up after pid \d+, which has gone: Docker cannot be reached since [\d:]+; its containers \(workerd-morph-e2e-cccc55556666-\*\) are unconfirmed/,
+        "the waiting run says what the slot is held for",
+      );
 
       await rm(path.join(docker, "down"));
       await waiting;
       assert.equal(exists("held1"), false);
+      assert.equal(existsSync(statusFileFor(lockFile)), false, "a finished cleanup leaves no status behind");
       await next.release();
     });
 
@@ -342,18 +349,39 @@ esac
         "workerd-morph-e2e-dddd77778888-",
         `process.on("SIGTERM", async () => { await lock.release({ handOver: true }); process.exit(0); });`,
       );
+      // The next run is already waiting when the slot changes hands, and
+      // Docker cannot be asked, so the guardian cannot finish: if the hand-over
+      // ever left the lock free, even for a moment, the next run would be in.
+      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
+      let nextHeld = false;
+      const waiting = next.acquire().then(() => (nextHeld = true));
+      await sleep(700);
+      await writeFile(path.join(docker, "down"), "");
       owner.kill("SIGTERM");
       await new Promise((resolve) => owner.once("exit", resolve));
+      await sleep(4000);
+      assert.equal(nextHeld, false, "the slot never came free between the run and its guardian");
+      assert.equal(exists("left1"), true);
 
-      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
-      await next.acquire();
+      await rm(path.join(docker, "down"));
+      await waiting;
       assert.equal(exists("left1"), false, "the guardian finished the cleanup before the next run got in");
       await next.release();
     });
 
     it("refuses a prefix it did not choose", () => {
       const lock = createMachineLock({ lockFile: freshLock(), log: () => {}, args: "x" });
-      for (const bad of ["workerd-morph", "x;rm -rf /-", "workerd-morph.*-", "Workerd-A-"]) {
+      for (const bad of [
+        "workerd-morph",
+        "workerd-morph-",
+        "workerd-morph-e2e-",
+        "workerd-morph-e2e-aaaa1111222-",
+        "workerd-morph-e2e-aaaa111122223-",
+        "workerd-morph-e2e-AAAA11112222-",
+        "workerd-morph-e2e-aaaa11112222",
+        "x;rm -rf /-",
+        "workerd-morph.*-",
+      ]) {
         assert.throws(() => lock.trackContainers(bad), /E2E_LOCK_BAD_CONTAINER_PREFIX/);
       }
     });

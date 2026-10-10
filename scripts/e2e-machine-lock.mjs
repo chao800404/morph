@@ -80,20 +80,40 @@ export function containersFileFor(lockFile, ownerPid) {
   return `${lockFile}.containers.${ownerPid}`;
 }
 
-/** Only names a run itself chose: no shell or regex metacharacters. */
-const CONTAINER_PREFIX = /^[a-z0-9][a-z0-9-]*-$/;
+/**
+ * What the slot's holder is doing while it cleans up, for a waiting run to
+ * show: stopping processes, removing containers, or Docker not answering.
+ */
+export function statusFileFor(lockFile) {
+  return `${lockFile}.status`;
+}
+
+/**
+ * Exactly the prefix a run's worker name gives its containers, and nothing
+ * looser: a fixed-length id ends at the `-`, so one run's prefix can never be
+ * the start of another's, and there is nothing in it a shell or a regex reads.
+ */
+const CONTAINER_PREFIX = /^workerd-morph-e2e-[0-9a-f]{12}-$/;
 
 export function flockAvailable() {
   return spawnSync("flock", ["--version"], { stdio: "ignore" }).status === 0;
 }
 
 function readHolder(lockFile) {
+  let holder = "a run that left no note";
   try {
     const note = JSON.parse(readFileSync(holderNoteFor(lockFile), "utf8"));
-    return `pid ${note.pid} in ${note.cwd}, since ${note.startedAt} (${note.args})`;
+    holder = `pid ${note.pid} in ${note.cwd}, since ${note.startedAt} (${note.args})`;
   } catch {
-    return "a run that left no note";
+    // No note: say so.
   }
+  try {
+    const status = readFileSync(statusFileFor(lockFile), "utf8").trim();
+    if (status) return `${holder}; ${status}`;
+  } catch {
+    // No status: the holder is running, not cleaning up.
+  }
+  return holder;
 }
 
 /** A path as one single-quoted shell word. */
@@ -112,14 +132,17 @@ function shellQuote(value) {
  * Docker cannot be asked, the guardian keeps the lock and asks again: an
  * unconfirmed cleanup is not a finished one.
  */
-function guardianScript(ownerPid, groupsFile, containersFile, noteFile) {
+function guardianScript(ownerPid, groupsFile, containersFile, noteFile, statusFile) {
   const groups = shellQuote(groupsFile);
   const containers = shellQuote(containersFile);
   const note = shellQuote(noteFile);
+  const status = shellQuote(statusFile);
   const nap = "sleep 1 3>&-";
+  const say = (text) => `echo "cleaning up after pid ${ownerPid}, which has gone: ${text}" > ${status}`;
   return [
     `while kill -0 ${ownerPid} 2>/dev/null; do ${nap}; done`,
     `if [ -f ${groups} ]; then`,
+    `  ${say("stopping its processes")}`,
     `  for g in $(cat ${groups}); do kill -TERM -"$g" 2>/dev/null; done`,
     "  i=0",
     `  while [ $i -lt ${ORPHAN_GRACE_SECONDS} ]; do`,
@@ -134,14 +157,17 @@ function guardianScript(ownerPid, groupsFile, containersFile, noteFile) {
     "fi",
     `if [ -f ${containers} ]; then`,
     `  p=$(cat ${containers})`,
+    `  ${say("removing its containers ($p*)")}`,
     "  while :; do",
-    `    ids=$(docker ps -aq --filter "name=^$p" 3>&-) || { sleep 5 3>&-; continue; }`,
+    `    ids=$(docker ps -aq --filter "name=^$p" 3>&-) || { grep -q "Docker cannot" ${status} 2>/dev/null || ${say("Docker cannot be reached since $(date +%H:%M:%S); its containers ($p*) are unconfirmed, asking again")}; sleep 5 3>&-; continue; }`,
+    `    ${say("removing its containers ($p*)")}`,
     '    [ -z "$ids" ] && break',
     "    docker rm -f $ids >/dev/null 2>&1 3>&-",
     `    ${nap}`,
     "  done",
     `  rm -f ${containers}`,
     "fi",
+    `rm -f ${status}`,
     `grep -q '"pid":${ownerPid},' ${note} 2>/dev/null && rm -f ${note}`,
   ].join("\n");
 }
@@ -153,7 +179,7 @@ function guardianScript(ownerPid, groupsFile, containersFile, noteFile) {
  * `release` is safe to call at any point, waiting or not, and more than once.
  *
  * @param {{ lockFile: string, log: (message: string) => void, args: string,
- *   ownerPid?: number }} options
+ *   ownerPid?: number, remindMs?: number }} options
  */
 export function createMachineLock(options) {
   const ownerPid = options.ownerPid ?? process.pid;
@@ -209,7 +235,7 @@ export function createMachineLock(options) {
           options.log(`waiting for the machine's E2E slot, held by ${readHolder(options.lockFile)}`);
           reminder = setInterval(
             () => options.log(`still waiting for the E2E slot, held by ${readHolder(options.lockFile)}`),
-            REMIND_MS,
+            options.remindMs ?? REMIND_MS,
           );
         }, 500);
         child.once("exit", (code, signal) => {
@@ -229,6 +255,8 @@ export function createMachineLock(options) {
         throw error;
       });
       held = true;
+      // A guardian killed mid-cleanup can leave its status; it is not ours.
+      rmSync(statusFileFor(options.lockFile), { force: true });
       writeFileSync(
         holderNoteFor(options.lockFile),
         JSON.stringify({
@@ -240,7 +268,16 @@ export function createMachineLock(options) {
       );
       guardian = spawn(
         "sh",
-        ["-c", guardianScript(ownerPid, groupsFile, containersFile, holderNoteFor(options.lockFile))],
+        [
+          "-c",
+          guardianScript(
+            ownerPid,
+            groupsFile,
+            containersFile,
+            holderNoteFor(options.lockFile),
+            statusFileFor(options.lockFile),
+          ),
+        ],
         { stdio: ["ignore", "ignore", "inherit", fd], detached: true },
       );
       // It outlives this process by design; nothing here waits on it.
