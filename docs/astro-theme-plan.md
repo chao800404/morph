@@ -886,6 +886,35 @@ OCC）→ 該實例更新、其他實例不變**。
 - 「來源選取不會寫入」改為實際斷言：單擊、雙擊、雙擊後輸入、Escape、打開 Content 與 Styles 分頁之後，所有 Theme 檔案的版本與內容、source generation、每個 Document 的草稿 revision、generation 與內容都不變。
 
 
+#### 3.6.2.4 中斷診斷（一輪，2026-10-10 05:00 UTC，結果目錄 `/tmp/l15x-e2e/20261010-125555-l15-on/`）
+
+帶入只做記錄的 6d3cccc，加上 E2E 專用的請求計時與 dev server 輸出、docker events、測試步驟時間戳。
+
+**時間軸（`.astro` 存檔前後）**：
+
+| 時間（UTC） | 事件 |
+| --- | --- |
+| 05:04:45 | Monaco 輸入 |
+| 05:04:47.0 | 同步 changed 1；dev server 同一秒記錄 `[vite] program reload` |
+| 05:04:55.7 | 同步 unchanged 1 |
+| 05:05:00.8 | 頁面重新載入 `/`（200） |
+| 05:05:03.3–05:05:06.4 | 20 次 `OperationInterruptedError`，都在頁面重新載入後的模組請求高峰，同時在途最多約 6 個 |
+| 05:05:06.4 | HMR relay long-poll 回 500 |
+
+**判讀（依使用者的標準）**：
+
+- 原始錯誤 10 筆**全部**是 `Container port connection closed unexpectedly.`（retryable:true）：**只確認症狀相同**。
+- **重新載入與請求重疊沒有對上**：記錄到的 `program reload` 在中斷前 16 秒；中斷發生時 dev server 沒有任何重新載入的紀錄。Worker 模組也可能在下一個請求時才延遲重新載入而沒有記錄，所以不能排除，但目前的證據**不支持**「同一機制」。
+- 新事實：記錄為失敗的模組請求，最終幾乎都回 304（SDK 重試後成功）；真正以失敗收場的只有 HMR relay 的 long-poll（500）。
+- 容器崩潰（`not listening to port 3000`）這輪沒有發生；docker events 只有建立、啟動與停止時的銷毀。
+
+**同一輪的其他結果**：
+
+- 3b 這輪通過（舊選取沒跳；新位置 19:17；47/47）。累計跑到 3b 的 4 次中 2 次通過、2 次被中斷：**仍未完成穩定性驗收**。
+- 不寫入斷言通過：點選、雙擊、雙擊後輸入、Enter、Escape 之後，Theme 檔案版本與內容、source generation、所有 Document 都沒有變；內容寫入 0 次。
+- 未量到（spec 的錯）：island 畫布標籤在所有點選之後才讀，已換成別的選取（選取報告的 `locatedAt: "enclosing"` 有通過）；Content 與 Styles 分頁以 `role="tab"` 找不到，控制項數量沒有量。
+- island HMR：dev server 有 `[watch] /workspace/src/l15/Counter.jsx`，但沒有任何 HMR update 紀錄。另外 Vite 的相依掃描失敗（預設 Theme 的 Start 檔案 import 未核准的 `clsx`），預先打包被略過。兩點交給 island HMR 的追蹤項目。
+
 #### 3.6.3 L1.5b 內容欄位編輯
 
 **支援目標與第一版**：
