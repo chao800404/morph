@@ -21,7 +21,10 @@ import {
   type ContentUnavailableReason,
   type EditorSelectionDescriptor,
 } from "@/lib/storefront/editor/selection-taxonomy";
-import { rebaseSelectedRowPath } from "@/lib/storefront/editor/selected-row-identity";
+import {
+  rebaseSelectedRowPath,
+  type SelectedRowRefusal,
+} from "@/lib/storefront/editor/selected-row-identity";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -318,11 +321,15 @@ type EditorStyleInspectorProps = {
  * be made instead.
  */
 const CONTENT_BLOCKED_MESSAGES: Record<
-  ContentUnavailableReason | "row-lost",
+  ContentUnavailableReason | SelectedRowRefusal,
   string
 > = {
   "row-lost":
     "This entry was moved or removed after it was selected, so an edit here would have no entry to go to. Select it again on the canvas.",
+  "row-id-missing":
+    "This entry has no stable id the editor can confirm it by (or shares one with another entry), so an edit could land on a different entry. Nothing is written; edit it in Code, or select it again once it has been saved.",
+  "row-id-duplicate":
+    "Another entry in this list has the same id, so the editor cannot tell which one an edit belongs to. Nothing is written until the ids are distinct.",
   "value-not-from-row":
     "This text comes from a value the list sets in code, not from this entry's own field, so editing it here could not change what the page shows. Edit it in Code; the entry's own fields are offered when the entry is selected.",
   "row-not-passed":
@@ -783,8 +790,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       rebaseSelectedRowPath(selection?.fieldPath, selection?.itemId, props),
     [props, selection?.fieldPath, selection?.itemId],
   );
-  const selectedRowLost = selectedRow.lost;
-  const activeFieldKey = selectedRowLost ? null : selection?.fieldKey;
+  const selectedRowRefused = selectedRow.refused;
+  const activeFieldKey = selectedRowRefused ? null : selection?.fieldKey;
   const activeFieldPath = selectedRow.fieldPath ?? undefined;
   /**
    * Why nothing here may be written, when something stops it: the selected
@@ -793,8 +800,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * there is none to offer — not a guess, and not a top-level field of the
    * same name.
    */
-  const contentBlockedReason: ContentUnavailableReason | "row-lost" | null =
-    selectedRowLost ? "row-lost" : (selection?.contentUnavailable ?? null);
+  const contentBlockedReason:
+    | ContentUnavailableReason
+    | SelectedRowRefusal
+    | null = selectedRowRefused ?? selection?.contentUnavailable ?? null;
   const contentBlockedRef = useRef(contentBlockedReason);
   contentBlockedRef.current = contentBlockedReason;
   // A commit seen when this panel mounted is already in the props it read.
@@ -887,10 +896,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         }
         const rebased = rebaseSelectedRowPath(
           binding.fieldPath,
-          selection?.itemId,
+          binding.itemId ?? selection?.itemId,
           props,
         );
-        if (rebased.lost) return [];
+        if (rebased.refused) return [];
         return rebased.fieldPath === binding.fieldPath
           ? [binding]
           : [{ ...binding, fieldPath: rebased.fieldPath ?? binding.fieldPath }];

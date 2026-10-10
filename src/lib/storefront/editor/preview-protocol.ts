@@ -643,7 +643,8 @@ function parseEditableDescendantFields(
       !isBoundedString(item.fieldKey, 200) ||
       !isNullableBoundedString(item.fieldPath, 500) ||
       (item.sectionId !== undefined &&
-        !isNullableBoundedString(item.sectionId, 100))
+        !isNullableBoundedString(item.sectionId, 100)) ||
+      (item.itemId !== undefined && !isNullableBoundedString(item.itemId, 200))
     ) {
       return null;
     }
@@ -661,6 +662,7 @@ function parseEditableDescendantFields(
       fieldKey: item.fieldKey,
       fieldPath: item.fieldPath,
       sectionId,
+      ...(typeof item.itemId === "string" ? { itemId: item.itemId } : {}),
     });
   }
   return result;

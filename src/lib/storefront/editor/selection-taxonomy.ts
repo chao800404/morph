@@ -84,6 +84,11 @@ export type EditableDescendantField = Readonly<{
    * from, editing one would write to whichever the selection happened to name.
    */
   sectionId: string | null;
+  /**
+   * The `id` of the repeated-field row the field is in, when it is in one.
+   * A container can span several rows, so each field carries its own.
+   */
+  itemId?: string | null;
 }>;
 
 /**

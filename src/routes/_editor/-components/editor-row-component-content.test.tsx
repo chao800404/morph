@@ -359,6 +359,39 @@ describe("editing a row rendered by its own component", () => {
     expect(screen.queryByDisplayValue("T2")).toBeNull();
     expect(onPropsChange).not.toHaveBeenCalled();
   });
+
+  it("refuses a row selected without an id, and says why", async () => {
+    const { onPropsChange } = renderInspector({
+      ...(await clickOn("T2")),
+      itemId: null,
+    });
+
+    expect(screen.queryByDisplayValue("T2")).toBeNull();
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/no stable id/);
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+
+  it("refuses a row whose id another stored row shares, and says why", async () => {
+    const { onPropsChange } = renderInspector(await clickOn("T2"), {
+      props: {
+        label: "Why",
+        items: [
+          { id: "r2", title: "T1", body: "B1" },
+          { id: "r2", title: "T2", body: "B2" },
+        ],
+      },
+    });
+
+    expect(screen.queryByDisplayValue("T2")).toBeNull();
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/same id/);
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
 });
 
 /**

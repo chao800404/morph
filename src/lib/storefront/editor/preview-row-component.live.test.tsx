@@ -286,6 +286,44 @@ describe("a row rendered by its own component, declared with of:", () => {
     expect(restored.textContent).toBe("T2");
   });
 
+  it("reports no row id where the row has none, or shares one", async () => {
+    const files = [CARD, list(`<Card key={index} {...item} />`), route()];
+    const withoutIds = await mount(files, {
+      index: {
+        version: 1,
+        sections: [
+          section("list", {
+            items: [
+              { title: "T1", body: "B1" },
+              { title: "T2", body: "B2" },
+            ],
+          }),
+        ],
+      },
+    });
+    expect(resolveSelectable(elementShowing(withoutIds, "T2"))?.itemId).toBe(
+      null,
+    );
+
+    const shared = await mount(files, {
+      index: {
+        version: 1,
+        sections: [
+          section("list", {
+            items: [
+              { id: "same", title: "T1", body: "B1" },
+              { id: "same", title: "T2", body: "B2" },
+            ],
+          }),
+        ],
+      },
+    });
+    expect(resolveSelectable(elementShowing(shared, "T2"))?.itemId).toBe(null);
+    // Unique again, it is reported.
+    const unique = await mount(files);
+    expect(resolveSelectable(elementShowing(unique, "T2"))?.itemId).toBe("r2");
+  });
+
   it("reaches rows the Document has not stored yet", async () => {
     // Card is never told anything but its row: a single row with no stored
     // body still offers body, under that row.

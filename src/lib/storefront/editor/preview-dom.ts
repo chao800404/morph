@@ -396,7 +396,19 @@ function previewRowItemId(element: HTMLElement): string | null {
     return null;
   }
   const id = row.dataset.storefrontItemId ?? "";
-  return id && id.length <= 200 ? id : null;
+  if (!id || id.length > 200) return null;
+  // An id is an identity only while one row holds it. Two rows sharing one
+  // cannot be told apart, so the element is reported as having none, and the
+  // editor refuses to write rather than pick one.
+  const section = closestPreviewSectionRoot(row) ?? row.ownerDocument;
+  const rowPaths = new Set<string>();
+  for (const candidate of section.querySelectorAll<HTMLElement>(
+    `[data-storefront-item-id="${CSS.escape(id)}"][data-storefront-field-path]`,
+  )) {
+    const path = candidate.dataset.storefrontFieldPath ?? "";
+    if (/^[^.]+\.\d+$/.test(path)) rowPaths.add(path);
+  }
+  return rowPaths.size > 1 ? null : id;
 }
 
 /** Whether something inside `element` is a field the editor can prove. */
@@ -635,7 +647,13 @@ export function collectEditableDescendantFields(
     const identity = `${sectionId ?? ""}\u0000${fieldKey}\u0000${fieldPath}`;
     if (identities.has(identity)) continue;
     identities.add(identity);
-    result.push({ fieldKey, fieldPath, sectionId: sectionId ?? null });
+    const itemId = previewRowItemId(candidate);
+    result.push({
+      fieldKey,
+      fieldPath,
+      sectionId: sectionId ?? null,
+      ...(itemId ? { itemId } : {}),
+    });
   }
 
   return result;
