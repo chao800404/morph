@@ -41,12 +41,12 @@ Morph 希望同時具備：
 
 **產品目標。** 作者用框架原本的寫法撰寫 Theme；Design 逐步接上這些寫法，而不是要求作者為了 Design 改寫。只能執行、Design 卻認不出內容綁定，不算達成這個目標。這是產品要完成的方向，不是拒絕程式的規則：Morph 不因為認不出綁定而拒絕、改寫或限制作者的程式。
 
-**不約制的是資料載入方式。**
+**不約制的是資料載入與傳遞方式。**
 - 內容經 Morph 的讀取呼叫取得（例如 `morph.pages.get()`），與任何 headless CMS 相同。
 - 讀到之後怎麼傳由作者決定：解構、別名、Astro frontmatter、TanStack Start 的 server function → loader → `useLoaderData()`。
 - 不要求固定寫成 `home.hero`、不要求手寫標記或特定 wrapper 元件。
 
-**仍要遵守的是欄位契約。** 可以在 Design 視覺寫入的欄位，必須由既有的 `contentFields`／`.fields.ts` 宣告（型別、限制、預設值）。這規定的是「哪些欄位可寫、怎麼驗證」，不是資料怎麼傳。
+**仍要遵守的是欄位契約。** 可以在 Design 視覺寫入的欄位，必須由既有的 `contentFields`／`.fields.ts` 宣告欄位與型別、限制。這規定的是「哪些欄位可寫、怎麼驗證」，不是程式怎麼寫。元件的預設值仍寫在元件程式裡，不要求在宣告中再寫一份，避免兩份真相。
 
 **正式驗收條件（不是未來目標）。** 以下兩例必須通過才能宣稱支援，每例都要確認四件事：畫布點選選到正確的欄位、Inspector 修改後畫布更新、Document 寫入的是原始值（不是 Theme 轉換後的文字）、重新載入後三者一致。
 - Astro：frontmatter 中 `const home = await morph.pages.get("/home"); const { hero } = home;`，再 `<Hero {...hero} />`。
@@ -476,7 +476,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 - **內容**：`src/morph/content.ts` 改為作者擁有，有明確的還原方式；Design 寫入前先確認需要的匯出形狀（#180）。Inspector 只編輯儲存的值，不再把 Theme 轉換後的文字當草稿；畫布行內編輯只在顯示文字等於儲存值時開始（#186）。Starter 可在本機以 `morph.pages.get` 讀已發布內容（#161）。
 - **編輯器**：離開或切頁前先送出等待中的修改，存檔狀態與發布狀態分開顯示（#192）；Theme 重新取得時，畫布上正在輸入的文字不再被關閉（#201）；Theme 無法編譯導致畫布空白時說明原因（#194）。
 - **建置與預覽的容器**：三種 Sandbox 容器依實測定規格（#157）；建置容器啟動失敗時只重試啟動階段，探測改在 Durable Object 內執行，才讀得到結構化錯誤（#149、#155）；Build Preview 容器啟動失敗時回應「starting」，不再停在 500（#170）。
-- **直譯器**：直譯器的保證已在真實 React Live Preview 中以測試固定（#193）。刪除直譯器是下一個 PR，排在 #198 與 Header／Footer 相關分支合併之後。
+- **直譯器**：直譯器的保證已在真實 React Live Preview 中以測試固定（#193）。刪除直譯器是下一個 PR，前置條件是以下四項全部合併：#198（自身元件渲染的列有穩定身分）、#199（共用 layout 修改算作未發布）、Header／Footer 隱藏修正、欄位標記修正（後兩項 2026-10-11 尚無 PR）。
 - **本機程式碼同步（原型）**：本機資料夾與 Theme Code 工作區雙向同步，含累計大量刪除保護（#177）；過時副本的提示列出本機同步也是可能來源（#182）。用法與限制見 [`docs/local-code-sync.md`](docs/local-code-sync.md)，後續順序見下表。
 - **E2E 基礎設施**：一台機器同時只跑一個編輯器 E2E，runner 自己持鎖；容器傳輸的 run 以自己的名稱認領容器、建自己的 Sandbox 映像，互不清除（#195）。一般 `pnpm dev` 之間仍會互相清除 Sandbox 容器，見 [`TODO.md`](TODO.md)。
 
