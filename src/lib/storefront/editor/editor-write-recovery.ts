@@ -24,7 +24,7 @@ export async function verifyEditorWriter({
 }: {
   ownerUserId: string;
   readSession: () => Promise<{ user?: { id?: string } | null } | null>;
-  readTheme: () => Promise<{ success: boolean }>;
+  readTheme: () => Promise<{ success: boolean; error?: string | null }>;
 }): Promise<EditorWriteVerification> {
   let session: Awaited<ReturnType<typeof readSession>>;
   try {
@@ -38,9 +38,11 @@ export async function verifyEditorWriter({
 
   try {
     const theme = await readTheme();
-    // A Theme the server will not hand back — gone, or no longer this
-    // store's — is one this editor cannot save to.
-    return theme.success ? "verified" : "access-denied";
+    if (theme.success) return "verified";
+    // A Theme the server says is not there — gone, or no longer this
+    // store's — is one this editor cannot save to. Any other failure, a
+    // server error above all, says nothing about access, and is no answer.
+    return theme.error === "NOT_FOUND" ? "access-denied" : "unanswered";
   } catch (error) {
     const code = classifyAuthFailure(error);
     if (code === "AUTH_REQUIRED") return "signed-out";

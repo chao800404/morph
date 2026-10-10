@@ -36,6 +36,12 @@ import {
 } from "@/lib/storefront/editor/editor-write-gate";
 import { currentRequestStamp } from "@/lib/storefront/editor/editor-request-sequence";
 import {
+  currentThemeReadFailure,
+  resolveEditorLock,
+  type EditorLockReason,
+  type ThemeReadFailure,
+} from "@/lib/storefront/editor/editor-read-lock";
+import {
   confirmLostSave,
   earlierRefusalStillApplies,
   settleHeldFile,
@@ -380,6 +386,10 @@ import {
 import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
+  EditorLockedPanel,
+  EditorThemeReadNotice,
+} from "./editor-locked-panel";
+import {
   awaitsOwnSave,
   planPreviewSync,
   waitForOwnSaves,
@@ -449,12 +459,18 @@ function preloadEditorCodeWorkspace() {
 
 export function EditorModeSurface({
   active,
+  locked = false,
   className,
   children,
   style,
   surfaceRef,
 }: {
   active: boolean;
+  /**
+   * The editor is closed (`resolveEditorLock`): hidden and out of reach as an
+   * inactive surface is, and still mounted, so the unsaved work inside stays.
+   */
+  locked?: boolean;
   className?: string;
   children: React.ReactNode;
   style?: React.CSSProperties;
@@ -464,12 +480,13 @@ export function EditorModeSurface({
    */
   surfaceRef?: React.Ref<HTMLDivElement>;
 }) {
+  const shown = active && !locked;
   return (
     <div
       ref={surfaceRef}
       style={style}
-      aria-hidden={!active}
-      inert={!active}
+      aria-hidden={!shown}
+      inert={!shown}
       className={cn(
         "col-start-1 row-start-3 min-h-0 min-w-0 flex relative",
         // Keep the iframe/Monaco layout alive while the other mode is shown.
@@ -479,7 +496,7 @@ export function EditorModeSurface({
         // grid layer fully transparent even for composited children such as
         // Monaco and the iframe, while z-index gives the active layer a
         // deterministic stacking order.
-        active
+        shown
           ? "visible z-10 opacity-100"
           : "invisible z-0 opacity-0 pointer-events-none",
         className,
@@ -494,10 +511,12 @@ export function EditorModeSurface({
 export function EditorCodeModeSurface({
   active,
   preload,
+  locked,
   children,
 }: {
   active: boolean;
   preload?: boolean;
+  locked?: boolean;
   children: React.ReactNode;
 }) {
   const [hasMounted, setHasMounted] = useState(active || preload);
@@ -509,7 +528,11 @@ export function EditorCodeModeSurface({
   if (!active && !hasMounted) return null;
 
   return (
-    <EditorModeSurface active={active} className="flex-1 overflow-hidden">
+    <EditorModeSurface
+      active={active}
+      locked={locked}
+      className="flex-1 overflow-hidden"
+    >
       {children}
     </EditorModeSurface>
   );
@@ -623,6 +646,15 @@ type EditorShellProps = {
     email?: string;
     image?: string | null;
   };
+  /**
+   * What the latest read of `context` failed with, while the editor stays on
+   * the data read before it; see `resolveEditorRouteView`. With the stamp the
+   * read was sent under, when it threw.
+   */
+  themeRead?: ThemeReadFailure | null;
+  themeReadSentUnder?: number;
+  /** Reads `context` again. */
+  onRetryThemeRead?: () => void;
 };
 
 /** Resolves true when the navigation must not happen. */
@@ -760,6 +792,9 @@ export function VisualEditorShell({
   navigatingRoutePath,
   navigationGuardRef,
   currentUser,
+  themeRead = null,
+  themeReadSentUnder,
+  onRetryThemeRead,
 }: EditorShellProps) {
   // The design surface owns the panel widths as CSS custom properties so a
   // resize drag can repaint without re-rendering this component. See
@@ -5091,6 +5126,39 @@ export function VisualEditorShell({
   );
 
   /**
+   * The Theme refused or gone, as the latest read of it says — unless that
+   * read was sent before a check of who is signed in that has read the Theme
+   * since. A refusal stops writes here as one from a save would; reads alone
+   * do not do that (`refusalOfError`), but this read is the Theme itself.
+   */
+  const currentThemeRead = currentThemeReadFailure(
+    writeGate,
+    themeRead,
+    themeReadSentUnder,
+  );
+  const themeRefused =
+    currentThemeRead === "access-denied" || currentThemeRead === "missing";
+  useEffect(() => {
+    if (!themeRefused) return;
+    useEditorWriteGateStore
+      .getState()
+      .pause(workspaceScope, "ACCESS_DENIED", "theme");
+  }, [themeRefused, workspaceScope]);
+
+  /**
+   * Closed to the author while another account is signed in, or the Theme is
+   * refused or gone; see `resolveEditorLock`. Nothing is unmounted: the
+   * unsaved work stays in this tab, out of reach, and nothing sends it.
+   */
+  const editorLockRef = useRef<EditorLockReason | null>(null);
+  const editorLock = resolveEditorLock(
+    writeGate,
+    currentThemeRead,
+    editorLockRef.current,
+  );
+  editorLockRef.current = editorLock;
+
+  /**
    * Whether the author's edits are stored, decided from what is held now —
    * never from a response arriving, which may answer an older write. See
    * `resolveEditorSaveState`. Shown apart from the publish state, which only
@@ -5468,6 +5536,16 @@ export function VisualEditorShell({
     if (answer === "unanswered") {
       toast.error("Could not check your sign-in. Try again.");
       return;
+    }
+    if (answer === "access-denied") {
+      // Read the Theme again, so the editor shows what the check found: a
+      // Theme refused or gone closes it (`resolveEditorLock`).
+      void queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ).queryKey,
+      });
     }
     if (gate.recovery !== "verified") return;
     // Reads and the preview can come back now; the paused writes wait for
@@ -9435,7 +9513,10 @@ export function VisualEditorShell({
       {/* Keep the canvas controls in a dedicated auto-sized center track with
           equal flexible gutters. The storefront name stays left and the save
           and publish actions stay right without shifting the center controls. */}
-      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4">
+      <header
+        inert={editorLock !== null}
+        className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4"
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -10003,17 +10084,24 @@ export function VisualEditorShell({
           onCheckAgain={() => void checkWriterAgain()}
           onSave={() => void resumePausedWrites()}
         />
-        <EditorUnconfirmedSavesNotice
-          count={unconfirmedFiles.length + unconfirmedContentCount}
-          checking={isCheckingUnconfirmed}
-          onCheck={() => void checkUnconfirmedSaves()}
+        <EditorThemeReadNotice
+          failed={currentThemeRead === "unavailable"}
+          onRetry={onRetryThemeRead}
         />
-        <EditorSourceConflictNotice
-          paths={pendingSourceConflicts}
-          saving={isSavingSourceConflicts}
-          onSave={() => void saveSourceConflicts()}
-        />
+        <div inert={editorLock !== null} className="flex flex-col">
+          <EditorUnconfirmedSavesNotice
+            count={unconfirmedFiles.length + unconfirmedContentCount}
+            checking={isCheckingUnconfirmed}
+            onCheck={() => void checkUnconfirmedSaves()}
+          />
+          <EditorSourceConflictNotice
+            paths={pendingSourceConflicts}
+            saving={isSavingSourceConflicts}
+            onSave={() => void saveSourceConflicts()}
+          />
+        </div>
       </div>
+      {editorLock ? <EditorLockedPanel reason={editorLock} /> : null}
 
       {/*
         A build is the compiled artifact, not something the editor can act
@@ -10022,7 +10110,8 @@ export function VisualEditorShell({
         as one more panel inside the editor, and so the artifact is seen at
         the size a visitor gets instead of inside a scaled canvas.
       */}
-      {releasePreview ? (
+      {/* Not over a closed editor: it would cover the notice that says why. */}
+      {editorLock ? null : releasePreview ? (
         <RouteFullscreenSurface
           label="Published release"
           onClose={returnToLivePreview}
@@ -10153,6 +10242,7 @@ export function VisualEditorShell({
       <EditorCodeModeSurface
         active={editorMode === "code"}
         preload={shouldPreloadCodeWorkspace}
+        locked={editorLock !== null}
       >
         <Suspense
           fallback={
@@ -10197,6 +10287,7 @@ export function VisualEditorShell({
 
       <EditorModeSurface
         active={editorMode === "design"}
+        locked={editorLock !== null}
         className="flex-1 overflow-hidden bg-muted/40 max-md:flex-col"
         surfaceRef={designSurfaceRef}
         style={
