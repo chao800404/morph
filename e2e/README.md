@@ -17,6 +17,19 @@ saved session lands in `e2e/.auth/`, which is ignored by git.
 
 A dev server on port 3000 is reused if one is already running.
 
+### One run per machine
+
+`pnpm test:e2e:local-preview` (`scripts/run-editor-e2e.mjs`) takes a
+machine-wide lock before it starts anything shared, and waits for it, so two
+runs on one machine take turns instead of failing each other under load. While
+it waits it prints who holds the slot (pid, folder, start time, arguments). The
+lock is `flock`'s and follows the run: however it ends, even killed outright,
+the slot comes free within about a second.
+
+- `MORPH_E2E_LOCK=0` runs without the lock, and says so.
+- Without `flock` (macOS) the run goes ahead unlocked, and says so.
+- Calling `playwright test` directly bypasses it.
+
 ## Other browsers
 
 Chromium always runs. Firefox and WebKit are opt-in, because each needs system

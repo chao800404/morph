@@ -31,6 +31,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  DEFAULT_LOCK_FILE,
+  createMachineLock,
+  flockAvailable,
+} from "./e2e-machine-lock.mjs";
 
 /** Whether an exit has already been chosen. See `exitAfterFlush` below. */
 let exiting = false;
@@ -192,6 +197,13 @@ const started = [];
  */
 const buildTimings = [];
 let stateDir = null;
+/**
+ * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
+ * port check until teardown is done, so the next run starts on a machine this
+ * one has left.
+ * @type {ReturnType<typeof createMachineLock> | null}
+ */
+let machineLock = null;
 
 function log(message) {
   console.log(`[e2e] ${message}`);
@@ -568,6 +580,13 @@ async function runTeardown() {
     log(`removed ${stateDir}`);
     stateDir = null;
   }
+  // Last: the slot is free only once this run has left the machine. Also
+  // stops a wait still in progress when the run was interrupted while waiting.
+  if (machineLock) {
+    await machineLock.release();
+    machineLock = null;
+    log("released the machine's E2E slot");
+  }
 }
 
 /**
@@ -822,6 +841,23 @@ async function main() {
     throw new Error(
       `CLOUDFLARE_CREDENTIALS_PRESENT: ${credentialsFound.join(", ")}. This run publishes, and publishing is atomic — the pointer moves and the release is deployed by whichever deployer the Worker composes. With a credential in scope that is the real one, which uploads to Cloudflare. Remove it from the environment this run loads, or run the suite without the publish slice.`,
     );
+  }
+
+  // After every check that needs nothing shared, so a run that is refused
+  // anyway does not wait for a slot first; before the port check, which would
+  // otherwise refuse a run because the one ahead of it is still using it.
+  if (process.env.MORPH_E2E_LOCK === "0") {
+    log("machine lock off (MORPH_E2E_LOCK=0): this run may overlap another");
+  } else if (!flockAvailable()) {
+    log("machine lock unavailable (no flock on this system): this run may overlap another");
+  } else {
+    machineLock = createMachineLock({
+      lockFile: process.env.MORPH_E2E_LOCK_FILE ?? DEFAULT_LOCK_FILE,
+      log,
+      args: process.argv.slice(2).join(" ") || "(full suite)",
+    });
+    await machineLock.acquire();
+    log("holding the machine's E2E slot");
   }
 
   if (await portInUse(DEV_PORT)) {
