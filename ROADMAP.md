@@ -433,6 +433,34 @@ Starter bootstrap 與 workspace upgrade 契約：
 - Live Preview 在 Sandbox 中斷後自動重連（#139、#143）；原生預先渲染不再開 inspector port，修正偶發的 EADDRINUSE 500（#146）。
 - 原生建置開關仍關閉；開啟是另一個 PR，限已認證的工具鏈組合，且須先完成 Cloudflare 部署環境的驗收。
 
+進度（2026-10-08～10，皆為本機驗收，Cloudflare 部署環境未驗）：
+- **Astro A1～A6c 已合併**，仍在 `MORPH_ASTRO_THEMES=1` 開關後面，正式環境一律關閉；細節與各步閘門見 [`docs/astro-theme-plan.md`](docs/astro-theme-plan.md)。
+  - A1 框架身分由 build 記錄（#151）。
+  - A2a／A2b 工具鏈依框架分開，以身分記錄；預先渲染在 Sandbox 路徑驗證（#162、#163）。
+  - A3 預先渲染只讀封存內容，以真實建置證明（#164）。
+  - A4 原生建置先在本機 runner、再到 Sandbox runner；官方 Astro Cloudflare fixture 原樣匯入（#165、#168、#169）。Wrangler 設定可省略，工具目錄不從原始碼來（#171）。
+  - A5 網站記錄框架；Astro 走過 Build Preview、發布與回滾（#178）。
+  - A6 Live Preview：A6a 本機 sidecar（#179）；A6b-1 草稿內容同步，帶票據、雜湊綁定並逐伺服器確認（#181、#185）；A6c 進容器（#188）；純 Astro 網站不需 Start 入口檔即可啟動預覽（#196）；Code 修改 React island 時就地更新並保留狀態（#197，只在本機容器驗收，CI 不跑容器）。
+  - 下一步是 L1.5（點選定位，設計草稿 #191 未合併）；L2 仍等解析 Worker 的正式部署核准。
+- **`src/` 下的二進位檔**：沿用 `public/` 的儲存與建置機制，兩種 Live Preview 傳輸、Build Preview、發布與回滾都已驗收；Code 模式可上傳（#172～#175）。平台建置檔在伺服器端拒絕，過期的可刪除（#176）。
+- **內容**：`src/morph/content.ts` 改為作者擁有，有明確的還原方式；Design 寫入前先確認需要的匯出形狀（#180）。Inspector 只編輯儲存的值，不再把 Theme 轉換後的文字當草稿；畫布行內編輯只在顯示文字等於儲存值時開始（#186）。Starter 可在本機以 `morph.pages.get` 讀已發布內容（#161）。
+- **編輯器**：離開或切頁前先送出等待中的修改，存檔狀態與發布狀態分開顯示（#192）；Theme 重新取得時，畫布上正在輸入的文字不再被關閉（#201）；Theme 無法編譯導致畫布空白時說明原因（#194）。
+- **建置與預覽的容器**：三種 Sandbox 容器依實測定規格（#157）；建置容器啟動失敗時只重試啟動階段，探測改在 Durable Object 內執行，才讀得到結構化錯誤（#149、#155）；Build Preview 容器啟動失敗時回應「starting」，不再停在 500（#170）。
+- **直譯器**：直譯器的保證已在真實 React Live Preview 中以測試固定（#193）。刪除直譯器是下一個 PR，排在 #198 與 Header／Footer 相關分支合併之後。
+- **本機程式碼同步（原型）**：本機資料夾與 Theme Code 工作區雙向同步，含累計大量刪除保護（#177）；過時副本的提示列出本機同步也是可能來源（#182）。用法與限制見 [`docs/local-code-sync.md`](docs/local-code-sync.md)，後續順序見下表。
+- **E2E 基礎設施**：一台機器同時只跑一個編輯器 E2E，runner 自己持鎖；容器傳輸的 run 以自己的名稱認領容器、建自己的 Sandbox 映像，互不清除（#195）。一般 `pnpm dev` 之間仍會互相清除 Sandbox 容器，見 [`TODO.md`](TODO.md)。
+
+### 本機程式碼同步後續（2026-10-09 排定，依序）
+
+第 1 階段原型已合併（#177、#182）。以下依使用者排定的順序進行；安全還原排在即時更新之前，避免使用者在還原能力缺席時依賴即時同步。
+
+| 順序 | 項目 | 類別 |
+| ---: | --- | --- |
+| 1 | 安全的 pull／restore 指令：本機誤刪或改壞後，可從 Morph 取回，不必刪掉 `.morph/sync-state.json` 重新 `link` | 正確性 |
+| 2 | 專案綁定與防誤連：確認本機資料夾與 Morph 工作區的對應，避免把一個專案的檔案同步進另一個 | 安全 |
+| 3 | 編輯器即時顯示本機修改，以及 Code 模式內的衝突標示 | 介面 |
+| 4 | 框架原生寫法的綁定契約設計文件（loader、server function、解構、Astro frontmatter） | 設計 |
+
 ---
 
 # Phase 0 — Architecture Alignment
