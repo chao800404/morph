@@ -39,6 +39,16 @@ import {
 } from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import { Input } from "@/components/ui/input";
@@ -823,6 +833,16 @@ export function VisualEditorShell({
   >({});
   const contentConflictsRef = useRef(contentConflicts);
   contentConflictsRef.current = contentConflicts;
+  /**
+   * Conflicted sections whose update was stopped because a list in them was
+   * changed on both sides, by pending-content key. Kept so the toolbar can
+   * say which lists, and so the author has a way out other than waiting.
+   */
+  const [listConflicts, setListConflicts] = useState<
+    Record<string, { templateId: string; sectionId: string; lists: string[] }>
+  >({});
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  const [contentResetEpoch, setContentResetEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -1379,13 +1399,20 @@ export function VisualEditorShell({
           "An earlier save was not answered. Your changes are kept; check before saving again.",
         );
       }
-      const clearConflict = () =>
+      const clearConflict = () => {
         setContentConflicts((current) => {
           if (!(key in current)) return current;
           const next = { ...current };
           delete next[key];
           return next;
         });
+        setListConflicts((current) => {
+          if (!(key in current)) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
 
       try {
         const result = await commitPendingContent({
@@ -1564,14 +1591,22 @@ export function VisualEditorShell({
       // overwrite the other writer's rows. Nothing is sent for this section;
       // it stays out of date with the author's content kept, and they are
       // told why rather than having either side's work replaced.
-      const listConflicts = conflictingListKeys({
+      const conflictedLists = conflictingListKeys({
         incoming,
         baseline,
         local: pending.props,
       });
-      if (listConflicts.length > 0) {
+      if (conflictedLists.length > 0) {
+        setListConflicts((current) => ({
+          ...current,
+          [key]: {
+            templateId,
+            sectionId: pending.sectionId,
+            lists: conflictedLists,
+          },
+        }));
         toast.error(
-          `${listConflicts.join(", ")} also changed elsewhere since you edited ${listConflicts.length === 1 ? "it" : "them"}, so your version was not written over theirs. Reload the editor to see the latest list, then make your change again.`,
+          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Use "Discard mine" to load the latest version, then make your change again.`,
         );
         continue;
       }
@@ -7770,6 +7805,70 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id, queryClient],
   );
 
+  /**
+   * Discards the unsaved content of sections whose update stopped on a list
+   * both sides changed, and loads the latest version — only once the author
+   * has confirmed it in the dialog that names what will be lost.
+   *
+   * The whole section's unsaved content goes, not only the list: what is left
+   * would be an edit made against a version the author no longer sees. The
+   * Inspector's own copy is reset with it (`contentResetEpoch`), so nothing
+   * typed before is sent again by the next keystroke.
+   */
+  const discardListConflicts = useCallback(async () => {
+    const entries = Object.entries(listConflicts);
+    if (entries.length === 0) return;
+    // The latest version is read first. If it cannot be, nothing is
+    // discarded: dropping the draft without the version that replaces it
+    // would lose the author's work and leave them where they were.
+    const fresh = await queryClient
+      .fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      })
+      .catch(() => null);
+    if (!fresh?.success) {
+      toast.error(
+        "The latest version could not be loaded, so nothing was discarded. Try again.",
+      );
+      return;
+    }
+
+    const keys = new Set(entries.map(([key]) => key));
+    for (const key of keys) {
+      pendingPropsMapRef.current.delete(key);
+      pendingPropsBaselineRef.current.delete(key);
+    }
+    setContentConflicts((current) => {
+      const next = { ...current };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+    setListConflicts({});
+    setDiscardDialogOpen(false);
+    // Edits from here on are made against the version just loaded.
+    for (const requestedTemplateId of new Set(
+      entries.map(([, entry]) => entry.templateId),
+    )) {
+      const templateId =
+        routeTemplateIdsRef.current.get(requestedTemplateId) ??
+        requestedTemplateId;
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === templateId,
+      );
+      if (typeof template?.draftGeneration === "number") {
+        templateDraftGenerationRef.current.set(
+          templateId,
+          template.draftGeneration,
+        );
+      }
+    }
+    setContentResetEpoch((epoch) => epoch + 1);
+  }, [context.storefront.id, context.theme.id, listConflicts, queryClient]);
+
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
       // The binding, not the active template: on a page whose document is not
@@ -9186,6 +9285,57 @@ export function VisualEditorShell({
                     Try again
                   </Button>
                 ) : null}
+                {Object.keys(listConflicts).length > 0 ? (
+                  // The way out when an update stopped on a list both sides
+                  // changed. Nothing is discarded by the button itself: it
+                  // asks first, and says exactly what would be lost.
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => setDiscardDialogOpen(true)}
+                    title="Discard your unsaved changes to the sections whose lists were also changed elsewhere, and load the latest version."
+                  >
+                    Discard mine…
+                  </Button>
+                ) : null}
+                <AlertDialog
+                  open={discardDialogOpen}
+                  onOpenChange={setDiscardDialogOpen}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Discard your unsaved changes?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Someone else changed{" "}
+                        {Object.values(listConflicts)
+                          .map(
+                            (entry) =>
+                              `${entry.lists.join(", ")} in ${entry.sectionId}`,
+                          )
+                          .join("; ")}{" "}
+                        since you edited it, so your version cannot be saved
+                        over theirs. Discarding removes all of your unsaved
+                        changes to{" "}
+                        {Object.values(listConflicts).length === 1
+                          ? "that section"
+                          : "those sections"}{" "}
+                        and loads the latest version. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep my changes</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => void discardListConflicts()}
+                      >
+                        Discard and load latest
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
                 {/* Splits the bar into what is true and what you can do. The
                     status was the only item here with no container of its own,
                     so against a row of icon buttons it read as loose text. */}
@@ -10047,6 +10197,7 @@ export function VisualEditorShell({
         </div>
 
         <EditorAssistantPanel
+          contentResetEpoch={contentResetEpoch}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}

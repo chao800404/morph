@@ -697,30 +697,31 @@ describe("a list both writers changed", () => {
 
     // The document as the other writer left it: a row added in front.
     const client = readyQueryClient();
+    const remote = {
+      success: true,
+      data: {
+        ...listContext,
+        templates: [
+          {
+            ...listContext.templates[0],
+            draftGeneration: 7,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  props: { heading: "Welcome", items: rows("C", "A", "B") },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
     client.setQueryData(
       storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
-      {
-        success: true,
-        data: {
-          ...listContext,
-          templates: [
-            {
-              ...listContext.templates[0],
-              draftGeneration: 7,
-              document: {
-                version: 1,
-                sections: [
-                  {
-                    id: "hero",
-                    type: "hero",
-                    props: { heading: "Welcome", items: rows("C", "A", "B") },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      } as never,
+      remote as never,
     );
     render(
       <QueryClientProvider client={client}>
@@ -779,6 +780,53 @@ describe("a list both writers changed", () => {
     );
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(saveStatus()).toBe("Out of date");
+
+    // The way out names the list, and asks before anything is discarded.
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/items in hero/);
+    expect(dialog.textContent).toMatch(/cannot be undone/);
+
+    // Declined, nothing changes: the draft is still there to decide about.
+    act(() => {
+      screen.getByRole("button", { name: "Keep my changes" }).click();
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+
+    // Confirmed while the latest version cannot be read: nothing is
+    // discarded, since dropping the draft would leave the author with neither.
+    getThemeEditor.mockRejectedValueOnce(new Error("offline"));
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/nothing was discarded/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+
+    // Confirmed with the latest version readable, the section's draft is
+    // dropped and the conflict with it. Nothing is written: the latest
+    // version is what the editor now holds.
+    getThemeEditor.mockResolvedValue(remote);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 });
 

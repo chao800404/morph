@@ -158,3 +158,45 @@ describe("a list both sides changed", () => {
     ).toEqual([]);
   });
 });
+
+describe("telling a list change from an id repair, three ways", () => {
+  it("does not count ids the repair gave the rows as anyone's change", async () => {
+    // The author's baseline and the latest version are both read through the
+    // same repair, so rows stored without ids carry the same derived ids on
+    // both sides. Another writer saving an unrelated field stores those ids;
+    // that is not a change to the list.
+    const { normalizeDocumentRowIds } = await import("./normalize-row-ids");
+    const stored = {
+      version: 1,
+      sections: [
+        {
+          id: "s",
+          props: { heading: "H", items: [{ title: "A" }, { title: "B" }] },
+        },
+      ],
+    };
+    const read = normalizeDocumentRowIds(stored, "t").value;
+    const baseline = read.sections[0]!.props as Record<string, unknown>;
+    const incoming = { ...baseline, heading: "Theirs" };
+    const items = baseline.items as Array<Record<string, unknown>>;
+    const local = {
+      ...baseline,
+      items: [items[0], { ...items[1], title: "B edited" }],
+    };
+
+    expect(conflictingListKeys({ baseline, local, incoming })).toEqual([]);
+  });
+
+  it("stops when it cannot tell what the list was before the author's edit", () => {
+    // Nothing was stored when the author started: the panel showed the
+    // component's defaults. Since then another writer stored the list. Which
+    // rows are whose cannot be told, so it is a conflict, not a guess.
+    expect(
+      conflictingListKeys({
+        baseline: { heading: "H" },
+        local: { heading: "H", items: [{ title: "Default edited" }] },
+        incoming: { heading: "H", items: [{ id: "x", title: "Theirs" }] },
+      }),
+    ).toEqual(["items"]);
+  });
+});
