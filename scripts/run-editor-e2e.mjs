@@ -273,6 +273,7 @@ async function runWhileServing(name, command, args, env = {}) {
     env: { ...process.env, ...env },
     detached: true,
   });
+  machineLock?.track(child.pid);
   const result = new Promise((resolve) => {
     child.once("exit", (code) => resolve(code));
     // A command that could not be started at all has no `exit`. `spawnSync`
@@ -311,6 +312,9 @@ function start(name, command, args, env, onLine) {
     // explicitly, which is the same path a normal run takes.
     detached: true,
   });
+  // Should this runner die without tearing down, the lock's holder stops
+  // this group before letting the next run in.
+  machineLock?.track(child.pid);
   if (onLine) {
     for (const stream of [child.stdout, child.stderr]) {
       let pending = "";

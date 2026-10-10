@@ -20,15 +20,21 @@ A dev server on port 3000 is reused if one is already running.
 ### One run per machine
 
 `pnpm test:e2e:local-preview` (`scripts/run-editor-e2e.mjs`) takes a
-machine-wide lock before it starts anything shared, and waits for it, so two
-runs on one machine take turns instead of failing each other under load. While
-it waits it prints who holds the slot (pid, folder, start time, arguments). The
-lock is `flock`'s and follows the run: however it ends, even killed outright,
-the slot comes free within about a second.
+machine-wide lock (`/tmp/morph-editor-e2e.lock`, whatever TMPDIR or folder)
+before it starts anything shared, and waits for it, so two runs on one machine
+never overlap. It is mutual exclusion, not a queue: of several waiting runs,
+which goes next is not defined. While it waits it prints who holds the slot
+(pid, folder, start time, arguments).
 
-- `MORPH_E2E_LOCK=0` runs without the lock, and says so.
+The slot is released after teardown has stopped everything the run started. If
+a run is killed outright, the lock's holder stops the process groups that run
+registered (TERM, then KILL after ten seconds) and only then releases.
+
+- `MORPH_E2E_LOCK=0` runs without the lock, and says so. It stops nothing.
 - Without `flock` (macOS) the run goes ahead unlocked, and says so.
-- Calling `playwright test` directly bypasses it.
+- Not covered: calling `playwright test` directly; a checkout from before the
+  lock; the short synchronous steps (migrations, seed, `docker`) of a run
+  killed during them; load from unit tests or builds.
 
 ## Other browsers
 
