@@ -842,6 +842,10 @@ export function VisualEditorShell({
     Record<string, { templateId: string; sectionId: string; lists: string[] }>
   >({});
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  // A discard waiting on the latest version: one at a time, and the button
+  // that starts one is not offered meanwhile.
+  const [discarding, setDiscarding] = useState(false);
+  const discardingRef = useRef(false);
   const [contentResetEpoch, setContentResetEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
@@ -7817,7 +7821,16 @@ export function VisualEditorShell({
    */
   const discardListConflicts = useCallback(async () => {
     const entries = Object.entries(listConflicts);
-    if (entries.length === 0) return;
+    if (entries.length === 0 || discardingRef.current) return;
+    // What the author confirmed discarding, as it stood when they did. Every
+    // edit stores a new draft object, so one that differs after the wait is
+    // an edit made while the latest version was loading — not part of what
+    // was confirmed, and not to be dropped with it.
+    const confirmed = new Map(
+      entries.map(([key]) => [key, pendingPropsMapRef.current.get(key)]),
+    );
+    discardingRef.current = true;
+    setDiscarding(true);
     // The latest version is read first. If it cannot be, nothing is
     // discarded: dropping the draft without the version that replaces it
     // would lose the author's work and leave them where they were.
@@ -7829,10 +7842,23 @@ export function VisualEditorShell({
         ),
         staleTime: 0,
       })
-      .catch(() => null);
+      .catch(() => null)
+      .finally(() => {
+        discardingRef.current = false;
+        setDiscarding(false);
+      });
     if (!fresh?.success) {
       toast.error(
         "The latest version could not be loaded, so nothing was discarded. Try again.",
+      );
+      return;
+    }
+    const editedMeanwhile = [...confirmed].some(
+      ([key, draft]) => pendingPropsMapRef.current.get(key) !== draft,
+    );
+    if (editedMeanwhile) {
+      toast.error(
+        "You edited this section while the latest version was loading, so nothing was discarded. Choose Discard mine again to discard your changes as they are now.",
       );
       return;
     }
@@ -9294,6 +9320,7 @@ export function VisualEditorShell({
                     variant="outline"
                     size="sm"
                     className="h-7 shrink-0 px-2 text-xs"
+                    disabled={discarding}
                     onClick={() => setDiscardDialogOpen(true)}
                     title="Discard your unsaved changes to the sections whose lists were also changed elsewhere, and load the latest version."
                   >

@@ -813,11 +813,61 @@ describe("a list both writers changed", () => {
     );
     expect(saveStatus()).toBe("Out of date");
 
-    // Confirmed with the latest version readable, the section's draft is
-    // dropped and the conflict with it. Nothing is written: the latest
-    // version is what the editor now holds.
-    getThemeEditor.mockResolvedValue(remote);
+    // Confirmed, but the author edits the section again while the latest
+    // version is loading. That edit is not part of what they confirmed, so
+    // nothing is discarded; meanwhile no second discard can be started.
+    // The server still refuses the stale document, as OCC does.
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    let release!: (value: unknown) => void;
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Discard mine…",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true),
+    );
+    sendInlineCommit("B edited again", "B edited", {
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+    });
+    act(() => release(remote));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/while the latest version was loading/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+    // The newer edit's own save is answered (refused, as the document moved)
+    // before the author decides again.
+    await waitFor(() =>
+      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(1),
+    );
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    const sentBeforeDiscard = updateSectionProps.mock.calls.length;
+
+    // Confirmed with the latest version readable and nothing typed meanwhile,
+    // the section's draft is dropped and the conflict with it. Nothing is
+    // written: the latest version is what the editor now holds.
+    getThemeEditor.mockResolvedValue(remote);
     act(() => {
       screen.getByRole("button", { name: "Discard mine…" }).click();
     });
@@ -826,7 +876,7 @@ describe("a list both writers changed", () => {
     });
     await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
     expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
-    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps).toHaveBeenCalledTimes(sentBeforeDiscard);
   });
 });
 
