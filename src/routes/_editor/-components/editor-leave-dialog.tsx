@@ -19,6 +19,10 @@ import { LoaderCircle } from "lucide-react";
  * both always offered; it never says the edits will be saved; and it never
  * says a save already sent was not — going without waiting does not recall a
  * request, which may still be stored after the author left.
+ *
+ * Keeping a draft across a page switch keeps it in this tab's memory only:
+ * nothing here is stored anywhere a reload could find it, and the words say
+ * so rather than let "kept" read as "saved".
  */
 export function EditorLeaveDialog({
   prompt,
@@ -47,12 +51,12 @@ export function EditorLeaveDialog({
       : phase === "saving"
         ? leaving
           ? "You will leave as soon as they are saved. If you leave now, a save already sent may still be stored, but nothing more is sent; anything not sent yet is lost."
-          : "The page will switch as soon as they are saved. If you switch now, the save already sent goes on, and anything not sent yet stays unsaved in this tab."
+          : "The page will switch as soon as they are saved. If you switch now, the save already sent goes on; anything not sent yet stays in this editor tab, unsaved, and is lost if you reload or close it."
         : prompt?.phase === "not-saved"
           ? `${prompt.reason} ${
               leaving
                 ? "If you leave now, they are lost."
-                : "If you switch now, they stay unsaved in this tab."
+                : "If you switch now, they stay in this editor tab, still unsaved, and are lost if you reload or close it."
             }`
           : null;
 
@@ -67,7 +71,7 @@ export function EditorLeaveDialog({
           : "Switch without waiting"
         : leaving
           ? "Leave and discard"
-          : "Switch anyway";
+          : "Switch, keep draft unsaved";
 
   return (
     <AlertDialog

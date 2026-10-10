@@ -1879,18 +1879,23 @@ export function VisualEditorShell({
    */
   const [inlineEditOpen, setInlineEditOpen] = useState(false);
   const inlineEditOpenRef = useRef(false);
-  /** Waiting for the open edit to end; see `finishOpenEdit`. */
-  const inlineEditEndedRef = useRef(new Set<() => void>());
-  const reportInlineEdit = useCallback((editing: boolean) => {
-    inlineEditOpenRef.current = editing;
-    setInlineEditOpen(editing);
-    if (editing) return;
-    for (const ended of inlineEditEndedRef.current) ended();
-    inlineEditEndedRef.current.clear();
-  }, []);
+  /** Called with true when the edit was finished, false when it was lost. */
+  const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
+  const reportInlineEdit = useCallback(
+    (editing: boolean, finished = true) => {
+      inlineEditOpenRef.current = editing;
+      setInlineEditOpen(editing);
+      if (editing) return;
+      for (const ended of inlineEditEndedRef.current) ended(finished);
+      inlineEditEndedRef.current.clear();
+    },
+    [],
+  );
   // A new preview document has no edit open, whatever the last one said.
+  // An edit that was open went with the old one, unfinished: a frame
+  // replaced while the author is finishing it must not read as finished.
   useEffect(() => {
-    reportInlineEdit(false);
+    reportInlineEdit(false, false);
   }, [previewKey, reportInlineEdit]);
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
@@ -5109,9 +5114,9 @@ export function VisualEditorShell({
           inlineEditEndedRef.current.delete(ended);
           resolve(false);
         }, INLINE_EDIT_FINISH_TIMEOUT_MS);
-        const ended = () => {
+        const ended = (finished: boolean) => {
           clearTimeout(timer);
-          resolve(true);
+          resolve(finished);
         };
         inlineEditEndedRef.current.add(ended);
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {

@@ -133,7 +133,7 @@ export type EditorLeaveGuard = {
 export const EDITOR_LEAVE_PROMPT_DELAY_MS = 400;
 
 const OPEN_EDIT_NO_ANSWER =
-  "The text being edited on the page did not finish. It is still there; finish it, or stay and try again.";
+  "The text being edited on the page could not be finished, so it was not saved.";
 
 const CHANGED_WHILE_SAVING =
   "Something changed while it was being saved. Your changes are kept.";

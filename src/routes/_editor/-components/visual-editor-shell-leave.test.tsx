@@ -8,6 +8,7 @@ import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gat
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
+import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
   VisualEditorShell,
@@ -127,8 +128,10 @@ function editorHolding(props: Record<string, unknown>) {
   };
 }
 
-function renderShell() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderShell(
+  shellContext: StorefrontThemeEditorDTO = context,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   client.setQueryData(
     themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
     {
@@ -138,16 +141,20 @@ function renderShell() {
     } as never,
   );
   const guardRef: { current: EditorNavigationGuard | null } = { current: null };
-  render(
+  const shellAt = (search: StorefrontThemeEditorSearch) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
-        search={baseSearch}
+        context={shellContext}
+        search={search}
         onSearchChange={vi.fn()}
         navigationGuardRef={guardRef}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const { rerender } = render(shellAt(baseSearch));
+  /** The router having moved to `search`, as it does once a navigation goes. */
+  const moveTo = (search: StorefrontThemeEditorSearch) =>
+    act(() => rerender(shellAt(search)));
   /** Asks the shell, as the router does, and records the answer. */
   const navigate = (kind: EditorLeaveKind) => {
     const outcome: { blocked?: boolean } = {};
@@ -156,7 +163,7 @@ function renderShell() {
     });
     return outcome;
   };
-  return { navigate };
+  return { navigate, moveTo, client };
 }
 
 function fromPreview(data: Record<string, unknown>) {
@@ -365,7 +372,7 @@ describe("navigating before the debounce fired", () => {
     );
 
     act(() => {
-      screen.getByRole("button", { name: "Switch anyway" }).click();
+      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
     });
     await tick(1_000);
     expect(outcome.blocked).toBe(false);
@@ -459,7 +466,7 @@ describe("a held draft when nothing is waiting to be sent", () => {
     );
 
     act(() => {
-      screen.getByRole("button", { name: "Switch anyway" }).click();
+      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
     });
     await tick(1_000);
     // Switched, and still not resent: the draft waits for the rebase.
@@ -517,6 +524,104 @@ describe("a held draft when nothing is waiting to be sent", () => {
     await tick(1_000);
     expect(outcome.blocked).toBe(false);
     expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+});
+
+describe("a draft kept across a page switch", () => {
+  /** Home (A) and a product template (B), each with its own section. */
+  const twoPages = {
+    ...context,
+    templates: [
+      context.templates[0],
+      {
+        id: "template-2",
+        type: "product",
+        name: "Product",
+        document: {
+          version: 1,
+          sections: [{ id: "banner", type: "banner", props: { title: "B" } }],
+        },
+        draftGeneration: 1,
+        version: 1,
+      },
+    ],
+  } as unknown as StorefrontThemeEditorDTO;
+  const pageB = {
+    template: "product",
+    templateId: "template-2",
+    viewport: "desktop",
+  } as StorefrontThemeEditorSearch;
+
+  it("stays A's: B is not written, and back on A the rebase sends A's draft to A", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A as another writer left it, for the rebase to read.
+    client.setQueryData(storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey, {
+      success: true,
+      data: {
+        ...twoPages,
+        templates: [
+          {
+            ...twoPages.templates[0],
+            draftGeneration: 5,
+            document: {
+              version: 1,
+              sections: [{ id: "hero", type: "hero", props: { heading: "Theirs", cta: "New" } }],
+            },
+          },
+          twoPages.templates[1],
+        ],
+      },
+    } as never);
+    const { navigate, moveTo } = renderShell(twoPages, client);
+    await selectHeading();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    typeHeading("Hello", "Welcome");
+    await tick(300);
+    await tick();
+    expect(saveStatus()).toBe("Out of date");
+
+    // A to B, keeping the draft.
+    const toB = navigate("switch-page");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Switch, keep draft unsaved" }).click();
+    });
+    await tick();
+    expect(toB.blocked).toBe(false);
+    moveTo(pageB);
+    await tick(1_000);
+
+    // Nothing was written for B, and A's conflict is still A's.
+    const requests = () =>
+      updateSectionProps.mock.calls.map(
+        ([request]) =>
+          (request as { data: { templateId: string; sectionId: string; props: Record<string, unknown> } }).data,
+      );
+    expect(requests().map((request) => request.templateId)).toEqual(["template-1"]);
+    expect(saveStatus()).toBe("Out of date");
+
+    // Back to A, and the update resends A's draft, rebased, to A.
+    moveTo(baseSearch);
+    await tick();
+    updateSectionProps.mockResolvedValue(SAVED);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await tick();
+    await tick();
+
+    expect(requests()).toHaveLength(2);
+    expect(requests()[1]).toMatchObject({
+      templateId: "template-1",
+      sectionId: "hero",
+      props: { heading: "Hello", cta: "New" },
+    });
+    expect(requests().some((request) => request.templateId === "template-2")).toBe(false);
   });
 });
 
@@ -599,6 +704,37 @@ describe("text still open for typing on the canvas", () => {
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
+  it("is not taken as finished when the frame is replaced while finishing it", async () => {
+    updateSectionProps.mockResolvedValue(SAVED);
+    const { navigate, client } = await openInlineEdit();
+
+    const outcome = navigate("leave-editor");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+    });
+    await tick(0);
+    // The preview reloads (a new address) before it answers: the typed text
+    // went with the old document.
+    act(() => {
+      client.setQueryData(
+        themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+        {
+          success: true,
+          message: "Live Preview server ready",
+          data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview?again` },
+        } as never,
+      );
+    });
+    await tick();
+
+    expect(outcome.blocked).toBeUndefined();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "could not be finished, so it was not saved",
+    );
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
   it("stays when the page does not finish the edit", async () => {
     const { navigate } = await openInlineEdit();
 
@@ -612,7 +748,7 @@ describe("text still open for typing on the canvas", () => {
 
     expect(outcome.blocked).toBeUndefined();
     expect(screen.getByRole("alertdialog").textContent).toContain(
-      "did not finish",
+      "could not be finished, so it was not saved",
     );
   });
 });
