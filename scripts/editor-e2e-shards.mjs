@@ -36,6 +36,8 @@ export const EDITOR_SHARDS = [
     "astro-publish-acceptance.spec.ts",
     // Container transport and MORPH_ASTRO_THEMES=1 only, like the one above.
     "astro-preview-container.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only, like the two above.
+    "astro-island-hmr.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
