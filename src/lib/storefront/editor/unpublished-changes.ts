@@ -106,12 +106,64 @@ export function describeThemeSourceChanges(
   return { changed: false };
 }
 
+/** A template's draft and published revisions, as the editor context has them. */
+export type TemplatePublishState = Readonly<{
+  id: string;
+  draftRevisionId?: string | null;
+  publishedRevisionId?: string | null;
+}>;
+
+export type ContentPublishDiff =
+  { changed: false } | { changed: true; reason: "page" | "layout" };
+
+function hasUnpublishedDraft(template: TemplatePublishState): boolean {
+  return Boolean(
+    template.draftRevisionId &&
+    template.draftRevisionId !== template.publishedRevisionId,
+  );
+}
+
+/**
+ * Whether a publish from this page would seal content that is not live.
+ *
+ * The same scope `publishTemplate` seals: the page being published, and the
+ * shared layout's draft, which has no URL of its own and so travels with
+ * whatever page is published (`pendingShell`, by the same comparison). Other
+ * pages' drafts are not in it — they keep their published revisions and are
+ * published from their own page — so they do not count here; lighting Publish
+ * for them would ship nothing of theirs.
+ *
+ * Only the layout used to be missing: a Header or Footer edit saved a layout
+ * draft that this page's Publish never offered to ship, so the toolbar said
+ * "Published" over an edit the storefront did not have.
+ */
+export function describeContentChanges(scope: {
+  page: TemplatePublishState | null | undefined;
+  layout: TemplatePublishState | null | undefined;
+}): ContentPublishDiff {
+  if (scope.page && hasUnpublishedDraft(scope.page)) {
+    return { changed: true, reason: "page" };
+  }
+  if (
+    scope.layout &&
+    scope.layout.id !== scope.page?.id &&
+    hasUnpublishedDraft(scope.layout)
+  ) {
+    return { changed: true, reason: "layout" };
+  }
+  return { changed: false };
+}
+
 /** One line naming what Publish would ship, for a tooltip or a log. */
 export function describeUnpublishedChanges(
   diff: ThemeSourceDiff,
-  hasTemplateChanges: boolean,
+  content: ContentPublishDiff,
 ): string {
-  if (hasTemplateChanges && !diff.changed) return "Page content edited";
+  if (content.changed && !diff.changed) {
+    return content.reason === "layout"
+      ? "Shared layout edited"
+      : "Page content edited";
+  }
   if (!diff.changed) return "Nothing to publish";
 
   switch (diff.reason) {

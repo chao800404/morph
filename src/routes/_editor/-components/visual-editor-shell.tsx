@@ -193,6 +193,7 @@ import { resolvePublishBuildPlan } from "@/lib/storefront/editor/publish-build-p
 import { previewLoadWasInterrupted } from "@/lib/storefront/service/preview-runtime-interruption";
 import {
   describeThemeSourceChanges,
+  describeContentChanges,
   describeUnpublishedChanges,
   publishedFileStates,
 } from "@/lib/storefront/editor/unpublished-changes";
@@ -3611,16 +3612,18 @@ export function VisualEditorShell({
     [effectiveThemeFiles, themeBinaryFiles, publishedSnapshotMap],
   );
 
-  const hasTemplateChanges = Boolean(
-    activeTemplate?.draftRevisionId &&
-    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
-  );
-  const hasUnpublishedChanges = hasTemplateChanges || themeSourceDiff.changed;
+  // What this page's publish would seal: the page and the shared layout,
+  // the same scope the server seals (`publishTemplate`).
+  const contentDiff = describeContentChanges({
+    page: activeTemplate,
+    layout: layoutTemplate,
+  });
+  const hasUnpublishedChanges = contentDiff.changed || themeSourceDiff.changed;
   // Publish being lit with nothing edited is unfalsifiable from the outside,
   // so the reason travels with the state instead of having to be guessed.
   const unpublishedReason = describeUnpublishedChanges(
     themeSourceDiff,
-    hasTemplateChanges,
+    contentDiff,
   );
 
   const saveThemeFileSequentially = useCallback(
