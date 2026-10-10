@@ -17,7 +17,7 @@ const owner = "user-1";
 
 function verify(overrides: {
   session?: () => Promise<{ user?: { id?: string } | null } | null>;
-  theme?: () => Promise<{ success: boolean }>;
+  theme?: () => Promise<{ success: boolean; error?: string }>;
 }) {
   const readTheme = vi.fn(overrides.theme ?? (async () => ({ success: true })));
   return {
@@ -58,8 +58,24 @@ describe("verifyEditorWriter", () => {
       }).result,
     ).resolves.toBe("access-denied");
     await expect(
-      verify({ theme: async () => ({ success: false }) }).result,
+      verify({
+        theme: async () => ({ success: false, error: "NOT_FOUND" }),
+      }).result,
     ).resolves.toBe("access-denied");
+  });
+
+  // This used to expect any `success: false` to read as access-denied. A
+  // server error answers `success: false` too, and says nothing about access:
+  // taken for a refusal, it closed the Theme to an author who may edit it.
+  it("does not take a server error for a refusal", async () => {
+    await expect(
+      verify({
+        theme: async () => ({ success: false, error: "GET_FAILED" }),
+      }).result,
+    ).resolves.toBe("unanswered");
+    await expect(
+      verify({ theme: async () => ({ success: false }) }).result,
+    ).resolves.toBe("unanswered");
   });
 
   it("reads a session that lapsed between the two questions as signed out", async () => {
