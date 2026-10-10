@@ -9,7 +9,11 @@ import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-fi
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import { themeSourceStore } from "@/lib/storefront/storage/theme-storage.server";
-import { themePreviewWorkspaceInput } from "@/lib/storefront/service/theme-preview-workspace-files";
+import {
+  themePreviewEntry,
+  themePreviewWorkspaceInput,
+} from "@/lib/storefront/service/theme-preview-workspace-files";
+import { resolveThemeFramework } from "@/lib/storefront/theme-framework";
 import { readAtSourceGeneration } from "@/lib/storefront/service/source-generation-snapshot";
 import {
   THEME_PREVIEW_SERVER_PORT,
@@ -174,12 +178,21 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     const workspace = themePreviewWorkspaceInput(entries, (digest) =>
       themeSourceStore.readBinaryFile(digest),
     );
-    const entry = workspace.entry;
-    if (!entry) {
+    // Whether the Theme needs an entry file is its framework's to say: an
+    // Astro site is started from its config and has none.
+    const astroThemes = astroThemesEnabled(
+      env as unknown as Record<string, unknown>,
+    );
+    const previewEntry = themePreviewEntry(
+      workspace.entry,
+      resolveThemeFramework(editorContext.theme.framework, { astroThemes }),
+    );
+    if (!previewEntry.ok) {
       return fail("This theme has no entry file.", {
         error: "THEME_ENTRY_MISSING",
       });
     }
+    const entry = previewEntry.entry;
 
     const server = selection.server;
     const started = await server.start({
@@ -202,7 +215,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       // As the site records it: an Astro site is not previewed as Start, and
       // is previewed at all only where this server turns Astro on.
       framework: editorContext.theme.framework,
-      astroThemes: astroThemesEnabled(env as unknown as Record<string, unknown>),
+      astroThemes,
     });
     if (!started.ok) {
       const traceId = recordPreviewStartFailure({

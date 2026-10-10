@@ -6,6 +6,7 @@ import type {
   ThemeWorkspaceBinaryLoader,
   ThemeWorkspaceFile,
 } from "@/lib/storefront/compiler/theme-sandbox-workspace";
+import type { ThemeFrameworkResolution } from "@/lib/storefront/theme-framework";
 
 /**
  * What a Live Preview is started from: every file of the workspace, binary
@@ -46,4 +47,24 @@ export function themePreviewWorkspaceInput(
     ),
     loadBinary: (ref) => readBinaryFile(ref.digest),
   };
+}
+
+/**
+ * The entry a Live Preview starts from, or `null` where the Theme's framework
+ * does not use one; `ok: false` when the Theme needs one and has none.
+ *
+ * Asked of the framework the Theme records, resolved as the preview server
+ * resolves it. A recorded framework this server cannot serve keeps the
+ * requirement: the start is refused either way, and an unknown framework
+ * never decides that a check does not apply to it.
+ */
+export function themePreviewEntry(
+  entry: string | null,
+  framework: ThemeFrameworkResolution,
+): Readonly<{ ok: true; entry: string | null }> | Readonly<{ ok: false }> {
+  if (entry !== null) return { ok: true, entry };
+  if (framework.ok && framework.framework.preview.entryFile === "unused") {
+    return { ok: true, entry: null };
+  }
+  return { ok: false };
 }
