@@ -864,7 +864,7 @@ OCC）→ 該實例更新、其他實例不變**。
 
 - `split-inside` 是保守判定：同一層中只落在外層候選的元素（例如 Layout 直接包的頁面元素）也一起不可選；它們仍能定位與開 Code。
 - island 內部元素沒有 `data-morph-loc`：Core 對 `.jsx` 的既有注入在 Astro 預覽中沒有生效，點 island 會選到外層 `div#island`。第一版 island 內部不支援定位。
-- **island HMR 沒有送達，與本轉換無關**：有注入（run 7–10）與無注入（off run 2）都一樣；island 以 `component-url=/workspace/src/l15/Counter.jsx` 渲染，頁面另外載入 `/src/l15/Counter.jsx`，兩份模組，推測 HMR 更新了沒在用的那份（未驗證）。屬於既有 Astro 預覽。
+- **island HMR 沒有送達：已定位為實驗流程缺少通知，不是產品問題**（3.6.2.5）。spec 直接呼叫 `applyThemePreviewFiles`，跳過了編輯器在寫入後送出的 `morph:storefront-preview-theme-files-written`，頁面因此從不去拉 HMR relay；真實的 Code 存檔路徑已驗證可更新。兩份模組確實存在，但不會阻止 HMR。
 - **風險 2（6.7）**：Monaco 存檔 `.astro` 後兩次先後同步，接著 `OperationInterruptedError`，3/3（run 6、8、10）；run 10 之後容器崩潰（`not listening to port 3000`）。只同步單一 `.jsx` 時 0/3。已轉給調查 session；它判斷可能是同一機制（Worker reload 停頓中多個代理請求重疊）但未驗證，容器崩潰是新症狀。3b 因此只有一次通過。
 - 執行紀錄：共 10 次有注入、2 次無注入。run 1 容器啟動失敗（原因未定位）；run 2–5、8、9 是 spec 的錯誤（導覽、視窗太小導致點擊落在側欄、OCC 拒絕正確、重新載入編輯器重啟預覽），都已修正；無注入 run 1 是 spec 把 fixture 的偽造註解當成平台標記。
 - 容器清理：每次只移除「前後差集、名稱前綴、建立時間在本次期間、期間無其他程序」的容器（每次 1 個 proxy）；環境檔只移除本次建立的。另有一次手動執行 `docker run busybox` 下載了映像，未先徵求同意，已刪除。
@@ -928,7 +928,7 @@ OCC）→ 該實例更新、其他實例不變**。
 | island 畫布標籤 | **未量測**：不算通過，也不算產品失敗 |
 | Content／Styles 分頁的可編輯控制項 | **未量測**：不算通過，也不算產品失敗。下次直接記錄各分頁有哪些控制項、是否啟用（數量只作輔助，切換後一增一減時差值仍是零）；「操作後沒有寫入」的斷言仍是依據 |
 | island 內部定位 | 第一版不支援，介面標示；追蹤項目待 `inject-preview-bindings` 相關 session 合併後再開 |
-| island HMR | 有注入與無注入兩組均失敗，支持它不是注入版本獨有的問題，但**尚未建立與注入的因果關係**；由 HMR session 調查 |
+| island HMR | 失敗已定位為實驗流程缺少通知（3.6.2.5）。無注入時，真實 Code 路徑在容器中驗證可更新；**有注入的版本待下一輪正式驗收確認**，spec 已改走 Code 存檔 |
 
 下一次容器執行要由具體的修正或新假設驅動（例如中斷或 HMR 的修正、純 Astro Theme 的 fixture），屆時順便補量兩項未量測，不為了補量另佔時段，也不重跑碰運氣。
 
@@ -937,10 +937,36 @@ OCC）→ 該實例更新、其他實例不變**。
 - 改用**純 Astro Theme** 的 fixture，重新建立有／無注入的對照基線，再補 3b 與兩項未量測。混合 fixture（Astro 加在 Start Starter 上）的既有結果保留作參考，但不能直接代表一般 Astro 專案。
 - Morph 既有的模組讀取重試能解釋部分請求為何最後成功，但**不能代替底層故障的修正**；也不為了讓驗收通過而擴大重試範圍。
 - 觸發條件：HMR 或中斷調查有具體修正，或純 Astro fixture 完成。在那之前 L1.5a **不標為完整驗收通過**，也不另開新任務。
-- island HMR（已交給 island HMR 的追蹤 session）：
-  - **Vite 是否產生更新**：dev server 有 `[watch] /workspace/src/l15/Counter.jsx`，但沒有任何 HMR update 紀錄，目前看不到 Vite 為它產生更新的證據；
-  - **relay 是否送達**：relay 的 long-poll 在中斷時回 500，但 run 7 沒有任何中斷時一樣沒送達，所以 relay 的 500 不足以解釋；兩者分開調查；
+- island HMR：已定位，見 3.6.2.5。另外兩項分開保留：
+  - **relay 500 是獨立風險**：它不是這次缺通知的原因，但在真實編輯路徑上，relay 請求遇到平台中斷時仍可能讓更新失敗（`theme-files-failed`），不能因 3.6.2.5 結案；
   - **fixture 的相依掃描**：Astro 的掃描入口寫死為 `src/**/*.{jsx,tsx,vue,svelte,html,astro,mdx}`，而這個 fixture（與 A6c 相同）是把 Astro 檔案加進 E2E 預設的 Start Starter Theme，Starter 的元件 import `clsx`（屬於 `tanstack-start-1.168` 工具鏈，不在 Astro 工具鏈），import guard 拒絕是正確的，**不放寬核准清單**。掃描失敗讓預先打包被略過，可能干擾 HMR，但還不是根因；乾淨的測試條件是純 Astro Theme。
+
+#### 3.6.2.5 island HMR 沒送達：定位（2026-10-10）
+
+**結論**：實驗流程缺少通知，不是產品問題，不修改產品程式。
+
+預覽的 HMR 經由 HTTP relay（`/__morph-theme-preview__/_morph/hmr`）傳遞，頁面只在收到編輯器的 `morph:storefront-preview-theme-files-written` 時才去拉（`theme-preview-bridge-entry.ts` 的 `applyWrittenThemeRevision`）。產品中 `applyThemePreviewFiles` 唯一的呼叫者是編輯器，寫入成功後一定會送出這個通知。實驗的 `runIslandHmr` 在測試中直接呼叫 server function，所以檔案有寫入（`sync changed:1`）、Vite 也產生了更新，但頁面從未去拿。`.astro` 的修改走的是 Code 存檔，所以會生效。
+
+**容器內證據**（純 React island fixture，加在 Start Starter 上；**沒有** L1.5 注入）：
+
+| 步驟 | relay | island |
+| --- | --- | --- |
+| 直接呼叫 `applyThemePreviewFiles`，等 15 秒 | 1 筆 `js-update`（`/workspace/src/islands/Counter.jsx`） | 文字不變，沒有重新載入 |
+| 拉 relay 並交給 `__morphApplyViteHmrPayload`（即 bridge 收到通知時做的事） | — | 文字更新，`[vite] hot updated`，沒有重新載入 |
+| Code 分頁編輯並 Ctrl+S | — | 文字更新，沒有重新載入 |
+
+這輪的點擊沒有讓計數離開 0，**state 保留沒有被證明**；由回歸 E2E 先點到非零再改文字來驗證。
+
+**兩份模組**：確實存在，來源已找到。Astro 搭配 Cloudflare adapter 時，dev 的 `resolve`（`dev-nonrunnable`）原樣回傳絕對路徑，所以 island 從 `/workspace/src/...` 載入；plugin-react 6.1.2 的 refresh wrapper 加了一行自我 import，被 Vite 改寫成 `/src/...`，因而多一份。用同版本工具鏈（Vite 8.3.3）在本機重現：Vite 自己的 WebSocket 或 Morph 的 relay 都能熱更新，state 也保留，所以它**不會阻止** HMR。
+
+**讀 dev server 輸出的注意事項**：Astro 的 Vite logger 會把 `hmr update <file>` 與 `page reload <file>` 都改寫成 `[watch] <file>`，所以 `[watch]` 本身無法區分是局部更新還是整頁重新載入，要看 relay 的 payload（`js-update` 或 `full-reload`）與瀏覽器的結果。3.6.2.4 的 `05:05:27 [watch] /workspace/src/l15/Counter.jsx` 不能當作「Vite 沒有產生更新」的證據。
+
+**範圍與後續**：
+
+- 已證明的只有無注入的路徑；有注入的版本在下一輪正式驗收中確認，不為此追加重跑。
+- 實驗的 island 步驟改走 Code 存檔（`editAndSave`），**不**手動補通知：手動通知會再次繞過真實接線。
+- relay 500 是獨立風險，見 3.6.2.4 後的條件，不因此結案。
+- 補一支回歸 E2E：專屬的純 Astro Theme，走 Code 存檔，確認 island 文字更新、沒有整頁重新載入，並在計數非零時保留 state。這是新增的產品保證，舊版產品同樣會通過。
 
 #### 3.6.3 L1.5b 內容欄位編輯
 
