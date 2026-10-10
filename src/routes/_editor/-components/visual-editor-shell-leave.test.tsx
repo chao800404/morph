@@ -989,3 +989,72 @@ describe("a list conflict the update stopped on", () => {
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("an inline edit open when the Theme's data is fetched again", () => {
+  const sentToPreview = (type: string) =>
+    vi
+      .mocked(postEditorToPreviewMessage)
+      .mock.calls.map(([, message]) => message as { type?: string })
+      .filter((message) => message.type === type);
+  const routeSyncs = () => sentToPreview("morph:storefront-preview-set-route");
+
+  /** A preview that has said it is ready, with the route sent to it once. */
+  function readyShell(shellContext?: StorefrontThemeEditorDTO) {
+    const shell = renderShell(shellContext);
+    fromPreview({ type: "morph:storefront-preview-ready" });
+    expect(routeSyncs()).toEqual([
+      expect.objectContaining({ templateId: "template-1", routePath: null }),
+    ]);
+    return shell;
+  }
+
+  // Telling the preview its route again ends the edit open on it: a Theme
+  // with a router finishes the edit before navigating, committing what was
+  // typed so far. A save fetches the Theme again, and a double click in that
+  // window opened an edit only for it to close half a second later (E2E
+  // leave-before-save, run after content-fields-sidecar).
+  it("is neither ended nor sent when the same document arrives again", async () => {
+    updateSectionProps.mockResolvedValue(SAVED);
+    const { moveTo } = readyShell();
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    await act(async () => {});
+    expect(saveStatus()).toBe("Unsaved");
+
+    // The fetch a save makes, answered: equal to what is held, a new object.
+    moveTo(baseSearch, structuredClone(context));
+    await act(async () => {});
+
+    // The page was asked for nothing: what is typed there stays there.
+    expect(routeSyncs()).toHaveLength(1);
+    expect(sentToPreview("morph:storefront-preview-finish-inline-text")).toEqual([]);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(saveStatus()).toBe("Unsaved");
+  });
+
+  it("sends the route again for another page, another document, or a new frame", async () => {
+    const twoDocuments = {
+      ...context,
+      templates: [
+        ...context.templates,
+        { ...context.templates[0], id: "template-2", type: "product", name: "Product" },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    const { moveTo } = readyShell(twoDocuments);
+
+    moveTo({ ...baseSearch, routePath: "/about" }, twoDocuments);
+    await act(async () => {});
+    expect(routeSyncs()).toHaveLength(2);
+    expect(routeSyncs()[1]).toMatchObject({ routePath: "/about" });
+
+    moveTo({ ...baseSearch, template: "product", templateId: "template-2" }, twoDocuments);
+    await act(async () => {});
+    expect(routeSyncs()).toHaveLength(3);
+    expect(routeSyncs()[2]).toMatchObject({ templateId: "template-2", routePath: null });
+
+    // The frame was rebuilt and said so: it has no route until it is told.
+    fromPreview({ type: "morph:storefront-preview-ready" });
+    await act(async () => {});
+    expect(routeSyncs()).toHaveLength(4);
+    expect(routeSyncs()[3]).toMatchObject({ templateId: "template-2" });
+  });
+});
