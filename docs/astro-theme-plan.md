@@ -739,6 +739,33 @@ OCC）→ 該實例更新、其他實例不變**。
   - 位置指向 Theme 以外的檔案時不跳；
   - 不改變任何草稿或原始碼。
 
+#### 3.6.2.1 實驗 3 結果（2026-10-10，本機一次性腳本：以程式啟動 `astro dev` 7.3.5 加 `@astrojs/cloudflare` 14.3.3、抓 SSR HTML、驗證後關閉；沒有瀏覽器 hydration 檢查；不是 Morph 預覽容器）
+
+腳本：`~/projects/astro-spike/l15-sourceloc/run.mjs`。每個帶位置的元素都回到原始碼核對：該行該欄是否為同一個 `<tag` 的開頭。
+
+**Astro 原生的 `annotateSourceFile`（【事實】）**：
+
+- 條件寫死在 `astro/dist/core/compile/compile.js`：`vite command === "serve"`、設定 `devToolbar.enabled`、使用者偏好 `devToolbar.enabled` 三者都成立才打開，沒有獨立選項。工具列關閉時，輸出中沒有 `data-astro-source-*`（已確認）。
+- 開啟工具列時：
+  - 頁面被注入 `/@id/astro/runtime/client/dev-toolbar/entrypoint.js`，測試頁的 HTML 從 9.8 KB 增加到 14.8 KB；
+  - `data-astro-source-file` 是**絕對路徑**（容器內的檔案路徑）；
+  - 沒有我們的 plugin 時，**行號 44/44 正確**；欄位不是元素開頭，而是開頭標籤結束附近（差 0 到 1 欄，`<body>` 差 4 欄），**0/44 指向 `<tag` 開頭**；
+  - 只標 `.astro` 的元素，React island 內部沒有；
+  - 有其他 `load` hook 改寫原始碼時（例如插入屬性），欄位跟著位移，因為 Astro 標的是它實際編譯的那份文字。
+- 要用原生標記，就得開啟工具列並另外移除它的 client，這與預覽包裝關閉工具列的安全理由衝突。
+
+**在預覽容器內自己標記（spike 的 `data-morph-loc`，以 compiler-rs 與 Babel 解析原始碼）**：
+
+- 工具列開或關都一樣：plain 頁面 **47/47** 指向 `<tag` 開頭，涵蓋頁面、元件、slot 內容與 React island（`.jsx`）。
+- **與邊界轉換的順序有關**：marked 頁面先插入邊界 Fragment、再計算位置時，排在被標記元件後面、同一行的元素位置錯誤（46/47，`<span>` 指到 37:128，該行沒有那麼長）。位置必須以作者的原始碼計算（同一次解析同時產生位置與邊界，或先算位置再插入邊界並保留原始位置）。之前 43/43 全對，只是因為測試頁剛好沒有這種寫法。
+- 這是預覽容器內的提示，不是可信解析；路徑是 Theme 內的相對路徑。
+
+**判定（待使用者審閱）**：
+
+- 建議 L1.5a 採用預覽容器內自己標記，不採用 Astro 原生標記：原生標記需要工具列、帶絕對路徑、欄位不精確、不涵蓋 island。
+- 正式接入的條件：位置以原始碼計算；與邊界轉換在同一個轉換中處理；Core 開檔前仍確認路徑屬於這個 Theme。
+- **未驗**：瀏覽器 hydration 之後屬性是否保留（island 的伺服器與 client 都經過同一個轉換，應一致，但本輪沒有在瀏覽器確認）；Vue 與其他框架；Morph 預覽容器中的實際路徑。
+
 #### 3.6.3 L1.5b 內容欄位編輯
 
 **支援目標與第一版**：
