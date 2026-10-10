@@ -1077,9 +1077,33 @@ describe("an inline edit left open on the page", () => {
     ).toBeNull();
   });
 
-  it("is ended at the editor's request, kept or put back", () => {
-    const finish = { type: "morph:storefront-preview-finish-inline-text", commit: false };
+  it("is ended at the editor's request, kept or put back, naming the request", () => {
+    const finish = {
+      type: "morph:storefront-preview-finish-inline-text",
+      commit: false,
+      requestId: 4,
+    };
     expect(parseEditorToPreviewMessage(finish)).toEqual(finish);
     expect(parseEditorToPreviewMessage({ ...finish, commit: 1 })).toBeNull();
+    const { requestId: _omitted, ...unnamed } = finish;
+    expect(parseEditorToPreviewMessage(unnamed)).toBeNull();
+  });
+
+  it("carries the request a commit answers back as a number, or nothing", () => {
+    const commit = {
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    };
+    expect(parsePreviewToEditorMessage(commit)).toEqual(commit);
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: 4 }),
+    ).toEqual({ ...commit, finishRequestId: 4 });
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: "4" }),
+    ).toBeNull();
   });
 });

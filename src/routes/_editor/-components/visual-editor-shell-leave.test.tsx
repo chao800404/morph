@@ -141,10 +141,13 @@ function renderShell(
     } as never,
   );
   const guardRef: { current: EditorNavigationGuard | null } = { current: null };
-  const shellAt = (search: StorefrontThemeEditorSearch) => (
+  const shellAt = (
+    search: StorefrontThemeEditorSearch,
+    nextContext: StorefrontThemeEditorDTO = shellContext,
+  ) => (
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={shellContext}
+        context={nextContext}
         search={search}
         onSearchChange={vi.fn()}
         navigationGuardRef={guardRef}
@@ -153,8 +156,10 @@ function renderShell(
   );
   const { rerender } = render(shellAt(baseSearch));
   /** The router having moved to `search`, as it does once a navigation goes. */
-  const moveTo = (search: StorefrontThemeEditorSearch) =>
-    act(() => rerender(shellAt(search)));
+  const moveTo = (
+    search: StorefrontThemeEditorSearch,
+    nextContext?: StorefrontThemeEditorDTO,
+  ) => act(() => rerender(shellAt(search, nextContext)));
   /** Asks the shell, as the router does, and records the answer. */
   const navigate = (kind: EditorLeaveKind) => {
     const outcome: { blocked?: boolean } = {};
@@ -187,7 +192,11 @@ async function selectHeading() {
   });
 }
 
-function typeHeading(value: string, originalValue: string) {
+function typeHeading(
+  value: string,
+  originalValue: string,
+  finishRequestId?: number,
+) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
@@ -195,6 +204,7 @@ function typeHeading(value: string, originalValue: string) {
     fieldPath: "heading",
     value,
     originalValue,
+    ...(finishRequestId === undefined ? {} : { finishRequestId }),
   });
 }
 
@@ -629,7 +639,10 @@ describe("text still open for typing on the canvas", () => {
   const finishRequests = () =>
     vi
       .mocked(postEditorToPreviewMessage)
-      .mock.calls.map(([, message]) => message as { type: string; commit?: boolean })
+      .mock.calls.map(
+        ([, message]) =>
+          message as { type: string; commit?: boolean; requestId?: number },
+      )
       .filter((message) => message.type === "morph:storefront-preview-finish-inline-text");
 
   /** Opens an inline edit on the heading, as the preview reports one. */
@@ -668,12 +681,14 @@ describe("text still open for typing on the canvas", () => {
       screen.getByRole("button", { name: "Finish editing and continue" }).click();
     });
     await tick(0);
-    expect(finishRequests()).toEqual([
+    expect(finishRequests()).toMatchObject([
       { type: "morph:storefront-preview-finish-inline-text", commit: true },
     ]);
+    const requestId = finishRequests()[0]!.requestId!;
 
-    // The preview answers as it does: the commit, then the close.
-    typeHeading("Typed on the canvas", "Welcome");
+    // The preview answers as it does: the commit naming the request, then
+    // the close.
+    typeHeading("Typed on the canvas", "Welcome", requestId);
     fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
     await tick();
 
@@ -684,6 +699,95 @@ describe("text still open for typing on the canvas", () => {
     write.resolve(SAVED);
     await tick();
     expect(outcome.blocked).toBe(false);
+  });
+
+  /** Opens an edit, asks to leave, chooses finish; returns what it asked. */
+  async function finishing(write: Promise<unknown>) {
+    updateSectionProps.mockReturnValue(write);
+    const shell = await openInlineEdit();
+    const outcome = shell.navigate("leave-editor");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+    });
+    await tick(0);
+    return { ...shell, outcome, requestId: finishRequests()[0]!.requestId! };
+  }
+
+  it("is cancelled by an ordinary commit arriving while it finishes", async () => {
+    const { outcome } = await finishing(deferred<unknown>().promise);
+
+    // Not the request's answer: no id, so it is the author editing again.
+    typeHeading("Typed elsewhere", "Welcome");
+    await tick(0);
+
+    expect(outcome.blocked).toBe(true);
+  });
+
+  it("is cancelled by an undo arriving while it finishes", async () => {
+    updateSectionProps.mockResolvedValue(SAVED);
+    const shell = renderShell();
+    await selectHeading();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // An earlier edit, saved, so there is something to undo; the document
+    // now holds it.
+    typeHeading("Saved before", "Welcome");
+    await tick(300);
+    await tick();
+    shell.moveTo(baseSearch, {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [{ id: "hero", type: "hero", props: { heading: "Saved before" } }],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO);
+    await tick();
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+    await tick(0);
+    const outcome = shell.navigate("leave-editor");
+    await tick();
+    act(() => {
+      screen.getByRole("button", { name: "Finish editing and continue" }).click();
+    });
+    await tick(0);
+
+    fromPreview({ type: "morph:storefront-preview-history-shortcut", direction: "undo" });
+    await tick(0);
+
+    expect(outcome.blocked).toBe(true);
+  });
+
+  it("lets the request's own commit through once: a repeat is input", async () => {
+    const { outcome, requestId } = await finishing(deferred<unknown>().promise);
+
+    typeHeading("Typed on the canvas", "Welcome", requestId);
+    await tick(0);
+    expect(outcome.blocked).toBeUndefined();
+
+    // The same answer again, while finishing is still open.
+    typeHeading("Typed on the canvas, again", "Typed on the canvas", requestId);
+    await tick(0);
+    expect(outcome.blocked).toBe(true);
+  });
+
+  it("treats the request's commit arriving after the edit closed as input", async () => {
+    const write = deferred<unknown>();
+    const { outcome, requestId } = await finishing(write.promise);
+    typeHeading("Typed on the canvas", "Welcome", requestId);
+    fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    await tick();
+    // Saving now, the edit over.
+    expect(sentHeadings()).toEqual(["Typed on the canvas"]);
+    expect(outcome.blocked).toBeUndefined();
+
+    typeHeading("Late", "Typed on the canvas", requestId);
+    await tick(0);
+    expect(outcome.blocked).toBe(true);
   });
 
   it("is put back, not sent, when the author discards it", async () => {
@@ -697,7 +801,7 @@ describe("text still open for typing on the canvas", () => {
     });
     await tick(1_000);
 
-    expect(finishRequests()).toEqual([
+    expect(finishRequests()).toMatchObject([
       { type: "morph:storefront-preview-finish-inline-text", commit: false },
     ]);
     expect(outcome.blocked).toBe(false);

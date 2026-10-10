@@ -22,6 +22,10 @@ import {
   resolveEditorSaveState,
 } from "@/lib/storefront/editor/editor-save-status";
 import {
+  isRequestedInlineFinishCommit,
+  type InlineFinishRequest,
+} from "@/lib/storefront/editor/inline-finish-request";
+import {
   EditorWritePaused,
   editorWriteRefusal,
   isEditorWriteGatePaused,
@@ -1262,6 +1266,12 @@ export function VisualEditorShell({
       onBlocked: (kind, why) => leavePortsRef.current.onBlocked(kind, why),
     }),
   );
+  /**
+   * Set only around handing on the commit an author-requested finish
+   * produced (see `isRequestedInlineFinishCommit`), so that one commit does
+   * not count as new input. Everything else does.
+   */
+  const requestedFinishCommitRef = useRef(false);
   /** Section props as they stood when the current debounce window opened. */
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
     new Map(),
@@ -1881,11 +1891,16 @@ export function VisualEditorShell({
   const inlineEditOpenRef = useRef(false);
   /** Called with true when the edit was finished, false when it was lost. */
   const inlineEditEndedRef = useRef(new Set<(finished: boolean) => void>());
+  /** The finish this editor asked for and has not seen answered; one at most. */
+  const inlineFinishRequestRef = useRef<InlineFinishRequest | null>(null);
+  const inlineFinishSequenceRef = useRef(0);
   const reportInlineEdit = useCallback(
     (editing: boolean, finished = true) => {
       inlineEditOpenRef.current = editing;
       setInlineEditOpen(editing);
       if (editing) return;
+      // The edit is over: a commit arriving now answers nothing.
+      inlineFinishRequestRef.current = null;
       for (const ended of inlineEditEndedRef.current) ended(finished);
       inlineEditEndedRef.current.clear();
     },
@@ -5108,10 +5123,30 @@ export function VisualEditorShell({
     hasOpenEdit: () => inlineEditOpenRef.current,
     finishOpenEdit: (commit) => {
       if (!inlineEditOpenRef.current) return Promise.resolve(true);
+      const requestId = (inlineFinishSequenceRef.current += 1);
+      // What is being asked for, recorded here: the field the author is
+      // editing, in the document now framed. The answer is checked against
+      // this, not taken from the preview's word.
+      const target = previewSelection.currentTarget();
+      inlineFinishRequestRef.current =
+        commit &&
+        previewKeyRef.current &&
+        target?.sectionId &&
+        target.fieldKey &&
+        target.fieldPath
+          ? {
+              id: requestId,
+              previewKey: previewKeyRef.current,
+              sectionId: target.sectionId,
+              fieldKey: target.fieldKey,
+              fieldPath: target.fieldPath,
+            }
+          : null;
       return new Promise<boolean>((resolve) => {
         // A preview that never answers must not hold the author here.
         const timer = setTimeout(() => {
           inlineEditEndedRef.current.delete(ended);
+          inlineFinishRequestRef.current = null;
           resolve(false);
         }, INLINE_EDIT_FINISH_TIMEOUT_MS);
         const ended = (finished: boolean) => {
@@ -5122,6 +5157,7 @@ export function VisualEditorShell({
         postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
           type: "morph:storefront-preview-finish-inline-text",
           commit,
+          requestId,
         });
       });
     },
@@ -7865,6 +7901,7 @@ export function VisualEditorShell({
       // already holds (on blur, say, as focus moves to the question) is not.
       const heldProps = { ...sectionPropsSnapshot(sectionId), ...existingProps };
       if (
+        !requestedFinishCommitRef.current &&
         Object.entries(nextProps).some(
           ([field, value]) => !sameContent(heldProps[field], value),
         )
@@ -7977,10 +8014,24 @@ export function VisualEditorShell({
         fieldPath: message.fieldPath,
         value: message.value,
       }));
-      handleSectionPropsChange(
-        message.sectionId,
-        setFieldPathValue(currentProps, message.fieldPath, message.value),
+      // The commit the author asked for by finishing the edit is handed on
+      // without counting as new input — that one, once. Anything else that
+      // arrives, a repeat or a late one included, is input as usual.
+      const requestedFinish = isRequestedInlineFinishCommit(
+        inlineFinishRequestRef.current,
+        message,
+        previewKeyRef.current,
       );
+      if (requestedFinish) inlineFinishRequestRef.current = null;
+      requestedFinishCommitRef.current = requestedFinish;
+      try {
+        handleSectionPropsChange(
+          message.sectionId,
+          setFieldPathValue(currentProps, message.fieldPath, message.value),
+        );
+      } finally {
+        requestedFinishCommitRef.current = false;
+      }
     };
     return () => {
       inlineTextCommitHandlerRef.current = () => {};

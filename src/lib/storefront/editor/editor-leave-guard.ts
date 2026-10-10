@@ -125,7 +125,10 @@ export type EditorLeaveGuard = {
   leave: () => void;
   /** The author keeps the open edit's text; the navigation then saves it. */
   finishEdit: () => void;
-  /** The author edited something; a waiting navigation is cancelled. */
+  /**
+   * The author edited something; a waiting navigation is cancelled. Not
+   * called for the commit an author-requested finish produces.
+   */
   noteInput: () => void;
   readonly waiting: boolean;
 };
@@ -151,8 +154,6 @@ export function createEditorLeaveGuard(
     kind: EditorLeaveKind;
     resolve: (block: boolean) => void;
     promptTimer: ReturnType<typeof setTimeout> | null;
-    /** Ending the open edit; the commit that produces is not new input. */
-    finishingEdit: boolean;
     /** Waiting on the author about an open edit. */
     askingAboutEdit: boolean;
   };
@@ -228,7 +229,6 @@ export function createEditorLeaveGuard(
           kind,
           resolve,
           promptTimer: null,
-          finishingEdit: false,
           askingAboutEdit: openEdit,
         };
         current = attempt;
@@ -245,12 +245,10 @@ export function createEditorLeaveGuard(
       const attempt = current;
       if (!attempt || !attempt.askingAboutEdit) return;
       attempt.askingAboutEdit = false;
-      attempt.finishingEdit = true;
       const finishing = ports.finishOpenEdit?.(true) ?? Promise.resolve(true);
       finishing.then(
         (ended) => {
           if (current !== attempt) return;
-          attempt.finishingEdit = false;
           if (!ended) return notSaved(attempt, OPEN_EDIT_NO_ANSWER);
           ports.onPrompt(null);
           if (!ports.hasPendingWrites(attempt.kind)) {
@@ -258,10 +256,7 @@ export function createEditorLeaveGuard(
           }
           save(attempt);
         },
-        () => {
-          attempt.finishingEdit = false;
-          notSaved(attempt, OPEN_EDIT_NO_ANSWER);
-        },
+        () => notSaved(attempt, OPEN_EDIT_NO_ANSWER),
       );
     },
     stay: () => {
@@ -276,11 +271,10 @@ export function createEditorLeaveGuard(
       settle(attempt, false);
     },
     noteInput: () => {
-      // The open edit's own commit, arriving because the author chose to
-      // finish it, is not the author editing again.
-      if (current && !current.finishingEdit) {
-        settle(current, true, "kept-editing");
-      }
+      // Any input, including while an open edit is being finished. The one
+      // commit that finishing produces is told apart by the caller, which
+      // does not report it (`isRequestedInlineFinishCommit`).
+      if (current) settle(current, true, "kept-editing");
     },
     get waiting() {
       return current !== null;

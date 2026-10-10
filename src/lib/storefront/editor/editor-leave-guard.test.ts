@@ -392,9 +392,8 @@ describe("text still open for typing on the page", () => {
     h.guard.finishEdit();
     expect(h.finishes.map((finish) => finish.commit)).toEqual([true]);
 
-    // The commit reaches the editor as an ordinary edit before the close is
-    // reported; it is not the author typing again.
-    h.guard.noteInput();
+    // The commit it produces is not reported as input by the caller (see
+    // `isRequestedInlineFinishCommit`), so nothing calls noteInput here.
     h.closeEdit(true);
     h.finishes[0]!.answer.resolve(true);
     await settle();
@@ -405,6 +404,24 @@ describe("text still open for typing on the page", () => {
     h.flushes[0]!.resolve({ saved: true });
     await settle();
     expect(blocked).toBe(false);
+  });
+
+  it("is cancelled by input that arrives while the edit is being finished", async () => {
+    const h = withOpenEdit();
+    let blocked: boolean | undefined;
+    void h.guard.request("leave-editor").then((value) => (blocked = value));
+    h.guard.finishEdit();
+
+    h.guard.noteInput();
+    await settle();
+    expect(blocked).toBe(true);
+
+    // Finishing answering afterwards neither revives it nor saves for it.
+    h.closeEdit(true);
+    h.finishes[0]!.answer.resolve(true);
+    await settle();
+    expect(blocked).toBe(true);
+    expect(h.flushes).toEqual([]);
   });
 
   it("stays, with the text still open, when the author stays", async () => {
