@@ -259,6 +259,12 @@ export type EditorCodeWorkspaceHandle = {
   saveAll: (options?: { confirmed?: boolean }) => Promise<boolean>;
   /** Flushes Monaco drafts before a consumer changes authoring mode. */
   flushPendingChanges: () => Promise<boolean>;
+  /**
+   * Whether any Monaco draft differs from its saved baseline, now. Read
+   * directly rather than through the dirty-path summary, which reaches the
+   * shell a render later than a save that just landed.
+   */
+  hasUnsavedDrafts: () => boolean;
 };
 
 type PublicUrlReviewState = {
@@ -3227,6 +3233,8 @@ const EditorCodeWorkspaceContent = forwardRef<
     () => ({
       saveAll: handleSaveAll,
       flushPendingChanges,
+      hasUnsavedDrafts: () =>
+        Object.values(draftDirtyRef.current).some(Boolean),
     }),
     [flushPendingChanges, handleSaveAll],
   );
