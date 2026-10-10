@@ -896,6 +896,52 @@ OCC）→ 該實例更新、其他實例不變**。
   - 偽造標記（作者手寫、或在頁面上以腳本加入）不能讓 Core 接受任何未確認的寫入；
   - 失效標記（slot 已改名或刪除）不觸發錯誤寫入，只是沒有欄位。
 
+#### 3.6.5.1 實驗 2 結果（2026-10-10，本機 `astro dev` 7.3.5 加 `@astrojs/cloudflare` 14.3.3 的 workerd dev，Chromium；不是 Morph 預覽容器，也不是 Cloudflare）
+
+腳本與頁面：`~/projects/astro-spike/l15-boundary-plugin.mjs`、`src/pages/l15/{plain,marked}/cases.astro`。plain 與 marked 的原始碼相同，只有 marked 經過實驗用的預覽轉換。標記的 id 用的是實驗用的原始碼位置（`行:欄`），不是正式設計的 slot id。
+
+**轉換的掛點與形式（【事實】）**：
+
+- Astro 在自己很早的 transform 中就編譯 `.astro`，所以預覽轉換必須掛在 Vite 的 `load`，`transform` 來不及（與 spike 的來源位置 plugin 相同）。
+- **純 HTML 註解在元件的 slot 內容中會被 compiler-rs 0.5.1 丟掉**：`<Outer><!--x--><Hero /></Outer>` 的註解不會輸出；作者手寫的一般註解也一樣。一般元素內（`<div><!--x--></div>`）則保留，與 `compressHTML` 無關。`<Layout><Hero /></Layout>` 是 Astro 頁面最常見的寫法，所以純註解不可行。
+- 改用 `<Fragment set:html={"<!--morph:s …-->"} />` 輸出原始 HTML：slot 內容中也保留，不新增元素。之後的結果都是這個形式。
+- 呼叫處在運算式中（例如 `.map()` 的回傳值）時，用 `<>…</>` 包住，同樣不產生元素。
+
+**結果（Fragment 形式）**：
+
+| 項目 | 結果 |
+| --- | --- |
+| 元素與樣式 | plain 與 marked 在同一個 iframe 尺寸下，44 個元素的標籤、子元素數、文字節點與計算後樣式（含 `:first-child`、`:last-child`、`+`、`:empty`、`:nth-child`、`:only-child` 的規則）**差異 0** |
+| 空白文字節點 | 沒有增加（SSR 輸出中註解緊貼元素） |
+| 同一元件兩個實例 | 各自一個範圍，不互相串用 |
+| 多根節點 | 一個範圍涵蓋兩個根 |
+| 巢狀（slot 內） | 外層與內層各自配對，不交錯 |
+| 空輸出 | 範圍存在但沒有內容 |
+| `<tbody>` 中的 `<tr>`、`<tr>` 中的 `<td>`、`<select>` 中的 `<option>` | 範圍正確 |
+| `<table>` 中直接放 `<tr>`（瀏覽器補 `<tbody>`） | **開頭註解留在 `<table>`、結尾註解進入 `<tbody>`**，範圍被拆開（可偵測） |
+| `<p>` 中放 `<div>`（瀏覽器提早結束 `<p>`） | **範圍被拆開**（可偵測） |
+| `<tbody>` 中直接放文字（foster parenting） | 文字被搬到表格前，範圍變成空的；**無法與真正的空輸出區分** |
+| React island（`client:load`） | hydration 正常；第一個 island 的範圍內含 Astro 注入的 `<style>` 與 `<script>`（不可見） |
+| 迴圈中的同一個呼叫處 | **兩個實例的 id 相同**，只靠標記無法區分 |
+| 修改元件（`.astro`） | 整頁重載，重載後範圍正確，並納入新增的根元素 |
+| 修改頁面 | 整頁重載，**所有原始碼位置 id 跟著位移**；舊 id 可能指到另一個實例 |
+| 修改 React island | Fast Refresh，不重載，狀態保留，範圍不受影響 |
+
+HMR 的三項在純註解與 Fragment 兩種形式下都測過，結果相同。
+
+**對設計的影響**：
+
+- 3.6.5 的「邊界註解」改為「以 `Fragment set:html` 輸出的邊界註解」；正式轉換掛在 `load`。
+- 以下情況一律不產生可寫的選取，退回內容列表（可偵測）：
+  - 開頭與結尾註解不在同一個父節點（table、`<p>` 等瀏覽器重整 DOM 的位置）；
+  - 未配對、交錯；
+  - 同一 id 出現多次（迴圈、或偽造）；
+  - 空範圍（同時涵蓋 foster parenting 搬走內容的情況）。
+- 被 foster parenting 搬出的內容不在任何範圍內，點選時不會選到它；如果它落在外層範圍內，選到的是外層。這是「包含關係正確、但目標不精確」，列為已知限制。
+- **id 不能用原始碼位置**：修改頁面就會位移。正式的 id 用 Core 確認過的 (文件範圍, slot)，加上預覽實例與內容版本；重新載入或 HMR 之後，舊選取一律重新確認（3.6.3 條件 3）。
+- 迴圈中的 section 第一版不支援畫布選取（同一 slot 多次渲染），只能從內容列表編輯。
+- 未測：`compressHTML` 在建置輸出中的行為（標記只在預覽，建置不經過轉換）、Vue 或其他框架的 island、`server:defer`、View Transitions 的頁面切換、Morph 預覽容器中的實際路徑。
+
 #### 3.6.6 開始實作前的實驗
 
 順序：先證明內容綁定與實例範圍的基礎，再驗 Code 定位。
