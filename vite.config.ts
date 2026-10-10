@@ -215,6 +215,13 @@ const config = defineConfig({
       // `pnpm dev` dies on `EADDRINUSE` before it serves anything. An
       // end-to-end run has nothing to attach a debugger to, so it goes without.
       inspectorPort: process.env.MORPH_E2E_STATE_DIR ? false : undefined,
+      // A container end-to-end run names its worker (`morph-e2e-<id>`) so the
+      // containers its dev server starts are named after it and can be told
+      // from anyone else's (`scripts/run-editor-e2e.mjs`, `containerPrefix`).
+      // Unset everywhere else, so `pnpm dev` and builds keep `morph`.
+      config: process.env.MORPH_E2E_WORKER_NAME
+        ? { name: process.env.MORPH_E2E_WORKER_NAME }
+        : undefined,
     }),
     tailwindcss(),
     tanstackStart(),

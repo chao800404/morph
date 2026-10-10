@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
@@ -244,5 +244,118 @@ describe("the machine's E2E slot", { skip: !flockAvailable() && "no flock here" 
     await lock.acquire();
     await lock.release();
     await lock.release();
+  });
+
+  describe("a run's containers", () => {
+    // A `docker` on PATH backed by files: one file per container, holding its
+    // name; `down` present means the daemon cannot be reached.
+    const FAKE_DOCKER = `#!/bin/sh
+d="$FAKE_DOCKER_DIR"
+[ -f "$d/down" ] && exit 1
+case "$1" in
+  ps)
+    prefix=$(printf '%s\\n' "$@" | sed -n 's/^name=^//p')
+    for f in "$d"/*.c; do
+      [ -f "$f" ] || continue
+      case "$(cat "$f")" in "$prefix"*) basename "$f" .c ;; esac
+    done ;;
+  rm) shift; [ "$1" = "-f" ] && shift; for id in "$@"; do rm -f "$d/$id.c"; done ;;
+esac
+`;
+    let docker = "";
+    let bin = "";
+    before(async () => {
+      docker = await mkdtemp(path.join(dir, "docker-"));
+      bin = await mkdtemp(path.join(dir, "bin-"));
+      await writeFile(path.join(bin, "docker"), FAKE_DOCKER);
+      await chmod(path.join(bin, "docker"), 0o755);
+    });
+    const container = (id, name) => writeFile(path.join(docker, `${id}.c`), name);
+    const exists = (id) => existsSync(path.join(docker, `${id}.c`));
+    const env = () => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_DIR: docker });
+
+    /** An owner that holds the slot with a container prefix, until killed. */
+    async function containerOwner(prefix, extra = "") {
+      const owner = owned(
+        spawn(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `import { createMachineLock } from ${JSON.stringify(MODULE)};
+             const lock = createMachineLock({ lockFile: ${JSON.stringify(lockFile)}, log: () => {}, args: "containers" });
+             await lock.acquire();
+             lock.trackContainers(${JSON.stringify(prefix)});
+             ${extra}
+             console.log("HELD");
+             setInterval(() => {}, 1000);`,
+          ],
+          { env: env(), stdio: ["ignore", "pipe", "inherit"] },
+        ),
+      );
+      await new Promise((resolve) => owner.stdout.on("data", (d) => String(d).includes("HELD") && resolve()));
+      return owner;
+    }
+
+    it("removes only this run's containers before letting the next run in", async () => {
+      lockFile = freshLock();
+      await container("mine1", "workerd-morph-e2e-aaaa11112222-PreviewSandbox-1");
+      await container("mine2", "workerd-morph-e2e-aaaa11112222-PreviewSandbox-1-proxy");
+      await container("other", "workerd-morph-e2e-bbbb33334444-PreviewSandbox-1");
+      await container("devs", "workerd-morph-PreviewSandbox-9");
+      const owner = await containerOwner("workerd-morph-e2e-aaaa11112222-");
+      owner.kill("SIGKILL");
+
+      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
+      await next.acquire();
+      assert.equal(exists("mine1"), false);
+      assert.equal(exists("mine2"), false);
+      assert.equal(exists("other"), true, "another run's container is not this run's");
+      assert.equal(exists("devs"), true, "a developer's own container is not this run's");
+      await next.release();
+    });
+
+    it("keeps the slot while Docker cannot be asked whether they are gone", async () => {
+      lockFile = freshLock();
+      await container("held1", "workerd-morph-e2e-cccc55556666-Sandbox-1");
+      const owner = await containerOwner("workerd-morph-e2e-cccc55556666-");
+      await writeFile(path.join(docker, "down"), "");
+      owner.kill("SIGKILL");
+
+      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
+      let nextHeld = false;
+      const waiting = next.acquire().then(() => (nextHeld = true));
+      await sleep(4000);
+      assert.equal(nextHeld, false, "an unconfirmed cleanup must not let the next run in");
+
+      await rm(path.join(docker, "down"));
+      await waiting;
+      assert.equal(exists("held1"), false);
+      await next.release();
+    });
+
+    it("hands the slot to the guardian when the run could not confirm its own cleanup", async () => {
+      lockFile = freshLock();
+      await container("left1", "workerd-morph-e2e-dddd77778888-Sandbox-1");
+      // The run gives up its slot saying its containers did not go, and exits.
+      const owner = await containerOwner(
+        "workerd-morph-e2e-dddd77778888-",
+        `process.on("SIGTERM", async () => { await lock.release({ handOver: true }); process.exit(0); });`,
+      );
+      owner.kill("SIGTERM");
+      await new Promise((resolve) => owner.once("exit", resolve));
+
+      const next = createMachineLock({ lockFile, log: () => {}, args: "next" });
+      await next.acquire();
+      assert.equal(exists("left1"), false, "the guardian finished the cleanup before the next run got in");
+      await next.release();
+    });
+
+    it("refuses a prefix it did not choose", () => {
+      const lock = createMachineLock({ lockFile: freshLock(), log: () => {}, args: "x" });
+      for (const bad of ["workerd-morph", "x;rm -rf /-", "workerd-morph.*-", "Workerd-A-"]) {
+        assert.throws(() => lock.trackContainers(bad), /E2E_LOCK_BAD_CONTAINER_PREFIX/);
+      }
+    });
   });
 });
