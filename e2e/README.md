@@ -17,6 +17,72 @@ saved session lands in `e2e/.auth/`, which is ignored by git.
 
 A dev server on port 3000 is reused if one is already running.
 
+### One run per machine
+
+`pnpm test:e2e:local-preview` (`scripts/run-editor-e2e.mjs`) takes a
+machine-wide lock (`/tmp/morph-editor-e2e.lock`, shared within one WSL
+distribution whatever TMPDIR or folder) before it starts anything shared, and
+waits for it, so two runs never overlap. It is mutual exclusion, not a queue:
+of several waiting runs, which goes next is not defined. While it waits it
+prints who holds the slot (pid, folder, start time, arguments).
+
+The runner itself holds the lock for its whole life (its open descriptor on
+the lock file), together with a guardian process that shares it. The lock goes
+only when both are gone:
+
+- Killing the guardian, or anything else, while the run is going does not
+  free the slot.
+- A normal or interrupted run stops everything it started, then releases.
+- A run killed outright leaves the guardian holding the slot. The guardian
+  stops the process groups the run registered (TERM, then KILL after ten
+  seconds), waits until they are gone, with no timeout, and only then lets
+  the lock go.
+
+**A container run's containers are its own by name.** With
+`MORPH_E2E_TRANSPORT=cloudflare-sandbox` the runner gives the dev server a
+worker name of its own (`morph-e2e-<id>`, via `MORPH_E2E_WORKER_NAME` and the
+Cloudflare plugin's `config` in `vite.config.ts`). workerd names a container
+after its Durable Object namespace, `<worker>-<class>`, so every container the
+run starts is `workerd-morph-e2e-<id>-…`. Nothing else has that prefix — a
+developer's own `pnpm dev` is `workerd-morph-…`, another run has its own id —
+so the run can remove exactly its own:
+
+- At teardown, after the dev server has stopped, the runner removes the
+  containers with its prefix. If Docker cannot confirm they are gone, the run
+  hands the slot to the guardian instead of releasing it.
+- A run killed outright: after stopping its process groups the guardian
+  removes the containers with its prefix and keeps the slot until Docker
+  reports none, asking again while Docker cannot be reached.
+- Nothing is removed by "it appeared during the run" any more; the old
+  `MORPH_E2E_REAP_CONTAINERS` switch is gone.
+- A waiting run shows what the slot is held for while a guardian cleans up:
+  stopping processes, removing containers, or Docker not answering (and since
+  when).
+
+**A container run's images are its own too.** When any dev server stops,
+`@cloudflare/vite-plugin` removes containers by
+`docker ps --filter ancestor=<its image tag>`. Each session's tag is random,
+but identical builds share one image id, and Docker resolves `ancestor` to that
+id, so stopping one dev server removes every session's Sandbox containers built
+from the same image. A container run therefore builds its Sandbox images with
+its id as `MORPH_DEV_IMAGE_RUN`, which `Dockerfile.sandbox` writes into a label:
+same layers, an image id of its own, so neither the run's teardown nor anyone
+else's reaches the other (`src/server/e2e-container-isolation.ts`). Anything
+unexpected — a malformed id, no containers, a pulled image — stops the run
+rather than falling back to the shared image.
+
+This keeps E2E runs apart from everything else. It does not make plain
+`pnpm dev` sessions safe beside each other: they still share one image, and
+stopping one still removes the others' Sandbox containers.
+
+- `MORPH_E2E_LOCK=0` bypasses the protection entirely. Use it only for an
+  isolated diagnosis with no other E2E run on the machine. It stops nothing.
+- Without `flock` (macOS) the run goes ahead unlocked, and says so.
+- Not covered: calling `playwright test` directly; a checkout from before the
+  lock; the short synchronous steps (migrations, seed) of a run killed during
+  them, which write only to that run's own state directory; load from unit
+  tests or builds.
+
 ## Other browsers
 
 Chromium always runs. Firefox and WebKit are opt-in, because each needs system
@@ -110,11 +176,12 @@ the dev server but does not reap containers workerd started through the Sandbox
 binding. Ten accumulated in one session, after which the machine's load average
 reached 57 and every run stalled in `openEditor` at "preview frame".
 
-Clear them by *difference*, never by name or image. A developer's own `pnpm dev`
+Never clear them by the shared name or image. A developer's own `pnpm dev`
 starts a container with an identically shaped name, so
 `docker rm $(docker ps --filter name=workerd-morph-Sandbox -q)` destroys their
 session's sandbox along with the suite's leftovers — which is exactly what
-happened here. Snapshot `docker ps -q` before the run and remove only what is new.
+happened here. The runner now names its own containers (`workerd-morph-e2e-<id>-…`,
+see "One run per machine") and removes only those.
 
 ## What these tests change
 

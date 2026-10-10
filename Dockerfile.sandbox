@@ -48,3 +48,11 @@ RUN cd /opt/morph-platform \
 # it lays out the workspace; the image holds no shared link.
 RUN mkdir -p /workspace
 WORKDIR /workspace
+
+# Local development only. A container end-to-end run passes its own id here, so
+# its image gets an id of its own: @cloudflare/vite-plugin removes containers
+# by `ancestor=<tag>`, which Docker resolves to the image id, and identical
+# builds share one (src/server/e2e-container-isolation.ts). Every other build,
+# deploys included, leaves it empty: an empty label and no layer of its own.
+ARG MORPH_DEV_IMAGE_RUN=""
+LABEL dev.morph.image-run=$MORPH_DEV_IMAGE_RUN

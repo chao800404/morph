@@ -1,5 +1,6 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
+import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
@@ -3358,7 +3359,7 @@ export function VisualEditorShell({
     const more =
       stalePaths.length > 3 ? ` and ${stalePaths.length - 3} more` : "";
     toast.warning(
-      `Another tab saved newer versions of ${names}${more}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
+      `Newer versions of ${names}${more} were saved elsewhere, possibly from ${POSSIBLE_SAVE_SOURCES}. This tab's copy is out of date, so its edits were not sent to the Live Preview. Reload to continue from the latest version.`,
       { duration: 20_000 },
     );
   }, []);
@@ -7668,7 +7669,7 @@ export function VisualEditorShell({
   droppedContentHandlerRef.current = (droppedProps) => {
     const names = droppedProps.map((key) => `"${key}"`).join(", ");
     toast.warning(
-      `Not saved: ${names} ${droppedProps.length === 1 ? "is not an editable field" : "are not editable fields"} in the current Theme source, which may have changed in another tab. This tab has read it again.`,
+      `Not saved: ${names} ${droppedProps.length === 1 ? "is not an editable field" : "are not editable fields"} in the current Theme source, which may have been changed elsewhere, possibly from ${POSSIBLE_SAVE_SOURCES}. This tab has read it again.`,
       { duration: 20_000 },
     );
     void queryClient
