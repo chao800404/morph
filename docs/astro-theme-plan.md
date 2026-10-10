@@ -898,22 +898,43 @@ OCC）→ 該實例更新、其他實例不變**。
 | 05:04:47.0 | 同步 changed 1；dev server 同一秒記錄 `[vite] program reload` |
 | 05:04:55.7 | 同步 unchanged 1 |
 | 05:05:00.8 | 頁面重新載入 `/`（200） |
-| 05:05:03.3–05:05:06.4 | 20 次 `OperationInterruptedError`，都在頁面重新載入後的模組請求高峰，同時在途最多約 6 個 |
+| 05:05:03.3–05:05:06.4 | 10 次請求失敗（見下方計數），都在頁面重新載入後的模組請求高峰，同時在途最多約 6 個 |
 | 05:05:06.4 | HMR relay long-poll 回 500 |
 
 **判讀（依使用者的標準）**：
 
+- **計數**：先前寫的「20 次中斷」是按日誌行數算的，每筆 SDK 錯誤日誌中 `OperationInterruptedError` 出現兩次（stack 與 name）。實際是 **10 次請求失敗**（10 個不同的 SDK traceId）；每一次在兩層各記一筆：SDK 的 `Proxy routing error`，以及 DO 中的原始錯誤 `PREVIEW_CONTAINER_FETCH_FAILED`（6d3cccc）。UI 沒有收到任何通知。往後應以 request ID 串起各層，避免一次故障被算成多次。
 - 原始錯誤 10 筆**全部**是 `Container port connection closed unexpectedly.`（retryable:true）：**只確認症狀相同**。
 - **重新載入與請求重疊沒有對上**：記錄到的 `program reload` 在中斷前 16 秒；中斷發生時 dev server 沒有任何重新載入的紀錄。Worker 模組也可能在下一個請求時才延遲重新載入而沒有記錄，所以不能排除，但目前的證據**不支持**「同一機制」。
-- 新事實：記錄為失敗的模組請求，最終幾乎都回 304（SDK 重試後成功）；真正以失敗收場的只有 HMR relay 的 long-poll（500）。
+- **後續請求多數回 304，恢復途徑尚未以 request ID 確認**：同一段時間內每個 path 在 Worker 層只有一個請求，而它最終回 304，所以恢復發生在同一個 Worker 請求之內，不是瀏覽器重新請求。這與 Morph 自己的模組讀取重試（`preview-proxy-response.ts`：只對 `/src/`、`/@fs/`、`/@id/` 等模組讀取，遇到 `Proxy routing error` 最多試 3 次）一致，但沒有逐次嘗試的紀錄可以串起重試鏈。
+- **中斷有實際影響**：HMR relay 的 long-poll（`/__morph-theme-preview__/_morph/hmr`）不在模組讀取重試的範圍內，以 500 失敗。
 - 容器崩潰（`not listening to port 3000`）這輪沒有發生；docker events 只有建立、啟動與停止時的銷毀。
 
 **同一輪的其他結果**：
 
 - 3b 這輪通過（舊選取沒跳；新位置 19:17；47/47）。累計跑到 3b 的 4 次中 2 次通過、2 次被中斷：**仍未完成穩定性驗收**。
 - 不寫入斷言通過：點選、雙擊、雙擊後輸入、Enter、Escape 之後，Theme 檔案版本與內容、source generation、所有 Document 都沒有變；內容寫入 0 次。
-- 未量到（spec 的錯）：island 畫布標籤在所有點選之後才讀，已換成別的選取（選取報告的 `locatedAt: "enclosing"` 有通過）；Content 與 Styles 分頁以 `role="tab"` 找不到，控制項數量沒有量。
-- island HMR：dev server 有 `[watch] /workspace/src/l15/Counter.jsx`，但沒有任何 HMR update 紀錄。另外 Vite 的相依掃描失敗（預設 Theme 的 Start 檔案 import 未核准的 `clsx`），預先打包被略過。兩點交給 island HMR 的追蹤項目。
+- 未量到（spec 的錯，已修正於 5d044ab，未執行）：island 畫布標籤在所有點選之後才讀，已換成別的選取（選取報告的 `locatedAt: "enclosing"` 有通過）；右側分頁是 `aria-pressed` 按鈕，不是 ARIA tab，以 `role="tab"` 找不到。
+
+**驗收矩陣（2026-10-10，使用者審閱後）**：
+
+| 項目 | 狀態 |
+| --- | --- |
+| 定位（46/46、Code 4/4、偽造與越界 7/7） | 已測案例通過 |
+| 邊界判定（實例、多根、表格、迴圈、`split-inside`、偽造註解） | 已測案例通過 |
+| 有無注入對照（版面、互動） | 已測案例通過 |
+| 不寫入（點選、雙擊、輸入、Enter、Escape 前後，檔案、generation、Document 不變） | 已測案例通過 |
+| 3b 存檔後舊選取失效、重新選取對應新版本 | 功能曾通過（2/4），**穩定性待驗**；另 2 次被平台中斷打斷 |
+| island 畫布標籤 | **未量測**：不算通過，也不算產品失敗 |
+| Content／Styles 分頁的可編輯控制項 | **未量測**：不算通過，也不算產品失敗 |
+| island 內部定位 | 第一版不支援，介面標示；追蹤項目待 `inject-preview-bindings` 相關 session 合併後再開 |
+| island HMR | 失敗，與轉換無關；由追蹤 session 調查 |
+
+下一次容器執行要由具體的修正或新假設驅動（例如中斷或 HMR 的修正、純 Astro Theme 的 fixture），屆時順便補量兩項未量測，不為了補量另佔時段，也不重跑碰運氣。
+- island HMR（已交給 island HMR 的追蹤 session）：
+  - **Vite 是否產生更新**：dev server 有 `[watch] /workspace/src/l15/Counter.jsx`，但沒有任何 HMR update 紀錄，目前看不到 Vite 為它產生更新的證據；
+  - **relay 是否送達**：relay 的 long-poll 在中斷時回 500，但 run 7 沒有任何中斷時一樣沒送達，所以 relay 的 500 不足以解釋；兩者分開調查；
+  - **fixture 的相依掃描**：Astro 的掃描入口寫死為 `src/**/*.{jsx,tsx,vue,svelte,html,astro,mdx}`，而這個 fixture（與 A6c 相同）是把 Astro 檔案加進 E2E 預設的 Start Starter Theme，Starter 的元件 import `clsx`（屬於 `tanstack-start-1.168` 工具鏈，不在 Astro 工具鏈），import guard 拒絕是正確的，**不放寬核准清單**。掃描失敗讓預先打包被略過，可能干擾 HMR，但還不是根因；乾淨的測試條件是純 Astro Theme。
 
 #### 3.6.3 L1.5b 內容欄位編輯
 
