@@ -28,6 +28,20 @@
   - 這是獨立項目，Astro A2 完成不會勾掉它。
 - [ ] 容器規格（#157）在雲端的實際驗證，以及最壞情況用量：`max_instances`、`sleepAfter` 各套用在哪些容器類別、同時開啟的預覽數上限。
 
+## 已知限制，追蹤中（2026-10-10）
+
+- [ ] 一般 `pnpm dev` 之間會互相清除 Sandbox 容器
+  - 原因：dev server 關閉時，`@cloudflare/vite-plugin` 以 `docker ps --filter ancestor=<image tag>` 移除容器。各 session 的 tag 不同，但內容相同的 build 共用同一個 image id，Docker 依 id 比對，所以會選中其他 session 的容器（2026-10-10 以自己建立的容器實測）。
+  - #195 只讓編輯器 E2E 的 container run 改用自己的映像，與其他環境互不清除；一般 dev session 彼此仍未隔離，不能宣稱本機所有工作可以安全並行。
+- [ ] container 傳輸下 `preview-transport.spec.ts` 的 60 秒上限
+  - 2026-10-10 一次逾時：preview frame 41 秒，其中約 25 秒在預覽啟動之前；之後前後比較各兩輪都通過（見 #195 說明）。
+  - 兩輪不足以判定是負載造成，也不足以排除容器映像隔離的成本。先累積各階段耗時，再判斷是產品啟動變慢、資源競爭，還是門檻不適合 container 模式；不因一次失敗直接調高。
+- [ ] 平台中斷訊息：「Sandbox operation sandbox.fetch was interrupted while the platform was updating the sandbox runtime」
+  - 2026-10-10 一次 container 發布驗收的 log 中出現 17 個錯誤物件（34 行），都在預覽重新啟動後 1 秒內，斷言未受影響。只算日誌出現次數，不是 17 次獨立故障。
+  - 另有工作在追查原因（並行預覽同步後的平台中斷）；2026-10-10 的去識別化紀錄已交給它，未要求重跑。
+- [ ] 正式映像多一個空值 LABEL
+  - `Dockerfile.sandbox` 最後的 `LABEL dev.morph.image-run`（#195）在正式建置時為空值；layers、執行設定與工具鏈清單不變，但 image id 因此改變。首次部署時確認沒有依賴舊 image id 的地方。
+
 ## 待決定
 
 - [ ] 在 Domains 頁面加入 CMS 網址設定流程
