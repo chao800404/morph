@@ -5354,7 +5354,11 @@ export function VisualEditorShell({
         return {
           saved: false,
           reason:
-            Object.keys(contentConflictsRef.current).length > 0
+            // "Keep mine" does not save a list both sides changed; see
+            // `heldContentMessage`.
+            Object.keys(listConflictsRef.current).length > 0
+              ? heldContentMessage({ hasListConflict: true })
+              : Object.keys(contentConflictsRef.current).length > 0
               ? "Some content is out of date with the document. Use Load latest, keep mine first."
               : Object.values(readFiles()).some(
                     (file) => file.saveState === "conflict",
