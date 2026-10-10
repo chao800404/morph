@@ -37,6 +37,24 @@ Morph 希望同時具備：
 - 客戶以平台與自己做好的 sections 組合頁面（Design 模式），或在 Code 模式新增元件、修改樣式。
 - 開發者可以在本地以標準 TanStack Start 專案撰寫，之後匯入同一個工作區（匯入流程列在後續項目最後）。
 
+### 1.2 Morph 配合框架的寫法，不是作者配合 Morph（2026-10-09 確認）
+
+- 作者用框架原本的寫法撰寫 Theme，不必為了讓 Design／CMS 讀得到內容而改成 Morph 指定的形狀。例如不必把所有內容都寫成 `home.hero` 這種直接取值。
+- 只有程式跑得起來還不夠：寫法能執行，但 Morph 認不出哪個元件對應哪一頁的哪個內容，對這個產品沒有意義。Design 要能接上這些寫法。
+- 內容仍要經 Morph 的讀取呼叫取得（例如 `morph.pages.get()`），這點與任何 headless CMS 相同。不約制的是讀到之後的資料流：解構、別名、Astro frontmatter、TanStack Start 的 server function → loader → `useLoaderData()`，都由作者決定。
+- 以下兩種寫法是**必須支援的案例**，不是永遠留在 Code-only：
+  - Astro：frontmatter 中 `const home = await morph.pages.get("/home"); const { hero } = home;`，再 `<Hero {...hero} />`。
+  - TanStack Start：`createServerFn` 的 handler 回傳 `morph.pages.get("/home")`，route `loader` 呼叫它，元件以 `Route.useLoaderData()` 解構出 `hero`，再 `<Hero {...hero} />`。
+- 做法分兩層：
+  - 常見的原生寫法自動辨識，包括直接取值、解構、別名、標準 loader／server function 回傳，每種框架以真實案例驗收。
+  - 認不出的複雜寫法，提供明確的綁定出口：作者標明「這個元件實例對應 `/home` 的 `hero`」，不必改原本的資料載入方式，也不靠猜變數名稱。
+- 兩層共用一份契約：頁面身分＋slot／實例身分＋欄位路徑＋欄位宣告。各框架 adapter 把它接到元件與畫布；Core 仍驗證授權、欄位與 OCC，不只信任畫布傳來的標記。
+- 界線：
+  - 不承諾自動理解任意資料轉換。
+  - 認不出綁定時維持 Code-only，不猜，不寫入別的內容。
+  - 不為每種語法加零散特例；先定契約與案例清單，再實作。
+- 目前狀態：方向成立，但尚未證明上述原生寫法都已能在 Design 編輯；已有辨識證據的只有直接取值（`home.hero`）。契約文件列在「本機程式碼同步後續」第 4 項。
+
 ---
 
 ## 2. Architecture Direction
@@ -459,7 +477,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 1 | 安全的 pull／restore 指令：本機誤刪或改壞後，可從 Morph 取回，不必刪掉 `.morph/sync-state.json` 重新 `link` | 正確性 |
 | 2 | 專案綁定與防誤連：確認本機資料夾與 Morph 工作區的對應，避免把一個專案的檔案同步進另一個 | 安全 |
 | 3 | 編輯器即時顯示本機修改，以及 Code 模式內的衝突標示 | 介面 |
-| 4 | 框架原生寫法的綁定契約設計文件（loader、server function、解構、Astro frontmatter） | 設計 |
+| 4 | 內容綁定契約設計文件：讓 Design 接上框架原生的資料流寫法，不要求作者改寫（見 1.2）。內容包括契約（頁面身分＋slot／實例身分＋欄位路徑＋欄位宣告）、自動辨識的範圍、複雜寫法的明確綁定出口，以及每種框架的驗收案例清單；Astro frontmatter 解構與 Start server function → loader → `useLoaderData()` 兩例必列 | 設計 |
 
 ---
 

@@ -83,7 +83,7 @@
 - **容器可靠性**：10-08 紀錄的「建置容器啟動失敗時發布直接失敗」已處理：只重試啟動階段，探測在 Durable Object 內執行（#149、#155）。Build Preview 容器啟動失敗時回應「starting」（#170）。三種 Sandbox 容器依實測定規格（#157）。
 - **本機程式碼同步原型**：雙向同步與累計大量刪除保護（#177、#182），見 [`docs/local-code-sync.md`](local-code-sync.md)。
 - **測試的證據力**：E2E 一台機器同時只跑一個，container run 以自己的名稱與映像隔離容器（#195）；content-fields sidecar spec 改用自己的 Theme，不再留下文件影響下一個 spec（#200）。
-- **仍未完成**：Cloudflare 部署環境的驗收；一般 `pnpm dev` 之間仍互相清除 Sandbox 容器；container 模式下預覽前置檢查曾逾時一次，原因未定（兩者見 [`TODO.md`](../TODO.md)）。
+- **仍未完成**：Design 接上框架原生的資料流寫法（[ROADMAP](../ROADMAP.md) 1.2；Astro frontmatter 解構、Start server function → loader → `useLoaderData()` 為必須支援的案例），契約文件尚未開始，目前只有直接取值有辨識證據；Cloudflare 部署環境的驗收；一般 `pnpm dev` 之間仍互相清除 Sandbox 容器；container 模式下預覽前置檢查曾逾時一次，原因未定（兩者見 [`TODO.md`](../TODO.md)）。
 
 ### 2026-10-07～08：原生 Start 的內容配對、發布預覽與 Live Preview 恢復
 

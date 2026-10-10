@@ -240,6 +240,11 @@ STRIPE_SECRET [ 新增 Secret ]
 - 加入的寫法在 Code 中完整可見、可閱讀，不使用隱藏或虛擬模組。
 - 沒有交給 Design 的元件維持官方寫法，Design 對它們只讀或不顯示可編輯欄位。
 
+2026-10-09 補充（見 [ROADMAP](../ROADMAP.md) 1.2）：這一列是要縮小的過渡做法，不是終點。
+- 必要的只有內容的讀取呼叫（例如 `morph.pages.get()`），與任何 headless CMS 相同。
+- 讀到之後的資料流由作者用框架原本的寫法決定，Design 要能跟上：解構、別名、route `loader`、server function、`useLoaderData()`。不應要求作者為了 Design 改成固定的取值形狀。
+- 目標由內容綁定契約文件定義：常見寫法自動辨識，複雜寫法提供明確的綁定出口；認不出時維持 Code-only，不猜。
+
 ## 匯出
 
 程式碼可帶走，本地 `vite build` 符合官方行為。交給 Design 管理的內容與 CMS 頁面仍存在 Morph，
