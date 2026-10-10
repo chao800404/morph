@@ -30,9 +30,9 @@ const navSource = `export const contentFields = {
 export default function Nav({
   heading = "Menu",
   navItems = [
-    { label: "Shop", link: { href: "/collections/all" } },
-    { label: "About", link: { href: "/pages/about" } },
-    { label: "Journal", link: { href: "/blogs/journal" } },
+    { id: "nav-shop", label: "Shop", link: { href: "/collections/all" } },
+    { id: "nav-about", label: "About", link: { href: "/pages/about" } },
+    { id: "nav-journal", label: "Journal", link: { href: "/blogs/journal" } },
   ],
 }) {
   return (
@@ -67,9 +67,11 @@ export const Route = createRootRoute({ component: () => <Outlet /> });
   },
 ] as never;
 
+// With ids, as every row the editor loads has: `normalizeDocumentRowIds`
+// gives stored rows one before the panel ever reads them.
 const rows = [
-  { label: "Shop", link: { href: "/collections/all" } },
-  { label: "About", link: { href: "/pages/about" } },
+  { id: "nav-shop", label: "Shop", link: { href: "/collections/all" } },
+  { id: "nav-about", label: "About", link: { href: "/pages/about" } },
 ];
 
 /** Selecting the anchor the second row renders. */
@@ -86,6 +88,8 @@ function rowSelection(): EditorSelectionDescriptor {
     elementKey: null,
     fieldKey: "label",
     fieldPath: "navItems.1.label",
+    // The row's id, as the bridge reports it alongside the path.
+    itemId: "nav-about",
     className: "",
     isSection: false,
     computed: null,
@@ -267,9 +271,20 @@ describe("selecting one entry of a repeated field", () => {
       tagName: "nav",
       fieldKey: null,
       fieldPath: null,
+      itemId: null,
       descendantFields: [
-        { fieldKey: "label", fieldPath: "navItems.0.label", sectionId: null },
-        { fieldKey: "label", fieldPath: "navItems.1.label", sectionId: null },
+        {
+          fieldKey: "label",
+          fieldPath: "navItems.0.label",
+          sectionId: null,
+          itemId: "nav-shop",
+        },
+        {
+          fieldKey: "label",
+          fieldPath: "navItems.1.label",
+          sectionId: null,
+          itemId: "nav-about",
+        },
       ],
     } as EditorSelectionDescriptor);
 

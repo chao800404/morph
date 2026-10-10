@@ -164,9 +164,7 @@ const context = {
       name: "Home",
       document: {
         version: 1,
-        sections: [
-          { id: "hero", type: "hero", props: { heading: "Welcome" } },
-        ],
+        sections: [{ id: "hero", type: "hero", props: { heading: "Welcome" } }],
       },
       draftGeneration: 1,
       version: 1,
@@ -257,7 +255,10 @@ async function commitInlineText(value = "Hello", originalValue = "Welcome") {
 }
 
 async function selectHeading() {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
@@ -306,7 +307,6 @@ const saveStatus = () =>
   document
     .querySelector("[data-editor-save-status]")
     ?.getAttribute("aria-label");
-
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -375,8 +375,12 @@ function canvasY(): string | null {
 /** Lets the reveal's frame, and the transform's own frame, run. */
 async function flushFrames() {
   await act(async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
   });
 }
 
@@ -395,9 +399,9 @@ describe("the selection round trip", () => {
       </QueryClientProvider>,
     );
 
-    expect(messagesOfType("morph:storefront-preview-set-section")).toContainEqual(
-      expect.objectContaining({ sectionId: "hero" }),
-    );
+    expect(
+      messagesOfType("morph:storefront-preview-set-section"),
+    ).toContainEqual(expect.objectContaining({ sectionId: "hero" }));
   });
 
   it("keeps a section change quiet while there is no frame to address", () => {
@@ -662,6 +666,220 @@ describe("a content save the document moved under", () => {
   });
 });
 
+describe("a list both writers changed", () => {
+  it("stops rather than writing the author's copy of the list over theirs", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                props: { heading: "Welcome", items: rows("A", "B") },
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+
+    // The document as the other writer left it: a row added in front.
+    const client = readyQueryClient();
+    const remote = {
+      success: true,
+      data: {
+        ...listContext,
+        templates: [
+          {
+            ...listContext.templates[0],
+            draftGeneration: 7,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  props: { heading: "Welcome", items: rows("C", "A", "B") },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext}
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // The author edits B's title on the canvas.
+    const rowNode = {
+      ...heroNode,
+      id: "hero:node:row-title",
+      label: "Title",
+      target: {
+        sectionId: "hero",
+        nodeId: "hero:node:row-title",
+        fieldKey: "title",
+        fieldPath: "items.1.title",
+        itemId: "b",
+        isSection: false,
+      },
+    };
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [rowNode],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    sendInlineCommit("B edited", "B", {
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+    });
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 8, droppedProps: [] },
+    } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+
+    // Nothing is sent: the author's array would remove C and put the edit
+    // where C now sits. The author is told why, and the section stays out of
+    // date with their edit kept.
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/items also changed elsewhere/),
+      ),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toBe("Out of date");
+
+    // The way out names the list, and asks before anything is discarded.
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/items in hero/);
+    expect(dialog.textContent).toMatch(/cannot be undone/);
+
+    // Declined, nothing changes: the draft is still there to decide about.
+    act(() => {
+      screen.getByRole("button", { name: "Keep my changes" }).click();
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+
+    // Confirmed while the latest version cannot be read: nothing is
+    // discarded, since dropping the draft would leave the author with neither.
+    getThemeEditor.mockRejectedValueOnce(new Error("offline"));
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/nothing was discarded/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+
+    // Confirmed, but the author edits the section again while the latest
+    // version is loading. That edit is not part of what they confirmed, so
+    // nothing is discarded; meanwhile no second discard can be started.
+    // The server still refuses the stale document, as OCC does.
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    let release!: (value: unknown) => void;
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Discard mine…",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true),
+    );
+    sendInlineCommit("B edited again", "B edited", {
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+    });
+    act(() => release(remote));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/while the latest version was loading/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+    // The newer edit's own save is answered (refused, as the document moved)
+    // before the author decides again.
+    await waitFor(() =>
+      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(1),
+    );
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    const sentBeforeDiscard = updateSectionProps.mock.calls.length;
+
+    // Confirmed with the latest version readable and nothing typed meanwhile,
+    // the section's draft is dropped and the conflict with it. Nothing is
+    // written: the latest version is what the editor now holds.
+    getThemeEditor.mockResolvedValue(remote);
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(updateSectionProps).toHaveBeenCalledTimes(sentBeforeDiscard);
+  });
+});
+
 /**
  * The one part of the round trip that moves what the author is looking at.
  *
@@ -675,7 +893,10 @@ describe("bringing the canvas to a selection", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     renderShell();
 
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+    });
     const row = await screen.findByText("h1");
     posted.length = 0;
     act(() => {
@@ -890,7 +1111,9 @@ describe("a style patch the source cannot answer", () => {
   it("says so when the source does not parse", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     stylePatchTarget.elementName = "section";
-    renderShellWithHero('export function Hero() { return <section className="p-4"');
+    renderShellWithHero(
+      'export function Hero() { return <section className="p-4"',
+    );
 
     applyStylePatch();
 

@@ -224,6 +224,7 @@ export function usePreviewSelection({
         sourceLocation: message.sourceLocation ?? undefined,
         nodeId: message.nodeId ?? undefined,
         fieldPath: message.fieldPath ?? undefined,
+        itemId: message.itemId ?? undefined,
         elementKey: message.elementKey ?? undefined,
         fieldKey: message.fieldKey ?? message.field ?? undefined,
         isSection: message.isSection,

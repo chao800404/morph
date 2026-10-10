@@ -605,6 +605,27 @@ Visual Editor 必須能識別 customer 自己撰寫的元件，**且不得要求
   最外層吸收全部內容。只有 Document section 之間才需要扁平化。
 - source position 只在該位置唯一時可用；重複（例如 `.map()` 產生的列表）必須跳過，
   不得任選一個。
+- **列由元件渲染時（`items.map((item) => <Card {...item} />)`），列身分靠編譯器傳遞，
+  不靠 DOM 猜測組合。** `injectPreviewBindings` 在列表呼叫端確認某個 prop 最後生效的值就是
+  該列欄位時（`{...item}`，或 `heading={item.title}`），透過 `__morphRow` 把列路徑交給該元件
+  自己的參數，元件元素因而直接帶 `items.N.title`。`previewFieldBinding` 拒絕元件列內所有路徑
+  不在該列之下的欄位，不得退回頂層的同名欄位 —— 那是 List 從未宣告的欄位。
+- **辨識不到綁定，只暫停那個欄位的視覺寫入，不限制作者。** 合法程式一律照常儲存、預覽、
+  建置。內容來源無法確認時，Inspector 不提供該欄位、不猜測，並以 `contentUnavailable`
+  說明原因（`selection-taxonomy.ts`）。目前尚未支援的寫法（整包取 `props`、`memo()`／
+  `forwardRef()`、值經轉換、列內的巢狀列表等）是解析器現階段的範圍，不是作者必須遵守的
+  規則；不得要求作者改寫程式來配合 Morph。支援清單與逐項的辨識方式見
+  `docs/row-component-binding-support.md`。
+- **列的索引不是身分。** 選取帶著列的 `id`（`data-storefront-item-id`）；寫入前與選取還原
+  都以 id 重新確認目前的索引（`rebaseSelectedRowPath`、`followRestoredRow`）。id 缺少、
+  重複或已找不到時一律拒絕寫入並說明原因，不得寫到佔了同一個索引的另一列。id 只在同一
+  section、同一欄位的列表內比對。id 持久化後不再改變；持久化前重新推導出不同 id 時，
+  舊選取失效、要求重新選取。這是編輯器端的防線，不取代伺服器的 OCC。缺 id 時不得鎖死：
+  Inspector 仍提供整個列表編輯並提示先儲存列表；整個列表的儲存同樣帶 OCC，同一個列表兩邊
+  都改過時不自動送出，不得把舊面板的列表覆蓋到新版（見
+  `docs/row-component-binding-support.md`）。`__morphRow` 只是定位提示，不是授權：
+  伺服器仍以自己解析的 capability、OCC 與 ownership 檢查決定能寫什麼，正式 build 不跑
+  這個注入，產物不含它。
 - 右側 Inspector 不得要求存在 Document section 才能運作。樣式編輯寫回 Theme Source，
   與 Document 無關；沒有 Document section 時仍應可檢視與改樣式，只是內容欄位為空，
   且不得對不存在的 section 寫入內容值。

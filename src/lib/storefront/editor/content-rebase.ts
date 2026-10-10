@@ -56,6 +56,55 @@ export function sameContentValue(a: unknown, b: unknown): boolean {
  * are dropped too, unless the author changed them — an author's value outlives
  * a server key only because they are actively asserting it.
  */
+/**
+ * Lists that both the author and the other writer changed since the edit's
+ * baseline, to different results.
+ *
+ * `rebaseContentProps` lets the author's value of a key win. For one value
+ * that is the choice "keep mine" names. For a list it is not: the author's
+ * copy is the whole array as their panel last drew it, and writing it would
+ * remove the rows the other writer added, undo their reorder, and put the
+ * author's row edits back at indexes that may now hold other rows. There is no
+ * safe automatic answer, so such a list is reported and nothing is sent.
+ */
+export function conflictingListKeys({
+  incoming,
+  baseline,
+  local,
+}: {
+  incoming: ContentProps;
+  baseline: ContentProps;
+  local: ContentProps;
+}): string[] {
+  return Object.keys(local).filter(
+    (key) =>
+      [local[key], incoming[key], baseline[key]].some(Array.isArray) &&
+      !sameContentValue(local[key], baseline[key]) &&
+      !sameContentValue(incoming[key], baseline[key]) &&
+      !sameContentValue(local[key], incoming[key]),
+  );
+}
+
+/**
+ * What to tell an author whose content is held by a conflict, before
+ * something that needs it saved (publishing, building, leaving) can go on.
+ *
+ * One answer for every place that asks. A list both sides changed is not
+ * saved by "Load latest, keep mine" — that is the point of stopping it — so
+ * pointing the author at that button would send them round in a circle; the
+ * way out for it is "Discard mine", or staying with the draft kept.
+ */
+export function heldContentMessage({
+  hasListConflict,
+}: {
+  /** A section held because a list in it was changed on both sides. */
+  hasListConflict: boolean;
+}): string {
+  return hasListConflict
+    ? "A list you edited was also changed elsewhere, so your version cannot be saved over it. Your changes are kept; use Discard mine to load the latest version, then make your change again."
+    : "Content is out of date with the document. Load the latest version and keep your changes before continuing.";
+}
+
 export function rebaseContentProps({
   incoming,
   baseline,
