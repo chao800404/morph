@@ -2740,3 +2740,53 @@ describe("EditorStyleInspector selection content", () => {
     expect(screen.queryByDisplayValue("Unsaved A")).toBeNull();
   });
 });
+
+describe("a section whose component file is gone", () => {
+  const common = {
+    onPropsChange: vi.fn(),
+    onUpdateThemeFileStyle: vi.fn(),
+    onJumpToCode: vi.fn(),
+  };
+  const keptCard = {
+    id: "kept-source",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: "src/components/KeptCard.tsx",
+    content: "export default function KeptCard() { return <section />; }",
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    createdAt: "2026-10-10T00:00:00.000Z",
+    updatedAt: "2026-10-10T00:00:00.000Z",
+  };
+
+  it("says it cannot render and names the missing file, rather than CMS-only", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={{
+          ...baseSection("recovery-card", {}),
+          componentRef: "src/components/RecoveryCard.tsx",
+        }}
+        themeFiles={[keptCard]}
+      />,
+    );
+
+    expect(screen.getByText("Cannot render")).toBeTruthy();
+    expect(screen.getByText("RecoveryCard.tsx")).toBeTruthy();
+    expect(screen.queryByText("CMS-only")).toBeNull();
+  });
+
+  it("still calls a section that never named a file CMS-only", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("newsletter", {})}
+        themeFiles={[keptCard]}
+      />,
+    );
+
+    expect(screen.getByText("CMS-only")).toBeTruthy();
+    expect(screen.queryByText("Cannot render")).toBeNull();
+  });
+});

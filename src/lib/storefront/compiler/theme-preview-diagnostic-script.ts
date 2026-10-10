@@ -22,10 +22,30 @@
  * Paths and counts only — never the query, never the host, which carries the
  * preview's credential.
  *
+ * One thing it shows rather than sends. When a page cannot come up because
+ * Vite would not compile one of its modules, Vite's own error overlay is part
+ * of what failed to load, so the canvas would be empty. This script reads the
+ * error Vite broadcast for that module from the preview's HMR relay and puts
+ * it in the page, as plain text. It stays in the frame: the editor says which
+ * file failed from its own copy of the source (preview-compile-failure.ts) and
+ * never takes text from the frame to show.
+ *
+ * And one thing it does: a hot update that could not be applied reloads the
+ * page (THEME_PREVIEW_HMR_FAILED_EVENT says why), so a Theme broken while its
+ * page was showing fails the way a Theme broken before it loaded does, and is
+ * told the same way. Once per page: the page that then fails to load never
+ * gets another hot update to fail.
+ *
  * Addressed with the same `editorOrigin` and `previewSession` the bridge reads
  * from the page URL, and validated on the editor side like any other frame
  * message: exact origin, the framed window, the matching session.
  */
+import { PREVIEW_RUNTIME_INTERRUPTED_STATUS } from "../service/preview-runtime-interruption";
+import {
+  THEME_PREVIEW_HMR_FAILED_EVENT,
+  THEME_PREVIEW_SERVER_BASE_PATH,
+} from "./theme-preview-dev-server";
+
 export const THEME_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE =
   "morph:storefront-preview-diagnostic";
 
@@ -53,6 +73,12 @@ const MAX_ENTRIES = 20;
 const MAX_PATH_LENGTH = 300;
 /** How long after `load` to look, so late module fetches are included. */
 const SUMMARY_DELAY_MS = 1_000;
+/** Where the preview's Vite server relays what it broadcasts to its clients. */
+const HMR_RELAY_PATH = `${THEME_PREVIEW_SERVER_BASE_PATH}_morph/hmr`;
+/** The proxy's interruption, which is never the Theme's compile error. */
+const INTERRUPTED_STATUS = PREVIEW_RUNTIME_INTERRUPTED_STATUS;
+const MAX_COMPILE_MESSAGE_LENGTH = 2_000;
+const MAX_COMPILE_FRAME_LENGTH = 4_000;
 
 export function themePreviewDiagnosticScriptSource(): string {
   return `(function () {
@@ -106,6 +132,82 @@ export function themePreviewDiagnosticScriptSource(): string {
       failedScripts: failedScripts.slice(0, ${MAX_ENTRIES}),
     });
   }
+  var compileErrorShown = false;
+  function sourcePathOf(path) {
+    var base = "${THEME_PREVIEW_SERVER_BASE_PATH}";
+    if (path.indexOf(base) === 0) return path.slice(base.length);
+    while (path.charAt(0) === "/") path = path.slice(1);
+    return path;
+  }
+  function compileErrorFor(entries, paths) {
+    for (var i = entries.length - 1; i >= 0; i--) {
+      var payload = entries[i] && entries[i].payload;
+      var err = payload && payload.type === "error" ? payload.err : null;
+      if (!err || typeof err.id !== "string") continue;
+      var id = err.id.split("?")[0];
+      for (var j = 0; j < paths.length; j++) {
+        var path = paths[j];
+        if (id === path || id.slice(-(path.length + 1)) === "/" + path) {
+          return { path: path, err: err };
+        }
+      }
+    }
+    return null;
+  }
+  function renderCompileError(found) {
+    var doc = window.document;
+    if (!doc || !doc.body) return;
+    var panel = doc.createElement("section");
+    panel.setAttribute("role", "alert");
+    panel.setAttribute("data-morph-preview-compile-error", "");
+    panel.style.cssText =
+      "box-sizing:border-box;margin:0;padding:24px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#7f1d1d;background:#fff;";
+    function add(tag, text, css) {
+      var element = doc.createElement(tag);
+      element.textContent = text;
+      element.style.cssText = css;
+      panel.appendChild(element);
+    }
+    add("h1", "The preview server reported an error for " + found.path, "font-size:15px;margin:0 0 8px;");
+    add(
+      "p",
+      String(found.err.message || "").slice(0, ${MAX_COMPILE_MESSAGE_LENGTH}),
+      "white-space:pre-wrap;margin:0 0 12px;",
+    );
+    if (typeof found.err.frame === "string" && found.err.frame) {
+      add(
+        "pre",
+        found.err.frame.slice(0, ${MAX_COMPILE_FRAME_LENGTH}),
+        "white-space:pre;overflow:auto;margin:0;padding:12px;background:#fef2f2;",
+      );
+    }
+    doc.body.appendChild(panel);
+  }
+  // Only for a page that cannot come up, and only for a server error on one
+  // of its own modules: the same two halves the editor requires.
+  function showCompileError() {
+    if (compileErrorShown || failedScripts.length === 0) return;
+    if (typeof window.fetch !== "function") return;
+    var list = failures();
+    var paths = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].status < 500 || list[i].status === ${INTERRUPTED_STATUS}) continue;
+      paths.push(sourcePathOf(list[i].path));
+    }
+    if (paths.length === 0) return;
+    compileErrorShown = true;
+    window
+      .fetch("${HMR_RELAY_PATH}?after=0&cursor=1", { cache: "no-store" })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (value) {
+        var entries = value && Array.isArray(value.entries) ? value.entries : [];
+        var found = compileErrorFor(entries, paths);
+        if (found) renderCompileError(found);
+      })
+      .catch(function () {});
+  }
   function stopProgress() {
     if (heartbeat === null) return;
     clearInterval(heartbeat);
@@ -133,6 +235,7 @@ export function themePreviewDiagnosticScriptSource(): string {
         return;
       }
       send("script-failed");
+      showCompileError();
     },
     true,
   );
@@ -146,6 +249,7 @@ export function themePreviewDiagnosticScriptSource(): string {
     progress("load");
     setTimeout(function () {
       if (failures().length > 0) send("load-summary");
+      showCompileError();
     }, ${SUMMARY_DELAY_MS});
   });
   // Ready is the bridge's to say, and it says so to the editor itself; past
@@ -155,6 +259,12 @@ export function themePreviewDiagnosticScriptSource(): string {
     stopProgress();
   });
   window.addEventListener("pagehide", stopProgress);
+  var reloadingAfterFailedUpdate = false;
+  window.addEventListener("${THEME_PREVIEW_HMR_FAILED_EVENT}", function () {
+    if (reloadingAfterFailedUpdate) return;
+    reloadingAfterFailedUpdate = true;
+    location.reload();
+  });
   progress("script");
   heartbeat = setInterval(function () {
     progress(null);

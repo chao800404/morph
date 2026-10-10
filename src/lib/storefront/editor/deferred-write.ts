@@ -18,11 +18,16 @@
  *
  * Extracted from the shell so the ordering can be stated as tests. It renders
  * nothing, holds no state, and reaches nothing outside the ports it is given.
+ *
+ * The write waits in `writes` rather than behind a bare timer, so leaving the
+ * page can send it now through this same ordering (`DebouncedWrites.flush`).
  */
 
+import type { DebouncedWrites } from "./debounced-writes";
+
 export type DeferredWritePorts<TId, TResult> = Readonly<{
-  /** Pending timers, keyed so a newer gesture supersedes its own predecessor. */
-  timers: Map<string, ReturnType<typeof setTimeout>>;
+  /** Waiting writes, keyed so a newer gesture supersedes its own predecessor. */
+  writes: DebouncedWrites;
   key: string;
   delayMs: number;
   /** Records the entry now and returns the id needed to take it back. */
@@ -38,22 +43,16 @@ export type DeferredWritePorts<TId, TResult> = Readonly<{
 export function scheduleDeferredWrite<TId, TResult>(
   ports: DeferredWritePorts<TId, TResult>,
 ): void {
-  const { timers, key, delayMs, record, discard, save, isConflict, onError } =
+  const { writes, key, delayMs, record, discard, save, isConflict, onError } =
     ports;
-
-  const pending = timers.get(key);
-  if (pending !== undefined) {
-    clearTimeout(pending);
-  }
 
   // Recorded here rather than when the write lands: the author can press undo
   // during the debounce window, and an entry that arrives afterwards cannot
   // reverse the edit that is already on screen.
   const id = record();
 
-  const timer = setTimeout(() => {
-    timers.delete(key);
-    void save()
+  writes.schedule(key, delayMs, () =>
+    save()
       .then((result) => {
         // A conflicted write never landed, so there is nothing to reverse.
         if (isConflict(result)) discard(id);
@@ -61,8 +60,6 @@ export function scheduleDeferredWrite<TId, TResult>(
       .catch((error: unknown) => {
         discard(id);
         onError(error);
-      });
-  }, delayMs);
-
-  timers.set(key, timer);
+      }),
+  );
 }

@@ -198,6 +198,22 @@ export const THEME_PREVIEW_DEP_OPTIMIZE_INCLUDES: readonly string[] = [
 ];
 
 /**
+ * Window event the preview's Vite client fires when a hot update could not be
+ * applied — a module it fetched answered with an error, usually because it no
+ * longer compiles.
+ *
+ * Vite's own answer is to keep the previous page and raise its overlay from
+ * the error it broadcasts. Here that broadcast reaches the page only through
+ * the HTTP relay, which is read when the editor writes, so the overlay never
+ * comes and the page would go on showing source that no longer exists. The
+ * page's first script reloads it instead (theme-preview-diagnostic-script):
+ * the module it then cannot load is reported like any page that cannot come
+ * up, which the editor explains and recovers from once a fix is written.
+ */
+export const THEME_PREVIEW_HMR_FAILED_EVENT =
+  "morph:storefront-preview-hmr-failed";
+
+/**
  * Source of the Live Preview's HTTP HMR relay, a Vite plugin object
  * expression for a generated config.
  *
@@ -267,14 +283,25 @@ export function previewHttpHmrPluginSource(): string {
   transform(code, id) {
     if (!id.replace(/\\\\/g, "/").endsWith("/vite/dist/client/client.mjs")) return null;
     const connect = "transport.connect(createHMRHandler(handleMessage));";
-    if (!code.includes(connect)) {
+    const failedUpdate = "warnFailedUpdate(err, path) {";
+    // Each edit lands on exactly one place it was written for. A client that
+    // lost either, or grew a second, is not the one these edits fit: serving
+    // it refuses loudly instead of editing the wrong line.
+    const once = (needle) => code.split(needle).length === 2;
+    if (!once(connect) || !once(failedUpdate)) {
       throw new Error("MORPH_PREVIEW_HMR_CLIENT_CONTRACT_CHANGED");
     }
     return {
-      code: code.replace(
-        connect,
-        "globalThis.__morphApplyViteHmrPayload = (payload) => handleMessage(payload);",
-      ),
+      code: code
+        .replace(
+          connect,
+          "globalThis.__morphApplyViteHmrPayload = (payload) => handleMessage(payload);",
+        )
+        .replace(
+          failedUpdate,
+          failedUpdate +
+            ' try { globalThis.dispatchEvent(new Event(${JSON.stringify(THEME_PREVIEW_HMR_FAILED_EVENT)})); } catch {}',
+        ),
       map: null,
     };
   },

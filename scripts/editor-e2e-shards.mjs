@@ -82,6 +82,12 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Two tests, each loading the editor once or twice.
     "row-component-content.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Three tests, each opening the editor twice.
+    "leave-before-save.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
+    "preview-error-recovery.spec.ts",
   ],
 ];
 

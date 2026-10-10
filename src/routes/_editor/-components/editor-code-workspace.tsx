@@ -243,6 +243,12 @@ type EditorCodeWorkspaceProps = {
     /** The author asked for this save; see `saveThemeFileSequentially`. */
     options?: { confirmed?: boolean },
   ) => Promise<StorefrontThemeFileDTO | null>;
+  /**
+   * The author typed in a file. Called for their edits only, not for a
+   * model the workspace rewrote itself, and without the content: whoever
+   * listens needs to know someone is still editing, not what was typed.
+   */
+  onAuthorInput?: () => void;
   /** Applies transient Monaco buffers to the running React preview. */
   onPreviewFilesChange?: (
     files: Array<{ path: string; content: string }>,
@@ -259,6 +265,12 @@ export type EditorCodeWorkspaceHandle = {
   saveAll: (options?: { confirmed?: boolean }) => Promise<boolean>;
   /** Flushes Monaco drafts before a consumer changes authoring mode. */
   flushPendingChanges: () => Promise<boolean>;
+  /**
+   * Whether any Monaco draft differs from its saved baseline, now. Read
+   * directly rather than through the dirty-path summary, which reaches the
+   * shell a render later than a save that just landed.
+   */
+  hasUnsavedDrafts: () => boolean;
 };
 
 type PublicUrlReviewState = {
@@ -490,6 +502,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     onThemeFilesMoved,
     onDirtyFilesChange,
     onSaveFile,
+    onAuthorInput,
     onPreviewFilesChange: onSourcePreviewFilesChange,
     onBuildPreview,
     externalDiagnostics,
@@ -2857,6 +2870,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (value === undefined) return;
     if (suppressModelChangeRef.current) return;
     if (activeFileIsGenerated) return;
+    onAuthorInput?.();
 
     const path = activeFilePath;
     draftContentsRef.current[path] = value;
@@ -3227,6 +3241,8 @@ const EditorCodeWorkspaceContent = forwardRef<
     () => ({
       saveAll: handleSaveAll,
       flushPendingChanges,
+      hasUnsavedDrafts: () =>
+        Object.values(draftDirtyRef.current).some(Boolean),
     }),
     [flushPendingChanges, handleSaveAll],
   );
