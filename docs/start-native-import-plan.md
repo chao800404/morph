@@ -241,9 +241,9 @@ STRIPE_SECRET [ 新增 Secret ]
 - 沒有交給 Design 的元件維持官方寫法，Design 對它們只讀或不顯示可編輯欄位。
 
 2026-10-09 補充（見 [ROADMAP](../ROADMAP.md) 1.2）：這一列是要縮小的過渡做法，不是終點。
-- 必要的只有內容的讀取呼叫（例如 `morph.pages.get()`），與任何 headless CMS 相同。
-- 讀到之後的資料流由作者用框架原本的寫法決定，Design 要能跟上：解構、別名、route `loader`、server function、`useLoaderData()`。不應要求作者為了 Design 改成固定的取值形狀。
-- 目標由內容綁定契約文件定義：常見寫法自動辨識，複雜寫法提供明確的綁定出口；認不出時維持 Code-only，不猜。
+- 就資料載入方式而言，必要的只有內容的讀取呼叫（例如 `morph.pages.get()`），與任何 headless CMS 相同。讀到之後的資料流由作者用框架原本的寫法決定，Design 要能跟上：解構、別名、route `loader`、server function、`useLoaderData()`。不要求固定的取值形狀、手寫標記或特定 wrapper。
+- 可視覺寫入的欄位仍須由 `contentFields`／`.fields.ts` 宣告；這是欄位契約，不是資料流的限制。
+- 目標由內容綁定契約文件定義：常見寫法逐步自動辨識，複雜寫法可選用明確的綁定出口；認不出時程式照常執行與編輯，Design 不猜、不寫回。
 
 ## 匯出
 

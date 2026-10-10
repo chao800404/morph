@@ -39,21 +39,33 @@ Morph 希望同時具備：
 
 ### 1.2 Morph 配合框架的寫法，不是作者配合 Morph（2026-10-09 確認）
 
-- 作者用框架原本的寫法撰寫 Theme，不必為了讓 Design／CMS 讀得到內容而改成 Morph 指定的形狀。例如不必把所有內容都寫成 `home.hero` 這種直接取值。
-- 只有程式跑得起來還不夠：寫法能執行，但 Morph 認不出哪個元件對應哪一頁的哪個內容，對這個產品沒有意義。Design 要能接上這些寫法。
-- 內容仍要經 Morph 的讀取呼叫取得（例如 `morph.pages.get()`），這點與任何 headless CMS 相同。不約制的是讀到之後的資料流：解構、別名、Astro frontmatter、TanStack Start 的 server function → loader → `useLoaderData()`，都由作者決定。
-- 以下兩種寫法是**必須支援的案例**，不是永遠留在 Code-only：
-  - Astro：frontmatter 中 `const home = await morph.pages.get("/home"); const { hero } = home;`，再 `<Hero {...hero} />`。
-  - TanStack Start：`createServerFn` 的 handler 回傳 `morph.pages.get("/home")`，route `loader` 呼叫它，元件以 `Route.useLoaderData()` 解構出 `hero`，再 `<Hero {...hero} />`。
-- 做法分兩層：
-  - 常見的原生寫法自動辨識，包括直接取值、解構、別名、標準 loader／server function 回傳，每種框架以真實案例驗收。
-  - 認不出的複雜寫法，提供明確的綁定出口：作者標明「這個元件實例對應 `/home` 的 `hero`」，不必改原本的資料載入方式，也不靠猜變數名稱。
-- 兩層共用一份契約：頁面身分＋slot／實例身分＋欄位路徑＋欄位宣告。各框架 adapter 把它接到元件與畫布；Core 仍驗證授權、欄位與 OCC，不只信任畫布傳來的標記。
-- 界線：
-  - 不承諾自動理解任意資料轉換。
-  - 認不出綁定時維持 Code-only，不猜，不寫入別的內容。
-  - 不為每種語法加零散特例；先定契約與案例清單，再實作。
-- 目前狀態：方向成立，但尚未證明上述原生寫法都已能在 Design 編輯；已有辨識證據的只有直接取值（`home.hero`）。契約文件列在「本機程式碼同步後續」第 4 項。
+**產品目標。** 作者用框架原本的寫法撰寫 Theme；Design 逐步接上這些寫法，而不是要求作者為了 Design 改寫。只能執行、Design 卻認不出內容綁定，不算達成這個目標。這是產品要完成的方向，不是拒絕程式的規則：Morph 不因為認不出綁定而拒絕、改寫或限制作者的程式。
+
+**不約制的是資料載入方式。**
+- 內容經 Morph 的讀取呼叫取得（例如 `morph.pages.get()`），與任何 headless CMS 相同。
+- 讀到之後怎麼傳由作者決定：解構、別名、Astro frontmatter、TanStack Start 的 server function → loader → `useLoaderData()`。
+- 不要求固定寫成 `home.hero`、不要求手寫標記或特定 wrapper 元件。
+
+**仍要遵守的是欄位契約。** 可以在 Design 視覺寫入的欄位，必須由既有的 `contentFields`／`.fields.ts` 宣告（型別、限制、預設值）。這規定的是「哪些欄位可寫、怎麼驗證」，不是資料怎麼傳。
+
+**正式驗收條件（不是未來目標）。** 以下兩例必須通過才能宣稱支援，每例都要確認四件事：畫布點選選到正確的欄位、Inspector 修改後畫布更新、Document 寫入的是原始值（不是 Theme 轉換後的文字）、重新載入後三者一致。
+- Astro：frontmatter 中 `const home = await morph.pages.get("/home"); const { hero } = home;`，再 `<Hero {...hero} />`。
+- TanStack Start：`createServerFn` 的 handler 回傳 `morph.pages.get("/home")`，route `loader` 呼叫它，元件以 `Route.useLoaderData()` 解構出 `hero`，再 `<Hero {...hero} />`。
+
+**做法分兩層，共用一份契約。**
+- 常見的原生寫法逐步完成自動辨識：直接取值、解構、別名、標準 loader／server function 回傳，每種框架以真實案例驗收。
+- 複雜寫法可以使用**可選的**明確綁定出口：作者標明「這個元件實例對應 `/home` 的 `hero`」，不必改原本的資料載入方式，也不靠猜變數名稱。不強迫作者重構成可辨識的形狀。
+- 契約要說明如何確認：頁面身分、section／列（重複項目）的實例身分、欄位路徑、欄位宣告，以及畫面所依據的來源版本。任一項不明確就停止寫入。
+
+**Core 的授權與 OCC 不等於綁定正確。** 它們防止越權與過時寫入，但不能證明點到的元素就是那個欄位。綁定的正確性要由上面的契約確認，不能只信任畫布傳來的標記，也不能由「寫入被接受」反推。
+
+**認不出時。** 程式照常執行，Code 照常可編輯；該處在 Design 中顯示為由程式碼控制，不猜測、不寫回。不承諾自動理解任意資料轉換；不為每種語法加零散特例，先定契約與案例清單再實作。
+
+**目前證據（有限實驗，不是正式支援）。** #187 草稿附錄的綁定探測實驗（實驗測試尚未進 repo）：
+- 在 TanStack Start 的兩種預覽模式下，同一頁五種寫法共 12 個欄位結果都符合預期，包括 `content()` 展開、loader → 解構 → 逐欄傳值、`toUpperCase()` 轉換、展開後跨 slot 覆寫、兩欄位拼接。
+- server function → loader：完整 Start 預覽中探針找不到，因為資料在伺服器端讀取，伺服器端探測尚未設計。
+- 未測：Astro、重複列、圖片與非文字欄位。
+- 這些都不是跨框架的完整驗收，兩個正式驗收條件都還沒通過。契約文件列在「本機程式碼同步後續」第 4 項。
 
 ---
 
@@ -477,7 +489,7 @@ Starter bootstrap 與 workspace upgrade 契約：
 | 1 | 安全的 pull／restore 指令：本機誤刪或改壞後，可從 Morph 取回，不必刪掉 `.morph/sync-state.json` 重新 `link` | 正確性 |
 | 2 | 專案綁定與防誤連：確認本機資料夾與 Morph 工作區的對應，避免把一個專案的檔案同步進另一個 | 安全 |
 | 3 | 編輯器即時顯示本機修改，以及 Code 模式內的衝突標示 | 介面 |
-| 4 | 內容綁定契約設計文件：讓 Design 接上框架原生的資料流寫法，不要求作者改寫（見 1.2）。內容包括契約（頁面身分＋slot／實例身分＋欄位路徑＋欄位宣告）、自動辨識的範圍、複雜寫法的明確綁定出口，以及每種框架的驗收案例清單；Astro frontmatter 解構與 Start server function → loader → `useLoaderData()` 兩例必列 | 設計 |
+| 4 | 內容綁定契約設計文件：讓 Design 接上框架原生的資料流寫法，不要求作者改寫（見 1.2）。內容包括契約（頁面身分、section／列實例身分、欄位路徑、欄位宣告、來源版本，任一不明確即停止寫入）、自動辨識的範圍、可選的明確綁定出口，以及每種框架的驗收案例清單；Astro frontmatter 解構與 Start server function → loader → `useLoaderData()` 是正式驗收條件 | 設計 |
 
 ---
 
