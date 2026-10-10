@@ -400,13 +400,20 @@ function previewRowItemId(element: HTMLElement): string | null {
   // An id is an identity only while one row holds it. Two rows sharing one
   // cannot be told apart, so the element is reported as having none, and the
   // editor refuses to write rather than pick one.
+  //
+  // Counted within one list of one section: two lists may legitimately reuse
+  // an id (`normalizeDocumentRowIds` scopes ids per array too), and only a
+  // collision inside the same list leaves a row ambiguous.
+  const listKey = (row.dataset.storefrontFieldPath ?? "").split(".")[0] ?? "";
   const section = closestPreviewSectionRoot(row) ?? row.ownerDocument;
   const rowPaths = new Set<string>();
   for (const candidate of section.querySelectorAll<HTMLElement>(
     `[data-storefront-item-id="${CSS.escape(id)}"][data-storefront-field-path]`,
   )) {
     const path = candidate.dataset.storefrontFieldPath ?? "";
-    if (/^[^.]+\.\d+$/.test(path)) rowPaths.add(path);
+    if (/^[^.]+\.\d+$/.test(path) && path.startsWith(`${listKey}.`)) {
+      rowPaths.add(path);
+    }
   }
   return rowPaths.size > 1 ? null : id;
 }

@@ -618,8 +618,10 @@ Visual Editor 必須能識別 customer 自己撰寫的元件，**且不得要求
   `docs/row-component-binding-support.md`。
 - **列的索引不是身分。** 選取帶著列的 `id`（`data-storefront-item-id`）；寫入前與選取還原
   都以 id 重新確認目前的索引（`rebaseSelectedRowPath`、`followRestoredRow`）。id 缺少、
-  重複或已找不到時一律拒絕寫入並說明原因，不得寫到佔了同一個索引的另一列。這是編輯器端
-  的防線，不取代伺服器的 OCC。`__morphRow` 只是定位提示，不是授權：
+  重複或已找不到時一律拒絕寫入並說明原因，不得寫到佔了同一個索引的另一列。id 只在同一
+  section、同一欄位的列表內比對。這是編輯器端的防線，不取代伺服器的 OCC。缺 id 時不得
+  鎖死：Inspector 仍提供整個列表編輯，並提示先儲存列表（見
+  `docs/row-component-binding-support.md`）。`__morphRow` 只是定位提示，不是授權：
   伺服器仍以自己解析的 capability、OCC 與 ownership 檢查決定能寫什麼，正式 build 不跑
   這個注入，產物不含它。
 - 右側 Inspector 不得要求存在 Document section 才能運作。樣式編輯寫回 Theme Source，

@@ -327,7 +327,7 @@ const CONTENT_BLOCKED_MESSAGES: Record<
   "row-lost":
     "This entry was moved or removed after it was selected, so an edit here would have no entry to go to. Select it again on the canvas.",
   "row-id-missing":
-    "This entry has no stable id the editor can confirm it by (or shares one with another entry), so an edit could land on a different entry. Nothing is written; edit it in Code, or select it again once it has been saved.",
+    "This entry has no id yet, so the editor cannot confirm which entry a canvas edit belongs to. Edit the list below instead; once the list has been saved, its entries can be edited one by one from the canvas.",
   "row-id-duplicate":
     "Another entry in this list has the same id, so the editor cannot tell which one an edit belongs to. Nothing is written until the ids are distinct.",
   "value-not-from-row":
@@ -804,8 +804,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     | ContentUnavailableReason
     | SelectedRowRefusal
     | null = selectedRowRefused ?? selection?.contentUnavailable ?? null;
-  const contentBlockedRef = useRef(contentBlockedReason);
-  contentBlockedRef.current = contentBlockedReason;
+  /**
+   * The list a row selected without an id belongs to.
+   *
+   * The row cannot be confirmed, so the selection's path is not written to —
+   * but the author is not left with nothing to do. The whole list is offered
+   * unscoped, where every write addresses the rows as the panel draws them
+   * now rather than an index remembered from the click. Rows nothing stores
+   * yet are the component's own defaults; saving the list once stores them,
+   * and the editor reads stored rows with ids (`normalizeDocumentRowIds`), so
+   * the canvas can address each one after that.
+   */
+  const unconfirmedRowListKey =
+    selectedRowRefused === "row-id-missing"
+      ? (selection?.fieldPath?.split(".")[0] ?? null)
+      : null;
+  /** Whether nothing may be written: blocked, with no list offered instead. */
+  const contentWritesBlocked = Boolean(
+    contentBlockedReason && !unconfirmedRowListKey,
+  );
+  const contentBlockedRef = useRef(contentWritesBlocked);
+  contentBlockedRef.current = contentWritesBlocked;
   // A commit seen when this panel mounted is already in the props it read.
   const appliedInlineCommitRef = useRef(inlineTextCommit?.id ?? 0);
   const [inlineCommitEpoch, setInlineCommitEpoch] = useState(0);
@@ -1294,6 +1313,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           (!isSelectedNode ||
             selectedField === fieldKey ||
             selectedArrayRow?.fieldKey === fieldKey ||
+            unconfirmedRowListKey === fieldKey ||
             // The selected element's own key counts as well. Selecting a
             // button reports the element as `action` while the field under the
             // cursor is its label, so the destination field — the whole reason
@@ -2537,7 +2557,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
-      {view === "content" && !contentBlockedReason && textPromotion ? (
+      {view === "content" && !contentWritesBlocked && textPromotion ? (
         <EditorCodeTextNotice
           key={`${componentPath}:${textPromotionTargetKey}`}
           analysis={textPromotion}
@@ -2550,7 +2570,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ) : null}
 
       {view === "content" &&
-      !contentBlockedReason &&
+      !contentWritesBlocked &&
       !hasEditableContent &&
       !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
@@ -2566,7 +2586,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
       {/* 1. Content & Text Fields */}
       {view === "content" &&
-        !contentBlockedReason &&
+        !contentWritesBlocked &&
         hasEditableContent &&
         (visibleModules.has("content") || visibleModules.has("media")) && (
           <InspectorGroup

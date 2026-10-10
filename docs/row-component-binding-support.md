@@ -33,7 +33,38 @@
   都依 id 重新確認目前索引（`rebaseSelectedRowPath`、`followRestoredRow`）。以下情況一律
   拒絕寫入並說明原因：選取的列沒有 id、id 在列表中重複、或原本的 id 已找不到。
 - 這是編輯器端的防線，不取代伺服器：整份寫入仍由伺服器依 Document 的 generation（OCC）
-  接受或拒絕。
+  接受或拒絕。OCC 擋過時版本，但不能單獨證明選中的是哪一列，兩者缺一不可。
+- id 只在「同一個 section、同一個欄位、同一個列表」內使用：Inspector 只在該 section 的
+  該欄位陣列裡找，選取還原只在該 section、同一欄位的列裡找，預覽端判斷重複也只算同一個
+  列表。別的列表有同名 id 不算數。
+
+## 列 id 的生命週期（已核對）
+
+- `normalizeDocumentRowIds` **只補缺少的 id、修正重複的 id**：任何非空字串的既有 id
+  都原樣保留；重複時第一列保留，後面的列換新 id；以陣列為範圍。
+- 補上的 id 由「template＋section＋路徑＋索引＋內容」推導，**只套用在讀出來的文件上**
+  （`findEditorContext`），不在編輯後重算。`updateSectionProps` 以這份已補 id 的文件為底
+  寫入，所以第一次儲存後 id 就存進資料庫，之後改文字、重排都不再變動。
+- 預覽畫布的 template 內容同樣來自 `findEditorContext`，所以畫布上的 id 與 Inspector 一致。
+  頁面（`storefrontPageDal`）不經過這個修補，但頁面只在後台 Pages 編輯，不經 Visual Editor
+  的列寫入。
+- 重排（`swapArrayItemsAtFieldPaths`）搬動整列，id 跟著走；新增列（`addArrayRowAtFieldPath`）
+  取新的 id；undo／redo 還原的是含 id 的 props 快照。這些由
+  `row-id-lifecycle.test.ts` 依序驗證。
+
+## 尚未儲存、且程式碼預設列沒有 id 的列表
+
+- 畫布上這種列沒有 id，從畫布選取單一列時**不寫入**（不退回用索引猜）。
+- 但不會鎖死：Inspector 顯示整個列表供編輯，並提示「先儲存列表，才能從畫布逐列編輯」。
+  列表編輯器的寫入對應的是面板當下畫出的列，不是點擊時記下的索引。儲存後，編輯器讀回的
+  文件會補上 id，之後就能從畫布逐列編輯。
+- Starter 的預設列在「已儲存」與「未儲存（只顯示程式碼預設值）」兩種狀態下都有可確認的
+  id（`starter-row-identity.live.test.tsx`），因此這條規則沒有讓 Starter 原本能逐列編輯的
+  列變成不能編輯。
+- **待定的小範圍方案（尚未實作）**：首次編輯未儲存的預設列表時，由平台在既有的儲存與
+  OCC 流程中把預設列建立成 Document 裡有 id 的列（用 `createMorphItemId`，不用內容或
+  索引雜湊），成功後才開放從畫布逐列寫入。不改作者原始碼、不另建身分機制。需要另外設計
+  與驗證。
 
 ## 支援現況
 

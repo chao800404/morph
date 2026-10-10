@@ -319,6 +319,47 @@ describe("a row rendered by its own component, declared with of:", () => {
       },
     });
     expect(resolveSelectable(elementShowing(shared, "T2"))?.itemId).toBe(null);
+    // The same id in another list of the section is not a collision: ids
+    // are scoped to their own list, as `normalizeDocumentRowIds` scopes them.
+    const twoLists = await mount(
+      [
+        CARD,
+        {
+          path: "src/components/List.tsx",
+          content: `import Card from "./Card";
+export const contentFields = {
+  items: { type: "array", of: "./Card" },
+  more: { type: "array", of: "./Card" },
+};
+export default function List({ items = [], more = [] }) {
+  return (
+    <section>
+      {items.map((item, index) => <Card key={item.id} {...item} />)}
+      {more.map((item, index) => <Card key={item.id} {...item} />)}
+    </section>
+  );
+}`,
+        },
+        route(),
+      ],
+      {
+        index: {
+          version: 1,
+          sections: [
+            section("list", {
+              items: [{ id: "same", title: "T1", body: "B1" }],
+              more: [{ id: "same", title: "M1", body: "MB1" }],
+            }),
+          ],
+        },
+      },
+    );
+    expect(resolveSelectable(elementShowing(twoLists, "T1"))?.itemId).toBe(
+      "same",
+    );
+    expect(resolveSelectable(elementShowing(twoLists, "M1"))?.itemId).toBe(
+      "same",
+    );
     // Unique again, it is reported.
     const unique = await mount(files);
     expect(resolveSelectable(elementShowing(unique, "T2"))?.itemId).toBe("r2");

@@ -101,9 +101,10 @@ const props = {
 async function clickOn(
   text: string,
   stored = true,
+  fileSet = files,
 ): Promise<EditorSelectionDescriptor> {
   const { html } = await renderLivePreviewRoute({
-    files: [...livePreviewPlatformFiles(), ...files],
+    files: [...livePreviewPlatformFiles(), ...fileSet],
     documents: stored
       ? {
           index: {
@@ -149,6 +150,7 @@ async function clickOn(
 function renderInspector(
   selection: EditorSelectionDescriptor,
   section: Partial<TestSection> = {},
+  fileSet = files,
 ) {
   const onPropsChange = vi.fn();
   const inspector = (patch: Partial<TestSection>) => (
@@ -165,7 +167,7 @@ function renderInspector(
         } as TestSection
       }
       themeFiles={
-        files.map((file) => ({
+        fileSet.map((file) => ({
           ...file,
           mimeType: "text/typescript",
         })) as never
@@ -360,18 +362,66 @@ describe("editing a row rendered by its own component", () => {
     expect(onPropsChange).not.toHaveBeenCalled();
   });
 
-  it("refuses a row selected without an id, and says why", async () => {
+  it("never writes to a row selected without an id, but offers its whole list", async () => {
+    // The row cannot be confirmed, so nothing scoped to it is offered and
+    // nothing goes to its remembered index. The list it belongs to is still
+    // there, whole, with the reason above it.
     const { onPropsChange } = renderInspector({
       ...(await clickOn("T2")),
       itemId: null,
     });
 
-    expect(screen.queryByDisplayValue("T2")).toBeNull();
     expect(
       document.querySelector('[data-slot="inspector-content-unavailable"]')
         ?.textContent,
-    ).toMatch(/no stable id/);
+    ).toMatch(/no id yet/);
+    expect(screen.queryByText("2 / 2")).toBeNull();
+    expect(screen.getByDisplayValue("T1")).toBeTruthy();
+    expect(screen.getByDisplayValue("T2")).toBeTruthy();
     expect(onPropsChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unsaved list of rows without ids editable as a whole", async () => {
+    // A component whose own default rows carry no id, and nothing stored:
+    // the canvas shows them, but no row can be confirmed from a click. The
+    // author is not locked out: the list is edited whole, and saving it is
+    // what gives the rows the ids canvas editing needs.
+    const withoutIds = files.map((file) =>
+      file.path === "src/components/List.tsx"
+        ? {
+            ...file,
+            content: file.content
+              .replace('{ id: "d1", title: "D1"', '{ title: "D1"')
+              .replace('{ id: "d2", title: "D2"', '{ title: "D2"'),
+          }
+        : file,
+    );
+    const selection = await clickOn("D2", false, withoutIds);
+    expect(selection.itemId).toBeNull();
+    const { onPropsChange } = renderInspector(
+      selection,
+      { props: {} },
+      withoutIds,
+    );
+
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/once the list has been saved/);
+    const second = screen
+      .getAllByDisplayValue("D2")
+      .filter((element) => element.tagName === "INPUT");
+    expect(second).toHaveLength(1);
+    fireEvent.input(second[0]!, { target: { value: "Edited" } });
+
+    // The whole list is written, as the panel draws it, so the row beside it
+    // is kept rather than lost.
+    expect(onPropsChange.mock.calls.at(-1)?.[0]).toEqual({
+      items: [
+        { title: "D1", body: "Default 1" },
+        { title: "Edited", body: "Default 2" },
+      ],
+    });
   });
 
   it("refuses a row whose id another stored row shares, and says why", async () => {
