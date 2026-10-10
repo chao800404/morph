@@ -12,6 +12,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { renderSafeThemeComponent } from "@/components/storefront/safe-theme-component-renderer";
+import { renderLivePreviewComponent } from "@/lib/test-utils/live-preview-render";
 import { STARTER_THEME_CATALOG_FILES } from "./starter-theme-catalog-files";
 import { STARTER_THEME_FILES } from "./starter-theme-files";
 
@@ -118,5 +119,50 @@ describe("every file Morph generates for Code mode", () => {
         `${file.path} writes a marker the compiler now derives`,
       ).toEqual([]);
     }
+  });
+});
+
+/**
+ * Row identity in the real React Live Preview. React runs the loop, so the
+ * identity has to be written in before it does: that is the preview's source
+ * pass, and these hold that it names every row the starter renders.
+ */
+describe("row identity in the starter, in real React", () => {
+  async function livePathsFor(path: string, previewPass?: boolean) {
+    const { html } = await renderLivePreviewComponent({
+      files,
+      sourcePath: path,
+      props: rows,
+      previewPass,
+    });
+    return [
+      ...new Set(
+        [...html.matchAll(/data-storefront-field-path="([^"]*)"/g)].map(
+          (m) => m[1],
+        ),
+      ),
+    ].sort();
+  }
+
+  it("still names every row of a repeated field", async () => {
+    const paths = await livePathsFor("src/components/CategoryShowcase.tsx");
+
+    expect(paths).toContain("items.0.title");
+    expect(paths).toContain("items.1.title");
+    expect(paths).toContain("items.0.caption");
+  });
+
+  it("derives a grouped value read through a fallback chain", async () => {
+    expect(await livePathsFor("src/components/CategoryShowcase.tsx")).toContain(
+      "items.0.image",
+    );
+  });
+
+  it("names nothing without the preview's source pass", async () => {
+    // The starter writes no identity itself (asserted above), so every path
+    // found by the two tests before this one came from that pass.
+    expect(
+      await livePathsFor("src/components/CategoryShowcase.tsx", false),
+    ).toEqual([]);
   });
 });

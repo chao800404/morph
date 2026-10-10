@@ -36,6 +36,10 @@ export const EDITOR_SHARDS = [
     "astro-publish-acceptance.spec.ts",
     // Container transport and MORPH_ASTRO_THEMES=1 only, like the one above.
     "astro-preview-container.spec.ts",
+    // Unmeasured until the next rebalance; the other two shards already hold
+    // several unmeasured files. One test on a throwaway Theme, two editor
+    // opens.
+    "starter-shell-content.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
