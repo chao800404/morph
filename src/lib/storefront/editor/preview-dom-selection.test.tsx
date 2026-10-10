@@ -8,7 +8,7 @@ import {
   previewSectionSelector,
   resolvePreviewSelectionRestoreElement,
   selectionStyleSnapshot,
-} from "./preview";
+} from "./preview-dom";
 
 describe("preview selection style snapshot", () => {
   it("captures every computed value consumed by Margin, Fill, and Border", () => {

@@ -10,6 +10,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
 import {
   createDefaultStorefrontHomeDocument,
   createDefaultStorefrontLayoutDocument,
@@ -118,5 +119,127 @@ describe("shell content stored in the layout document", () => {
     expect(html).not.toContain("Cart (0)");
     // The footer is a separate section and stays.
     expect(html).toContain("© Online Store");
+  });
+});
+
+/**
+ * The same contract in the real React Live Preview. The layout Document and
+ * the page Document are separate here, as they are stored: the preview's
+ * content snapshot reads the shell first and the page over it, the same
+ * resolution the published site uses.
+ */
+describe("shell content stored in the layout document, in real React", () => {
+  async function renderLiveHome(
+    layout: StorefrontPageDocument = createDefaultStorefrontLayoutDocument(),
+    themeFiles: Array<{ path: string; content: string }> = files,
+  ): Promise<string> {
+    const { html } = await renderLivePreviewRoute({
+      files: themeFiles,
+      documents: { index: createDefaultStorefrontHomeDocument(), layout },
+    });
+    return html;
+  }
+
+  function layoutWithHeaderProps(props: SectionProps): StorefrontPageDocument {
+    const layout = createDefaultStorefrontLayoutDocument();
+    return {
+      ...layout,
+      sections: layout.sections.map((section) =>
+        section.id === STOREFRONT_LAYOUT_HEADER_SLOT_ID
+          ? { ...section, props: { ...section.props, ...props } }
+          : section,
+      ),
+    };
+  }
+
+  it("renders the seeded values, matching what the source declared", async () => {
+    const html = await renderLiveHome();
+
+    expect(html).toContain("Online Store");
+    expect(html).toContain("Shop");
+    expect(html).toContain("Journal");
+    expect(html).toContain("Cart (0)");
+    expect(html).toContain("© Online Store");
+  });
+
+  it("renders an edited store name", async () => {
+    expect(
+      await renderLiveHome(
+        layoutWithHeaderProps({ storeName: "Kinfolk Supply" }),
+      ),
+    ).toContain("Kinfolk Supply");
+  });
+
+  it("would notice a layout that stopped passing the slot through", async () => {
+    // The layout slot is the only way stored shell content reaches the
+    // Header. Without the spread, the edited name must not appear.
+    const unslotted = files.map((file) =>
+      file.path === "src/layouts/StorefrontLayout.tsx"
+        ? {
+            ...file,
+            content: file.content.replace(
+              `<Header {...content("${STOREFRONT_LAYOUT_HEADER_SLOT_ID}")} />`,
+              "<Header />",
+            ),
+          }
+        : file,
+    );
+    expect(
+      unslotted.find((file) => file.path === "src/layouts/StorefrontLayout.tsx")
+        ?.content,
+    ).toContain("<Header />");
+
+    expect(
+      await renderLiveHome(
+        layoutWithHeaderProps({ storeName: "Kinfolk Supply" }),
+        unslotted,
+      ),
+    ).not.toContain("Kinfolk Supply");
+  });
+
+  it("renders a navigation list the source defaults could never hold", async () => {
+    const html = await renderLiveHome(
+      layoutWithHeaderProps({
+        navItems: [
+          { label: "Ceramics", link: { href: "/collections/ceramics" } },
+          { label: "Contact", link: { href: "/pages/contact" } },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Ceramics");
+    expect(html).toContain('href="/collections/ceramics"');
+    expect(html).toContain("Contact");
+    expect(html).not.toContain(">About<");
+  });
+
+  it("renders an edited link destination", async () => {
+    expect(
+      await renderLiveHome(
+        layoutWithHeaderProps({ cartLink: { href: "/checkout" } }),
+      ),
+    ).toContain('href="/checkout"');
+  });
+
+  // KNOWN DIVERGENCE from the interpreter, found while porting this file.
+  // The interpreter hid a disabled shell section. The starter layout renders
+  // `<Header {...content(...)} />` without asking `isSectionHidden`, so in
+  // real React (after a reload, and on the published site, which runs the
+  // same source) a hidden Header comes back with its source defaults. Only
+  // the bridge's live toggle hides it, until the page reloads. `it.fails`
+  // keeps it visible: when the starter is fixed this goes red.
+  it.fails("hides the header when the shell section is disabled", async () => {
+    const layout = createDefaultStorefrontLayoutDocument();
+    const html = await renderLiveHome({
+      ...layout,
+      sections: layout.sections.map((section) =>
+        section.id === STOREFRONT_LAYOUT_HEADER_SLOT_ID
+          ? { ...section, enabled: false }
+          : section,
+      ),
+    });
+
+    expect(html).toContain("© Online Store");
+    expect(html).not.toContain("Cart (0)");
   });
 });
