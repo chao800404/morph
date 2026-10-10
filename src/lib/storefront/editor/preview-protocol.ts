@@ -227,6 +227,21 @@ export type EditorToPreviewMessage =
     }
   | { type: "morph:storefront-preview-request-structure" }
   | {
+      /**
+       * Ends the text being typed into on the canvas: kept (`commit`), which
+       * sends it as an ordinary inline commit, or put back as it was. Asked
+       * by the editor before it leaves the page, after the author chose.
+       */
+      type: "morph:storefront-preview-finish-inline-text";
+      commit: boolean;
+      /**
+       * Names this one request. The commit it produces carries it back, and
+       * the editor checks it against what it asked for; the preview only
+       * echoes it, and saying it does not make a commit anything special.
+       */
+      requestId: number;
+    }
+  | {
       type: "morph:storefront-preview-request-selection-style";
       styleRevision?: number;
     }
@@ -487,6 +502,21 @@ export type PreviewToEditorMessage =
        * the field.
        */
       originalValue: string;
+      /**
+       * The editor's `finish-inline-text` request this commit answers, when
+       * it does. Echoed, not trusted: see `isRequestedInlineFinishCommit`.
+       */
+      finishRequestId?: number;
+    }
+  | {
+      /**
+       * Text on the canvas was opened for typing (`editing: true`), or the
+       * edit ended, committed or not. While one is open the typed text lives
+       * only in the preview, so the editor counts it as unsaved and asks the
+       * author before leaving. Sent after any commit of the same edit.
+       */
+      type: "morph:storefront-preview-inline-text-editing";
+      editing: boolean;
     }
   | {
       /**
@@ -845,6 +875,11 @@ export function parseEditorToPreviewMessage(
         : null;
     case "morph:storefront-preview-request-structure":
       return { type: value.type };
+    case "morph:storefront-preview-finish-inline-text":
+      return typeof value.commit === "boolean" &&
+        isSafeRevision(value.requestId)
+        ? { type: value.type, commit: value.commit, requestId: value.requestId }
+        : null;
     case "morph:storefront-preview-request-selection-style":
       return value.styleRevision === undefined ||
         isSafeRevision(value.styleRevision)
@@ -1251,7 +1286,9 @@ export function parsePreviewToEditorMessage(
         isBoundedString(value.fieldPath, 500) &&
         value.fieldPath.length > 0 &&
         isBoundedString(value.value, 10_000) &&
-        isBoundedString(value.originalValue, 10_000)
+        isBoundedString(value.originalValue, 10_000) &&
+        (value.finishRequestId === undefined ||
+          isSafeRevision(value.finishRequestId))
         ? {
             type: value.type,
             sectionId: value.sectionId,
@@ -1259,7 +1296,14 @@ export function parsePreviewToEditorMessage(
             fieldPath: value.fieldPath,
             value: value.value,
             originalValue: value.originalValue,
+            ...(value.finishRequestId === undefined
+              ? {}
+              : { finishRequestId: value.finishRequestId }),
           }
+        : null;
+    case "morph:storefront-preview-inline-text-editing":
+      return typeof value.editing === "boolean"
+        ? { type: value.type, editing: value.editing }
         : null;
     case "morph:storefront-preview-inline-text-refused":
       return isBoundedString(value.sectionId, 100) &&

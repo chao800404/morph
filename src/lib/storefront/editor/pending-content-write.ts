@@ -123,3 +123,38 @@ export function sameContent(left: unknown, right: unknown): boolean {
     leftEntries.every(([key, value]) => sameContent(value, rightRecord[key]))
   );
 }
+
+/**
+ * A pending-content map that says when it changes.
+ *
+ * The map is written from a dozen places — edits, acknowledgements, rebases,
+ * checks of unanswered writes — and whether anything is still unsaved has to
+ * be shown the moment any of them changes it. Reporting from the map itself
+ * means no write site can forget to.
+ */
+export class ObservedPendingContent extends Map<string, PendingContentEntry> {
+  private readonly onChange: () => void;
+
+  constructor(onChange: () => void) {
+    super();
+    this.onChange = onChange;
+  }
+
+  override set(key: string, value: PendingContentEntry): this {
+    super.set(key, value);
+    this.onChange();
+    return this;
+  }
+
+  override delete(key: string): boolean {
+    const deleted = super.delete(key);
+    if (deleted) this.onChange();
+    return deleted;
+  }
+
+  override clear(): void {
+    const had = this.size > 0;
+    super.clear();
+    if (had) this.onChange();
+  }
+}

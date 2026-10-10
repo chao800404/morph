@@ -7,11 +7,16 @@ import { useQuery } from "@tanstack/react-query";
 import {
   createFileRoute,
   stripSearchParams,
+  useBlocker,
   useRouterState,
 } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
+import { classifyEditorNavigation } from "@/lib/storefront/editor/editor-leave-guard";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
-import { VisualEditorShell } from "../../../../-components/visual-editor-shell";
+import {
+  VisualEditorShell,
+  type EditorNavigationGuard,
+} from "../../../../-components/visual-editor-shell";
 import { normalizeEditorTemplateSearch } from "../../../../-components/editor-template";
 import { storefrontThemeFileQueries } from "../../../../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../../../../-queries/storefront-theme.queries";
@@ -73,6 +78,38 @@ function VisualEditorRoute() {
   // Where the router is going rather than where it has loaded: `search` keeps
   // the old location until the new one's `beforeLoad` and loader finish, and
   // the router moves this back itself if that navigation fails or is replaced.
+  // Leaving the editor, or switching to another page, first sends the edits
+  // still waiting out their debounce; the shell decides when it may go (see
+  // `createEditorLeaveGuard`). Reloading or closing the tab is the shell's own
+  // `beforeunload`, which can only warn.
+  const navigationGuardRef = useRef<EditorNavigationGuard | null>(null);
+  const shouldBlockNavigation = useCallback(
+    ({
+      current,
+      next,
+    }: {
+      current: { pathname: string; search: unknown };
+      next: { pathname: string; search: unknown };
+    }) => {
+      const kind = classifyEditorNavigation(
+        {
+          pathname: current.pathname,
+          search: (current.search ?? {}) as Record<string, unknown>,
+        },
+        {
+          pathname: next.pathname,
+          search: (next.search ?? {}) as Record<string, unknown>,
+        },
+      );
+      if (!kind) return false;
+      return navigationGuardRef.current?.(kind) ?? false;
+    },
+    [],
+  );
+  useBlocker({
+    shouldBlockFn: shouldBlockNavigation,
+    enableBeforeUnload: false,
+  });
   const navigatingRoutePath = useRouterState({
     select: (state) => {
       const routePath = (state.location.search as { routePath?: unknown })
@@ -124,6 +161,7 @@ function VisualEditorRoute() {
       search={search}
       onSearchChange={handleSearchChange}
       navigatingRoutePath={navigatingRoutePath}
+      navigationGuardRef={navigationGuardRef}
       currentUser={routeContext?.session?.user}
     />
   );
@@ -134,12 +172,14 @@ function ReadyVisualEditorRoute({
   search,
   onSearchChange,
   navigatingRoutePath,
+  navigationGuardRef,
   currentUser,
 }: {
   context: Parameters<typeof VisualEditorShell>[0]["context"];
   search: StorefrontThemeEditorSearch;
   onSearchChange: (next: Partial<StorefrontThemeEditorSearch>) => void;
   navigatingRoutePath: string;
+  navigationGuardRef: React.MutableRefObject<EditorNavigationGuard | null>;
   currentUser: Parameters<typeof VisualEditorShell>[0]["currentUser"];
 }) {
   const normalizedSearch = normalizeEditorTemplateSearch(context, search);
@@ -175,6 +215,7 @@ function ReadyVisualEditorRoute({
       search={normalizedSearch}
       onSearchChange={onSearchChange}
       navigatingRoutePath={navigatingRoutePath}
+      navigationGuardRef={navigationGuardRef}
       currentUser={currentUser}
     />
   );

@@ -58,7 +58,7 @@
     "verify:deployed-svg": "tsx scripts/verify-deployed-svg.ts",
     "check:migrations": "node --test scripts/pending-migrations.test.mjs && node scripts/check-pending-migrations.mjs --files-only",
     "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
-    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs",
+    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs scripts/e2e-machine-lock.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",
     "ship": "node scripts/ship.mjs"
   },
