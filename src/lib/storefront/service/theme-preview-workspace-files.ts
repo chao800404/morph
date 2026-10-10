@@ -56,7 +56,10 @@ export function themePreviewWorkspaceInput(
  * Asked of the framework the Theme records, resolved as the preview server
  * resolves it. A recorded framework this server cannot serve keeps the
  * requirement: the start is refused either way, and an unknown framework
- * never decides that a check does not apply to it.
+ * never decides that a check does not apply to it. `ok` says only that the
+ * entry question is answered, never that the framework passed: the
+ * transports still refuse one they cannot serve (`preview-framework`),
+ * entry or not.
  */
 export function themePreviewEntry(
   entry: string | null,
