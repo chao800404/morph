@@ -20,21 +20,40 @@ A dev server on port 3000 is reused if one is already running.
 ### One run per machine
 
 `pnpm test:e2e:local-preview` (`scripts/run-editor-e2e.mjs`) takes a
-machine-wide lock (`/tmp/morph-editor-e2e.lock`, whatever TMPDIR or folder)
-before it starts anything shared, and waits for it, so two runs on one machine
-never overlap. It is mutual exclusion, not a queue: of several waiting runs,
-which goes next is not defined. While it waits it prints who holds the slot
-(pid, folder, start time, arguments).
+machine-wide lock (`/tmp/morph-editor-e2e.lock`, shared within one WSL
+distribution whatever TMPDIR or folder) before it starts anything shared, and
+waits for it, so two runs never overlap. It is mutual exclusion, not a queue:
+of several waiting runs, which goes next is not defined. While it waits it
+prints who holds the slot (pid, folder, start time, arguments).
 
-The slot is released after teardown has stopped everything the run started. If
-a run is killed outright, the lock's holder stops the process groups that run
-registered (TERM, then KILL after ten seconds) and only then releases.
+The runner itself holds the lock for its whole life (its open descriptor on
+the lock file), together with a guardian process that shares it. The lock goes
+only when both are gone:
 
-- `MORPH_E2E_LOCK=0` runs without the lock, and says so. It stops nothing.
+- Killing the guardian, or anything else, while the run is going does not
+  free the slot.
+- A normal or interrupted run stops everything it started, then releases.
+- A run killed outright leaves the guardian holding the slot. The guardian
+  stops the process groups the run registered (TERM, then KILL after ten
+  seconds), waits until they are gone, with no timeout, and only then lets
+  the lock go.
+
+**Sidecar transport only, for a killed run.** With `MORPH_E2E_TRANSPORT=cloudflare-sandbox`
+the lock still keeps live runs apart, but a run killed outright can leave the
+containers its dev server started: they are not in its process groups, the
+guardian does not stop them, and the next run starts beside them. Until that is
+handled, stop a killed container run's containers before starting another.
+`MORPH_E2E_REAP_CONTAINERS=1` removes containers that appeared during a run,
+which is not the same as containers that run created; use it only where nothing
+else holds a sandbox session.
+
+- `MORPH_E2E_LOCK=0` bypasses the protection entirely. Use it only for an
+  isolated diagnosis with no other E2E run on the machine. It stops nothing.
 - Without `flock` (macOS) the run goes ahead unlocked, and says so.
 - Not covered: calling `playwright test` directly; a checkout from before the
-  lock; the short synchronous steps (migrations, seed, `docker`) of a run
-  killed during them; load from unit tests or builds.
+  lock; the short synchronous steps (migrations, seed) of a run killed during
+  them, which write only to that run's own state directory; load from unit
+  tests or builds.
 
 ## Other browsers
 

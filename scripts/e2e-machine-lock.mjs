@@ -12,28 +12,43 @@
  * and waits for it. This is mutual exclusion only: of several runs waiting,
  * which goes next is not defined (flock does not queue in order).
  *
- * One lock for the whole machine: a fixed path under /tmp, not `os.tmpdir()`,
- * which follows TMPDIR — two sessions with different TMPDIR values would each
- * lock a file of their own and never wait for each other.
+ * One lock for the whole machine (one WSL distribution): a fixed path under
+ * /tmp, not `os.tmpdir()`, which follows TMPDIR — two sessions with different
+ * TMPDIR values would each lock a file of their own.
  *
- * The lock is the kernel's (`flock`), held by a small holder process that
- * watches the runner. The runner releases it last, after its own teardown has
- * stopped everything it started. If the runner is killed outright and never
- * tears down, the holder does the part that matters to the next run: it stops
- * the process groups this runner registered (`track`) — TERM, then KILL after
- * ten seconds — waits for them to go, and only then lets the lock go. It never
- * signals anything it was not given, and an unlocked run (MORPH_E2E_LOCK=0)
- * involves none of this.
+ * Who holds it. The lock is the kernel's (`flock`) and belongs to an open file
+ * description, not to a process: it lasts until every descriptor for it is
+ * closed. The runner opens the lock file and keeps that descriptor for its
+ * whole life; `flock` takes the lock on it and exits. A guardian process
+ * shares the same description. So the lock is released only when both the
+ * runner and the guardian are gone:
+ *
+ * - Killing the guardian, or anything else, while the runner runs does not
+ *   release it — the runner's own descriptor still holds it.
+ * - Killing the runner outright leaves the guardian holding it. The guardian
+ *   stops the process groups the runner registered (`track`) — TERM, then
+ *   KILL after ten seconds — waits until they are gone, with no timeout, and
+ *   only then exits and lets the lock go. It never signals anything it was
+ *   not given.
+ * - A normal or interrupted run stops its children itself, then `release`
+ *   ends the guardian and closes the descriptor.
  *
  * While a run waits it says who holds the slot (pid, folder, start time,
- * arguments), from a note the holder leaves beside the lock.
+ * arguments), from a note beside the lock.
  *
  * `flock` is util-linux: present on Linux and WSL, absent on macOS. Without it,
  * or with MORPH_E2E_LOCK=0, the run goes ahead unlocked and says so.
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -44,14 +59,14 @@ export const DEFAULT_LOCK_FILE =
 
 /** How often the waiting run repeats who it is waiting for. */
 const REMIND_MS = 60_000;
-/** How long the holder gives an orphaned group to stop before KILL. */
+/** How long the guardian gives an orphaned group to stop before KILL. */
 const ORPHAN_GRACE_SECONDS = 10;
 
 export function holderNoteFor(lockFile) {
   return `${lockFile}.holder.json`;
 }
 
-/** The process groups one run has started, for its holder to stop. */
+/** The process groups one run has started, for its guardian to stop. */
 export function groupsFileFor(lockFile, ownerPid) {
   return `${lockFile}.groups.${ownerPid}`;
 }
@@ -75,15 +90,17 @@ function shellQuote(value) {
 }
 
 /**
- * What the holder runs while it holds the lock: wait for the owner to go,
- * then stop what the owner registered and did not get to stop itself.
+ * What the guardian runs, holding the lock's description on fd 3: wait for
+ * the owner to go, then stop what the owner registered and did not get to
+ * stop itself. Its own `sleep`s are started with fd 3 closed, so nothing but
+ * the guardian itself keeps the lock.
  */
-function holderScript(ownerPid, groupsFile, noteFile) {
+function guardianScript(ownerPid, groupsFile, noteFile) {
   const groups = shellQuote(groupsFile);
   const note = shellQuote(noteFile);
+  const nap = "sleep 1 3>&-";
   return [
-    "echo acquired",
-    `while kill -0 ${ownerPid} 2>/dev/null; do sleep 1; done`,
+    `while kill -0 ${ownerPid} 2>/dev/null; do ${nap}; done`,
     `if [ -f ${groups} ]; then`,
     `  for g in $(cat ${groups}); do kill -TERM -"$g" 2>/dev/null; done`,
     "  i=0",
@@ -91,10 +108,10 @@ function holderScript(ownerPid, groupsFile, noteFile) {
     "    alive=0",
     `    for g in $(cat ${groups}); do kill -0 -"$g" 2>/dev/null && alive=1; done`,
     '    [ "$alive" = 0 ] && break',
-    "    sleep 1; i=$((i+1))",
+    `    ${nap}; i=$((i+1))`,
     "  done",
     `  for g in $(cat ${groups}); do kill -KILL -"$g" 2>/dev/null; done`,
-    `  while :; do alive=0; for g in $(cat ${groups}); do kill -0 -"$g" 2>/dev/null && alive=1; done; [ "$alive" = 0 ] && break; sleep 1; done`,
+    `  while :; do alive=0; for g in $(cat ${groups}); do kill -0 -"$g" 2>/dev/null && alive=1; done; [ "$alive" = 0 ] && break; ${nap}; done`,
     `  rm -f ${groups}`,
     "fi",
     `grep -q '"pid":${ownerPid},' ${note} 2>/dev/null && rm -f ${note}`,
@@ -103,10 +120,9 @@ function holderScript(ownerPid, groupsFile, noteFile) {
 
 /**
  * The machine's E2E slot, for one run: `acquire` waits for it and holds it
- * until `release`, or until this process is gone. `track` registers a process
- * group this run started, for the holder to stop should the run die without
- * tearing down. `release` is safe to call at any point, waiting or not, and
- * more than once.
+ * until `release`, or until this process is gone and its registered groups
+ * have been stopped. `track` registers a process group this run started.
+ * `release` is safe to call at any point, waiting or not, and more than once.
  *
  * @param {{ lockFile: string, log: (message: string) => void, args: string,
  *   ownerPid?: number }} options
@@ -114,22 +130,30 @@ function holderScript(ownerPid, groupsFile, noteFile) {
 export function createMachineLock(options) {
   const ownerPid = options.ownerPid ?? process.pid;
   const groupsFile = groupsFileFor(options.lockFile, ownerPid);
+  /** The lock's open file description, held for the run's whole life. */
+  let fd = /** @type {number | null} */ (null);
   /** @type {import("node:child_process").ChildProcess | null} */
-  let holder = null;
+  let waiter = null;
+  /** @type {import("node:child_process").ChildProcess | null} */
+  let guardian = null;
   let held = false;
 
-  function stopHolder() {
-    const child = holder;
-    holder = null;
+  /** Closes the lock's descriptor once, whichever path gets here first. */
+  function closeFd() {
+    const open = fd;
+    fd = null;
+    if (open !== null) closeSync(open);
+  }
+
+  /** @param {import("node:child_process").ChildProcess | null} child */
+  function stopGroup(child) {
     if (!child || child.exitCode !== null || child.signalCode !== null) {
       return Promise.resolve();
     }
-    // Referenced again: it was unref'd once it held the slot, and waiting on
-    // an unref'd child lets the process end before it does.
+    // Referenced again: an unref'd child lets the process end before it does.
     child.ref();
     const gone = new Promise((resolve) => child.once("exit", resolve));
     try {
-      // Its own group: flock and the shell it runs, nothing else.
       process.kill(-(/** @type {number} */ (child.pid)), "SIGTERM");
     } catch {
       child.kill("SIGTERM");
@@ -139,15 +163,17 @@ export function createMachineLock(options) {
 
   return {
     /** @returns {Promise<void>} */
-    acquire() {
+    async acquire() {
       rmSync(groupsFile, { force: true });
-      const child = spawn(
-        "flock",
-        [options.lockFile, "sh", "-c", holderScript(ownerPid, groupsFile, holderNoteFor(options.lockFile))],
-        { stdio: ["ignore", "pipe", "inherit"], detached: true },
-      );
-      holder = child;
-      return new Promise((resolve, reject) => {
+      fd = openSync(options.lockFile, "a");
+      // `flock 3` locks the description on its fd 3 — ours — and exits once
+      // it has it; the lock then stays with the description.
+      const child = spawn("flock", ["3"], {
+        stdio: ["ignore", "ignore", "inherit", fd],
+        detached: true,
+      });
+      waiter = child;
+      await new Promise((resolve, reject) => {
         let reminder = /** @type {NodeJS.Timeout | null} */ (null);
         const waiting = setTimeout(() => {
           options.log(`waiting for the machine's E2E slot, held by ${readHolder(options.lockFile)}`);
@@ -156,39 +182,39 @@ export function createMachineLock(options) {
             REMIND_MS,
           );
         }, 500);
-        const done = () => {
+        child.once("exit", (code, signal) => {
           clearTimeout(waiting);
           if (reminder) clearInterval(reminder);
-        };
-        /** @type {import("node:stream").Readable} */ (child.stdout).on("data", (chunk) => {
-          if (held || !String(chunk).includes("acquired")) return;
-          held = true;
-          done();
-          writeFileSync(
-            holderNoteFor(options.lockFile),
-            JSON.stringify({
-              pid: ownerPid,
-              cwd: process.cwd(),
-              startedAt: new Date().toISOString(),
-              args: options.args,
-            }),
-          );
-          // Held by the child from here; this process may exit without
-          // waiting on it, and the child follows once it has cleaned up.
-          child.unref();
-          /** @type {import("node:stream").Readable} */ (child.stdout).destroy();
-          resolve();
-        });
-        child.once("exit", (code, signal) => {
-          if (held) return;
-          done();
-          reject(new Error(`E2E_LOCK_FAILED: flock ended (${signal ?? code}) before the slot was free.`));
+          waiter = null;
+          if (code === 0) resolve(undefined);
+          else reject(new Error(`E2E_LOCK_FAILED: flock ended (${signal ?? code}) before the slot was free.`));
         });
         child.once("error", (error) => {
-          done();
+          clearTimeout(waiting);
+          if (reminder) clearInterval(reminder);
           reject(error);
         });
+      }).catch((error) => {
+        closeFd();
+        throw error;
       });
+      held = true;
+      writeFileSync(
+        holderNoteFor(options.lockFile),
+        JSON.stringify({
+          pid: ownerPid,
+          cwd: process.cwd(),
+          startedAt: new Date().toISOString(),
+          args: options.args,
+        }),
+      );
+      guardian = spawn(
+        "sh",
+        ["-c", guardianScript(ownerPid, groupsFile, holderNoteFor(options.lockFile))],
+        { stdio: ["ignore", "ignore", "inherit", fd], detached: true },
+      );
+      // It outlives this process by design; nothing here waits on it.
+      guardian.unref();
     },
 
     /** @param {number | undefined} pgid */
@@ -198,9 +224,12 @@ export function createMachineLock(options) {
     },
 
     async release() {
+      // A wait still in progress: stop it, so it never takes the slot later.
+      await stopGroup(waiter);
+      waiter = null;
       if (held) {
         held = false;
-        // The run tore down what it started; nothing is left for the holder.
+        // The run tore down what it started; nothing is left for the guardian.
         rmSync(groupsFile, { force: true });
         try {
           const note = JSON.parse(readFileSync(holderNoteFor(options.lockFile), "utf8"));
@@ -209,7 +238,9 @@ export function createMachineLock(options) {
           // No note, or another run's: leave it.
         }
       }
-      await stopHolder();
+      await stopGroup(guardian);
+      guardian = null;
+      closeFd();
     },
   };
 }
