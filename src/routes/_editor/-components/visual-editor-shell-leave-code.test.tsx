@@ -16,6 +16,13 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
+// Loaded with the file, not inside a test. The shell reaches the Code
+// workspace through `lazy()`, and its first load — a large module, compiled on
+// demand — counted against the first test's time and outran it under a full,
+// parallel run. Imported here it is compiled at collection; `lazy()` then
+// resolves to this same, already-loaded module, which the tests still mount
+// for real through the shell.
+import "./editor-code-workspace";
 
 /**
  * Leaving the editor with a Code draft, through the shell as it is wired.
