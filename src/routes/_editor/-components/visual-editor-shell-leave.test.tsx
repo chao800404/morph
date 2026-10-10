@@ -432,6 +432,94 @@ describe("navigating before the debounce fired", () => {
   });
 });
 
+describe("a held draft when nothing is waiting to be sent", () => {
+  /**
+   * The write gate's answers keep the draft and stop the navigation, page
+   * switches included; leaving never sends it again to get away.
+   */
+  it("stops a page switch on a conflicted edit, without resending it", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    });
+    const { navigate } = await editBeforeDebounce();
+    await tick(300);
+    await tick();
+    expect(saveStatus()).toBe("Out of date");
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    const outcome = navigate("switch-page");
+    await tick();
+
+    expect(outcome.blocked).toBeUndefined();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "out of date with the document",
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Switch anyway" }).click();
+    });
+    await tick(1_000);
+    // Switched, and still not resent: the draft waits for the rebase.
+    expect(outcome.blocked).toBe(false);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getByRole("button", { name: "Load latest, keep mine" })).toBeTruthy();
+  });
+
+  it("stops a page switch on a write whose outcome is unknown, without resending it", async () => {
+    updateSectionProps.mockRejectedValue(new Error("offline"));
+    const { navigate } = await editBeforeDebounce();
+    await tick(300);
+    await tick();
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    const outcome = navigate("switch-page");
+    await tick();
+
+    expect(outcome.blocked).toBeUndefined();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "It could not be confirmed whether an earlier save was stored.",
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Stay here" }).click();
+    });
+    await tick(1_000);
+    expect(outcome.blocked).toBe(true);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send while the account has lost permission, and leaves only when told", async () => {
+    updateSectionProps.mockResolvedValue(SAVED);
+    const { navigate } = await editBeforeDebounce();
+    act(() => {
+      useEditorWriteGateStore
+        .getState()
+        .pause(
+          { storefrontId: "storefront-1", themeId: "theme-1" },
+          "ACCESS_DENIED",
+          "theme",
+        );
+    });
+
+    const outcome = navigate("leave-editor");
+    await tick();
+
+    expect(outcome.blocked).toBeUndefined();
+    expect(screen.getByRole("alertdialog").textContent).toContain(
+      "Your account is not allowed to make this change.",
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Leave and discard" }).click();
+    });
+    await tick(1_000);
+    expect(outcome.blocked).toBe(false);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+});
+
 describe("text still open for typing on the canvas", () => {
   const finishRequests = () =>
     vi

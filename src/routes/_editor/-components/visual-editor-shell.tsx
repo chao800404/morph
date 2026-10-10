@@ -5071,17 +5071,26 @@ export function VisualEditorShell({
       ) {
         return true;
       }
-      // Anything else held — a failed save, a conflict, an unanswered write, a
-      // Code draft — stays in this tab across a page switch, and is still
-      // shown in the toolbar. Leaving the editor loses it.
-      if (kind === "switch-page") return false;
-      return (
+      // Held, not waiting: a failed save, a conflict, an unanswered write, a
+      // paused one. Nothing here sends it, but the author is told before the
+      // page changes, as before leaving: the draft stays either way.
+      if (
         pendingPropsMapRef.current.size > 0 ||
         unconfirmedContentRef.current.size > 0 ||
-        // Read now: the dirty-path summary arrives a render after a save.
-        (editorCodeWorkspaceRef.current?.hasUnsavedDrafts() ?? false) ||
-        files.some((file) => file.dirty)
-      );
+        files.some(
+          (file) =>
+            file.dirty ||
+            file.saveState === "conflict" ||
+            file.saveState === "error",
+        )
+      ) {
+        return true;
+      }
+      // Code drafts save themselves and stay across a page switch; leaving
+      // the editor takes them away. Read now: the dirty-path summary reaches
+      // the shell a render after a save.
+      if (kind === "switch-page") return false;
+      return editorCodeWorkspaceRef.current?.hasUnsavedDrafts() ?? false;
     },
     flush: async (kind) => {
       const readFiles = () =>
@@ -5172,8 +5181,12 @@ export function VisualEditorShell({
           reason:
             Object.keys(contentConflictsRef.current).length > 0
               ? "Some content is out of date with the document. Use Load latest, keep mine first."
-              : (Object.values(readFiles()).find((file) => file.errorMessage)
-                  ?.errorMessage ?? "Some changes have not been saved."),
+              : Object.values(readFiles()).some(
+                    (file) => file.saveState === "conflict",
+                  )
+                ? "A source file was changed elsewhere. Resolve the conflict first; your changes are kept."
+                : (Object.values(readFiles()).find((file) => file.errorMessage)
+                    ?.errorMessage ?? "Some changes have not been saved."),
         };
       }
       return { saved: true };
