@@ -38,6 +38,19 @@ const SECTION_ID_ATTRIBUTE = "data-storefront-section-id";
 const SOURCE_FILE_ATTRIBUTE = "data-morph-source-file";
 
 /**
+ * Says the editor must not take an element's hand-written field marker as its
+ * field, and why: `conflict` when the element provably renders a different
+ * field, `unproven` when what it renders cannot be traced to one.
+ *
+ * A marker is a hint the author may write, never one they must, and it never
+ * decides where an edit is stored. The marker itself is left as written — it
+ * is the author's source — and this is put beside it for the editor to read.
+ */
+export const FIELD_REFUSED_ATTRIBUTE = "data-morph-field-refused";
+
+export type FieldMarkerRefusal = "conflict" | "unproven";
+
+/**
  * Utilities that space children by counting them, and so notice a wrapper.
  *
  * `display: contents` takes the wrapper out of layout but not out of the
@@ -296,6 +309,57 @@ function fieldForElement(node: any, rowItem: string | null): string | null {
     if (fromAttribute) return fromAttribute;
   }
   return null;
+}
+
+/** A hand-written `data-storefront-field`, read as a string when it is one. */
+function readAuthoredFieldMarker(openingElement: any): string | null {
+  for (const attribute of openingElement?.attributes ?? []) {
+    if (
+      attribute?.type !== "JSXAttribute" ||
+      attribute.name?.type !== "JSXIdentifier" ||
+      attribute.name.name !== FIELD_ATTRIBUTE
+    ) {
+      continue;
+    }
+    const value = attribute.value;
+    if (value?.type === "StringLiteral") return value.value;
+    if (
+      value?.type === "JSXExpressionContainer" &&
+      value.expression?.type === "StringLiteral"
+    ) {
+      return value.expression.value;
+    }
+    // Computed: nothing here can say which field it names.
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Whether a hand-written field marker can stand, and why not when it cannot.
+ *
+ * It stands when the element provably renders the field it names, or when the
+ * element is a row of the array it names — a row renders many fields, and the
+ * array is the one it belongs to. Anything else would let a name the author
+ * typed send an edit to a field the element does not show.
+ */
+function authoredMarkerRefusal(args: {
+  marker: string | null;
+  rendered: string | null;
+  /** Whether `rendered` is a field the component declares (true when it declares none in source). */
+  renderedIsField: boolean;
+  rowOfArray: string | undefined;
+}): FieldMarkerRefusal | null {
+  const { marker, rendered, renderedIsField, rowOfArray } = args;
+  if (marker !== null && rowOfArray !== undefined && marker === rowOfArray) {
+    return null;
+  }
+  if (marker !== null && rendered === marker) return null;
+  // A conflict needs a field on the other side. A local the element renders
+  // (`displayImage`, say) is not one: the source is merely untraceable.
+  return marker !== null && rendered !== null && renderedIsField
+    ? "conflict"
+    : "unproven";
 }
 
 /**
@@ -698,6 +762,8 @@ export function injectPreviewBindings(
     // reached a second time as an element in its own right, and wrapping it
     // twice would nest one content marker inside another.
     const wrappedRows = new Set<number>();
+    // Each `.map()` row element, by its start, with the array it is a row of.
+    const rowElements = new Map<number, string>();
     // Wrappers are extra children, which is the one thing a `space-y` rule
     // notices. Counted so the warning below can speak for them too.
     let contentWrappers = 0;
@@ -730,6 +796,7 @@ export function injectPreviewBindings(
       const mapCall = readMapCall(node);
       if (mapCall) {
         const row = mapCall.rowElement;
+        if (row?.start != null) rowElements.set(row.start, mapCall.arrayPath);
         // `map` passes the index whether the callback asked for it or not, so
         // the compiler writes the parameter in when the author did not. Without
         // one there is nothing to build `items.0.title` from: every row is
@@ -866,6 +933,39 @@ export function injectPreviewBindings(
 
           if (field && allowed && !hasAttribute(opening, FIELD_ATTRIBUTE)) {
             parts.push(` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"`);
+          }
+          // A hand-written marker is kept as written, but it is only taken as
+          // the element's field when the element provably renders that field.
+          if (
+            hasAttribute(opening, FIELD_ATTRIBUTE) &&
+            !hasAttribute(opening, FIELD_REFUSED_ATTRIBUTE)
+          ) {
+            const marker = readAuthoredFieldMarker(opening);
+            const refusal = authoredMarkerRefusal({
+              marker,
+              rendered: field,
+              renderedIsField:
+                declared === null || declared === undefined || allowed,
+              rowOfArray:
+                node.start != null ? rowElements.get(node.start) : undefined,
+            });
+            if (refusal) {
+              parts.push(` ${FIELD_REFUSED_ATTRIBUTE}="${refusal}"`);
+              const at = opening.loc?.start?.line;
+              const named =
+                marker === null
+                  ? "a computed data-storefront-field"
+                  : `data-storefront-field="${marker}"`;
+              warnings.push({
+                path: file.path,
+                message:
+                  `${at ? `Line ${at}: ` : ""}${named} ` +
+                  (refusal === "conflict"
+                    ? `names a field this element does not show (it shows "${field}").`
+                    : "is on an element whose content cannot be traced to that field.") +
+                  " Design will not edit it, so an edit cannot be stored in the wrong field; edit it in Code, or remove the marker and let Morph find the field.",
+              });
+            }
           }
           if (
             field &&
