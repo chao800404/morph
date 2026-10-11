@@ -126,11 +126,11 @@ server function → loader → `useLoaderData()` 的資料在伺服器讀取，�
 
 只接受下面每一環都是「直接傳遞、不加工」的形狀；任何一環不符合，整條鏈不成立，該元素顯示為「由程式碼控制」。
 
-1. **server function**：模組層的 `const getX = createServerFn(…).handler(<函式>)`（中間可以有不使用輸入的 `.middleware()`），函式本體**直接回傳** `morph.pages.get("字面路徑")`，或 `const p = await morph.pages.get("字面路徑"); return p;`。`morph` 必須是從 Theme 內容模組具名 import 的。
+1. **server function**：模組層的 `const getX = createServerFn(…).handler(<函式>)`，中間沒有其他步驟（`.middleware()`、`.validator()`／`.inputValidator()` 第一版都不納入），函式本體**直接回傳** `morph.pages.get("字面路徑")`，或 `const p = await morph.pages.get("字面路徑"); return p;`。`morph` 必須是從 Theme 內容模組具名 import 的。
 2. **loader**：route options 的 `loader` 直接回傳那個 server function 的呼叫結果（`() => getX()`、`async () => await getX()`、`async () => getX()`），不包成物件、不合併、不挑選欄位。
 3. **元件**：同一個 route 的 `component` 內，`const { hero } = Route.useLoaderData()`（可改名 `{ hero: h }`），或 `const home = Route.useLoaderData()` 再以字面 key 讀 `home.hero`；變數是 `const`，之後沒有重新指定。
-4. **呼叫處**：`<Hero {...hero} />` 展開單一 slot。逐欄傳值（`<Hero title={hero.title} subtitle={hero.subtitle} />`，全部來自同一個 slot）列為第二版，要另外定義「全部 props 來自同一 slot」的判斷。
-5. **頁面一致**：`morph.pages.get` 的路徑必須就是這個 route 對應的頁面；讀別的頁面的內容（例如 `/` 的 route 讀 `/about`）第一版不開放，避免從一個畫布寫到另一頁的 Document。
+4. **呼叫處**：`<Hero {...hero} />` 展開單一 slot，元素上除了 `key` 之外沒有其他屬性或展開。逐欄傳值（`<Hero title={hero.title} subtitle={hero.subtitle} />`，全部來自同一個 slot）列為第二版，要另外定義「全部 props 來自同一 slot」的判斷。
+5. **頁面一致**：`morph.pages.get` 的路徑是**這個 route 的網址路徑**，也就是內容解析用的那一個：首頁是 `"/"`（對應 `index` 範本），不是 `"/home"`；`"/home"` 會解析成另一個 route 自己的頁面。路徑不是這個 route 的頁面時（例如 `/` 的 route 讀 `"/about"` 或 `"/home"`），第一版不開放，避免從一個畫布寫到另一頁的 Document。
 
 **跨檔案範圍（第一版）**
 
@@ -146,6 +146,9 @@ server function → loader → `useLoaderData()` 的資料在伺服器讀取，�
 - 解構帶預設值（`{ hero = {} }`）、rest（`...rest`）、計算 key、兩層以上的巢狀解構；變數用 `let` 或之後被重新指定或修改。
 - 同一個 slot 在同一頁出現兩次以上（實例身分不明）。
 - 讀取的頁面不是這個 route 的頁面（第 5 點）。
+- **作用域**：同一個名稱在別的函式或巢狀區塊被重新宣告（例如內層 `const hero = …` 遮蔽外層），或解構來源不是這個 route 自己的 `Route.useLoaderData()`。今天的頁面變數分析只看名稱、不追作用域（`collectPageVariables` 的註解），新的追蹤必須以作用域為準，無法確認就拒絕。
+- **props 覆寫**：呼叫處在展開之外還有其他屬性或展開（`<Hero {...hero} title="Sale" />`、`<Hero title="Sale" {...hero} />`、`<Hero {...defaults} {...hero} />`）。被覆寫的欄位顯示的不是 Document 的值；第一版整個呼叫處不綁定，不逐欄判斷誰蓋過誰。
+- server function 使用 `.middleware()`、`.validator()`／`.inputValidator()`（第一版不納入）。
 - 需要跨出上面「跨檔案範圍」才能確認的任何一環。
 
 **與結構編輯分開**：辨識解構寫法是為了**內容編輯**。新增、移動、刪除區塊會改寫 route 原始碼，目前只會產生 `content("x")` 這種自成一處的寫法；對使用解構的 route，結構編輯先維持不開放，避免改寫作者的資料流。
@@ -172,7 +175,7 @@ server function → loader → `useLoaderData()` 的資料在伺服器讀取，�
 
 ```astro
 ---
-const home = await morph.pages.get("/home");
+const home = await morph.pages.get("/");
 const { hero } = home;
 ---
 <Hero {...hero} />
@@ -188,7 +191,7 @@ const { hero } = home;
 **案例 B：TanStack Start server function → loader → `useLoaderData()`**
 
 ```tsx
-const getHome = createServerFn().handler(() => morph.pages.get("/home"));
+const getHome = createServerFn().handler(() => morph.pages.get("/"));
 export const Route = createFileRoute("/")({
   loader: () => getHome(),
   component: Home,
