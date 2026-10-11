@@ -1,6 +1,5 @@
 import { parseColocatedContentFields } from "./ast/theme-content-fields-source";
 import { stripDerivableMarkers } from "./ast/strip-derivable-markers";
-import { confirmThemeContentModuleFunctionExport } from "./ast/theme-content-module";
 import { STARTER_THEME_CATALOG_FILES } from "./starter-theme-catalog-files";
 import {
   LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE,
@@ -1590,11 +1589,12 @@ function planStarterThemeWorkspaceWrites(
     readonly legacy: readonly string[];
     readonly current: string;
     /**
-     * Content-module functions `current` imports. The module is the author's
-     * (rule 01 §4.4), so a replacement that would import one it cannot be
-     * shown to declare is left for the author rather than breaking the build.
+     * `current` imports what the author may have changed or removed (the
+     * content module is theirs, rule 01 §4.4), so it replaces their file only
+     * when `starterSourceImportsSatisfied` confirms every import; otherwise
+     * the file is left for the author rather than breaking the build.
      */
-    readonly contentModuleImports?: readonly string[];
+    readonly checkImports?: boolean;
   }> = [
     {
       path: "src/components/Hero.tsx",
@@ -1724,7 +1724,7 @@ function planStarterThemeWorkspaceWrites(
         LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
       ],
       current: STARTER_THEME_LAYOUT_SOURCE,
-      contentModuleImports: ["content", "isSectionHidden"],
+      checkImports: true,
     },
   ];
 
@@ -1733,31 +1733,28 @@ function planStarterThemeWorkspaceWrites(
     (existingLegacyPage.content === STARTER_THEME_INDEX_SOURCE ||
       existingLegacyPage.content === LEGACY_STARTER_THEME_INDEX_SOURCE),
   );
-  // The content module as this plan leaves it: an untouched copy replaced
-  // above, otherwise whatever the author has.
-  const contentModuleAfterPlan =
-    upgrades.find((file) => file.path === "src/morph/content.ts") ??
-    existingByPath.get("src/morph/content.ts");
-  const contentModuleWillDeclare = (exportNames: readonly string[]) =>
-    Boolean(contentModuleAfterPlan) &&
-    exportNames.every(
-      (exportName) =>
-        confirmThemeContentModuleFunctionExport(
-          [contentModuleAfterPlan!],
-          exportName,
-          "upgrade the Starter layout",
-        ).ok,
-    );
   for (const replacement of exactLegacyReplacements) {
     const existing = existingByPath.get(replacement.path);
     if (!existing) continue;
     const isLegacy = replacement.legacy.includes(existing.content);
     if (!isLegacy) continue;
-    if (
-      replacement.contentModuleImports &&
-      !contentModuleWillDeclare(replacement.contentModuleImports)
-    ) {
-      continue;
+    // Checked against the workspace as the plan leaves it so far: the content
+    // module is seeded or upgraded above. A file a later step adds is not seen
+    // yet, which can only keep the author's file, never break the build.
+    if (replacement.checkImports) {
+      const afterPlan = new Map(
+        existingFiles.map((file) => [file.path, file.content] as const),
+      );
+      for (const file of upgrades) afterPlan.set(file.path, file.content);
+      if (
+        !starterSourceImportsSatisfied(
+          replacement.path,
+          replacement.current,
+          afterPlan,
+        )
+      ) {
+        continue;
+      }
     }
     upgrades.push({
       path: replacement.path,

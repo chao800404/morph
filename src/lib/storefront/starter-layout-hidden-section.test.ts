@@ -287,6 +287,28 @@ ${declaration}
     ).toBeUndefined();
   });
 
+  it("leaves it when the author deleted a component it imports", () => {
+    // Every relative import must resolve as the plan leaves the workspace
+    // (`starterSourceImportsSatisfied`, the check the home route uses too).
+    const footer = workspace().find((file) =>
+      /^src\/components\/Footer\.tsx?$/.test(file.path),
+    );
+    expect(footer).toBeDefined();
+    expect(
+      plannedLayout(
+        workspace(
+          compose(
+            setContent(
+              LAYOUT,
+              LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
+            ),
+            without(footer!.path),
+          ),
+        ),
+      ),
+    ).toBeUndefined();
+  });
+
   it("leaves it when the author deleted the content module", () => {
     expect(
       plannedLayout(
