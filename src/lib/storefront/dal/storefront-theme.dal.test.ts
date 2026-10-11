@@ -2741,6 +2741,54 @@ export default function SiteHeader() { return <header />; }`;
   });
 
   /**
+   * A click on content the editor cannot place in a Document section — a
+   * component handed `{...hero}` from `useLoaderData()`, which today gets no
+   * section wrapper — resolves to that component's own root, identified by its
+   * source file (loader-data-binding.live.test.ts). Sent here, that id must
+   * write nothing: not the Document's `hero`, and no new revision.
+   */
+  it("updateSectionProps writes nothing for a section id the Document does not have", async () => {
+    const document =
+      '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}';
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-unknown', 'theme-a', 'index', 'Home', '${document}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-unknown', 1, '${document}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-unknown",
+      sectionId: "src/components/Hero.tsx",
+      props: { title: "Edited" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).toBeNull();
+    const stored = sqlite
+      .prepare(
+        "SELECT document, draft_revision_id AS draft FROM storefront_theme_templates WHERE id = 'template-unknown'",
+      )
+      .get() as { document: string; draft: string };
+    expect(JSON.parse(stored.document)).toEqual(JSON.parse(document));
+    expect(stored.draft).toBe("11111111-1111-4111-8111-111111111111");
+    const revisions = sqlite
+      .prepare(
+        "SELECT COUNT(*) AS count FROM storefront_theme_template_revisions WHERE template_id = 'template-unknown'",
+      )
+      .get() as { count: number };
+    expect(revisions.count).toBe(1);
+  });
+
+  /**
    * A name is the editor's label for one placement, not content. It is stored
    * beside `props` because `props` is spread into the component and travels to
    * every visitor — and a component may declare a content field of its own
