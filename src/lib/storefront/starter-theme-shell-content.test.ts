@@ -221,14 +221,12 @@ describe("shell content stored in the layout document, in real React", () => {
     ).toContain('href="/checkout"');
   });
 
-  // KNOWN DIVERGENCE from the interpreter, found while porting this file.
-  // The interpreter hid a disabled shell section. The starter layout renders
-  // `<Header {...content(...)} />` without asking `isSectionHidden`, so in
-  // real React (after a reload, and on the published site, which runs the
-  // same source) a hidden Header comes back with its source defaults. Only
-  // the bridge's live toggle hides it, until the page reloads. `it.fails`
-  // keeps it visible: when the starter is fixed this goes red.
-  it.fails("hides the header when the shell section is disabled", async () => {
+  // The interpreter hid a disabled shell section; real React used not to.
+  // The starter layout rendered `<Header {...content(...)} />` without asking
+  // `isSectionHidden`, so after a reload, and on the published site, a hidden
+  // Header came back with its source defaults. The layout now asks, as the
+  // home route does (Starter 29).
+  it("hides the header when the shell section is disabled", async () => {
     const layout = createDefaultStorefrontLayoutDocument();
     const html = await renderLiveHome({
       ...layout,

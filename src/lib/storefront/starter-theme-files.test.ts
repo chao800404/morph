@@ -71,6 +71,27 @@ function inStartWorkspace(
   ];
 }
 
+
+/**
+ * Section components every manifest-era workspace has had since the first
+ * Starter, and which no upgrade adds back.
+ *
+ * The current home route imports them. The upgrade replaces a legacy route
+ * only when everything the new one imports will be there, so a two-file
+ * fixture without them would be asking for a route that cannot build.
+ */
+const MANIFEST_ERA_SECTION_COMPONENTS = [
+  "src/components/Hero.tsx",
+  "src/components/Principles.tsx",
+].map((path) => ({
+  id: path,
+  path,
+  content: STARTER_THEME_FILES_WITH_LEGACY_MANIFEST.find(
+    (file) => file.path === path,
+  )!.content,
+  version: 1,
+}));
+
 describe("starter Principles theme source", () => {
   it("ships a token-only order transfer confirmation route in new Themes", () => {
     const route = STARTER_THEME_V4_NEW_FILES.find(
@@ -1108,6 +1129,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
         }),
         version: 5,
       },
+      ...MANIFEST_ERA_SECTION_COMPONENTS,
     ]);
 
     expect(upgrades).toContainEqual(
@@ -1138,6 +1160,7 @@ export default function Principles({ label = "Why we choose differently" }: Prin
         )!.content,
         version: 3,
       },
+      ...MANIFEST_ERA_SECTION_COMPONENTS,
     ]);
     expect(emptyRouteUpgrade).toContainEqual(
       expect.objectContaining({
@@ -1387,6 +1410,7 @@ describe("content slot upgrade", () => {
       content: routeContent,
       version: 4,
     },
+    ...MANIFEST_ERA_SECTION_COMPONENTS,
   ];
 
   it("seeds the platform content module for themes that lack it", () => {

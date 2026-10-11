@@ -1,5 +1,7 @@
 import {
+  isContentUnavailableReason,
   isSelectionKind,
+  type ContentUnavailableReason,
   type EditableDescendantField,
   type SelectionKind,
 } from "./selection-taxonomy";
@@ -184,6 +186,12 @@ export type PreviewSelectionRestoreTarget = Readonly<{
   htmlId?: string;
   nodeId?: string;
   fieldPath?: string;
+  /**
+   * The `id` of the repeated-field row the element was in. `fieldPath` names
+   * the row by index, which a reorder hands to another row; the id is what
+   * the restore follows instead.
+   */
+  itemId?: string;
   elementKey?: string;
   fieldKey?: string;
   isSection?: boolean;
@@ -226,6 +234,21 @@ export type EditorToPreviewMessage =
       measurementRevision: number;
     }
   | { type: "morph:storefront-preview-request-structure" }
+  | {
+      /**
+       * Ends the text being typed into on the canvas: kept (`commit`), which
+       * sends it as an ordinary inline commit, or put back as it was. Asked
+       * by the editor before it leaves the page, after the author chose.
+       */
+      type: "morph:storefront-preview-finish-inline-text";
+      commit: boolean;
+      /**
+       * Names this one request. The commit it produces carries it back, and
+       * the editor checks it against what it asked for; the preview only
+       * echoes it, and saying it does not make a commit anything special.
+       */
+      requestId: number;
+    }
   | {
       type: "morph:storefront-preview-request-selection-style";
       styleRevision?: number;
@@ -331,6 +354,10 @@ export type PreviewSelectionMessage = {
   fieldKey: string | null;
   field: string | null;
   fieldPath: string | null;
+  /** The repeated-field row the element is in, by its persistent `id`. */
+  itemId?: string | null;
+  /** Why the element offers no content to edit, when the preview can say. */
+  contentUnavailable?: ContentUnavailableReason | null;
   /** Monotonically increasing editor intent, used to reject stale replies. */
   selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
@@ -487,6 +514,21 @@ export type PreviewToEditorMessage =
        * the field.
        */
       originalValue: string;
+      /**
+       * The editor's `finish-inline-text` request this commit answers, when
+       * it does. Echoed, not trusted: see `isRequestedInlineFinishCommit`.
+       */
+      finishRequestId?: number;
+    }
+  | {
+      /**
+       * Text on the canvas was opened for typing (`editing: true`), or the
+       * edit ended, committed or not. While one is open the typed text lives
+       * only in the preview, so the editor counts it as unsaved and asks the
+       * author before leaving. Sent after any commit of the same edit.
+       */
+      type: "morph:storefront-preview-inline-text-editing";
+      editing: boolean;
     }
   | {
       /**
@@ -631,7 +673,8 @@ function parseEditableDescendantFields(
       !isBoundedString(item.fieldKey, 200) ||
       !isNullableBoundedString(item.fieldPath, 500) ||
       (item.sectionId !== undefined &&
-        !isNullableBoundedString(item.sectionId, 100))
+        !isNullableBoundedString(item.sectionId, 100)) ||
+      (item.itemId !== undefined && !isNullableBoundedString(item.itemId, 200))
     ) {
       return null;
     }
@@ -649,6 +692,7 @@ function parseEditableDescendantFields(
       fieldKey: item.fieldKey,
       fieldPath: item.fieldPath,
       sectionId,
+      ...(typeof item.itemId === "string" ? { itemId: item.itemId } : {}),
     });
   }
   return result;
@@ -682,6 +726,7 @@ function parsePreviewSelectionRestoreTarget(
     (value.htmlId !== undefined && !isBoundedString(value.htmlId, 200)) ||
     (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
     (value.fieldPath !== undefined && !isBoundedString(value.fieldPath, 500)) ||
+    (value.itemId !== undefined && !isBoundedString(value.itemId, 200)) ||
     (value.elementKey !== undefined &&
       !isBoundedString(value.elementKey, 200)) ||
     (value.fieldKey !== undefined && !isBoundedString(value.fieldKey, 200)) ||
@@ -699,6 +744,7 @@ function parsePreviewSelectionRestoreTarget(
     htmlId: value.htmlId,
     nodeId: value.nodeId,
     fieldPath: value.fieldPath,
+    ...(value.itemId === undefined ? {} : { itemId: value.itemId }),
     elementKey: value.elementKey,
     fieldKey: value.fieldKey,
     isSection: value.isSection,
@@ -845,6 +891,11 @@ export function parseEditorToPreviewMessage(
         : null;
     case "morph:storefront-preview-request-structure":
       return { type: value.type };
+    case "morph:storefront-preview-finish-inline-text":
+      return typeof value.commit === "boolean" &&
+        isSafeRevision(value.requestId)
+        ? { type: value.type, commit: value.commit, requestId: value.requestId }
+        : null;
     case "morph:storefront-preview-request-selection-style":
       return value.styleRevision === undefined ||
         isSafeRevision(value.styleRevision)
@@ -1183,6 +1234,11 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
         !isNullableBoundedString(value.fieldPath, 500) ||
+        (value.itemId !== undefined &&
+          !isNullableBoundedString(value.itemId, 200)) ||
+        (value.contentUnavailable !== undefined &&
+          value.contentUnavailable !== null &&
+          !isContentUnavailableReason(value.contentUnavailable)) ||
         (value.selectionRevision !== undefined &&
           !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
@@ -1220,6 +1276,8 @@ export function parsePreviewToEditorMessage(
         fieldKey: value.fieldKey,
         field: value.field,
         fieldPath: value.fieldPath,
+        itemId: value.itemId ?? null,
+        contentUnavailable: value.contentUnavailable ?? null,
         ...(value.selectionRevision === undefined
           ? {}
           : { selectionRevision: value.selectionRevision }),
@@ -1251,7 +1309,9 @@ export function parsePreviewToEditorMessage(
         isBoundedString(value.fieldPath, 500) &&
         value.fieldPath.length > 0 &&
         isBoundedString(value.value, 10_000) &&
-        isBoundedString(value.originalValue, 10_000)
+        isBoundedString(value.originalValue, 10_000) &&
+        (value.finishRequestId === undefined ||
+          isSafeRevision(value.finishRequestId))
         ? {
             type: value.type,
             sectionId: value.sectionId,
@@ -1259,7 +1319,14 @@ export function parsePreviewToEditorMessage(
             fieldPath: value.fieldPath,
             value: value.value,
             originalValue: value.originalValue,
+            ...(value.finishRequestId === undefined
+              ? {}
+              : { finishRequestId: value.finishRequestId }),
           }
+        : null;
+    case "morph:storefront-preview-inline-text-editing":
+      return typeof value.editing === "boolean"
+        ? { type: value.type, editing: value.editing }
         : null;
     case "morph:storefront-preview-inline-text-refused":
       return isBoundedString(value.sectionId, 100) &&

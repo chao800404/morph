@@ -36,10 +36,15 @@ export const EDITOR_SHARDS = [
     "astro-publish-acceptance.spec.ts",
     // Container transport and MORPH_ASTRO_THEMES=1 only, like the one above.
     "astro-preview-container.spec.ts",
+    // Container transport and MORPH_ASTRO_THEMES=1 only, like the two above.
+    "astro-island-hmr.spec.ts",
     // Unmeasured until the next rebalance; the other two shards already hold
     // several unmeasured files. One test on a throwaway Theme, two editor
     // opens.
     "starter-shell-content.spec.ts",
+    // Container transport only, like the publish files above: skipped on
+    // every CI shard.
+    "publish-layout-edit.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -65,6 +70,9 @@ export const EDITOR_SHARDS = [
     // fewest tests. Four tests on a throwaway Theme, each loading the editor
     // two or three times.
     "content-module-transform.spec.ts",
+    // Unmeasured; two editor opens on a throwaway Theme. Its publish half
+    // runs only with the container transport.
+    "section-visibility-layout.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
@@ -79,6 +87,15 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Two tests, about 4 minutes locally.
     "local-code-sync.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Two tests, each loading the editor once or twice.
+    "row-component-content.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Three tests, each opening the editor twice.
+    "leave-before-save.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
+    "preview-error-recovery.spec.ts",
   ],
 ];
 

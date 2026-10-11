@@ -221,3 +221,50 @@ describe("an edit the page rendered over", () => {
     expect(section.firstChild).toBe(rerendered);
   });
 });
+
+describe("telling the editor an edit is open", () => {
+  function editorReporting() {
+    const events: string[] = [];
+    const editor = createInlineTextEditor({
+      onCommit: (commit) => events.push(`commit:${commit.value}`),
+      onEditingChange: (editing) => events.push(editing ? "open" : "closed"),
+      onLayoutChanged: vi.fn(),
+      storedValue: () => "Stored title",
+    });
+    return { editor, events };
+  }
+
+  it("reports the edit open, then its commit before it reports it closed", () => {
+    // The editor resolves "finish it" on the close, so the commit has to be
+    // in its hands by then.
+    const { target, heading } = renderedHeading("Stored title");
+    const { editor, events } = editorReporting();
+
+    editor.begin(target, { selectionEnabled: true });
+    heading.textContent = "Typed title";
+    editor.finish(true);
+
+    expect(events).toEqual(["open", "commit:Typed title", "closed"]);
+  });
+
+  it("reports an abandoned edit closed, with nothing committed", () => {
+    const { target, heading } = renderedHeading("Stored title");
+    const { editor, events } = editorReporting();
+
+    editor.begin(target, { selectionEnabled: true });
+    heading.textContent = "Typed title";
+    editor.finish(false);
+
+    expect(events).toEqual(["open", "closed"]);
+  });
+
+  it("reports nothing for an edit that never began", () => {
+    const { target } = renderedHeading("Changed on its way");
+    const { editor, events } = editorReporting();
+
+    expect(editor.begin(target, { selectionEnabled: true })).toBe(false);
+    editor.finish(true);
+
+    expect(events).toEqual([]);
+  });
+});

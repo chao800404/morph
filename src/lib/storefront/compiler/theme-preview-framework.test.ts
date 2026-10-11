@@ -64,6 +64,43 @@ describe("a Live Preview of a framework Morph cannot preview", () => {
     );
   });
 
+  // Whether the Theme had an entry file decides nothing here: an entry is
+  // never a sign the framework passed, and no entry never lets one through.
+  for (const entry of ["src/index.tsx", null]) {
+    for (const framework of ["astro", "not-a-framework"]) {
+      it(`refuses ${framework} without the switch, entry ${entry === null ? "absent" : "present"}`, async () => {
+        let acquired = 0;
+        const sandbox = new CloudflareSandboxVitePreviewServer({
+          sandboxProvider: {
+            getSandbox: async () => {
+              acquired += 1;
+              throw new Error("a container was acquired");
+            },
+          },
+        });
+        const local = new LocalVitePreviewServer({
+          workspacesRoot: path.join(os.tmpdir(), "morph-preview-framework-test"),
+        });
+
+        for (const result of [
+          await sandbox.start(input({ framework, entry })),
+          await local.start(
+            input({ previewHostname: "127.0.0.1", framework, entry }),
+          ),
+        ]) {
+          expect(result.ok).toBe(false);
+          expect(!result.ok && result.stage).toBe("preview-framework");
+          expect(!result.ok && result.errorMessage).toMatch(
+            framework === "astro"
+              ? /^THEME_FRAMEWORK_UNAVAILABLE: /
+              : /^THEME_FRAMEWORK_UNKNOWN: /,
+          );
+        }
+        expect(acquired).toBe(0);
+      });
+    }
+  }
+
   it("reaches for a container for Astro only with the switch", async () => {
     let acquired = 0;
     const server = new CloudflareSandboxVitePreviewServer({

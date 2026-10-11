@@ -1067,3 +1067,43 @@ describe("opening a deleted file's history from the canvas", () => {
     ).toBeNull();
   });
 });
+
+describe("an inline edit left open on the page", () => {
+  it("is reported open or closed, and nothing else", () => {
+    const open = { type: "morph:storefront-preview-inline-text-editing", editing: true };
+    expect(parsePreviewToEditorMessage(open)).toEqual(open);
+    expect(
+      parsePreviewToEditorMessage({ ...open, editing: "yes" }),
+    ).toBeNull();
+  });
+
+  it("is ended at the editor's request, kept or put back, naming the request", () => {
+    const finish = {
+      type: "morph:storefront-preview-finish-inline-text",
+      commit: false,
+      requestId: 4,
+    };
+    expect(parseEditorToPreviewMessage(finish)).toEqual(finish);
+    expect(parseEditorToPreviewMessage({ ...finish, commit: 1 })).toBeNull();
+    const { requestId: _omitted, ...unnamed } = finish;
+    expect(parseEditorToPreviewMessage(unnamed)).toBeNull();
+  });
+
+  it("carries the request a commit answers back as a number, or nothing", () => {
+    const commit = {
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    };
+    expect(parsePreviewToEditorMessage(commit)).toEqual(commit);
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: 4 }),
+    ).toEqual({ ...commit, finishRequestId: 4 });
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: "4" }),
+    ).toBeNull();
+  });
+});

@@ -20,7 +20,7 @@ const input = (
   overrides: Partial<PlanThemeWorkspaceInput> = {},
 ): PlanThemeWorkspaceInput => ({
   files,
-  entry: "",
+  entry: null,
   buildId: "preview-1",
   approvedDependencies: new Set(),
   mode: "preview-server",

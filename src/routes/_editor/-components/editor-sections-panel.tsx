@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { missingSectionComponentPath } from "@/lib/storefront/editor/preview-compile-failure";
 import {
   Collapsible,
   CollapsibleContent,
@@ -180,6 +181,11 @@ export type EditorSectionsPanelProps = {
    */
   sharedSectionIds?: ReadonlySet<string>;
   /**
+   * The Theme's file paths, to mark a section whose component file is gone
+   * as one that cannot render rather than leave it looking like the rest.
+   */
+  themeFilePaths?: ReadonlySet<string>;
+  /**
    * Source paths and section ids whose definition is shared by more than one
    * rendered page. A child delete would otherwise rewrite the shared TSX.
    */
@@ -334,6 +340,7 @@ function SortableSectionRow({
   deleteDisabled,
   rootNode,
   rootNodeSelected,
+  missingComponentPath,
   children,
 }: {
   section: EditorSection;
@@ -364,6 +371,8 @@ function SortableSectionRow({
   rootNode?: PreviewEditableNode | null;
   /** Whether the current selection is that root, rather than the section. */
   rootNodeSelected?: boolean;
+  /** The component file this section names, when it is not in the Theme. */
+  missingComponentPath?: string | null;
   children?: React.ReactNode;
 }) {
   const { ref, handleRef, isDragging } = useSortable({
@@ -432,6 +441,16 @@ function SortableSectionRow({
                   aria-hidden="true"
                 />
                 <span className="truncate">{displayLabel}</span>
+                {missingComponentPath ? (
+                  <span
+                    className="flex shrink-0 text-destructive"
+                    data-editor-tree-cannot-render="true"
+                    title={`${missingComponentPath} is not in this Theme, so this section cannot render.`}
+                  >
+                    <CircleAlert className="size-3.5" aria-hidden="true" />
+                    <span className="sr-only">Cannot render</span>
+                  </span>
+                ) : null}
                 {domIdentity ? (
                   <span
                     aria-hidden="true"
@@ -817,6 +836,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   sourceLayoutRoots = NO_LAYOUT_ROOTS,
   routeStructurePending = false,
   sharedSectionIds,
+  themeFilePaths,
   sharedLayoutPaths,
   themeRoutes = [],
   onPrefetchThemeRoute,
@@ -1640,6 +1660,10 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                             // three pages carries three names.
                             displayLabel={section.name ?? section.type}
                             domIdentity={domIdentityOf(normalized.root)}
+                            missingComponentPath={missingSectionComponentPath(
+                              section.componentRef,
+                              themeFilePaths,
+                            )}
                             onRequestRename={
                               onRenameSection
                                 ? () => {

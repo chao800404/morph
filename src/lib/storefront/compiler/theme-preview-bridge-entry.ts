@@ -108,11 +108,29 @@ let selectedSectionId = null;
 const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
 
+/** The editor's finish request being answered, while finish runs. */
+let answeringFinishRequest = null;
+
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
     if (!channel) return;
     postPreviewToEditorMessage(
-      { type: "morph:storefront-preview-commit-inline-text", ...commit },
+      {
+        type: "morph:storefront-preview-commit-inline-text",
+        ...commit,
+        ...(answeringFinishRequest === null
+          ? {}
+          : { finishRequestId: answeringFinishRequest }),
+      },
+      channel,
+    );
+  },
+  // Typed text lives only here until it is committed, so the editor is told
+  // an edit is open: it counts as unsaved, and leaving asks first.
+  onEditingChange: (editing) => {
+    if (!channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-inline-text-editing", editing },
       channel,
     );
   },
@@ -233,6 +251,8 @@ function sendSelectionReport(item) {
           ? null
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
+      itemId: item.itemId,
+      contentUnavailable: item.contentUnavailable,
       ...selectionMetadata(item),
       styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -364,6 +384,7 @@ function reportSelection(target) {
     elementKey: item.elementKey || undefined,
     fieldKey: item.fieldKey || undefined,
     fieldPath: item.fieldPath || undefined,
+    itemId: item.itemId || undefined,
     isSection: item.element === item.section,
   };
   if (selectedItem.element) {
@@ -757,6 +778,13 @@ if (channel) {
     html[data-storefront-editor-selection-enabled] [data-storefront-component] {
       cursor: pointer !important;
     }
+    /* Hiding a section sets the hidden attribute on its wrapper, whose inline
+       display: contents beats the browser's own [hidden] rule. Tailwind's
+       preflight happens to override that; a Theme without it kept showing
+       the section the author had just hidden. */
+    [data-storefront-section-id][hidden] {
+      display: none !important;
+    }
     [data-storefront-editor-drag-handle="true"] {
       cursor: grab !important;
     }
@@ -985,6 +1013,16 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-finish-inline-text") {
+      // The author chose, in the editor, what happens to the open edit. The
+      // commit this produces names the request; any other does not.
+      answeringFinishRequest = message.requestId;
+      try {
+        inlineEditor.finish(message.commit);
+      } finally {
+        answeringFinishRequest = null;
+      }
     }
     if (message?.type === "morph:storefront-preview-update-theme-files") {
       // The files themselves are not taken from here: Morph writes them into

@@ -301,5 +301,164 @@ describe("Live Preview lifecycle", () => {
     expect(livePreviewLifecycleLabel("syncing-source")).toMatch(/Syncing/);
     expect(livePreviewLifecycleLabel("reconnecting")).toMatch(/Reconnecting/);
     expect(livePreviewLifecycleLabel("ready")).toBeNull();
+    // Not a wait: the alert says why, and a spinner would say it is coming.
+    expect(livePreviewLifecycleLabel("theme-error")).toBeNull();
+  });
+});
+
+describe("a Theme that does not compile", () => {
+  const failure = {
+    files: ["src/routes/error-recovery.tsx"],
+    source: { "src/routes/error-recovery.tsx": "broken" },
+    paths: ["src/routes/error-recovery.tsx"],
+  };
+  const loading = () =>
+    reduceLivePreviewLifecycle(initialLivePreviewLifecycleState, {
+      type: "server-ready",
+      key: "preview-1",
+    });
+  const themeError = () =>
+    reduceLivePreviewLifecycle(loading(), {
+      type: "frame-compile-failed",
+      key: "preview-1",
+      failure,
+    });
+
+  it("is told apart from a preview that failed, and spends no recovery", () => {
+    expect(themeError()).toMatchObject({
+      phase: "theme-error",
+      key: "preview-1",
+      compileFailure: failure,
+      automaticRecoveryAttempts: 0,
+      message: null,
+    });
+  });
+
+  it("is accepted whatever the frame's bridge said first", () => {
+    // The bridge is a module graph of its own and can come up, and even
+    // confirm the source, beside a Theme whose entry did not load.
+    const ready = [
+      { type: "frame-ready", key: "preview-1" },
+      { type: "source-confirmed", key: "preview-1", at: 0 },
+    ] satisfies LivePreviewLifecycleEvent[];
+    const afterReady = ready.reduce(reduceLivePreviewLifecycle, loading());
+    expect(afterReady.phase).toBe("ready");
+    expect(
+      reduceLivePreviewLifecycle(afterReady, {
+        type: "frame-compile-failed",
+        key: "preview-1",
+        failure,
+      }).phase,
+    ).toBe("theme-error");
+  });
+
+  it("is held against that frame's bridge, which says nothing about the Theme", () => {
+    const events = [
+      { type: "frame-signal", key: "preview-1" },
+      { type: "frame-ready", key: "preview-1" },
+      { type: "source-confirmed", key: "preview-1", at: 0 },
+      { type: "source-failed", key: "preview-1", message: "HMR failed" },
+    ] satisfies LivePreviewLifecycleEvent[];
+    const state = themeError();
+    for (const event of events) {
+      expect(reduceLivePreviewLifecycle(state, event)).toBe(state);
+    }
+  });
+
+  it("ignores a report from a frame that was already replaced", () => {
+    const state = reduceLivePreviewLifecycle(loading(), {
+      type: "frame-compile-failed",
+      key: "preview-0",
+      failure,
+    });
+    expect(state.phase).toBe("loading-frame");
+    expect(state.compileFailure).toBeNull();
+  });
+
+  it("takes a report again only when its files or their source changed", () => {
+    const state = themeError();
+    expect(
+      reduceLivePreviewLifecycle(state, {
+        type: "frame-compile-failed",
+        key: "preview-1",
+        failure: { ...failure, files: [...failure.files] },
+      }),
+    ).toBe(state);
+    const otherFile = {
+      files: ["src/components/Card.tsx"],
+      source: { "src/components/Card.tsx": "broken" },
+      paths: ["src/components/Card.tsx"],
+    };
+    expect(
+      reduceLivePreviewLifecycle(state, {
+        type: "frame-compile-failed",
+        key: "preview-1",
+        failure: otherFile,
+      }).compileFailure,
+    ).toEqual(otherFile);
+    const otherSource = {
+      ...failure,
+      source: { "src/routes/error-recovery.tsx": "broken differently" },
+    };
+    expect(
+      reduceLivePreviewLifecycle(state, {
+        type: "frame-compile-failed",
+        key: "preview-1",
+        failure: otherSource,
+      }).compileFailure,
+    ).toEqual(otherSource);
+  });
+
+  it("ends with a new frame, and forgets the files with it", () => {
+    const next = reduceLivePreviewLifecycle(themeError(), {
+      type: "server-ready",
+      key: "preview-2",
+    });
+    expect(next).toMatchObject({
+      phase: "loading-frame",
+      key: "preview-2",
+      compileFailure: null,
+    });
+  });
+
+  it("keeps waiting for a fix while the server query repeats itself", () => {
+    const state = themeError();
+    expect(
+      reduceLivePreviewLifecycle(state, {
+        type: "server-ready",
+        key: "preview-1",
+      }),
+    ).toBe(state);
+  });
+
+  it("can still be refreshed, or reconnected after an interruption", () => {
+    expect(
+      reduceLivePreviewLifecycle(themeError(), { type: "manual-recovery" }),
+    ).toMatchObject({ phase: "reconnecting", compileFailure: null });
+    expect(
+      reduceLivePreviewLifecycle(themeError(), {
+        type: "frame-interrupted",
+        key: "preview-1",
+        message: "Interrupted",
+        at: 0,
+      }),
+    ).toMatchObject({
+      phase: "reconnecting",
+      automaticRecoveryAttempts: 1,
+      compileFailure: null,
+    });
+  });
+
+  it("is not entered while there is no frame to have failed", () => {
+    for (const phase of ["starting-server", "reconnecting"] as const) {
+      const state = { ...loading(), phase };
+      expect(
+        reduceLivePreviewLifecycle(state, {
+          type: "frame-compile-failed",
+          key: "preview-1",
+          failure,
+        }),
+      ).toBe(state);
+    }
   });
 });

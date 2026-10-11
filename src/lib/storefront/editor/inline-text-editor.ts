@@ -54,11 +54,18 @@ export type InlineTextEditor = Readonly<{
 
 export function createInlineTextEditor({
   onCommit,
+  onEditingChange,
   onLayoutChanged,
   storedValue,
   onRefused,
 }: {
   onCommit: (commit: InlineTextCommit) => void;
+  /**
+   * An edit opened (true) or ended (false), committed or not. Called on the
+   * end after `onCommit`, so a listener told the edit is over has already
+   * been given its value.
+   */
+  onEditingChange?: (editing: boolean) => void;
   /** Editing changes how much room the text takes; overlays follow it. */
   onLayoutChanged: () => void;
   /**
@@ -140,6 +147,7 @@ export function createInlineTextEditor({
     // typed belongs to a rendering that no longer exists. Nothing is saved.
     if (!edit.element.isConnected) {
       onLayoutChanged();
+      onEditingChange?.(false);
       return;
     }
 
@@ -188,6 +196,7 @@ export function createInlineTextEditor({
         originalValue: edit.originalValue,
       });
     }
+    onEditingChange?.(false);
   };
 
   const insertPlainTextAtSelection = (text: string) => {
@@ -370,6 +379,7 @@ export function createInlineTextEditor({
     selection?.removeAllRanges();
     selection?.addRange(range);
     onLayoutChanged();
+    onEditingChange?.(true);
     return true;
   };
   return {

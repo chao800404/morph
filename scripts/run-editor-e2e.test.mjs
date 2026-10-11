@@ -222,6 +222,10 @@ async function runRunner(extraEnv, onStarted, extraArgs = ["fake.spec.ts"]) {
       PATH: `${path.join(scratch, "bin")}${path.delimiter}${process.env.PATH}`,
       MORPH_E2E_TRANSPORT: "cloudflare-sandbox",
       MORPH_E2E_PORT: String(await freePort()),
+      // Its own lock: these fake runs must neither wait for nor block a real
+      // run on this machine. Beside pidDir, not in it: every name in pidDir
+      // is read as a pid.
+      MORPH_E2E_LOCK_FILE: `${pidDir}.lock`,
       FAKE_PID_DIR: pidDir,
       ...extraEnv,
     },

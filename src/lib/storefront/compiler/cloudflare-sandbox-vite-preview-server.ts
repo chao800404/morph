@@ -238,7 +238,8 @@ export type StartPreviewServerInput = Readonly<{
   /** Identifies the container, and so the preview URL, for this Theme. */
   previewId: string;
   files: readonly ThemeWorkspaceFile[];
-  entry: string;
+  /** `null` only where the framework's preview uses none (`preview.entryFile`). */
+  entry: string | null;
   dependencies?: Readonly<Record<string, string>>;
   /** Host the preview URL is built on. Must not be platform surface. */
   previewHostname: string;

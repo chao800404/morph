@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDebouncedWrites } from "./debounced-writes";
 import { scheduleDeferredWrite } from "./deferred-write";
 
 /**
@@ -14,7 +15,7 @@ import { scheduleDeferredWrite } from "./deferred-write";
 const KEY = "theme:src/components/Hero.tsx";
 
 function harness() {
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const writes = createDebouncedWrites();
   const record = vi.fn(() => 1);
   const discard = vi.fn();
   const save = vi.fn(
@@ -23,13 +24,13 @@ function harness() {
   const onError = vi.fn();
 
   return {
-    timers,
+    writes,
     record,
     discard,
     save,
     onError,
     args: {
-      timers,
+      writes,
       key: KEY,
       delayMs: 300,
       record,
@@ -52,7 +53,7 @@ afterEach(() => {
 
 describe("a write that is recorded before it lands", () => {
   it("puts the entry in the history before the write has happened", async () => {
-    const { args, record, save, discard, timers } = harness();
+    const { args, record, save, discard, writes } = harness();
 
     scheduleDeferredWrite(args);
 
@@ -66,7 +67,7 @@ describe("a write that is recorded before it lands", () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(discard).not.toHaveBeenCalled();
     // A timer that has fired is no longer pending.
-    expect(timers.size).toBe(0);
+    expect(writes.size).toBe(0);
   });
 
   it("takes the entry back when the write reports a conflict", async () => {
@@ -94,7 +95,7 @@ describe("a write that is recorded before it lands", () => {
   });
 
   it("supersedes a pending write for the same key instead of writing twice", async () => {
-    const { args, record, save, timers } = harness();
+    const { args, record, save, writes } = harness();
 
     scheduleDeferredWrite(args);
     scheduleDeferredWrite(args);
@@ -105,6 +106,25 @@ describe("a write that is recorded before it lands", () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(save).toHaveBeenCalledTimes(1);
-    expect(timers.size).toBe(0);
+    expect(writes.size).toBe(0);
+  });
+
+  it("sends now, in the same order, when flushed before its delay ends", async () => {
+    const { args, discard, save, writes } = harness();
+    save.mockResolvedValue({ status: "source-conflict" });
+
+    scheduleDeferredWrite(args);
+    // Leaving the page does not wait out the debounce.
+    await writes.flush();
+
+    expect(save).toHaveBeenCalledTimes(1);
+    // Flushing is the same write, so a write that did not land is still
+    // taken back out of the history.
+    expect(discard).toHaveBeenCalledWith(1);
+    expect(writes.size).toBe(0);
+
+    // And the timer it replaced does not send it a second time.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(save).toHaveBeenCalledTimes(1);
   });
 });

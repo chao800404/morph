@@ -23,6 +23,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../src/lib/storefront/starter-theme-v3-files";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
  * The Starter upgrade to version 28 on the workspace the editor provisions,
@@ -32,7 +33,8 @@ import {
  *      calling morph.pages.get reads it;
  *   D. the same workspace marked 27: the upgrade runs and changes no file;
  *   B. the pre-pages content module, untouched, on 27: only content.ts is
- *      replaced, a second load changes nothing, and the Theme is on 28;
+ *      replaced, a second load changes nothing, and the Theme is on the
+ *      current Starter version;
  *   E. a toolchain pin an earlier Starter wrote: the build refuses it, and
  *      builds once the upgrade brings it forward (containers only);
  *   C. the pre-pages module as the author edited it, on 27: nothing changes.
@@ -343,7 +345,7 @@ test.describe("Starter upgrade to version 28", () => {
     setStarterVersion(27);
     await openEditor(page);
     expect(await workspace(page)).toEqual(before);
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
   });
 
   test("B. the untouched pre-pages module on 27: only content.ts is replaced, once", async ({
@@ -369,12 +371,12 @@ test.describe("Starter upgrade to version 28", () => {
     for (const path of OLD_PATH_COMPONENTS) {
       expect(Object.keys(after)).not.toContain(path);
     }
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     // A second load: no second replacement, no added file, no version write.
     await openEditor(page);
     expect(await workspace(page)).toEqual(after);
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     const marker = `morph-b-${randomUUID()}`;
     await typeHeroMarker(page, marker);

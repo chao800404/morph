@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeThemeSourceChanges,
+  describeContentChanges,
   describeUnpublishedChanges,
   publishedFileStates,
   type PublishedFileState,
@@ -108,21 +109,33 @@ describe("describeUnpublishedChanges", () => {
     expect(
       describeUnpublishedChanges(
         { changed: true, reason: "modified", path: "src/hero.tsx" },
-        false,
+        { changed: false },
       ),
     ).toBe("Edited src/hero.tsx");
   });
 
   it("credits a content-only edit when the source is untouched", () => {
-    expect(describeUnpublishedChanges({ changed: false }, true)).toBe(
-      "Page content edited",
-    );
+    expect(
+      describeUnpublishedChanges(
+        { changed: false },
+        { changed: true, reason: "page" },
+      ),
+    ).toBe("Page content edited");
+  });
+
+  it("names a shared layout edit as such", () => {
+    expect(
+      describeUnpublishedChanges(
+        { changed: false },
+        { changed: true, reason: "layout" },
+      ),
+    ).toBe("Shared layout edited");
   });
 
   it("says so plainly when there is nothing to publish", () => {
-    expect(describeUnpublishedChanges({ changed: false }, false)).toBe(
-      "Nothing to publish",
-    );
+    expect(
+      describeUnpublishedChanges({ changed: false }, { changed: false }),
+    ).toBe("Nothing to publish");
   });
 });
 
@@ -229,5 +242,81 @@ describe("publishedFileStates", () => {
   it("reads an unresolved, empty snapshot as none at all", () => {
     expect(publishedFileStates([])).toBeNull();
     expect(publishedFileStates(undefined)).toBeNull();
+  });
+});
+
+describe("describeContentChanges", () => {
+  const live = (id: string) => ({
+    id,
+    draftRevisionId: `${id}-r1`,
+    publishedRevisionId: `${id}-r1`,
+  });
+  const drafted = (id: string) => ({
+    id,
+    draftRevisionId: `${id}-r2`,
+    publishedRevisionId: `${id}-r1`,
+  });
+
+  it("has nothing to publish when the page and the layout are both live", () => {
+    expect(
+      describeContentChanges({ page: live("index"), layout: live("layout") }),
+    ).toEqual({ changed: false });
+  });
+
+  it("reports the page's own draft", () => {
+    expect(
+      describeContentChanges({
+        page: drafted("index"),
+        layout: live("layout"),
+      }),
+    ).toEqual({ changed: true, reason: "page" });
+  });
+
+  it("reports a layout draft, which the page's publish seals too", () => {
+    // A Header edit alone used to leave Publish off and the status at
+    // "Published", while the storefront kept the old Header.
+    expect(
+      describeContentChanges({
+        page: live("index"),
+        layout: drafted("layout"),
+      }),
+    ).toEqual({ changed: true, reason: "layout" });
+  });
+
+  it("reports a layout that has a draft and was never published", () => {
+    expect(
+      describeContentChanges({
+        page: live("index"),
+        layout: { id: "layout", draftRevisionId: "layout-r1" },
+      }),
+    ).toEqual({ changed: true, reason: "layout" });
+  });
+
+  it("does not count a layout with no draft at all", () => {
+    expect(
+      describeContentChanges({
+        page: live("index"),
+        layout: {
+          id: "layout",
+          draftRevisionId: null,
+          publishedRevisionId: null,
+        },
+      }),
+    ).toEqual({ changed: false });
+  });
+
+  it("does not count the layout twice when it is the page being published", () => {
+    expect(
+      describeContentChanges({
+        page: live("layout"),
+        layout: drafted("layout"),
+      }),
+    ).toEqual({ changed: false });
+  });
+
+  it("works with no layout template", () => {
+    expect(
+      describeContentChanges({ page: live("index"), layout: undefined }),
+    ).toEqual({ changed: false });
   });
 });

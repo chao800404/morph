@@ -170,6 +170,20 @@ describe("recovering", () => {
     expect(unanswered.recovery).toBe("none");
     expect(unanswered.signedOut).toBe(true);
   });
+
+  it("keeps another account found when the question asked from there fails", () => {
+    const changed = editorWriterChanged(OPEN_EDITOR_WRITE_GATE);
+    const begun = beginEditorWriteVerification(changed, nextStamp)!;
+    expect(begun.verifyingFrom).toBe("different-account");
+    const unanswered = finishEditorWriteVerification(
+      begun,
+      begun.epoch,
+      "unanswered",
+    );
+    expect(unanswered.recovery).toBe("different-account");
+    expect(unanswered.signedOut).toBe(true);
+    expect(editorWriteRefusal(unanswered, "theme")).toBe("ACCOUNT_CHANGED");
+  });
 });
 
 describe("another account signed in here", () => {
