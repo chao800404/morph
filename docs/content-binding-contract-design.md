@@ -108,6 +108,55 @@ server function → loader → `useLoaderData()` 的資料在伺服器讀取，�
 
 兩者都還沒有實作。**先研究編譯時追蹤**（使用者 2026-10-12）：它不重新執行作者的伺服器程式，沒有副作用與隔離成本。會重跑伺服器程式的探測，副作用與隔離成本較高，留作後續選項，不當首選。
 
+### 5.1 案例 B 的盤點（2026-10-12，唯讀，main `02024d9`）
+
+**今天的辨識到哪裡為止**
+
+| 環節 | 現況 | 程式位置 |
+|---|---|---|
+| 區塊身分（route 層） | 只在 JSX 呼叫處辨識兩種寫法：`{...content("x")}`，或 `{...page.x}`／`{...page["x"]}`，其中 `page` 是**同一檔案**裡 `const page = await morph.pages.get("字面路徑")` 宣告的變數（只看名稱，不追 scope）。解構刻意不辨識：模組註解說明，解構的 pattern 被頁面上所有區塊共用，新增、移動、刪除區塊時會需要改第二個地方 | `ast/theme-content-binding.ts`；`inject-preview-bindings.ts` `readSectionSlotId`；`theme-route-sections.ts` `readSlotId` |
+| 區塊包裝與 Document 區塊 | 上述寫法才會在預覽包上 `data-storefront-section-id`，也才會出現在 route 的區塊清單（`deriveThemeRouteSections` → `mergeDocumentWithRouteSections`），Document 才有這個區塊可寫 | 同上 |
+| 欄位（元件層） | 元件內 prop → JSX 的推導與呼叫處無關：`<Hero {...hero} />` 裡 Hero 的元素仍會帶 `data-storefront-field`，但外面沒有區塊包裝，編輯器不知道這是哪個 Document 區塊 | `inject-preview-bindings.ts`、`theme-field-binding.ts` |
+| server function、loader、`useLoaderData()` | 完全沒有辨識 | — |
+| 跨檔案 | 元件與列元件的相對 import 有解析（`resolveLocalModulePathFromFiles`：`./x`、`.tsx`、`.jsx`、`/index`）；`morph` 只從 `morph/content` 模組的具名 import 辨識 | `theme-content-capability-resolver.ts` |
+
+**案例 B 斷在哪裡**：`<Hero {...hero} />` 的 `hero` 來自 `Route.useLoaderData()` 的解構，不是上表兩種寫法，所以 route 層既不包區塊、也不列入區塊清單。元件內的欄位屬性還在，但沒有區塊身分，點選後無法對到 Document 的 `hero`。
+
+**第一版可證明的形狀（提案）**
+
+只接受下面每一環都是「直接傳遞、不加工」的形狀；任何一環不符合，整條鏈不成立，該元素顯示為「由程式碼控制」。
+
+1. **server function**：模組層的 `const getX = createServerFn(…).handler(<函式>)`（中間可以有不使用輸入的 `.middleware()`），函式本體**直接回傳** `morph.pages.get("字面路徑")`，或 `const p = await morph.pages.get("字面路徑"); return p;`。`morph` 必須是從 Theme 內容模組具名 import 的。
+2. **loader**：route options 的 `loader` 直接回傳那個 server function 的呼叫結果（`() => getX()`、`async () => await getX()`、`async () => getX()`），不包成物件、不合併、不挑選欄位。
+3. **元件**：同一個 route 的 `component` 內，`const { hero } = Route.useLoaderData()`（可改名 `{ hero: h }`），或 `const home = Route.useLoaderData()` 再以字面 key 讀 `home.hero`；變數是 `const`，之後沒有重新指定。
+4. **呼叫處**：`<Hero {...hero} />` 展開單一 slot。逐欄傳值（`<Hero title={hero.title} subtitle={hero.subtitle} />`，全部來自同一個 slot）列為第二版，要另外定義「全部 props 來自同一 slot」的判斷。
+5. **頁面一致**：`morph.pages.get` 的路徑必須就是這個 route 對應的頁面；讀別的頁面的內容（例如 `/` 的 route 讀 `/about`）第一版不開放，避免從一個畫布寫到另一頁的 Document。
+
+**跨檔案範圍（第一版）**
+
+- server function 可以在同一個 route 檔，或由 route 以**相對路徑**直接 import 的 Theme 原始碼檔案（一層）。用既有的 `resolveLocalModulePathFromFiles` 解析。
+- 不跟：re-export／barrel 檔、路徑別名（`@/…`）、動態 `import()`、`node_modules`、跨兩層以上的轉手。
+- 元件仍沿用既有的相對 import 解析。
+
+**拒絕條件（任一成立就不綁定，並給原因）**
+
+- `pages.get` 的路徑不是字串字面值（變數、模板字串含運算式、由 server function 的輸入決定）。
+- handler 對結果做任何加工：轉換、合併、展開、條件分支、讀多個頁面。
+- loader 包裝或加工結果（`{ home: await getX() }`、`.then(…)`、挑選欄位）。第一版不追物件包裝；之後可另加「包一層、以字面 key 取回」的形狀。
+- 解構帶預設值（`{ hero = {} }`）、rest（`...rest`）、計算 key、兩層以上的巢狀解構；變數用 `let` 或之後被重新指定或修改。
+- 同一個 slot 在同一頁出現兩次以上（實例身分不明）。
+- 讀取的頁面不是這個 route 的頁面（第 5 點）。
+- 需要跨出上面「跨檔案範圍」才能確認的任何一環。
+
+**與結構編輯分開**：辨識解構寫法是為了**內容編輯**。新增、移動、刪除區塊會改寫 route 原始碼，目前只會產生 `content("x")` 這種自成一處的寫法；對使用解構的 route，結構編輯先維持不開放，避免改寫作者的資料流。
+
+**執行環境**：預設 Live Preview 是純前端模式，案例 B 的頁面在那裡無法執行（#187 §6、2026-10-10 實驗）。案例 B 的畫布驗收需要完整 Start 預覽（`MORPH_THEME_PREVIEW_RUNTIME=start`，非預設）。編譯時追蹤本身不需要執行頁面。
+
+**測試工具（`src/lib/test-utils/live-preview-render.ts`）的能力**
+
+- 能做：用產品自己的預覽 source pass、真 React、真 TanStack router 渲染 route，**會執行 route 的 loader**，`useLoaderData()` 可用；內容經 Theme 自己的 `content.ts` client 分支向 `/_morph/content` 取得，由預覽的 resolver 回答。
+- 不能做：它替 `@tanstack/react-start` 只提供 `createIsomorphicFn`，**沒有 `createServerFn`**，使用它的 route 載入時就會失敗；它只走 client 分支，不模擬伺服器端執行或完整 Start 預覽。
+
 ## 6. 兩個正式驗收案例
 
 以下兩例**都通過**，才能宣稱支援「不限制寫法」的綁定。每例都要確認四件事：
