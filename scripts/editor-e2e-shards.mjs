@@ -42,6 +42,9 @@ export const EDITOR_SHARDS = [
     // several unmeasured files. One test on a throwaway Theme, two editor
     // opens.
     "starter-shell-content.spec.ts",
+    // Container transport only, like the publish files above: skipped on
+    // every CI shard.
+    "publish-layout-edit.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
