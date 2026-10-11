@@ -337,6 +337,10 @@ const CONTENT_BLOCKED_MESSAGES: Record<
     "This list's entries are rendered by a component the editor cannot yet link to each entry (for example one that takes its props as a whole object, or is wrapped in memo()). The page previews and builds as written; edit this text in Code for now.",
   "nested-list":
     "This is a list inside one of the list's entries, which the editor cannot edit visually yet. The page previews and builds as written; edit it in Code for now.",
+  "marker-conflicts-source":
+    "This element's data-storefront-field names one field, but it shows another, so the editor will not guess which one an edit belongs to. The page previews and builds as written; edit this text in Code, or remove the attribute so the editor follows what the element shows.",
+  "marker-unproven":
+    "This element's data-storefront-field names a field, but the editor cannot trace what the element shows back to it (for example, the value passes through a local first). The page previews and builds as written; edit this text in Code for now.",
 };
 
 const STRING_IMAGE_FIELD_HINT =

@@ -106,11 +106,18 @@ export type EditableDescendantField = Readonly<{
  *   `memo()` or another call), so its fields cannot be tied to the row.
  * - `nested-list`: a list the row's component keeps of its own; a row holds
  *   no list in the content model yet.
+ * - `marker-conflicts-source`: a hand-written `data-storefront-field` names
+ *   one field while the element provably renders another. The marker is a
+ *   hint, never where an edit goes (rule 02 §8.5).
+ * - `marker-unproven`: a hand-written `data-storefront-field` names a field,
+ *   but what the element renders cannot be traced to it.
  */
 export const CONTENT_UNAVAILABLE_REASONS = [
   "value-not-from-row",
   "row-not-passed",
   "nested-list",
+  "marker-conflicts-source",
+  "marker-unproven",
 ] as const;
 export type ContentUnavailableReason =
   (typeof CONTENT_UNAVAILABLE_REASONS)[number];

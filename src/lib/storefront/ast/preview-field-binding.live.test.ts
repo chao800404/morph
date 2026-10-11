@@ -16,7 +16,12 @@ import {
   mountLivePreview,
   renderLivePreviewComponent,
 } from "@/lib/test-utils/live-preview-render";
-import { resolveSelectable } from "@/lib/storefront/editor/preview-dom";
+import {
+  collectEditableDescendantFields,
+  PREVIEW_FIELD_REFUSED_ATTRIBUTE,
+  resolveSelectable,
+} from "@/lib/storefront/editor/preview-dom";
+import { FIELD_REFUSED_ATTRIBUTE } from "./inject-preview-bindings";
 
 const PATH = "src/components/Widget.tsx";
 
@@ -187,36 +192,62 @@ export default function Widget({ title = "T", description = "D" }) {
     ).toBe("description");
   });
 
-  // KNOWN GAP, found while porting this file. A hand-written
-  // `data-storefront-field` is kept as written ("never overwrites an attribute
-  // the author wrote"), so an element that shows `{description}` but is
-  // marked `title` sends edits to `title`. Where the marker and the provable
-  // source disagree, or the source cannot be proven, the content write has
-  // to stop rather than follow the marker. `it.fails` until it does.
-  it.fails(
-    "does not edit the field a hand-written marker names when the element renders another",
-    async () => {
-      expect(
-        await clickedField(`${TWO_FIELDS}
+  // A hand-written `data-storefront-field` is kept as written ("never
+  // overwrites an attribute the author wrote"). It is a hint, never where an
+  // edit goes: the compiler refuses it beside the marker when the element
+  // provably renders another field, or nothing it can trace, and the editor
+  // reads that refusal through `previewFieldBinding`.
+
+  /** What a click on the component's only `<p>` selects. */
+  async function clickedP(source: string) {
+    const root = mountLivePreview(await render(source));
+    const selected = resolveSelectable(root.querySelector("p"));
+    return { root, selected };
+  }
+
+  it("edits the field a hand-written marker names when the element renders it", async () => {
+    const { root, selected } = await clickedP(`${TWO_FIELDS}
+export default function Widget({ title = "T", description = "D" }) {
+  return <p data-storefront-field="title">{title}</p>;
+}`);
+    expect(selected?.fieldKey).toBe("title");
+    expect(selected?.contentUnavailable).toBeNull();
+    expect(
+      collectEditableDescendantFields(root).map((field) => field.fieldKey),
+    ).toEqual(["title"]);
+  });
+
+  it("does not edit the field a hand-written marker names when the element renders another", async () => {
+    const { root, selected } = await clickedP(`${TWO_FIELDS}
 export default function Widget({ title = "T", description = "D" }) {
   return <p data-storefront-field="title">{description}</p>;
-}`),
-      ).not.toBe("title");
-    },
-  );
+}`);
+    // Not `title`, and not `description` either: the editor does not pick a
+    // side when the author's marker and the source disagree.
+    expect(selected?.fieldKey).toBeNull();
+    expect(selected?.contentUnavailable).toBe("marker-conflicts-source");
+    // The author's attribute is still there as written.
+    expect(root.querySelector("p")?.getAttribute("data-storefront-field")).toBe(
+      "title",
+    );
+    // Nor is it offered as a field from an enclosing selection.
+    expect(collectEditableDescendantFields(root)).toEqual([]);
+  });
 
-  it.fails(
-    "does not edit the field a hand-written marker names when the source cannot be proven",
-    async () => {
-      expect(
-        await clickedField(`export const contentFields = { title: { type: "text" } };
+  it("does not edit the field a hand-written marker names when the source cannot be proven", async () => {
+    const { selected } = await clickedP(`export const contentFields = { title: { type: "text" } };
 export default function Widget({ title = "T" }) {
   const shown = "x" + title;
   return <p data-storefront-field="title">{shown}</p>;
-}`),
-      ).toBeNull();
-    },
-  );
+}`);
+    expect(selected?.fieldKey).toBeNull();
+    expect(selected?.contentUnavailable).toBe("marker-unproven");
+  });
+
+  it("reads the refusal under the attribute name the compiler writes", () => {
+    // preview-dom is copied into the bridge and cannot import the compiler.
+    expect(PREVIEW_FIELD_REFUSED_ATTRIBUTE).toBe(FIELD_REFUSED_ATTRIBUTE);
+  });
 
   it("gives every repeated item an identity without any marker", async () => {
     const html = await render(
