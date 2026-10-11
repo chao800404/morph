@@ -42,6 +42,9 @@ export const EDITOR_SHARDS = [
     // several unmeasured files. One test on a throwaway Theme, two editor
     // opens.
     "starter-shell-content.spec.ts",
+    // Container transport only, like the publish files above: skipped on
+    // every CI shard.
+    "publish-layout-edit.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -84,6 +87,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Two tests, about 4 minutes locally.
     "local-code-sync.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // fewest files. Two tests, each loading the editor once or twice.
+    "row-component-content.spec.ts",
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Three tests, each opening the editor twice.
     "leave-before-save.spec.ts",

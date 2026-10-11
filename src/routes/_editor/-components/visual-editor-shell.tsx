@@ -36,6 +36,11 @@ import {
 } from "@/lib/storefront/editor/editor-write-gate";
 import { currentRequestStamp } from "@/lib/storefront/editor/editor-request-sequence";
 import {
+  currentThemeReadFailure,
+  resolveEditorLock,
+  type ThemeReadFailure,
+} from "@/lib/storefront/editor/editor-read-lock";
+import {
   confirmLostSave,
   earlierRefusalStillApplies,
   settleHeldFile,
@@ -53,9 +58,23 @@ import {
   reportEditorReadFailure,
   sendEditorWrite,
 } from "@/lib/storefront/editor/send-editor-write";
-import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
+import {
+  conflictingListKeys,
+  heldContentMessage,
+  rebaseContentProps,
+} from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import { Input } from "@/components/ui/input";
@@ -219,6 +238,7 @@ import { createPreviewCompileRecovery } from "@/lib/storefront/editor/preview-co
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
   describeThemeSourceChanges,
+  describeContentChanges,
   describeUnpublishedChanges,
   publishedFileStates,
 } from "@/lib/storefront/editor/unpublished-changes";
@@ -380,6 +400,10 @@ import {
 import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
+  EditorLockedPanel,
+  EditorThemeReadNotice,
+} from "./editor-locked-panel";
+import {
   awaitsOwnSave,
   planPreviewSync,
   waitForOwnSaves,
@@ -449,12 +473,18 @@ function preloadEditorCodeWorkspace() {
 
 export function EditorModeSurface({
   active,
+  locked = false,
   className,
   children,
   style,
   surfaceRef,
 }: {
   active: boolean;
+  /**
+   * The editor is closed (`resolveEditorLock`): hidden and out of reach as an
+   * inactive surface is, and still mounted, so the unsaved work inside stays.
+   */
+  locked?: boolean;
   className?: string;
   children: React.ReactNode;
   style?: React.CSSProperties;
@@ -464,12 +494,13 @@ export function EditorModeSurface({
    */
   surfaceRef?: React.Ref<HTMLDivElement>;
 }) {
+  const shown = active && !locked;
   return (
     <div
       ref={surfaceRef}
       style={style}
-      aria-hidden={!active}
-      inert={!active}
+      aria-hidden={!shown}
+      inert={!shown}
       className={cn(
         "col-start-1 row-start-3 min-h-0 min-w-0 flex relative",
         // Keep the iframe/Monaco layout alive while the other mode is shown.
@@ -479,7 +510,7 @@ export function EditorModeSurface({
         // grid layer fully transparent even for composited children such as
         // Monaco and the iframe, while z-index gives the active layer a
         // deterministic stacking order.
-        active
+        shown
           ? "visible z-10 opacity-100"
           : "invisible z-0 opacity-0 pointer-events-none",
         className,
@@ -494,10 +525,12 @@ export function EditorModeSurface({
 export function EditorCodeModeSurface({
   active,
   preload,
+  locked,
   children,
 }: {
   active: boolean;
   preload?: boolean;
+  locked?: boolean;
   children: React.ReactNode;
 }) {
   const [hasMounted, setHasMounted] = useState(active || preload);
@@ -509,7 +542,11 @@ export function EditorCodeModeSurface({
   if (!active && !hasMounted) return null;
 
   return (
-    <EditorModeSurface active={active} className="flex-1 overflow-hidden">
+    <EditorModeSurface
+      active={active}
+      locked={locked}
+      className="flex-1 overflow-hidden"
+    >
       {children}
     </EditorModeSurface>
   );
@@ -623,6 +660,15 @@ type EditorShellProps = {
     email?: string;
     image?: string | null;
   };
+  /**
+   * What the latest read of `context` failed with, while the editor stays on
+   * the data read before it; see `resolveEditorRouteView`. With the stamp the
+   * read was sent under, when it threw.
+   */
+  themeRead?: ThemeReadFailure | null;
+  themeReadSentUnder?: number;
+  /** Reads `context` again. */
+  onRetryThemeRead?: () => void;
 };
 
 /** Resolves true when the navigation must not happen. */
@@ -760,6 +806,9 @@ export function VisualEditorShell({
   navigatingRoutePath,
   navigationGuardRef,
   currentUser,
+  themeRead = null,
+  themeReadSentUnder,
+  onRetryThemeRead,
 }: EditorShellProps) {
   // The design surface owns the panel widths as CSS custom properties so a
   // resize drag can repaint without re-rendering this component. See
@@ -880,6 +929,22 @@ export function VisualEditorShell({
   >({});
   const contentConflictsRef = useRef(contentConflicts);
   contentConflictsRef.current = contentConflicts;
+  /**
+   * Conflicted sections whose update was stopped because a list in them was
+   * changed on both sides, by pending-content key. Kept so the toolbar can
+   * say which lists, and so the author has a way out other than waiting.
+   */
+  const [listConflicts, setListConflicts] = useState<
+    Record<string, { templateId: string; sectionId: string; lists: string[] }>
+  >({});
+  const listConflictsRef = useRef(listConflicts);
+  listConflictsRef.current = listConflicts;
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  // A discard waiting on the latest version: one at a time, and the button
+  // that starts one is not offered meanwhile.
+  const [discarding, setDiscarding] = useState(false);
+  const discardingRef = useRef(false);
+  const [contentResetEpoch, setContentResetEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -1513,13 +1578,20 @@ export function VisualEditorShell({
           "An earlier save was not answered. Your changes are kept; check before saving again.",
         );
       }
-      const clearConflict = () =>
+      const clearConflict = () => {
         setContentConflicts((current) => {
           if (!(key in current)) return current;
           const next = { ...current };
           delete next[key];
           return next;
         });
+        setListConflicts((current) => {
+          if (!(key in current)) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
 
       contentSendingRef.current += 1;
       syncContentWritesRef.current();
@@ -1701,13 +1773,39 @@ export function VisualEditorShell({
         (entry) => entry.id === pending.sectionId,
       );
       const incoming = (section?.props as Record<string, unknown>) ?? {};
+      const baseline = pendingPropsBaselineRef.current.get(key) ?? {};
+
+      // A list both sides changed has no safe automatic answer: the author's
+      // copy is the whole array as their panel drew it, and sending it would
+      // overwrite the other writer's rows. Nothing is sent for this section;
+      // it stays out of date with the author's content kept, and they are
+      // told why rather than having either side's work replaced.
+      const conflictedLists = conflictingListKeys({
+        incoming,
+        baseline,
+        local: pending.props,
+      });
+      if (conflictedLists.length > 0) {
+        setListConflicts((current) => ({
+          ...current,
+          [key]: {
+            templateId,
+            sectionId: pending.sectionId,
+            lists: conflictedLists,
+          },
+        }));
+        toast.error(
+          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Use "Discard mine" to load the latest version, then make your change again.`,
+        );
+        continue;
+      }
 
       pendingPropsMapRef.current.set(key, {
         sectionId: pending.sectionId,
         routePath: pending.routePath,
         props: rebaseContentProps({
           incoming,
-          baseline: pendingPropsBaselineRef.current.get(key) ?? {},
+          baseline,
           local: pending.props,
         }),
       });
@@ -1797,7 +1895,10 @@ export function VisualEditorShell({
         // message names the action that resolves it.
         throw new Error(
           Object.keys(contentConflictsRef.current).length > 0
-            ? "Content is out of date with the document. Load the latest version and keep your changes before continuing."
+            ? heldContentMessage({
+                hasListConflict:
+                  Object.keys(listConflictsRef.current).length > 0,
+              })
             : "Content changed while saving. Retry before continuing.",
         );
       }
@@ -3846,16 +3947,18 @@ export function VisualEditorShell({
     [effectiveThemeFiles, themeBinaryFiles, publishedSnapshotMap],
   );
 
-  const hasTemplateChanges = Boolean(
-    activeTemplate?.draftRevisionId &&
-    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
-  );
-  const hasUnpublishedChanges = hasTemplateChanges || themeSourceDiff.changed;
+  // What this page's publish would seal: the page and the shared layout,
+  // the same scope the server seals (`publishTemplate`).
+  const contentDiff = describeContentChanges({
+    page: activeTemplate,
+    layout: layoutTemplate,
+  });
+  const hasUnpublishedChanges = contentDiff.changed || themeSourceDiff.changed;
   // Publish being lit with nothing edited is unfalsifiable from the outside,
   // so the reason travels with the state instead of having to be guessed.
   const unpublishedReason = describeUnpublishedChanges(
     themeSourceDiff,
-    hasTemplateChanges,
+    contentDiff,
   );
 
   const saveThemeFileSequentially = useCallback(
@@ -5091,6 +5194,36 @@ export function VisualEditorShell({
   );
 
   /**
+   * The Theme refused or gone, as the latest read of it says — unless that
+   * read was sent before a check of who is signed in that has read the Theme
+   * since. A refusal stops writes here as one from a save would; reads alone
+   * do not do that (`refusalOfError`), but this read is the Theme itself.
+   */
+  const currentThemeRead = currentThemeReadFailure(
+    writeGate,
+    themeRead,
+    themeReadSentUnder,
+  );
+  const themeRefused =
+    currentThemeRead === "access-denied" || currentThemeRead === "missing";
+  useEffect(() => {
+    if (!themeRefused) return;
+    useEditorWriteGateStore
+      .getState()
+      .pause(workspaceScope, "ACCESS_DENIED", "theme");
+  }, [themeRefused, workspaceScope]);
+
+  /**
+   * Closed to the author while another account is signed in, or the Theme is
+   * refused or gone; see `resolveEditorLock`. Nothing is unmounted: the
+   * unsaved work stays in this tab, out of reach, and no write sends it (reads
+   * still go out; see `resolveEditorLock` for what is and is not sent).
+   * Derived from the gate on every render; nothing is remembered between
+   * renders, so a render React discards cannot leave a stale answer behind.
+   */
+  const editorLock = resolveEditorLock(writeGate, currentThemeRead);
+
+  /**
    * Whether the author's edits are stored, decided from what is held now —
    * never from a response arriving, which may answer an older write. See
    * `resolveEditorSaveState`. Shown apart from the publish state, which only
@@ -5289,7 +5422,11 @@ export function VisualEditorShell({
         return {
           saved: false,
           reason:
-            Object.keys(contentConflictsRef.current).length > 0
+            // "Keep mine" does not save a list both sides changed; see
+            // `heldContentMessage`.
+            Object.keys(listConflictsRef.current).length > 0
+              ? heldContentMessage({ hasListConflict: true })
+              : Object.keys(contentConflictsRef.current).length > 0
               ? "Some content is out of date with the document. Use Load latest, keep mine first."
               : Object.values(readFiles()).some(
                     (file) => file.saveState === "conflict",
@@ -5468,6 +5605,16 @@ export function VisualEditorShell({
     if (answer === "unanswered") {
       toast.error("Could not check your sign-in. Try again.");
       return;
+    }
+    if (answer === "access-denied") {
+      // Read the Theme again, so the editor shows what the check found: a
+      // Theme refused or gone closes it (`resolveEditorLock`).
+      void queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ).queryKey,
+      });
     }
     if (gate.recovery !== "verified") return;
     // Reads and the preview can come back now; the paused writes wait for
@@ -6825,6 +6972,8 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
+        itemId: message.itemId ?? null,
+        contentUnavailable: message.contentUnavailable ?? null,
         descendantFields,
         className,
         isSection: selectionIsSection,
@@ -6860,14 +7009,18 @@ export function VisualEditorShell({
     search.viewport,
   ]);
 
+  // Keyed by the id, not the template: every fetch of the Theme hands over a
+  // new object for the same document, and the route sent again would end an
+  // inline edit open on the page (a Theme with a router finishes it first).
+  const activeTemplateId = activeTemplate?.id;
   const syncPreviewRoute = useCallback(() => {
-    if (!activeTemplate) return;
+    if (!activeTemplateId) return;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
-      templateId: activeTemplate.id,
+      templateId: activeTemplateId,
       routePath: search.routePath ?? null,
     });
-  }, [activeTemplate, postEditorToPreviewMessage, search.routePath]);
+  }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
 
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
@@ -8323,6 +8476,92 @@ export function VisualEditorShell({
     [context.storefront.id, context.theme.id, queryClient],
   );
 
+  /**
+   * Discards the unsaved content of sections whose update stopped on a list
+   * both sides changed, and loads the latest version — only once the author
+   * has confirmed it in the dialog that names what will be lost.
+   *
+   * The whole section's unsaved content goes, not only the list: what is left
+   * would be an edit made against a version the author no longer sees. The
+   * Inspector's own copy is reset with it (`contentResetEpoch`), so nothing
+   * typed before is sent again by the next keystroke.
+   */
+  const discardListConflicts = useCallback(async () => {
+    const entries = Object.entries(listConflicts);
+    if (entries.length === 0 || discardingRef.current) return;
+    // What the author confirmed discarding, as it stood when they did. Every
+    // edit stores a new draft object, so one that differs after the wait is
+    // an edit made while the latest version was loading — not part of what
+    // was confirmed, and not to be dropped with it.
+    const confirmed = new Map(
+      entries.map(([key]) => [key, pendingPropsMapRef.current.get(key)]),
+    );
+    discardingRef.current = true;
+    setDiscarding(true);
+    // The latest version is read first. If it cannot be, nothing is
+    // discarded: dropping the draft without the version that replaces it
+    // would lose the author's work and leave them where they were.
+    const fresh = await queryClient
+      .fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      })
+      .catch(() => null)
+      .finally(() => {
+        discardingRef.current = false;
+        setDiscarding(false);
+      });
+    if (!fresh?.success) {
+      toast.error(
+        "The latest version could not be loaded, so nothing was discarded. Try again.",
+      );
+      return;
+    }
+    const editedMeanwhile = [...confirmed].some(
+      ([key, draft]) => pendingPropsMapRef.current.get(key) !== draft,
+    );
+    if (editedMeanwhile) {
+      toast.error(
+        "You edited this section while the latest version was loading, so nothing was discarded. Choose Discard mine again to discard your changes as they are now.",
+      );
+      return;
+    }
+
+    const keys = new Set(entries.map(([key]) => key));
+    for (const key of keys) {
+      pendingPropsMapRef.current.delete(key);
+      pendingPropsBaselineRef.current.delete(key);
+    }
+    setContentConflicts((current) => {
+      const next = { ...current };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+    setListConflicts({});
+    setDiscardDialogOpen(false);
+    // Edits from here on are made against the version just loaded.
+    for (const requestedTemplateId of new Set(
+      entries.map(([, entry]) => entry.templateId),
+    )) {
+      const templateId =
+        routeTemplateIdsRef.current.get(requestedTemplateId) ??
+        requestedTemplateId;
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === templateId,
+      );
+      if (typeof template?.draftGeneration === "number") {
+        templateDraftGenerationRef.current.set(
+          templateId,
+          template.draftGeneration,
+        );
+      }
+    }
+    setContentResetEpoch((epoch) => epoch + 1);
+  }, [context.storefront.id, context.theme.id, listConflicts, queryClient]);
+
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
       // The binding, not the active template: on a page whose document is not
@@ -9431,7 +9670,10 @@ export function VisualEditorShell({
       {/* Keep the canvas controls in a dedicated auto-sized center track with
           equal flexible gutters. The storefront name stays left and the save
           and publish actions stay right without shifting the center controls. */}
-      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4">
+      <header
+        inert={editorLock !== null}
+        className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4"
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -9733,6 +9975,58 @@ export function VisualEditorShell({
                     Try again
                   </Button>
                 ) : null}
+                {Object.keys(listConflicts).length > 0 ? (
+                  // The way out when an update stopped on a list both sides
+                  // changed. Nothing is discarded by the button itself: it
+                  // asks first, and says exactly what would be lost.
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    disabled={discarding}
+                    onClick={() => setDiscardDialogOpen(true)}
+                    title="Discard your unsaved changes to the sections whose lists were also changed elsewhere, and load the latest version."
+                  >
+                    Discard mine…
+                  </Button>
+                ) : null}
+                <AlertDialog
+                  open={discardDialogOpen}
+                  onOpenChange={setDiscardDialogOpen}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Discard your unsaved changes?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Someone else changed{" "}
+                        {Object.values(listConflicts)
+                          .map(
+                            (entry) =>
+                              `${entry.lists.join(", ")} in ${entry.sectionId}`,
+                          )
+                          .join("; ")}{" "}
+                        since you edited it, so your version cannot be saved
+                        over theirs. Discarding removes all of your unsaved
+                        changes to{" "}
+                        {Object.values(listConflicts).length === 1
+                          ? "that section"
+                          : "those sections"}{" "}
+                        and loads the latest version. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep my changes</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => void discardListConflicts()}
+                      >
+                        Discard and load latest
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
                 {/* Splits the bar into what is true and what you can do. The
                     status was the only item here with no container of its own,
                     so against a row of icon buttons it read as loose text. */}
@@ -9999,17 +10293,24 @@ export function VisualEditorShell({
           onCheckAgain={() => void checkWriterAgain()}
           onSave={() => void resumePausedWrites()}
         />
-        <EditorUnconfirmedSavesNotice
-          count={unconfirmedFiles.length + unconfirmedContentCount}
-          checking={isCheckingUnconfirmed}
-          onCheck={() => void checkUnconfirmedSaves()}
+        <EditorThemeReadNotice
+          failed={currentThemeRead === "unavailable"}
+          onRetry={onRetryThemeRead}
         />
-        <EditorSourceConflictNotice
-          paths={pendingSourceConflicts}
-          saving={isSavingSourceConflicts}
-          onSave={() => void saveSourceConflicts()}
-        />
+        <div inert={editorLock !== null} className="flex flex-col">
+          <EditorUnconfirmedSavesNotice
+            count={unconfirmedFiles.length + unconfirmedContentCount}
+            checking={isCheckingUnconfirmed}
+            onCheck={() => void checkUnconfirmedSaves()}
+          />
+          <EditorSourceConflictNotice
+            paths={pendingSourceConflicts}
+            saving={isSavingSourceConflicts}
+            onSave={() => void saveSourceConflicts()}
+          />
+        </div>
       </div>
+      {editorLock ? <EditorLockedPanel reason={editorLock} /> : null}
 
       {/*
         A build is the compiled artifact, not something the editor can act
@@ -10018,7 +10319,8 @@ export function VisualEditorShell({
         as one more panel inside the editor, and so the artifact is seen at
         the size a visitor gets instead of inside a scaled canvas.
       */}
-      {releasePreview ? (
+      {/* Not over a closed editor: it would cover the notice that says why. */}
+      {editorLock ? null : releasePreview ? (
         <RouteFullscreenSurface
           label="Published release"
           onClose={returnToLivePreview}
@@ -10149,6 +10451,7 @@ export function VisualEditorShell({
       <EditorCodeModeSurface
         active={editorMode === "code"}
         preload={shouldPreloadCodeWorkspace}
+        locked={editorLock !== null}
       >
         <Suspense
           fallback={
@@ -10193,6 +10496,7 @@ export function VisualEditorShell({
 
       <EditorModeSurface
         active={editorMode === "design"}
+        locked={editorLock !== null}
         className="flex-1 overflow-hidden bg-muted/40 max-md:flex-col"
         surfaceRef={designSurfaceRef}
         style={
@@ -10613,6 +10917,7 @@ export function VisualEditorShell({
         </div>
 
         <EditorAssistantPanel
+          contentResetEpoch={contentResetEpoch}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}

@@ -1,5 +1,7 @@
 import {
+  isContentUnavailableReason,
   isSelectionKind,
+  type ContentUnavailableReason,
   type EditableDescendantField,
   type SelectionKind,
 } from "./selection-taxonomy";
@@ -184,6 +186,12 @@ export type PreviewSelectionRestoreTarget = Readonly<{
   htmlId?: string;
   nodeId?: string;
   fieldPath?: string;
+  /**
+   * The `id` of the repeated-field row the element was in. `fieldPath` names
+   * the row by index, which a reorder hands to another row; the id is what
+   * the restore follows instead.
+   */
+  itemId?: string;
   elementKey?: string;
   fieldKey?: string;
   isSection?: boolean;
@@ -346,6 +354,10 @@ export type PreviewSelectionMessage = {
   fieldKey: string | null;
   field: string | null;
   fieldPath: string | null;
+  /** The repeated-field row the element is in, by its persistent `id`. */
+  itemId?: string | null;
+  /** Why the element offers no content to edit, when the preview can say. */
+  contentUnavailable?: ContentUnavailableReason | null;
   /** Monotonically increasing editor intent, used to reject stale replies. */
   selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
@@ -661,7 +673,8 @@ function parseEditableDescendantFields(
       !isBoundedString(item.fieldKey, 200) ||
       !isNullableBoundedString(item.fieldPath, 500) ||
       (item.sectionId !== undefined &&
-        !isNullableBoundedString(item.sectionId, 100))
+        !isNullableBoundedString(item.sectionId, 100)) ||
+      (item.itemId !== undefined && !isNullableBoundedString(item.itemId, 200))
     ) {
       return null;
     }
@@ -679,6 +692,7 @@ function parseEditableDescendantFields(
       fieldKey: item.fieldKey,
       fieldPath: item.fieldPath,
       sectionId,
+      ...(typeof item.itemId === "string" ? { itemId: item.itemId } : {}),
     });
   }
   return result;
@@ -712,6 +726,7 @@ function parsePreviewSelectionRestoreTarget(
     (value.htmlId !== undefined && !isBoundedString(value.htmlId, 200)) ||
     (value.nodeId !== undefined && !isBoundedString(value.nodeId, 200)) ||
     (value.fieldPath !== undefined && !isBoundedString(value.fieldPath, 500)) ||
+    (value.itemId !== undefined && !isBoundedString(value.itemId, 200)) ||
     (value.elementKey !== undefined &&
       !isBoundedString(value.elementKey, 200)) ||
     (value.fieldKey !== undefined && !isBoundedString(value.fieldKey, 200)) ||
@@ -729,6 +744,7 @@ function parsePreviewSelectionRestoreTarget(
     htmlId: value.htmlId,
     nodeId: value.nodeId,
     fieldPath: value.fieldPath,
+    ...(value.itemId === undefined ? {} : { itemId: value.itemId }),
     elementKey: value.elementKey,
     fieldKey: value.fieldKey,
     isSection: value.isSection,
@@ -1218,6 +1234,11 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
         !isNullableBoundedString(value.fieldPath, 500) ||
+        (value.itemId !== undefined &&
+          !isNullableBoundedString(value.itemId, 200)) ||
+        (value.contentUnavailable !== undefined &&
+          value.contentUnavailable !== null &&
+          !isContentUnavailableReason(value.contentUnavailable)) ||
         (value.selectionRevision !== undefined &&
           !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
@@ -1255,6 +1276,8 @@ export function parsePreviewToEditorMessage(
         fieldKey: value.fieldKey,
         field: value.field,
         fieldPath: value.fieldPath,
+        itemId: value.itemId ?? null,
+        contentUnavailable: value.contentUnavailable ?? null,
         ...(value.selectionRevision === undefined
           ? {}
           : { selectionRevision: value.selectionRevision }),

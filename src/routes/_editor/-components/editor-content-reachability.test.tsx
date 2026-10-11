@@ -560,13 +560,13 @@ export function HomeRoute() {
     await expectTwoPromosApart("");
   });
 
-  // KNOWN DIVERGENCE from the interpreter, found while porting this file.
-  // The interpreter carried the row through the component boundary and wrote
-  // `items.0.title` on Card's own elements. The real preview wraps each row
-  // (`data-storefront-field-path="items.0"`) but Card's fields are named only
-  // `title`/`body`, so the editor drops them as ambiguous between rows and a
-  // click resolves to a top-level `title` the List never declared.
-  it.fails(
+  // The interpreter carried the row through the component boundary in its
+  // environment and wrote `items.0.title` on Card's own elements. The real
+  // preview carries it as a prop the compiler adds on both sides (List passes
+  // it, Card's own parameter takes it), so Card's elements name the row's
+  // field rather than a top-level `title` the List never declared. Paths,
+  // clicks, restore and refusals: preview-row-component.live.test.tsx.
+  it(
     "reaches every row field of a repeated list declared by reference",
     async () => {
       const reachable = await liveReachableFields(
