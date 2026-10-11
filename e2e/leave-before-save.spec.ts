@@ -73,6 +73,107 @@ function watchContentWrites(page: Page) {
   return watched;
 }
 
+type QueryClientWindow = {
+  __TSR_ROUTER__: {
+    options: { context: { queryClient: { isFetching(): number } } };
+  };
+};
+
+/**
+ * Holds back the next fetch of the Theme's data until `answer` is called.
+ *
+ * A save fetches the Theme again once the server has answered it, and the
+ * toolbar says "Saving…" until that fetch is in. Held, it stands for the
+ * window in which an author can already open the saved text on the canvas.
+ */
+async function holdNextThemeFetch(page: Page) {
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => (answer = resolve));
+  let caught!: () => void;
+  const held = new Promise<void>((resolve) => (caught = resolve));
+  let armed = true;
+  await page.route(
+    (url) => isServerFn(url.toString(), "getStorefrontThemeEditor"),
+    async (route) => {
+      if (!armed) return route.fallback();
+      armed = false;
+      caught();
+      const response = await route.fetch();
+      await answered;
+      await route.fulfill({ response });
+    },
+  );
+  return { held, answer };
+}
+
+/**
+ * Lets the held fetch answer, and says whether the page was told its route
+ * because of it.
+ *
+ * Messages from the editor reach the page in the order they were posted, so a
+ * marker posted once the fetched data has been rendered arrives after anything
+ * that render sent. Counting the route only up to the marker is what makes
+ * "not sent" an answer rather than a race.
+ */
+async function answerHeldThemeFetch(
+  page: Page,
+  fetch: Awaited<ReturnType<typeof holdNextThemeFetch>>,
+) {
+  const frame = await (await page.locator("iframe").first().elementHandle())!
+    .contentFrame();
+  if (!frame) throw new Error("No preview frame");
+  await frame.evaluate(() => {
+    const seen = { routes: 0, marker: false };
+    (window as unknown as { __e2eSeen: typeof seen }).__e2eSeen = seen;
+    window.addEventListener("message", (event) => {
+      const type = (event.data as { type?: unknown } | null)?.type;
+      if (seen.marker) return;
+      if (type === "morph:storefront-preview-set-route") seen.routes += 1;
+      if (type === "e2e:fetched-theme-rendered") seen.marker = true;
+    });
+  });
+  const fetched = page.waitForResponse(
+    (response) =>
+      isServerFn(response.url(), "getStorefrontThemeEditor") && response.ok(),
+    { timeout: 30_000 },
+  );
+  fetch.answer();
+  await fetched;
+  // Taken in by the editor's cache, rendered, and its effects run: they post
+  // before the next frame's task.
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as unknown as QueryClientWindow
+        ).__TSR_ROUTER__.options.context.queryClient.isFetching(),
+      ),
+    )
+    .toBe(0);
+  await page.evaluate(async () => {
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => setTimeout(resolve, 0)),
+    );
+    document
+      .querySelector("iframe")
+      ?.contentWindow?.postMessage({ type: "e2e:fetched-theme-rendered" }, "*");
+  });
+  await expect
+    .poll(() =>
+      frame.evaluate(
+        () =>
+          (window as unknown as { __e2eSeen: { marker: boolean } }).__e2eSeen
+            .marker,
+      ),
+    )
+    .toBe(true);
+  const routes = await frame.evaluate(
+    () =>
+      (window as unknown as { __e2eSeen: { routes: number } }).__e2eSeen.routes,
+  );
+  return { routeSent: routes > 0 };
+}
+
 test("leaving the editor right after an edit saves it first", async ({
   page,
 }) => {
@@ -155,7 +256,14 @@ test("text typed on the canvas is warned about on reload, and saved once finishe
   const base = `inline-base ${Date.now()}`;
 
   try {
+    // The save's own fetch of the Theme is held until the text is open and
+    // typed into. The editor used to tell the page its route again when that
+    // fetch came in, and the page ends an open edit before navigating: text
+    // opened while a save settled closed under the author, and what was typed
+    // so far was committed.
+    const themeFetch = await holdNextThemeFetch(page);
     await writeHeroField(page, 0, base);
+    await themeFetch.held;
     const text = previewFrame(page).getByText(base, { exact: true });
     await expect(text).toBeVisible({ timeout: 30_000 });
     const enable = page.getByRole("button", {
@@ -177,9 +285,15 @@ test("text typed on the canvas is warned about on reload, and saved once finishe
     await page.keyboard.press("End");
     await page.keyboard.type(" typed");
 
+    const writes = watchContentWrites(page);
+    const told = await answerHeldThemeFetch(page, themeFetch);
+    expect(told.routeSent, "the route was sent to the page again").toBe(false);
+
     // Typed, not committed: only the preview has it.
+    await expect(editing).toContainText(`${base} typed`);
     const status = page.locator("[data-editor-save-status]");
     await expect(status).toHaveAttribute("data-save-state", "unsaved");
+    expect(writes.sent, "nothing typed was sent").toBe(0);
 
     const dialogs: string[] = [];
     page.on("dialog", (dialog) => {
@@ -200,6 +314,7 @@ test("text typed on the canvas is warned about on reload, and saved once finishe
     expect(await storedDocumentsHold(page, `${base} typed`)).toBe(true);
   } finally {
     page.removeAllListeners("dialog");
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await openEditor(page);
     await writeHeroField(page, 0, original);
   }

@@ -1,5 +1,6 @@
 import {
   selectionKindFromElement,
+  type ContentUnavailableReason,
   type EditableDescendantField,
 } from "./selection-taxonomy";
 import type {
@@ -69,12 +70,46 @@ export function selectionStyleSnapshot(
   };
 }
 
+/**
+ * A restore target whose row path is re-read through the row's `id`.
+ *
+ * The path names the row by index, and after a reorder that index belongs to
+ * another row: restoring by it would move the selection, silently, onto a row
+ * the author did not pick. The id stays with the row, so the path is taken
+ * from wherever that row is now. A row that is gone leaves the target alone;
+ * the identities below decide, as they did before ids were carried.
+ */
+function followRestoredRow(
+  section: HTMLElement,
+  target: PreviewSelectionRestoreTarget,
+): PreviewSelectionRestoreTarget {
+  const match =
+    target.itemId && target.fieldPath
+      ? /^([^.]+)\.(\d+)(\..+)?$/.exec(target.fieldPath)
+      : null;
+  if (!match) return target;
+  const [, key = "", , rest = ""] = match;
+  for (const row of section.querySelectorAll<HTMLElement>(
+    `[data-storefront-item-id="${CSS.escape(target.itemId!)}"][data-storefront-field-path]`,
+  )) {
+    // The row itself (`items.2`), not a field inside it.
+    const rowPath = row.dataset.storefrontFieldPath ?? "";
+    const index = rowPath.startsWith(`${key}.`)
+      ? rowPath.slice(key.length + 1)
+      : "";
+    if (!/^\d+$/.test(index)) continue;
+    return { ...target, fieldPath: `${rowPath}${rest}` };
+  }
+  return target;
+}
+
 export function resolvePreviewSelectionRestoreElement(
   section: HTMLElement,
   target: PreviewSelectionRestoreTarget,
   retainedElement?: HTMLElement | null,
 ): HTMLElement {
   if (target.isSection) return section;
+  target = followRestoredRow(section, target);
   const sourceLocationSelector = target.sourceLocation
     ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
     : null;
@@ -132,8 +167,22 @@ export function resolvePreviewSelectionRestoreElement(
       : null,
   ].filter((selector): selector is string => selector !== null);
   for (const selector of identitySelectors) {
-    const match = section.querySelector<HTMLElement>(selector);
-    if (match) return match;
+    // A row a component renders has its path twice: on the element the
+    // component returns, and on the preview's own wrapper around it, which
+    // takes no space and would leave the selection with nothing to outline.
+    // A field the editor refused is never restored onto at all.
+    let wrapper: HTMLElement | null = null;
+    for (const match of section.querySelectorAll<HTMLElement>(selector)) {
+      if (
+        match.hasAttribute("data-storefront-field") &&
+        !previewFieldBinding(match)?.fieldKey
+      ) {
+        continue;
+      }
+      if (!match.matches(PREVIEW_ROW_WRAPPER_SELECTOR)) return match;
+      wrapper ??= match;
+    }
+    if (wrapper) return wrapper;
   }
 
   // A source location is the explicit identity sent by a tree row. Prefer it
@@ -250,6 +299,135 @@ export function previewSectionSelector(sectionId: string): string {
   ].join(",");
 }
 
+/**
+ * The content field an element is bound to, or `null` when it names none the
+ * editor can prove.
+ *
+ * Every reading of an element's field goes through here — the tree, a click
+ * and the descendants a selection offers — so the three cannot disagree.
+ *
+ * The one refusal: inside a row a component renders, a field must address
+ * that row. The component names its own props, and a prop is the row's only
+ * when the list's call site proved it and the compiler said so with a path
+ * under the row's. Anything else there — a prop the list set from elsewhere, a
+ * list the component keeps of its own — names a field of the component, not
+ * of the section, and reading it as the section's would write to a field the
+ * section never declared.
+ */
+export function previewFieldBinding(
+  element: HTMLElement,
+): { fieldKey: string | null; fieldPath: string | null } | null {
+  const fieldKey = element.dataset.storefrontField || null;
+  const fieldPath = element.dataset.storefrontFieldPath || null;
+  if (!fieldKey && !fieldPath) return null;
+  const row = enclosingComponentRow(element);
+  if (row) {
+    const rowPath = row.dataset.storefrontFieldPath;
+    if (
+      !rowPath ||
+      !fieldPath ||
+      (fieldPath !== rowPath && !fieldPath.startsWith(`${rowPath}.`))
+    ) {
+      return null;
+    }
+  }
+  return { fieldKey, fieldPath };
+}
+
+/**
+ * The preview's wrapper around a row a component renders, when `element` is
+ * inside one in the same section.
+ */
+function enclosingComponentRow(element: HTMLElement): HTMLElement | null {
+  const row = element.parentElement?.closest<HTMLElement>(
+    PREVIEW_ROW_WRAPPER_SELECTOR,
+  );
+  return row &&
+    closestPreviewSectionRoot(row) === closestPreviewSectionRoot(element)
+    ? row
+    : null;
+}
+
+/**
+ * Whether an element's content is one the editor must not name.
+ *
+ * A field marker it refused, and inside a component's row any element with no
+ * proven field: the names a selection otherwise falls back to (the element's
+ * `data-morph-element`, its tag) are guesses at a top-level field, and a row
+ * has none.
+ */
+function isRefusedContent(element: HTMLElement): boolean {
+  if (previewFieldBinding(element)?.fieldKey) return false;
+  return (
+    element.hasAttribute("data-storefront-field") ||
+    enclosingComponentRow(element) !== null
+  );
+}
+
+/**
+ * Why an element inside a component's row offers no content, or `null` when
+ * it offers some or names none to begin with.
+ *
+ * Read from what the compiler wrote: an empty field is a prop the list did not
+ * set from the row; a field with no path is a component that was not handed
+ * its row; a path that is not the row's is a list of the component's own.
+ */
+export function previewContentUnavailableReason(
+  element: HTMLElement,
+): ContentUnavailableReason | null {
+  if (!element.hasAttribute("data-storefront-field")) return null;
+  if (previewFieldBinding(element)?.fieldKey) return null;
+  if (!enclosingComponentRow(element)) return null;
+  if (element.dataset.storefrontField === "") return "value-not-from-row";
+  return element.dataset.storefrontFieldPath ? "nested-list" : "row-not-passed";
+}
+
+/**
+ * The `id` of the repeated-field row an element belongs to, in its own
+ * section: what lets the editor confirm the row before it writes, since the
+ * index in its path moves whenever the rows do.
+ */
+function previewRowItemId(element: HTMLElement): string | null {
+  const row = element.closest<HTMLElement>("[data-storefront-item-id]");
+  if (
+    !row ||
+    closestPreviewSectionRoot(row) !== closestPreviewSectionRoot(element)
+  ) {
+    return null;
+  }
+  const id = row.dataset.storefrontItemId ?? "";
+  if (!id || id.length > 200) return null;
+  // An id is an identity only while one row holds it. Two rows sharing one
+  // cannot be told apart, so the element is reported as having none, and the
+  // editor refuses to write rather than pick one.
+  //
+  // Counted within one list of one section: two lists may legitimately reuse
+  // an id (`normalizeDocumentRowIds` scopes ids per array too), and only a
+  // collision inside the same list leaves a row ambiguous.
+  const listKey = (row.dataset.storefrontFieldPath ?? "").split(".")[0] ?? "";
+  const section = closestPreviewSectionRoot(row) ?? row.ownerDocument;
+  const rowPaths = new Set<string>();
+  for (const candidate of section.querySelectorAll<HTMLElement>(
+    `[data-storefront-item-id="${CSS.escape(id)}"][data-storefront-field-path]`,
+  )) {
+    const path = candidate.dataset.storefrontFieldPath ?? "";
+    if (/^[^.]+\.\d+$/.test(path) && path.startsWith(`${listKey}.`)) {
+      rowPaths.add(path);
+    }
+  }
+  return rowPaths.size > 1 ? null : id;
+}
+
+/** Whether something inside `element` is a field the editor can prove. */
+function hasBoundDescendantField(element: HTMLElement): boolean {
+  for (const candidate of element.querySelectorAll<HTMLElement>(
+    "[data-storefront-field]",
+  )) {
+    if (previewFieldBinding(candidate)?.fieldKey) return true;
+  }
+  return false;
+}
+
 function previewEditableNodeLabel(element: HTMLElement): string {
   // `Div#hero-content`, or `Div` when the element was never named: the tag says
   // what it is and the id says which one. Written this way round rather than
@@ -328,7 +506,7 @@ export function collectPreviewEditableNodes(root: {
     const sourceLocationCounts = new Map<string, number>();
     for (const candidate of candidates) {
       const morphNode = candidate.dataset.morphNode;
-      const fieldKey = candidate.dataset.storefrontField;
+      const fieldKey = previewFieldBinding(candidate)?.fieldKey;
       const sourceLocation = candidate.dataset.morphLoc;
       if (sourceLocation) {
         sourceLocationCounts.set(
@@ -351,8 +529,9 @@ export function collectPreviewEditableNodes(root: {
     for (const candidate of candidates) {
       if (nodes.length >= 500) return nodes;
       const nodeId = candidate.dataset.morphNode;
-      const fieldPath = candidate.dataset.storefrontFieldPath;
-      const fieldKey = candidate.dataset.storefrontField;
+      const binding = previewFieldBinding(candidate);
+      const fieldPath = binding?.fieldPath ?? undefined;
+      const fieldKey = binding?.fieldKey ?? undefined;
       const elementKey = candidate.dataset.morphElement;
       const itemId = candidate.closest<HTMLElement>("[data-storefront-item-id]")
         ?.dataset.storefrontItemId;
@@ -422,6 +601,7 @@ export function collectPreviewEditableNodes(root: {
         htmlId: hasUniqueHtmlId ? htmlId : undefined,
         nodeId: nodeId || undefined,
         fieldPath: fieldPath || undefined,
+        ...(itemId ? { itemId } : {}),
         elementKey: elementKey || undefined,
         fieldKey: fieldKey || undefined,
         isSection: false,
@@ -464,17 +644,23 @@ export function collectEditableDescendantFields(
   );
 
   for (const candidate of candidates) {
-    if (candidate.querySelector("[data-storefront-field]")) continue;
-    const fieldKey = candidate.dataset.storefrontField;
-    if (!fieldKey) continue;
-    const fieldPath = candidate.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(candidate);
+    if (!binding?.fieldKey || hasBoundDescendantField(candidate)) continue;
+    const fieldKey = binding.fieldKey;
+    const fieldPath = binding.fieldPath ?? fieldKey;
     const sectionId = previewSectionIdOf(
       closestPreviewSectionRoot(candidate) ?? candidate,
     );
     const identity = `${sectionId ?? ""}\u0000${fieldKey}\u0000${fieldPath}`;
     if (identities.has(identity)) continue;
     identities.add(identity);
-    result.push({ fieldKey, fieldPath, sectionId: sectionId ?? null });
+    const itemId = previewRowItemId(candidate);
+    result.push({
+      fieldKey,
+      fieldPath,
+      sectionId: sectionId ?? null,
+      ...(itemId ? { itemId } : {}),
+    });
   }
 
   return result;
@@ -488,7 +674,11 @@ export function collectEditableDescendantFields(
 export function closestPreviewFieldElement(
   element: HTMLElement,
 ): HTMLElement | null {
-  return element.closest<HTMLElement>("[data-storefront-field]");
+  const field = element.closest<HTMLElement>("[data-storefront-field]");
+  // A field the editor cannot prove is not passed over for an outer one
+  // either: the click is on that element, which is then selected as an
+  // element, with no content of its own to edit.
+  return field && previewFieldBinding(field)?.fieldKey ? field : null;
 }
 
 export type SelectableInfo = {
@@ -507,7 +697,13 @@ export type SelectableInfo = {
   tagName: string;
   role: string | null;
   inputType: string | null;
+  /** The repeated-field row the element is in, by its persistent `id`. */
+  itemId: string | null;
+  /** Why the element offers no content to edit, when that can be said. */
+  contentUnavailable: ContentUnavailableReason | null;
 };
+
+type ResolvedElement = Omit<SelectableInfo, "itemId" | "contentUnavailable">;
 
 export const getComponentDisplayName = (type: string): string => {
   switch (type.toLowerCase()) {
@@ -586,7 +782,7 @@ export const selectionMetadata = (item: SelectableInfo) => {
  * rather than walking to the route's marked `<main>` ancestor. The latter is
  * the page root and made every tree section click appear to select the page.
  */
-function sectionRootSelectable(section: HTMLElement): SelectableInfo {
+function sectionRootSelectable(section: HTMLElement): ResolvedElement {
   const sectionId = previewSectionIdOf(section) ?? null;
   const sectionType =
     section.dataset.storefrontSectionType ??
@@ -614,6 +810,18 @@ function sectionRootSelectable(section: HTMLElement): SelectableInfo {
 export const resolveSelectable = (
   target: EventTarget | null,
 ): SelectableInfo | null => {
+  const item = resolveSelectableElement(target);
+  if (!item) return null;
+  return {
+    ...item,
+    itemId: previewRowItemId(item.element),
+    contentUnavailable: previewContentUnavailableReason(item.element),
+  };
+};
+
+const resolveSelectableElement = (
+  target: EventTarget | null,
+): ResolvedElement | null => {
   if (!(target instanceof HTMLElement)) return null;
 
   // 0. A content field is more precise than an ancestor AST marker. Some
@@ -624,11 +832,10 @@ export const resolveSelectable = (
   if (fieldEl) {
     const sectionEl = closestPreviewSectionRoot(fieldEl);
     const descendantFields = collectEditableDescendantFields(fieldEl);
+    const binding = previewFieldBinding(fieldEl);
     const fieldKey =
-      descendantFields.length > 0
-        ? null
-        : (fieldEl.dataset.storefrontField ?? null);
-    const fieldPath = fieldEl.dataset.storefrontFieldPath ?? fieldKey;
+      descendantFields.length > 0 ? null : (binding?.fieldKey ?? null);
+    const fieldPath = binding?.fieldPath ?? fieldKey;
     const elementKey = fieldEl.dataset.morphElement ?? null;
     const selectableType =
       fieldEl.dataset.storefrontComponent ??
@@ -676,10 +883,14 @@ export const resolveSelectable = (
     const nodeId = morphEl.dataset.morphNode ?? null;
     const elementKey = morphEl.dataset.morphElement ?? null;
     const descendantFields = collectEditableDescendantFields(morphEl);
+    const binding = previewFieldBinding(morphEl);
+    // A field marker the editor refused stays refused: the element-name
+    // fallback below is for elements that carry none.
+    const refused = isRefusedContent(morphEl);
     const fieldKey =
-      descendantFields.length > 0
+      descendantFields.length > 0 || refused
         ? null
-        : (morphEl.dataset.storefrontField ??
+        : (binding?.fieldKey ??
           (elementKey
             ? elementKey === "action"
               ? "actionLabel"
@@ -687,7 +898,7 @@ export const resolveSelectable = (
                 ? "imageSrc"
                 : elementKey
             : null));
-    const fieldPath = morphEl.dataset.storefrontFieldPath ?? fieldKey;
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const selectableType =
       elementKey ?? nodeId ?? morphEl.tagName.toLowerCase();
 
@@ -718,8 +929,10 @@ export const resolveSelectable = (
     const compType =
       componentEl.dataset.storefrontComponent ??
       componentEl.tagName.toLowerCase();
-    const fieldKey = componentEl.dataset.storefrontField ?? null;
-    const fieldPath = componentEl.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(componentEl);
+    const refused = isRefusedContent(componentEl);
+    const fieldKey = binding?.fieldKey ?? null;
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const elementKey =
       componentEl.dataset.morphElement ??
       (compType === "heading" ||
@@ -739,7 +952,7 @@ export const resolveSelectable = (
       label: getComponentDisplayName(compType),
       elementKey,
       fieldKey,
-      field: fieldKey ?? elementKey,
+      field: fieldKey ?? (refused ? null : elementKey),
       fieldPath,
       descendantFields,
       tagName: componentEl.tagName.toLowerCase(),
@@ -821,14 +1034,17 @@ export const resolveSelectable = (
                                                           ? "card"
                                                           : tag;
 
-    const fieldKey =
-      elementEl.dataset.storefrontField ??
-      (compType === "action"
-        ? "actionLabel"
-        : compType === "image"
-          ? "imageSrc"
-          : compType);
-    const fieldPath = elementEl.dataset.storefrontFieldPath ?? fieldKey;
+    const binding = previewFieldBinding(elementEl);
+    const refused = isRefusedContent(elementEl);
+    const fieldKey = refused
+      ? null
+      : (binding?.fieldKey ??
+        (compType === "action"
+          ? "actionLabel"
+          : compType === "image"
+            ? "imageSrc"
+            : compType));
+    const fieldPath = refused ? null : (binding?.fieldPath ?? fieldKey);
     const descendantFields = collectEditableDescendantFields(elementEl);
 
     return {

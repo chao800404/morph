@@ -1111,8 +1111,8 @@ describe("EditorStyleInspector selection content", () => {
         {...common}
         section={baseSection("principles", {
           items: [
-            { title: "First title", body: "First body" },
-            { title: "Second title", body: "Second body" },
+            { id: "r0", title: "First title", body: "First body" },
+            { id: "r1", title: "Second title", body: "Second body" },
           ],
         })}
         selection={selectionDescriptor({
@@ -1122,9 +1122,20 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "principle-item",
           fieldKey: null,
           fieldPath: "items.1",
+          itemId: "r1",
           descendantFields: [
-            { fieldKey: "title", fieldPath: "items.1.title", sectionId: null },
-            { fieldKey: "body", fieldPath: "items.1.body", sectionId: null },
+            {
+              fieldKey: "title",
+              fieldPath: "items.1.title",
+              sectionId: null,
+              itemId: "r1",
+            },
+            {
+              fieldKey: "body",
+              fieldPath: "items.1.body",
+              sectionId: null,
+              itemId: "r1",
+            },
           ],
         })}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -1145,8 +1156,8 @@ describe("EditorStyleInspector selection content", () => {
     fireEvent.blur(title);
     expect(onPropsChange).toHaveBeenLastCalledWith({
       items: [
-        { title: "First title", body: "First body" },
-        { title: "Updated second title", body: "Second body" },
+        { id: "r0", title: "First title", body: "First body" },
+        { id: "r1", title: "Updated second title", body: "Second body" },
       ],
     });
   });
@@ -1491,8 +1502,8 @@ describe("EditorStyleInspector selection content", () => {
         onPreviewSelectionField={onPreviewSelectionField}
         section={baseSection("principles", {
           items: [
-            { title: "One", body: "First" },
-            { title: "Two", body: "Second" },
+            { id: "r0", title: "One", body: "First" },
+            { id: "r1", title: "Two", body: "Second" },
           ],
         })}
         selection={selectionDescriptor({
@@ -1501,6 +1512,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "title",
           fieldKey: "title",
           fieldPath: "items.1.title",
+          itemId: "r1",
         })}
       />,
     );
@@ -1515,8 +1527,8 @@ describe("EditorStyleInspector selection content", () => {
     fireEvent.blur(input);
     expect(onPropsChange).toHaveBeenCalledWith({
       items: [
-        { title: "One", body: "First" },
-        { title: "Changed", body: "Second" },
+        { id: "r0", title: "One", body: "First" },
+        { id: "r1", title: "Changed", body: "Second" },
       ],
     });
   });
@@ -1529,8 +1541,18 @@ describe("EditorStyleInspector selection content", () => {
         section={baseSection("category-showcase", {
           heading: "Collections",
           items: [
-            { imageSrc: "/one.png", imageAlt: "One", imagePosition: "center" },
-            { imageSrc: "/two.png", imageAlt: "Two", imagePosition: "top" },
+            {
+              id: "r0",
+              imageSrc: "/one.png",
+              imageAlt: "One",
+              imagePosition: "center",
+            },
+            {
+              id: "r1",
+              imageSrc: "/two.png",
+              imageAlt: "Two",
+              imagePosition: "top",
+            },
           ],
         })}
         selection={selectionDescriptor({
@@ -1539,6 +1561,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "image",
           fieldKey: "imageSrc",
           fieldPath: "items.1.imageSrc",
+          itemId: "r1",
         })}
       />,
     );
@@ -2072,8 +2095,8 @@ describe("EditorStyleInspector selection content", () => {
         {...common}
         section={baseSection("principles", {
           items: [
-            { title: "First", body: "First body" },
-            { title: "Second", body: "Second body" },
+            { id: "r0", title: "First", body: "First body" },
+            { id: "r1", title: "Second", body: "Second body" },
           ],
         })}
         themeFiles={[
@@ -2101,6 +2124,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "card",
           fieldKey: "title",
           fieldPath: "items.0.title",
+          itemId: "r0",
           className: classes,
           computed: {
             paddingTop: "32px",
@@ -2486,8 +2510,18 @@ describe("EditorStyleInspector selection content", () => {
         section={baseSection("category-showcase", {
           heading: "Collections",
           items: [
-            { imageSrc: "/one.png", imageAlt: "One", imagePosition: "center" },
-            { imageSrc: "/two.png", imageAlt: "Two", imagePosition: "top" },
+            {
+              id: "r0",
+              imageSrc: "/one.png",
+              imageAlt: "One",
+              imagePosition: "center",
+            },
+            {
+              id: "r1",
+              imageSrc: "/two.png",
+              imageAlt: "Two",
+              imagePosition: "top",
+            },
           ],
         })}
         selection={selectionDescriptor({
@@ -2496,6 +2530,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "image",
           fieldKey: "imageSrc",
           fieldPath: "items.1.imageSrc",
+          itemId: "r1",
         })}
       />,
     );
@@ -2516,8 +2551,8 @@ describe("EditorStyleInspector selection content", () => {
         onPreviewSelectionField={onPreviewSelectionField}
         section={baseSection("principles", {
           items: [
-            { title: "One", body: "First" },
-            { title: "Two", body: "Second" },
+            { id: "r0", title: "One", body: "First" },
+            { id: "r1", title: "Two", body: "Second" },
           ],
         })}
         selection={selectionDescriptor({
@@ -2526,6 +2561,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "body",
           fieldKey: "body",
           fieldPath: "items.1.body",
+          itemId: "r1",
         })}
       />,
     );
@@ -2539,8 +2575,8 @@ describe("EditorStyleInspector selection content", () => {
     fireEvent.blur(body);
     expect(onPropsChange).toHaveBeenLastCalledWith({
       items: [
-        { title: "One", body: "First" },
-        { title: "Two", body: "Changed body" },
+        { id: "r0", title: "One", body: "First" },
+        { id: "r1", title: "Two", body: "Changed body" },
       ],
     });
   });

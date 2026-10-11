@@ -1,4 +1,7 @@
 // @vitest-environment node
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createNativePrerenderContent } from "../compiler/theme-prerender-content";
 import {
@@ -18,6 +21,8 @@ import {
   astroToolchainInstalled,
   runAstroPrerenderBuild,
   text,
+  toolchainViteCacheState,
+  watchBuildViteCaches,
 } from "./astro-native-prerender.test-support";
 
 /**
@@ -46,6 +51,7 @@ async function build(
     sealed?: boolean;
     faults?: AstroPrerenderTestFaults;
     files?: ReturnType<typeof astroThemeFiles>;
+    env?: Readonly<Record<string, string>>;
   } = {},
 ) {
   const files = options.files ?? astroThemeFiles({ plain: true });
@@ -63,6 +69,7 @@ async function build(
     files,
     prerenderContent,
     testFaults: options.faults,
+    env: options.env,
   });
   const failure =
     run.exitCode === 0
@@ -120,6 +127,62 @@ describe.skipIf(missingToolchain)("an Astro build's prerendered content", () => 
         refused: 0,
       });
       expect(stamps.every((stamp) => stamp.nonce === run.nonce)).toBe(true);
+    },
+  );
+
+  // Builds run at once on one machine (the test workers, the build runner's
+  // passes) and share the toolchain their node_modules links to; a Vite cache
+  // there was committed by all of them at once and failed with ENOTEMPTY.
+  it(
+    "gives each build its own Vite cache, outside the shared toolchain and the workspace, removed when the build ends",
+    BUILD,
+    async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "morph-astro-cache-test-"));
+      const watch = watchBuildViteCaches(tmp);
+      try {
+        const before = toolchainViteCacheState();
+        // Two at once, as test workers and a runner's passes build.
+        const runs = await Promise.all([
+          build({ env: { TMPDIR: tmp } }),
+          build({ env: { TMPDIR: tmp } }),
+        ]);
+        const { seen, remaining } = watch.stop();
+        for (const run of runs) {
+          expect(run.exitCode, run.output).toBe(0);
+          expect(
+            [...run.outputs.keys()].filter((file) => /(^|\/)\.vite\/|deps_ssr/.test(file)),
+          ).toEqual([]);
+        }
+        expect(toolchainViteCacheState()).toEqual(before);
+        // One cache per build, each holding its build's optimization; none left.
+        expect([...seen.values()]).toEqual([true, true]);
+        expect(remaining).toEqual([]);
+      } finally {
+        watch.stop();
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    "removes a failed build's Vite cache too",
+    BUILD,
+    async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "morph-astro-cache-test-"));
+      const watch = watchBuildViteCaches(tmp);
+      try {
+        const run = await build({
+          faults: { contentServer: "http-500" },
+          env: { TMPDIR: tmp },
+        });
+        const { seen, remaining } = watch.stop();
+        expect(run.exitCode).not.toBe(0);
+        expect([...seen.values()]).toEqual([true]);
+        expect(remaining).toEqual([]);
+      } finally {
+        watch.stop();
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
     },
   );
 
