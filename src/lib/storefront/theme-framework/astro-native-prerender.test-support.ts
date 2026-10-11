@@ -12,6 +12,7 @@ import {
   nativeBuildLoaderSource,
 } from "./tanstack-start-native-wrapper";
 import {
+  ASTRO_BUILD_VITE_CACHE_PREFIX,
   ASTRO_WRAPPER_CONFIG_PATH,
   astroPrerenderWorkspaceFiles,
   type AstroPrerenderTestFaults,
@@ -31,6 +32,45 @@ export const astroToolchainInstalled = fs.existsSync(
 );
 
 export const newNonce = () => randomBytes(16).toString("hex");
+
+/**
+ * The toolchain's own Vite dependency cache, as directory identities. Every
+ * build's workspace links node_modules to the toolchain, so a build that
+ * commits a dependency optimization under its default cache dir renames into
+ * this one and changes it.
+ */
+export function toolchainViteCacheState(): readonly string[] {
+  const cache = path.join(ASTRO_TOOLCHAIN_NODE_MODULES, ".vite");
+  return ["", "deps", "deps_ssr"].map((name) => {
+    const stat = fs.statSync(path.join(cache, name), { throwIfNoEntry: false });
+    return stat ? `.vite/${name} ${stat.ino} ${stat.mtimeMs}` : `.vite/${name} absent`;
+  });
+}
+
+/**
+ * The builds' own Vite caches as they appear in `dir` (the builds' TMPDIR),
+ * polled while the builds run: by name, whether each held the `ssr`
+ * dependency optimization. `stop()` also lists those still there.
+ */
+export function watchBuildViteCaches(dir: string): {
+  stop: () => { seen: ReadonlyMap<string, boolean>; remaining: string[] };
+} {
+  const seen = new Map<string, boolean>();
+  const caches = () =>
+    fs.readdirSync(dir).filter((name) => name.startsWith(ASTRO_BUILD_VITE_CACHE_PREFIX));
+  const timer = setInterval(() => {
+    for (const name of caches()) {
+      const held = fs.existsSync(path.join(dir, name, "deps_ssr"));
+      seen.set(name, (seen.get(name) ?? false) || held);
+    }
+  }, 25);
+  return {
+    stop: () => {
+      clearInterval(timer);
+      return { seen, remaining: caches() };
+    },
+  };
+}
 
 export type AstroBuildRun = Readonly<{
   exitCode: number;
