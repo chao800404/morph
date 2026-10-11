@@ -107,23 +107,26 @@ export function classifyThemeReadFailure(
 }
 
 /**
- * Why the editor is closed to the author, while their unsaved work is kept
- * apart; null while it is not.
+ * Why the editor is closed to the author; null while it is not.
+ *
+ * Closed means hidden, `inert` and sending nothing. It is not isolation: the
+ * unsaved work stays in this tab's memory (the DOM, state, the query cache,
+ * the preview frame), where the tab's devtools can read it. That is the cost
+ * of keeping it.
  *
  * - `different-account`: another account is signed in. The work here is the
- *   first account's: it is not shown to the other one as a workspace it may
- *   use, and never sent as theirs.
+ *   first account's: it is not offered to the other one as a workspace, and
+ *   never sent as theirs.
  * - `theme-access-denied` / `theme-missing`: see `ThemeReadFailure`.
  *
  * Not for a sign-in that merely expired: the same author is still here, and
  * the editor stays open with writes paused (`EditorWritesPausedNotice`).
  *
- * `previous` is the reason the editor was closed for until now. While a check
- * of who is signed in is under way the gate no longer says whose session it
- * found, and the editor must not open for that moment: it stays closed for
- * the reason it was, until the check answers. A check that got no answer
- * (`unanswered`, which leaves the gate paused with no recovery) is no answer
- * either, and opens nothing.
+ * Read from the gate alone, never from what was decided on an earlier render.
+ * While a check of who is signed in is under way, `verifyingFrom` says the
+ * gate was checking from another account, and the editor stays closed; a
+ * check that gets no answer leaves the gate at `different-account`
+ * (`finishEditorWriteVerification`).
  */
 export type EditorLockReason =
   "different-account" | "theme-access-denied" | "theme-missing";
@@ -131,18 +134,15 @@ export type EditorLockReason =
 export function resolveEditorLock(
   gate: EditorWriteGate,
   themeRead: ThemeReadFailure | null,
-  previous: EditorLockReason | null,
 ): EditorLockReason | null {
   if (gate.recovery === "different-account") return "different-account";
   if (themeRead === "access-denied") return "theme-access-denied";
   if (themeRead === "missing") return "theme-missing";
-  if (gate.recovery === "verifying") return previous;
   if (
-    previous === "different-account" &&
-    gate.signedOut &&
-    gate.recovery === "none"
+    gate.recovery === "verifying" &&
+    gate.verifyingFrom === "different-account"
   ) {
-    return previous;
+    return "different-account";
   }
   return null;
 }

@@ -38,7 +38,6 @@ import { currentRequestStamp } from "@/lib/storefront/editor/editor-request-sequ
 import {
   currentThemeReadFailure,
   resolveEditorLock,
-  type EditorLockReason,
   type ThemeReadFailure,
 } from "@/lib/storefront/editor/editor-read-lock";
 import {
@@ -5149,14 +5148,10 @@ export function VisualEditorShell({
    * Closed to the author while another account is signed in, or the Theme is
    * refused or gone; see `resolveEditorLock`. Nothing is unmounted: the
    * unsaved work stays in this tab, out of reach, and nothing sends it.
+   * Derived from the gate on every render; nothing is remembered between
+   * renders, so a render React discards cannot leave a stale answer behind.
    */
-  const editorLockRef = useRef<EditorLockReason | null>(null);
-  const editorLock = resolveEditorLock(
-    writeGate,
-    currentThemeRead,
-    editorLockRef.current,
-  );
-  editorLockRef.current = editorLock;
+  const editorLock = resolveEditorLock(writeGate, currentThemeRead);
 
   /**
    * Whether the author's edits are stored, decided from what is held now —
