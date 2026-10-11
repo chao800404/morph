@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { EDITOR_PATH, openEditor } from "./helpers";
 
 import {
@@ -18,6 +18,20 @@ import {
   MARKER,
   SECOND_EMAIL,
 } from "./helpers/editor-writes-paused";
+
+/**
+ * The editor closed to another account: the reason shown where the editor
+ * was, and the editor itself out of reach. (`editAndSave` writes through
+ * Monaco's API, which no closed editor can stop; what stops the save then is
+ * the write gate, checked separately by counting saves.)
+ */
+async function expectClosedToAnotherAccount(page: Page) {
+  await expect(page.locator('[data-editor-locked="different-account"]')).toBeVisible();
+  await expect(page.locator("[data-editor-mode-surface]").first()).toHaveAttribute(
+    "inert",
+    "",
+  );
+}
 
 test.describe("unsaved work when the signed-in account changes", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
@@ -166,6 +180,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(pausedNotice(page)).toContainText(
         "A different account is signed in",
       );
+      await expectClosedToAnotherAccount(page);
 
       const saves = countSaves(page, hero);
       await editAndSave(page, hero, `${original}\n/* ${MARKER} other */`);
@@ -179,6 +194,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(pausedNotice(page)).toContainText(
         "A different account is signed in",
       );
+      await expectClosedToAnotherAccount(page);
       expect(saves.sent).toBe(0);
     } finally {
       await context.close();
@@ -202,6 +218,9 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(pausedNotice(page)).toContainText(
         "A different account is signed in",
       );
+      // Found by the refused save, it closes the editor all the same, and
+      // the draft is still held in it.
+      await expectClosedToAnotherAccount(page);
       expect(await readSource(page, hero)).toContain(`${MARKER} unasked`);
     } finally {
       await context.close();
@@ -245,6 +264,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(pausedNotice(page)).toContainText(
         "A different account is signed in",
       );
+      await expectClosedToAnotherAccount(page);
       expect(await readSource(page, hero)).toContain(`${MARKER} late`);
     } finally {
       await context.close();

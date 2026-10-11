@@ -12,6 +12,10 @@ import {
 } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
 import { classifyEditorNavigation } from "@/lib/storefront/editor/editor-leave-guard";
+import {
+  resolveEditorRouteView,
+  type ThemeReadFailure,
+} from "@/lib/storefront/editor/editor-read-lock";
 import { VisualEditorPending } from "../../../../-components/visual-editor-pending";
 import {
   VisualEditorShell,
@@ -118,7 +122,39 @@ function VisualEditorRoute() {
     },
   });
 
+  // The data last read for this Theme. Once there is some, a read that fails
+  // must not take the editor away: the author's unsaved work goes with it.
+  // See `resolveEditorRouteView`.
+  const themeKey = `${params.storefrontId}/${params.themeId}`;
+  const lastLoaded = useRef<{
+    key: string;
+    context: Parameters<typeof VisualEditorShell>[0]["context"];
+  } | null>(null);
+  if (query.data?.success) {
+    lastLoaded.current = { key: themeKey, context: query.data.data };
+  }
+  const view = resolveEditorRouteView(
+    query,
+    lastLoaded.current?.key === themeKey ? lastLoaded.current.context : null,
+  );
+
   if (query.isPending) return <VisualEditorPending />;
+
+  if (view.kind === "ready") {
+    return (
+      <ReadyVisualEditorRoute
+        context={view.context}
+        search={search}
+        onSearchChange={handleSearchChange}
+        navigatingRoutePath={navigatingRoutePath}
+        navigationGuardRef={navigationGuardRef}
+        currentUser={routeContext?.session?.user}
+        themeRead={view.themeRead}
+        themeReadSentUnder={view.sentUnder}
+        onRetryThemeRead={() => void query.refetch()}
+      />
+    );
+  }
 
   if (query.isError || !query.data) {
     return (
@@ -143,27 +179,16 @@ function VisualEditorRoute() {
     );
   }
 
-  const result = query.data;
-  if (!result.success) {
-    return (
-      <div className="flex h-svh items-center justify-center p-6">
-        <div className="max-w-md rounded-lg border bg-component p-6 text-center shadow-sm">
-          <h1 className="text-lg font-semibold">Theme editor unavailable</h1>
-          <p className="mt-2 text-sm text-muted-foreground">{result.message}</p>
-        </div>
-      </div>
-    );
-  }
-
+  // Never loaded: nothing to keep, so the failure is the page.
   return (
-    <ReadyVisualEditorRoute
-      context={result.data}
-      search={search}
-      onSearchChange={handleSearchChange}
-      navigatingRoutePath={navigatingRoutePath}
-      navigationGuardRef={navigationGuardRef}
-      currentUser={routeContext?.session?.user}
-    />
+    <div className="flex h-svh items-center justify-center p-6">
+      <div className="max-w-md rounded-lg border bg-component p-6 text-center shadow-sm">
+        <h1 className="text-lg font-semibold">Theme editor unavailable</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {query.data.success ? null : query.data.message}
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -174,6 +199,9 @@ function ReadyVisualEditorRoute({
   navigatingRoutePath,
   navigationGuardRef,
   currentUser,
+  themeRead,
+  themeReadSentUnder,
+  onRetryThemeRead,
 }: {
   context: Parameters<typeof VisualEditorShell>[0]["context"];
   search: StorefrontThemeEditorSearch;
@@ -181,6 +209,9 @@ function ReadyVisualEditorRoute({
   navigatingRoutePath: string;
   navigationGuardRef: React.MutableRefObject<EditorNavigationGuard | null>;
   currentUser: Parameters<typeof VisualEditorShell>[0]["currentUser"];
+  themeRead: ThemeReadFailure | null;
+  themeReadSentUnder: number | undefined;
+  onRetryThemeRead: () => void;
 }) {
   const normalizedSearch = normalizeEditorTemplateSearch(context, search);
   const shouldNormalizeSearch = normalizedSearch !== search;
@@ -217,6 +248,9 @@ function ReadyVisualEditorRoute({
       navigatingRoutePath={navigatingRoutePath}
       navigationGuardRef={navigationGuardRef}
       currentUser={currentUser}
+      themeRead={themeRead}
+      themeReadSentUnder={themeReadSentUnder}
+      onRetryThemeRead={onRetryThemeRead}
     />
   );
 }
