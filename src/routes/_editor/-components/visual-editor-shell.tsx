@@ -5147,7 +5147,8 @@ export function VisualEditorShell({
   /**
    * Closed to the author while another account is signed in, or the Theme is
    * refused or gone; see `resolveEditorLock`. Nothing is unmounted: the
-   * unsaved work stays in this tab, out of reach, and nothing sends it.
+   * unsaved work stays in this tab, out of reach, and no write sends it (reads
+   * still go out; see `resolveEditorLock` for what is and is not sent).
    * Derived from the gate on every render; nothing is remembered between
    * renders, so a render React discards cannot leave a stale answer behind.
    */

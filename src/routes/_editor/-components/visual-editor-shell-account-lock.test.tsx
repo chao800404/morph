@@ -18,7 +18,7 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * — hidden and out of reach — and keeps the unsaved work, sending none of it.
  * A sign-in that merely expired leaves it open with writes paused, as before.
  * Only a check that finds the first account back, allowed to edit, opens it
- * again, and even then nothing is sent until the author says so.
+ * again, and even then none of the held work is sent until the author says so.
  *
  * The edit is made the way the canvas makes one, and waits out the real
  * debounce; only `setTimeout` is faked.

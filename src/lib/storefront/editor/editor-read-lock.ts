@@ -109,10 +109,13 @@ export function classifyThemeReadFailure(
 /**
  * Why the editor is closed to the author; null while it is not.
  *
- * Closed means hidden, `inert` and sending nothing. It is not isolation: the
- * unsaved work stays in this tab's memory (the DOM, state, the query cache,
- * the preview frame), where the tab's devtools can read it. That is the cost
- * of keeping it.
+ * Closed means hidden, `inert`, and no write sent: every write meets the
+ * write gate first (`sendEditorWrite`). It is not silence: reads still go
+ * out, and under a Theme-refused lock so does the preview's file sync, which
+ * is held back only for a sign-out (`editorSignedOut`); the server refuses
+ * them. Nor is it isolation: the unsaved work stays in this tab's memory (the
+ * DOM, state, the query cache, the preview frame), where the tab's devtools
+ * can read it. That is the cost of keeping it.
  *
  * - `different-account`: another account is signed in. The work here is the
  *   first account's: it is not offered to the other one as a workspace, and
@@ -154,7 +157,7 @@ const LOCK_MESSAGES: Record<
   "different-account": {
     title: "A different account is signed in.",
     detail:
-      "This editor holds another account's unsaved work, so it is closed. Sign in again as that account, then check again; nothing is sent until then.",
+      "This editor holds another account's unsaved work, so it is closed. Sign in again as that account, then check again; none of it is saved until then.",
   },
   "theme-access-denied": {
     title: "Your account can no longer open this Theme.",
