@@ -106,8 +106,43 @@ function createClientIsomorphicFn() {
   return fn;
 }
 
+/**
+ * `createServerFn` with its handler run in-process, by the test.
+ *
+ * This is not what a Theme gets anywhere real. In the deployed Worker and the
+ * full Start preview the handler runs on the server; the default client-only
+ * Live Preview cannot run it at all. It exists so that a route reading its
+ * content through a server function can be rendered here, and so that what a
+ * test asserts about it is the preview's source pass and the editor's reading
+ * of the markup — not that the page works in either real environment. The
+ * handler reaches the same client branch of `morph.pages.get()` as everything
+ * else in this harness.
+ *
+ * Only `.handler()` is modelled. Middleware and validators throw, so a test
+ * that needs them finds out instead of getting a stand-in that skipped them.
+ */
+function createInProcessServerFn() {
+  const unsupported = (step: string) => () => {
+    throw new Error(
+      `live-preview-render: createServerFn().${step}() is not modelled by this harness`,
+    );
+  };
+  return {
+    middleware: unsupported("middleware"),
+    validator: unsupported("validator"),
+    inputValidator: unsupported("inputValidator"),
+    handler:
+      (handle: (context: { data: unknown; context: object }) => unknown) =>
+      async (options?: { data?: unknown }) =>
+        handle({ data: options?.data, context: {} }),
+  };
+}
+
 const START_PACKAGES = {
-  "@tanstack/react-start": { createIsomorphicFn: createClientIsomorphicFn },
+  "@tanstack/react-start": {
+    createIsomorphicFn: createClientIsomorphicFn,
+    createServerFn: createInProcessServerFn,
+  },
   "@tanstack/react-start/server": {
     getRequest: () => {
       throw new Error("live-preview-render: a client render has no request");
