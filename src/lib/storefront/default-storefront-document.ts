@@ -57,8 +57,12 @@ import {
  *     first upgrade a source-first workspace (no morph.theme.json) actually
  *     receives: its replacements now run, and the section components it keeps
  *     under `sections/` are no longer added back at their old paths.
+ * 29: an untouched layout asks `isSectionHidden` before rendering the Header
+ *     and Footer, so hiding one in the editor hides it on reload and on the
+ *     published site instead of showing it with the component's defaults.
+ *     Left alone when the content module cannot be shown to declare it.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 28;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 29;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

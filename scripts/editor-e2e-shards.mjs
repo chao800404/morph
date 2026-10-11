@@ -70,6 +70,9 @@ export const EDITOR_SHARDS = [
     // fewest tests. Four tests on a throwaway Theme, each loading the editor
     // two or three times.
     "content-module-transform.spec.ts",
+    // Unmeasured; two editor opens on a throwaway Theme. Its publish half
+    // runs only with the container transport.
+    "section-visibility-layout.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

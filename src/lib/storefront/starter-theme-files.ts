@@ -26,6 +26,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
@@ -1587,6 +1588,13 @@ function planStarterThemeWorkspaceWrites(
     readonly path: string;
     readonly legacy: readonly string[];
     readonly current: string;
+    /**
+     * `current` imports what the author may have changed or removed (the
+     * content module is theirs, rule 01 §4.4), so it replaces their file only
+     * when `starterSourceImportsSatisfied` confirms every import; otherwise
+     * the file is left for the author rather than breaking the build.
+     */
+    readonly checkImports?: boolean;
   }> = [
     {
       path: "src/components/Hero.tsx",
@@ -1711,8 +1719,12 @@ function planStarterThemeWorkspaceWrites(
         LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
         STARTER_THEME_INDEX_SOURCE,
         LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
+        // Slot-bound but always visible: a hidden Header or Footer still
+        // rendered, with the component's defaults in place of the author's.
+        LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
       ],
       current: STARTER_THEME_LAYOUT_SOURCE,
+      checkImports: true,
     },
   ];
 
@@ -1726,6 +1738,24 @@ function planStarterThemeWorkspaceWrites(
     if (!existing) continue;
     const isLegacy = replacement.legacy.includes(existing.content);
     if (!isLegacy) continue;
+    // Checked against the workspace as the plan leaves it so far: the content
+    // module is seeded or upgraded above. A file a later step adds is not seen
+    // yet, which can only keep the author's file, never break the build.
+    if (replacement.checkImports) {
+      const afterPlan = new Map(
+        existingFiles.map((file) => [file.path, file.content] as const),
+      );
+      for (const file of upgrades) afterPlan.set(file.path, file.content);
+      if (
+        !starterSourceImportsSatisfied(
+          replacement.path,
+          replacement.current,
+          afterPlan,
+        )
+      ) {
+        continue;
+      }
+    }
     upgrades.push({
       path: replacement.path,
       content: replacement.current,

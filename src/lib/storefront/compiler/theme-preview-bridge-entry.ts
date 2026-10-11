@@ -778,6 +778,13 @@ if (channel) {
     html[data-storefront-editor-selection-enabled] [data-storefront-component] {
       cursor: pointer !important;
     }
+    /* Hiding a section sets the hidden attribute on its wrapper, whose inline
+       display: contents beats the browser's own [hidden] rule. Tailwind's
+       preflight happens to override that; a Theme without it kept showing
+       the section the author had just hidden. */
+    [data-storefront-section-id][hidden] {
+      display: none !important;
+    }
     [data-storefront-editor-drag-handle="true"] {
       cursor: grab !important;
     }
