@@ -479,3 +479,65 @@ describe("the row hint the preview carries", () => {
     });
   });
 });
+
+/**
+ * A hand-written `data-storefront-field` on the List's label, from the click
+ * to what the Inspector offers. The marker is a hint: it stands only where the
+ * element renders the field it names (rule 02 §8.5).
+ */
+describe("a hand-written field marker, as the Inspector sees it", () => {
+  const withLabelMarker = (marker: string) =>
+    files.map((file) =>
+      file.path === "src/components/List.tsx"
+        ? {
+            ...file,
+            content: file.content.replace(
+              "<p>{label}</p>",
+              `<p data-storefront-field="${marker}">{label}</p>`,
+            ),
+          }
+        : file,
+    );
+
+  it("edits the field it names when the element renders that field", async () => {
+    const fileSet = withLabelMarker("label");
+    const selection = await clickOn("Why", true, fileSet);
+    expect(selection.fieldKey).toBe("label");
+    expect(selection.contentUnavailable).toBeNull();
+    const { onPropsChange } = renderInspector(selection, {}, fileSet);
+
+    const input = screen
+      .getAllByDisplayValue("Why")
+      .find((element) => element.tagName === "INPUT")!;
+    fireEvent.input(input, { target: { value: "Edited" } });
+    // A top-level text field commits when it loses focus.
+    fireEvent.blur(input);
+
+    const written = onPropsChange.mock.calls.at(-1)?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(written.label).toBe("Edited");
+    expect(written.items).toEqual(props.items);
+  });
+
+  it("offers nothing to write when it names a field the element does not render, and says why", async () => {
+    // Marked `items`, showing `label`: neither is taken.
+    const fileSet = withLabelMarker("items");
+    const selection = await clickOn("Why", true, fileSet);
+    expect(selection.fieldKey).toBeNull();
+    expect(selection.contentUnavailable).toBe("marker-conflicts-source");
+    const { onPropsChange } = renderInspector(selection, {}, fileSet);
+
+    expect(
+      document.querySelector('[data-slot="inspector-content-unavailable"]')
+        ?.textContent,
+    ).toMatch(/names one field, but it shows another/);
+    expect(
+      screen
+        .queryAllByDisplayValue("Why")
+        .filter((element) => element.tagName === "INPUT"),
+    ).toEqual([]);
+    expect(onPropsChange).not.toHaveBeenCalled();
+  });
+});

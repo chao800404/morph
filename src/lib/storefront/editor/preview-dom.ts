@@ -229,6 +229,15 @@ export const PREVIEW_EDITABLE_NODE_SELECTOR = [
 export const PREVIEW_ROW_WRAPPER_SELECTOR = "[data-morph-preview-row-wrapper]";
 
 /**
+ * Written by the compiler beside a hand-written `data-storefront-field` it
+ * refused (`FIELD_REFUSED_ATTRIBUTE` in `inject-preview-bindings.ts`), with
+ * `conflict` or `unproven`. Spelled out here because this module is copied
+ * into the preview bridge, which cannot import the compiler; a test holds the
+ * two equal.
+ */
+export const PREVIEW_FIELD_REFUSED_ATTRIBUTE = "data-morph-field-refused";
+
+/**
  * Elements that act as a selectable section root.
  *
  * `data-storefront-section-id` is injected when a component resolves to a
@@ -306,13 +315,19 @@ export function previewSectionSelector(sectionId: string): string {
  * Every reading of an element's field goes through here — the tree, a click
  * and the descendants a selection offers — so the three cannot disagree.
  *
- * The one refusal: inside a row a component renders, a field must address
- * that row. The component names its own props, and a prop is the row's only
- * when the list's call site proved it and the compiler said so with a path
- * under the row's. Anything else there — a prop the list set from elsewhere, a
- * list the component keeps of its own — names a field of the component, not
- * of the section, and reading it as the section's would write to a field the
- * section never declared.
+ * Two refusals:
+ *
+ * - A hand-written marker the compiler refused (`FIELD_REFUSED_ATTRIBUTE`):
+ *   it names a field the element does not provably render. The marker is kept
+ *   as the author wrote it, so it is still in the DOM; it is a hint, never
+ *   where an edit goes (rule 02 §8.5).
+ * - Inside a row a component renders, a field must address that row. The
+ *   component names its own props, and a prop is the row's only when the
+ *   list's call site proved it and the compiler said so with a path under the
+ *   row's. Anything else there — a prop the list set from elsewhere, a list
+ *   the component keeps of its own — names a field of the component, not of
+ *   the section, and reading it as the section's would write to a field the
+ *   section never declared.
  */
 export function previewFieldBinding(
   element: HTMLElement,
@@ -320,6 +335,7 @@ export function previewFieldBinding(
   const fieldKey = element.dataset.storefrontField || null;
   const fieldPath = element.dataset.storefrontFieldPath || null;
   if (!fieldKey && !fieldPath) return null;
+  if (element.hasAttribute(PREVIEW_FIELD_REFUSED_ATTRIBUTE)) return null;
   const row = enclosingComponentRow(element);
   if (row) {
     const rowPath = row.dataset.storefrontFieldPath;
@@ -365,18 +381,23 @@ function isRefusedContent(element: HTMLElement): boolean {
 }
 
 /**
- * Why an element inside a component's row offers no content, or `null` when
- * it offers some or names none to begin with.
+ * Why an element offers no content, or `null` when it offers some or names
+ * none to begin with.
  *
- * Read from what the compiler wrote: an empty field is a prop the list did not
- * set from the row; a field with no path is a component that was not handed
- * its row; a path that is not the row's is a list of the component's own.
+ * Read from what the compiler wrote: a refused hand-written marker says
+ * whether it conflicts with what the element renders or could not be proven.
+ * Inside a component's row, an empty field is a prop the list did not set
+ * from the row; a field with no path is a component that was not handed its
+ * row; a path that is not the row's is a list of the component's own.
  */
 export function previewContentUnavailableReason(
   element: HTMLElement,
 ): ContentUnavailableReason | null {
   if (!element.hasAttribute("data-storefront-field")) return null;
   if (previewFieldBinding(element)?.fieldKey) return null;
+  const refused = element.getAttribute(PREVIEW_FIELD_REFUSED_ATTRIBUTE);
+  if (refused === "conflict") return "marker-conflicts-source";
+  if (refused !== null) return "marker-unproven";
   if (!enclosingComponentRow(element)) return null;
   if (element.dataset.storefrontField === "") return "value-not-from-row";
   return element.dataset.storefrontFieldPath ? "nested-list" : "row-not-passed";

@@ -2,6 +2,9 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { injectPreviewBindings } from "./inject-preview-bindings";
+import * as starterV3 from "../starter-theme-v3-files";
+import { STARTER_THEME_FILES } from "../starter-theme-files";
+import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
 
 const run = (content: string, path = "src/components/Hero.tsx") =>
   injectPreviewBindings([{ path, content }]).files[0]!.content;
@@ -364,8 +367,11 @@ export default function Hero({ heading }) {
   });
 
   it("never overwrites an attribute the author wrote by hand", () => {
-    // A hand-written marker exists where the analysis cannot see, so it is
-    // the only thing making that element editable.
+    // The author's marker stays exactly as written. It used to be taken as
+    // the element's field too, on the grounds that it marks what the analysis
+    // cannot see; it no longer is (2026-10-10 decision: a marker is a hint,
+    // never where an edit goes). `shown` cannot be traced to `heading`, so
+    // the element is refused beside the marker — see the describe below.
     const source = `${DECLARES}
 export default function Hero({ heading }) {
   const shown = heading ?? "";
@@ -374,6 +380,7 @@ export default function Hero({ heading }) {
 `;
     const out = run(source);
     expect(out.match(/data-storefront-field="heading"/g)).toHaveLength(1);
+    expect(out).toContain('data-morph-field-refused="unproven"');
   });
 
   it("leaves a row alone when the array is not something it can address", () => {
@@ -879,6 +886,147 @@ describe("a component whose fields are declared in <Name>.fields.ts", () => {
       { path: "src/components/Hero.fields.ts", content: DECLARES },
     ]);
     expect(result.files[1]!.content).toBe(DECLARES);
+  });
+});
+
+/**
+ * A hand-written `data-storefront-field` is a hint, never where an edit goes.
+ *
+ * It is kept as written. It is taken as the element's field only when the
+ * element provably renders that field (or is a row of the array it names);
+ * otherwise the element is refused beside it, and the author is told why.
+ */
+describe("a hand-written field marker", () => {
+  const TWO = `export const contentFields = {
+  title: { type: "text" },
+  description: { type: "text" },
+  items: { type: "array", fields: { label: { type: "text" } } },
+} as const;
+`;
+  const bind = (body: string) =>
+    injectPreviewBindings([
+      { path: "src/components/Widget.tsx", content: `${TWO}${body}` },
+    ]);
+  const refusalsIn = (content: string) =>
+    [...content.matchAll(/data-morph-field-refused="([a-z]+)"/g)].map(
+      (match) => match[1],
+    );
+  const refusalWarnings = (result: ReturnType<typeof bind>) =>
+    result.warnings.filter((warning) =>
+      warning.message.includes("Design will not edit it"),
+    );
+
+  it("stands when the element renders the field it names", () => {
+    const result = bind(`export default function Widget({ title = "T" }) {
+  return <h1 data-storefront-field="title">{title}</h1>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+    expect(refusalWarnings(result)).toEqual([]);
+  });
+
+  it("stands on a row element naming the array it is a row of", () => {
+    const result = bind(`export default function Widget({ items = [] }) {
+  return <ul>{items.map((item, index) => (
+    <li key={index} data-storefront-field="items"><b>{item.label}</b><i>{item.label}</i></li>
+  ))}</ul>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+  });
+
+  it("stands on a row field the element renders through the row", () => {
+    const result = bind(`export default function Widget({ items = [] }) {
+  return <ul>{items.map((item, index) => (
+    <li key={index}><span data-storefront-field="label">{item.label}</span></li>
+  ))}</ul>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+  });
+
+  it("is refused as a conflict when the element renders another field", () => {
+    const source = `export default function Widget({ title = "T", description = "D" }) {
+  return <p data-storefront-field="title">{description}</p>;
+}`;
+    const result = bind(source);
+    const out = result.files[0]!.content;
+
+    expect(refusalsIn(out)).toEqual(["conflict"]);
+    // The author's own attribute is untouched, and nothing is added beside it.
+    expect(out.match(/data-storefront-field="[^"]*"/g)).toEqual([
+      'data-storefront-field="title"',
+    ]);
+    const [warning] = refusalWarnings(result);
+    expect(warning?.path).toBe("src/components/Widget.tsx");
+    expect(warning?.message).toContain('data-storefront-field="title"');
+    expect(warning?.message).toContain('"description"');
+    expect(warning?.message).toMatch(/^Line \d+: /);
+  });
+
+  it("is refused as unproven when what the element renders cannot be traced", () => {
+    const result = bind(`export default function Widget({ title = "T" }) {
+  const shown = "x" + title;
+  return <p data-storefront-field="title">{shown}</p>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual(["unproven"]);
+  });
+
+  it("is refused as unproven when the marker itself is computed", () => {
+    const result =
+      bind(`export default function Widget({ title = "T", name = "title" }) {
+  return <p data-storefront-field={name}>{title}</p>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual(["unproven"]);
+  });
+
+  it("checks the markers an attribute-forwarding link carries", () => {
+    const ok = injectPreviewBindings([
+      {
+        path: "src/components/Widget.tsx",
+        content: `import ThemeLink from "../morph/link";
+${TWO}export default function Widget({ items = [], title = "T", description = "D" }) {
+  return <nav>
+    {items.map((item, index) => (
+      <ThemeLink key={index} data-storefront-field="label">{item.label}</ThemeLink>
+    ))}
+    <ThemeLink data-storefront-field="title">{description}</ThemeLink>
+  </nav>;
+}`,
+      },
+    ]);
+    expect(refusalsIn(ok.files[0]!.content)).toEqual(["conflict"]);
+  });
+
+  it("leaves Morph's own starter sources, old and current, as they were", () => {
+    // Every Starter generation that still carries hand-written markers was
+    // written by Morph against its own declarations. Only one marker in all
+    // of them names a field through a local the analysis cannot trace
+    // (`displayImage = image ?? imageSrc`), and that one is refused.
+    const refused: string[] = [];
+    for (const [name, value] of Object.entries(starterV3)) {
+      if (typeof value !== "string" || !value.includes("data-storefront-field"))
+        continue;
+      const result = injectPreviewBindings([
+        { path: `src/components/${name}.tsx`, content: value },
+      ]);
+      for (const kind of refusalsIn(result.files[0]!.content)) {
+        refused.push(`${name}: ${kind}`);
+      }
+    }
+    for (const file of [
+      ...STARTER_THEME_FILES,
+      ...STARTER_THEME_CATALOG_FILES,
+    ]) {
+      const result = injectPreviewBindings([
+        { path: file.path, content: file.content },
+      ]);
+      for (const kind of refusalsIn(
+        result.files.find((out) => out.path === file.path)?.content ?? "",
+      )) {
+        refused.push(`${file.path}: ${kind}`);
+      }
+    }
+    expect(refused).toEqual([
+      "LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE: unproven",
+    ]);
   });
 });
 
