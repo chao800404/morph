@@ -54,6 +54,11 @@ export const NATIVE_PRERENDER_PAGES_PATH = ".morph/prerender-pages.ndjson";
 /** In the wrapper's source, so a leak into the deployable Worker is found. */
 export const ASTRO_PRERENDER_SHIM_MARKER = "__MORPH_ASTRO_PRERENDER_WRAPPER__";
 /**
+ * Each build's own Vite cache, a fresh directory with this prefix in the
+ * build process's temporary directory, removed when that process exits.
+ */
+export const ASTRO_BUILD_VITE_CACHE_PREFIX = "morph-astro-build-vite-";
+/**
  * The entry `@astrojs/cloudflare` writes into its prerender Worker config
  * (`experimental.prerenderWorker.config.main`, `dist/index.js`). If an adapter
  * release changes it, the wrapper no longer applies, and the build says so
@@ -155,6 +160,7 @@ const importGuard = ${nativeImportGuardPluginSource()};`
   return `// Written by Morph for this build (astro-native-prerender.ts).
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 
 const NONCE = ${JSON.stringify(options.nonce)};
@@ -167,6 +173,7 @@ const REFUSED_READS = ${JSON.stringify(NATIVE_PRERENDER_REFUSED_READS_PATH)};
 const STAMPS = ${JSON.stringify(NATIVE_PRERENDER_STAMPS_PATH)};
 const PAGES = ${JSON.stringify(NATIVE_PRERENDER_PAGES_PATH)};
 const STAMP_PATH = ${JSON.stringify(STAMP_PATH)};
+const VITE_CACHE_PREFIX = ${JSON.stringify(ASTRO_BUILD_VITE_CACHE_PREFIX)};
 const MAX_STAMP_BYTES = ${MAX_STAMP_BYTES};
 const WITHOUT_SNAPSHOT = ${JSON.stringify(NATIVE_PRERENDER_WITHOUT_SNAPSHOT)};
 const VIRTUAL_ENTRY = "\\0morph-astro-prerender-entry";
@@ -192,6 +199,24 @@ const record = (file, entry) => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.appendFileSync(target, JSON.stringify({ nonce: NONCE, ...entry }) + "\\n");
 };
+
+// The workspace's node_modules is a link to the shared, pinned toolchain, so
+// Vite's default cache (node_modules/.vite) is the toolchain's: every build on
+// the machine would commit its dependency optimization (\`astro build\` runs one,
+// in the dev server it syncs with) into the same directory, and two at once
+// fail with ENOTEMPTY. Each build gets its own, outside the workspace, whose
+// every file is read as the build's output. It is removed when the process
+// exits, whether the build passed or failed; a process killed by a signal
+// (a runner's timeout) leaves it in the temporary directory.
+let viteCacheDir = null;
+function buildViteCacheDir() {
+  if (!viteCacheDir) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), VITE_CACHE_PREFIX));
+    process.once("exit", () => fs.rmSync(dir, { recursive: true, force: true }));
+    viteCacheDir = dir;
+  }
+  return viteCacheDir;
+}
 
 function readSealed() {
   try {
@@ -294,7 +319,12 @@ export function morphAstroBuild() {
     name: "morph:astro-build",
     hooks: {
       "astro:config:setup": ({ updateConfig }) => {
-        updateConfig({ vite: { plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin] } });
+        updateConfig({
+          vite: {
+            cacheDir: buildViteCacheDir(),
+            plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin],
+          },
+        });
       },
       "astro:config:done": ({ config }) => {
         // Under "file" or "preserve" a prerendered page asks for its content
