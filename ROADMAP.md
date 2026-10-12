@@ -49,8 +49,8 @@ Morph 希望同時具備：
 **仍要遵守的是欄位契約。** 可以在 Design 視覺寫入的欄位，必須由既有的 `contentFields`／`.fields.ts` 宣告欄位與型別、限制。這規定的是「哪些欄位可寫、怎麼驗證」，不是程式怎麼寫。元件的預設值仍寫在元件程式裡，不要求在宣告中再寫一份，避免兩份真相。
 
 **正式驗收條件（不是未來目標）。** 以下兩例必須通過才能宣稱支援，每例都要確認四件事：畫布點選選到正確的欄位、Inspector 修改後畫布更新、Document 寫入的是原始值（不是 Theme 轉換後的文字）、重新載入後三者一致。
-- Astro：frontmatter 中 `const home = await morph.pages.get("/home"); const { hero } = home;`，再 `<Hero {...hero} />`。
-- TanStack Start：`createServerFn` 的 handler 回傳 `morph.pages.get("/home")`，route `loader` 呼叫它，元件以 `Route.useLoaderData()` 解構出 `hero`，再 `<Hero {...hero} />`。
+- Astro：首頁 `/` 的 frontmatter 中 `const home = await morph.pages.get("/"); const { hero } = home;`，再 `<Hero {...hero} />`。
+- TanStack Start：首頁 `/` 的 `createServerFn` handler 回傳 `morph.pages.get("/")`，route `loader` 呼叫它，元件以 `Route.useLoaderData()` 解構出 `hero`，再 `<Hero {...hero} />`。
 
 **做法分兩層，共用一份契約。**
 - 常見的原生寫法逐步完成自動辨識：直接取值、解構、別名、標準 loader／server function 回傳，每種框架以真實案例驗收。
