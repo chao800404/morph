@@ -1,7 +1,7 @@
 /**
  * The page-object spelling of a content binding.
  *
- *   const home = await morph.pages.get("/home");
+ *   const home = await morph.pages.get("/");
  *   <Hero {...home.hero} />
  *   <Gallery {...home["summer-sale"]} />
  *

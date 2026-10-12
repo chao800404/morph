@@ -1072,6 +1072,14 @@ if (channel) {
         }, 0);
       }
     }
+    if (message?.type === "morph:storefront-preview-refresh-content") {
+      // The preview's server confirmed it now reads the author's saved
+      // content. Loaders that read it there run again through the same
+      // coalesced refresh an edit uses; the editor holds this back while
+      // text is being typed on the page, so it never ends that edit.
+      refreshPreviewContent();
+      return;
+    }
     if (message?.type === "morph:storefront-preview-update-section-props") {
       updatePreviewContent(
         message.sectionId,

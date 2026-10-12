@@ -203,6 +203,23 @@ describe("applying document changes to the real React preview", () => {
     );
   });
 
+  it("reloads content the preview's server confirmed, through the same refresh", () => {
+    const start = BRIDGE.indexOf(
+      'message?.type === "morph:storefront-preview-refresh-content"',
+    );
+    expect(start).toBeGreaterThan(-1);
+    const handler = BRIDGE.slice(
+      start,
+      BRIDGE.indexOf(
+        'message?.type === "morph:storefront-preview-update-section-props"',
+      ),
+    );
+    expect(handler).toContain("refreshPreviewContent();");
+    // It carries no content and changes none: the page reads what the
+    // server now holds, never a value from the message.
+    expect(handler).not.toContain("updatePreviewContent(");
+  });
+
   it("hides a hidden section's display: contents wrapper without the Theme's help", () => {
     // The wrapper's inline display: contents beats the browser's [hidden]
     // rule; only Tailwind's preflight used to override it. The rule has to
