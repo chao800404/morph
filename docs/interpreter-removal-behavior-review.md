@@ -1,6 +1,6 @@
 # 舊直譯器移除：行為差異與決策表
 
-狀態：**審閱草稿，不授權刪除或移植程式。** 2026-10-12 以 main `145a3ec` 唯讀盤點。本文只新增文件，沒有執行舊路由、瀏覽器或部署驗收。
+狀態：**審閱草稿，不授權刪除或移植程式。** 2026-10-12 最初以 main `145a3ec` 唯讀盤點，後續整合 main `29b9c2d` 並更新 #216 的交付狀態。本文只新增文件，沒有執行舊路由、瀏覽器或部署驗收。
 
 ## 1. 範圍與現況
 
@@ -9,7 +9,7 @@
 - 舊入口：`src/routes/_editor/store/$storefrontId/themes/$themeId/preview.tsx`。
 - 舊渲染鏈：`storefront-preview.tsx` → `safe-theme-route-renderer.tsx`／`safe-theme-component-renderer.tsx`，以及 `storefront-document-renderer.tsx` 的內建渲染。
 - 現行選取、樣式與內容：preview bridge → `visual-editor-shell.tsx` → 既有 AST／Document 寫入與 OCC。
-- 區塊來源：`theme-route-sections.ts`；#212 已辨識第一版 Start loader 資料流，但它的完整畫布自動更新仍等 A6b-2。
+- 區塊來源：`theme-route-sections.ts`；#212 已辨識第一版 Start loader 資料流，#216 已合併 A6b-2 的成功存檔 → 同步 → 確認 → 畫布刷新。完整 Start 的主要流程已有驗收證據；Astro 編輯器整頁刷新仍只有單元測試，須等 L1.5 的畫布編輯流程驗收，不把 Astro 容器同步／island HMR 當成這項證據。
 
 #193 將產品保證搬到真實 React harness；#198、#199、#208、#209 四項前置修正已合併。這不等於已完成移除，也不代表新的案例 B 已完整驗收。
 
@@ -73,7 +73,7 @@
 
 ## 6. 移除 PR 的交付邊界
 
-- 重新核對四項前置修正、#193 的原始保證及相關測試是否已轉正。新案例 B 的 A6b-2 預期失敗另列，不把它誤算成舊直譯器的產品保證。
+- 重新核對四項前置修正、#193 的原始保證及相關測試是否已轉正。案例 B 的 A6b-2 預期失敗已在 #216 轉正，但內容綁定契約的反向驗收仍須分開核對；不把新資料流的驗收或尚未完成的 Astro Design 誤算成舊直譯器的產品保證。
 - 移除舊入口／僅它使用的模組、`test:parity` 與已搬移的重複測試；保留 `test:workspace-preview` 和現行產品測試。
 - route tree、bridge 與其他生成檔只跑既有 generator，不手改。
 - 規則與文件將「直譯器產生位置」改為「Live Preview 編譯時注入」；不能把合法作者語法整體拒絕。
