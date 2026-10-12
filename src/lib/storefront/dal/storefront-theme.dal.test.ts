@@ -2741,11 +2741,12 @@ export default function SiteHeader() { return <header />; }`;
   });
 
   /**
-   * A click on content the editor cannot place in a Document section — a
-   * component handed `{...hero}` from `useLoaderData()`, which today gets no
-   * section wrapper — resolves to that component's own root, identified by its
-   * source file (loader-data-binding.live.test.ts). Sent here, that id must
-   * write nothing: not the Document's `hero`, and no new revision.
+   * A click on content the editor cannot place in a Document section — for
+   * one, a component handed `{...hero}` from a loader whose handler changes
+   * what it read, so the slot is not proven — resolves to that component's own
+   * root, identified by its source file (loader-data-binding.live.test.ts).
+   * Sent here, that id must write nothing: not the Document's `hero`, and no
+   * new revision.
    */
   it("updateSectionProps writes nothing for a section id the Document does not have", async () => {
     const document =

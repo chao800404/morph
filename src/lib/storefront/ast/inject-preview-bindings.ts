@@ -5,8 +5,11 @@ import {
   readComponentContentFields,
 } from "./theme-content-fields-declaration";
 import {
+  collectLoaderSlotBindings,
   collectPageVariables,
+  NO_LOADER_SLOT_BINDINGS,
   readPageBindingKey,
+  type LoaderSlotBindings,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import type { ThemeContentFieldDefinition } from "@/lib/storefront/theme-content-capabilities";
@@ -824,12 +827,18 @@ function threadedFieldAttributes(
  *
  * A component cannot say which section it is — the same one can be placed
  * twice on a page — so the only place the answer exists is where its content
- * is handed to it: `<Hero {...content("starter-hero")} />`.
+ * is handed to it: `<Hero {...content("starter-hero")} />`, or a slot of the
+ * page the route's loader is proven to read (`collectLoaderSlotBindings`).
  */
 function readSectionSlotId(
   openingElement: any,
   pageVariables: ReadonlySet<string>,
+  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
 ): string | null {
+  const loaderSlot = loaderSlots.get(openingElement?.start);
+  if (loaderSlot !== undefined) {
+    return loaderSlot.length > 0 ? loaderSlot : null;
+  }
   for (const attribute of openingElement?.attributes ?? []) {
     if (attribute?.type !== "JSXSpreadAttribute") continue;
     const pageKey = readPageBindingKey(attribute.argument, pageVariables);
@@ -1161,6 +1170,10 @@ export function injectPreviewBindings(
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
     const pageVariables = collectPageVariables(ast);
+    const loaderSlots = collectLoaderSlotBindings(ast, {
+      path: file.path,
+      files,
+    });
     const insertions: Insertion[] = [];
 
     // This module's components that render some list's rows: each takes the
@@ -1357,7 +1370,7 @@ export function injectPreviewBindings(
         // a component's element and an attribute put there becomes a prop the
         // component is free to ignore — it would never reach the page. The
         // wrapper is taken out of layout so the page looks the same.
-        const slotId = readSectionSlotId(opening, pageVariables);
+        const slotId = readSectionSlotId(opening, pageVariables, loaderSlots);
         if (slotId && node.start != null && node.end != null) {
           slotIds.push(slotId);
           wrap(
