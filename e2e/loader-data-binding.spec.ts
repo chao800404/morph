@@ -288,18 +288,12 @@ test.describe("case B in the full Start preview", () => {
     await expect(titleField(page)).toHaveValue(edited);
   });
 
-  // KNOWN GAP, not part of the binding: content a page reads on the server
-  // reaches a running preview only through `syncThemePreviewContent`, and
-  // nothing calls it yet (the planned "A6b-2": save → sync → confirm →
-  // reload). Until then the canvas keeps the value the preview started with,
-  // and shows an edit after a reload — which the test above checks. Confirmed
-  // on 2026-10-12 from the trace: the edit is saved under `hero` with the
-  // typed value, the preview re-runs the server function, and its answer
-  // still has no edited `hero`. This turns red once the sync is wired.
-  //
-  // `test.fail()` is called just before that one assertion: anything before it
-  // that breaks — the page, the selection, the save, the stored value — fails
-  // this test as an ordinary failure instead of passing as the known gap.
+  // Content a page reads on the server reaches a running preview only through
+  // `syncThemePreviewContent`: the editor syncs the drafts after the save and
+  // refreshes the canvas once the preview confirms it reads them (A6b-2,
+  // docs/astro-theme-plan.md 6.5). Before that was wired, the preview re-ran
+  // the server function on the snapshot it started with and the canvas kept
+  // the old value until a reload (confirmed from a trace on 2026-10-12).
   test("the canvas shows an Inspector edit without a reload", async ({
     page,
   }) => {
@@ -320,7 +314,6 @@ test.describe("case B in the full Start preview", () => {
     await field.press("Tab");
     expect((await saved).ok()).toBe(true);
     expect(await storedProps(page)).toEqual({ title: edited });
-    test.fail();
     await expect(heading(page)).toHaveText(edited, { timeout: 15_000 });
   });
 });
