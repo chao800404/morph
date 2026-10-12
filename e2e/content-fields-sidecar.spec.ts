@@ -529,6 +529,20 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     browser,
   }) => {
     test.setTimeout(240_000);
+    // Visiting a route only creates a placeholder. Establish the real
+    // Document explicitly so the refusal compares the same stored draft.
+    await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...scope!, routePath: CROSS_TAB_ROUTE_PATH },
+    )) as {
+      success: boolean;
+      data?: { id: string; draftGeneration: number };
+    };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    expect(ensured.data).toBeDefined();
     await openRoute(page, CROSS_TAB_ROUTE_PATH, STALE_SLOT);
     await selectCard(page, STALE_SLOT);
     const field = titleField(page, "CrossTabStale title");
@@ -539,6 +553,8 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     expect(beforeSourceChange.success).toBe(true);
     const beforeDocument = beforeSourceChange.data.templates.find(t=>t.routePath===CROSS_TAB_ROUTE_PATH);
     expect(beforeDocument).toBeDefined();
+    expect(beforeDocument!.id).toBe(ensured.data!.id);
+    expect(beforeDocument!.draftGeneration).toBe(ensured.data!.draftGeneration);
 
     await deleteInAnotherTab(browser, STALE_SIDECAR);
 
