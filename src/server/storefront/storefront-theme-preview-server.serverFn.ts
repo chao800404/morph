@@ -37,6 +37,7 @@ import {
   type ThemePreviewContentSnapshot,
 } from "@/lib/storefront/compiler/theme-preview-content";
 import { readConsistentPreviewContent } from "@/lib/storefront/service/preview-content-read";
+import { previewContentRefresh } from "@/lib/storefront/service/preview-content-refresh";
 import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
@@ -184,10 +185,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     const astroThemes = astroThemesEnabled(
       env as unknown as Record<string, unknown>,
     );
-    const previewEntry = themePreviewEntry(
-      workspace.entry,
-      resolveThemeFramework(editorContext.theme.framework, { astroThemes }),
-    );
+    const framework = resolveThemeFramework(editorContext.theme.framework, {
+      astroThemes,
+    });
+    const previewEntry = themePreviewEntry(workspace.entry, framework);
     if (!previewEntry.ok) {
       return fail("This theme has no entry file.", {
         error: "THEME_ENTRY_MISSING",
@@ -195,6 +196,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     }
     const entry = previewEntry.entry;
 
+    const previewRuntime =
+      (env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
+        ? ("start" as const)
+        : undefined;
     const server = selection.server;
     const started = await server.start({
       previewId,
@@ -210,9 +215,7 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       platformHostEnv: pickPlatformHostnameEnv(
         env as unknown as Record<string, unknown>,
       ),
-      ...((env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
-        ? { previewRuntime: "start" as const }
-        : {}),
+      ...(previewRuntime ? { previewRuntime } : {}),
       // As the site records it: an Astro site is not previewed as Start, and
       // is previewed at all only where this server turns Astro on.
       framework: editorContext.theme.framework,
@@ -269,6 +272,12 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       readyMs: started.readyMs,
       timings: started.timings,
       hoistedContentFields: started.hoistedContentFields,
+      // Whether the editor syncs saved content into this preview, and how the
+      // canvas shows it once the preview confirms (A6b-2).
+      contentRefresh: previewContentRefresh({
+        previewRuntime,
+        devServer: framework.ok && Boolean(framework.framework.preview.devServer),
+      }),
     });
   });
 
@@ -445,6 +454,9 @@ export const syncThemePreviewContent = createServerFn({ method: "POST" })
           error: written.reason,
         }),
         ticket: written.ticket,
+        // The ticket this sync was written under: what the editor asks
+        // `confirmThemePreviewContent` about, rather than sending it again.
+        sentTicket: contentTicket,
       };
     }
     return ok("Live Preview content applied", { ticket: written.ticket });

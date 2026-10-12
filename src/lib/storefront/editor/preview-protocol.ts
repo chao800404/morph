@@ -236,6 +236,15 @@ export type EditorToPreviewMessage =
   | { type: "morph:storefront-preview-request-structure" }
   | {
       /**
+       * The preview's server now reads the author's saved content (a content
+       * sync it confirmed, docs/astro-theme-plan.md 6.5): load the page's
+       * content again. Carries no content; the page reads it where it always
+       * does.
+       */
+      type: "morph:storefront-preview-refresh-content";
+    }
+  | {
+      /**
        * Ends the text being typed into on the canvas: kept (`commit`), which
        * sends it as an ordinary inline commit, or put back as it was. Asked
        * by the editor before it leaves the page, after the author chose.
@@ -890,6 +899,7 @@ export function parseEditorToPreviewMessage(
           }
         : null;
     case "morph:storefront-preview-request-structure":
+    case "morph:storefront-preview-refresh-content":
       return { type: value.type };
     case "morph:storefront-preview-finish-inline-text":
       return typeof value.commit === "boolean" &&
