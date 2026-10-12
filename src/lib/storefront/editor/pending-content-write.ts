@@ -3,6 +3,8 @@ export type PendingContentEntry = {
   props: Record<string, unknown>;
   /** The route the edit was made on; absent for the layout. */
   routePath?: string;
+  /** Captured with the edit, never replaced by a later workspace refetch. */
+  expectedSourceGeneration?: number;
 };
 
 /**

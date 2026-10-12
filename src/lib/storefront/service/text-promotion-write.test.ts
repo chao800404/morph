@@ -386,6 +386,7 @@ describe("promoteTextToField", () => {
     const promoted = fileRow();
 
     const edited = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 2,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-home",
@@ -523,6 +524,7 @@ export default function Header({ notice = "Free shipping" }) {
 describe("resetting a promoted field", () => {
   const reset = (resetProps: string[], props: Record<string, unknown> = {}) =>
     storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 2,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-home",

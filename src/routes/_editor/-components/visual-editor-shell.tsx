@@ -1,4 +1,5 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { advanceSelectionAfterTextPromotion, captureSelectionSourceBaseline, type SelectionSourceBaseline } from "@/lib/storefront/editor/selection-source-baseline";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
@@ -1348,6 +1349,19 @@ export function VisualEditorShell({
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
     new Map(),
   );
+  const selectionSourceBaselinesRef = useRef(new Map<string, SelectionSourceBaseline>());
+  const captureSourceForSelection = useCallback((target: PreviewSelectionRestoreTarget) => {
+    const generation = useThemeWorkspaceStore.getState().getAcceptedSourceGeneration({
+      storefrontId: context.storefront.id, themeId: context.theme.id,
+    });
+    const key = JSON.stringify(target);
+    const baseline = captureSelectionSourceBaseline(key, generation);
+    if (baseline) selectionSourceBaselinesRef.current.set(target.sectionId, baseline);
+    else selectionSourceBaselinesRef.current.delete(target.sectionId);
+  }, [context.storefront.id, context.theme.id]);
+  useEffect(() => {
+    selectionSourceBaselinesRef.current.clear();
+  }, [context.storefront.id, context.theme.id]);
   const templateMutationQueueRef = useRef<Map<string, Promise<unknown>>>(
     new Map(),
   );
@@ -1381,6 +1395,7 @@ export function VisualEditorShell({
       sectionId: string;
       props: Record<string, unknown>;
       expectedDraftGeneration: number;
+      expectedSourceGeneration: number;
       templateId?: string;
       routePath?: string;
       resetProps?: string[];
@@ -1398,6 +1413,7 @@ export function VisualEditorShell({
               sectionId: variables.sectionId,
               props: variables.props,
               expectedDraftGeneration: variables.expectedDraftGeneration,
+              expectedSourceGeneration: variables.expectedSourceGeneration,
               ...(variables.routePath
                 ? { routePath: variables.routePath }
                 : {}),
@@ -1622,6 +1638,10 @@ export function VisualEditorShell({
                 props: entry.props,
                 expectedDraftGeneration: generation,
                 routePath: entry.routePath,
+                // A queued edit must keep the generation captured when typed.
+                // Missing bookkeeping fails validation, never borrows a later
+                // selection's generation when this queue eventually runs.
+                expectedSourceGeneration: entry.expectedSourceGeneration ?? 0,
               }),
             ).then(
               (result) => {
@@ -1816,6 +1836,7 @@ export function VisualEditorShell({
       pendingPropsMapRef.current.set(key, {
         sectionId: pending.sectionId,
         routePath: pending.routePath,
+        expectedSourceGeneration: pending.expectedSourceGeneration,
         props: rebaseContentProps({
           incoming,
           baseline,
@@ -6975,6 +6996,9 @@ export function VisualEditorShell({
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
+      if (outcome.newCanvasIntent || !selectionSourceBaselinesRef.current.has(message.sectionId)) {
+        captureSourceForSelection(outcome.target);
+      }
 
       if (outcome.reveal && message.documentRect) {
         const rect = message.documentRect;
@@ -7143,6 +7167,7 @@ export function VisualEditorShell({
             sectionId,
             isSection: true,
           } satisfies PreviewSelectionRestoreTarget;
+          captureSourceForSelection(target);
           const componentType =
             sectionId === (search.routePath ?? "/")
               ? "page"
@@ -7219,6 +7244,7 @@ export function VisualEditorShell({
         componentType,
         collectEditableNodeDescendantFields(selectedNode, previewNodes),
       );
+      captureSourceForSelection(target);
       setActiveSelection(nextSelection);
       setActiveComputedStyleRevision(0);
       if (target.sectionId !== search.section) {
@@ -7854,6 +7880,8 @@ export function VisualEditorShell({
         return failed("This section has no document to store the text in.");
       }
       const store = useThemeWorkspaceStore.getState();
+      const promotionBaseline = selectionSourceBaselinesRef.current.get(request.sectionId);
+      if (!promotionBaseline) return failed("Select the text again before making it editable.");
       const workspaceFile = store.getWorkspaceFiles(
         workspaceScope.storefrontId,
         workspaceScope.themeId,
@@ -7899,7 +7927,7 @@ export function VisualEditorShell({
               fieldName: request.fieldName,
               value: request.value,
               expectedSourceGeneration:
-                store.getAcceptedSourceGeneration(workspaceScope),
+                promotionBaseline.sourceGeneration,
               expectedFileVersion: workspaceFile.serverVersion,
               expectedDraftGeneration,
               ...(request.confirmedImpact
@@ -7921,6 +7949,14 @@ export function VisualEditorShell({
           { success: true }
         >
       ).data;
+      const currentBaseline = selectionSourceBaselinesRef.current.get(request.sectionId) ?? null;
+      const advancedBaseline = advanceSelectionAfterTextPromotion(currentBaseline, {
+        selectionKey: promotionBaseline.selectionKey,
+        sentSourceGeneration: promotionBaseline.sourceGeneration,
+        acceptedSourceGeneration: saved.sourceGeneration,
+        confirmed: true,
+      });
+      if (advancedBaseline) selectionSourceBaselinesRef.current.set(request.sectionId, advancedBaseline);
       // The page's value is a saved draft now, like any content write.
       previewContentSyncRef.current?.requestSync();
       useThemeWorkspaceStore
@@ -8067,6 +8103,7 @@ export function VisualEditorShell({
             props: {},
             resetProps: fieldKeys,
             expectedDraftGeneration,
+            expectedSourceGeneration: selectionSourceBaselinesRef.current.get(sectionId)?.sourceGeneration ?? 0,
             routePath: routePathForTemplate(templateId),
           }),
       )) as { success: boolean; message?: string };
@@ -8148,6 +8185,8 @@ export function VisualEditorShell({
         sectionId,
         props: mergedProps,
         routePath: routePathForTemplate(templateId),
+        expectedSourceGeneration: pendingPropsMapRef.current.get(key)?.expectedSourceGeneration ??
+          selectionSourceBaselinesRef.current.get(sectionId)?.sourceGeneration ?? 0,
       });
 
       const timer = setTimeout(() => {
@@ -8362,6 +8401,7 @@ export function VisualEditorShell({
         sectionId,
         props: result.value,
         routePath: routePathForTemplate(templateId),
+        expectedSourceGeneration: selectionSourceBaselinesRef.current.get(sectionId)?.sourceGeneration ?? 0,
       };
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(key, { ...section.props });
@@ -8398,6 +8438,7 @@ export function VisualEditorShell({
             sectionId,
             props: currentProps,
             routePath: reorderPending.routePath,
+            expectedSourceGeneration: reorderPending.expectedSourceGeneration,
           });
         }
         restoreSelectionAndProps();
@@ -8458,6 +8499,11 @@ export function VisualEditorShell({
         sectionId,
         props: mergedProps,
         routePath: routePathForTemplate(templateId),
+        // This explicit structure action names a Document slot, not a field
+        // inferred from an old canvas selection. Still freeze its precondition
+        // now, and never replace a pending field edit's older baseline.
+        expectedSourceGeneration: pendingPropsMapRef.current.get(key)?.expectedSourceGeneration ??
+          useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(workspaceScope),
       };
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(

@@ -1,0 +1,62 @@
+/** A selection's source precondition, not a new workspace version counter. */
+export type SelectionSourceBaseline = Readonly<{
+  selectionKey: string;
+  sourceGeneration: number;
+}>;
+
+export function captureSelectionSourceBaseline(
+  selectionKey: string,
+  sourceGeneration: number,
+): SelectionSourceBaseline | null {
+  if (
+    !selectionKey ||
+    !Number.isSafeInteger(sourceGeneration) ||
+    sourceGeneration < 1
+  )
+    return null;
+  return { selectionKey, sourceGeneration };
+}
+
+/** Reads may invalidate a baseline; they must never silently advance it. */
+export function selectionSourceIsCurrent(
+  baseline: SelectionSourceBaseline | null,
+  selectionKey: string,
+  currentSourceGeneration: number,
+): boolean {
+  return (
+    baseline !== null &&
+    baseline.selectionKey === selectionKey &&
+    baseline.sourceGeneration === currentSourceGeneration
+  );
+}
+
+/**
+ * Only the acknowledged text-promotion operation may advance source while
+ * preserving its own selection. Ordinary source edits require reselection.
+ * The caller supplies this operation's sent/returned generations, never a
+ * generation merely observed on refetch. An older response cannot advance a
+ * newer selection, and an ambiguous or non-successor result advances nothing.
+ */
+export function advanceSelectionAfterTextPromotion(
+  baseline: SelectionSourceBaseline | null,
+  acknowledgement: Readonly<{
+    selectionKey: string;
+    sentSourceGeneration: number;
+    acceptedSourceGeneration: number;
+    confirmed: boolean;
+  }>,
+): SelectionSourceBaseline | null {
+  if (
+    !baseline ||
+    !acknowledgement.confirmed ||
+    baseline.selectionKey !== acknowledgement.selectionKey ||
+    baseline.sourceGeneration !== acknowledgement.sentSourceGeneration ||
+    acknowledgement.acceptedSourceGeneration !==
+      acknowledgement.sentSourceGeneration + 1
+  )
+    return baseline;
+  return captureSelectionSourceBaseline(
+    baseline.selectionKey,
+    acknowledgement.acceptedSourceGeneration,
+  );
+}

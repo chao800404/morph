@@ -533,6 +533,12 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     await selectCard(page, STALE_SLOT);
     const field = titleField(page, "CrossTabStale title");
     await expect(field).toBeVisible();
+    const beforeSourceChange = await serverFn(page,THEMES,"getStorefrontThemeEditor",{...scope!}) as {
+      success: boolean; data: {templates:Array<{id:string;routePath:string|null;draftGeneration:number;document:unknown}>};
+    };
+    expect(beforeSourceChange.success).toBe(true);
+    const beforeDocument = beforeSourceChange.data.templates.find(t=>t.routePath===CROSS_TAB_ROUTE_PATH);
+    expect(beforeDocument).toBeDefined();
 
     await deleteInAnotherTab(browser, STALE_SIDECAR);
 
@@ -551,22 +557,27 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     );
     await field.fill(edited);
     await field.press("Tab");
-    expect((await saved).ok()).toBe(true);
+    const refused = await saved;
+    expect(await refused.text()).toContain("SELECTION_SOURCE_CONFLICT");
 
     await expect(
       page.getByText(
-        /Not saved: "title" is not an editable field in the current Theme source/,
+        /The source code has changed\. Select the field again/,
       ),
     ).toBeVisible({ timeout: 15_000 });
+    // Previously this asserted a partial save and an automatic source reload.
+    // A stale selection now refuses the whole write and keeps the typed text:
+    // retaining these old expectations would require discarding the draft.
+    await expect(field).toHaveValue(edited);
+    await expect(field).toBeVisible();
+    const afterSourceChange = await serverFn(page,THEMES,"getStorefrontThemeEditor",{...scope!}) as typeof beforeSourceChange;
+    expect(afterSourceChange.success).toBe(true);
+    const afterDocument = afterSourceChange.data.templates.find(t=>t.id===beforeDocument!.id);
+    expect(afterDocument?.draftGeneration).toBe(beforeDocument!.draftGeneration);
+    expect(afterDocument?.document).toEqual(beforeDocument!.document);
     const heading = previewFrame(page).locator(
       `[data-storefront-section-id="${STALE_SLOT}"] h2`,
     );
-    await expect(heading).toHaveText(DEFAULT_TITLE, { timeout: 15_000 });
-    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0, {
-      timeout: 45_000,
-    });
-    await expect(field).toHaveCount(0);
-
     // Nothing was stored for the field: a fresh load renders the default.
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(heading).toBeVisible({ timeout: 90_000 });

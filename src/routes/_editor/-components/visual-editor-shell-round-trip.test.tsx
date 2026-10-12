@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,6 +78,18 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
         >
           Apply a style patch
         </button>
+        <button
+          type="button"
+          onClick={() => void props.onPromoteText?.({
+            sectionId: "hero",
+            componentSourcePath: "src/components/Hero.tsx",
+            targetKey: "heading",
+            fieldName: "heading",
+            value: "Welcome",
+          })}
+        >
+          Promote the selected text
+        </button>
       </>
     ),
   };
@@ -92,6 +104,7 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
  * `onError`. Both have to reach the author.
  */
 const updateSectionProps = vi.hoisted(() => vi.fn());
+const promoteText = vi.hoisted(() => vi.fn());
 
 /**
  * The editor's read of the Theme, which is how a write that got no answer is
@@ -117,6 +130,7 @@ vi.mock(
   async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
+    promoteStorefrontThemeText: promoteText,
     getStorefrontThemeEditor: getThemeEditor,
   }),
 );
@@ -965,7 +979,7 @@ describe("bringing the canvas to a selection", () => {
  * tree is written by hand rather than through `buildFileTree` because it only
  * has to render, and importing the DAL would pull the server layer into jsdom.
  */
-function renderShellWithHero(content: string) {
+function renderShellWithHero(content: string, selectedSection?: string) {
   const client = readyQueryClient();
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
@@ -1013,7 +1027,7 @@ function renderShellWithHero(content: string) {
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={context}
-        search={baseSearch}
+        search={selectedSection ? {...baseSearch,section:selectedSection} : baseSearch}
         onSearchChange={vi.fn()}
       />
     </QueryClientProvider>,
@@ -1047,6 +1061,58 @@ function applyStylePatch() {
  * rather than to this file. Said here so the gap is recorded instead of
  * implied away by the coverage.
  */
+describe("a text promotion's source baseline", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+  const source = 'export function Hero() { return <h1 data-morph-node="heading">Welcome</h1>; }';
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
+    promoteText.mockReset();
+  });
+
+  it("advances the same selection after its own acknowledged promotion", async () => {
+    promoteText.mockResolvedValue({
+      success: true,
+      data: {
+        sourceGeneration: 2,
+        draftGeneration: 2,
+        file: {
+          path: "src/components/Hero.tsx",
+          content: source,
+          version: 2,
+          updatedAt: "2026-10-12T00:00:00.000Z",
+        },
+        document: { version: 1, sections: [{ id: "hero", type: "hero", props: { heading: "Welcome" } }] },
+      },
+    });
+    renderShellWithHero(source);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: "Promote the selected text" }));
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(1));
+    expect(promoteText.mock.calls[0][0].data.expectedSourceGeneration).toBe(1);
+    await waitFor(() => expect(useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope)).toBe(2));
+    // Same selected target, without a new tree/canvas selection. Ask to
+    // promote again so the shell's real callback reads its advanced baseline;
+    // this harness does not simulate HMR replacing the rendered element.
+    promoteText.mockResolvedValue({ success: false, message: "Already a field" });
+    fireEvent.click(screen.getByRole("button", { name: "Promote the selected text" }));
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(2));
+    expect(promoteText.mock.calls[1][0].data.expectedSourceGeneration).toBe(2);
+  });
+
+  it("does not replace a selected promotion baseline with an external Code generation", async () => {
+    promoteText.mockResolvedValue({ success: false, error: "SELECTION_SOURCE_CONFLICT", message: "The source code has changed. Select the field again. Your changes are kept." });
+    renderShellWithHero(source);
+    await selectHeading();
+    act(() => useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope));
+    fireEvent.click(screen.getByRole("button", { name: "Promote the selected text" }));
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(1));
+    expect(promoteText.mock.calls[0][0].data.expectedSourceGeneration).toBe(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+});
+
 describe("a style patch the source cannot answer", () => {
   const STATIC_SOURCE =
     'export function Hero() { return <section data-morph-node="section" className="p-4">x</section>; }';
@@ -1221,6 +1287,62 @@ describe("an inline edit of text the Theme changed", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("sends the selected source baseline rather than the newer workspace generation", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1,{storefrontId:"storefront-1",themeId:"theme-1"});
+    const message = "The source code has changed. Select the field again. Your changes are kept.";
+    updateSectionProps.mockResolvedValue({success:false,error:"SELECTION_SOURCE_CONFLICT",message} as never);
+    const error = vi.spyOn(toast,"error").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    act(() => useThemeWorkspaceStore.getState().acceptRemoteGeneration(2,{storefrontId:"storefront-1",themeId:"theme-1"}));
+    sendInlineCommit("Unsaved from old source","Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(updateSectionProps.mock.calls[0]![0].data.expectedSourceGeneration).toBe(1);
+    await waitFor(() => expect(error).toHaveBeenCalledWith(message));
+    await new Promise(resolve => setTimeout(resolve,600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).not.toBe("Saved");
+  });
+
+  it("keeps the same selected source precondition for two content-only saves", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1,{storefrontId:"storefront-1",themeId:"theme-1"});
+    saved();
+    renderShell();
+    await selectHeading();
+    sendInlineCommit("First own save","Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    sendInlineCommit("Second own save","Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(updateSectionProps.mock.calls.map(call => call[0].data.expectedSourceGeneration)).toEqual([1,1]);
+  });
+
+  it("keeps Inspector text visible after a source baseline refusal without resending", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1,{storefrontId:"storefront-1",themeId:"theme-1"});
+    const message = "The source code has changed. Select the field again. Your changes are kept.";
+    updateSectionProps.mockResolvedValue({success:false,error:"SELECTION_SOURCE_CONFLICT",message} as never);
+    renderShellWithHero('export const contentFields = { heading: { type: "text", label: "Heading" } }; export function Hero({ heading = "Welcome" }) { return <h1>{heading}</h1>; }', "hero");
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button",{name:/^Content$/}));
+    const input = await screen.findByDisplayValue("Welcome");
+    act(() => useThemeWorkspaceStore.getState().acceptRemoteGeneration(2,{storefrontId:"storefront-1",themeId:"theme-1"}));
+    fireEvent.input(input,{target:{value:"Unsaved Inspector text"}});
+    fireEvent.blur(input);
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(updateSectionProps.mock.calls[0]![0].data.expectedSourceGeneration).toBe(1);
+    const expectDraftInActivePanel = () => {
+      const field = screen.getByDisplayValue("Unsaved Inspector text");
+      expect(field.isConnected).toBe(true);
+      expect(field.closest("[hidden], [inert]")).toBeNull();
+      for (let element: Element | null = field; element; element = element.parentElement) {
+        expect(window.getComputedStyle(element).display).not.toBe("none");
+      }
+    };
+    expectDraftInActivePanel();
+    await new Promise(resolve => setTimeout(resolve,600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expectDraftInActivePanel();
   });
 
   it("is not saved when it comes from a window other than the preview", async () => {

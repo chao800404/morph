@@ -28,3 +28,8 @@ export const TEMPLATE_DRAFT_GENERATION_MISMATCH =
  * that ref describes what rendered then, not what renders now.
  */
 export const SECTION_SOURCE_UNCONFIRMED = "SECTION_SOURCE_UNCONFIRMED";
+
+/** The source used for a visual selection is no longer the saved source. */
+export const SELECTION_SOURCE_CONFLICT = "SELECTION_SOURCE_CONFLICT";
+export const SELECTION_SOURCE_CONFLICT_MESSAGE =
+  "The source code has changed. Select the field again. Your changes are kept.";

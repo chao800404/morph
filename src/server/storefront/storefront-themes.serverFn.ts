@@ -1,6 +1,8 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import {
   SECTION_SOURCE_UNCONFIRMED,
+  SELECTION_SOURCE_CONFLICT,
+  SELECTION_SOURCE_CONFLICT_MESSAGE,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
@@ -310,6 +312,9 @@ export const updateStorefrontThemeSectionProps = createServerFn({
       // The document moved since this tab last saw it. Said as the code the
       // editor rebases on; as a plain failure, "Try again" would resend the
       // same stale generation and be refused the same way every time.
+      if (message.includes(SELECTION_SOURCE_CONFLICT)) {
+        return fail(SELECTION_SOURCE_CONFLICT_MESSAGE, { error: SELECTION_SOURCE_CONFLICT });
+      }
       if (message.includes(TEMPLATE_DRAFT_GENERATION_MISMATCH)) {
         return fail("Template draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
@@ -375,6 +380,9 @@ export const promoteStorefrontThemeText = createServerFn({ method: "POST" })
         createdBy: context.user.id,
       });
       if (result.ok) return ok("Text is now an editable field", result);
+      if (result.error === "CONFLICT" && result.conflict === "source-generation") {
+        return fail(SELECTION_SOURCE_CONFLICT_MESSAGE, { error: SELECTION_SOURCE_CONFLICT });
+      }
       return fail(result.message, {
         error: result.error,
         errors:
