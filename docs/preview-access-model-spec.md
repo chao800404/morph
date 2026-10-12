@@ -1,6 +1,6 @@
 # 預覽存取與撤銷規格
 
-狀態：**設計草稿，尚未實作或安全驗收。** 2026-10-12 以 main `145a3ec` 唯讀核對程式。目標是「預設私人草稿；分享是明確建立、可到期與撤銷的能力」，不是宣稱目前的預覽已符合此模型。
+狀態：**設計草稿，尚未實作或安全驗收。** 2026-10-12 最初以 main `145a3ec` 唯讀核對程式，後續一般 merge main `48330aa` 並更新 #216 的交付狀態。目標是「預設私人草稿；分享是明確建立、可到期與撤銷的能力」，不是宣稱目前的預覽已符合此模型。
 
 ## 1. 產品界線
 
@@ -65,7 +65,7 @@
 
 需要另外確認：跨 origin 私人預覽如何拿到受約束的 browser credential；現有 verifier 是否覆蓋目前 Theme 的 ownership／角色撤銷；SDK URL 是否可繞過；撤銷事件如何與 request、已送出的寫入與 session 終止競態配合。
 
-既有 Document／source 儲存、OCC、content ticket、fenced workspace 寫入、發布與 rollback 不變。A6b-2 的內容同步不在本規格實作；完成同步也不等於完成 preview read 授權。
+既有 Document／source 儲存、OCC、content ticket、fenced workspace 寫入、發布與 rollback 不變。A6b-2 的內容同步已在 #216 合併，不在本規格實作；完整 Start 的主要流程與本機 Astro 容器同步／island HMR 有驗收證據，但不等於 Astro Design、正式 Cloudflare 全面支援或 preview read 授權已完成。
 
 ## 7. 專用資源驗收矩陣
 
