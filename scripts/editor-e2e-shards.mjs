@@ -45,6 +45,9 @@ export const EDITOR_SHARDS = [
     // Container transport only, like the publish files above: skipped on
     // every CI shard.
     "publish-layout-edit.spec.ts",
+    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which CI
+    // does not run: skipped on every CI shard, like the gated files above.
+    "loader-data-binding.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
