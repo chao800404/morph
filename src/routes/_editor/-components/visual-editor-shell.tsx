@@ -261,9 +261,15 @@ import {
 } from "@/lib/storefront/editor/preview-stale-probe";
 import {
   applyThemePreviewFiles,
+  confirmThemePreviewContent,
+  syncThemePreviewContent,
   touchThemePreviewServer,
   probeThemePreviewAddress,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
+import {
+  createPreviewContentSync,
+  type PreviewContentSync,
+} from "@/lib/storefront/editor/preview-content-sync";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   parsePreviewSectionProps,
@@ -1361,6 +1367,11 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * A content write was saved: carry it into a preview that reads content on
+   * its server (`createPreviewContentSync`). Set below, beside the preview.
+   */
+  const previewContentSyncRef = useRef<PreviewContentSync | null>(null);
   /** Set below, beside the preview it reloads. */
   const droppedContentHandlerRef = useRef<
     (droppedProps: readonly string[]) => void
@@ -1412,6 +1423,8 @@ export function VisualEditorShell({
         return;
       }
       setDraftSaveState("idle");
+      // Saved, so the drafts the sync reads hold it (6.5).
+      previewContentSyncRef.current?.requestSync();
       if (result.data.droppedProps.length > 0) {
         droppedContentHandlerRef.current(result.data.droppedProps);
       }
@@ -2005,6 +2018,8 @@ export function VisualEditorShell({
       inlineFinishRequestRef.current = null;
       for (const ended of inlineEditEndedRef.current) ended(finished);
       inlineEditEndedRef.current.clear();
+      // A content refresh held back while it was open can be shown now.
+      previewContentSyncRef.current?.editEnded();
     },
     [],
   );
@@ -3332,6 +3347,62 @@ export function VisualEditorShell({
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+
+  // A preview that reads content on its server shows a saved edit only once
+  // the drafts are synced into it and it confirms reading them (A6b-2,
+  // docs/astro-theme-plan.md 6.5). Null for the client-only preview, which
+  // the content messages above already keep current.
+  const previewContentRefresh =
+    previewServer.data?.success === true
+      ? previewServer.data.data.contentRefresh
+      : null;
+  useEffect(() => {
+    if (!previewContentRefresh) return;
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    const sync = createPreviewContentSync({
+      sync: () => syncThemePreviewContent({ data: scope }),
+      confirm: (ticket) =>
+        confirmThemePreviewContent({ data: { ...scope, ticket } }),
+      refresh: () => {
+        if (previewContentRefresh === "reload") {
+          // The page is rendered on the server; only loading it again shows
+          // what the server now reads (6.3).
+          setPreviewRevision((revision) => revision + 1);
+          return;
+        }
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-refresh-content",
+        });
+        schedulePreviewRemeasureRef.current();
+      },
+      // Text typed on the canvas lives only in the page until committed;
+      // reloading the content under it would end the edit.
+      canRefresh: () => !inlineEditOpenRef.current,
+      onBehind: () => {
+        // One notice, replaced rather than stacked. The changes are saved;
+        // nothing is sent again on its own, and the next save syncs again.
+        toast.warning(
+          "The Live Preview may not show your latest changes yet. They are saved; your next edit updates the preview.",
+          { id: "preview-content-behind", duration: 10_000 },
+        );
+      },
+    });
+    previewContentSyncRef.current = sync;
+    return () => {
+      sync.dispose();
+      if (previewContentSyncRef.current === sync) {
+        previewContentSyncRef.current = null;
+      }
+    };
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    postEditorToPreviewMessage,
+    previewContentRefresh,
+  ]);
   const confirmPreviewStyleRevision = useCallback(
     (confirmation: { previewKey: string; styleRevision: number }) => {
       const initialPreviewSync = initialPreviewSyncRef.current;
@@ -7850,6 +7921,8 @@ export function VisualEditorShell({
           { success: true }
         >
       ).data;
+      // The page's value is a saved draft now, like any content write.
+      previewContentSyncRef.current?.requestSync();
       useThemeWorkspaceStore
         .getState()
         .acceptRemoteGeneration(saved.sourceGeneration, workspaceScope);
