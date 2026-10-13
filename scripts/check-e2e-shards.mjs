@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -14,6 +14,24 @@ import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
 const WORKFLOW_FILE = fileURLToPath(
   new URL("../.github/workflows/ci.yml", import.meta.url),
 );
+const E2E_DIRECTORY = fileURLToPath(new URL("../e2e/", import.meta.url));
+
+/**
+ * Every file the plan allocates exists under e2e/. The coverage check below
+ * compares collected test IDs, and a planned file that is gone simply
+ * collects nothing, so a deleted spec could stay named in the plan unnoticed.
+ */
+export function verifyPlannedFilesExist(
+  shards = EDITOR_SHARDS,
+  exists = (file) => existsSync(path.join(E2E_DIRECTORY, file)),
+) {
+  const missing = shards.flat().filter((file) => !exists(file));
+  assert.deepEqual(
+    missing,
+    [],
+    `The shard plan names files that do not exist in e2e/: ${missing.join(", ")}`,
+  );
+}
 
 /**
  * The workflow cannot import the plan, so its three shard-count spellings are
@@ -187,6 +205,7 @@ if (
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   verifyWorkflowWiring(readFileSync(WORKFLOW_FILE, "utf8"));
+  verifyPlannedFilesExist();
   const indexes = Array.from(
     { length: EDITOR_SHARD_COUNT },
     (_, index) => index + 1,

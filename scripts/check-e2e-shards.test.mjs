@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   latestShardReports,
   verifyCoverage,
+  verifyPlannedFilesExist,
   verifyWorkflowWiring,
 } from "./check-e2e-shards.mjs";
 import {
@@ -38,6 +39,21 @@ test("balanced whole-file plan contains each file once and matches exact paths",
     }
   }
 });
+
+test("every file the plan allocates exists in e2e/", () => {
+  verifyPlannedFilesExist();
+});
+
+test("a planned file that no longer exists fails, naming it", () => {
+  const plan = [["kept.spec.ts", "gone.spec.ts"], ["also-kept.spec.ts"]];
+  const exists = (file) => file !== "gone.spec.ts";
+  assert.throws(
+    () => verifyPlannedFilesExist(plan, exists),
+    /do not exist in e2e\/: gone\.spec\.ts/,
+  );
+  assert.doesNotThrow(() => verifyPlannedFilesExist(plan, () => true));
+});
+
 test("full and focused invocations are not narrowed", () => {
   assert.deepEqual(editorShardArguments([]), []);
   assert.deepEqual(editorShardArguments(["editor.spec.ts", "--grep=save"]), [
