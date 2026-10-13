@@ -174,6 +174,69 @@ describe("case B: server function → loader → useLoaderData", () => {
     expect(subtitle?.fieldKey).toBe("subtitle");
   });
 
+  it("does not offer a disabled loader slot as a selectable content field", async () => {
+    // Same valid route and component as the positive case above. Only the
+    // stored section's enabled state changes: the normal loader chain must
+    // not turn a hidden Document slot into an editable default-valued Hero.
+    const hidden: StorefrontPageDocument = {
+      ...HOME,
+      sections: HOME.sections.map((section) => ({
+        ...section,
+        enabled: false,
+      })),
+    };
+    const { html, prepared } = await renderLivePreviewRoute({
+      files: themeFiles(CASE_B_ROUTE),
+      documents: { index: hidden },
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    // A missing fixture or failed content read cannot satisfy this test:
+    // Core did exclude the hidden value, while the positive case renders it.
+    expect(html).not.toContain("Stored title");
+    const root = mountLivePreview(html);
+    const heading = root.querySelector("h1");
+    expect(heading).not.toBeNull();
+    expect(heading?.textContent).toBe("Default title");
+    expect(resolveSelectable(heading)).toBeNull();
+  });
+
+  it("keeps two loader slot instances of the same component distinct", async () => {
+    const source = route({ body: '  const { hero, promo } = Route.useLoaderData();\n  return <main><Hero {...hero} /><Hero {...promo} /></main>;' });
+    const { html, prepared } = await renderLivePreviewRoute({
+      files: themeFiles(source),
+      documents: { index: {
+        ...HOME,
+        sections: [...HOME.sections, { id: "promo", type: "hero", enabled: true, props: { title: "Promo title", subtitle: "Promo subtitle" } }],
+      } as StorefrontPageDocument },
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    const root = mountLivePreview(html);
+    const headings = root.querySelectorAll("h1");
+    expect(headings).toHaveLength(2);
+    expect(headings[0]?.textContent).toBe("Stored title");
+    expect(headings[1]?.textContent).toBe("Promo title");
+    expect(resolveSelectable(headings[0]!)?.sectionId).toBe("hero");
+    expect(resolveSelectable(headings[1]!)?.sectionId).toBe("promo");
+    expect(resolveSelectable(headings[0]!)?.fieldPath).toBe("title");
+    expect(resolveSelectable(headings[1]!)?.fieldPath).toBe("title");
+  });
+
+  it("refuses a handwritten marker conflicting with the loader component's source", async () => {
+    const files = themeFiles(CASE_B_ROUTE).map((file) => file.path === HERO
+      ? { ...file, content: file.content.replace("<h1>", '<h1 data-storefront-field="subtitle">') }
+      : file);
+    const { html, prepared } = await renderLivePreviewRoute({ files, documents: { index: HOME } });
+    expect(prepared.bindings.skipped).toEqual([]);
+    const root = mountLivePreview(html);
+    const heading = root.querySelector("h1");
+    expect(heading?.textContent).toBe("Stored title");
+    expect(heading?.getAttribute("data-morph-field-refused")).toBe("conflict");
+    const selection = resolveSelectable(heading);
+    expect(selection?.sectionId).toBe("hero");
+    expect(selection?.contentUnavailable).toBe("marker-conflicts-source");
+    expect(selection?.fieldKey).toBeNull();
+  });
+
   it("still names no Document section where the source cannot be confirmed, so nothing can be written there", async () => {
     // The handler changes what it read, so the link from `hero` to the page's
     // `hero` slot is not proven. The page still renders; a click on the
