@@ -1,6 +1,6 @@
 # 共用內容讀取核心與平台接線（設計草稿）
 
-狀態：**草稿，尚未核准實作。** 本文取代原本只針對 Astro 的 `docs/astro-content-read-module-design.md`（已改名為本檔）。依據 ROADMAP 1.3（2026-10-13 確認的方向）：所有框架用同一套 Morph API 讀內容，讀取核心不依賴 React 或 Astro，框架接線由平台或 integration 處理。所述「現況」於 2026-10-13 對照 `main`（`c266b9c`）核對。
+狀態：**草稿，尚未核准實作。** 本文取代原本只針對 Astro 的 `docs/astro-content-read-module-design.md`（已改名為本檔）。依據 ROADMAP 1.3（2026-10-13 確認的方向）：所有框架用同一套 Morph API 讀內容，讀取核心不依賴 React 或 Astro，框架接線由平台或 integration 處理。所述「現況」於 2026-10-13 對照 `main`（`c266b9c`）核對。§4.5–§4.8（正式接線位置、SDK 交付比較、作者自己電腦、隱藏區塊驗收）是同日追加的設計比較，只有文件，沒有實作。
 
 標示方式：**【已核對】** 是在程式碼或測試中確認的事實，附檔案位置；**【提案】** 是本文的設計，待核准；**【未驗證】** 是尚未用測試證明的部分。
 
@@ -96,7 +96,7 @@ const { hero } = home;
 | Build Preview | Core 驗證權杖後設定 | `src/lib/storefront/service/build-preview/build-preview-request.ts` |
 | Live Preview（Start dev、`astro dev`） | 預覽 Worker entry 對每個請求 `set`，指向只有它回答的 `http://morph-preview-content.invalid`，資料來自草稿快照 | `src/lib/storefront/compiler/theme-preview-start-runtime.ts` |
 | 建置時預先渲染（Astro） | Morph 建置 integration 的 prerender 包裝，指向只回答封存快照的 loopback server | `src/lib/storefront/theme-framework/astro-native-prerender.ts` |
-| 作者自己電腦 | 無 | Start 接線以 DEV 限定的 `MORPH_CONTENT_ORIGIN` 補上；Astro 尚無（§9 待決 3） |
+| 作者自己電腦 | 無 | Start 接線以 DEV 限定的 `MORPH_CONTENT_ORIGIN` 補上（已發布內容）；Astro 延後，設計須保留這條路（§4.7） |
 
 核心只取標頭的 `origin`，路徑忽略；位址不從模組層變數、前一個請求或使用者可控的輸入取得。
 
@@ -126,17 +126,117 @@ const { hero } = home;
 - `astro dev`（Morph 預覽 Worker entry、wrapper config、import guard，皆未修改）：Theme 沒有 `src/middleware.ts`，頁面讀到草稿（`local-vite-preview-server.content-read-parity.test.ts`）。
 - `astro build`（Morph build runner 與 prerender 包裝，未修改）：`/about` 的預先渲染讀到封存值。反向：同一組檔案**不加** integration 時，核心拿不到請求，丟 `no_content_source`，`/about` 預先渲染失敗、建置失敗（`native-astro-case-a.build.test.ts`）。所以讓讀取成功的是 integration 的 `addMiddleware`，不是 Theme 寫的東西。
 
-**替代之處**：正式做法是由 Morph 自己的 wrapper config 加入這個 integration（`astro-preview-workspace.ts` 的 `integrations: [...own.integrations, morphAstroPreview()]`、`astro-native-prerender.ts` 的 `morphAstroBuild()` 同一行）。那是產品程式，這一輪不改；測試支援改為把 integration 加進 Theme 的 `astro.config.mjs` 再交給 harness。效果相同（integration 進入同一份清單），但**Morph 的 wrapper 本身還沒有這一行**。
+**替代之處**：測試支援把 integration 加進 Theme 的 `astro.config.mjs` 再交給 harness，只因 Morph 的 wrapper 是產品程式、這一輪不改。這是測試的權宜，**不是正式位置**：正式接線只放在 Morph 產生的 wrapper，絕不寫進作者的設定檔（§4.5）。**Morph 的 wrapper 本身還沒有這一行。**
 
 ### 4.3 Start
 
 【已核對：真實 Start dev server】接線檔案安裝為 `src/morph/content.ts`，只回答核心的問題。Start 的 `getRequest()` 本身就是每次請求的上下文，不需要額外 middleware。
 
-【已核對】Start Starter 目前的 `src/morph/content.ts` 是作者的檔案（Starter 種入，升級規則只替換位元組未改的副本），讀取邏輯寫在裡面。改為「核心 + 接線」時，Starter 怎麼遷移屬於正式 SDK 的交付（§9 待決 5），本輪不改 Starter。
+【已核對】Start Starter 目前的 `src/morph/content.ts` 是作者的檔案（Starter 種入，升級規則只替換位元組未改的副本），讀取邏輯寫在裡面。改為「核心 + 接線」時，Starter 怎麼遷移屬於正式 SDK 的交付（§4.6），本輪不改 Starter。
 
 ### 4.4 刷新
 
 存檔後刷新沿用既有預覽管線：Core 寫入新的草稿快照，預覽 Worker 回答新內容，下一次渲染重新讀取。【已核對：真實執行】兩個框架寫入新快照後，下一次渲染都顯示新值（核心不快取）。
+
+### 4.5 正式接線位置：Morph 產生的 wrapper，不是作者的設定檔
+
+原則【提案】：平台接線一律先放進 Morph 產生的 wrapper。作者的 `astro.config.mjs`、`vite.config.ts`、`wrangler.jsonc`、`src/middleware.ts` 都不為讀取內容而改。
+
+現有的 wrapper【已核對】：
+
+| 路徑 | 產生的檔案 | 產生它的程式 | 現在的 integration 清單 |
+|---|---|---|---|
+| Astro Live Preview（`astro dev`） | `.morph/astro.preview.config.mjs`（`ASTRO_PREVIEW_CONFIG_PATH`），旁邊是 integration 檔 `ASTRO_PREVIEW_INTEGRATION_PATH` | `src/lib/storefront/theme-framework/astro-preview-workspace.ts` 的 `wrapperConfigSource`，由 `planAstroPreviewWorkspace` 寫入工作區 | `[...(own.integrations ?? []), morphAstroPreview()]`；`morphAstroPreview` 的 `astro:config:setup` 目前只呼叫 `updateConfig`（Vite plugins、import guard、server 設定） |
+| Astro 建置 | `.morph/astro.build.config.mjs`（`ASTRO_WRAPPER_CONFIG_PATH`），integration 原始碼由 `astroBuildIntegrationSource` 產生 | `src/lib/storefront/theme-framework/astro-native-prerender.ts` 的 `astroWrapperConfigSource`，由 `astroPrerenderWorkspaceFiles` 寫入 | `[...(own.integrations ?? []), morphAstroBuild()]`；`morphAstroBuild` 的 `astro:config:setup` 目前只呼叫 `updateConfig` |
+| Start 建置 | `.morph/vite.config.ts`（`NATIVE_WRAPPER_CONFIG_PATH`） | `src/lib/storefront/theme-framework/tanstack-start-native-wrapper.ts` 的 `nativeWrapperConfigSource` | 作者的 Vite config 原樣 import，加上 Morph 的 import guard 與 frozen-content plugin |
+
+兩份 Astro wrapper 都「原樣 import 作者的 config，Morph 只在最後加自己的 integration」，`.morph/` 是 Morph 的目錄（`tanstack-start-native-wrapper.ts` 的註解：「Nothing here rewrites the project's files; the wrapper sits beside them in `.morph/`, which is Morph's.」）。
+
+加入的位置【提案，未實作】：
+
+- Astro：在 `morphAstroPreview()` 與 `morphAstroBuild()` 既有的 `astro:config:setup` hook 裡多呼叫一次 `addMiddleware({ order: "pre", entrypoint })`，entrypoint 是 Morph 寫在 `.morph/` 下的 middleware 檔（相當於 `content-read-core/astro/middleware.ts` 與 `request-context.ts`）。不新增第三個 integration，也就不改 wrapper 的清單形狀；兩條路徑（預覽、建置）同一份 middleware 原始碼。
+- Start：不需要 middleware（§4.3）；接線只是 `src/morph/content.ts` 的解析對象（§4.6），wrapper 不必為讀取多做事。【未驗證：Start Live Preview 的 wrapper 是否也要配合 §4.6 的模組解析】
+- import guard：`.morph/` 在工作區內，兩份 guard 都以「解析到工作區內或核准的套件」判斷，所以不必放寬允許清單【已核對：guard 規則見 `astro-preview-workspace.ts` 的 `previewImportGuardSource`；未驗證：實際把 middleware 放在 `.morph/` 時】。
+
+驗收須證明「作者設定檔未改」【提案】：
+
+1. 以 fixture 原樣的位元組啟動 `astro dev` 與 `astro build`（不經測試支援改寫 `astro.config.mjs`），讀取成功；測試斷言交給 harness 的作者檔案 sha256 等於 fixture 磁碟上的檔案。
+2. 反向：同一組檔案，wrapper 不呼叫 `addMiddleware` 時，`astro dev` 回 500（`no_content_source`），建置失敗。
+3. 工作區中除了 `.morph/` 與平台安裝的檔案（§4.6）之外，沒有任何檔案與作者的修訂不同；修訂本身（存進 Core 的 source revision）不含 `.morph/`。
+4. 作者自己有 `src/middleware.ts`（含 `sequence()`）時兩者都執行，作者的 middleware 讀得到內容。
+5. Theme 不是 Morph 管線執行時（作者自己電腦），作者設定檔一樣不必改（§4.7）。
+
+目前的測試替代（§4.2）只滿足 2 的建置部分，不滿足 1、3、4、5。
+
+### 4.6 SDK 交付：兩個做法的比較
+
+兩個做法都必須滿足的硬性條件【提案】：
+
+- **網站永遠不帶自己改過的核心**：核心的每一份副本都等於平台維護的某一版位元組。
+- **升級永遠不覆寫作者改過的檔案**。
+
+現況【已核對】：
+
+- `src/morph/content.ts` 是作者的檔案（rule 01 §4.4；`src/lib/storefront/ast/theme-content-module.ts` 開頭註解：「Morph seeds it and the Starter upgrade replaces an untouched copy, but an author may edit or delete it」）。
+- Starter 升級只替換位元組完全等於已知 Starter 世代的副本：`src/lib/storefront/starter-theme-files.ts` 以 `LEGACY_STARTER_THEME_CONTENT_MODULE_SOURCE`、`..._V12_`、`..._V13_`、`..._V14_SOURCE` 比對 `src/morph/content.ts`；其他檔案也一樣（`createStarterThemeWorkspaceUpgrade`：「replaced only when their bytes still exactly match the previous bootstrap」）。新 route 只在它的 import 都能滿足時寫入（`starterSourceImportsSatisfied`）。升級是可預覽的計畫，以 OCC 寫入。
+- 升級只對 Start 工作區（`starterUpgradeApplies`）；目前沒有 Astro Starter，Astro 工作區的升級計畫是空的。
+- 已有明確的「還原內容模組」指令（`RESTORE_THEME_CONTENT_MODULE_COMMAND`，`theme-content-module.ts`），由作者主動執行。
+
+**(a) 平台維護核心 + 作者端的薄入口檔**
+
+- 形狀：核心（與 Astro 的 request-context／middleware）不存進網站的原始碼修訂，由平台在每次預覽、建置時放進 `.morph/`（或以 wrapper 提供的模組解析，例如 Vite alias），版本由平台決定。作者擁有一個很薄的 `src/morph/content.ts`：只從平台模組 re-export `morph`（Start 版另含 `createIsomorphicFn` 的那幾行，或也一併移到平台）。
+- 核心怎麼更新：平台換掉 `.morph/` 的內容即可，網站不需要任何寫入；每次建置記錄用了哪一版核心（建議放進建置的 input hash，讓重建可重現）。
+- 作者修改怎麼偵測、保留：核心不在網站裡，作者無從改它，硬性條件一自然成立。薄入口檔沿用現行規則：位元組等於已知世代才替換，否則保留並列出。作者改了入口檔（例如包一層自己的函式）也不影響核心本身。
+- 既有網站的遷移：Start Starter 的 `src/morph/content.ts` 若位元組等於已知世代，升級把它換成薄入口檔；改過的保留，舊介面（`loadContentSlots`、`content()`）在遷移期間要繼續可用，不能讓作者的頁面壞掉。
+- 風險：
+  - 作者在 Morph 之外（自己電腦、自己的 CI）也要拿得到同一版核心，否則薄入口檔解析不到（§4.7）。這需要一個平台提供的取得方式（例如本機同步工具寫入 `.morph/`，或可下載的固定版本），**不假設 npm**，屬待決。
+  - 建置輸入多了一個平台提供的部分，回溯舊建置時要能取得當時那一版。
+  - 編輯器的模組能力檢查（`confirmThemeContentModuleFunctionExport`）目前只認在 `src/morph/content.ts` 內宣告的函式，re-export 會被判為 unconfirmed；薄入口檔的寫法要與它對齊，或讓它認得平台模組。這會碰到產品程式，屬待決。
+
+**(b) Starter 把檔案複製進網站**
+
+- 形狀：Starter 種入 `src/morph/core.ts` 與接線檔，和現在種入 `src/morph/content.ts` 一樣，都在網站的原始碼修訂裡。
+- 核心怎麼更新：Starter 升級，位元組等於已知世代才替換。
+- 作者修改怎麼偵測、保留：沿用現行規則，作者改過的不覆寫。**但這正好違反硬性條件一**：作者改過 `core.ts` 之後升級不能碰它，網站從此帶著自己改過的核心。要同時滿足兩個條件，只能把 `core.ts` 定為「平台擁有、作者唯讀」的新類別（Code 模式拒絕寫入、建置拒絕不認得的位元組），這是所有權規則與契約的變更（rule 01 §4.4、#187 §3.2「SDK 是作者的檔案」）。
+- 既有網站的遷移：升級新增 `core.ts`、替換未改的 `content.ts`；改過的保留，網站同時有新核心與舊讀取邏輯。
+- 風險：上述衝突；每個網站都存一份核心，版本分散；Astro 目前沒有 Starter 也沒有升級路徑，Astro 網站要另建一套。
+
+**建議【提案】：(a)。** 只有 (a) 能在不改所有權規則的前提下同時滿足兩個硬性條件：核心不在網站裡，作者改不到；作者擁有的只有薄入口檔，沿用現行「只換未改的副本」規則。代價是「平台以外的環境怎麼拿到同一版核心」必須設計（§4.7、§9），而且要在 (a) 定案時一起定，不能事後補。
+
+### 4.7 作者在自己電腦執行（延後，但不得被設計排除）
+
+產品目標【提案，依使用者 2026-10-13 指示】：作者能在自己電腦上以 `astro dev`、Start 的 `vite dev` 執行網站。可以之後才實作，但現在的設計不能讓它變得不可能。
+
+已發布內容：
+
+- 【已核對】Start：DEV 限定的 `MORPH_CONTENT_ORIGIN`（Starter 的 `localContentOrigin`，建置時被替換成常數），加上作者自願放進自己 `vite.config.ts` 的本機開發代理（`src/lib/storefront/local-dev/morph-dev-content-proxy.ts`，`docs/local-development.md`），讓用戶端導覽也讀得到。讀的是 Core 公開的 `/_morph/content`，即已發布快照，不帶 cookie。
+- 【提案】Astro：同一個核心、同一個 `localOrigin` 欄位；差別只在 Astro 接線怎麼取得這個值。Astro 在 workerd 中執行，shell 的環境變數不會自動出現在 `process.env`【未驗證】，可能要由 integration 在 `astro:config:setup` 讀取後以 `define` 注入，或讀 `.dev.vars`。延後，但核心的 `MorphContentSource.localOrigin` 欄位必須保留，接線也不能假設「沒有 Morph 就沒有來源」。
+- 必須保留的設計空間【提案】：(1) 核心不得寫死只認平台標頭；(2) 平台接線（§4.5）在 Morph 管線之外缺席時，作者端有另一個不改作者設定檔的取得方式（對 Astro 而言，這和 (a) 的「核心在平台以外怎麼取得」是同一個待決問題）；(3) 標頭存在但不可用時仍是 `invalid_content_origin`，絕不退回本機位址（現行行為，已核對）。
+
+草稿內容（本機讀草稿）：
+
+- 【提案】只在授權下：作者在 Morph 內明確發出一個預覽憑證，綁定網站與作者，可撤銷、有期限（與 #214 預覽權限規格同一套撤銷語意）。
+- 憑證不進頁面輸出、不進網址、不進錯誤訊息：只放在本機開發伺服器的環境（與 `MORPH_CONTENT_ORIGIN` 同一處），由伺服器端的讀取帶上；核心目前 `credentials: "omit"` 且不轉送作者請求的標頭，這個規則保留，憑證是額外、明確的一個來源。用戶端導覽的讀取經本機開發代理代送，瀏覽器看不到憑證。
+- 撤銷後下一次讀取就被拒（不是快取到期才失效），錯誤碼走共用集合；是否新增代碼屬待決（§9）。
+- 這需要 Core 端的新端點或權限規則，是產品與契約（#214）的範圍，本文只列需求，不設計端點。
+
+本文原本寫「Astro 尚無」「不採用」之處，都改為「延後」加上上面必須保留的設計空間。
+
+### 4.8 隱藏區塊的驗收
+
+驗收不只是「API 不回該區塊的值」，還要【提案】：
+
+1. 頁面不顯示被隱藏區塊的**元件預設值**（作者在 Design 隱藏 hero，網站上就看不到 hero，不是看到 Starter 的佔位文字）。
+2. 正常的 Astro frontmatter 計算在區塊不存在時不會崩潰：`const { hero } = home;` 以及常見的後續寫法（例如讀 `hero.title` 再做轉換）。
+3. 不要求作者為此改寫頁面。
+
+目前原型的行為【已核對：真實執行】：`hero` 是 `undefined`，`<Hero {...hero} />` 等於不給任何 prop，所以元件顯示自己的預設值（parity 測試的隱藏案例在 Astro 與 Start 都如此）。`const { hero } = home;` 不會崩潰；但 `hero.title` 這類存取在 `undefined` 上會丟錯【未驗證：沒有 fixture 這樣寫】。本輪依指示不改 fixture 或測試去「修正」它。
+
+沒有作者程式碼或契約變更就做不到的部分（明列為缺口）：
+
+- **缺口 1：不顯示預設值。** 頁面直接展開 `hero` 時，讀取核心無法讓元件不渲染：核心只能決定 `hero` 的值，不能取消 `<Hero />` 這個節點。#187 §3.2（隱藏區塊回 `{}`）解決的是「存取 `hero.title` 不崩潰」，**不**解決預設值，反而讓 `{...{}}` 照樣顯示預設值。要不顯示，只能 (i) 作者寫 `isHidden` 判斷（違反「不要求作者改寫」），或 (ii) 編譯時注入隱藏判斷（#187 §4；Astro 屬 L1.5 之後），或 (iii) 平台在渲染結果中移除該區塊（需要能在輸出中定位區塊，與 §8 的標記問題相關，未驗證）。
+- **缺口 2：不崩潰。** 目前形狀下 `hero.title` 在 `undefined` 上會崩潰；#187 §3.2 若核准（回 `{}`）可讓一層的存取不崩潰，但 `hero.title.toUpperCase()` 這類更深的存取仍會在 `undefined` 上崩潰。完全不崩潰需要作者的防禦寫法或改變頁面形狀的契約，兩者都在本文範圍外。
+- 兩個缺口都屬契約（#187）的決定，列入 §9。
 
 ## 5. 一份核心由兩個 fixture 共用：如何證明
 
@@ -146,7 +246,7 @@ const { hero } = home;
 - 結構測試：兩個工作區的 `src/morph/core.ts` 的 sha256 都等於該檔；每個工作區只有這一個檔案含讀取邏輯；各框架的 `src/morph/content.ts` 都從 `./core` import。反向：Theme 自帶一份讀取程式時會被測出。
 - 真實執行：parity 測試在 `astro dev` 與 Start dev server 啟動後，讀取兩個預覽工作區磁碟上的 `src/morph/core.ts`，sha256 都等於該檔。
 
-這不是「兩邊各寫一份再比對結果」：兩邊執行的是同一份位元組；正式 SDK 的對應做法是兩邊安裝同一個套件版本。
+這不是「兩邊各寫一份再比對結果」：兩邊執行的是同一份位元組。正式交付如何做到同一份位元組（不假設 npm 套件）見 §4.6。
 
 ## 6. 讀取共用，寫入權限分開【提案，依 ROADMAP 1.3】
 
@@ -167,12 +267,13 @@ const { hero } = home;
 
 ## 9. 待使用者決定
 
-1. **正式接線放在哪裡**：Astro integration 是否加入 Morph 的 wrapper config（預覽與建置各一行，§4.2），或以 Morph 套件的 integration 交付。這是產品程式變更，需另行授權。
+1. **正式接線的實作**：§4.5 建議在 `morphAstroPreview()`／`morphAstroBuild()` 既有的 hook 中呼叫 `addMiddleware`，middleware 放在 `.morph/`。這是產品程式變更，需另行授權；驗收條件見 §4.5。
 2. **接線找不到請求時的錯誤碼**：目前沿用 `no_content_source`，訊息改為核心固定的一句。或所有框架一起新增一個代碼（會改變共用集合）。
-3. **作者自己電腦的內容來源**：Astro 是否也支援 DEV 限定的 `MORPH_CONTENT_ORIGIN`。Astro 在 workerd 中執行，shell 的環境變數不會自動出現在 `process.env`，做法要另外驗證；`docs/astro-theme-plan.md` §4「不採用 `MORPH_CONTENT_ORIGIN`」已與 Start 現況不一致，需要更新。
+3. **作者自己電腦（延後，不排除，§4.7）**：Astro 怎麼取得 DEV 限定的 `localOrigin`（workerd 中的環境變數，未驗證）；核心在 Morph 管線之外怎麼取得同一版（與待決 5 同一題）；本機讀草稿的授權憑證由 Core 的哪個端點發出、怎麼撤銷（屬 #214 與產品範圍）；撤銷後的錯誤是否用新代碼。`docs/astro-theme-plan.md` §4「不採用 `MORPH_CONTENT_ORIGIN`」已與 Start 現況不一致，該文件需要另行更新為「延後」（本輪只改本文）。
 4. **轉址與大小限制**：是否在核心內 `redirect: "manual"` 並限制回應大小，讓 `redirect_refused`／`response_too_large` 不只來自本機代理。改在核心，所有框架一起生效。
-5. **交付方式**：正式 SDK 是套件，或 Starter 種入的作者檔案；Start Starter 現有的 `src/morph/content.ts`（含失敗回預設值的舊介面）如何遷移。
-6. **隱藏區塊**：目前形狀下，案例 A／B 的頁面直接展開 `hero`，隱藏時 `hero` 是 `undefined`，元件顯示自己的預設值（真實執行在兩個框架都如此，§10）。這不是讀取失敗，但也不是終點；由 #187 §3.2（`{}`）與 §4（編譯時注入隱藏判斷）決定，兩者都不要求作者改寫。
+5. **交付方式（§4.6，建議 (a)）**：是否採「平台維護核心 + 薄入口檔」；核心在平台以外的取得方式（不假設 npm）；建置記錄核心版本的方式；編輯器的模組能力檢查如何認得 re-export 的 `morph`（產品程式）；Start Starter 現有 `src/morph/content.ts`（含失敗回預設值的舊介面）的遷移期。若選 (b)，需要「平台擁有、作者唯讀」的新檔案類別，這是所有權規則與 #187 §3.2「SDK 是作者的檔案」的變更。
+6. **隱藏區塊（§4.8）**：缺口 1（不顯示預設值）與缺口 2（深層存取不崩潰）都無法只靠讀取核心解決。需要 #187 決定：§3.2 的 `{}` 只解決一層存取；不顯示預設值要靠 §4 的編譯時注入、平台在輸出中移除區塊，或接受作者寫 `isHidden`。這是契約層級的決定。
+7. **wrapper 與作者 middleware 的順序**：`order: "pre"` 讓平台 middleware 在作者的之前執行；作者若在自己的 middleware 中也要讀內容，這個順序是必要的，需在 §4.5 驗收第 4 點證明。
 
 ## 10. Fixture 與測試
 
@@ -202,6 +303,9 @@ const { hero } = home;
 - 真實框架中的網路錯誤與上游拒絕（`content_not_found` 等）：只在核心原型測；真實執行只測了 `invalid_path`。
 - Start 接線在 Node 中直接執行（需要 Start 編譯器處理 `createIsomorphicFn`），以及 Start 的用戶端導覽讀取（`same-origin` 分支）。
 - Start 的建置（本輪只有 dev server）。
-- Morph 自己的 wrapper config 加入 integration（§4.2 的替代）；作者另有 `src/middleware.ts` 時的順序。
+- Morph 自己的 wrapper 呼叫 `addMiddleware`（§4.5，目前是測試替代）；§4.5 驗收第 1、3、4、5 點；作者另有 `src/middleware.ts` 時的順序。
+- SDK 交付（§4.6）：兩個做法都只是比較，沒有原型。
+- 作者自己電腦執行 Astro 與本機讀草稿（§4.7）：延後，未驗證。
+- 隱藏區塊不顯示預設值、深層存取不崩潰（§4.8 缺口 1、2）。
 - Cloudflare Sandbox 容器 transport 的 Live Preview。
 - 正式 SDK：本輪只有測試原型。
