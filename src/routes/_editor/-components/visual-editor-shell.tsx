@@ -3434,7 +3434,8 @@ export function VisualEditorShell({
   // shown again — the author selects it afresh, at a fresh source baseline.
   useEffect(() => {
     const previous = previousConfirmedHiddenRef.current;
-    previousConfirmedHiddenRef.current = confirmedHiddenSections;    const newlyHidden = new Set<string>();
+    previousConfirmedHiddenRef.current = confirmedHiddenSections;
+    const newlyHidden = new Set<string>();
     for (const key of confirmedHiddenSections) {
       if (!previous.has(key)) newlyHidden.add(key.split("\u0000")[1] ?? "");
     }
