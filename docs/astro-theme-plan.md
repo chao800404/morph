@@ -678,8 +678,8 @@ OCC）→ 該實例更新、其他實例不變**。
 ## 4. 內容
 
 契約：Theme 伺服器端的程式從請求標頭 `x-morph-content-origin` 取得 origin，再呼叫
-`GET <origin>/_morph/content?path=<pathname>`。**Astro 不新增任何管道**：不新增環境變數（start-native
-計畫早期草稿提到的 `MORPH_CONTENT_ORIGIN` 並未實作，這裡也不採用）、不用虛擬模組、不用 `Astro.locals`。
+`GET <origin>/_morph/content?path=<pathname>`。**Astro 目前不新增任何管道**：不新增環境變數、不用虛擬模組、不用 `Astro.locals`。
+（2026-10-13 更正：`MORPH_CONTENT_ORIGIN` 已在 Start 的開發模式使用，見 `src/lib/storefront/local-dev/morph-dev-content-proxy.ts` 與 Starter 的內容模組。作者在自己的電腦執行網站（localhost）仍是產品目標，Astro 的具體方案與實作延後；設計須保留用同一套 SDK 讀已發布內容，以及經授權、可撤銷地讀草稿。跨框架讀取核心的設計見 ROADMAP 1.3。）
 
 Astro Theme 在原始碼中有一個看得到的讀取函式（例如 `src/morph/content.ts`），以
 `Astro.request.headers.get("x-morph-content-origin")` 取得 origin，形狀與 starter Theme 的
