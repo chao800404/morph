@@ -154,6 +154,7 @@ describe("selecting one entry of a repeated field", () => {
           }),
         ],
       }),
+      { inputFieldPath: "navItems.1.link" },
     );
   });
 

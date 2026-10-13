@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { EDITOR_PATH, previewFrame } from "./helpers";
 import { THEMES, publishShowingRelease, serverFn } from "./native-acceptance";
-import { themeScopeFromEditorPath, type ThemeScope } from "./native-compat";
+import { themeScopeFromEditorPath, themeSourceGeneration, type ThemeScope } from "./native-compat";
 
 /**
  * A Header the layout Document marks hidden stays hidden on every load.
@@ -137,6 +137,7 @@ async function writeSlot(
       sectionId,
       props,
       expectedDraftGeneration: layout.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page,scope!),
     },
   )) as { success: boolean; message?: string };
   expect(written.success, written.message).toBe(true);
