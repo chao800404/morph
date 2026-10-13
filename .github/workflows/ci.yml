@@ -155,6 +155,14 @@ jobs:
           node --test scripts/check-e2e-shards.test.mjs
           node scripts/check-e2e-shards.mjs
 
+      # Every spec gated on the full Start preview is run by the full Start
+      # job or excluded with a reason, and that job is wired to turn the
+      # runtime on and to refuse a skipped Start test.
+      - name: Check the full Start preview plan
+        run: |
+          node --test scripts/check-e2e-start.test.mjs
+          node scripts/check-e2e-start.mjs
+
   editor-e2e-local-preview:
     name: Editor E2E shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
@@ -297,3 +305,96 @@ jobs:
         run: |
           node --test scripts/check-e2e-shards.test.mjs
           node scripts/check-e2e-shards.mjs shard-artifacts
+
+  # The specs gated on the full TanStack Start preview, which skip on every
+  # shard above because the shards run the default client-only preview. Same
+  # local sidecar transport and environment as the shards, with the Start
+  # runtime turned on in both places it is read: the Worker's
+  # `.dev.vars.local_preview_e2e` and the specs' `MORPH_E2E_PREVIEW_RUNTIME`.
+  # The file list and its exclusions live in scripts/editor-e2e-start.mjs;
+  # Architecture guards checks this job against it.
+  editor-e2e-full-start:
+    name: Editor E2E full Start preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The same installation, with the same retry rule, as the shards'.
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
+          for attempt in 1 2 3; do
+            status=0
+            timeout 240 pnpm exec playwright install --with-deps chromium 2>&1 | tee install.log || status=$?
+            [ "$status" -eq 0 ] && exit 0
+            if [ "$status" -ne 124 ] && ! grep -Eq "$transient" install.log; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            sudo pkill -f apt-get || true
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts."
+          exit 1
+
+      # The shards' environment (see "Write the run's environment" above),
+      # plus the Worker variable that selects the full Start preview.
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+          cat > .dev.vars.local_preview_e2e <<EOF
+          MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199
+          MORPH_LOCAL_THEME_PREVIEW_TOKEN=$(openssl rand -hex 32)
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          EOF
+
+      - name: Editor end-to-end, full Start preview
+        env:
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/full-start.json
+        run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts e2e/native-compat-preview.spec.ts
+
+      # Playwright passes a run whose tests skipped themselves, and every
+      # Start test skips when the runtime did not reach it. Only the listed
+      # by-design skips may skip; anything else fails the job.
+      - name: Require every Start test to have run
+        run: node scripts/check-e2e-start.mjs test-results/full-start.json
+
+      # Not under `editor-e2e-results-*`: the acceptance job downloads that
+      # pattern and reads it as shard reports.
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-full-start-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error
