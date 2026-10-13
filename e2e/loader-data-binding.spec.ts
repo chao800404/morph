@@ -7,11 +7,13 @@ import {
   clickExposedElement,
   enableSelection,
   openContentTab,
+  isServerFunctionCall,
   previewFrame,
 } from "./helpers";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
+  themeSourceGeneration,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
@@ -240,6 +242,7 @@ test.describe("case B in the full Start preview", () => {
         sectionId: SLOT,
         props: { title: STORED_TITLE },
         expectedDraftGeneration: ensured.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page,scope),
         routePath: ROUTE_PATH,
       },
     )) as { success: boolean };
@@ -315,5 +318,52 @@ test.describe("case B in the full Start preview", () => {
     expect((await saved).ok()).toBe(true);
     expect(await storedProps(page)).toEqual({ title: edited });
     await expect(heading(page)).toHaveText(edited, { timeout: 15_000 });
+  });
+
+  test("a delayed save from an old selection is refused after another Code source write", async ({page}) => {
+    test.setTimeout(240_000);
+    await openRoute(page);
+    await selectHeading(page);
+    const field = titleField(page);
+    await expect(field).toBeVisible();
+    const before = await storedProps(page);
+    const sourceBefore = await themeSourceGeneration(page,scope!);
+    const edited = `Held stale selection ${Date.now()}`;
+    let release!: () => void;
+    let observed!: () => void;
+    const held = new Promise<void>(resolve => {release=resolve;});
+    const observedRequest = new Promise<void>(resolve => {observed=resolve;});
+    let writes = 0;
+    const handler = async (route: import("@playwright/test").Route) => {
+      if (isServerFunctionCall(route.request().url(),"updateStorefrontThemeSectionProps") && (route.request().postData() ?? "").includes(edited)) {
+        writes += 1;
+        expect(route.request().postData()).toContain("expectedSourceGeneration");
+        observed();
+        await held;
+      }
+      await route.continue();
+    };
+    await page.route("**/_serverFn/**",handler);
+    try {
+      await field.fill(edited);
+      await field.press("Tab");
+      await observedRequest;
+      // The same save function Code uses; an unrelated file changes too.
+      // First version invalidates every source change, not only related files.
+      const changed = await writeThemeFiles(page,scope!, [{path:"src/selection-baseline-note.ts",content:"export const note = 1;\n"}]);
+      expect(changed.success,JSON.stringify(changed)).toBe(true);
+      expect(await themeSourceGeneration(page,scope!)).toBe(sourceBefore+1);
+      const response = page.waitForResponse(r=>isServerFunctionCall(r.url(),"updateStorefrontThemeSectionProps") && (r.request().postData() ?? "").includes(edited));
+      release();
+      expect(await (await response).text()).toContain("SELECTION_SOURCE_CONFLICT");
+      await expect(page.getByText(/The source code has changed\. Select the field again/)).toBeVisible();
+      expect(await storedProps(page)).toEqual(before);
+      await expect(field).toHaveValue(edited);
+      await expect(field).toBeVisible();
+      expect(writes).toBe(1);
+    } finally {
+      release();
+      await page.unroute("**/_serverFn/**",handler);
+    }
   });
 });

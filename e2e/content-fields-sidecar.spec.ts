@@ -529,10 +529,47 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     browser,
   }) => {
     test.setTimeout(240_000);
+    // Visiting a route only creates a placeholder. Establish the real
+    // Document explicitly so the refusal compares the same stored draft.
+    await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...scope!, routePath: CROSS_TAB_ROUTE_PATH },
+    )) as {
+      success: boolean;
+      data?: { id: string; draftGeneration: number };
+    };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    expect(ensured.data).toBeDefined();
     await openRoute(page, CROSS_TAB_ROUTE_PATH, STALE_SLOT);
     await selectCard(page, STALE_SLOT);
     const field = titleField(page, "CrossTabStale title");
     await expect(field).toBeVisible();
+    const beforeSourceChange = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as {
+      success: boolean;
+      data: {
+        templates: Array<{
+          id: string;
+          routePath: string | null;
+          draftGeneration: number;
+          document: unknown;
+        }>;
+      };
+    };
+    expect(beforeSourceChange.success).toBe(true);
+    const beforeDocument = beforeSourceChange.data.templates.find(
+      (t) => t.routePath === CROSS_TAB_ROUTE_PATH,
+    );
+    expect(beforeDocument).toBeDefined();
+    expect(beforeDocument!.id).toBe(ensured.data!.id);
+    expect(beforeDocument!.draftGeneration).toBe(ensured.data!.draftGeneration);
 
     await deleteInAnotherTab(browser, STALE_SIDECAR);
 
@@ -551,27 +588,101 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     );
     await field.fill(edited);
     await field.press("Tab");
-    expect((await saved).ok()).toBe(true);
+    const refused = await saved;
+    expect(await refused.text()).toContain("SELECTION_SOURCE_CONFLICT");
 
     await expect(
-      page.getByText(
-        /Not saved: "title" is not an editable field in the current Theme source/,
-      ),
+      page.getByText(/The source code has changed\. Select the field again/),
     ).toBeVisible({ timeout: 15_000 });
+    // Previously this asserted a partial save and an automatic source reload.
+    // A stale selection now refuses the whole write and keeps the typed text:
+    // retaining these old expectations would require discarding the draft.
+    await expect(field).toHaveValue(edited);
+    await expect(field).toBeVisible();
+    const afterSourceChange = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as typeof beforeSourceChange;
+    expect(afterSourceChange.success).toBe(true);
+    const afterDocument = afterSourceChange.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(afterDocument?.draftGeneration).toBe(
+      beforeDocument!.draftGeneration,
+    );
+    expect(afterDocument?.document).toEqual(beforeDocument!.document);
     const heading = previewFrame(page).locator(
       `[data-storefront-section-id="${STALE_SLOT}"] h2`,
     );
-    await expect(heading).toHaveText(DEFAULT_TITLE, { timeout: 15_000 });
-    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0, {
-      timeout: 45_000,
-    });
-    await expect(field).toHaveCount(0);
+    // Restore the declaration without remounting the editor: a reload would
+    // discard the pending input and could not prove recovery. Refresh preview
+    // explicitly refetches source without remounting the editor; it does not
+    // itself confirm any retained content field.
+    const restored = await writeThemeFiles(
+      page,
+      scope!,
+      CROSS_TAB_FILES.filter((file) => file.path === STALE_SIDECAR),
+    );
+    expect(restored.success, JSON.stringify(restored)).toBe(true);
+    const refreshedSource = page.waitForResponse((response) =>
+      isServerFunctionCall(response.url(), "listStorefrontThemeFiles"),
+    );
+    await page.getByRole("button", { name: "Refresh preview" }).click();
+    expect(await (await refreshedSource).text()).toContain(STALE_SIDECAR);
+    await expect(cardTitle(page, STALE_SLOT)).toBeVisible({ timeout: 90_000 });
+    await selectCard(page, STALE_SLOT);
+    await expect(field).toHaveValue(edited);
+    const afterReselection = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as typeof beforeSourceChange;
+    const stillHeld = afterReselection.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(stillHeld?.draftGeneration).toBe(beforeDocument!.draftGeneration);
+    expect(stillHeld?.document).toEqual(beforeDocument!.document);
 
-    // Nothing was stored for the field: a fresh load renders the default.
+    const confirmed = `Confirmed recovery ${Date.now()}`;
+    const recovered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) &&
+        (response.request().postData() ?? "").includes(confirmed),
+      { timeout: 30_000 },
+    );
+    await field.fill(confirmed);
+    await field.press("Tab");
+    const accepted = await recovered;
+    expect(await accepted.text()).toContain("Theme section props updated");
+    const readback = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...scope!,
+    })) as typeof beforeSourceChange;
+    expect(readback.success).toBe(true);
+    const recoveredDocument = readback.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(recoveredDocument?.draftGeneration).toBe(
+      beforeDocument!.draftGeneration + 1,
+    );
+    expect(recoveredDocument?.document).toMatchObject({
+      sections: expect.arrayContaining([
+        expect.objectContaining({
+          id: STALE_SLOT,
+          props: expect.objectContaining({ title: confirmed }),
+        }),
+      ]),
+    });
+    // Only after the pending recovery has been proved do we reload/read back.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(heading).toBeVisible({ timeout: 90_000 });
-    await expect(heading).toHaveText(DEFAULT_TITLE);
-    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0);
+    await expect(heading).toHaveText(confirmed, { timeout: 90_000 });
+    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(1);
   });
 });
 
