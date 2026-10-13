@@ -279,6 +279,14 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * of rendering a list editor over an empty object and discarding the edits.
    */
   const contentStore = storedSection ? "document" : "source";
+  /**
+   * A hidden section opens no content editing (content binding contract §6),
+   * whichever entry named it: a canvas selection, its Sections-panel row, or
+   * the URL. Read from the stored document the shell hands this panel
+   * (`routeBackedContext`, the section model), the same judgement the shell
+   * lets a selection go by when a hide is confirmed.
+   */
+  const contentRefused = storedSection?.enabled === false;
 
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const isInspectorTab = tab === "styles" || tab === "content";
@@ -303,6 +311,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // Nothing is written into a hidden section from this panel.
+      if (contentRefused) return;
       if (documentSection) {
         onSectionPropsChange?.(documentSection.id, nextProps, options);
         return;
@@ -320,6 +330,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       if (sourcePath) onCodeComponentPropsChange?.(sourcePath, nextProps);
     },
     [
+      contentRefused,
       documentSection,
       onCodeComponentPropsChange,
       onSectionPropsChange,
@@ -479,7 +490,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
-          {selectedSection ? (
+          {selectedSection && !(contentRefused && tab === "content") ? (
             <EditorStyleInspector
               sharedLayoutPaths={sharedLayoutPaths}
               sectionTemplatePaths={sectionTemplatePaths}
@@ -487,6 +498,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}
+              documentWritesRefused={contentRefused}
               themeFiles={themeFiles}
               routeSourcePath={routeSourcePath}
               onPromoteText={onPromoteText}

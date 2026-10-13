@@ -3409,6 +3409,54 @@ export function VisualEditorShell({
     setActiveSelection(null);
   }, [editorMode, previewSelection]);
 
+  /**
+   * Sections the stored documents hold as hidden, by the document that owns
+   * them: the same reading the Sections panel shows its Show/Hide control
+   * from. Only a confirmed hide is in here. The canvas toggles at once, but a
+   * hide whose save was refused, failed or got no answer never changes these
+   * documents, so it never reaches the effect below.
+   */
+  const confirmedHiddenSections = useMemo(() => {
+    const hidden = new Set<string>();
+    for (const section of sectionModel.document.sections) {
+      if (section.enabled !== false) continue;
+      const templateId = sectionModel.bindings.get(section.id)?.templateId;
+      if (templateId) hidden.add(`${templateId}\u0000${section.id}`);
+    }
+    return hidden;
+  }, [sectionModel]);
+  const previousConfirmedHiddenRef = useRef(confirmedHiddenSections);
+  // A hidden section is not selectable (content binding contract §6). When a
+  // section the author has selected becomes hidden, the selection and the
+  // Inspector entry it feeds are let go, as when a section is deleted. Only
+  // the selection: anything typed and not yet saved stays where it is held
+  // (the pending content map), and nothing is restored when the section is
+  // shown again — the author selects it afresh, at a fresh source baseline.
+  useEffect(() => {
+    const previous = previousConfirmedHiddenRef.current;
+    previousConfirmedHiddenRef.current = confirmedHiddenSections;    const newlyHidden = new Set<string>();
+    for (const key of confirmedHiddenSections) {
+      if (!previous.has(key)) newlyHidden.add(key.split("\u0000")[1] ?? "");
+    }
+    if (newlyHidden.size === 0) return;
+    if (newlyHidden.has(previewSelection.currentTarget()?.sectionId ?? "")) {
+      previewSelection.forget();
+    }
+    if (activeSelection && newlyHidden.has(activeSelection.sectionId)) {
+      setActiveSelection(null);
+      setActiveComputedStyleRevision(0);
+    }
+    if (search.section && newlyHidden.has(search.section)) {
+      onSearchChange({ section: "" });
+    }
+  }, [
+    activeSelection,
+    confirmedHiddenSections,
+    onSearchChange,
+    previewSelection,
+    search.section,
+  ]);
+
   // A surface stays mounted so Monaco and the preview keep their local state,
   // but focus must not remain inside the surface that just became hidden. A
   // focused hidden descendant can keep browser/Monaco paint state alive and

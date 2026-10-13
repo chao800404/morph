@@ -448,4 +448,130 @@ test.describe("case B in the full Start preview", () => {
     );
     await expect(titleField(page)).toHaveValue(stored);
   });
+
+  // The same rule while the editor stays open: the author hides the section
+  // from the Sections panel, the editor saves, syncs the drafts into the
+  // running preview and refreshes it (A6b-2) — no reload of the editor or of
+  // the preview. The bridge also hides the wrapper at once, so the heading
+  // cannot be reached by pointer; the click is dispatched on it, which is the
+  // event the bridge's own capture listener reads.
+  test("hiding and showing from the Sections panel, without a reload, takes and gives back the selection", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const treeNodes = page.locator(`[data-editor-tree-node-id^="${SLOT}:"]`);
+    await openRoute(page);
+    const storedTitle = (await storedProps(page))?.title;
+    expect(storedTitle).toEqual(expect.any(String));
+    const stored = storedTitle as string;
+    await expect(heading(page)).toHaveText(stored);
+    await selectHeading(page);
+    await expect(titleField(page)).toHaveValue(stored);
+    await expect(treeNodes.first()).toBeAttached();
+
+    // Neither document may be replaced while this runs.
+    await page.evaluate(() => {
+      (window as unknown as { __hsNoReload?: boolean }).__hsNoReload = true;
+    });
+    await previewFrame(page)
+      .locator("html")
+      .evaluate(() => {
+        (window as unknown as { __hsNoReload?: boolean }).__hsNoReload = true;
+      });
+    const noReload = async () => {
+      expect(
+        await page.evaluate(
+          () => (window as unknown as { __hsNoReload?: boolean }).__hsNoReload,
+        ),
+        "the editor reloaded",
+      ).toBe(true);
+      expect(
+        await previewFrame(page)
+          .locator("html")
+          .evaluate(
+            () =>
+              (window as unknown as { __hsNoReload?: boolean }).__hsNoReload,
+          ),
+        "the preview reloaded",
+      ).toBe(true);
+    };
+
+    const hide = treeNodes
+      .first()
+      .getByRole("button", { name: /^Hide section / });
+    const sectionType = ((await hide.getAttribute("aria-label")) ?? "").replace(
+      /^Hide section /,
+      "",
+    );
+    expect(sectionType).not.toBe("");
+    const show = page.getByRole("button", {
+      name: `Show section ${sectionType}`,
+    });
+    await treeNodes.first().hover();
+    await hide.click();
+    try {
+      // Applied once the preview's server reads the synced draft: the loader
+      // runs again and returns the slot as hidden.
+      await expect(sectionWrapper(page)).toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+        { timeout: 30_000 },
+      );
+      await expect(heading(page)).toHaveText(DEFAULT_TITLE);
+      await expect(show).toBeVisible();
+
+      await heading(page).dispatchEvent("click");
+      await settleSelection(page);
+      await expect(heading(page)).not.toHaveAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+      await expect(titleField(page)).toHaveCount(0);
+      await expect(treeNodes).toHaveCount(0);
+
+      // The hidden section's own row still selects it, and opens no content.
+      const row = page.getByRole("button", { name: sectionType, exact: true });
+      await row.click();
+      await expect(row).toHaveAttribute("data-active", "true");
+      await openContentTab(page);
+      await expect(
+        page.getByRole("button", { name: "Content", exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
+      await expect(titleField(page)).toHaveCount(0);
+      await expect(show).toBeVisible();
+      await noReload();
+    } finally {
+      if (await show.isVisible().catch(() => false)) await show.click();
+    }
+
+    await expect(sectionWrapper(page)).not.toHaveAttribute(
+      "data-morph-section-hidden",
+      { timeout: 30_000 },
+    );
+    await expect(heading(page)).toHaveText(stored);
+    await expect(heading(page)).toBeVisible();
+    await expect(treeNodes.first()).toBeAttached();
+    await selectHeading(page);
+    await expect(heading(page)).toHaveAttribute(
+      "data-storefront-editor-selected",
+      "true",
+    );
+    await expect(titleField(page)).toHaveValue(stored);
+
+    // Reselected explicitly, it saves at the current baseline.
+    const edited = `Shown again ${Date.now()}`;
+    const saved = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) && (response.request().postData() ?? "").includes(edited),
+      { timeout: 30_000 },
+    );
+    await titleField(page).fill(edited);
+    await titleField(page).press("Tab");
+    expect(await (await saved).text()).not.toContain("SELECTION_SOURCE_CONFLICT");
+    await expect.poll(async () => (await storedProps(page))?.title).toBe(edited);
+    await noReload();
+  });
 });
