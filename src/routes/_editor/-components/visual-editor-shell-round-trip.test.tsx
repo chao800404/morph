@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -1112,7 +1113,16 @@ describe("source refusal recovery contract", () => {
     };
   let canvasRevision = 0;
 
+  // Only the save debounce (a 300 ms `setTimeout`) is faked. It runs on its own
+  // here, so `waitFor` and the debounce behave as they do with a real clock,
+  // but every timer stays under the test's control: see `afterEach`, and
+  // `holdSaveDebounce` for the tests that decide when a save leaves.
+  const FAKED: { toFake: Array<"setTimeout" | "clearTimeout"> } = {
+    toFake: ["setTimeout", "clearTimeout"],
+  };
+
   beforeEach(() => {
+    vi.useFakeTimers({ ...FAKED, shouldAdvanceTime: true });
     canvasRevision = 0;
     useThemeWorkspaceStore.setState({ workspaces: {} });
     useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
@@ -1122,6 +1132,44 @@ describe("source refusal recovery contract", () => {
         : refused,
     );
   });
+
+  // A debounced save outlives an unmount: the shell does not cancel its timer.
+  // So each test ends by unmounting, letting every reply it was sent settle,
+  // and proving no save is still waiting to leave; the clock is restored in
+  // `finally`, so a test that fails midway cannot send a save into the next
+  // test's mock either.
+  afterEach(async () => {
+    try {
+      cleanup();
+      await act(async () => {
+        await Promise.allSettled(
+          updateSectionProps.mock.results.map((result) => result.value),
+        );
+      });
+      const sent = updateSectionProps.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(
+        updateSectionProps,
+        "no save may leave after the editor is gone",
+      ).toHaveBeenCalledTimes(sent);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  /** From here on, a debounced save leaves only on `releaseSaveDebounce`. */
+  function holdSaveDebounce() {
+    vi.useFakeTimers(FAKED);
+  }
+
+  async function releaseSaveDebounce() {
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+  }
 
   async function openFields() {
     renderShellWithHero(source, "hero", editorContext);
@@ -1293,30 +1341,115 @@ describe("source refusal recovery contract", () => {
     );
   });
 
-  it("confirms only one of two refused fields without sending the other field", async () => {
-    await openFields();
-    input("Welcome", "Kept old heading");
-    await reselect("subheading");
-    await screen.findByDisplayValue("Summary");
-    input("Summary", "Kept old subheading");
-    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
-    expect(request(0).props).toEqual({
-      heading: "Kept old heading",
-      subheading: "Kept old subheading",
-    });
+  // Two refused fields reach the server in either of two legal orders: both
+  // typed before the debounce ends (one request), or the heading leaving
+  // before the subheading is typed (two requests). Each order is driven
+  // explicitly; in both, each field keeps the generation it was typed under
+  // and only the field confirmed by new input takes the newer one.
+
+  /** After both fields were refused: confirm the heading only. */
+  async function confirmHeadingOnly(requestsSoFar: number) {
     act(() =>
       useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
     );
     await reselect();
     await screen.findByDisplayValue("Kept old heading");
     input("Kept old heading", "Confirmed new heading");
-    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
-    expect(request(1).props).toEqual({ heading: "Confirmed new heading" });
-    expect(request(1).expectedSourceGeneration).toBe(2);
+    await releaseSaveDebounce();
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(requestsSoFar + 1),
+    );
+    const confirmed = request(requestsSoFar);
+    expect(confirmed.expectedSourceGeneration).toBe(2);
+    expect(confirmed.props).toEqual({ heading: "Confirmed new heading" });
+    // The subheading was not confirmed: it is still here, unsent.
     await reselect("subheading");
     expect(screen.getByDisplayValue("Kept old subheading")).toBeTruthy();
+    await releaseSaveDebounce();
+    expect(updateSectionProps).toHaveBeenCalledTimes(requestsSoFar + 1);
     expect(saveStatus()).not.toBe("Saved");
+  }
+
+  it.each([
+    ["refused", () => refused],
+    [
+      "saved",
+      () => ({
+        success: true,
+        data: { draftGeneration: 2, droppedProps: [] },
+      }),
+    ],
+  ])(
+    "a reply (%s) that arrives after the editor is gone sends nothing more",
+    async (_kind, answer) => {
+      holdSaveDebounce();
+      let deliver!: (value: unknown) => void;
+      updateSectionProps.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            deliver = resolve;
+          }),
+      );
+      await openFields();
+      act(() =>
+        useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+      );
+      await reselect();
+      input("Welcome", "In flight");
+      await releaseSaveDebounce();
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      expect(request(0).props).toEqual({ heading: "In flight" });
+      // The editor goes while the request is still unanswered.
+      cleanup();
+      await act(async () => {
+        deliver(answer());
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("two fields typed inside one debounce leave together, refused at their own generation; confirming one sends only it", async () => {
+    holdSaveDebounce();
+    await openFields();
+    input("Welcome", "Kept old heading");
+    await reselect("subheading");
+    await screen.findByDisplayValue("Summary");
+    input("Summary", "Kept old subheading");
+    // Nothing has left yet: both edits are inside the same debounce.
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    expect(request(0).props).toEqual({
+      heading: "Kept old heading",
+      subheading: "Kept old subheading",
+    });
+    await confirmHeadingOnly(1);
+  });
+
+  it("a heading that left before the subheading was typed is refused on its own; each field keeps its own generation", async () => {
+    holdSaveDebounce();
+    await openFields();
+    input("Welcome", "Kept old heading");
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    expect(request(0).props).toEqual({ heading: "Kept old heading" });
+    await reselect("subheading");
+    await screen.findByDisplayValue("Summary");
+    input("Summary", "Kept old subheading");
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    // The refused heading does not ride along with the subheading.
+    expect(request(1).expectedSourceGeneration).toBe(1);
+    expect(request(1).props).toEqual({ subheading: "Kept old subheading" });
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    await confirmHeadingOnly(2);
   });
 
   it("new input in another field does not confirm a previously refused heading", async () => {
