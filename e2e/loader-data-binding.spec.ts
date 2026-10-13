@@ -575,3 +575,327 @@ test.describe("case B in the full Start preview", () => {
     await noReload();
   });
 });
+
+/**
+ * Case B's two full-write acceptances, on a Theme and route of their own: the
+ * selection-level tests above and in `loader-data-binding.live.test.ts` show
+ * what is selected; these show what a real Inspector edit then writes.
+ *
+ * - Two instances of one component, each spread from its own slot the loader
+ *   returned: an edit to one is stored under that slot only, and a reload
+ *   agrees.
+ * - An element whose hand-written `data-storefront-field` names a declared
+ *   field other than the one it shows: nothing is written from it, by the
+ *   Inspector or by typing on the canvas.
+ */
+test.describe("case B full writes in the full Start preview", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const TWO_ROUTE = "/loader-binding-two";
+  const MARKED_ROUTE = "/loader-binding-marked";
+  const FIRST = "hero";
+  const SECOND = "promo";
+  const FIRST_TITLE = "First instance stored title";
+  const SECOND_TITLE = "Second instance stored title";
+  const MARKED_TITLE = "Marked stored title";
+  const MARKED_SUBTITLE = "Marked stored subtitle";
+
+  let writeScope: ThemeScope | null = null;
+  let writeEditorPath: string | null = null;
+
+  const WRITE_FILES = [
+    {
+      path: "src/routes/loader-binding-two.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import LoaderHero from "../components/LoaderHero";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${TWO_ROUTE}"));
+
+export const Route = createFileRoute("${TWO_ROUTE}")({
+  loader: () => getPage(),
+  component: TwoInstancesRoute,
+});
+
+function TwoInstancesRoute() {
+  const { ${FIRST}, ${SECOND} } = Route.useLoaderData();
+  return (
+    <main>
+      <LoaderHero {...${FIRST}} />
+      <LoaderHero {...${SECOND}} />
+    </main>
+  );
+}
+`,
+    },
+    {
+      path: "src/routes/loader-binding-marked.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import MarkedHero from "../components/MarkedHero";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${MARKED_ROUTE}"));
+
+export const Route = createFileRoute("${MARKED_ROUTE}")({
+  loader: () => getPage(),
+  component: MarkedRoute,
+});
+
+function MarkedRoute() {
+  const { ${FIRST} } = Route.useLoaderData();
+  return (
+    <main>
+      <MarkedHero {...${FIRST}} />
+    </main>
+  );
+}
+`,
+    },
+    FILES[1]!,
+    {
+      path: "src/components/MarkedHero.tsx",
+      content: `export const contentFields = {
+  title: { type: "text", label: "Marked title" },
+  subtitle: { type: "text", label: "Marked subtitle" },
+} as const;
+
+type MarkedHeroProps = { title?: string; subtitle?: string };
+
+export default function MarkedHero({
+  title = "Marked default title",
+  subtitle = "Marked default subtitle",
+}: MarkedHeroProps) {
+  return (
+    <section className="px-6 py-10">
+      <h2 data-storefront-field="subtitle" className="text-2xl font-semibold">
+        {title}
+      </h2>
+      <p className="mt-2">{subtitle}</p>
+    </section>
+  );
+}
+`,
+    },
+  ];
+
+  async function storeSlot(
+    page: Page,
+    routePath: string,
+    sectionId: string,
+    props: Record<string, unknown>,
+  ) {
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...writeScope!, routePath },
+    )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    const stored = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...writeScope!,
+        templateId: ensured.data!.id,
+        sectionId,
+        props,
+        expectedDraftGeneration: ensured.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(
+          page,
+          writeScope!,
+        ),
+        routePath,
+      },
+    )) as { success: boolean };
+    expect(stored.success, JSON.stringify(stored)).toBe(true);
+  }
+
+  async function storedSections(page: Page, routePath: string) {
+    const editor = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...writeScope!,
+    })) as {
+      success: boolean;
+      data?: {
+        templates: Array<{
+          routePath: string | null;
+          document: {
+            sections: Array<{ id: string; props?: Record<string, unknown> }>;
+          };
+        }>;
+      };
+    };
+    expect(editor.success, JSON.stringify(editor)).toBe(true);
+    const template = editor.data!.templates.find(
+      (candidate) => candidate.routePath === routePath,
+    );
+    return Object.fromEntries(
+      (template?.document.sections ?? []).map((section) => [
+        section.id,
+        section.props ?? null,
+      ]),
+    );
+  }
+
+  async function openWriteRoute(page: Page, routePath: string, text: string) {
+    const url = new URL(writeEditorPath!, "http://placeholder");
+    url.searchParams.set("routePath", routePath);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(previewFrame(page).getByText(text)).toBeVisible({
+      timeout: 90_000,
+    });
+  }
+
+  async function clickOnCanvas(
+    page: Page,
+    target: ReturnType<Page["locator"]>,
+  ) {
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    await target.scrollIntoViewIfNeeded();
+    expect(
+      await clickExposedElement(page, target),
+      "the element was not exposed on the canvas",
+    ).not.toBeNull();
+    await settleSelection(page);
+  }
+
+  const sectionTitle = (page: Page, sectionId: string) =>
+    previewFrame(page).locator(
+      `[data-storefront-section-id="${sectionId}"] [data-storefront-field="title"]`,
+    );
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    writeScope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...writeScope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find(
+      (template) => template.type === "index",
+    );
+    expect(home).toBeDefined();
+    writeEditorPath = `/store/${writeScope.storefrontId}/themes/${writeScope.themeId}/editor?templateId=${home!.id}`;
+    const saved = await writeThemeFiles(page, writeScope, WRITE_FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+
+    await storeSlot(page, TWO_ROUTE, FIRST, { title: FIRST_TITLE });
+    await storeSlot(page, TWO_ROUTE, SECOND, { title: SECOND_TITLE });
+    await storeSlot(page, MARKED_ROUTE, FIRST, {
+      title: MARKED_TITLE,
+      subtitle: MARKED_SUBTITLE,
+    });
+    expect(await storedSections(page, TWO_ROUTE)).toEqual({
+      [FIRST]: { title: FIRST_TITLE },
+      [SECOND]: { title: SECOND_TITLE },
+    });
+    await page.context().close();
+  });
+
+  test("an edit to one of two instances is stored under its own slot only, and a reload agrees", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await openWriteRoute(page, TWO_ROUTE, SECOND_TITLE);
+    await expect(sectionTitle(page, FIRST)).toHaveText(FIRST_TITLE);
+    await expect(sectionTitle(page, SECOND)).toHaveText(SECOND_TITLE);
+
+    await clickOnCanvas(page, sectionTitle(page, SECOND));
+    await openContentTab(page);
+    const field = titleField(page);
+    await expect(field).toBeVisible();
+    await expect(field).toHaveValue(SECOND_TITLE);
+
+    const edited = `Second instance edited ${Date.now()}`;
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).origin === new URL(page.url()).origin &&
+        (response.request().postData() ?? "").includes(edited),
+      { timeout: 30_000 },
+    );
+    await field.fill(edited);
+    await field.press("Tab");
+    expect((await saved).ok()).toBe(true);
+
+    expect(await storedSections(page, TWO_ROUTE)).toEqual({
+      [FIRST]: { title: FIRST_TITLE },
+      [SECOND]: { title: edited },
+    });
+
+    await openWriteRoute(page, TWO_ROUTE, edited);
+    await expect(sectionTitle(page, FIRST)).toHaveText(FIRST_TITLE);
+    await expect(sectionTitle(page, SECOND)).toHaveText(edited);
+    await clickOnCanvas(page, sectionTitle(page, FIRST));
+    await openContentTab(page);
+    await expect(titleField(page)).toHaveValue(FIRST_TITLE);
+  });
+
+  test("an element whose hand-written marker names another declared field writes nothing", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        isServerFunctionCall(request.url(), "updateStorefrontThemeSectionProps")
+      ) {
+        writes.push(request.postData() ?? "");
+      }
+    });
+    await openWriteRoute(page, MARKED_ROUTE, MARKED_TITLE);
+    const marked = previewFrame(page).locator(
+      `[data-storefront-section-id="${FIRST}"] h2`,
+    );
+    await expect(marked).toHaveText(MARKED_TITLE);
+    await expect(marked).toHaveAttribute(
+      "data-morph-field-refused",
+      "conflict",
+    );
+
+    await clickOnCanvas(page, marked);
+    await openContentTab(page);
+    await expect(
+      page.getByText("names one field, but it shows another", { exact: false }),
+    ).toBeVisible();
+    // Neither field is offered for this element.
+    await expect(
+      page
+        .locator('[data-slot="inspector-content-field"]')
+        .filter({ hasText: /Marked (title|subtitle)/ })
+        .locator("input"),
+    ).toHaveCount(0);
+
+    // Typing on the canvas does not open an edit either.
+    await marked.dblclick();
+    await page.keyboard.type(" typed");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1_500);
+
+    expect(writes).toEqual([]);
+    expect(await storedSections(page, MARKED_ROUTE)).toEqual({
+      [FIRST]: { title: MARKED_TITLE, subtitle: MARKED_SUBTITLE },
+    });
+    await openWriteRoute(page, MARKED_ROUTE, MARKED_TITLE);
+    await expect(marked).toHaveText(MARKED_TITLE);
+  });
+});
