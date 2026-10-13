@@ -213,10 +213,12 @@ if (import.meta.hot) {
       }
       if (!applied) {
         // A hot update arrived and none of it could be used. The usual cause is
-        // an edit that leaves the module valid but no longer exporting \`Route\`
-        // — a syntax error would have raised Vite's own overlay instead. Silence
-        // here shows the author their previous page as though nothing happened,
-        // so it is said out loud in the preview's console.
+        // an edit that leaves the module valid but no longer exporting \`Route\`.
+        // One that no longer compiles also arrives here empty, but Vite's client
+        // has already reported that update as failed, and the page reloads to
+        // show it (THEME_PREVIEW_HMR_FAILED_EVENT). Silence here shows the
+        // author their previous page as though nothing happened, so it is said
+        // out loud in the preview's console.
         console.warn(
           "[morph] a route module was hot-updated but exported no usable Route; the preview is still showing the previous version.",
         );

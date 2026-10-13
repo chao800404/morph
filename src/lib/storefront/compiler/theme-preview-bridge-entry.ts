@@ -45,11 +45,15 @@ import {
 } from "./preview/selection-style-preview";
 import { createInlineTextEditor } from "./preview/inline-text-editor";
 import {
+  getFieldPathValue,
+  setFieldPathValue,
+} from "./preview/selection-taxonomy";
+import {
   isCompatibleReorderTarget,
   reorderCommitFor,
   reorderIdentity,
 } from "./preview/preview-reorder-identity";
-import { updatePreviewContent } from "./preview-content";
+import { previewSlotContent, updatePreviewContent } from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -70,7 +74,18 @@ function refreshPreviewContent() {
     void Promise.resolve()
       .then(() => router.invalidate({ sync: true }))
       .then(() => {
-        restoreSelectedSection();
+        // The selected element is re-found, not widened to its section:
+        // typing in the Inspector refreshes on every change, and the
+        // selection must stay on the field being typed into.
+        if (
+          selectionEnabled &&
+          lastRestoreTarget &&
+          lastRestoreTarget.sectionId === selectedSectionId
+        ) {
+          restoreSelectedTarget(lastRestoreTarget);
+        } else {
+          restoreSelectedSection();
+        }
         reportStructure();
         drawOverlays();
       })
@@ -93,16 +108,51 @@ let selectedSectionId = null;
 const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
 
+/** The editor's finish request being answered, while finish runs. */
+let answeringFinishRequest = null;
+
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
     if (!channel) return;
     postPreviewToEditorMessage(
-      { type: "morph:storefront-preview-commit-inline-text", ...commit },
+      {
+        type: "morph:storefront-preview-commit-inline-text",
+        ...commit,
+        ...(answeringFinishRequest === null
+          ? {}
+          : { finishRequestId: answeringFinishRequest }),
+      },
+      channel,
+    );
+  },
+  // Typed text lives only here until it is committed, so the editor is told
+  // an edit is open: it counts as unsaved, and leaving asks first.
+  onEditingChange: (editing) => {
+    if (!channel) return;
+    postPreviewToEditorMessage(
+      { type: "morph:storefront-preview-inline-text-editing", editing },
       channel,
     );
   },
   // Typing changes how much room the text takes, so the rings follow it.
   onLayoutChanged: () => drawOverlays(),
+  // What this page rendered the field from. The Theme's content() may change
+  // a value on its way to the component; the text is then not the value.
+  storedValue: (target) =>
+    target.sectionId && target.fieldPath
+      ? getFieldPathValue(previewSlotContent(target.sectionId), target.fieldPath)
+      : undefined,
+  onRefused: (target) => {
+    if (!channel || !target.sectionId || !target.fieldPath) return;
+    postPreviewToEditorMessage(
+      {
+        type: "morph:storefront-preview-inline-text-refused",
+        sectionId: target.sectionId,
+        fieldPath: target.fieldPath,
+      },
+      channel,
+    );
+  },
 });
 
 const toOverlayItem = (item) =>
@@ -201,6 +251,8 @@ function sendSelectionReport(item) {
           ? null
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
+      itemId: item.itemId,
+      contentUnavailable: item.contentUnavailable,
       ...selectionMetadata(item),
       styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -332,6 +384,7 @@ function reportSelection(target) {
     elementKey: item.elementKey || undefined,
     fieldKey: item.fieldKey || undefined,
     fieldPath: item.fieldPath || undefined,
+    itemId: item.itemId || undefined,
     isSection: item.element === item.section,
   };
   if (selectedItem.element) {
@@ -594,6 +647,10 @@ if (channel) {
   // The editor's own overlays are appended to <body>; a Theme that owns the
   // whole document is observed from there. See isPreviewEditorUiMutation.
   const structureObserver = new MutationObserver((allMutations) => {
+    // A render that replaced the element being edited ends the edit, unsaved.
+    if (inlineEditor.editingElement()?.isConnected === false) {
+      inlineEditor.finish(false);
+    }
     const mutations = overlays
       ? allMutations.filter(
           (mutation) => !isPreviewEditorUiMutation(mutation, overlays.owns),
@@ -720,6 +777,13 @@ if (channel) {
     html[data-storefront-editor-selection-enabled] [data-storefront-section-id],
     html[data-storefront-editor-selection-enabled] [data-storefront-component] {
       cursor: pointer !important;
+    }
+    /* Hiding a section sets the hidden attribute on its wrapper, whose inline
+       display: contents beats the browser's own [hidden] rule. Tailwind's
+       preflight happens to override that; a Theme without it kept showing
+       the section the author had just hidden. */
+    [data-storefront-section-id][hidden] {
+      display: none !important;
     }
     [data-storefront-editor-drag-handle="true"] {
       cursor: grab !important;
@@ -950,6 +1014,16 @@ if (channel) {
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
     }
+    if (message?.type === "morph:storefront-preview-finish-inline-text") {
+      // The author chose, in the editor, what happens to the open edit. The
+      // commit this produces names the request; any other does not.
+      answeringFinishRequest = message.requestId;
+      try {
+        inlineEditor.finish(message.commit);
+      } finally {
+        answeringFinishRequest = null;
+      }
+    }
     if (message?.type === "morph:storefront-preview-update-theme-files") {
       // The files themselves are not taken from here: Morph writes them into
       // the container, which is what Vite is watching. This only records the
@@ -997,6 +1071,14 @@ if (channel) {
           reportStructure();
         }, 0);
       }
+    }
+    if (message?.type === "morph:storefront-preview-refresh-content") {
+      // The preview's server confirmed it now reads the author's saved
+      // content. Loaders that read it there run again through the same
+      // coalesced refresh an edit uses; the editor holds this back while
+      // text is being typed on the page, so it never ends that edit.
+      refreshPreviewContent();
+      return;
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
       updatePreviewContent(
@@ -1214,7 +1296,23 @@ if (channel) {
       } else if (message.fieldKey === "actionHref") {
         target.setAttribute("href", message.value);
       } else {
-        target.textContent = message.value;
+        // Text reaches the page through the Theme's content(), which may
+        // change it on the way. Writing the typed value into the element
+        // would show it unchanged, and would take the element from React,
+        // which then keeps updating a node that is no longer on the page. The
+        // value goes where the page reads its content, and the page renders.
+        const sectionId = selectedItem.sectionId;
+        if (!sectionId) return;
+        updatePreviewContent(
+          sectionId,
+          setFieldPathValue(
+            previewSlotContent(sectionId) || {},
+            fieldPath || message.fieldKey,
+            message.value,
+          ),
+        );
+        refreshPreviewContent();
+        return;
       }
       drawOverlays();
       return;

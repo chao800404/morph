@@ -15,6 +15,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
+import { sourceLocationKey } from "./ast/source-location-key";
+import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   parseComponentSource,
   patchComponentDefaultProp,
@@ -220,5 +223,77 @@ describe("a component the author wrote, registered nowhere", () => {
     );
 
     expect(patched).toContain('title = "New default"');
+  });
+});
+
+/**
+ * The same page in the real React Live Preview: stored content reaches the
+ * author's component, the editor's identity reaches its elements, and the
+ * source position the canvas reports is one the style patcher can act on.
+ */
+describe("a component the author wrote, in real React", () => {
+  const document_: StorefrontPageDocument = {
+    version: 1,
+    sections: [
+      {
+        id: "my-banner",
+        type: "my-banner",
+        componentRef: SOURCE_PATH,
+        enabled: true,
+        props: {
+          title: "Stored title",
+          cta: { href: "/collections/all" },
+        },
+      },
+    ],
+  };
+
+  async function renderLive(previewPass?: boolean) {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { html } = await renderLivePreviewRoute({
+        files,
+        documents: { index: document_ },
+        previewPass,
+      });
+      expect(errors.mock.calls).toHaveLength(0);
+      return html;
+    } finally {
+      errors.mockRestore();
+    }
+  }
+
+  it("renders stored content, and the elements the editor selects by", async () => {
+    const markup = await renderLive();
+
+    expect(markup).toContain("Stored title");
+    expect(markup).toContain('href="/collections/all"');
+    expect(markup).toContain('data-storefront-field="title"');
+    expect(markup).toContain('data-storefront-section-id="my-banner"');
+    expect(markup).toContain("data-morph-loc");
+  });
+
+  it("carries none of that identity without the preview's source pass", async () => {
+    // Nothing above writes a marker; the source pass is what does.
+    const markup = await renderLive(false);
+
+    expect(markup).toContain("Stored title");
+    expect(markup).not.toContain("data-storefront-field");
+    expect(markup).not.toContain("data-morph-loc");
+  });
+
+  it("reports a source position the style patcher can patch", async () => {
+    const markup = await renderLive();
+    const location = /<section [^>]*data-morph-loc="([^"]+)"/.exec(markup)?.[1];
+    expect(location?.startsWith(`${SOURCE_PATH}:`)).toBe(true);
+
+    const patched = patchElementClassNameResult(
+      MY_BANNER,
+      sourceLocationKey(location)!,
+      (classes) => classes.replace("bg-white", "bg-stone-100"),
+    );
+
+    expect(patched.editable).toBe(true);
+    expect(patched.code).toContain('<section className="bg-stone-100 p-10">');
   });
 });

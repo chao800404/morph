@@ -59,6 +59,13 @@ export type EditorWriteGate = Readonly<{
    * refusal of a request sent before it no longer decides anything here.
    */
   verificationStamp: number;
+  /**
+   * Where recovery stood when the latest verification began. While it is
+   * under way `recovery` says only "verifying"; this says what it is checking
+   * from, and what an unanswered check falls back to (see
+   * `finishEditorWriteVerification`).
+   */
+  verifyingFrom: EditorWriteRecovery;
 }>;
 
 export const OPEN_EDITOR_WRITE_GATE: EditorWriteGate = {
@@ -68,6 +75,7 @@ export const OPEN_EDITOR_WRITE_GATE: EditorWriteGate = {
   ownerUserId: null,
   epoch: 0,
   verificationStamp: 0,
+  verifyingFrom: "none",
 };
 
 /**
@@ -181,6 +189,7 @@ export function beginEditorWriteVerification(
   return {
     ...gate,
     recovery: "verifying",
+    verifyingFrom: gate.recovery,
     epoch: gate.epoch + 1,
     verificationStamp: stamp(),
   };
@@ -243,7 +252,16 @@ export function finishEditorWriteVerification(
       // Still paused: the author confirms before anything is sent.
       return { ...next, recovery: "verified" };
     case "unanswered":
-      return { ...next, recovery: "none" };
+      // No answer is no evidence. Another account found signed in stays
+      // found: falling to "none" would read as a sign-in that merely expired,
+      // and open the editor this tab closed to that account.
+      return {
+        ...next,
+        recovery:
+          gate.verifyingFrom === "different-account"
+            ? "different-account"
+            : "none",
+      };
   }
 }
 

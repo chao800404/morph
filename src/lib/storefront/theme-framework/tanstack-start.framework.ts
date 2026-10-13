@@ -35,6 +35,8 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
     // browser-only preview is served under the platform base path.
     framePath: (runtime) =>
       runtime === "start" ? "/" : THEME_PREVIEW_SERVER_BASE_PATH,
+    // The generated bootstrap and the import protection both start from it.
+    entryFile: "required",
   },
   build: {
     artifactEntry: (routeRegistry) =>

@@ -1,10 +1,28 @@
+import {
+  samePreviewCompileFailure,
+  type PreviewCompileFailure,
+} from "@/lib/storefront/editor/preview-compile-failure";
+
 export type LivePreviewLifecyclePhase =
   | "starting-server"
   | "loading-frame"
   | "syncing-source"
   | "ready"
   | "reconnecting"
-  | "failed";
+  | "failed"
+  /**
+   * The runtime is serving, but the Theme does not compile: the frame's page
+   * could not load its own modules. Not a failure of the preview, so nothing
+   * here reconnects or times out — reconnecting would compile the same source
+   * and fail the same way.
+   *
+   * Held for the frame that reported it. The preview bridge is a module graph
+   * of its own and can come up beside a Theme that did not, so its signals
+   * from that frame say nothing about the Theme and are ignored. What ends
+   * the phase is a new frame: the editor loads one once newer source has been
+   * written into the preview, or when the author refreshes.
+   */
+  | "theme-error";
 
 export type LivePreviewLifecycleState = Readonly<{
   phase: LivePreviewLifecyclePhase;
@@ -13,6 +31,8 @@ export type LivePreviewLifecycleState = Readonly<{
   automaticRecoveryAttempts: number;
   recoveryId: number;
   message: string | null;
+  /** Which Theme files would not compile, while the phase is `theme-error`. */
+  compileFailure: PreviewCompileFailure | null;
   /** When the current uninterrupted healthy period began, if there is one. */
   readySince: number | null;
 }>;
@@ -58,6 +78,17 @@ export type LivePreviewLifecycleEvent =
       message: string;
       at: number;
     }>
+  /**
+   * The frame's document cannot come up because Vite would not compile one of
+   * the Theme's files. Accepted for the current frame whatever it has said
+   * before: its bridge can report ready beside a Theme that failed, and Vite
+   * reloads a page in place when an update breaks it.
+   */
+  | Readonly<{
+      type: "frame-compile-failed";
+      key: string;
+      failure: PreviewCompileFailure;
+    }>
   | Readonly<{ type: "recovery-request-finished"; recoveryId: number }>
   | Readonly<{ type: "manual-recovery" }>;
 
@@ -68,6 +99,7 @@ export const initialLivePreviewLifecycleState: LivePreviewLifecycleState = {
   automaticRecoveryAttempts: 0,
   recoveryId: 0,
   message: null,
+  compileFailure: null,
   readySince: null,
 };
 
@@ -79,6 +111,17 @@ export const initialLivePreviewLifecycleState: LivePreviewLifecycleState = {
  * revision acknowledgements, applied to readiness and failures as well.
  */
 export function reduceLivePreviewLifecycle(
+  state: LivePreviewLifecycleState,
+  event: LivePreviewLifecycleEvent,
+): LivePreviewLifecycleState {
+  const next = reduce(state, event);
+  // The failed files describe the phase that names them, and no other.
+  return next.phase !== "theme-error" && next.compileFailure !== null
+    ? { ...next, compileFailure: null }
+    : next;
+}
+
+function reduce(
   state: LivePreviewLifecycleState,
   event: LivePreviewLifecycleEvent,
 ): LivePreviewLifecycleState {
@@ -100,7 +143,8 @@ export function reduceLivePreviewLifecycle(
         (state.phase === "loading-frame" ||
           state.phase === "syncing-source" ||
           state.phase === "ready" ||
-          state.phase === "failed")
+          state.phase === "failed" ||
+          state.phase === "theme-error")
       ) {
         return state;
       }
@@ -138,7 +182,9 @@ export function reduceLivePreviewLifecycle(
         readySince: null,
       };
     case "frame-ready":
-      if (state.key !== event.key) return state;
+      if (state.key !== event.key || state.phase === "theme-error") {
+        return state;
+      }
       return {
         ...state,
         phase: "syncing-source",
@@ -147,7 +193,9 @@ export function reduceLivePreviewLifecycle(
         readySince: null,
       };
     case "source-confirmed":
-      if (state.key !== event.key) return state;
+      if (state.key !== event.key || state.phase === "theme-error") {
+        return state;
+      }
       return {
         ...state,
         phase: "ready",
@@ -157,7 +205,11 @@ export function reduceLivePreviewLifecycle(
         readySince: state.phase === "ready" ? state.readySince : event.at,
       };
     case "source-failed":
-      if (state.key !== event.key) return state;
+      // A Theme that does not compile cannot take an update either; the
+      // compile error is the more specific of the two answers.
+      if (state.key !== event.key || state.phase === "theme-error") {
+        return state;
+      }
       if (state.phase === "failed" && state.message === event.message) {
         return state;
       }
@@ -199,7 +251,10 @@ export function reduceLivePreviewLifecycle(
       if (
         state.phase !== "loading-frame" &&
         state.phase !== "syncing-source" &&
-        state.phase !== "ready"
+        state.phase !== "ready" &&
+        // A page that reloaded itself after a compile error loads its
+        // modules again, and an interruption can break that load as well.
+        state.phase !== "theme-error"
       ) {
         return state;
       }
@@ -209,6 +264,28 @@ export function reduceLivePreviewLifecycle(
         message: event.message,
         at: event.at,
       });
+    case "frame-compile-failed":
+      if (
+        state.key !== event.key ||
+        state.phase === "starting-server" ||
+        state.phase === "reconnecting"
+      ) {
+        return state;
+      }
+      if (
+        state.phase === "theme-error" &&
+        state.compileFailure &&
+        samePreviewCompileFailure(state.compileFailure, event.failure)
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        phase: "theme-error",
+        message: null,
+        compileFailure: event.failure,
+        readySince: null,
+      };
     case "recovery-request-finished":
       if (
         state.phase !== "reconnecting" ||
@@ -249,6 +326,7 @@ export function livePreviewLifecycleLabel(
       return "Reconnecting Live Preview…";
     case "ready":
     case "failed":
+    case "theme-error":
       return null;
   }
 }

@@ -1,4 +1,3 @@
-import { transformSync } from "esbuild";
 import { createRequire } from "node:module";
 import * as jsxRuntime from "react/jsx-runtime";
 
@@ -74,9 +73,31 @@ export function createThemeModuleLoader(
      * construction rather than by hoping two resolutions agree.
      */
     packages?: Readonly<Record<string, unknown>>;
+    /**
+     * Compiles one module's TSX to CommonJS. Defaults to esbuild, as the build
+     * uses.
+     *
+     * esbuild refuses to load under jsdom (its `TextEncoder` invariant fails
+     * across the two realms), so a test that needs a DOM passes a compiler
+     * that works there.
+     */
+    compile?: (source: string, sourcePath: string) => string;
   },
 ) {
   const hostRequire = createRequire(import.meta.url);
+  const compile =
+    options?.compile ??
+    ((source: string, sourcePath: string) => {
+      // Required here, not imported: loading esbuild at all is what fails
+      // under jsdom, even for a caller that never compiles with it.
+      const esbuild = hostRequire("esbuild") as typeof import("esbuild");
+      return esbuild.transformSync(source, {
+        loader: sourcePath.endsWith(".ts") ? "ts" : "tsx",
+        jsx: "automatic",
+        format: "cjs",
+        target: "es2022",
+      }).code;
+    });
   const approved = new Set(DEFAULT_APPROVED_DEPENDENCIES);
   const cache = new Map<string, Record<string, unknown>>();
   const preloaded = new Map<string, unknown>(
@@ -120,12 +141,7 @@ export function createThemeModuleLoader(
       return empty;
     }
 
-    const { code } = transformSync(source.content, {
-      loader: sourcePath.endsWith(".ts") ? "ts" : "tsx",
-      jsx: "automatic",
-      format: "cjs",
-      target: "es2022",
-    });
+    const code = compile(source.content, sourcePath);
 
     const module = { exports: {} as Record<string, unknown> };
     cache.set(sourcePath, module.exports);
@@ -134,7 +150,8 @@ export function createThemeModuleLoader(
       if (id === "react/jsx-runtime" || id === "react/jsx-dev-runtime") {
         return jsxRuntime;
       }
-      if (id.startsWith(".")) return loadModule(resolveRelative(sourcePath, id));
+      if (id.startsWith("."))
+        return loadModule(resolveRelative(sourcePath, id));
       const ready = preloaded.get(id);
       if (ready) return ready;
       // Approved packages resolve for real, exactly as the build resolves them:

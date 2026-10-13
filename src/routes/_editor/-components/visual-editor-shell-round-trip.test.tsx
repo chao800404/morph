@@ -1,5 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +16,11 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { storefrontThemeQueries } from "../-queries/storefront-theme.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  INLINE_TEXT_NOT_SAVED_MESSAGE,
+  INLINE_TEXT_REFUSED_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * The selection round trip through the shell, rather than through the rules.
@@ -37,6 +48,20 @@ const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
 
 const posted: Array<Record<string, unknown>> = [];
+
+beforeEach(() => {
+  posted.length = 0;
+  // Code acceptance and observed query versions are intentionally distinct.
+  // No scenario may inherit the previous test's observed source generation.
+  useThemeWorkspaceStore.setState({
+    acceptedGenerations: {},
+    observedGenerations: {},
+    generations: {},
+    workspaces: {},
+    files: {},
+    activeWorkspaceKey: null,
+  });
+});
 
 /**
  * The Inspector panel is the real one, with one button beside it.
@@ -74,6 +99,20 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
         >
           Apply a style patch
         </button>
+        <button
+          type="button"
+          onClick={() =>
+            void props.onPromoteText?.({
+              sectionId: "hero",
+              componentSourcePath: "src/components/Hero.tsx",
+              targetKey: "heading",
+              fieldName: "heading",
+              value: "Welcome",
+            })
+          }
+        >
+          Promote the selected text
+        </button>
       </>
     ),
   };
@@ -88,6 +127,7 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
  * `onError`. Both have to reach the author.
  */
 const updateSectionProps = vi.hoisted(() => vi.fn());
+const promoteText = vi.hoisted(() => vi.fn());
 
 /**
  * The editor's read of the Theme, which is how a write that got no answer is
@@ -113,6 +153,7 @@ vi.mock(
   async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     updateStorefrontThemeSectionProps: updateSectionProps,
+    promoteStorefrontThemeText: promoteText,
     getStorefrontThemeEditor: getThemeEditor,
   }),
 );
@@ -160,7 +201,7 @@ const context = {
       name: "Home",
       document: {
         version: 1,
-        sections: [{ id: "hero", type: "hero" }],
+        sections: [{ id: "hero", type: "hero", props: { heading: "Welcome" } }],
       },
       draftGeneration: 1,
       version: 1,
@@ -245,18 +286,36 @@ const messagesOfType = (type: string) =>
  * re-checks the descriptor it already holds, then writes. So the harness only
  * has to select the node and send the commit.
  */
-async function commitInlineText(value = "Hello") {
-  fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+async function commitInlineText(value = "Hello", originalValue = "Welcome") {
+  await selectHeading();
+  sendInlineCommit(value, originalValue);
+}
+
+async function selectHeading() {
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [heroNode],
+  });
   const row = await screen.findByText("h1");
   act(() => {
     row.closest("button")?.click();
   });
+}
+
+function sendInlineCommit(
+  value: string,
+  originalValue: string,
+  field: { fieldKey: string; fieldPath: string } = {
+    fieldKey: "heading",
+    fieldPath: "heading",
+  },
+) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId: "hero",
-    fieldKey: "heading",
-    fieldPath: "heading",
+    ...field,
     value,
+    originalValue,
   });
 }
 
@@ -285,7 +344,6 @@ const saveStatus = () =>
   document
     .querySelector("[data-editor-save-status]")
     ?.getAttribute("aria-label");
-
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -354,8 +412,12 @@ function canvasY(): string | null {
 /** Lets the reveal's frame, and the transform's own frame, run. */
 async function flushFrames() {
   await act(async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
   });
 }
 
@@ -374,9 +436,9 @@ describe("the selection round trip", () => {
       </QueryClientProvider>,
     );
 
-    expect(messagesOfType("morph:storefront-preview-set-section")).toContainEqual(
-      expect.objectContaining({ sectionId: "hero" }),
-    );
+    expect(
+      messagesOfType("morph:storefront-preview-set-section"),
+    ).toContainEqual(expect.objectContaining({ sectionId: "hero" }));
   });
 
   it("keeps a section change quiet while there is no frame to address", () => {
@@ -472,7 +534,7 @@ describe("a content save that fails", () => {
     await waitFor(() => expect(saveStatus()).toBe("Save failed"));
     // No answer is not "it did not land": it may have, so nothing goes again
     // on its own — not this write, and not the next edit either.
-    await commitInlineText("Hello again");
+    await commitInlineText("Hello again", "Hello");
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
@@ -632,12 +694,226 @@ describe("a content save the document moved under", () => {
       data: { props: Record<string, unknown>; expectedDraftGeneration: number };
     };
 
-    // The author's key wins and the other writer's keys survive, which is the
-    // only reason this is safe to send at all.
-    expect(resend.data.props).toEqual({ heading: "Mine", cta: "New" });
+    // Only the author's changed field is sent. The server's partial merge
+    // preserves cta; sending a remote field back is no longer confirmation.
+    expect(resend.data.props).toEqual({ heading: "Mine" });
     // The generation comes from the document as it is now. Reusing this
     // session's observed one would be refused for the same reason.
     expect(resend.data.expectedDraftGeneration).toBe(7);
+  });
+});
+
+describe("a list both writers changed", () => {
+  it("stops rather than writing the author's copy of the list over theirs", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0],
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "hero",
+                type: "hero",
+                props: { heading: "Welcome", items: rows("A", "B") },
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+
+    // The document as the other writer left it: a row added in front.
+    const client = readyQueryClient();
+    const remote = {
+      success: true,
+      data: {
+        ...listContext,
+        templates: [
+          {
+            ...listContext.templates[0],
+            draftGeneration: 7,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "hero",
+                  type: "hero",
+                  props: { heading: "Welcome", items: rows("C", "A", "B") },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext}
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // The author edits B's title on the canvas.
+    const rowNode = {
+      ...heroNode,
+      id: "hero:node:row-title",
+      label: "Title",
+      target: {
+        sectionId: "hero",
+        nodeId: "hero:node:row-title",
+        fieldKey: "title",
+        fieldPath: "items.1.title",
+        itemId: "b",
+        isSection: false,
+      },
+    };
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [rowNode],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    sendInlineCommit("B edited", "B", {
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+    });
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 8, droppedProps: [] },
+    } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+
+    // Nothing is sent: the author's array would remove C and put the edit
+    // where C now sits. The author is told why, and the section stays out of
+    // date with their edit kept.
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/items also changed elsewhere/),
+      ),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(saveStatus()).toBe("Out of date");
+
+    // The way out names the list, and asks before anything is discarded.
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/items in hero/);
+    expect(dialog.textContent).toMatch(/cannot be undone/);
+
+    // Declined, nothing changes: the draft is still there to decide about.
+    act(() => {
+      screen.getByRole("button", { name: "Keep my changes" }).click();
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy();
+
+    // Confirmed while the latest version cannot be read: nothing is
+    // discarded, since dropping the draft would leave the author with neither.
+    getThemeEditor.mockRejectedValueOnce(new Error("offline"));
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/nothing was discarded/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+
+    // Confirmed, but the author edits the section again while the latest
+    // version is loading. That edit is not part of what they confirmed, so
+    // nothing is discarded; meanwhile no second discard can be started.
+    // The server still refuses the stale document, as OCC does.
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    let release!: (value: unknown) => void;
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Discard mine…",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true),
+    );
+    sendInlineCommit("B edited again", "B edited", {
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+    });
+    act(() => release(remote));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(/while the latest version was loading/),
+      ),
+    );
+    expect(saveStatus()).toBe("Out of date");
+    // The newer edit's own save is answered (refused, as the document moved)
+    // before the author decides again.
+    await waitFor(() =>
+      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(1),
+    );
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+    const sentBeforeDiscard = updateSectionProps.mock.calls.length;
+
+    // Confirmed with the latest version readable and nothing typed meanwhile,
+    // the section's draft is dropped and the conflict with it. Nothing is
+    // written: the latest version is what the editor now holds.
+    getThemeEditor.mockResolvedValue(remote);
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() => expect(saveStatus()).not.toBe("Out of date"));
+    expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull();
+    expect(updateSectionProps).toHaveBeenCalledTimes(sentBeforeDiscard);
   });
 });
 
@@ -654,7 +930,10 @@ describe("bringing the canvas to a selection", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     renderShell();
 
-    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [heroNode],
+    });
     const row = await screen.findByText("h1");
     posted.length = 0;
     act(() => {
@@ -723,8 +1002,13 @@ describe("bringing the canvas to a selection", () => {
  * tree is written by hand rather than through `buildFileTree` because it only
  * has to render, and importing the DAL would pull the server layer into jsdom.
  */
-function renderShellWithHero(content: string) {
-  const client = readyQueryClient();
+function renderShellWithHero(
+  content: string,
+  selectedSection?: string,
+  editorContext = context,
+  providedClient?: QueryClient,
+) {
+  const client = providedClient ?? readyQueryClient();
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
     {
@@ -770,13 +1054,557 @@ function renderShellWithHero(content: string) {
   return render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
-        search={baseSearch}
+        context={editorContext}
+        search={
+          selectedSection
+            ? { ...baseSearch, section: selectedSection }
+            : baseSearch
+        }
         onSearchChange={vi.fn()}
       />
     </QueryClientProvider>,
   );
 }
+
+/**
+ * Diagnostic contract only: reselecting does not confirm retained input.
+ * New input confirms that field, not every pending prop in its section.
+ * These are ordinary assertions, never expected failures; do not ship red.
+ */
+describe("source refusal recovery contract", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+  const message =
+    "The source code has changed. Select the field again. Your changes are kept.";
+  const source = `export const contentFields = {
+    heading: { type: "text", label: "Heading" },
+    subheading: { type: "text", label: "Subheading" }
+  };
+  export function Hero({ heading = "Welcome", subheading = "Summary" }) {
+    return <section><h1>{heading}</h1><p>{subheading}</p></section>;
+  }`;
+  const editorContext: StorefrontThemeEditorDTO = {
+    ...context,
+    templates: [
+      {
+        ...context.templates[0]!,
+        document: {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled: true,
+              props: { heading: "Welcome", subheading: "Summary" },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const refused = {
+    success: false,
+    error: "SELECTION_SOURCE_CONFLICT",
+    message,
+  };
+  const request = (index: number) =>
+    updateSectionProps.mock.calls[index]![0].data as {
+      expectedSourceGeneration: number;
+      props: Record<string, unknown>;
+    };
+  let canvasRevision = 0;
+
+  // Only the save debounce (a 300 ms `setTimeout`) is faked. It runs on its own
+  // here, so `waitFor` and the debounce behave as they do with a real clock,
+  // but every timer stays under the test's control: see `afterEach`, and
+  // `holdSaveDebounce` for the tests that decide when a save leaves.
+  const FAKED: { toFake: Array<"setTimeout" | "clearTimeout"> } = {
+    toFake: ["setTimeout", "clearTimeout"],
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ ...FAKED, shouldAdvanceTime: true });
+    canvasRevision = 0;
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
+    updateSectionProps.mockImplementation(async ({ data }) =>
+      data.expectedSourceGeneration === 2
+        ? { success: true, data: { draftGeneration: 2, droppedProps: [] } }
+        : refused,
+    );
+  });
+
+  // A debounced save outlives an unmount: the shell does not cancel its timer.
+  // So each test ends by unmounting, letting every reply it was sent settle,
+  // and proving no save is still waiting to leave; the clock is restored in
+  // `finally`, so a test that fails midway cannot send a save into the next
+  // test's mock either.
+  afterEach(async () => {
+    try {
+      cleanup();
+      await act(async () => {
+        await Promise.allSettled(
+          updateSectionProps.mock.results.map((result) => result.value),
+        );
+      });
+      const sent = updateSectionProps.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(
+        updateSectionProps,
+        "no save may leave after the editor is gone",
+      ).toHaveBeenCalledTimes(sent);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  /** From here on, a debounced save leaves only on `releaseSaveDebounce`. */
+  function holdSaveDebounce() {
+    vi.useFakeTimers(FAKED);
+  }
+
+  async function releaseSaveDebounce() {
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+  }
+
+  async function openFields() {
+    renderShellWithHero(source, "hero", editorContext);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
+  }
+
+  function input(value: string, next: string) {
+    const field = screen.getByDisplayValue(value);
+    fireEvent.input(field, { target: { value: next } });
+    fireEvent.blur(field);
+  }
+
+  async function reselect(field: "heading" | "subheading" = "heading") {
+    const revision =
+      Math.max(
+        canvasRevision,
+        ...posted.map((m) =>
+          typeof m.selectionRevision === "number" ? m.selectionRevision : 0,
+        ),
+      ) + 1;
+    canvasRevision = revision;
+    fromPreview({
+      type: "morph:storefront-preview-select-section",
+      sectionId: "hero",
+      componentType: "hero",
+      kind: "heading",
+      nodeId: `hero:node:${field}`,
+      sourceFilePath: "src/components/Hero.tsx",
+      sourceLocation: null,
+      elementKey: field,
+      fieldKey: field,
+      field,
+      fieldPath: field,
+      descendantFields: [],
+      tagName: field === "heading" ? "h1" : "p",
+      role: null,
+      inputType: null,
+      styleRevision: Math.max(
+        0,
+        ...posted.map((m) =>
+          typeof m.styleRevision === "number" ? m.styleRevision : 0,
+        ),
+      ),
+      className: "",
+      isSection: false,
+      inspectorOverride: null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      selectionRevision: revision,
+    });
+    await flushFrames();
+  }
+
+  async function refuseHeading() {
+    await openFields();
+    // The server has moved but this tab has not observed it yet: the first
+    // refusal is genuine. Once observed, old fields must be held client-side.
+    input("Welcome", "Kept old heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    expect(screen.getByDisplayValue("Kept old heading")).toBeTruthy();
+  }
+
+  it("saves new input at a fresh selection when no older edit is pending", async () => {
+    await openFields();
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await reselect();
+    input("Welcome", "Fresh heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(request(0).expectedSourceGeneration).toBe(2);
+    // Stored content is still unpublished; assert saving, not publishing.
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-editor-save-status]")
+          ?.getAttribute("data-save-state"),
+      ).toBe("saved"),
+    );
+  });
+
+  it("recovers at an observed, preview-confirmed generation without accepting it for Code", async () => {
+    const client = readyQueryClient();
+    renderShellWithHero(source, "hero", editorContext, client);
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    await screen.findByDisplayValue("Welcome");
+    input("Welcome", "Kept old heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const query = storefrontThemeFileQueries.tree(
+      scope.storefrontId,
+      scope.themeId,
+    );
+    const tree = client.getQueryData(query.queryKey)!;
+    act(() =>
+      client.setQueryData(query.queryKey, {
+        ...tree,
+        sourceGeneration: 2,
+        files: tree.files.map((file) => ({
+          ...file,
+          content: `${source}\n// external source update`,
+          version: 2,
+        })),
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        useThemeWorkspaceStore.getState().getObservedSourceGeneration(scope),
+      ).toBe(2),
+    );
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(1);
+    await reselect();
+    input("Kept old heading", "Awaiting source confirmation");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    // The new frame's existing full-source handshake confirms the snapshot.
+    // This controlled bridge event is not a browser/HMR acceptance test.
+    fromPreview({ type: "morph:storefront-preview-ready" });
+    await waitFor(() =>
+      expect(
+        messagesOfType("morph:storefront-preview-update-theme-files").length,
+      ).toBeGreaterThan(0),
+    );
+    const revision = Math.max(
+      ...posted.map((m) =>
+        typeof m.styleRevision === "number" ? m.styleRevision : 0,
+      ),
+    );
+    fromPreview({
+      type: "morph:storefront-preview-theme-files-applied",
+      styleRevision: revision,
+    });
+    await flushFrames();
+    await reselect();
+    input("Awaiting source confirmation", "Confirmed new heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(request(1).expectedSourceGeneration).toBe(2);
+    expect(request(1).props).toEqual({ heading: "Confirmed new heading" });
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(1);
+  });
+
+  it("recovers a refused field only after reselection and new input in that field", async () => {
+    await refuseHeading();
+    await reselect();
+    input("Kept old heading", "Confirmed new heading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(request(1).expectedSourceGeneration).toBe(2);
+    expect(request(1).props.heading).toBe("Confirmed new heading");
+    await waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-editor-save-status]")
+          ?.getAttribute("data-save-state"),
+      ).toBe("saved"),
+    );
+  });
+
+  // Two refused fields reach the server in either of two legal orders: both
+  // typed before the debounce ends (one request), or the heading leaving
+  // before the subheading is typed (two requests). Each order is driven
+  // explicitly; in both, each field keeps the generation it was typed under
+  // and only the field confirmed by new input takes the newer one.
+
+  /** After both fields were refused: confirm the heading only. */
+  async function confirmHeadingOnly(requestsSoFar: number) {
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await reselect();
+    await screen.findByDisplayValue("Kept old heading");
+    input("Kept old heading", "Confirmed new heading");
+    await releaseSaveDebounce();
+    await waitFor(() =>
+      expect(updateSectionProps).toHaveBeenCalledTimes(requestsSoFar + 1),
+    );
+    const confirmed = request(requestsSoFar);
+    expect(confirmed.expectedSourceGeneration).toBe(2);
+    expect(confirmed.props).toEqual({ heading: "Confirmed new heading" });
+    // The subheading was not confirmed: it is still here, unsent.
+    await reselect("subheading");
+    expect(screen.getByDisplayValue("Kept old subheading")).toBeTruthy();
+    await releaseSaveDebounce();
+    expect(updateSectionProps).toHaveBeenCalledTimes(requestsSoFar + 1);
+    expect(saveStatus()).not.toBe("Saved");
+  }
+
+  it.each([
+    ["refused", () => refused],
+    [
+      "saved",
+      () => ({
+        success: true,
+        data: { draftGeneration: 2, droppedProps: [] },
+      }),
+    ],
+  ])(
+    "a reply (%s) that arrives after the editor is gone sends nothing more",
+    async (_kind, answer) => {
+      holdSaveDebounce();
+      let deliver!: (value: unknown) => void;
+      updateSectionProps.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            deliver = resolve;
+          }),
+      );
+      await openFields();
+      act(() =>
+        useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+      );
+      await reselect();
+      input("Welcome", "In flight");
+      await releaseSaveDebounce();
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      expect(request(0).props).toEqual({ heading: "In flight" });
+      // The editor goes while the request is still unanswered.
+      cleanup();
+      await act(async () => {
+        deliver(answer());
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("two fields typed inside one debounce leave together, refused at their own generation; confirming one sends only it", async () => {
+    holdSaveDebounce();
+    await openFields();
+    input("Welcome", "Kept old heading");
+    await reselect("subheading");
+    await screen.findByDisplayValue("Summary");
+    input("Summary", "Kept old subheading");
+    // Nothing has left yet: both edits are inside the same debounce.
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    expect(request(0).props).toEqual({
+      heading: "Kept old heading",
+      subheading: "Kept old subheading",
+    });
+    await confirmHeadingOnly(1);
+  });
+
+  it("a heading that left before the subheading was typed is refused on its own; each field keeps its own generation", async () => {
+    holdSaveDebounce();
+    await openFields();
+    input("Welcome", "Kept old heading");
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    expect(request(0).props).toEqual({ heading: "Kept old heading" });
+    await reselect("subheading");
+    await screen.findByDisplayValue("Summary");
+    input("Summary", "Kept old subheading");
+    await releaseSaveDebounce();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    // The refused heading does not ride along with the subheading.
+    expect(request(1).expectedSourceGeneration).toBe(1);
+    expect(request(1).props).toEqual({ subheading: "Kept old subheading" });
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    await confirmHeadingOnly(2);
+  });
+
+  it("new input in another field does not confirm a previously refused heading", async () => {
+    await refuseHeading();
+    await reselect("subheading");
+    await screen.findByDisplayValue("Summary");
+    input("Summary", "Confirmed new subheading");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(request(1).props).toEqual({
+      subheading: "Confirmed new subheading",
+    });
+    expect(request(1).expectedSourceGeneration).toBe(2);
+    await reselect();
+    expect(screen.getByDisplayValue("Kept old heading")).toBeTruthy();
+    expect(saveStatus()).not.toBe("Saved");
+  });
+
+  it("reselection alone or Retry never upgrades a refused payload baseline", async () => {
+    await refuseHeading();
+    await reselect();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    // New policy: retry is not confirmation, so no stale resend at all.
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(screen.getByDisplayValue("Kept old heading")).toBeTruthy();
+  });
+
+  it("reads back an unanswered write first and never upgrades or resends its stale baseline", async () => {
+    let answer!: (value: unknown) => void;
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    await openFields();
+    input("Welcome", "Unanswered heading");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await reselect();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    act(() =>
+      answer(editorHolding({ heading: "Welcome", subheading: "Summary" })),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps.mock.invocationCallOrder[0]!).toBeLessThan(
+      getThemeEditor.mock.invocationCallOrder[0]!,
+    );
+    expect(request(0).expectedSourceGeneration).toBe(1);
+    expect(screen.getByDisplayValue("Unanswered heading")).toBeTruthy();
+  });
+
+  it("blocks input without a selection baseline before calling the server", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    await openFields();
+    // A newly reported selection cannot capture a version from a workspace
+    // that has not accepted one; do not substitute the current Theme version.
+    act(() =>
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(0, scope),
+    );
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(0);
+    await reselect();
+    input("Welcome", "No baseline heading");
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(message, {
+        id: "selection-source-conflict",
+      }),
+    );
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("No baseline heading")).toBeTruthy();
+  });
+
+  it("keeps an old undo record blocked even after the field is freshly selected", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    });
+    await openFields();
+    input("Welcome", "Saved heading");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await reselect();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(`Could not undo: ${message}`),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("does not upgrade an old redo record when the field is freshly selected", async () => {
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    });
+    await openFields();
+    input("Welcome", "Saved heading");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Undo" }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    // A replay may debounce like ordinary content. It must never borrow gen2.
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await reselect();
+    fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(`Could not redo: ${message}`),
+    );
+    expect(
+      screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(
+      updateSectionProps.mock.calls.every(
+        (call) => call[0].data.expectedSourceGeneration === 1,
+      ),
+    ).toBe(true);
+  });
+});
 
 function applyStylePatch() {
   act(() => {
@@ -805,6 +1633,84 @@ function applyStylePatch() {
  * rather than to this file. Said here so the gap is recorded instead of
  * implied away by the coverage.
  */
+describe("a text promotion's source baseline", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+  const source =
+    'export function Hero() { return <h1 data-morph-node="heading">Welcome</h1>; }';
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({ workspaces: {} });
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
+    promoteText.mockReset();
+  });
+
+  it("advances the same selection after its own acknowledged promotion", async () => {
+    promoteText.mockResolvedValue({
+      success: true,
+      data: {
+        sourceGeneration: 2,
+        draftGeneration: 2,
+        file: {
+          path: "src/components/Hero.tsx",
+          content: source,
+          version: 2,
+          updatedAt: "2026-10-12T00:00:00.000Z",
+        },
+        document: {
+          version: 1,
+          sections: [
+            { id: "hero", type: "hero", props: { heading: "Welcome" } },
+          ],
+        },
+      },
+    });
+    renderShellWithHero(source);
+    await selectHeading();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Promote the selected text" }),
+    );
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(1));
+    expect(promoteText.mock.calls[0][0].data.expectedSourceGeneration).toBe(1);
+    await waitFor(() =>
+      expect(
+        useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+      ).toBe(2),
+    );
+    // Same selected target, without a new tree/canvas selection. Ask to
+    // promote again so the shell's real callback reads its advanced baseline;
+    // this harness does not simulate HMR replacing the rendered element.
+    promoteText.mockResolvedValue({
+      success: false,
+      message: "Already a field",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Promote the selected text" }),
+    );
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(2));
+    expect(promoteText.mock.calls[1][0].data.expectedSourceGeneration).toBe(2);
+  });
+
+  it("does not replace a selected promotion baseline with an external Code generation", async () => {
+    promoteText.mockResolvedValue({
+      success: false,
+      error: "SELECTION_SOURCE_CONFLICT",
+      message:
+        "The source code has changed. Select the field again. Your changes are kept.",
+    });
+    renderShellWithHero(source);
+    await selectHeading();
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Promote the selected text" }),
+    );
+    await waitFor(() => expect(promoteText).toHaveBeenCalledTimes(1));
+    expect(promoteText.mock.calls[0][0].data.expectedSourceGeneration).toBe(1);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+});
+
 describe("a style patch the source cannot answer", () => {
   const STATIC_SOURCE =
     'export function Hero() { return <section data-morph-node="section" className="p-4">x</section>; }';
@@ -869,7 +1775,9 @@ describe("a style patch the source cannot answer", () => {
   it("says so when the source does not parse", async () => {
     const error = vi.spyOn(toast, "error").mockImplementation(() => "");
     stylePatchTarget.elementName = "section";
-    renderShellWithHero('export function Hero() { return <section className="p-4"');
+    renderShellWithHero(
+      'export function Hero() { return <section className="p-4"',
+    );
 
     applyStylePatch();
 
@@ -877,6 +1785,247 @@ describe("a style patch the source cannot answer", () => {
       expect(error).toHaveBeenCalledWith(
         `Cannot modify styles: syntax error in ${stylePatchTarget.filePath}. Fix TSX in Code mode.`,
       ),
+    );
+  });
+});
+
+/**
+ * Typing over text on the canvas is an edit of the field only when the text
+ * was the stored value. A Theme's `content()` may change a value on its way to
+ * the page; saving the typed text would store it changed, again on each pass.
+ */
+describe("an inline edit of text the Theme changed", () => {
+  const saved = () =>
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 2, droppedProps: [] },
+    } as never);
+
+  it("is not saved, and the canvas is left to what the Theme rendered", async () => {
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    posted.length = 0;
+
+    sendInlineCommit("TRANSFORMED:WELCOME!", "TRANSFORMED:WELCOME");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    // The preview already put back what the Theme rendered. Pushing the
+    // stored value onto the canvas here would show it without content().
+    expect(
+      messagesOfType("morph:storefront-preview-update-section-props"),
+    ).toEqual([]);
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+  });
+
+  it("is saved when the text was the stored value", async () => {
+    saved();
+    renderShell();
+
+    await commitInlineText("Welcome home", "Welcome");
+
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown> };
+    };
+    expect(sent.data.props).toEqual({ heading: "Welcome home" });
+  });
+
+  it("is not saved when another tab changed the field while it was typed", async () => {
+    saved();
+    vi.spyOn(toast, "info").mockImplementation(() => "");
+    const client = readyQueryClient();
+    const view = renderShell(client);
+    await selectHeading();
+
+    // Another tab's save reaches this editor while the canvas edit is open.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={
+            editorHolding({ heading: "Theirs" })
+              .data as unknown as StorefrontThemeEditorDTO
+          }
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    // The edit began from the value this tab saw.
+    sendInlineCommit("Welcome, mine", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+
+    // The control: an edit begun from the value now stored is saved, so the
+    // refusal above was about the moved value and nothing else.
+    sendInlineCommit("Theirs, edited", "Theirs");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown> };
+    };
+    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
+  });
+
+  it("is not saved when it names a field other than the one selected", async () => {
+    saved();
+    renderShell();
+    await selectHeading();
+
+    // A late commit from an edit of another field.
+    sendInlineCommit("Late", "Welcome", {
+      fieldKey: "subheading",
+      fieldPath: "subheading",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("holds an obsolete selected field rather than borrowing the newer workspace generation", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+    });
+    const message =
+      "The source code has changed. Select the field again. Your changes are kept.";
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      error: "SELECTION_SOURCE_CONFLICT",
+      message,
+    } as never);
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      }),
+    );
+    sendInlineCommit("Unsaved from old source", "Welcome");
+    // Once the newer source is known, rejection is client-side, not an RPC.
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith(message, {
+        id: "selection-source-conflict",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(saveStatus()).not.toBe("Saved");
+  });
+
+  it("keeps the same selected source precondition for two content-only saves", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+    });
+    saved();
+    renderShell();
+    await selectHeading();
+    sendInlineCommit("First own save", "Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    sendInlineCommit("Second own save", "Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
+    expect(
+      updateSectionProps.mock.calls.map(
+        (call) => call[0].data.expectedSourceGeneration,
+      ),
+    ).toEqual([1, 1]);
+  });
+
+  it("keeps Inspector text visible after a source baseline refusal without resending", async () => {
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, {
+      storefrontId: "storefront-1",
+      themeId: "theme-1",
+    });
+    const message =
+      "The source code has changed. Select the field again. Your changes are kept.";
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      error: "SELECTION_SOURCE_CONFLICT",
+      message,
+    } as never);
+    renderShellWithHero(
+      'export const contentFields = { heading: { type: "text", label: "Heading" } }; export function Hero({ heading = "Welcome" }) { return <h1>{heading}</h1>; }',
+      "hero",
+    );
+    await selectHeading();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const input = await screen.findByDisplayValue("Welcome");
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      }),
+    );
+    fireEvent.input(input, { target: { value: "Unsaved Inspector text" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const expectDraftInActivePanel = () => {
+      const field = screen.getByDisplayValue("Unsaved Inspector text");
+      expect(field.isConnected).toBe(true);
+      expect(field.closest("[hidden], [inert]")).toBeNull();
+      for (
+        let element: Element | null = field;
+        element;
+        element = element.parentElement
+      ) {
+        expect(window.getComputedStyle(element).display).not.toBe("none");
+      }
+    };
+    expectDraftInActivePanel();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expectDraftInActivePanel();
+  });
+
+  it("is not saved when it comes from a window other than the preview", async () => {
+    saved();
+    renderShell();
+    await selectHeading();
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "morph:storefront-preview-commit-inline-text",
+            sectionId: "hero",
+            fieldKey: "heading",
+            fieldPath: "heading",
+            value: "Forged",
+            originalValue: "Welcome",
+            previewSession: PREVIEW_SESSION,
+          },
+          origin: PREVIEW_ORIGIN,
+          source: window,
+        }),
+      );
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("tells the author where to edit text the preview would not open", async () => {
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+
+    fromPreview({
+      type: "morph:storefront-preview-inline-text-refused",
+      sectionId: "hero",
+      fieldPath: "heading",
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_REFUSED_MESSAGE,
+      expect.anything(),
     );
   });
 });

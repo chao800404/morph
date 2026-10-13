@@ -9,6 +9,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { renderSafeThemeRoute } from "@/components/storefront/safe-theme-route-renderer";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
 import { patchComponentDefaultProp } from "./ast/theme-ast-transformer";
 import {
   createDefaultStorefrontHomeDocument,
@@ -86,6 +87,87 @@ describe("starter layout and the layout components' own props", () => {
     expect(STARTER_THEME_LAYOUT_SOURCE).toContain(
       `<Footer {...content("${STOREFRONT_LAYOUT_FOOTER_SLOT_ID}")} />`,
     );
+  });
+});
+
+/**
+ * The same contract in the real React Live Preview: the starter's own
+ * layout, root route and content module, run by React.
+ */
+describe("starter layout and the layout components' own props, in real React", () => {
+  async function renderLiveHome(
+    files: Array<{ path: string; content: string }>,
+  ): Promise<string> {
+    const { html } = await renderLivePreviewRoute({
+      files,
+      // No layout Document: what renders for the shell is whatever the
+      // components and the layout decide, which is the subject here.
+      documents: { index: createDefaultStorefrontHomeDocument() },
+    });
+    return html;
+  }
+
+  function withPatchedHeader(): Array<{ path: string; content: string }> {
+    return starterFiles().map((file) =>
+      file.path === "src/components/Header.tsx"
+        ? {
+            ...file,
+            content: patchComponentDefaultProp(
+              file.content,
+              "storeName",
+              "Patched Store",
+            ),
+          }
+        : file,
+    );
+  }
+
+  it("renders a patched Header default instead of a layout-owned value", async () => {
+    expect(await renderLiveHome(withPatchedHeader())).toContain(
+      "Patched Store",
+    );
+  });
+
+  it("renders a patched Footer default instead of a layout-owned value", async () => {
+    const files = starterFiles().map((file) =>
+      file.path === "src/components/Footer.tsx"
+        ? {
+            ...file,
+            content: patchComponentDefaultProp(
+              file.content,
+              "copyrightText",
+              "© Patched",
+            ),
+          }
+        : file,
+    );
+
+    expect(await renderLiveHome(files)).toContain("© Patched");
+  });
+
+  it("would notice a layout that owned the value itself", async () => {
+    // The regression this file exists for: a call-site attribute in the
+    // layout beats the component's default. Written into the layout here, the
+    // patched default must no longer render.
+    const files = withPatchedHeader().map((file) =>
+      file.path === "src/layouts/StorefrontLayout.tsx"
+        ? {
+            ...file,
+            content: file.content.replace(
+              `<Header {...content("${STOREFRONT_LAYOUT_HEADER_SLOT_ID}")} />`,
+              `<Header {...content("${STOREFRONT_LAYOUT_HEADER_SLOT_ID}")} storeName="Layout Owned" />`,
+            ),
+          }
+        : file,
+    );
+    expect(
+      files.find((file) => file.path === "src/layouts/StorefrontLayout.tsx")
+        ?.content,
+    ).toContain('storeName="Layout Owned"');
+
+    const html = await renderLiveHome(files);
+    expect(html).toContain("Layout Owned");
+    expect(html).not.toContain("Patched Store");
   });
 });
 

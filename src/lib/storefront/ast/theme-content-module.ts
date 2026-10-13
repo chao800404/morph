@@ -286,3 +286,67 @@ export function confirmThemeContentModuleFunctionExport(
     message: `Cannot ${purpose}: ${THEME_CONTENT_MODULE_PATH} does not export ${exportName}(), which Design writes to bind a section. Add the export in Code mode, then try again.`,
   };
 }
+
+/**
+ * The names a file imports, as values, from the Theme's content module.
+ *
+ * Read from the syntax: a relative specifier that resolves to
+ * `src/morph/content.ts` (with or without its extension). Type-only imports
+ * are left out — they are erased before the module runs. A namespace or
+ * default import is reported as `*` and `default`, which no function check
+ * confirms, so a caller that requires every name stops on them.
+ *
+ * Returns null when the file does not parse.
+ */
+export function readContentModuleValueImports(
+  importerPath: string,
+  source: string,
+): readonly string[] | null {
+  let ast: any;
+  try {
+    ast = parse(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  } catch {
+    return null;
+  }
+  const importerDirectory = importerPath.includes("/")
+    ? importerPath.slice(0, importerPath.lastIndexOf("/"))
+    : "";
+  const resolvesToContentModule = (specifier: string) => {
+    if (!specifier.startsWith(".")) return false;
+    const segments = importerDirectory ? importerDirectory.split("/") : [];
+    for (const part of specifier.split("/")) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") segments.pop();
+      else segments.push(part);
+    }
+    const resolved = segments.join("/");
+    return (
+      resolved === THEME_CONTENT_MODULE_PATH ||
+      `${resolved}.ts` === THEME_CONTENT_MODULE_PATH
+    );
+  };
+  const names: string[] = [];
+  for (const statement of ast.program.body ?? []) {
+    if (statement.type !== "ImportDeclaration") continue;
+    if (statement.importKind === "type") continue;
+    if (!resolvesToContentModule(String(statement.source?.value ?? ""))) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (specifier.type === "ImportNamespaceSpecifier") {
+        names.push("*");
+      } else if (specifier.type === "ImportDefaultSpecifier") {
+        names.push("default");
+      } else if (specifier.importKind !== "type") {
+        const imported = specifier.imported;
+        names.push(
+          imported?.type === "StringLiteral" ? imported.value : imported?.name,
+        );
+      }
+    }
+  }
+  return names;
+}

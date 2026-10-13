@@ -1,4 +1,7 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -8,10 +11,12 @@ import {
   previewFrame,
   saveEditedSource,
 } from "./helpers";
+import { THEMES, serverFn } from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
   writeThemeFiles,
+  type ThemeScope,
 } from "./native-compat";
 
 /**
@@ -20,12 +25,20 @@ import {
  * one instance on the canvas, edit its field, save, and see only that instance
  * change — then change the declaration in Code and see the Inspector follow.
  *
- * Writes its own route and component into the seeded, disposable store and
- * removes them afterwards.
+ * Runs on a Theme of its own, inserted into the runner-owned database. The
+ * edits here create route Documents, and nothing deletes a route Document:
+ * deleting a page removes its route file and keeps the Document for rollback.
+ * Written into the shared Theme, they outlived this spec and showed up in the
+ * next one's editor.
  */
-test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to a seeded editor store.");
+test.skip(
+  !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
+  "Needs the runner-owned throwaway store.",
+);
 
-const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+let scope: ThemeScope | null = null;
+let editorPath: string | null = null;
 const ROUTE_PATH = "/sidecar-fields";
 const COMPONENT = "src/components/SidecarCard.tsx";
 const SIDECAR = "src/components/SidecarCard.fields.ts";
@@ -137,6 +150,62 @@ function CrossTabRoute() {
   ...crossTabComponent("CrossTabStale"),
 ];
 
+async function createThrowawayTheme(): Promise<ThemeScope> {
+  const created = { ...shared!, themeId: randomUUID() };
+  const now = new Date().toISOString();
+  await promisify(execFile)("npx", [
+    "wrangler",
+    "d1",
+    "execute",
+    "DATABASE",
+    "--local",
+    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
+      ? ["--env", "local_preview_e2e"]
+      : []),
+    "--persist-to",
+    process.env.MORPH_E2E_STATE_DIR!,
+    "--command",
+    `INSERT INTO storefront_themes
+    (id, storefront_id, name, metadata, created_at, updated_at)
+    VALUES ('${created.themeId}', '${created.storefrontId}',
+      'content-fields-sidecar-${created.themeId}', '{"starterTemplateVersion":1}',
+      '${now}', '${now}');`,
+  ]);
+  return created;
+}
+
+/** What of this spec a Theme holds: its route Documents and its files. */
+async function sidecarTraces(page: Page, theme: ThemeScope) {
+  const editor = (await serverFn(
+    page,
+    THEMES,
+    "getStorefrontThemeEditor",
+    theme,
+  )) as {
+    success: boolean;
+    data?: { templates: Array<{ routePath: string | null }> };
+  };
+  expect(editor.success, JSON.stringify(editor)).toBe(true);
+  const listed = (await serverFn(
+    page,
+    "/src/server/storefront/storefront-theme-files.serverFn.ts",
+    "listStorefrontThemeFiles",
+    theme,
+  )) as { success: boolean; data?: { files: Array<{ path: string }> } };
+  expect(listed.success, JSON.stringify(listed)).toBe(true);
+  const written = new Set(
+    [...FILES, ...CROSS_TAB_FILES].map((file) => file.path),
+  );
+  return {
+    routePaths: editor
+      .data!.templates.map((template) => template.routePath)
+      .filter((routePath) => routePath?.startsWith(ROUTE_PATH)),
+    files: listed
+      .data!.files.map((file) => file.path)
+      .filter((path) => written.has(path)),
+  };
+}
+
 async function signedInPage(browser: Browser) {
   const { baseURL, storageState } = test.info().project.use;
   const context = await browser.newContext({ baseURL, storageState });
@@ -148,7 +217,7 @@ async function openRoute(
   routePath = ROUTE_PATH,
   slot = "sidecar-a",
 ) {
-  const url = new URL(EDITOR_PATH!, "http://placeholder");
+  const url = new URL(editorPath!, "http://placeholder");
   url.searchParams.set("routePath", routePath);
   await page.goto(`${url.pathname}${url.search}`, {
     waitUntil: "domcontentloaded",
@@ -198,7 +267,20 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const saved = await writeThemeFiles(page, scope!, [
+    scope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...scope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find(
+      (template) => template.type === "index",
+    );
+    expect(home).toBeDefined();
+    editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
+    const saved = await writeThemeFiles(page, scope, [
       ...FILES,
       ...CROSS_TAB_FILES,
     ]);
@@ -206,16 +288,25 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     await page.context().close();
   });
 
+  // Everything above wrote to the Theme of its own; the shared one holds
+  // none of it. The Theme of its own does hold the edited route's Document,
+  // which is what shows the check would see one left in the shared Theme.
   test.afterAll(async ({ browser }) => {
     const page = await signedInPage(browser);
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const removed = await removeThemeFiles(
-      page,
-      scope!,
-      [...FILES, ...CROSS_TAB_FILES].map((file) => file.path),
-    );
-    expect(removed.success, JSON.stringify(removed)).toBe(true);
-    await page.context().close();
+    try {
+      await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      if (scope) {
+        expect((await sidecarTraces(page, scope)).routePaths).toContain(
+          ROUTE_PATH,
+        );
+      }
+      expect(await sidecarTraces(page, shared!)).toEqual({
+        routePaths: [],
+        files: [],
+      });
+    } finally {
+      await page.context().close();
+    }
   });
 
   test("edits one instance's field without touching the other", async ({
@@ -367,7 +458,7 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
     const saved = await writeThemeFiles(
       page,
       scope!,
@@ -438,10 +529,47 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     browser,
   }) => {
     test.setTimeout(240_000);
+    // Visiting a route only creates a placeholder. Establish the real
+    // Document explicitly so the refusal compares the same stored draft.
+    await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...scope!, routePath: CROSS_TAB_ROUTE_PATH },
+    )) as {
+      success: boolean;
+      data?: { id: string; draftGeneration: number };
+    };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    expect(ensured.data).toBeDefined();
     await openRoute(page, CROSS_TAB_ROUTE_PATH, STALE_SLOT);
     await selectCard(page, STALE_SLOT);
     const field = titleField(page, "CrossTabStale title");
     await expect(field).toBeVisible();
+    const beforeSourceChange = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as {
+      success: boolean;
+      data: {
+        templates: Array<{
+          id: string;
+          routePath: string | null;
+          draftGeneration: number;
+          document: unknown;
+        }>;
+      };
+    };
+    expect(beforeSourceChange.success).toBe(true);
+    const beforeDocument = beforeSourceChange.data.templates.find(
+      (t) => t.routePath === CROSS_TAB_ROUTE_PATH,
+    );
+    expect(beforeDocument).toBeDefined();
+    expect(beforeDocument!.id).toBe(ensured.data!.id);
+    expect(beforeDocument!.draftGeneration).toBe(ensured.data!.draftGeneration);
 
     await deleteInAnotherTab(browser, STALE_SIDECAR);
 
@@ -460,27 +588,101 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
     );
     await field.fill(edited);
     await field.press("Tab");
-    expect((await saved).ok()).toBe(true);
+    const refused = await saved;
+    expect(await refused.text()).toContain("SELECTION_SOURCE_CONFLICT");
 
     await expect(
-      page.getByText(
-        /Not saved: "title" is not an editable field in the current Theme source/,
-      ),
+      page.getByText(/The source code has changed\. Select the field again/),
     ).toBeVisible({ timeout: 15_000 });
+    // Previously this asserted a partial save and an automatic source reload.
+    // A stale selection now refuses the whole write and keeps the typed text:
+    // retaining these old expectations would require discarding the draft.
+    await expect(field).toHaveValue(edited);
+    await expect(field).toBeVisible();
+    const afterSourceChange = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as typeof beforeSourceChange;
+    expect(afterSourceChange.success).toBe(true);
+    const afterDocument = afterSourceChange.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(afterDocument?.draftGeneration).toBe(
+      beforeDocument!.draftGeneration,
+    );
+    expect(afterDocument?.document).toEqual(beforeDocument!.document);
     const heading = previewFrame(page).locator(
       `[data-storefront-section-id="${STALE_SLOT}"] h2`,
     );
-    await expect(heading).toHaveText(DEFAULT_TITLE, { timeout: 15_000 });
-    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0, {
-      timeout: 45_000,
-    });
-    await expect(field).toHaveCount(0);
+    // Restore the declaration without remounting the editor: a reload would
+    // discard the pending input and could not prove recovery. Refresh preview
+    // explicitly refetches source without remounting the editor; it does not
+    // itself confirm any retained content field.
+    const restored = await writeThemeFiles(
+      page,
+      scope!,
+      CROSS_TAB_FILES.filter((file) => file.path === STALE_SIDECAR),
+    );
+    expect(restored.success, JSON.stringify(restored)).toBe(true);
+    const refreshedSource = page.waitForResponse((response) =>
+      isServerFunctionCall(response.url(), "listStorefrontThemeFiles"),
+    );
+    await page.getByRole("button", { name: "Refresh preview" }).click();
+    expect(await (await refreshedSource).text()).toContain(STALE_SIDECAR);
+    await expect(cardTitle(page, STALE_SLOT)).toBeVisible({ timeout: 90_000 });
+    await selectCard(page, STALE_SLOT);
+    await expect(field).toHaveValue(edited);
+    const afterReselection = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...scope! },
+    )) as typeof beforeSourceChange;
+    const stillHeld = afterReselection.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(stillHeld?.draftGeneration).toBe(beforeDocument!.draftGeneration);
+    expect(stillHeld?.document).toEqual(beforeDocument!.document);
 
-    // Nothing was stored for the field: a fresh load renders the default.
+    const confirmed = `Confirmed recovery ${Date.now()}`;
+    const recovered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) &&
+        (response.request().postData() ?? "").includes(confirmed),
+      { timeout: 30_000 },
+    );
+    await field.fill(confirmed);
+    await field.press("Tab");
+    const accepted = await recovered;
+    expect(await accepted.text()).toContain("Theme section props updated");
+    const readback = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...scope!,
+    })) as typeof beforeSourceChange;
+    expect(readback.success).toBe(true);
+    const recoveredDocument = readback.data.templates.find(
+      (t) => t.id === beforeDocument!.id,
+    );
+    expect(recoveredDocument?.draftGeneration).toBe(
+      beforeDocument!.draftGeneration + 1,
+    );
+    expect(recoveredDocument?.document).toMatchObject({
+      sections: expect.arrayContaining([
+        expect.objectContaining({
+          id: STALE_SLOT,
+          props: expect.objectContaining({ title: confirmed }),
+        }),
+      ]),
+    });
+    // Only after the pending recovery has been proved do we reload/read back.
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(heading).toBeVisible({ timeout: 90_000 });
-    await expect(heading).toHaveText(DEFAULT_TITLE);
-    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(0);
+    await expect(heading).toHaveText(confirmed, { timeout: 90_000 });
+    await expect(cardTitle(page, STALE_SLOT)).toHaveCount(1);
   });
 });
 
@@ -488,7 +690,7 @@ test.describe("content fields declared in <Name>.fields.ts", () => {
 async function deleteInAnotherTab(browser: Browser, path: string) {
   const other = await signedInPage(browser);
   try {
-    await other.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    await other.goto(editorPath!, { waitUntil: "domcontentloaded" });
     const removed = await removeThemeFiles(other, scope!, [path]);
     expect(removed.success, JSON.stringify(removed)).toBe(true);
   } finally {

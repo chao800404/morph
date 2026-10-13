@@ -155,6 +155,22 @@ describe("preview protocol", () => {
     expect(parseEditorToPreviewMessage({ ...response, status: 99 })).toBeNull();
   });
 
+  it("accepts a content refresh that carries no content", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-refresh-content",
+      }),
+    ).toEqual({ type: "morph:storefront-preview-refresh-content" });
+    // Anything sent beside it is not passed on: the page reads its content
+    // where it always does, never from this message.
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-refresh-content",
+        slots: { hero: { title: "injected" } },
+      }),
+    ).toEqual({ type: "morph:storefront-preview-refresh-content" });
+  });
+
   it("accepts a bounded in-place route change", () => {
     const message = {
       type: "morph:storefront-preview-set-route",
@@ -394,7 +410,6 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       field: "heading",
       fieldPath: "heading",
-      contentValue: "Current heading",
       selectionRevision: 4,
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       tagName: "h1",
@@ -411,16 +426,18 @@ describe("preview protocol", () => {
     expect(parsePreviewToEditorMessage(selection)).toMatchObject({
       kind: "text",
       styleRevision: 3,
-      contentValue: "Current heading",
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       selectionRevision: 4,
     });
+    // Rendered text is not a field's value: a Theme's content() may change
+    // it on the way to the page. The editor is not told it, so nothing can
+    // take it for the stored value.
     expect(
       parsePreviewToEditorMessage({
         ...selection,
-        contentValue: "x".repeat(10_001),
+        contentValue: "Rendered heading",
       }),
-    ).toBeNull();
+    ).not.toHaveProperty("contentValue");
     expect(
       parsePreviewToEditorMessage({
         ...selection,
@@ -477,6 +494,21 @@ describe("preview protocol", () => {
     ).toBeNull();
   });
 
+  it("accepts a bounded notice that inline editing was refused", () => {
+    const message = {
+      type: "morph:storefront-preview-inline-text-refused",
+      sectionId: "hero",
+      fieldPath: "items.0.title",
+    };
+    expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    expect(
+      parsePreviewToEditorMessage({ ...message, fieldPath: "" }),
+    ).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({ ...message, sectionId: "x".repeat(101) }),
+    ).toBeNull();
+  });
+
   it("accepts only a bounded inline text commit", () => {
     const message = {
       type: "morph:storefront-preview-commit-inline-text",
@@ -484,9 +516,20 @@ describe("preview protocol", () => {
       fieldKey: "heading",
       fieldPath: "content.heading",
       value: "Edited in the canvas",
+      originalValue: "Stored heading",
     };
 
     expect(parsePreviewToEditorMessage(message)).toEqual(message);
+    // Without the text it started from, the editor cannot tell an edit of the
+    // field from typing over text the Theme changed on its way to the page.
+    const { originalValue: _originalValue, ...unanchored } = message;
+    expect(parsePreviewToEditorMessage(unanchored)).toBeNull();
+    expect(
+      parsePreviewToEditorMessage({
+        ...message,
+        originalValue: "x".repeat(10_001),
+      }),
+    ).toBeNull();
     expect(
       parsePreviewToEditorMessage({ ...message, sectionId: "x".repeat(101) }),
     ).toBeNull();
@@ -1037,6 +1080,46 @@ describe("opening a deleted file's history from the canvas", () => {
         type: "morph:storefront-preview-open-file-history",
         path: { toString: () => "src/components/Footer.tsx" },
       }),
+    ).toBeNull();
+  });
+});
+
+describe("an inline edit left open on the page", () => {
+  it("is reported open or closed, and nothing else", () => {
+    const open = { type: "morph:storefront-preview-inline-text-editing", editing: true };
+    expect(parsePreviewToEditorMessage(open)).toEqual(open);
+    expect(
+      parsePreviewToEditorMessage({ ...open, editing: "yes" }),
+    ).toBeNull();
+  });
+
+  it("is ended at the editor's request, kept or put back, naming the request", () => {
+    const finish = {
+      type: "morph:storefront-preview-finish-inline-text",
+      commit: false,
+      requestId: 4,
+    };
+    expect(parseEditorToPreviewMessage(finish)).toEqual(finish);
+    expect(parseEditorToPreviewMessage({ ...finish, commit: 1 })).toBeNull();
+    const { requestId: _omitted, ...unnamed } = finish;
+    expect(parseEditorToPreviewMessage(unnamed)).toBeNull();
+  });
+
+  it("carries the request a commit answers back as a number, or nothing", () => {
+    const commit = {
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    };
+    expect(parsePreviewToEditorMessage(commit)).toEqual(commit);
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: 4 }),
+    ).toEqual({ ...commit, finishRequestId: 4 });
+    expect(
+      parsePreviewToEditorMessage({ ...commit, finishRequestId: "4" }),
     ).toBeNull();
   });
 });

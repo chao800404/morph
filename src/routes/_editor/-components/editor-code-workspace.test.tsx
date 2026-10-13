@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type RefObject } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +33,10 @@ import {
   type EditorCodeWorkspaceHandle,
 } from "./editor-code-workspace";
 import { configureThemeTypeScript } from "./editor-code-language-support";
+import {
+  createEditorLeaveGuard,
+  type EditorLeaveGuard,
+} from "@/lib/storefront/editor/editor-leave-guard";
 import { formatEditorCode } from "./editor-code-formatter";
 
 const monacoTestState = vi.hoisted(() => ({
@@ -207,6 +217,7 @@ function renderWorkspace(props?: {
   onPreviewFilesChange?: (
     files: Array<{ path: string; content: string }>,
   ) => void;
+  onAuthorInput?: () => void;
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -232,6 +243,7 @@ function renderWorkspace(props?: {
         onRestartPreview={props?.onRestartPreview}
         onDirtyFilesChange={props?.onDirtyFilesChange}
         onPreviewFilesChange={props?.onPreviewFilesChange}
+        onAuthorInput={props?.onAuthorInput}
       />
     </QueryClientProvider>,
   );
@@ -493,6 +505,77 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     resolveSave({ ...file, content: "in flight", version: 2 });
     const flushed = await flushPromise;
     expect(flushed).toBe(true);
+  });
+
+  /**
+   * Leaving the editor sends the Code drafts first; typing while that save
+   * is still out means the author is still here. Wired exactly as the shell
+   * wires it: the guard's flush is `flushPendingChanges`, its pending check
+   * is `hasUnsavedDrafts`, and `onAuthorInput` is `noteInput`. Only
+   * `setTimeout` is faked, so no autosave fires on its own while the save
+   * is held open by hand.
+   */
+  it("cancels a waiting navigation when the author types in Code, and keeps the newest draft", async () => {
+    const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
+    let resolveSave!: () => void;
+    const onSaveFile = vi.fn(
+      (_path: string, content: string) =>
+        new Promise<StorefrontThemeFileDTO>((resolve) => {
+          resolveSave = () => resolve({ ...file, content, version: 2 });
+        }),
+    );
+    const guardRef: { current: EditorLeaveGuard | null } = { current: null };
+    renderWorkspace({
+      workspaceRef,
+      onSaveFile,
+      onAuthorInput: () => guardRef.current?.noteInput(),
+    });
+    await waitFor(() => expect(workspaceRef.current).not.toBeNull());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      guardRef.current = createEditorLeaveGuard({
+        hasPendingWrites: () => workspaceRef.current!.hasUnsavedDrafts(),
+        flush: async () =>
+          (await workspaceRef.current!.flushPendingChanges())
+            ? { saved: true }
+            : { saved: false, reason: "Code changes could not be saved." },
+        onPrompt: () => {},
+        discard: () => {},
+      });
+      const editor = screen.getByRole("textbox", { name: "Code editor" });
+      fireEvent.change(editor, { target: { value: "first" } });
+
+      let blocked: boolean | undefined;
+      void guardRef.current
+        .request("leave-editor")
+        .then((value) => (blocked = value));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      // Leaving sent the draft, and the save is still out.
+      expect(onSaveFile).toHaveBeenCalledWith(file.path, "first", {
+        confirmed: false,
+      });
+      expect(blocked).toBeUndefined();
+
+      fireEvent.change(editor, { target: { value: "second" } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(blocked).toBe(true);
+
+      // The earlier save landing does not revive the navigation, and does
+      // not take the newer draft with it.
+      resolveSave();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(blocked).toBe(true);
+      expect((editor as HTMLTextAreaElement).value).toBe("second");
+      expect(workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lets the editor shell apply a saved file through HMR without refreshing the iframe", async () => {

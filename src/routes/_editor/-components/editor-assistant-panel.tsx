@@ -24,6 +24,7 @@ import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
   EditorStyleInspector,
+  type InspectorInlineTextCommit,
   type InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
 import { resolveEditorTemplate } from "./editor-template";
@@ -35,6 +36,12 @@ import type {
 import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
 
 type EditorAssistantPanelProps = {
+  /**
+   * Raised when the editor discards unsaved content on the author's say-so.
+   * The Inspector holds its own copy of what is being typed; a new value
+   * makes it read the section afresh instead of sending that copy again.
+   */
+  contentResetEpoch?: number;
   /** Modules the layout supplies; an edit to one reaches every page. */
   sharedLayoutPaths?: ReadonlySet<string>;
   /** Section library source, including what its entries re-export. */
@@ -101,6 +108,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** The last value an inline canvas edit wrote; see the Inspector's prop. */
+  inlineTextCommit?: InspectorInlineTextCommit | null;
   onCodeComponentPropsChange?: (
     filePath: string,
     nextProps: Record<string, unknown>,
@@ -225,9 +234,11 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  inlineTextCommit,
   onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
+  contentResetEpoch = 0,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -472,7 +483,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
             <EditorStyleInspector
               sharedLayoutPaths={sharedLayoutPaths}
               sectionTemplatePaths={sectionTemplatePaths}
-              resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}`}
+              resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}
@@ -491,6 +502,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onRepairThemeLinkBinding={onRepairThemeLinkBinding}
               onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
+              inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
             />
           ) : (

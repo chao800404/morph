@@ -84,10 +84,62 @@ export type EditableDescendantField = Readonly<{
    * from, editing one would write to whichever the selection happened to name.
    */
   sectionId: string | null;
+  /**
+   * The `id` of the repeated-field row the field is in, when it is in one.
+   * A container can span several rows, so each field carries its own.
+   */
+  itemId?: string | null;
 }>;
+
+/**
+ * Why a selected element offers no content to edit, when the preview can say.
+ *
+ * Each names something the editor does not support yet, not something the
+ * Theme did wrong: the code runs, previews and builds as written. What it
+ * stops is a visual write whose destination the editor cannot confirm.
+ *
+ * - `value-not-from-row`: inside a list's row, the component shows a value
+ *   the list set from something other than that row's field — a literal, a
+ *   computed value, or a spread of another object.
+ * - `row-not-passed`: the row's component is written in a way the editor
+ *   cannot yet hand its row to (it takes `props` whole, or is wrapped in
+ *   `memo()` or another call), so its fields cannot be tied to the row.
+ * - `nested-list`: a list the row's component keeps of its own; a row holds
+ *   no list in the content model yet.
+ * - `marker-conflicts-source`: a hand-written `data-storefront-field` names
+ *   one field while the element provably renders another. The marker is a
+ *   hint, never where an edit goes (rule 02 §8.5).
+ * - `marker-unproven`: a hand-written `data-storefront-field` names a field,
+ *   but what the element renders cannot be traced to it.
+ */
+export const CONTENT_UNAVAILABLE_REASONS = [
+  "value-not-from-row",
+  "row-not-passed",
+  "nested-list",
+  "marker-conflicts-source",
+  "marker-unproven",
+] as const;
+export type ContentUnavailableReason =
+  (typeof CONTENT_UNAVAILABLE_REASONS)[number];
+
+export function isContentUnavailableReason(
+  value: unknown,
+): value is ContentUnavailableReason {
+  return (
+    typeof value === "string" &&
+    (CONTENT_UNAVAILABLE_REASONS as readonly string[]).includes(value)
+  );
+}
 
 export type EditorSelectionDescriptor = {
   sectionId: string;
+  /**
+   * The `id` of the repeated-field row the element belongs to, when it is in
+   * one: what confirms the row before a write, since its index can move.
+   */
+  itemId?: string | null;
+  /** Why the element offers no content, when the preview could tell. */
+  contentUnavailable?: ContentUnavailableReason | null;
   kind: SelectionKind;
   componentType: string;
   tagName: string | null;
@@ -100,7 +152,6 @@ export type EditorSelectionDescriptor = {
   elementKey: string | null;
   fieldKey: string | null;
   fieldPath: string | null;
-  contentValue?: string | null;
   descendantFields?: readonly EditableDescendantField[];
   className: string;
   isSection: boolean;

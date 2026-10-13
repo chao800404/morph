@@ -399,10 +399,16 @@ describe("reorder and update props schemas", () => {
       sectionId: "s1",
       props: { title: "Hello" },
       expectedDraftGeneration: 3,
+      expectedSourceGeneration: 1,
     };
     expect(
       updateStorefrontThemeSectionPropsInputSchema.parse(validProps),
     ).toEqual(validProps);
+    for (const invalid of [undefined, 0, -1, 1.5]) {
+      expect(updateStorefrontThemeSectionPropsInputSchema.safeParse({
+        ...validProps, expectedSourceGeneration: invalid,
+      }).success).toBe(false);
+    }
 
     expect(() =>
       updateStorefrontThemeSectionPropsInputSchema.parse({

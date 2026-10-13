@@ -7,11 +7,12 @@ import {
   EDITOR_PATH,
   clickExposedElement,
   enableSelection,
+  isServerFunctionCall,
   openContentTab,
   previewFrame,
   settleSelection,
 } from "./helpers";
-import { signedInPage } from "./native-acceptance";
+import { savedField, signedInPage } from "./native-acceptance";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -22,6 +23,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../src/lib/storefront/starter-theme-v3-files";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
  * The Starter upgrade to version 28 on the workspace the editor provisions,
@@ -31,7 +33,8 @@ import {
  *      calling morph.pages.get reads it;
  *   D. the same workspace marked 27: the upgrade runs and changes no file;
  *   B. the pre-pages content module, untouched, on 27: only content.ts is
- *      replaced, a second load changes nothing, and the Theme is on 28;
+ *      replaced, a second load changes nothing, and the Theme is on the
+ *      current Starter version;
  *   E. a toolchain pin an earlier Starter wrote: the build refuses it, and
  *      builds once the upgrade brings it forward (containers only);
  *   C. the pre-pages module as the author edited it, on 27: nothing changes.
@@ -194,16 +197,29 @@ async function typeHeroMarker(page: Page, marker: string) {
     await openContentTab(page);
   }
   await expect(field).toBeVisible({ timeout: 30_000 });
+  // The edit is saved after the editor's debounce, not when the canvas shows
+  // it. "Unpublished" is no evidence either: the save status already says so
+  // before the edit and does not show Saving… while the debounce runs. A
+  // test that navigates on either leaves before the save is sent, and the
+  // marker never reaches the server (CI run 37964261465). So it waits for
+  // the save carrying the marker, and reads the draft back.
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
+      (response.request().postData() ?? "").includes(marker),
+    { timeout: 30_000 },
+  );
   await field.fill(marker);
   await field.press("Tab");
   await expect(
     previewFrame(page).getByText(marker, { exact: false }).first(),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
-    "aria-label",
-    "Unpublished",
-    { timeout: 30_000 },
-  );
+  const response = await saved;
+  expect(response.ok()).toBe(true);
+  // A refused write still answers 200; the refusal is in the body.
+  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  await savedField(page, scope!, marker);
 }
 
 async function expectLiveProbe(page: Page, marker: string) {
@@ -329,7 +345,7 @@ test.describe("Starter upgrade to version 28", () => {
     setStarterVersion(27);
     await openEditor(page);
     expect(await workspace(page)).toEqual(before);
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
   });
 
   test("B. the untouched pre-pages module on 27: only content.ts is replaced, once", async ({
@@ -355,12 +371,12 @@ test.describe("Starter upgrade to version 28", () => {
     for (const path of OLD_PATH_COMPONENTS) {
       expect(Object.keys(after)).not.toContain(path);
     }
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     // A second load: no second replacement, no added file, no version write.
     await openEditor(page);
     expect(await workspace(page)).toEqual(after);
-    expect(starterVersion()).toBe(28);
+    expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     const marker = `morph-b-${randomUUID()}`;
     await typeHeroMarker(page, marker);

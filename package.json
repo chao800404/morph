@@ -46,6 +46,7 @@
     "seed:e2e": "node scripts/seed-e2e.mjs",
     "test:e2e:ui": "playwright test --ui",
     "test:parity": "MORPH_THEME_PARITY=1 vitest run src/lib/storefront/workspace-theme-parity.test.ts",
+    "test:workspace-preview": "MORPH_WORKSPACE_PREVIEW=1 vitest run src/lib/storefront/workspace-theme-live-preview.test.ts",
     "theme:preview": "node --env-file-if-exists=.dev.vars scripts/theme-preview-sidecar.mjs",
     "check:local-preview-sidecar": "node scripts/check-local-preview-sidecar.mjs",
     "test:e2e:local-preview": "node scripts/run-editor-e2e.mjs",
@@ -57,7 +58,7 @@
     "verify:deployed-svg": "tsx scripts/verify-deployed-svg.ts",
     "check:migrations": "node --test scripts/pending-migrations.test.mjs && node scripts/check-pending-migrations.mjs --files-only",
     "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
-    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs",
+    "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs scripts/e2e-machine-lock.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",
     "ship": "node scripts/ship.mjs"
   },

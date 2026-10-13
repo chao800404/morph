@@ -26,6 +26,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE,
   LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE,
@@ -50,7 +51,14 @@ import {
   THEME_START_RUNTIME_DEPENDENCIES,
 } from "./compiler/theme-start-toolchain";
 import { planAdoptPageOwnedSections } from "./editor/page-section-copy";
-import { planThemeFileMove } from "./ast/theme-file-move";
+import {
+  planThemeFileMove,
+  readThemeFileImportTargets,
+} from "./ast/theme-file-move";
+import {
+  confirmThemeContentModuleFunctionExport,
+  readContentModuleValueImports,
+} from "./ast/theme-content-module";
 import { deriveThemeSourceRouterFramework } from "./theme-source-runtime-contract";
 
 /**
@@ -82,6 +90,57 @@ const STARTER_HOME_SECTION_SOURCES = new Set<string>(
 );
 
 const STARTER_HOME_ROUTE_PATH = "src/routes/index.tsx";
+
+/**
+ * Whether a Starter file can replace an author's workspace file without an
+ * import that the workspace, as the plan leaves it, cannot satisfy.
+ *
+ * An upgrade writes source the Starter owns into a workspace the author owns.
+ * The content module is the author's (rule 01 §4.4): they may have edited or
+ * removed it, and a component the new source imports may have been deleted.
+ * Writing a route that imports what is not there turns a workspace that builds
+ * today into one that does not. So every relative import must resolve to a
+ * file, and every value imported from the content module must be confirmed as
+ * a function by the same check Design writes use. Anything that cannot be
+ * confirmed — a missing file, an unparseable module, a re-export, a factory's
+ * result — keeps the author's file as it is.
+ *
+ * `afterPlan` is the workspace with the plan's writes applied.
+ */
+function starterSourceImportsSatisfied(
+  sourcePath: string,
+  source: string,
+  afterPlan: ReadonlyMap<string, string>,
+): boolean {
+  const targets = readThemeFileImportTargets(
+    sourcePath,
+    source,
+    new Set(afterPlan.keys()),
+  );
+  if (!targets) return false;
+  if (
+    targets.some(
+      (target) => target.specifier.startsWith(".") && !target.resolvedPath,
+    )
+  ) {
+    return false;
+  }
+  const contentImports = readContentModuleValueImports(sourcePath, source);
+  if (!contentImports) return false;
+  const contentModule = afterPlan.get("src/morph/content.ts");
+  const files =
+    contentModule === undefined
+      ? []
+      : [{ path: "src/morph/content.ts", content: contentModule }];
+  return contentImports.every(
+    (name) =>
+      confirmThemeContentModuleFunctionExport(
+        files,
+        name,
+        "upgrade the Starter",
+      ).ok,
+  );
+}
 
 const STARTER_THEME_SECTION_ENTRY_FILES =
   STARTER_THEME_SECTION_ENTRY_COMPONENTS.map((componentName) => ({
@@ -1241,9 +1300,37 @@ function starterUpgradeApplies(framework: StarterWorkspaceFramework): boolean {
  * workspace. Authored files are preserved. Legacy shell components are
  * replaced only when their bytes still exactly match the previous bootstrap,
  * and new route/section files are inserted only when missing.
+ *
+ * The home route is decided last, against the rest of the plan: the new route
+ * imports from files this same plan may add or replace (the content module is
+ * seeded or upgraded further down), and it is written only when every one of
+ * those imports will be satisfied (`starterSourceImportsSatisfied`).
  */
 export function createStarterThemeWorkspaceUpgrade(
   existingFiles: ExistingStarterThemeFile[],
+): StarterThemeWorkspaceUpgradeFile[] {
+  const deferred: { homeRoute: StarterThemeWorkspaceUpgradeFile | null } = {
+    homeRoute: null,
+  };
+  const upgrades = planStarterThemeWorkspaceWrites(existingFiles, deferred);
+  const homeRoute = deferred.homeRoute;
+  if (!homeRoute) return upgrades;
+  const afterPlan = new Map(
+    existingFiles.map((file) => [file.path, file.content] as const),
+  );
+  for (const file of upgrades) afterPlan.set(file.path, file.content);
+  return starterSourceImportsSatisfied(
+    homeRoute.path,
+    homeRoute.content,
+    afterPlan,
+  )
+    ? [...upgrades, homeRoute]
+    : upgrades;
+}
+
+function planStarterThemeWorkspaceWrites(
+  existingFiles: ExistingStarterThemeFile[],
+  deferred: { homeRoute: StarterThemeWorkspaceUpgradeFile | null },
 ): StarterThemeWorkspaceUpgradeFile[] {
   const existingByPath = new Map(
     existingFiles.map((file) => [file.path, file]),
@@ -1288,6 +1375,8 @@ export function createStarterThemeWorkspaceUpgrade(
   // Replacing bytes Morph wrote, and correcting the pins it owns, is safe on
   // any Start workspace: each rule matches an exact Starter generation.
   if (canAdoptRouteContract || isStartBySource) {
+    // Decided by the caller once the whole plan is known: the new route
+    // imports from files this plan may still add or replace.
     const existingHomeRoute = existingByPath.get("src/routes/index.tsx");
     if (
       existingHomeRoute?.content === LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE ||
@@ -1302,13 +1391,13 @@ export function createStarterThemeWorkspaceUpgrade(
       existingHomeRoute?.content ===
         LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE
     ) {
-      upgrades.push({
+      deferred.homeRoute = {
         path: existingHomeRoute.path,
         content: STARTER_THEME_HOME_ROUTE_SOURCE,
         mimeType: "text/typescript",
         expectedFileId: existingHomeRoute.id,
         expectedVersion: existingHomeRoute.version,
-      });
+      };
     }
 
     // A root route without a document shell builds successfully and previews
@@ -1499,6 +1588,13 @@ export function createStarterThemeWorkspaceUpgrade(
     readonly path: string;
     readonly legacy: readonly string[];
     readonly current: string;
+    /**
+     * `current` imports what the author may have changed or removed (the
+     * content module is theirs, rule 01 §4.4), so it replaces their file only
+     * when `starterSourceImportsSatisfied` confirms every import; otherwise
+     * the file is left for the author rather than breaking the build.
+     */
+    readonly checkImports?: boolean;
   }> = [
     {
       path: "src/components/Hero.tsx",
@@ -1623,8 +1719,12 @@ export function createStarterThemeWorkspaceUpgrade(
         LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
         STARTER_THEME_INDEX_SOURCE,
         LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
+        // Slot-bound but always visible: a hidden Header or Footer still
+        // rendered, with the component's defaults in place of the author's.
+        LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
       ],
       current: STARTER_THEME_LAYOUT_SOURCE,
+      checkImports: true,
     },
   ];
 
@@ -1638,6 +1738,24 @@ export function createStarterThemeWorkspaceUpgrade(
     if (!existing) continue;
     const isLegacy = replacement.legacy.includes(existing.content);
     if (!isLegacy) continue;
+    // Checked against the workspace as the plan leaves it so far: the content
+    // module is seeded or upgraded above. A file a later step adds is not seen
+    // yet, which can only keep the author's file, never break the build.
+    if (replacement.checkImports) {
+      const afterPlan = new Map(
+        existingFiles.map((file) => [file.path, file.content] as const),
+      );
+      for (const file of upgrades) afterPlan.set(file.path, file.content);
+      if (
+        !starterSourceImportsSatisfied(
+          replacement.path,
+          replacement.current,
+          afterPlan,
+        )
+      ) {
+        continue;
+      }
+    }
     upgrades.push({
       path: replacement.path,
       content: replacement.current,

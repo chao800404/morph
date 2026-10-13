@@ -203,6 +203,33 @@ describe("applying document changes to the real React preview", () => {
     );
   });
 
+  it("reloads content the preview's server confirmed, through the same refresh", () => {
+    const start = BRIDGE.indexOf(
+      'message?.type === "morph:storefront-preview-refresh-content"',
+    );
+    expect(start).toBeGreaterThan(-1);
+    const handler = BRIDGE.slice(
+      start,
+      BRIDGE.indexOf(
+        'message?.type === "morph:storefront-preview-update-section-props"',
+      ),
+    );
+    expect(handler).toContain("refreshPreviewContent();");
+    // It carries no content and changes none: the page reads what the
+    // server now holds, never a value from the message.
+    expect(handler).not.toContain("updatePreviewContent(");
+  });
+
+  it("hides a hidden section's display: contents wrapper without the Theme's help", () => {
+    // The wrapper's inline display: contents beats the browser's [hidden]
+    // rule; only Tailwind's preflight used to override it. The rule has to
+    // be in the editor's own stylesheet. A browser checks the cascade in
+    // e2e/layout-section-visibility.spec.ts.
+    expect(BRIDGE).toMatch(
+      /\[data-storefront-section-id\]\[hidden\] \{\s*display: none !important;\s*\}/,
+    );
+  });
+
   it("refreshes hydrated route content once per frame, then reports the new DOM", async () => {
     const source = BRIDGE.slice(
       BRIDGE.indexOf("let contentRefreshScheduled = false;"),
@@ -217,12 +244,17 @@ describe("applying document changes to the real React preview", () => {
         }),
     );
     const restore = vi.fn();
+    const restoreTarget = vi.fn();
     const report = vi.fn();
     const draw = vi.fn();
     const refresh = new Function(
       "window",
       "requestAnimationFrame",
       "restoreSelectedSection",
+      "restoreSelectedTarget",
+      "selectionEnabled",
+      "lastRestoreTarget",
+      "selectedSectionId",
       "reportStructure",
       "drawOverlays",
       source + "; return refreshPreviewContent;",
@@ -230,6 +262,10 @@ describe("applying document changes to the real React preview", () => {
       { __morphPreviewRouter: { invalidate } },
       (callback: () => void) => frames.push(callback),
       restore,
+      restoreTarget,
+      false,
+      null,
+      null,
       report,
       draw,
     );
@@ -243,6 +279,7 @@ describe("applying document changes to the real React preview", () => {
     finish();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(restore).toHaveBeenCalledOnce();
+    expect(restoreTarget).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalledOnce();
     expect(draw).toHaveBeenCalledOnce();
     refresh();
@@ -319,10 +356,196 @@ describe("editing text in the page it is rendered on", () => {
     expect(BRIDGE).toContain("editing.contains(event.target)");
   });
 
-  it("sends what was typed through the commit message", () => {
+  it("begins only on text that is the value the page rendered it from", () => {
+    // content() may change a value on its way to the component; typing over
+    // the changed text would save it changed.
+    expect(BRIDGE).toContain("storedValue: (target) =>");
     expect(BRIDGE).toContain(
-      '{ type: "morph:storefront-preview-commit-inline-text", ...commit }',
+      "getFieldPathValue(previewSlotContent(target.sectionId), target.fieldPath)",
     );
+  });
+
+  it("tells the editor when it refuses text bound to a field", () => {
+    expect(BRIDGE).toContain("onRefused: (target) => {");
+    expect(BRIDGE).toContain(
+      'type: "morph:storefront-preview-inline-text-refused"',
+    );
+  });
+
+  it("ends an edit whose element a render replaced, unsaved", () => {
+    const observer = BRIDGE.slice(
+      BRIDGE.indexOf("const structureObserver = new MutationObserver"),
+    );
+    expect(observer).toContain(
+      "if (inlineEditor.editingElement()?.isConnected === false) {",
+    );
+    expect(observer).toContain("inlineEditor.finish(false);");
+  });
+
+  /**
+   * The commit as it is actually posted, run from the bridge's own code.
+   *
+   * This used to pin the source text of the post. That proves nothing about
+   * what is sent, and broke on a rewrite that sent the same thing. The real
+   * `onCommit` handler and the real `finish-inline-text` block are cut out of
+   * the bridge here and run against a stand-in editor, so what is checked is
+   * the payload: the author's typed value, and the finish request's id only
+   * on the commit that answers it.
+   */
+  describe("sends what was typed through the commit message", () => {
+    type Node = { type?: string; start?: number; end?: number } & Record<
+      string,
+      unknown
+    >;
+
+    function bridgeCommitCode() {
+      const ast = parse(BRIDGE, {
+        sourceType: "module",
+        plugins: ["typescript"],
+      });
+      let onCommit: string | null = null;
+      let finishBlock: string | null = null;
+      const source = (node: Node) => BRIDGE.slice(node.start, node.end);
+      const visit = (value: unknown) => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value)) {
+          value.forEach(visit);
+          return;
+        }
+        const node = value as Node;
+        const callee = node.callee as Node | undefined;
+        if (
+          node.type === "CallExpression" &&
+          callee?.type === "Identifier" &&
+          callee.name === "createInlineTextEditor"
+        ) {
+          const options = (node.arguments as Node[])[0];
+          const property = (options?.properties as Node[] | undefined)?.find(
+            (entry) => (entry.key as Node | undefined)?.name === "onCommit",
+          );
+          if (property) onCommit = source(property.value as Node);
+        }
+        const test = node.test as Node | undefined;
+        if (
+          node.type === "IfStatement" &&
+          (test?.right as Node | undefined)?.value ===
+            "morph:storefront-preview-finish-inline-text"
+        ) {
+          finishBlock = source(node.consequent as Node);
+        }
+        for (const [key, child] of Object.entries(node)) {
+          if (key !== "loc" && key !== "extra") visit(child);
+        }
+      };
+      visit(ast.program);
+      expect(onCommit, "the bridge's onCommit handler").not.toBeNull();
+      expect(finishBlock, "the bridge's finish-inline-text block").not.toBeNull();
+      return { onCommit: onCommit!, finishBlock: finishBlock! };
+    }
+
+    const typed = {
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    };
+
+    /**
+     * The two pieces, run together: an editor stand-in whose `finish(true)`
+     * commits `typed` through the real handler, as the inline editor does.
+     */
+    function runBridge(finishThrows = false) {
+      const { onCommit, finishBlock } = bridgeCommitCode();
+      const posted: Array<{ message: Record<string, unknown>; channel: unknown }> =
+        [];
+      const channel = { previewSession: "session" };
+      const build = new Function(
+        "postPreviewToEditorMessage",
+        "channel",
+        "typed",
+        "finishThrows",
+        `let answeringFinishRequest = null;
+        const onCommit = ${onCommit};
+        const inlineEditor = {
+          finish: (commit) => {
+            if (commit) onCommit(typed);
+            if (finishThrows) throw new Error("finish failed");
+          },
+        };
+        const handle = (message) => ${finishBlock};
+        return { onCommit, handle };`,
+      ) as (
+        post: (message: Record<string, unknown>, channel: unknown) => void,
+        channel: unknown,
+        typed: unknown,
+        finishThrows: boolean,
+      ) => {
+        onCommit: (commit: unknown) => void;
+        handle: (message: Record<string, unknown>) => void;
+      };
+      const bridge = build(
+        (message, to) => posted.push({ message, channel: to }),
+        channel,
+        typed,
+        finishThrows,
+      );
+      return { ...bridge, posted, channel };
+    }
+
+    const finish = (commit: boolean, requestId: number) => ({
+      type: "morph:storefront-preview-finish-inline-text",
+      commit,
+      requestId,
+    });
+
+    it("posts an ordinary commit with what was typed, naming no request", () => {
+      const bridge = runBridge();
+      bridge.onCommit(typed);
+
+      expect(bridge.posted).toEqual([
+        {
+          message: {
+            type: "morph:storefront-preview-commit-inline-text",
+            ...typed,
+          },
+          channel: bridge.channel,
+        },
+      ]);
+      expect(bridge.posted[0]!.message).not.toHaveProperty("finishRequestId");
+    });
+
+    it("names the finish request on the commit that answers it, and only that one", () => {
+      const bridge = runBridge();
+      bridge.handle(finish(true, 7));
+      bridge.onCommit(typed);
+
+      expect(bridge.posted.map(({ message }) => message)).toEqual([
+        {
+          type: "morph:storefront-preview-commit-inline-text",
+          ...typed,
+          finishRequestId: 7,
+        },
+        { type: "morph:storefront-preview-commit-inline-text", ...typed },
+      ]);
+    });
+
+    it("posts nothing for a finish that puts the text back", () => {
+      const bridge = runBridge();
+      bridge.handle(finish(false, 8));
+
+      expect(bridge.posted).toEqual([]);
+    });
+
+    it("stops naming the request even when finishing throws", () => {
+      const bridge = runBridge(true);
+      expect(() => bridge.handle(finish(true, 9))).toThrow("finish failed");
+      bridge.onCommit(typed);
+
+      expect(bridge.posted.map(({ message }) => message.finishRequestId)).toEqual(
+        [9, undefined],
+      );
+    });
   });
 });
 
@@ -519,5 +742,27 @@ describe("confirming the Theme source the editor is waiting on", () => {
       BRIDGE.indexOf("function acknowledgePendingStyleRevision()"),
     );
     expect(acknowledgment).toContain("pendingStyleRevision = null;");
+  });
+});
+
+describe("a field typed into in the Inspector", () => {
+  const fieldUpdate = BRIDGE.slice(
+    BRIDGE.indexOf('"morph:storefront-preview-update-selection-field"'),
+  );
+
+  it("renders text through the Theme's content(), not into the element", () => {
+    // Writing it into the element shows it unchanged, and takes the node from
+    // React, which then keeps updating one that is no longer on the page.
+    expect(fieldUpdate).not.toContain("target.textContent = message.value");
+    expect(fieldUpdate).toContain("updatePreviewContent(");
+    expect(fieldUpdate).toContain("refreshPreviewContent();");
+  });
+
+  it("keeps the selection on the field across the refresh", () => {
+    const refresh = BRIDGE.slice(
+      BRIDGE.indexOf("function refreshPreviewContent()"),
+      BRIDGE.indexOf("let selectionEnabled"),
+    );
+    expect(refresh).toContain("restoreSelectedTarget(lastRestoreTarget);");
   });
 });

@@ -2,6 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parsePreviewToEditorMessage } from "@/lib/storefront/editor/preview-protocol";
 import {
+  previewHttpHmrPluginSource,
+  THEME_PREVIEW_HMR_FAILED_EVENT,
+} from "./theme-preview-dev-server";
+import {
   THEME_PREVIEW_BRIDGE_READY_EVENT,
   THEME_PREVIEW_BRIDGE_STARTED_EVENT,
   themePreviewDiagnosticScriptSource,
@@ -13,6 +17,8 @@ function runInPage(options: {
   search?: string;
   framed?: boolean;
   entries?: Array<{ name: string; responseStatus?: number }>;
+  fetch?: (url: string, init?: unknown) => Promise<unknown>;
+  document?: unknown;
 }) {
   let observed: ((list: { getEntries: () => unknown[] }) => void) | null = null;
   class FakePerformanceObserver {
@@ -32,7 +38,13 @@ function runInPage(options: {
       listeners.set(type, listener),
   };
   window.parent = options.framed === false ? window : parent;
+  if (options.fetch) window.fetch = options.fetch;
+  if (options.document) window.document = options.document;
   const location = {
+    reloads: 0,
+    reload() {
+      location.reloads += 1;
+    },
     search:
       options.search ??
       "?editorOrigin=http%3A%2F%2Flocalhost%3A3000&previewSession=session-1",
@@ -61,6 +73,7 @@ function runInPage(options: {
   return {
     listeners,
     posted,
+    location,
     /** Resources finishing, as the page's observer would be told. */
     finish: (count: number) =>
       observed?.({ getEntries: () => Array.from({ length: count }) }),
@@ -310,5 +323,174 @@ describe("parsePreviewToEditorMessage for diagnostics", () => {
     ]) {
       expect(parsePreviewToEditorMessage(bad)).toBeNull();
     }
+  });
+});
+
+type FakeElement = {
+  tag: string;
+  attributes: Record<string, string>;
+  textContent: string;
+  style: { cssText: string };
+  children: FakeElement[];
+};
+
+/** Just enough of a document to read back what the script put in the page. */
+function fakeDocument() {
+  const element = (tag: string): FakeElement & {
+    setAttribute: (name: string, value: string) => void;
+    appendChild: (child: FakeElement) => void;
+  } => {
+    const created = {
+      tag,
+      attributes: {} as Record<string, string>,
+      textContent: "",
+      style: { cssText: "" },
+      children: [] as FakeElement[],
+      setAttribute: (name: string, value: string) => {
+        created.attributes[name] = value;
+      },
+      appendChild: (child: FakeElement) => {
+        created.children.push(child);
+      },
+    };
+    return created;
+  };
+  const body = element("body");
+  return { body, createElement: element };
+}
+
+const BROKEN_ROUTE =
+  "https://5173-sbx-secret.preview.example.com/__morph-theme-preview__/src/routes/error-recovery.tsx";
+const VITE_ERROR = {
+  id: "/workspace/src/routes/error-recovery.tsx",
+  message:
+    'Failed to resolve import "../components/RecoveryCard" from "src/routes/error-recovery.tsx". Does the file exist?',
+  frame: '3  |  import RecoveryCard from "../components/RecoveryCard";',
+  plugin: "vite:import-analysis",
+};
+
+function relay(entries: unknown[]) {
+  const requested: string[] = [];
+  return {
+    requested,
+    fetch: async (url: string) => {
+      requested.push(url);
+      return { ok: true, json: async () => ({ sequence: entries.length, entries }) };
+    },
+  };
+}
+
+function failScript(page: ReturnType<typeof runInPage>) {
+  page.listeners.get("error")!({
+    target: { tagName: "SCRIPT", getAttribute: () => "/__entry.tsx" },
+  });
+}
+
+describe("a page whose module Vite would not compile", () => {
+  it("shows Vite's message in the page, as text, for the module that failed", async () => {
+    const document = fakeDocument();
+    const server = relay([
+      { sequence: 1, payload: { type: "update", updates: [] } },
+      { sequence: 2, payload: { type: "error", err: VITE_ERROR } },
+    ]);
+    const page = runInPage({
+      entries: [{ name: BROKEN_ROUTE, responseStatus: 500 }],
+      fetch: server.fetch,
+      document,
+    });
+    failScript(page);
+    await vi.waitFor(() => expect(document.body.children).toHaveLength(1));
+
+    expect(server.requested).toEqual([
+      "/__morph-theme-preview__/_morph/hmr?after=0&cursor=1",
+    ]);
+    const [panel] = document.body.children;
+    expect(panel!.attributes.role).toBe("alert");
+    expect(panel!.children.map((child) => [child.tag, child.textContent])).toEqual([
+      ["h1", "The preview server reported an error for src/routes/error-recovery.tsx"],
+      ["p", VITE_ERROR.message],
+      ["pre", VITE_ERROR.frame],
+    ]);
+    // Shown in the page only: nothing of it is sent to the editor.
+    expect(JSON.stringify(page.posted)).not.toContain("RecoveryCard");
+  });
+
+  it("asks once, however often the page reports", async () => {
+    const document = fakeDocument();
+    const server = relay([{ sequence: 1, payload: { type: "error", err: VITE_ERROR } }]);
+    const page = runInPage({
+      entries: [{ name: BROKEN_ROUTE, responseStatus: 500 }],
+      fetch: server.fetch,
+      document,
+    });
+    failScript(page);
+    failScript(page);
+    page.listeners.get("load")!({});
+    vi.advanceTimersByTime(1_000);
+    await vi.waitFor(() => expect(document.body.children).toHaveLength(1));
+    expect(server.requested).toHaveLength(1);
+  });
+
+  it("shows nothing for an error about some other module", async () => {
+    const document = fakeDocument();
+    const server = relay([
+      {
+        sequence: 1,
+        payload: {
+          type: "error",
+          err: { ...VITE_ERROR, id: "/workspace/src/routes/other-error-recovery.tsx" },
+        },
+      },
+    ]);
+    const page = runInPage({
+      entries: [{ name: BROKEN_ROUTE, responseStatus: 500 }],
+      fetch: server.fetch,
+      document,
+    });
+    failScript(page);
+    await vi.waitFor(() => expect(server.requested).toHaveLength(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.body.children).toEqual([]);
+  });
+
+  it("does not ask for an interruption, a refusal, or a page that came up", async () => {
+    for (const responseStatus of [503, 404]) {
+      const server = relay([]);
+      const page = runInPage({
+        entries: [{ name: BROKEN_ROUTE, responseStatus }],
+        fetch: server.fetch,
+        document: fakeDocument(),
+      });
+      failScript(page);
+      expect(server.requested).toEqual([]);
+    }
+    const server = relay([]);
+    const page = runInPage({
+      entries: [{ name: BROKEN_ROUTE, responseStatus: 500 }],
+      fetch: server.fetch,
+      document: fakeDocument(),
+    });
+    page.listeners.get("load")!({});
+    vi.advanceTimersByTime(1_000);
+    expect(server.requested).toEqual([]);
+  });
+});
+
+describe("a hot update the page could not apply", () => {
+  it("reloads the page, once, so the failure is told like a page that cannot load", () => {
+    const page = runInPage({});
+    const failed = page.listeners.get(THEME_PREVIEW_HMR_FAILED_EVENT)!;
+    failed({});
+    failed({});
+    expect(page.location.reloads).toBe(1);
+  });
+
+  it("is the event the preview's Vite client is made to fire", () => {
+    // The relay plugin edits Vite's client to fire it; the two ends share one
+    // constant so they cannot drift apart.
+    expect(previewHttpHmrPluginSource()).toContain(
+      `new Event(${JSON.stringify(THEME_PREVIEW_HMR_FAILED_EVENT)})`,
+    );
   });
 });

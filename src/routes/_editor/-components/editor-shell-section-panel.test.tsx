@@ -114,6 +114,7 @@ function renderPanel(options?: {
           elementKey: null,
           fieldKey: "label",
           fieldPath: "navItems.0.label",
+          itemId: "morph-nav-shop",
           className: "",
           isSection: false,
           computed: null,

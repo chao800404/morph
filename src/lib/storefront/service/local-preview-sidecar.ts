@@ -312,6 +312,24 @@ export async function startLocalPreviewSidecar(
         respond(response, 200, {});
         return;
       }
+      case "confirmContent": {
+        const confirmInput = input as { previewId?: unknown; ticket?: unknown };
+        if (
+          typeof confirmInput.previewId !== "string" ||
+          typeof confirmInput.ticket !== "number" ||
+          !Number.isSafeInteger(confirmInput.ticket) ||
+          confirmInput.ticket < 1
+        ) {
+          respond(response, 400, { error: "LOCAL_PREVIEW_SIDECAR_BAD_REQUEST" });
+          return;
+        }
+        respond(
+          response,
+          200,
+          await previews.confirmContent(confirmInput.previewId, confirmInput.ticket),
+        );
+        return;
+      }
       case "writeContent": {
         const writeInput = input as { previewId?: unknown; content?: unknown };
         if (

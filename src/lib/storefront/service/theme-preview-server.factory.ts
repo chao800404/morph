@@ -71,11 +71,17 @@ export type ThemePreviewServerSelection =
       /**
        * Writes a newer draft content snapshot and confirms it through the
        * preview's Worker, for a transport whose filesystem this process
-       * cannot reach. The container's comes with its Astro preview (A6c).
+       * cannot reach. The container's is written from the server function,
+       * which holds its binding (A6c).
        */
       writeContent?: (
         input: LocalPreviewSidecarWriteContentRequest,
       ) => Promise<PreviewContentWriteResult>;
+      /** The confirmation alone, for a sync whose answer was lost. */
+      confirmContent?: (input: {
+        previewId: string;
+        ticket: number;
+      }) => Promise<PreviewContentWriteResult>;
     }>
   | Readonly<{ enabled: false; reason: string; message: string }>;
 
@@ -148,6 +154,7 @@ export function createServerThemePreviewServer(
       admitAddress: ({ url }) => validateLoopbackPreviewUrl({ url }),
       applyFiles: (input) => client.applyFiles(input),
       writeContent: (input) => client.writeContent(input),
+      confirmContent: (input) => client.confirmContent(input),
     };
   }
 

@@ -39,7 +39,9 @@ describe("the local preview sidecar protocol", () => {
       "start",
       "stop",
       "writeContent",
-    ]);
+      // ...and its confirmation alone, for a sync whose answer was lost.
+      "confirmContent",
+    ].sort());
     // And the member names are the paths, so neither side can quietly address a
     // different endpoint for the same operation.
     for (const operation of Object.keys(

@@ -523,3 +523,98 @@ describe("the container's generation watermark", () => {
     ).toEqual([NEW]);
   });
 });
+
+// docs/astro-theme-plan.md 6.5, 6.6, A6c: the draft content file's own
+// requests, under the same lock, run by the same script.
+describe("the container's content requests", () => {
+  const contentFile = () => path.join(root, ".morph-preview-content.json");
+  const instanceFile = () => path.join(dir, "instance");
+  const snapshot = (headline: string, contentTicket: number, contentHash = `h-${headline}`) =>
+    JSON.stringify({
+      templates: { index: { slots: { hero: { headline } }, hiddenSlots: [] } },
+      pages: {},
+      contentTicket,
+      contentHash,
+    });
+  const content = (headline: string, ticket: number, hash?: string) =>
+    run({
+      op: "content",
+      path: contentFile(),
+      instancePath: instanceFile(),
+      content: snapshot(headline, ticket, hash),
+    } as never) as unknown as { outcome: string; ticket: number; instance: string | null };
+  const stamp = (instance: string) =>
+    run({
+      op: "stamp",
+      path: contentFile(),
+      instancePath: instanceFile(),
+      instance,
+    } as never);
+  const onDisk = () => JSON.parse(readFileSync(contentFile(), "utf8"));
+
+  it("writes nothing before a server has been stamped", () => {
+    expect(content("A", 1)).toEqual({ outcome: "no-server", ticket: 0, instance: null });
+    expect(existsSync(contentFile())).toBe(false);
+  });
+
+  it("stamps the running server on the file in place, and keeps it beside the lock", () => {
+    writeFileSync(contentFile(), snapshot("A", 1));
+    stamp("server-1");
+    expect(readFileSync(instanceFile(), "utf8")).toBe("server-1");
+    expect(onDisk()).toMatchObject({ contentTicket: 1, previewInstance: "server-1" });
+  });
+
+  it("keeps the highest ticket, stamps every write, and binds one ticket to one content", () => {
+    writeFileSync(contentFile(), snapshot("A", 1));
+    stamp("server-1");
+    expect(content("C", 3)).toEqual({ outcome: "written", ticket: 3, instance: "server-1" });
+    expect(onDisk()).toMatchObject({ contentTicket: 3, previewInstance: "server-1" });
+    expect(content("B", 2)).toEqual({ outcome: "superseded", ticket: 3, instance: "server-1" });
+    expect(content("C", 3)).toEqual({ outcome: "same", ticket: 3, instance: "server-1" });
+    expect(content("E", 3)).toEqual({ outcome: "conflict", ticket: 3, instance: "server-1" });
+    expect(onDisk().templates.index.slots.hero.headline).toBe("C");
+    expect(
+      run({ op: "read", path: contentFile(), instancePath: instanceFile() } as never),
+    ).toEqual({ outcome: "read", ticket: 3, instance: "server-1" });
+  });
+
+  it("ends on the highest ticket however concurrent syncs interleave", async () => {
+    writeFileSync(contentFile(), snapshot("start", 1));
+    stamp("server-1");
+    const tickets = [7, 2, 10, 4, 9, 3, 6, 8, 5];
+    await Promise.all(
+      tickets.map((ticket) =>
+        runAsync({
+          op: "content",
+          path: contentFile(),
+          instancePath: instanceFile(),
+          content: snapshot(`T${ticket}`, ticket),
+        } as never),
+      ),
+    );
+    expect(onDisk()).toMatchObject({ contentTicket: 10, previewInstance: "server-1" });
+    expect(onDisk().templates.index.slots.hero.headline).toBe("T10");
+  });
+
+  it("keeps a newer snapshot over a start's older one, and stamps the server", () => {
+    const relative = ".morph-preview-content.json";
+    writeFileSync(contentFile(), snapshot("C", 3));
+    writeFileSync(instanceFile(), "server-2");
+    const staging = path.join(dir, "staging");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(path.join(staging, relative), snapshot("A", 2));
+    run({
+      op: "start",
+      root,
+      staging,
+      files: [relative],
+      prune: [],
+      versions: {},
+      marker: { path: path.join(root, ".marker"), dirty: "dirty:s", expected: null },
+      commit: null,
+      content: { path: relative, instancePath: instanceFile() },
+    });
+    expect(onDisk()).toMatchObject({ contentTicket: 3, previewInstance: "server-2" });
+    expect(onDisk().templates.index.slots.hero.headline).toBe("C");
+  });
+});

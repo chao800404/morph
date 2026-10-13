@@ -191,7 +191,7 @@ describe("code-authored text content", () => {
     fireEvent.blur(storeName);
     expect(onPropsChange).toHaveBeenCalledWith(
       { storeName: "Studio Store" },
-      { skipPreviewSync: true },
+      { skipPreviewSync: true, inputFieldPath: "storeName" },
     );
   });
 
@@ -209,14 +209,20 @@ describe("code-authored text content", () => {
           elementKey: "label",
           fieldKey: "label",
           fieldPath: "label",
-          contentValue: "Why we choose differently",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
       />,
     );
 
-    const label = screen.getByDisplayValue("Why we choose differently");
+    // Nothing is stored for it, so the field starts empty: the text the canvas
+    // shows is a rendering, not a value of this field.
+    const label = screen.getByPlaceholderText(
+      "Section label...",
+    ) as HTMLInputElement;
+    expect(label.value).toBe("");
+    fireEvent.blur(label);
+    expect(onPropsChange).not.toHaveBeenCalled();
     fireEvent.input(label, { target: { value: "Designed with purpose" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
       "label",
@@ -224,10 +230,13 @@ describe("code-authored text content", () => {
       "Designed with purpose",
     );
     fireEvent.blur(label);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [],
-      label: "Designed with purpose",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [],
+        label: "Designed with purpose",
+      },
+      { inputFieldPath: "label" },
+    );
   });
 
   it("uses Theme manifest contentFields for a custom code-authored heading", () => {
@@ -284,7 +293,6 @@ describe("code-authored text content", () => {
           elementKey: "heading",
           fieldKey: "heading",
           fieldPath: "heading",
-          contentValue: "A thoughtful default",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
@@ -302,9 +310,12 @@ describe("code-authored text content", () => {
       "Designed for everyday use",
     );
     fireEvent.blur(heading);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      heading: "Designed for everyday use",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        heading: "Designed for everyday use",
+      },
+      { inputFieldPath: "heading" },
+    );
   });
 
   it("does not persist untouched default text controls but does persist an intentional clear", () => {
@@ -370,7 +381,10 @@ describe("code-authored text content", () => {
 
     fireEvent.input(heading, { target: { value: "" } });
     fireEvent.blur(heading);
-    expect(onPropsChange).toHaveBeenCalledWith({ heading: "" });
+    expect(onPropsChange).toHaveBeenCalledWith(
+      { heading: "" },
+      { inputFieldPath: "heading" },
+    );
   });
 
   it("persists a custom text field while it is edited", () => {
@@ -423,7 +437,6 @@ describe("code-authored text content", () => {
           elementKey: "nn",
           fieldKey: "nn",
           fieldPath: "nn",
-          contentValue: "t",
         })}
         onPreviewSelectionField={onPreviewSelectionField}
         onPropsChange={onPropsChange}
@@ -443,7 +456,7 @@ describe("code-authored text content", () => {
         items: [],
         nn: "saved nn",
       },
-      { skipPreviewSync: true },
+      { skipPreviewSync: true, inputFieldPath: "nn" },
     );
   });
 
@@ -570,7 +583,6 @@ describe("EditorStyleInspector selection content", () => {
         tagName: "img",
         elementKey: "image",
         fieldKey: "imageSrc",
-        contentValue: "/image.png",
       }),
     };
     const content = render(<EditorStyleInspector view="content" {...props} />);
@@ -619,9 +631,6 @@ describe("EditorStyleInspector selection content", () => {
           tagName: "img",
           elementKey: "image",
           fieldKey: "imageSrc",
-          // The preview selection can still carry the previous rendered value
-          // while the debounced Document write is being applied.
-          contentValue: "/previous-image.png",
         })}
       />,
     );
@@ -667,9 +676,12 @@ describe("EditorStyleInspector selection content", () => {
     );
     fireEvent.blur(alt);
 
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      image: { src: "/image.png", alt: "Updated alt" },
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        image: { src: "/image.png", alt: "Updated alt" },
+      },
+      { inputFieldPath: "image" },
+    );
   });
 
   it("shows an empty state for a layout element with no content fields", () => {
@@ -913,7 +925,6 @@ describe("EditorStyleInspector selection content", () => {
       elementKey: "heading",
       fieldKey: "heading",
       fieldPath: "heading",
-      contentValue: "Original heading",
     });
     const { rerender } = render(
       <EditorStyleInspector
@@ -926,17 +937,93 @@ describe("EditorStyleInspector selection content", () => {
 
     expect(screen.getByDisplayValue("Original heading")).toBeTruthy();
 
+    // The stored props have not been refetched yet; the commit carries the
+    // value the canvas edit is writing.
     rerender(
       <EditorStyleInspector
         view="content"
         {...common}
         section={section}
-        selection={{ ...selection, contentValue: "Edited in preview" }}
+        selection={selection}
+        inlineTextCommit={{
+          id: 1,
+          sectionId: "section-1",
+          fieldPath: "heading",
+          value: "Edited in preview",
+        }}
       />,
     );
 
     expect(screen.getByDisplayValue("Edited in preview")).toBeTruthy();
     expect(screen.queryByDisplayValue("Original heading")).toBeNull();
+  });
+
+  it("leaves a commit to another section's field alone", () => {
+    const section = baseSection("hero", { heading: "Hero heading" });
+    const selection = selectionDescriptor({
+      kind: "heading",
+      tagName: "h1",
+      elementKey: "heading",
+      fieldKey: "heading",
+      fieldPath: "heading",
+    });
+    const { rerender } = render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={section}
+        selection={selection}
+      />,
+    );
+
+    // The same component on the page twice: an edit of the other instance
+    // must not show up as this one's value.
+    rerender(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        section={section}
+        selection={selection}
+        inlineTextCommit={{
+          id: 1,
+          sectionId: "section-2",
+          fieldPath: "heading",
+          value: "Other instance",
+        }}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Hero heading")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Other instance")).toBeNull();
+  });
+
+  it("does not apply a commit it was mounted with a second time", () => {
+    const onPropsChange = vi.fn();
+    render(
+      <EditorStyleInspector
+        view="content"
+        {...common}
+        onPropsChange={onPropsChange}
+        // Refetched since: the stored value is newer than the commit.
+        section={baseSection("hero", { heading: "Stored after commit" })}
+        selection={selectionDescriptor({
+          kind: "heading",
+          tagName: "h1",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+        })}
+        inlineTextCommit={{
+          id: 3,
+          sectionId: "section-1",
+          fieldPath: "heading",
+          value: "Older inline value",
+        }}
+      />,
+    );
+
+    expect(screen.getByDisplayValue("Stored after commit")).toBeTruthy();
+    expect(onPropsChange).not.toHaveBeenCalled();
   });
 
   it("shows and edits only the bound child fields when a parent component is selected", () => {
@@ -1024,6 +1111,7 @@ describe("EditorStyleInspector selection content", () => {
         description: "Description",
         imageSrc: "/image.png",
       }),
+      { inputFieldPath: "heading" },
     );
   });
 
@@ -1036,8 +1124,8 @@ describe("EditorStyleInspector selection content", () => {
         {...common}
         section={baseSection("principles", {
           items: [
-            { title: "First title", body: "First body" },
-            { title: "Second title", body: "Second body" },
+            { id: "r0", title: "First title", body: "First body" },
+            { id: "r1", title: "Second title", body: "Second body" },
           ],
         })}
         selection={selectionDescriptor({
@@ -1047,9 +1135,20 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "principle-item",
           fieldKey: null,
           fieldPath: "items.1",
+          itemId: "r1",
           descendantFields: [
-            { fieldKey: "title", fieldPath: "items.1.title", sectionId: null },
-            { fieldKey: "body", fieldPath: "items.1.body", sectionId: null },
+            {
+              fieldKey: "title",
+              fieldPath: "items.1.title",
+              sectionId: null,
+              itemId: "r1",
+            },
+            {
+              fieldKey: "body",
+              fieldPath: "items.1.body",
+              sectionId: null,
+              itemId: "r1",
+            },
           ],
         })}
         onPreviewSelectionField={onPreviewSelectionField}
@@ -1068,12 +1167,15 @@ describe("EditorStyleInspector selection content", () => {
       "Updated second title",
     );
     fireEvent.blur(title);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [
-        { title: "First title", body: "First body" },
-        { title: "Updated second title", body: "Second body" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: "r0", title: "First title", body: "First body" },
+          { id: "r1", title: "Updated second title", body: "Second body" },
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
   });
 
   it("shows fill controls for text and commits text color only after editing finishes", () => {
@@ -1416,8 +1518,8 @@ describe("EditorStyleInspector selection content", () => {
         onPreviewSelectionField={onPreviewSelectionField}
         section={baseSection("principles", {
           items: [
-            { title: "One", body: "First" },
-            { title: "Two", body: "Second" },
+            { id: "r0", title: "One", body: "First" },
+            { id: "r1", title: "Two", body: "Second" },
           ],
         })}
         selection={selectionDescriptor({
@@ -1426,6 +1528,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "title",
           fieldKey: "title",
           fieldPath: "items.1.title",
+          itemId: "r1",
         })}
       />,
     );
@@ -1438,12 +1541,15 @@ describe("EditorStyleInspector selection content", () => {
     );
     expect(onPropsChange).not.toHaveBeenCalled();
     fireEvent.blur(input);
-    expect(onPropsChange).toHaveBeenCalledWith({
-      items: [
-        { title: "One", body: "First" },
-        { title: "Changed", body: "Second" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenCalledWith(
+      {
+        items: [
+          { id: "r0", title: "One", body: "First" },
+          { id: "r1", title: "Changed", body: "Second" },
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
   });
 
   it("renders a nested category image field and hides unrelated section fields", () => {
@@ -1454,8 +1560,18 @@ describe("EditorStyleInspector selection content", () => {
         section={baseSection("category-showcase", {
           heading: "Collections",
           items: [
-            { imageSrc: "/one.png", imageAlt: "One", imagePosition: "center" },
-            { imageSrc: "/two.png", imageAlt: "Two", imagePosition: "top" },
+            {
+              id: "r0",
+              imageSrc: "/one.png",
+              imageAlt: "One",
+              imagePosition: "center",
+            },
+            {
+              id: "r1",
+              imageSrc: "/two.png",
+              imageAlt: "Two",
+              imagePosition: "top",
+            },
           ],
         })}
         selection={selectionDescriptor({
@@ -1464,6 +1580,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "image",
           fieldKey: "imageSrc",
           fieldPath: "items.1.imageSrc",
+          itemId: "r1",
         })}
       />,
     );
@@ -1997,8 +2114,8 @@ describe("EditorStyleInspector selection content", () => {
         {...common}
         section={baseSection("principles", {
           items: [
-            { title: "First", body: "First body" },
-            { title: "Second", body: "Second body" },
+            { id: "r0", title: "First", body: "First body" },
+            { id: "r1", title: "Second", body: "Second body" },
           ],
         })}
         themeFiles={[
@@ -2026,6 +2143,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "card",
           fieldKey: "title",
           fieldPath: "items.0.title",
+          itemId: "r0",
           className: classes,
           computed: {
             paddingTop: "32px",
@@ -2411,8 +2529,18 @@ describe("EditorStyleInspector selection content", () => {
         section={baseSection("category-showcase", {
           heading: "Collections",
           items: [
-            { imageSrc: "/one.png", imageAlt: "One", imagePosition: "center" },
-            { imageSrc: "/two.png", imageAlt: "Two", imagePosition: "top" },
+            {
+              id: "r0",
+              imageSrc: "/one.png",
+              imageAlt: "One",
+              imagePosition: "center",
+            },
+            {
+              id: "r1",
+              imageSrc: "/two.png",
+              imageAlt: "Two",
+              imagePosition: "top",
+            },
           ],
         })}
         selection={selectionDescriptor({
@@ -2421,6 +2549,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "image",
           fieldKey: "imageSrc",
           fieldPath: "items.1.imageSrc",
+          itemId: "r1",
         })}
       />,
     );
@@ -2441,8 +2570,8 @@ describe("EditorStyleInspector selection content", () => {
         onPreviewSelectionField={onPreviewSelectionField}
         section={baseSection("principles", {
           items: [
-            { title: "One", body: "First" },
-            { title: "Two", body: "Second" },
+            { id: "r0", title: "One", body: "First" },
+            { id: "r1", title: "Two", body: "Second" },
           ],
         })}
         selection={selectionDescriptor({
@@ -2451,6 +2580,7 @@ describe("EditorStyleInspector selection content", () => {
           elementKey: "body",
           fieldKey: "body",
           fieldPath: "items.1.body",
+          itemId: "r1",
         })}
       />,
     );
@@ -2462,12 +2592,15 @@ describe("EditorStyleInspector selection content", () => {
       "Changed body",
     );
     fireEvent.blur(body);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [
-        { title: "One", body: "First" },
-        { title: "Two", body: "Changed body" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: "r0", title: "One", body: "First" },
+          { id: "r1", title: "Two", body: "Changed body" },
+        ],
+      },
+      { inputFieldPath: "items.1.body" },
+    );
   });
 
   it("keeps the top-level body field behavior unchanged", () => {
@@ -2497,9 +2630,12 @@ describe("EditorStyleInspector selection content", () => {
       "Updated section body",
     );
     fireEvent.blur(body);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      body: "Updated section body",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        body: "Updated section body",
+      },
+      { inputFieldPath: "body" },
+    );
   });
 
   it("does not render a standalone Design accordion while retaining nested design controls", () => {
@@ -2627,5 +2763,55 @@ describe("EditorStyleInspector selection content", () => {
     );
     expect(screen.getByDisplayValue("Template B")).toBeTruthy();
     expect(screen.queryByDisplayValue("Unsaved A")).toBeNull();
+  });
+});
+
+describe("a section whose component file is gone", () => {
+  const common = {
+    onPropsChange: vi.fn(),
+    onUpdateThemeFileStyle: vi.fn(),
+    onJumpToCode: vi.fn(),
+  };
+  const keptCard = {
+    id: "kept-source",
+    storefrontId: "storefront-1",
+    themeId: "theme-1",
+    path: "src/components/KeptCard.tsx",
+    content: "export default function KeptCard() { return <section />; }",
+    mimeType: "text/typescript",
+    isEntry: false,
+    version: 1,
+    createdAt: "2026-10-10T00:00:00.000Z",
+    updatedAt: "2026-10-10T00:00:00.000Z",
+  };
+
+  it("says it cannot render and names the missing file, rather than CMS-only", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={{
+          ...baseSection("recovery-card", {}),
+          componentRef: "src/components/RecoveryCard.tsx",
+        }}
+        themeFiles={[keptCard]}
+      />,
+    );
+
+    expect(screen.getByText("Cannot render")).toBeTruthy();
+    expect(screen.getByText("RecoveryCard.tsx")).toBeTruthy();
+    expect(screen.queryByText("CMS-only")).toBeNull();
+  });
+
+  it("still calls a section that never named a file CMS-only", () => {
+    render(
+      <EditorStyleInspector
+        {...common}
+        section={baseSection("newsletter", {})}
+        themeFiles={[keptCard]}
+      />,
+    );
+
+    expect(screen.getByText("CMS-only")).toBeTruthy();
+    expect(screen.queryByText("Cannot render")).toBeNull();
   });
 });

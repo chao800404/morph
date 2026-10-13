@@ -43,6 +43,9 @@ export const astroFramework: ThemeFrameworkAdapter = {
     // `astro dev` at the root of the preview's own origin (2.4, B9).
     framePath: () => "/",
     devServer: ASTRO_PREVIEW_DEV_SERVER,
+    // `astro dev` finds the project from `astro.config.*`; nothing in the
+    // workspace it is planned into names an entry file.
+    entryFile: "unused",
   },
   build: {
     artifactEntry: () => {

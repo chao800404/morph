@@ -24,6 +24,11 @@ describe("EditorSourceConflictNotice", () => {
     expect(notice.textContent).toContain(
       "Remote source changes detected in this theme",
     );
+    // Offers local sync as a possible source, not only another tab, and as a
+    // possibility: the editor cannot tell which it was.
+    expect(notice.textContent).toContain(
+      "The source may be another tab, another person, or local sync.",
+    );
     expect(notice.textContent).toContain(
       "Your changes to Hero.tsx are still here in this tab, but not saved yet.",
     );

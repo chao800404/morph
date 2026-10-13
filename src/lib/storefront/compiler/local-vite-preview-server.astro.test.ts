@@ -256,6 +256,18 @@ describe.skipIf(!available)(
       expect(await shown()).toBe("A6B-G");
     });
 
+    it("confirms a ticket it holds without writing, and not one it does not", async () => {
+      // G (106) is what the preview holds after the tests above.
+      expect(await server.confirmContent(PREVIEW_ID, 106)).toEqual({
+        applied: true,
+        ticket: 106,
+      });
+      expect(
+        await server.confirmContent(PREVIEW_ID, 999, { confirmTimeoutMs: 1_000 }),
+      ).toEqual({ applied: false, reason: "PREVIEW_CONTENT_NOT_CONFIRMED", ticket: 106 });
+      expect(await shown()).toBe("A6B-G");
+    });
+
     it("refuses a snapshot without a ticket, or whose hash is not its content's", async () => {
       await expect(
         server.writeContent(

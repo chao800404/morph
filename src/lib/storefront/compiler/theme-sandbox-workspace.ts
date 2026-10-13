@@ -236,9 +236,15 @@ export type ThemePreviewRuntime = "client" | "start";
 
 export type PlanThemeWorkspaceInput = Omit<
   PrepareThemeWorkspaceInput,
-  "session"
+  "session" | "entry"
 > &
   Readonly<{
+    /**
+     * The Theme's entry file. `null` only for a preview of a framework whose
+     * adapter says its preview does not use one (`preview.entryFile`); a
+     * planner that needs one refuses `null` rather than guessing a file.
+     */
+    entry: string | null;
     /**
      * Filesystem root the generated `vite.config.ts` names.
      *
@@ -361,6 +367,16 @@ export function planThemeSandboxWorkspace({
   hostWorkspaceRoot: requestedHostWorkspaceRoot,
   toolchainRoot: requestedToolchainRoot,
 }: PlanThemeWorkspaceInput): PrepareThemeWorkspaceResult {
+  if (entry === null) {
+    const errorMessage =
+      "THEME_ENTRY_MISSING: This Theme has no entry file to start from.";
+    return {
+      ok: false,
+      stage: "entry",
+      errorMessage,
+      errors: [{ severity: "error", message: errorMessage }],
+    };
+  }
   // The project's own build configuration and committed route tree stay in
   // the Theme's source; this workspace uses the platform's configuration and
   // regenerates the route tree, so they are left out rather than refused.

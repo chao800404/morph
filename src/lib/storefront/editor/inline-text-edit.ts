@@ -64,6 +64,29 @@ export function normalizeInlineTextEditValue(value: string): string {
     .slice(0, INLINE_TEXT_EDIT_MAX_LENGTH);
 }
 
+/**
+ * Whether the text on the canvas is the stored value itself.
+ *
+ * Typing over rendered text saves what was typed as the stored value. That is
+ * only an edit of the field when the page renders the field unchanged: a
+ * Theme's `content()` may transform a value on the way to the component, and
+ * no transform can be reversed in general, so editing the rendered text would
+ * save it transformed and compound on every pass. A field the Document holds
+ * nothing for renders a default nobody can tie to it either. Neither case can
+ * be edited in place; the Inspector still edits the stored value.
+ */
+export function inlineTextMatchesStoredValue(
+  renderedValue: string | null | undefined,
+  storedValue: unknown,
+): boolean {
+  return (
+    typeof renderedValue === "string" &&
+    typeof storedValue === "string" &&
+    normalizeInlineTextEditValue(renderedValue) ===
+      normalizeInlineTextEditValue(storedValue)
+  );
+}
+
 export function shouldNormalizeInlineTextInput(
   compositionActive: boolean,
   inputEventIsComposing: boolean,

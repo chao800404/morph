@@ -1405,6 +1405,7 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     ]);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-promo",
@@ -1479,6 +1480,7 @@ export default function Hero({ heading = "Hero", badge = "" }) {
       );
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-home",
@@ -1564,6 +1566,7 @@ export default function Hero() { return <h1 />; }`;
 
     const write = (props: Record<string, unknown>, routePath?: string) =>
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-product",
@@ -1666,6 +1669,7 @@ export default function Hero() { return <h1 />; }`;
     };
     const write = () =>
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-home",
@@ -1776,6 +1780,7 @@ function Home() { return <main><Hero {...content("hero-a")} /><Hero {...content(
       expectedDraftGeneration = 1,
     ) =>
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-home",
@@ -1936,6 +1941,7 @@ export default function Hero() { return <h1 />; }`;
       heading: string,
     ) =>
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId,
@@ -2201,6 +2207,7 @@ export default function SiteHeader() { return <header />; }`;
       );
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-layout",
@@ -2709,6 +2716,95 @@ export default function SiteHeader() { return <header />; }`;
     ).resolves.toBeNull();
   });
 
+  it.each(["unchanged", "before-read", "during-write"])("checks a preselected loader field source baseline: %s", async (mode) => {
+    // The actual DAL and persisted draft, not a mocked successful response.
+    const original = { version: 1, sections: [{
+      id: "hero", type: "hero", componentRef: "src/components/Hero.tsx", enabled: true,
+      props: { title: "Original title", subtitle: "Original subtitle" },
+    }] };
+    const component = `export const contentFields = {
+      title: { type: "text", label: "Title" },
+      subtitle: { type: "text", label: "Subtitle" },
+    };
+    export default function Hero({ title, subtitle }) { return <h1>{title}</h1>; }`;
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+      import { createServerFn } from "@tanstack/react-start";
+      import { morph } from "../morph/content";
+      import Hero from "../components/Hero";
+      const getHome = createServerFn().handler(() => morph.pages.get("/"));
+      export const Route = createFileRoute("/")({ loader: () => getHome(), component: Home });
+      function Home() { const { hero } = Route.useLoaderData(); return <main><Hero {...hero} /></main>; }`;
+    const insert = sqlite.prepare(`INSERT INTO storefront_theme_files
+      (id, storefront_id, theme_id, path, content, version, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 1, 'now', 'now')`);
+    for (const [path, content] of [
+      ["morph.theme.json", "{}"],
+      ["src/routes/__root.tsx", 'import { Outlet, createRootRoute } from "@tanstack/react-router"; export const Route = createRootRoute({ component: Root }); function Root() { return <Outlet />; }'],
+      ["src/routes/index.tsx", route],
+      ["src/components/Hero.tsx", component],
+      ["src/morph/content.ts", "export const morph = { pages: { get: async () => ({}) } };"],
+    ]) insert.run(`diagnostic-${path}`, path, content);
+    sqlite.prepare(`INSERT INTO storefront_theme_templates
+      (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES ('template-stale-source', 'theme-a', 'index', 'Home', ?,
+        '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now')`)
+      .run(JSON.stringify(original));
+    sqlite.prepare(`INSERT INTO storefront_theme_template_revisions
+      (id, template_id, version, document, created_at)
+      VALUES ('11111111-1111-4111-8111-111111111111', 'template-stale-source', 1, ?, 'now')`)
+      .run(JSON.stringify(original));
+    const staleRequest = {
+      storefrontId: "storefront-a", themeId: "theme-a", templateId: "template-stale-source",
+      sectionId: "hero", props: { title: "Typed from old selection" },
+      expectedDraftGeneration: 1, expectedSourceGeneration: 1, createdBy: "user-1", routePath: "/",
+    };
+    const changeSource = () => {
+      // Same declared fields and stored content; only the displayed source
+      // changes from title to subtitle after the old title was selected.
+      sqlite.prepare(`UPDATE storefront_theme_files SET content = ?, version = 2
+        WHERE theme_id = 'theme-a' AND path = 'src/components/Hero.tsx'`)
+        .run(component.replace("<h1>{title}</h1>", "<h1>{subtitle}</h1>"));
+      sqlite.exec("UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'");
+    };
+    if (mode === "before-read") changeSource();
+    if (mode === "during-write") {
+      const batch = workerEnv.DATABASE.batch.bind(workerEnv.DATABASE);
+      vi.spyOn(workerEnv.DATABASE, "batch").mockImplementationOnce(async (statements) => {
+        changeSource();
+        return batch(statements);
+      });
+    }
+    expect(sqlite.prepare("SELECT draft_generation AS generation FROM storefront_theme_templates WHERE id = 'template-stale-source'").get())
+      .toEqual({ generation: 1 });
+    if (mode !== "unchanged") {
+      await expect(storefrontThemeDal.updateSectionProps(staleRequest)).rejects.toThrow("SELECTION_SOURCE_CONFLICT");
+      const unchanged = sqlite.prepare(`SELECT r.document, t.draft_generation AS generation
+        FROM storefront_theme_templates t JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+        WHERE t.id = 'template-stale-source'`).get() as { document: string; generation: number };
+      expect(JSON.parse(unchanged.document)).toEqual(original);
+      expect(unchanged.generation).toBe(1);
+      expect(sqlite.prepare("SELECT COUNT(*) AS count FROM storefront_theme_template_revisions WHERE template_id = 'template-stale-source'").get()).toEqual({count: 1});
+      return;
+    }
+    const result = await storefrontThemeDal.updateSectionProps(staleRequest);
+    expect(result).not.toBeNull();
+    expect(result?.droppedProps).toEqual([]);
+    const row = sqlite.prepare(`SELECT r.document, t.draft_generation AS generation
+      FROM storefront_theme_templates t JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+      WHERE t.id = 'template-stale-source'`).get() as { document: string; generation: number };
+    expect(row.generation).toBe(2);
+    expect(JSON.parse(row.document).sections[0].props).toEqual({ title: "Typed from old selection", subtitle: "Original subtitle" });
+    expect(sqlite.prepare("SELECT source_generation AS generation FROM storefront_themes WHERE id = 'theme-a'").get())
+      .toEqual({ generation: 1 });
+    const next = await storefrontThemeDal.updateSectionProps({
+      ...staleRequest, expectedDraftGeneration: 2, props: {title: "Second own save"} });
+    expect(next?.draftGeneration).toBe(3);
+    const latest = sqlite.prepare(`SELECT r.document FROM storefront_theme_templates t
+      JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+      WHERE t.id = 'template-stale-source'`).get() as {document: string};
+    expect(JSON.parse(latest.document).sections[0].props.title).toBe("Second own save");
+  });
+
   it("updateSectionProps returns draftRevisionId along with version and document", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates
@@ -2724,6 +2820,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-a",
@@ -2738,6 +2835,56 @@ export default function SiteHeader() { return <header />; }`;
     expect(typeof result?.draftRevisionId).toBe("string");
     expect(result?.version).toBe(2);
     expect(result?.document.sections[0].props.title).toBe("Updated Title");
+  });
+
+  /**
+   * A click on content the editor cannot place in a Document section — for
+   * one, a component handed `{...hero}` from a loader whose handler changes
+   * what it read, so the slot is not proven — resolves to that component's own
+   * root, identified by its source file (loader-data-binding.live.test.ts).
+   * Sent here, that id must write nothing: not the Document's `hero`, and no
+   * new revision.
+   */
+  it("updateSectionProps writes nothing for a section id the Document does not have", async () => {
+    const document =
+      '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}';
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates
+        (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES
+        ('template-unknown', 'theme-a', 'index', 'Home', '${document}',
+         '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+      INSERT INTO storefront_theme_template_revisions
+        (id, template_id, version, document, created_at)
+      VALUES
+        ('11111111-1111-4111-8111-111111111111', 'template-unknown', 1, '${document}', 'now');
+    `);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-unknown",
+      sectionId: "src/components/Hero.tsx",
+      props: { title: "Edited" },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+    expect(result).toBeNull();
+    const stored = sqlite
+      .prepare(
+        "SELECT document, draft_revision_id AS draft FROM storefront_theme_templates WHERE id = 'template-unknown'",
+      )
+      .get() as { document: string; draft: string };
+    expect(JSON.parse(stored.document)).toEqual(JSON.parse(document));
+    expect(stored.draft).toBe("11111111-1111-4111-8111-111111111111");
+    const revisions = sqlite
+      .prepare(
+        "SELECT COUNT(*) AS count FROM storefront_theme_template_revisions WHERE template_id = 'template-unknown'",
+      )
+      .get() as { count: number };
+    expect(revisions.count).toBe(1);
   });
 
   /**
@@ -2829,6 +2976,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-c",
@@ -2882,6 +3030,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-dropped",
@@ -2917,6 +3066,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-video",
@@ -2986,6 +3136,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-promo",
@@ -3051,6 +3202,7 @@ export default function SiteHeader() { return <header />; }`;
 
     await expect(
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-promo-invalid",
@@ -3084,6 +3236,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-unknown",
@@ -3133,6 +3286,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-unknown-hero",
@@ -3177,6 +3331,7 @@ export default function SiteHeader() { return <header />; }`;
 
     // Edit hero description -> eyebrow, heading, actionLabel, imageSrc MUST be preserved
     const heroResult = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-starter",
@@ -3196,6 +3351,7 @@ export default function SiteHeader() { return <header />; }`;
 
     // Edit editorial-intro heading -> label, body MUST be preserved
     const introResult = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-starter",
@@ -3213,6 +3369,7 @@ export default function SiteHeader() { return <header />; }`;
 
     // Edit category-showcase heading -> items array MUST be preserved
     const catResult = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-starter",
@@ -3229,6 +3386,7 @@ export default function SiteHeader() { return <header />; }`;
 
     // Edit image-with-text actionLabel -> eyebrow, body, imagePosition MUST be preserved
     const storyResult = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-starter",
@@ -3247,6 +3405,7 @@ export default function SiteHeader() { return <header />; }`;
 
     // Edit newsletter placeholder -> eyebrow, body, actionLabel MUST be preserved
     const newsResult = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-starter",
@@ -3624,6 +3783,7 @@ describe("co-located content field declarations", () => {
           onPropsChange: (props) => {
             pending = storefrontThemeDal
               .updateSectionProps({
+      expectedSourceGeneration: 1,
                 storefrontId: "storefront-a",
                 themeId: "theme-a",
                 templateId: "template-p",
@@ -3663,6 +3823,7 @@ describe("co-located content field declarations", () => {
       expect(JSON.parse(old.document)).toEqual(original.document);
       await expect(
         storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
           storefrontId: "storefront-a",
           themeId: "theme-a",
           templateId: "template-p",
@@ -3692,6 +3853,7 @@ describe("co-located content field declarations", () => {
     seedSection('{"headline":"Original"}');
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-p",
@@ -3724,6 +3886,7 @@ describe("co-located content field declarations", () => {
     );
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-p",
@@ -3754,6 +3917,7 @@ describe("co-located content field declarations", () => {
 
     await expect(
       storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
         storefrontId: "storefront-a",
         themeId: "theme-a",
         templateId: "template-p",
@@ -3774,6 +3938,7 @@ describe("co-located content field declarations", () => {
     seedSection('{"headline":"Original"}');
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-p",
@@ -3805,6 +3970,7 @@ describe("co-located content field declarations", () => {
     seedSection('{"headline":"Original"}');
 
     const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
       storefrontId: "storefront-a",
       themeId: "theme-a",
       templateId: "template-p",

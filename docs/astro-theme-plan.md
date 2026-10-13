@@ -338,8 +338,14 @@ lockfile 只消除版本解析的漂移，不是完整的環境重現；Node、n
   副作用不一定只限於產物。沙箱外的產物檢查也不能證明任意程式碼安全。
 - Theme 降權（非 root）、容器控制服務的可達性與能力、工具鏈保護與可寫工作區／快取的分離，是獨立的安全閘門
   （`TODO.md` 部署前阻擋項），不隨 A2 完成。真正的唯讀掛載待確認平台是否支援，不先承諾。
-- Vite 的快取目前寫在工具鏈目錄下（`node_modules/.vite`，未設定 `cacheDir`），與 A2 之前相同。移到每次工作區
-  會改變建置與預覽的行為，列入規劃，另做回歸驗證，不在 A2 一起改。
+- Vite 的快取：Astro 建置（2026-10-11）由 Morph 的建置 integration 給每次建置一個自己的 `cacheDir`，放在系統暫存
+  目錄（`morph-astro-build-vite-` 開頭，由 `mkdtemp` 產生，每次建置唯一）。建置行程結束時刪除，成功或失敗
+  都一樣；被訊號終止（例如 runner 逾時）則留在暫存目錄，容器建置隨容器一起銷毀。不放在工作區，因為工作區的
+  每個檔案都會被當成建置輸出讀取。原因：工作區的 `node_modules` 連到共用工具鏈，預設的 `node_modules/.vite`
+  因此是工具鏈的；`astro build` 同步時啟動的 dev server 會做一次 `ssr` 依賴最佳化並提交到 `deps_ssr`，同時
+  進行的建置互相覆寫，以 `ENOTEMPTY` 失敗。回歸測試確認：兩個同時進行的建置各用一個快取、都不改動工具鏈的
+  `.vite`、結束後（含失敗的建置）不留下快取。預覽在 A6a 已改用工作區的 `.vite/`；Start 的 `vite build` 不做
+  依賴最佳化，未改。
 
 **第 2 版貫穿所有流程。** 建立、排隊、執行、重用、發布驗證都只讀 build 記錄上的格式與工具鏈識別，途中不重新
 取「目前版本」。必須有的測試：缺少工具鏈識別、未知格式、未知識別、清單與記錄不符、新舊格式的雜湊不同，
@@ -672,8 +678,8 @@ OCC）→ 該實例更新、其他實例不變**。
 ## 4. 內容
 
 契約：Theme 伺服器端的程式從請求標頭 `x-morph-content-origin` 取得 origin，再呼叫
-`GET <origin>/_morph/content?path=<pathname>`。**Astro 不新增任何管道**：不新增環境變數（start-native
-計畫早期草稿提到的 `MORPH_CONTENT_ORIGIN` 並未實作，這裡也不採用）、不用虛擬模組、不用 `Astro.locals`。
+`GET <origin>/_morph/content?path=<pathname>`。**Astro 目前不新增任何管道**：不新增環境變數、不用虛擬模組、不用 `Astro.locals`。
+（2026-10-13 更正：`MORPH_CONTENT_ORIGIN` 已在 Start 的開發模式使用，見 `src/lib/storefront/local-dev/morph-dev-content-proxy.ts` 與 Starter 的內容模組。作者在自己的電腦執行網站（localhost）仍是產品目標，Astro 的具體方案與實作延後；設計須保留用同一套 SDK 讀已發布內容，以及經授權、可撤銷地讀草稿。跨框架讀取核心的設計見 ROADMAP 1.3。）
 
 Astro Theme 在原始碼中有一個看得到的讀取函式（例如 `src/morph/content.ts`），以
 `Astro.request.headers.get("x-morph-content-origin")` 取得 origin，形狀與 starter Theme 的
@@ -1416,12 +1422,11 @@ A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6
 
 **實例放在資料檔，不另外放一個檔案**：第一版把實例放在獨立的 `.morph-preview-instance.json`，由 Worker 另外 import。這讓下面的時序衝突在本機必然發生，所以改為資料檔的欄位，Worker 不必多 import 任何東西。
 
-**`deps_ssr` 失敗：已找到來源，未修復**（6.5 的 CI 失敗）：
+**`deps_ssr` 失敗：原因與修正（2026-10-10 更正）**（6.5 的 CI 失敗）：
 
-- 診斷輸出的堆疊在 Cloudflare plugin 的 `getWorkerEntryExportTypes`（`workers/runner-worker`）：dev server 啟動時，plugin 在 workerd 中執行 Worker entry 取得它的 export 類型，模組載入去讀 `.vite/deps_ssr`。
-- Vite 的除錯輸出顯示，這時 ssr 的第一次依賴最佳化還在進行（暫存目錄已建立，還沒改名為 `deps_ssr`），整個 dev server 因此啟動失敗。
-- Worker entry 多一個動態 import（上面的實例檔）時，掃描時間從約 0.18 秒變成約 0.83 秒，本機每次都失敗；拿掉之後連跑三次都通過。原本的 Worker entry 也有同樣的時序窗口，只是窄，CI 高負載下才碰到。
-- 依使用者指示，不加重試掩蓋。這是 Cloudflare plugin 與 Vite 第一次 ssr 最佳化之間的時序問題，要在 A6c 或之後另外處理（例如確認最佳化完成之後才讓 plugin 執行 entry），在那之前標為已定位、未修復，診斷保留。
+- 這一節原本寫成「Cloudflare plugin 與 Vite 第一次 ssr 最佳化之間的時序問題」，**判斷錯誤**。
+- 真正的原因在 Morph 自己的匯入防護：A6a 把 Vite 的 `cacheDir` 移到工作區的 `.vite/`，匯入防護卻仍以為預先打包的依賴在 `node_modules/.vite/` 下，於是對 `.vite/deps_ssr/...` 呼叫 `realpathSync`。Vite 在第一次最佳化提交 `deps_ssr` 之前就已經把檔名交出來，`realpathSync` 因此在 `lstat '.vite/deps_ssr'` 失敗。
+- 已由 #184（d9d14f0）修正：快取中的路徑依路徑段判斷，不經由檔案系統讀取。上面的「多一個 import 就必定發生」也不成立，後來同樣條件下沒有重現。
 
 **測試**：
 
@@ -1429,6 +1434,54 @@ A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6
 - 草稿版本（真實 SQLite）：沒有寫入時不變；template 的草稿寫入、頁面的草稿寫入、頁面刪除都會改變版本。
 - 真實的本機 Astro 預覽：6.5 的排序測試照常通過；同一序號同一內容重送時重新確認、同一序號不同內容被拒；Worker 讀到的資料檔標著另一個伺服器時，重送不算確認（`PREVIEW_CONTENT_NOT_CONFIRMED`），之後由這個伺服器的傳輸寫入的下一份快照照常確認；雜湊與內容不符的快照被拒。連續執行三次都通過。
 - 雜湊只取內容，不受序號、版本、實例影響；指紋同樣不受影響。
+
+### 6.7 A6c：容器中的 Astro 預覽與內容同步（2026-10-10，本機真實容器；Cloudflare 未驗）
+
+- **啟動**：容器傳輸依 adapter 宣告的 `devServer` 執行 `astro dev --config .morph/astro.preview.config.mjs`，工作目錄為 `/workspace`，帶 adapter 宣告的環境變數，連接埠固定（包裝設定加上 `server.strictPort`）。就緒以 Worker 的位址探測判斷。程序識別也認得 Astro 的 dev server，重新啟動時能找到並停止舊的程序。
+- **實例**：只有宣告了 `devServer` 的框架才在容器中做，Start 的容器行為不變。啟動 dev server 前產生實例識別碼，記在容器的 `/tmp/morph-preview-instance`（不在工作區；容器重啟就消失），並蓋到資料檔上。
+- **內容寫入**：柵欄腳本新增 `content`、`stamp`、`read` 三種請求，和其他工作區寫入共用同一把鎖。`content` 比較序號與雜湊、蓋上當前實例、以 rename 替換；沒有任何 dev server 蓋過章時回 `no-server`（`PREVIEW_CONTENT_UNCONFIRMABLE`），什麼都不寫。啟動的 `start` 請求在搬入資料檔時，磁碟上序號較高的保留，並重新蓋上當前實例。
+- **確認**：Core 經由 Sandbox 代理探測 Worker（`preview-content-confirm.ts`），序號與實例都對上才算確認。
+- **只確認**：`confirmThemePreviewContent`（容器與本機都有，sidecar 多一個 `confirmContent` 端點）。用於「已套用但回應遺失」：重新探測，不盲目重送；重送也只會被當成同一次寫入（6.6）。
+- **容器重啟**：`/tmp` 的實例與工作區一起消失，D1 的序號照常遞增。下一次啟動以較大的序號、從草稿重建快照，並蓋上新的實例；之前的確認不再適用，因為實例不同。
+
+**真實容器驗收**（`e2e/astro-preview-container.spec.ts`，容器傳輸、`MORPH_ASTRO_THEMES=1`；CI 的各分片略過）：
+
+- 網站記為 Astro，經 Code 存入 Astro 頁面（伺服器渲染、讀首頁內容）。
+- 草稿一律經編輯器自己的草稿寫入，同步經 server function。這個網站仍帶著 Starter 的 Start 檔案，所以不代表 Astro Design 已可用（L1.5）。
+
+步驟與結果：
+
+1. 開啟編輯器，容器啟動 `astro dev`，預覽頁面顯示 A。
+2. 草稿改 B 並同步：Worker 確認後頁面顯示 B，不再出現 A。
+3. 只確認：持有的序號回報已確認，大 1000 的序號回報 `PREVIEW_CONTENT_NOT_CONFIRMED`。
+4. C、D 依序同步：之後連續三次讀取都是 D，沒有 C。
+5. 停止預覽後重新開啟：新的 dev server 顯示最新草稿 E，之後的同步序號大於重啟前，照常確認。
+
+依序版本**連續 2 次通過**（1.7、1.8 分鐘）。
+
+**並行同步後的平台中斷：已重現，未定位**（使用者決定先合併，另開調查）：
+
+- 第 4 步原本讓 C、D 兩個同步並行。2 次執行中，兩個同步都成功，資料檔停在較大的序號；但緊接著的下一個頁面代理請求被平台中斷（`OperationInterruptedError`，「platform was updating the sandbox runtime」），每次正好 1 次。改成依序後，2 次都沒有中斷。
+- SDK 把「isolate 被取代」「連線中斷」「DO 儲存重設」都轉成這個訊息，日誌沒有記下原始錯誤，所以還不知道是哪一種。
+- 產品面：A6b-2 的編輯器每個分頁一次只送一個同步；跨分頁同時同步時，頁面請求若被中斷，代理會回中斷狀態，由編輯器重新載入（`preview-runtime-interruption.ts`）。
+- 並行寫入本身的正確性由容器腳本的真實執行測試涵蓋：9 個並行同步，最後一定是最大序號。
+
+**測試**：
+
+- 容器腳本（真實 `node`）：
+  - 沒有蓋章前不寫入；
+  - 蓋章寫在 `/tmp` 與資料檔；
+  - 序號較低被取代、同序號同雜湊為相同、同序號不同雜湊為衝突；
+  - 9 個並行同步停在最大序號；
+  - 啟動時保留較新的內容並重新蓋章。
+- 確認：
+  - 序號達到才確認；
+  - 其他實例的回報不算；
+  - 不回應時不確認；
+  - 寫入被拒時不探測；
+  - 只確認時先問容器目前的實例，沒有實例就回報無法確認。
+- 容器傳輸（假容器）：Astro 的啟動指令、工作目錄、環境變數、就緒路徑與蓋章；Start 的寫入順序與既有測試相同。
+- 本機：「只確認」對持有與未持有的序號。
 
 ## 7. 安全預設
 

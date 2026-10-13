@@ -1126,6 +1126,18 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         ticket: written.ticket,
       };
     }
+    return this.confirmContent(previewId, ticket, options);
+  }
+
+  /**
+   * Waits until the Worker of the dev server running now names `ticket` or
+   * a later one, without writing: for a sync whose answer was lost.
+   */
+  async confirmContent(
+    previewId: string,
+    ticket: number,
+    options: Readonly<{ confirmTimeoutMs?: number }> = {},
+  ): Promise<PreviewContentWriteResult> {
     const running = this.running.get(previewId);
     if (!running?.confirmsContent || !running.instance) {
       return {

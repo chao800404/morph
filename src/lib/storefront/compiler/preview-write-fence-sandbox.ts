@@ -83,7 +83,64 @@ export type FencedWriteRequest =
         marker: string;
         manifest: Readonly<{ path: string; content: string }>;
       }> | null;
+      /**
+       * The draft content file among `files`, relative to `root`, and where
+       * the running dev server's instance is kept. A staged snapshot with a
+       * lower ticket than the one in place is not moved (a content sync
+       * wrote the newer one after this start read its drafts), and the one
+       * in place is stamped with the running instance
+       * (docs/astro-theme-plan.md 6.5, 6.6).
+       */
+      content?: Readonly<{ path: string; instancePath: string }>;
     }>;
+
+/**
+ * The draft content file's own requests (docs/astro-theme-plan.md 6.5, 6.6),
+ * taken under the same lock as every other workspace write.
+ *
+ * - `content`: a newer snapshot, by ticket, stamped with the running dev
+ *   server's instance and moved into place by one rename. The same ticket
+ *   with the same content hash is the same write (written again as it is);
+ *   with another hash it is a conflict; a lower ticket is superseded.
+ * - `stamp`: a dev server is about to start; its instance is kept beside
+ *   the lock and stamped onto the content file in place.
+ */
+export type PreviewContentRequest =
+  | Readonly<{
+      op: "content";
+      /** The content file, absolute. */
+      path: string;
+      /** Where the running instance is kept, absolute. */
+      instancePath: string;
+      content: string;
+    }>
+  | Readonly<{
+      op: "stamp";
+      path: string;
+      instancePath: string;
+      instance: string;
+    }>
+  /** What the file holds and which server is stamped; writes nothing. */
+  | Readonly<{
+      op: "read";
+      path: string;
+      instancePath: string;
+    }>;
+
+export type PreviewContentResult = Readonly<{
+  outcome:
+    | "written"
+    | "same"
+    | "superseded"
+    | "conflict"
+    | "no-server"
+    | "stamped"
+    | "read";
+  /** The ticket the file holds after the request. */
+  ticket: number;
+  /** The running instance, or null when no server has been stamped. */
+  instance: string | null;
+}>;
 
 export type FencedWriteResult = Readonly<{
   /** Paths the ledger held a newer version of; nothing was written. */
@@ -229,11 +286,47 @@ export function applyFencedRequest(
     for (const relative of request.prune) {
       io.removeFile(io.within(request.root, relative));
     }
+    // A snapshot's ticket, read in here: this function names nothing
+    // outside its parameters.
+    const ticketOf = (text: string | null): number => {
+      try {
+        const ticket = text === null ? 0 : JSON.parse(text)?.contentTicket;
+        return typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0
+          ? ticket
+          : 0;
+      } catch {
+        return 0;
+      }
+    };
     for (const relative of request.files) {
+      if (request.content && relative === request.content.path) {
+        const staged = io.within(request.staging!, relative);
+        const placed = io.within(request.root, relative);
+        if (ticketOf(io.readText(placed)) > ticketOf(io.readText(staged))) {
+          io.removeFile(staged);
+          continue;
+        }
+      }
       io.moveFile(
         io.within(request.staging!, relative),
         io.within(request.root, relative),
       );
+    }
+    if (request.content) {
+      // Whatever is in place now names the server running, if one is.
+      const instance = io.readText(request.content.instancePath);
+      const placed = io.within(request.root, request.content.path);
+      const text = io.readText(placed);
+      if (instance && text !== null) {
+        try {
+          io.writeText(
+            placed,
+            JSON.stringify({ ...JSON.parse(text), previewInstance: instance.trim() }),
+          );
+        } catch {
+          // Not a snapshot: left as it is.
+        }
+      }
     }
     io.writeText(ledgerPath, JSON.stringify(plan.ledger));
 
@@ -259,6 +352,70 @@ export function applyFencedRequest(
 }
 
 /**
+ * One content request, applied. Runs under the lock, in the container, as
+ * its own source; so it names nothing outside its parameters.
+ */
+export function applyPreviewContentRequest(
+  io: FenceIo & { renameInto(from: string, to: string): void },
+  request: PreviewContentRequest,
+): PreviewContentResult {
+  const read = (text: string | null) => {
+    try {
+      const parsed = text === null ? null : JSON.parse(text);
+      const ticket = parsed?.contentTicket;
+      const hash = parsed?.contentHash;
+      return {
+        parsed,
+        ticket:
+          typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0
+            ? ticket
+            : 0,
+        hash: typeof hash === "string" ? hash : null,
+      };
+    } catch {
+      return { parsed: null, ticket: 0, hash: null };
+    }
+  };
+  const placed = read(io.readText(request.path));
+  if (request.op === "stamp") {
+    io.writeText(request.instancePath, request.instance);
+    if (placed.parsed) {
+      const next = request.path + ".next";
+      io.writeText(
+        next,
+        JSON.stringify({ ...placed.parsed, previewInstance: request.instance }),
+      );
+      io.renameInto(next, request.path);
+    }
+    return { outcome: "stamped", ticket: placed.ticket, instance: request.instance };
+  }
+  const instanceText = io.readText(request.instancePath);
+  const instance = instanceText ? instanceText.trim() : null;
+  if (request.op === "read") {
+    return { outcome: "read", ticket: placed.ticket, instance };
+  }
+  const incoming = read(request.content);
+  if (!incoming.parsed || incoming.ticket === 0) {
+    throw new Error("PREVIEW_CONTENT_INVALID: a content sync carries a snapshot with its ticket.");
+  }
+  if (!instance) return { outcome: "no-server", ticket: placed.ticket, instance: null };
+  if (incoming.ticket < placed.ticket) {
+    return { outcome: "superseded", ticket: placed.ticket, instance };
+  }
+  if (incoming.ticket === placed.ticket) {
+    return {
+      outcome: incoming.hash !== null && incoming.hash === placed.hash ? "same" : "conflict",
+      ticket: placed.ticket,
+      instance,
+    };
+  }
+  const next = request.path + ".next";
+  io.writeText(next, JSON.stringify({ ...incoming.parsed, previewInstance: instance }));
+  io.renameInto(next, request.path);
+  return { outcome: "written", ticket: incoming.ticket, instance };
+}
+
+/**
  * The script the container runs. Self-contained; Node's stdlib only. The
  * ledger and lock paths are fixed in production and only moved by tests.
  */
@@ -274,6 +431,7 @@ const path = require("node:path");
 const planFencedWrite = ${planFencedWrite.toString()};
 const planFencedStart = ${planFencedStart.toString()};
 const applyFencedRequest = ${applyFencedRequest.toString()};
+const applyPreviewContentRequest = ${applyPreviewContentRequest.toString()};
 const LEDGER = ${JSON.stringify(paths.ledger)};
 const LOCK = ${JSON.stringify(paths.lock)};
 const requestPath = process.argv[2];
@@ -311,11 +469,16 @@ const io = {
     if (!resolved.startsWith(base + path.sep)) throw new Error("PREVIEW_FENCE_PATH_ESCAPE: " + relative);
     return resolved;
   },
+  // One rename on the same disk: a reader sees the old file or the new one.
+  renameInto(from, to) { fs.renameSync(from, to); },
 };
 
 let result;
 try {
-  result = applyFencedRequest(io, LEDGER, request, { planFencedWrite, planFencedStart });
+  result =
+    request.op === "content" || request.op === "stamp" || request.op === "read"
+      ? applyPreviewContentRequest(io, request)
+      : applyFencedRequest(io, LEDGER, request, { planFencedWrite, planFencedStart });
 } finally {
   fs.rmdirSync(LOCK);
   try { fs.unlinkSync(requestPath); } catch {}
@@ -334,6 +497,33 @@ export type FenceSandbox = {
     stderr: string;
   }>;
 };
+
+/** Runs one content request in the container, under the fence's lock. */
+export async function runPreviewContentRequestInSandbox(
+  sandbox: FenceSandbox,
+  request: PreviewContentRequest,
+): Promise<PreviewContentResult> {
+  const id = crypto.randomUUID();
+  const scriptPath = `${PREVIEW_FENCE_SCRIPT_PREFIX}${id}.cjs`;
+  const requestPath = `${PREVIEW_FENCE_SCRIPT_PREFIX}${id}.json`;
+  await sandbox.writeFile(scriptPath, fencedWriteScriptSource());
+  await sandbox.writeFile(requestPath, JSON.stringify(request));
+  const run = await sandbox.exec(`node ${scriptPath} ${requestPath}`);
+  if (!run.success) {
+    throw new Error(
+      `PREVIEW_FENCE_FAILED: ${run.stderr.trim().slice(0, 300) || `exit ${run.exitCode}`}`,
+    );
+  }
+  const parsed = JSON.parse(run.stdout) as PreviewContentResult;
+  return {
+    outcome: parsed.outcome,
+    ticket: parsed.ticket,
+    instance: parsed.instance ?? null,
+  };
+}
+
+/** Where a preview container keeps its running dev server's instance. */
+export const PREVIEW_INSTANCE_PATH = "/tmp/morph-preview-instance";
 
 /** Runs one fenced request in the container and reads back what it did. */
 export async function runFencedWriteInSandbox(
