@@ -629,8 +629,11 @@ describe("a draft kept across a page switch", () => {
     expect(requests()[1]).toMatchObject({
       templateId: "template-1",
       sectionId: "hero",
-      props: { heading: "Hello", cta: "New" },
+      // Only the edited field is sent; the server retains its latest CTA
+      // through the existing partial-merge contract, not a client echo.
+      props: { heading: "Hello" },
     });
+    expect(requests()[1]!.props).toEqual({ heading: "Hello" });
     expect(requests().some((request) => request.templateId === "template-2")).toBe(false);
   });
 });
