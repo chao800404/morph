@@ -9,6 +9,7 @@ import {
   openContentTab,
   isServerFunctionCall,
   previewFrame,
+  settleSelection,
 } from "./helpers";
 import { THEMES, serverFn } from "./native-acceptance";
 import {
@@ -158,6 +159,12 @@ const titleField = (page: Page) =>
  * section selection off, so it is turned on first whenever it is off.
  */
 async function selectHeading(page: Page) {
+  await clickHeading(page);
+  await openContentTab(page);
+}
+
+/** Clicks the heading on the canvas, turning section selection on first. */
+async function clickHeading(page: Page) {
   if (
     await page
       .getByRole("button", { name: "Enable section selection" })
@@ -171,7 +178,6 @@ async function selectHeading(page: Page) {
     await clickExposedElement(page, heading(page)),
     "the heading was not exposed on the canvas",
   ).not.toBeNull();
-  await openContentTab(page);
 }
 
 /** The route Document's stored props for the slot, as the server holds them. */
@@ -196,6 +202,35 @@ async function storedProps(page: Page): Promise<Record<string, unknown> | null> 
     null
   );
 }
+
+/** Hides or shows the slot's section, through the write the Sections panel makes. */
+async function setSectionEnabled(page: Page, enabled: boolean) {
+  const ensured = (await serverFn(
+    page,
+    THEMES,
+    "ensureStorefrontThemeRouteTemplate",
+    { ...scope!, routePath: ROUTE_PATH },
+  )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+  expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+  const written = (await serverFn(
+    page,
+    THEMES,
+    "updateStorefrontThemeSectionProps",
+    {
+      ...scope!,
+      templateId: ensured.data!.id,
+      sectionId: SLOT,
+      props: { enabled },
+      expectedDraftGeneration: ensured.data!.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page, scope!),
+      routePath: ROUTE_PATH,
+    },
+  )) as { success: boolean };
+  expect(written.success, JSON.stringify(written)).toBe(true);
+}
+
+const sectionWrapper = (page: Page) =>
+  previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`);
 
 test.describe("case B in the full Start preview", () => {
   test.describe.configure({ mode: "serial" });
@@ -365,5 +400,52 @@ test.describe("case B in the full Start preview", () => {
       release();
       await page.unroute("**/_serverFn/**",handler);
     }
+  });
+
+  // A hidden section is not selectable (content binding contract §6). The
+  // route spreads `{...hero}` with no guard of its own, so a hidden section
+  // still renders, with the component's default. The preview marks it from
+  // the `_hidden` the server function returned, and a click on it selects
+  // nothing; shown again, the same heading selects `hero.title` again.
+  test("a hidden section shows its default and selects nothing, and is selectable once shown", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await openRoute(page);
+    const storedTitle = (await storedProps(page))?.title;
+    expect(storedTitle).toEqual(expect.any(String));
+    const stored = storedTitle as string;
+
+    try {
+      await setSectionEnabled(page, false);
+      await openRoute(page);
+      // The server function read the Document and left the hidden slot out.
+      await expect(heading(page)).toHaveText(DEFAULT_TITLE);
+      await expect(sectionWrapper(page)).toHaveAttribute(
+        "data-morph-section-hidden",
+        "",
+      );
+      await clickHeading(page);
+      await settleSelection(page);
+      await expect(heading(page)).not.toHaveAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+      await expect(titleField(page)).toHaveCount(0);
+    } finally {
+      await setSectionEnabled(page, true);
+    }
+
+    await openRoute(page);
+    await expect(heading(page)).toHaveText(stored);
+    await expect(sectionWrapper(page)).not.toHaveAttribute(
+      "data-morph-section-hidden",
+    );
+    await selectHeading(page);
+    await expect(heading(page)).toHaveAttribute(
+      "data-storefront-editor-selected",
+      "true",
+    );
+    await expect(titleField(page)).toHaveValue(stored);
   });
 });

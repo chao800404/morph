@@ -238,6 +238,25 @@ export const PREVIEW_ROW_WRAPPER_SELECTOR = "[data-morph-preview-row-wrapper]";
 export const PREVIEW_FIELD_REFUSED_ATTRIBUTE = "data-morph-field-refused";
 
 /**
+ * Written by the compiler on a Document section's wrapper while the page that
+ * section came from lists it as hidden (`SECTION_HIDDEN_ATTRIBUTE` in
+ * `inject-preview-bindings.ts`; a test holds the two equal). What renders
+ * inside is the component's defaults, not the section's content, so nothing
+ * there is offered: a hidden section is not selectable (content binding
+ * contract §6), exactly as when the author's own guard leaves it unrendered.
+ */
+export const PREVIEW_SECTION_HIDDEN_ATTRIBUTE = "data-morph-section-hidden";
+
+/** Whether an element is, or is inside, a section the author hid. */
+export function isInHiddenPreviewSection(element: Element): boolean {
+  return (
+    element.closest(
+      `[data-storefront-section-id][${PREVIEW_SECTION_HIDDEN_ATTRIBUTE}]`,
+    ) !== null
+  );
+}
+
+/**
  * Elements that act as a selectable section root.
  *
  * `data-storefront-section-id` is injected when a component resolves to a
@@ -315,8 +334,11 @@ export function previewSectionSelector(sectionId: string): string {
  * Every reading of an element's field goes through here — the tree, a click
  * and the descendants a selection offers — so the three cannot disagree.
  *
- * Two refusals:
+ * Three refusals:
  *
+ * - Anything inside a section the author hid
+ *   (`PREVIEW_SECTION_HIDDEN_ATTRIBUTE`): it shows the component's defaults,
+ *   and an edit there would write into a section the author is not seeing.
  * - A hand-written marker the compiler refused (`FIELD_REFUSED_ATTRIBUTE`):
  *   it names a field the element does not provably render. The marker is kept
  *   as the author wrote it, so it is still in the DOM; it is a hint, never
@@ -336,6 +358,7 @@ export function previewFieldBinding(
   const fieldPath = element.dataset.storefrontFieldPath || null;
   if (!fieldKey && !fieldPath) return null;
   if (element.hasAttribute(PREVIEW_FIELD_REFUSED_ATTRIBUTE)) return null;
+  if (isInHiddenPreviewSection(element)) return null;
   const row = enclosingComponentRow(element);
   if (row) {
     const rowPath = row.dataset.storefrontFieldPath;
@@ -503,6 +526,8 @@ export function collectPreviewEditableNodes(root: {
 
   for (const section of sections) {
     if (!isPreviewSectionRoot(section)) continue;
+    // Listed nowhere a click could not reach either.
+    if (isInHiddenPreviewSection(section)) continue;
     // Components nest by nature, so a nested component root stays its own
     // section and simply owns fewer elements. Only Document sections are
     // flattened, because a Document section inside another would double-count
@@ -844,6 +869,9 @@ const resolveSelectableElement = (
   target: EventTarget | null,
 ): ResolvedElement | null => {
   if (!(target instanceof HTMLElement)) return null;
+  // A section the author hid offers nothing, not even itself: its elements
+  // are the component's defaults. Shown again, it is selectable again.
+  if (isInHiddenPreviewSection(target)) return null;
 
   // 0. A content field is more precise than an ancestor AST marker. Some
   // rendered fields (notably action labels) intentionally have no source

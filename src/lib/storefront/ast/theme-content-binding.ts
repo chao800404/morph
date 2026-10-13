@@ -166,6 +166,29 @@ export type LoaderSlotBindings = ReadonlyMap<number, string>;
 
 export const NO_LOADER_SLOT_BINDINGS: LoaderSlotBindings = new Map();
 
+/**
+ * Where the page a bound call site's slot came from can be read at that call
+ * site, for the one thing the preview needs from it besides the slot: whether
+ * the author hid it. A hidden slot is left out of the page and listed in its
+ * `_hidden` (`morph.pages.get`), so `<Hero {...hero} />` renders the
+ * component's defaults, and the editor must not offer them as the section's
+ * content (content binding contract §6).
+ *
+ * - `pattern`: the slot was destructured from `Route.useLoaderData()`; `start`
+ *   is the offset of that object pattern's `{`.
+ * - `local`: the whole page is held in a local, read as `home.hero`.
+ */
+export type LoaderSlotPage =
+  | Readonly<{ kind: "pattern"; start: number }>
+  | Readonly<{ kind: "local"; name: string }>;
+
+export type LoaderSlotBindingDetails = ReadonlyMap<
+  number,
+  Readonly<{ slot: string; page: LoaderSlotPage }>
+>;
+
+const NO_LOADER_SLOT_BINDING_DETAILS: LoaderSlotBindingDetails = new Map();
+
 const START_MODULE = "@tanstack/react-start";
 const ROUTER_MODULE = "@tanstack/react-router";
 
@@ -673,6 +696,19 @@ export function collectLoaderSlotBindings(
   ast: AnyNode,
   file: Readonly<{ path: string; files: readonly LoaderBindingFile[] }>,
 ): LoaderSlotBindings {
+  const details = collectLoaderSlotBindingDetails(ast, file);
+  if (details.size === 0) return NO_LOADER_SLOT_BINDINGS;
+  return new Map([...details].map(([start, { slot }]) => [start, slot]));
+}
+
+/**
+ * `collectLoaderSlotBindings`, with where each bound call site's page can be
+ * read (`LoaderSlotPage`). One analysis: the slots are the same either way.
+ */
+export function collectLoaderSlotBindingDetails(
+  ast: AnyNode,
+  file: Readonly<{ path: string; files: readonly LoaderBindingFile[] }>,
+): LoaderSlotBindingDetails {
   // Paths as the section derivation and the preview both name them, so the
   // two callers resolve every import the same way.
   const modulePath = normalizeThemeSourcePath(file.path);
@@ -686,7 +722,7 @@ export function collectLoaderSlotBindings(
     (source) => source === ROUTER_MODULE,
     "createFileRoute",
   );
-  if (!createFileRouteName) return NO_LOADER_SLOT_BINDINGS;
+  if (!createFileRouteName) return NO_LOADER_SLOT_BINDING_DETAILS;
 
   // export const Route = createFileRoute("/…")({ loader, component }), once.
   const routes: Array<{ name: string; options: AnyNode; path: string }> = [];
@@ -716,15 +752,15 @@ export function collectLoaderSlotBindings(
       }
     }
   }
-  if (routes.length !== 1) return NO_LOADER_SLOT_BINDINGS;
+  if (routes.length !== 1) return NO_LOADER_SLOT_BINDING_DETAILS;
   const [{ name: routeName, options: routeOptions, path: routePath }] = routes as [
     { name: string; options: AnyNode; path: string },
   ];
   if (declarationCounts(ast).get(routeName) !== 1) {
-    return NO_LOADER_SLOT_BINDINGS;
+    return NO_LOADER_SLOT_BINDING_DETAILS;
   }
   const pagePathOfRoute = staticPagePath(routePath);
-  if (!pagePathOfRoute) return NO_LOADER_SLOT_BINDINGS;
+  if (!pagePathOfRoute) return NO_LOADER_SLOT_BINDING_DETAILS;
 
   // The value an option has at runtime, when the object literal states it
   // once and plainly. A spread or a computed key could set any option; a
@@ -756,7 +792,7 @@ export function collectLoaderSlotBindings(
     loaderCall.callee?.type !== "Identifier" ||
     (loaderCall.arguments ?? []).length !== 0
   ) {
-    return NO_LOADER_SLOT_BINDINGS;
+    return NO_LOADER_SLOT_BINDING_DETAILS;
   }
   const pagePath = serverFunctionPagePathFor(
     ast,
@@ -765,7 +801,7 @@ export function collectLoaderSlotBindings(
     files,
   );
   if (pagePath === null || staticPagePath(pagePath) !== pagePathOfRoute) {
-    return NO_LOADER_SLOT_BINDINGS;
+    return NO_LOADER_SLOT_BINDING_DETAILS;
   }
 
   // component: Home, declared in this module.
@@ -776,12 +812,12 @@ export function collectLoaderSlotBindings(
       ? componentFunction(ast, componentName.name)
       : null;
   if (component?.body?.type !== "BlockStatement") {
-    return NO_LOADER_SLOT_BINDINGS;
+    return NO_LOADER_SLOT_BINDING_DETAILS;
   }
 
   // const { hero } = Route.useLoaderData();   → slot locals
   // const home = Route.useLoaderData();       → page locals, read as home.hero
-  const slotLocals = new Map<string, string>();
+  const slotLocals = new Map<string, { slot: string; patternStart: number }>();
   const pageLocals = new Set<string>();
   for (const statement of component.body.body ?? []) {
     if (
@@ -810,15 +846,15 @@ export function collectLoaderSlotBindings(
       );
       if (!plain) continue;
       for (const property of pattern) {
-        slotLocals.set(
-          property.value.name,
-          property.key.name ?? property.key.value,
-        );
+        slotLocals.set(property.value.name, {
+          slot: property.key.name ?? property.key.value,
+          patternStart: declarator.id.start,
+        });
       }
     }
   }
   if (slotLocals.size === 0 && pageLocals.size === 0) {
-    return NO_LOADER_SLOT_BINDINGS;
+    return NO_LOADER_SLOT_BINDING_DETAILS;
   }
 
   // A local is the loader's only while it is the only thing in the module
@@ -830,10 +866,13 @@ export function collectLoaderSlotBindings(
   const insideComponent = (node: AnyNode) =>
     node.start >= component.body.start && node.end <= component.body.end;
 
-  const elements = new Map<number, string>();
+  const elements = new Map<
+    number,
+    Readonly<{ slot: string; page: LoaderSlotPage }>
+  >();
   const slotUses = new Map<string, number>();
-  const bind = (element: AnyNode, slot: string) => {
-    elements.set(element.start, slot);
+  const bind = (element: AnyNode, slot: string, page: LoaderSlotPage) => {
+    elements.set(element.start, { slot, page });
     slotUses.set(slot, (slotUses.get(slot) ?? 0) + 1);
   };
 
@@ -862,7 +901,7 @@ export function collectLoaderSlotBindings(
     return found;
   };
 
-  for (const [local, slot] of slotLocals) {
+  for (const [local, { slot, patternStart }] of slotLocals) {
     if (declarations.get(local) !== 1) continue;
     const uses = referencesOf(local);
     // Exactly one use, and it is the element's only content spread. Any other
@@ -871,7 +910,7 @@ export function collectLoaderSlotBindings(
     if (uses.length !== 1) continue;
     const element = soleSpreadElement(uses[0], parents);
     if (!element || !insideComponent(element)) continue;
-    bind(element, slot);
+    bind(element, slot, { kind: "pattern", start: patternStart });
   }
 
   for (const local of pageLocals) {
@@ -898,12 +937,14 @@ export function collectLoaderSlotBindings(
       return true;
     });
     if (!allProvable) continue;
-    for (const [element, slot] of bound) bind(element, slot);
+    for (const [element, slot] of bound) {
+      bind(element, slot, { kind: "local", name: local });
+    }
   }
 
   // One slot, one element: two places showing the same slot cannot say which
   // one a click is on.
-  for (const [start, slot] of elements) {
+  for (const [start, { slot }] of elements) {
     if ((slotUses.get(slot) ?? 0) > 1) elements.delete(start);
   }
   return elements;
