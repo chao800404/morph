@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { StorefrontThemeBuildDTO } from "../dto/storefront-theme-build.dto";
 import type { StorefrontThemeRevisionDTO } from "../dto/storefront-theme-file.dto";
-import { caseAFixtureFiles } from "../theme-framework/astro-case-a-fixture.test-support";
+import { astroWorkspaceFiles } from "../theme-framework/content-read-fixtures.test-support";
 import { astroToolchainInstalled } from "../theme-framework/astro-native-prerender.test-support";
 import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
@@ -10,13 +10,19 @@ import { materializeThemeBuildInput } from "./theme-build-materializer";
 import type { ThemeBuildRunnerResult } from "./theme-build-runner.types";
 
 /**
+ * VALIDATION LEVEL: real framework run (astro build, prerender in workerd).
+ * Not production Cloudflare: the built Worker is not run.
+ *
  * The pure Astro Theme for case A (fixtures/morph/astro-case-a) through the
  * build runner, as native-astro-runner.build.test.ts builds an Astro Theme:
  * the materializer, the pinned Astro toolchain, Morph's build integration and
  * import guard, the two content passes. Nothing is changed for the fixture.
  *
  * `/` is server-rendered and `/about` prerendered, each reading its own page
- * with `morph.pages.get` through the fixture's middleware.
+ * with `morph.pages.get` through the one TEST PROTOTYPE core
+ * (fixtures/morph/content-read-core). The Theme has no src/middleware.ts: the
+ * platform wiring's integration adds the middleware with Astro's
+ * addMiddleware.
  */
 const BUILD = { timeout: 300_000 };
 const SEALED = { title: "CASE-A-SEALED-TITLE", subtitle: "CASE-A-SEALED-SUBTITLE" };
@@ -101,7 +107,7 @@ describe.skipIf(!astroToolchainInstalled)("the case A Astro Theme in a native bu
     "builds unchanged, and prerenders /about from its sealed content through the reader",
     BUILD,
     async () => {
-      const result = await run(caseAInput("case-a", caseAFixtureFiles()));
+      const result = await run(caseAInput("case-a", astroWorkspaceFiles()));
       if (!result.success) throw new Error(result.errorMessage);
       // The first pass, with no content, stopped on /about's read (Morph's
       // prerender wrapper records it, whatever the reader does with it); the
@@ -118,13 +124,33 @@ describe.skipIf(!astroToolchainInstalled)("the case A Astro Theme in a native bu
   );
 
   it(
+    "fails, never with the component defaults, when nothing adds the platform's middleware",
+    BUILD,
+    async () => {
+      // The reverse of the case above: the same files without the
+      // integration. The core gets no request, refuses, and the prerender of
+      // /about fails the build. What made the first case read is the
+      // integration's addMiddleware, not something the Theme wrote.
+      const result = await run(
+        caseAInput("case-a-no-wiring", astroWorkspaceFiles({ integration: false })),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.errorMessage).toContain(
+          "No content source: morph.pages.get ran outside a request the platform wired.",
+        );
+      }
+    },
+  );
+
+  it(
     "is refused by the same import guard when one of its files imports an unapproved package",
     BUILD,
     async () => {
       // The reverse of the case above: the guard is on this fixture's path.
       // zod is installed in the Astro toolchain (Astro depends on it) and is
       // not approved.
-      const files = caseAFixtureFiles().map((file) =>
+      const files = astroWorkspaceFiles().map((file) =>
         file.path === "src/components/Hero.astro"
           ? {
               ...file,
