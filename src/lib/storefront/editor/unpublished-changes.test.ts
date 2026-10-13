@@ -320,3 +320,39 @@ describe("describeContentChanges", () => {
     ).toEqual({ changed: false });
   });
 });
+
+// #218: the route document created empty on first use has no draft revision.
+// Left behind by a refused first write, it must not light Publish.
+describe("a route document created empty", () => {
+  it("is not an unpublished change, whether its published revision reads null or is absent", () => {
+    expect(
+      describeContentChanges({
+        page: {
+          id: "route-doc",
+          draftRevisionId: null,
+          publishedRevisionId: null,
+        },
+        layout: null,
+      }),
+    ).toEqual({ changed: false });
+    expect(
+      describeContentChanges({
+        page: { id: "route-doc", draftRevisionId: null },
+        layout: null,
+      }),
+    ).toEqual({ changed: false });
+  });
+
+  it("is an unpublished change once a write gives it a draft revision", () => {
+    expect(
+      describeContentChanges({
+        page: {
+          id: "route-doc",
+          draftRevisionId: "rev-1",
+          publishedRevisionId: null,
+        },
+        layout: null,
+      }),
+    ).toEqual({ changed: true, reason: "page" });
+  });
+});
