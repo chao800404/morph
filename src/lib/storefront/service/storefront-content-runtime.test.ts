@@ -502,3 +502,41 @@ describe("a static route's own document", () => {
     expect(result.slots).toEqual({ "starter-header": { storeName: "Store" } });
   });
 });
+
+// #218: an empty route document (created before a content write that was then
+// refused) is published content only once it is sealed; even then it adds
+// nothing to the shell the route renders inside.
+describe("an empty route document on the published site", () => {
+  const layout = {
+    sections: [
+      { id: "starter-header", enabled: true, props: { storeName: "Store" } },
+      { id: "starter-footer", enabled: false, props: { note: "Hidden" } },
+    ],
+  };
+  const routePorts = (routeDocument: unknown) => ({
+    getPublishedDocument: vi.fn(
+      async ({ templateType }: { templateType: string }) =>
+        (templateType === "layout" ? layout : null) as never,
+    ),
+    getPublishedRouteDocument: vi.fn(async () => routeDocument as never),
+  });
+
+  it("renders exactly as a route with no document", async () => {
+    const none = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/about",
+      ports: routePorts(null),
+    });
+    const empty = await resolveStorefrontContent({
+      publicationId: "pub_1",
+      pathname: "/about",
+      ports: routePorts({ sections: [] }),
+    });
+
+    expect(empty).toEqual(none);
+    expect(empty).toEqual({
+      slots: { "starter-header": { storeName: "Store" } },
+      hiddenSlots: ["starter-footer"],
+    });
+  });
+});

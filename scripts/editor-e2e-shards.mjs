@@ -21,7 +21,6 @@ export const EDITOR_SHARDS = [
     "authored-content.spec.ts",
     "native-compat-published.spec.ts",
     "performance.spec.ts",
-    "preview-health.spec.ts",
     "publish.spec.ts",
     // Container transport only, so skipped on every CI shard; placed with
     // publish.spec.ts, the other container-only file.
@@ -45,8 +44,9 @@ export const EDITOR_SHARDS = [
     // Container transport only, like the publish files above: skipped on
     // every CI shard.
     "publish-layout-edit.spec.ts",
-    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which CI
-    // does not run: skipped on every CI shard, like the gated files above.
+    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which the
+    // shards do not run: skipped on every shard, like the gated files above,
+    // and run by the full Start job instead (editor-e2e-start.mjs).
     "loader-data-binding.spec.ts",
   ],
   [
