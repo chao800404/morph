@@ -38,8 +38,6 @@ export const START_PREVIEW_SPECS = [
  * @type {Record<string, string>}
  */
 export const START_PREVIEW_EXCLUDED = {
-  "preview-health.spec.ts":
-    "Asserts the container transport's preview host (`5173-<id>-…`), which the local sidecar does not have, and probes `/__morph_preview_health`, a path renamed to `/_morph/preview-health` in 46a0edca; on the sidecar under Start it answers 404 (local run, 2026-10-13). Stale; left to its owner rather than rewritten here.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };
