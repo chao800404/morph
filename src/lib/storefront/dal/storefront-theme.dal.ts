@@ -1056,6 +1056,10 @@ export const storefrontThemeDal = {
    * same rule the runtime serves by, so a document is never created where no
    * visitor could be served it. Created empty: a document is values only, the
    * route's source is its structure, and the first real write fills it.
+   * Left empty — the write it was created for was refused — it previews and
+   * publishes exactly as no document (the shell alone) and, having no draft
+   * revision, is not an unpublished change (#218; pinned in the content
+   * runtime, preview snapshot and unpublished-changes tests).
    *
    * Idempotent. Two editors opening the same route race to create it; the
    * partial unique index on (theme, route_path) lets exactly one insert land,
