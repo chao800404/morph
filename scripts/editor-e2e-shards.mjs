@@ -21,7 +21,6 @@ export const EDITOR_SHARDS = [
     "authored-content.spec.ts",
     "native-compat-published.spec.ts",
     "performance.spec.ts",
-    "preview-health.spec.ts",
     "publish.spec.ts",
     // Container transport only, so skipped on every CI shard; placed with
     // publish.spec.ts, the other container-only file.
