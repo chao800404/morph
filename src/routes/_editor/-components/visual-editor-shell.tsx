@@ -1,10 +1,23 @@
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import {
+  advanceSelectionAfterTextPromotion,
+  captureSelectionSourceBaseline,
+  fieldSelectionKey,
+  sourceGenerationForFreshSelection,
+  type SelectionSourceBaseline,
+} from "@/lib/storefront/editor/selection-source-baseline";
 import { isEditablePublicTextPath } from "@/lib/storefront/editor/public-text-file";
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
 import { isThemePublicPath } from "@/lib/storefront/theme-public-files";
 import { writeThemePublicTextFile } from "../-queries/theme-binary-files";
 import {
   commitPendingContent,
+  acknowledgeContentFields,
+  fieldsNeedingReselection,
+  stageContentFields,
+  selectCurrentContentFields,
+  sourceSelectionFailure,
+  RESELECT_CONTENT_MESSAGE,
   ObservedPendingContent,
   sameContent,
   sectionContentLanded,
@@ -36,6 +49,11 @@ import {
 } from "@/lib/storefront/editor/editor-write-gate";
 import { currentRequestStamp } from "@/lib/storefront/editor/editor-request-sequence";
 import {
+  currentThemeReadFailure,
+  resolveEditorLock,
+  type ThemeReadFailure,
+} from "@/lib/storefront/editor/editor-read-lock";
+import {
   confirmLostSave,
   earlierRefusalStillApplies,
   settleHeldFile,
@@ -53,9 +71,23 @@ import {
   reportEditorReadFailure,
   sendEditorWrite,
 } from "@/lib/storefront/editor/send-editor-write";
-import { rebaseContentProps } from "@/lib/storefront/editor/content-rebase";
+import {
+  conflictingListKeys,
+  heldContentMessage,
+  rebaseContentProps,
+} from "@/lib/storefront/editor/content-rebase";
 import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { usePanelResize } from "./use-panel-resize";
 import { Input } from "@/components/ui/input";
@@ -219,6 +251,7 @@ import { createPreviewCompileRecovery } from "@/lib/storefront/editor/preview-co
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
   describeThemeSourceChanges,
+  describeContentChanges,
   describeUnpublishedChanges,
   publishedFileStates,
 } from "@/lib/storefront/editor/unpublished-changes";
@@ -241,9 +274,15 @@ import {
 } from "@/lib/storefront/editor/preview-stale-probe";
 import {
   applyThemePreviewFiles,
+  confirmThemePreviewContent,
+  syncThemePreviewContent,
   touchThemePreviewServer,
   probeThemePreviewAddress,
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
+import {
+  createPreviewContentSync,
+  type PreviewContentSync,
+} from "@/lib/storefront/editor/preview-content-sync";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   parsePreviewSectionProps,
@@ -380,6 +419,10 @@ import {
 import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
 import {
+  EditorLockedPanel,
+  EditorThemeReadNotice,
+} from "./editor-locked-panel";
+import {
   awaitsOwnSave,
   planPreviewSync,
   waitForOwnSaves,
@@ -449,12 +492,18 @@ function preloadEditorCodeWorkspace() {
 
 export function EditorModeSurface({
   active,
+  locked = false,
   className,
   children,
   style,
   surfaceRef,
 }: {
   active: boolean;
+  /**
+   * The editor is closed (`resolveEditorLock`): hidden and out of reach as an
+   * inactive surface is, and still mounted, so the unsaved work inside stays.
+   */
+  locked?: boolean;
   className?: string;
   children: React.ReactNode;
   style?: React.CSSProperties;
@@ -464,12 +513,13 @@ export function EditorModeSurface({
    */
   surfaceRef?: React.Ref<HTMLDivElement>;
 }) {
+  const shown = active && !locked;
   return (
     <div
       ref={surfaceRef}
       style={style}
-      aria-hidden={!active}
-      inert={!active}
+      aria-hidden={!shown}
+      inert={!shown}
       className={cn(
         "col-start-1 row-start-3 min-h-0 min-w-0 flex relative",
         // Keep the iframe/Monaco layout alive while the other mode is shown.
@@ -479,7 +529,7 @@ export function EditorModeSurface({
         // grid layer fully transparent even for composited children such as
         // Monaco and the iframe, while z-index gives the active layer a
         // deterministic stacking order.
-        active
+        shown
           ? "visible z-10 opacity-100"
           : "invisible z-0 opacity-0 pointer-events-none",
         className,
@@ -494,10 +544,12 @@ export function EditorModeSurface({
 export function EditorCodeModeSurface({
   active,
   preload,
+  locked,
   children,
 }: {
   active: boolean;
   preload?: boolean;
+  locked?: boolean;
   children: React.ReactNode;
 }) {
   const [hasMounted, setHasMounted] = useState(active || preload);
@@ -509,7 +561,11 @@ export function EditorCodeModeSurface({
   if (!active && !hasMounted) return null;
 
   return (
-    <EditorModeSurface active={active} className="flex-1 overflow-hidden">
+    <EditorModeSurface
+      active={active}
+      locked={locked}
+      className="flex-1 overflow-hidden"
+    >
       {children}
     </EditorModeSurface>
   );
@@ -623,6 +679,15 @@ type EditorShellProps = {
     email?: string;
     image?: string | null;
   };
+  /**
+   * What the latest read of `context` failed with, while the editor stays on
+   * the data read before it; see `resolveEditorRouteView`. With the stamp the
+   * read was sent under, when it threw.
+   */
+  themeRead?: ThemeReadFailure | null;
+  themeReadSentUnder?: number;
+  /** Reads `context` again. */
+  onRetryThemeRead?: () => void;
 };
 
 /** Resolves true when the navigation must not happen. */
@@ -760,6 +825,9 @@ export function VisualEditorShell({
   navigatingRoutePath,
   navigationGuardRef,
   currentUser,
+  themeRead = null,
+  themeReadSentUnder,
+  onRetryThemeRead,
 }: EditorShellProps) {
   // The design surface owns the panel widths as CSS custom properties so a
   // resize drag can repaint without re-rendering this component. See
@@ -880,6 +948,22 @@ export function VisualEditorShell({
   >({});
   const contentConflictsRef = useRef(contentConflicts);
   contentConflictsRef.current = contentConflicts;
+  /**
+   * Conflicted sections whose update was stopped because a list in them was
+   * changed on both sides, by pending-content key. Kept so the toolbar can
+   * say which lists, and so the author has a way out other than waiting.
+   */
+  const [listConflicts, setListConflicts] = useState<
+    Record<string, { templateId: string; sectionId: string; lists: string[] }>
+  >({});
+  const listConflictsRef = useRef(listConflicts);
+  listConflictsRef.current = listConflicts;
+  const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
+  // A discard waiting on the latest version: one at a time, and the button
+  // that starts one is not offered meanwhile.
+  const [discarding, setDiscarding] = useState(false);
+  const discardingRef = useRef(false);
+  const [contentResetEpoch, setContentResetEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(
     () => search.canvasWidth ?? previewDefaultWidths[search.viewport],
   );
@@ -1277,6 +1361,90 @@ export function VisualEditorShell({
   const pendingPropsBaselineRef = useRef<Map<string, Record<string, unknown>>>(
     new Map(),
   );
+  const selectionSourceBaselinesRef = useRef(
+    new Map<string, SelectionSourceBaseline | null>(),
+  );
+  const previewSourceCandidateRef = useRef<{
+    key: string;
+    revision: number;
+    generation: number;
+  } | null>(null);
+  const confirmedPreviewSourceRef = useRef<{
+    key: string;
+    generation: number;
+  } | null>(null);
+  const currentContentSourceGeneration = useCallback(() => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    const state = useThemeWorkspaceStore.getState();
+    return Math.max(
+      state.getAcceptedSourceGeneration(scope),
+      state.getObservedSourceGeneration(scope),
+    );
+  }, [context.storefront.id, context.theme.id]);
+  const freshContentSelectionGeneration = useCallback(() => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    const state = useThemeWorkspaceStore.getState();
+    const confirmed = confirmedPreviewSourceRef.current;
+    return sourceGenerationForFreshSelection({
+      accepted: state.getAcceptedSourceGeneration(scope),
+      observed: state.getObservedSourceGeneration(scope),
+      confirmedPreview:
+        confirmed?.key === previewKeyRef.current ? confirmed.generation : null,
+      hasLocalSourceChanges:
+        state.hasUnsavedEdits(scope) || state.hasActiveConflictsOrErrors(scope),
+    });
+  }, [context.storefront.id, context.theme.id]);
+  const captureSourceForSelection = useCallback(
+    (target: PreviewSelectionRestoreTarget) => {
+      const generation = freshContentSelectionGeneration();
+      const key = JSON.stringify(target);
+      const baseline =
+        generation === null
+          ? null
+          : captureSelectionSourceBaseline(key, generation);
+      const fieldKey = fieldSelectionKey(
+        target.sectionId,
+        target.fieldPath ?? target.fieldKey ?? "",
+        search.routePath ?? "/",
+      );
+      // A failed explicit field capture is a tombstone, not permission to
+      // borrow an older section/parent baseline.
+      selectionSourceBaselinesRef.current.set(fieldKey, baseline);
+    },
+    [freshContentSelectionGeneration, search.routePath],
+  );
+  const selectedFieldBaseline = useCallback(
+    (sectionId: string, path: string) => {
+      const parts = path.split(".");
+      const candidates = [
+        "",
+        ...parts.map((_, index) => parts.slice(0, index + 1).join(".")),
+      ];
+      for (const candidate of candidates.reverse()) {
+        const key = fieldSelectionKey(
+          sectionId,
+          candidate,
+          search.routePath ?? "/",
+        );
+        if (selectionSourceBaselinesRef.current.has(key)) {
+          return selectionSourceBaselinesRef.current.get(key) ?? null;
+        }
+      }
+      return null;
+    },
+    [search.routePath],
+  );
+  useEffect(() => {
+    selectionSourceBaselinesRef.current.clear();
+    confirmedPreviewSourceRef.current = null;
+    previewSourceCandidateRef.current = null;
+  }, [context.storefront.id, context.theme.id]);
   const templateMutationQueueRef = useRef<Map<string, Promise<unknown>>>(
     new Map(),
   );
@@ -1296,6 +1464,11 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * A content write was saved: carry it into a preview that reads content on
+   * its server (`createPreviewContentSync`). Set below, beside the preview.
+   */
+  const previewContentSyncRef = useRef<PreviewContentSync | null>(null);
   /** Set below, beside the preview it reloads. */
   const droppedContentHandlerRef = useRef<
     (droppedProps: readonly string[]) => void
@@ -1305,11 +1478,19 @@ export function VisualEditorShell({
       sectionId: string;
       props: Record<string, unknown>;
       expectedDraftGeneration: number;
+      expectedSourceGeneration: number;
       templateId?: string;
       routePath?: string;
       resetProps?: string[];
     }) => {
       if (!activeTemplate) throw new Error("No active template");
+      const currentGeneration = currentContentSourceGeneration();
+      if (
+        !Number.isSafeInteger(variables.expectedSourceGeneration) ||
+        variables.expectedSourceGeneration < 1 ||
+        variables.expectedSourceGeneration !== currentGeneration
+      )
+        throw sourceSelectionFailure();
       return sendEditorWrite(
         { storefrontId: context.storefront.id, themeId: context.theme.id },
         "theme",
@@ -1322,6 +1503,7 @@ export function VisualEditorShell({
               sectionId: variables.sectionId,
               props: variables.props,
               expectedDraftGeneration: variables.expectedDraftGeneration,
+              expectedSourceGeneration: variables.expectedSourceGeneration,
               ...(variables.routePath
                 ? { routePath: variables.routePath }
                 : {}),
@@ -1343,10 +1525,18 @@ export function VisualEditorShell({
     onSuccess: async (result) => {
       if (!result.success) {
         setDraftSaveState("error");
-        toast.error(result.message);
+        // The acknowledgement boundary also reports this retained-field
+        // refusal. One id updates that notice instead of showing it twice.
+        if (result.error === "SELECTION_SOURCE_CONFLICT") {
+          toast.error(result.message, { id: "selection-source-conflict" });
+        } else {
+          toast.error(result.message);
+        }
         return;
       }
       setDraftSaveState("idle");
+      // Saved, so the drafts the sync reads hold it (6.5).
+      previewContentSyncRef.current?.requestSync();
       if (result.data.droppedProps.length > 0) {
         droppedContentHandlerRef.current(result.data.droppedProps);
       }
@@ -1358,6 +1548,13 @@ export function VisualEditorShell({
       });
     },
     onError: (error) => {
+      if ((error as { code?: string }).code === "SELECTION_SOURCE_CONFLICT") {
+        setDraftSaveState("error");
+        toast.error(RESELECT_CONTENT_MESSAGE, {
+          id: "selection-source-conflict",
+        });
+        return;
+      }
       // Explained once by the paused-writes notice, not per section.
       if (isEditorWritePaused(error)) {
         setDraftSaveState("paused");
@@ -1493,8 +1690,17 @@ export function VisualEditorShell({
   );
 
   const contentChangeRef = useRef<
-    ((sectionId: string, props: Record<string, unknown>) => void) | null
+    | ((
+        sectionId: string,
+        props: Record<string, unknown>,
+        options?: InspectorPropsChangeOptions,
+      ) => void)
+    | null
   >(null);
+  // Forward reader port; the Document owner/model is resolved below.
+  const storedSectionPropsRef = useRef<
+    (sectionId: string, templateId?: string) => Record<string, unknown>
+  >(() => ({}));
   const commitSectionPending = useCallback(
     async (
       tid: string,
@@ -1513,13 +1719,20 @@ export function VisualEditorShell({
           "An earlier save was not answered. Your changes are kept; check before saving again.",
         );
       }
-      const clearConflict = () =>
+      const clearConflict = () => {
         setContentConflicts((current) => {
           if (!(key in current)) return current;
           const next = { ...current };
           delete next[key];
           return next;
         });
+        setListConflicts((current) => {
+          if (!(key in current)) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
 
       contentSendingRef.current += 1;
       syncContentWritesRef.current();
@@ -1529,6 +1742,12 @@ export function VisualEditorShell({
           pending: pendingPropsMapRef.current,
           baselines: pendingPropsBaselineRef.current,
           failureCode: (result) => result.error,
+          select: (entry) =>
+            selectCurrentContentFields(
+              entry,
+              currentContentSourceGeneration(),
+              storedSectionPropsRef.current(entry.sectionId, tid),
+            ),
           save: (entry) =>
             enqueueTemplateMutation(tid, (generation, templateId) =>
               updatePropsMutation.mutateAsync({
@@ -1537,6 +1756,10 @@ export function VisualEditorShell({
                 props: entry.props,
                 expectedDraftGeneration: generation,
                 routePath: entry.routePath,
+                // A queued edit must keep the generation captured when typed.
+                // Missing bookkeeping fails validation, never borrows a later
+                // selection's generation when this queue eventually runs.
+                expectedSourceGeneration: entry.expectedSourceGeneration!,
               }),
             ).then(
               (result) => {
@@ -1551,7 +1774,9 @@ export function VisualEditorShell({
                 // refusal answered for an earlier sign-in is an answer.
                 if (
                   !isEditorWritePaused(error) &&
-                  !isEditorWriteRefusedEarlier(error)
+                  !isEditorWriteRefusedEarlier(error) &&
+                  (error as { code?: string }).code !==
+                    "SELECTION_SOURCE_CONFLICT"
                 ) {
                   unconfirmedContentRef.current.set(key, entry);
                   syncUnconfirmedContentCount();
@@ -1566,9 +1791,22 @@ export function VisualEditorShell({
                   label: "Content",
                   scope: sectionHistoryScope(entry.sectionId),
                   undo: () =>
-                    contentChangeRef.current?.(entry.sectionId, baseline),
+                    contentChangeRef.current?.(
+                      entry.sectionId,
+                      Object.fromEntries(
+                        Object.keys(entry.props).map((key) => [
+                          key,
+                          baseline[key],
+                        ]),
+                      ),
+                      {
+                        historySourceGeneration: entry.expectedSourceGeneration,
+                      },
+                    ),
                   redo: () =>
-                    contentChangeRef.current?.(entry.sectionId, entry.props),
+                    contentChangeRef.current?.(entry.sectionId, entry.props, {
+                      historySourceGeneration: entry.expectedSourceGeneration,
+                    }),
                 });
               }
             : undefined,
@@ -1577,6 +1815,12 @@ export function VisualEditorShell({
         failedContentKeysRef.current.delete(key);
         return result;
       } catch (error) {
+        if ((error as { code?: string }).code === "SELECTION_SOURCE_CONFLICT") {
+          setDraftSaveState("error");
+          toast.error(RESELECT_CONTENT_MESSAGE, {
+            id: "selection-source-conflict",
+          });
+        }
         // The payload is retained either way; what differs is what the author
         // can do about it, so a conflict is recorded rather than only reported.
         if ((error as { code?: string }).code === TEMPLATE_DRAFT_CONFLICT) {
@@ -1597,6 +1841,9 @@ export function VisualEditorShell({
       updatePropsMutation,
       history,
       syncUnconfirmedContentCount,
+      context.storefront.id,
+      context.theme.id,
+      currentContentSourceGeneration,
     ],
   );
 
@@ -1641,6 +1888,16 @@ export function VisualEditorShell({
       );
       unconfirmedContentRef.current.delete(key);
       if (!sectionContentLanded(sent, section)) continue;
+      if (acknowledgeContentFields(pendingPropsMapRef.current, key, sent)) {
+        if (!pendingPropsMapRef.current.has(key))
+          pendingPropsBaselineRef.current.delete(key);
+        else
+          pendingPropsBaselineRef.current.set(key, {
+            ...pendingPropsBaselineRef.current.get(key),
+            ...sent.props,
+          });
+        continue;
+      }
       const now = pendingPropsMapRef.current.get(key);
       // Compared by content, not by reference: the same values can be
       // pending again under a new entry (a field re-emits on blur), and the
@@ -1701,13 +1958,41 @@ export function VisualEditorShell({
         (entry) => entry.id === pending.sectionId,
       );
       const incoming = (section?.props as Record<string, unknown>) ?? {};
+      const baseline = pendingPropsBaselineRef.current.get(key) ?? {};
+
+      // A list both sides changed has no safe automatic answer: the author's
+      // copy is the whole array as their panel drew it, and sending it would
+      // overwrite the other writer's rows. Nothing is sent for this section;
+      // it stays out of date with the author's content kept, and they are
+      // told why rather than having either side's work replaced.
+      const conflictedLists = conflictingListKeys({
+        incoming,
+        baseline,
+        local: pending.props,
+      });
+      if (conflictedLists.length > 0) {
+        setListConflicts((current) => ({
+          ...current,
+          [key]: {
+            templateId,
+            sectionId: pending.sectionId,
+            lists: conflictedLists,
+          },
+        }));
+        toast.error(
+          `${conflictedLists.join(", ")} also changed elsewhere since you edited ${conflictedLists.length === 1 ? "it" : "them"}, so your version was not written over theirs. Use "Discard mine" to load the latest version, then make your change again.`,
+        );
+        continue;
+      }
 
       pendingPropsMapRef.current.set(key, {
+        ...pending,
         sectionId: pending.sectionId,
         routePath: pending.routePath,
+        expectedSourceGeneration: pending.expectedSourceGeneration,
         props: rebaseContentProps({
           incoming,
-          baseline: pendingPropsBaselineRef.current.get(key) ?? {},
+          baseline,
           local: pending.props,
         }),
       });
@@ -1797,7 +2082,10 @@ export function VisualEditorShell({
         // message names the action that resolves it.
         throw new Error(
           Object.keys(contentConflictsRef.current).length > 0
-            ? "Content is out of date with the document. Load the latest version and keep your changes before continuing."
+            ? heldContentMessage({
+                hasListConflict:
+                  Object.keys(listConflictsRef.current).length > 0,
+              })
             : "Content changed while saving. Retry before continuing.",
         );
       }
@@ -1895,18 +2183,17 @@ export function VisualEditorShell({
   /** The finish this editor asked for and has not seen answered; one at most. */
   const inlineFinishRequestRef = useRef<InlineFinishRequest | null>(null);
   const inlineFinishSequenceRef = useRef(0);
-  const reportInlineEdit = useCallback(
-    (editing: boolean, finished = true) => {
-      inlineEditOpenRef.current = editing;
-      setInlineEditOpen(editing);
-      if (editing) return;
-      // The edit is over: a commit arriving now answers nothing.
-      inlineFinishRequestRef.current = null;
-      for (const ended of inlineEditEndedRef.current) ended(finished);
-      inlineEditEndedRef.current.clear();
-    },
-    [],
-  );
+  const reportInlineEdit = useCallback((editing: boolean, finished = true) => {
+    inlineEditOpenRef.current = editing;
+    setInlineEditOpen(editing);
+    if (editing) return;
+    // The edit is over: a commit arriving now answers nothing.
+    inlineFinishRequestRef.current = null;
+    for (const ended of inlineEditEndedRef.current) ended(finished);
+    inlineEditEndedRef.current.clear();
+    // A content refresh held back while it was open can be shown now.
+    previewContentSyncRef.current?.editEnded();
+  }, []);
   // A new preview document has no edit open, whatever the last one said.
   // An edit that was open went with the old one, unfinished: a frame
   // replaced while the author is finishing it must not read as finished.
@@ -3231,6 +3518,62 @@ export function VisualEditorShell({
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
+
+  // A preview that reads content on its server shows a saved edit only once
+  // the drafts are synced into it and it confirms reading them (A6b-2,
+  // docs/astro-theme-plan.md 6.5). Null for the client-only preview, which
+  // the content messages above already keep current.
+  const previewContentRefresh =
+    previewServer.data?.success === true
+      ? previewServer.data.data.contentRefresh
+      : null;
+  useEffect(() => {
+    if (!previewContentRefresh) return;
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    const sync = createPreviewContentSync({
+      sync: () => syncThemePreviewContent({ data: scope }),
+      confirm: (ticket) =>
+        confirmThemePreviewContent({ data: { ...scope, ticket } }),
+      refresh: () => {
+        if (previewContentRefresh === "reload") {
+          // The page is rendered on the server; only loading it again shows
+          // what the server now reads (6.3).
+          setPreviewRevision((revision) => revision + 1);
+          return;
+        }
+        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+          type: "morph:storefront-preview-refresh-content",
+        });
+        schedulePreviewRemeasureRef.current();
+      },
+      // Text typed on the canvas lives only in the page until committed;
+      // reloading the content under it would end the edit.
+      canRefresh: () => !inlineEditOpenRef.current,
+      onBehind: () => {
+        // One notice, replaced rather than stacked. The changes are saved;
+        // nothing is sent again on its own, and the next save syncs again.
+        toast.warning(
+          "The Live Preview may not show your latest changes yet. They are saved; your next edit updates the preview.",
+          { id: "preview-content-behind", duration: 10_000 },
+        );
+      },
+    });
+    previewContentSyncRef.current = sync;
+    return () => {
+      sync.dispose();
+      if (previewContentSyncRef.current === sync) {
+        previewContentSyncRef.current = null;
+      }
+    };
+  }, [
+    context.storefront.id,
+    context.theme.id,
+    postEditorToPreviewMessage,
+    previewContentRefresh,
+  ]);
   const confirmPreviewStyleRevision = useCallback(
     (confirmation: { previewKey: string; styleRevision: number }) => {
       const initialPreviewSync = initialPreviewSyncRef.current;
@@ -3251,13 +3594,24 @@ export function VisualEditorShell({
         key: confirmation.previewKey,
         at: Date.now(),
       });
+      const candidate = previewSourceCandidateRef.current;
+      if (
+        candidate?.key === confirmation.previewKey &&
+        candidate.revision === confirmation.styleRevision &&
+        candidate.generation === currentContentSourceGeneration()
+      ) {
+        confirmedPreviewSourceRef.current = {
+          key: candidate.key,
+          generation: candidate.generation,
+        };
+      }
       latestAppliedStyleRevisionRef.current = confirmation.styleRevision;
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-request-selection-style",
         styleRevision: confirmation.styleRevision,
       });
     },
-    [postEditorToPreviewMessage],
+    [postEditorToPreviewMessage, currentContentSourceGeneration],
   );
   // Once per set of files: every keystroke re-sends them, and one notice
   // says everything the next hundred would.
@@ -3317,6 +3671,26 @@ export function VisualEditorShell({
       latestStyleRevisionRef.current = styleRevision;
       const targetPreviewKey =
         options?.initialSync?.key ?? previewKeyRef.current;
+      // Only the full saved-source initial sync proves this whole-workspace
+      // generation. A partial HMR update or a latest query alone cannot do so.
+      const store = useThemeWorkspaceStore.getState();
+      const scope = {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+      };
+      const sourceGeneration = themeFilesQuery.data?.sourceGeneration;
+      previewSourceCandidateRef.current =
+        options?.initialSync &&
+        targetPreviewKey &&
+        sourceGeneration &&
+        !store.hasUnsavedEdits(scope) &&
+        !store.hasActiveConflictsOrErrors(scope)
+          ? {
+              key: targetPreviewKey,
+              revision: styleRevision,
+              generation: sourceGeneration,
+            }
+          : null;
       if (options?.initialSync) {
         // Register the request before starting the async write. A no-op write
         // can resolve immediately, and its truthful confirmation
@@ -3433,6 +3807,10 @@ export function VisualEditorShell({
           // preview is fine and shows that save; this tab is what is behind,
           // so it is told so rather than reconnected.
           if (result?.success === false && "stalePaths" in result) {
+            // This revision is acknowledged as settled, not as our source
+            // having landed. Never grant a fresh content baseline from it.
+            if (previewSourceCandidateRef.current?.revision === styleRevision)
+              previewSourceCandidateRef.current = null;
             const stalePaths = result.stalePaths as string[];
             const workspaceStore = useThemeWorkspaceStore.getState();
             // This tab's own save may have landed a moment ago and not yet
@@ -3520,6 +3898,7 @@ export function VisualEditorShell({
       context.theme.id,
       reloadFrameAfterCompileFailure,
       reportStalePreviewSync,
+      themeFilesQuery.data?.sourceGeneration,
     ],
   );
   postPreviewThemeFilesRef.current = postPreviewThemeFiles;
@@ -3846,16 +4225,18 @@ export function VisualEditorShell({
     [effectiveThemeFiles, themeBinaryFiles, publishedSnapshotMap],
   );
 
-  const hasTemplateChanges = Boolean(
-    activeTemplate?.draftRevisionId &&
-    activeTemplate.draftRevisionId !== activeTemplate.publishedRevisionId,
-  );
-  const hasUnpublishedChanges = hasTemplateChanges || themeSourceDiff.changed;
+  // What this page's publish would seal: the page and the shared layout,
+  // the same scope the server seals (`publishTemplate`).
+  const contentDiff = describeContentChanges({
+    page: activeTemplate,
+    layout: layoutTemplate,
+  });
+  const hasUnpublishedChanges = contentDiff.changed || themeSourceDiff.changed;
   // Publish being lit with nothing edited is unfalsifiable from the outside,
   // so the reason travels with the state instead of having to be guessed.
   const unpublishedReason = describeUnpublishedChanges(
     themeSourceDiff,
-    hasTemplateChanges,
+    contentDiff,
   );
 
   const saveThemeFileSequentially = useCallback(
@@ -5091,6 +5472,36 @@ export function VisualEditorShell({
   );
 
   /**
+   * The Theme refused or gone, as the latest read of it says — unless that
+   * read was sent before a check of who is signed in that has read the Theme
+   * since. A refusal stops writes here as one from a save would; reads alone
+   * do not do that (`refusalOfError`), but this read is the Theme itself.
+   */
+  const currentThemeRead = currentThemeReadFailure(
+    writeGate,
+    themeRead,
+    themeReadSentUnder,
+  );
+  const themeRefused =
+    currentThemeRead === "access-denied" || currentThemeRead === "missing";
+  useEffect(() => {
+    if (!themeRefused) return;
+    useEditorWriteGateStore
+      .getState()
+      .pause(workspaceScope, "ACCESS_DENIED", "theme");
+  }, [themeRefused, workspaceScope]);
+
+  /**
+   * Closed to the author while another account is signed in, or the Theme is
+   * refused or gone; see `resolveEditorLock`. Nothing is unmounted: the
+   * unsaved work stays in this tab, out of reach, and no write sends it (reads
+   * still go out; see `resolveEditorLock` for what is and is not sent).
+   * Derived from the gate on every render; nothing is remembered between
+   * renders, so a render React discards cannot leave a stale answer behind.
+   */
+  const editorLock = resolveEditorLock(writeGate, currentThemeRead);
+
+  /**
    * Whether the author's edits are stored, decided from what is held now —
    * never from a response arriving, which may answer an older write. See
    * `resolveEditorSaveState`. Shown apart from the publish state, which only
@@ -5116,6 +5527,13 @@ export function VisualEditorShell({
         (file) => file.dirty || file.saveState === "debouncing",
       ),
   });
+  const fieldsAwaitingReselection = Array.from(
+    pendingPropsMapRef.current.values(),
+  ).flatMap((entry) =>
+    fieldsNeedingReselection(entry, currentContentSourceGeneration()).map(
+      (path) => `${entry.sectionId}.${path}`,
+    ),
+  );
 
   // What leaving or switching pages has to wait for, and how it is sent.
   // Everything goes through the save paths the edits would have used anyway;
@@ -5166,7 +5584,10 @@ export function VisualEditorShell({
       const files = Object.values(
         useThemeWorkspaceStore
           .getState()
-          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId),
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ),
       );
       // Waiting out a debounce, or sent and not answered: what a page switch
       // would race.
@@ -5206,7 +5627,10 @@ export function VisualEditorShell({
       const readFiles = () =>
         useThemeWorkspaceStore
           .getState()
-          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+          .getWorkspaceFiles(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          );
       // Paused: nothing may be sent, and leaving is not the author saying to.
       const refusal = editorWriteRefusal(
         editorWriteGateFor(
@@ -5289,14 +5713,19 @@ export function VisualEditorShell({
         return {
           saved: false,
           reason:
-            Object.keys(contentConflictsRef.current).length > 0
-              ? "Some content is out of date with the document. Use Load latest, keep mine first."
-              : Object.values(readFiles()).some(
-                    (file) => file.saveState === "conflict",
-                  )
-                ? "A source file was changed elsewhere. Resolve the conflict first; your changes are kept."
-                : (Object.values(readFiles()).find((file) => file.errorMessage)
-                    ?.errorMessage ?? "Some changes have not been saved."),
+            // "Keep mine" does not save a list both sides changed; see
+            // `heldContentMessage`.
+            Object.keys(listConflictsRef.current).length > 0
+              ? heldContentMessage({ hasListConflict: true })
+              : Object.keys(contentConflictsRef.current).length > 0
+                ? "Some content is out of date with the document. Use Load latest, keep mine first."
+                : Object.values(readFiles()).some(
+                      (file) => file.saveState === "conflict",
+                    )
+                  ? "A source file was changed elsewhere. Resolve the conflict first; your changes are kept."
+                  : (Object.values(readFiles()).find(
+                      (file) => file.errorMessage,
+                    )?.errorMessage ?? "Some changes have not been saved."),
         };
       }
       return { saved: true };
@@ -5468,6 +5897,16 @@ export function VisualEditorShell({
     if (answer === "unanswered") {
       toast.error("Could not check your sign-in. Try again.");
       return;
+    }
+    if (answer === "access-denied") {
+      // Read the Theme again, so the editor shows what the check found: a
+      // Theme refused or gone closes it (`resolveEditorLock`).
+      void queryClient.invalidateQueries({
+        queryKey: storefrontThemeQueries.detail(
+          workspaceScope.storefrontId,
+          workspaceScope.themeId,
+        ).queryKey,
+      });
     }
     if (gate.recovery !== "verified") return;
     // Reads and the preview can come back now; the paused writes wait for
@@ -6551,7 +6990,8 @@ export function VisualEditorShell({
 
   // A new frame starts a document on whatever the preview holds now.
   useEffect(() => {
-    if (previewKey) previewCompileRecoveryRef.current.noteDocumentStarted(previewKey);
+    if (previewKey)
+      previewCompileRecoveryRef.current.noteDocumentStarted(previewKey);
   }, [previewKey]);
 
   useEffect(() => {
@@ -6757,6 +7197,18 @@ export function VisualEditorShell({
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
+      if (
+        outcome.newCanvasIntent ||
+        !selectionSourceBaselinesRef.current.has(
+          fieldSelectionKey(
+            message.sectionId,
+            outcome.target.fieldPath ?? outcome.target.fieldKey ?? "",
+            search.routePath ?? "/",
+          ),
+        )
+      ) {
+        captureSourceForSelection(outcome.target);
+      }
 
       if (outcome.reveal && message.documentRect) {
         const rect = message.documentRect;
@@ -6825,6 +7277,8 @@ export function VisualEditorShell({
         elementKey,
         fieldKey,
         fieldPath,
+        itemId: message.itemId ?? null,
+        contentUnavailable: message.contentUnavailable ?? null,
         descendantFields,
         className,
         isSection: selectionIsSection,
@@ -6923,6 +7377,7 @@ export function VisualEditorShell({
             sectionId,
             isSection: true,
           } satisfies PreviewSelectionRestoreTarget;
+          captureSourceForSelection(target);
           const componentType =
             sectionId === (search.routePath ?? "/")
               ? "page"
@@ -6999,6 +7454,7 @@ export function VisualEditorShell({
         componentType,
         collectEditableNodeDescendantFields(selectedNode, previewNodes),
       );
+      captureSourceForSelection(target);
       setActiveSelection(nextSelection);
       setActiveComputedStyleRevision(0);
       if (target.sectionId !== search.section) {
@@ -7634,6 +8090,12 @@ export function VisualEditorShell({
         return failed("This section has no document to store the text in.");
       }
       const store = useThemeWorkspaceStore.getState();
+      const promotionBaseline = selectedFieldBaseline(
+        request.sectionId,
+        request.fieldName,
+      );
+      if (!promotionBaseline)
+        return failed("Select the text again before making it editable.");
       const workspaceFile = store.getWorkspaceFiles(
         workspaceScope.storefrontId,
         workspaceScope.themeId,
@@ -7678,8 +8140,7 @@ export function VisualEditorShell({
               targetKey: request.targetKey,
               fieldName: request.fieldName,
               value: request.value,
-              expectedSourceGeneration:
-                store.getAcceptedSourceGeneration(workspaceScope),
+              expectedSourceGeneration: promotionBaseline.sourceGeneration,
               expectedFileVersion: workspaceFile.serverVersion,
               expectedDraftGeneration,
               ...(request.confirmedImpact
@@ -7701,6 +8162,28 @@ export function VisualEditorShell({
           { success: true }
         >
       ).data;
+      const promotionKey = fieldSelectionKey(
+        request.sectionId,
+        request.fieldName,
+        search.routePath ?? "/",
+      );
+      const currentBaseline = selectedFieldBaseline(
+        request.sectionId,
+        request.fieldName,
+      );
+      const advancedBaseline = advanceSelectionAfterTextPromotion(
+        currentBaseline,
+        {
+          selectionKey: promotionBaseline.selectionKey,
+          sentSourceGeneration: promotionBaseline.sourceGeneration,
+          acceptedSourceGeneration: saved.sourceGeneration,
+          confirmed: true,
+        },
+      );
+      if (advancedBaseline)
+        selectionSourceBaselinesRef.current.set(promotionKey, advancedBaseline);
+      // The page's value is a saved draft now, like any content write.
+      previewContentSyncRef.current?.requestSync();
       useThemeWorkspaceStore
         .getState()
         .acceptRemoteGeneration(saved.sourceGeneration, workspaceScope);
@@ -7770,6 +8253,8 @@ export function VisualEditorShell({
       templateIdForSection,
       updateWorkspaceLocal,
       workspaceScope,
+      selectedFieldBaseline,
+      search.routePath,
     ],
   );
 
@@ -7781,9 +8266,15 @@ export function VisualEditorShell({
    * time this runs.
    */
   const sectionPropsSnapshot = useCallback(
-    (sectionId: string): Record<string, unknown> => {
-      const owner =
-        sectionModel.bindings.get(sectionId)?.owner === "shell"
+    (sectionId: string, ownerTemplateId?: string): Record<string, unknown> => {
+      const owner = ownerTemplateId
+        ? context.templates.find(
+            (template) =>
+              template.id ===
+              (routeTemplateIdsRef.current.get(ownerTemplateId) ??
+                ownerTemplateId),
+          )
+        : sectionModel.bindings.get(sectionId)?.owner === "shell"
           ? layoutTemplate
           : activeTemplate;
       const section = owner?.document.sections.find(
@@ -7791,8 +8282,12 @@ export function VisualEditorShell({
       );
       return { ...((section?.props ?? {}) as Record<string, unknown>) };
     },
-    [activeTemplate, layoutTemplate, sectionModel],
+    [activeTemplate, layoutTemplate, sectionModel, context.templates],
   );
+  useEffect(() => {
+    // Publish the reader only for a committed render, never an abandoned one.
+    storedSectionPropsRef.current = sectionPropsSnapshot;
+  }, [sectionPropsSnapshot]);
 
   /**
    * Removes this page's value for declared fields, so the component's own
@@ -7815,11 +8310,30 @@ export function VisualEditorShell({
       sectionId: string,
       fieldKeys: string[],
       recordHistory = true,
+      historyGeneration?: number,
     ): Promise<{ success: boolean; message?: string }> => {
       reportAuthenticatedUserActivity();
       const templateId = templateIdForSection(sectionId);
       if (!templateId || fieldKeys.length === 0) {
         return { success: false, message: "Nothing to reset here." };
+      }
+      const generations = fieldKeys.map(
+        (path) =>
+          historyGeneration ??
+          selectedFieldBaseline(sectionId, path)?.sourceGeneration,
+      );
+      const sourceGeneration = generations[0];
+      if (
+        !sourceGeneration ||
+        !Number.isSafeInteger(sourceGeneration) ||
+        sourceGeneration < 1 ||
+        generations.some((generation) => generation !== sourceGeneration) ||
+        sourceGeneration !== currentContentSourceGeneration()
+      ) {
+        toast.error(RESELECT_CONTENT_MESSAGE, {
+          id: "selection-source-conflict",
+        });
+        return { success: false, message: RESELECT_CONTENT_MESSAGE };
       }
       try {
         await flushTemplatePendingProps(templateId);
@@ -7845,6 +8359,7 @@ export function VisualEditorShell({
             props: {},
             resetProps: fieldKeys,
             expectedDraftGeneration,
+            expectedSourceGeneration: sourceGeneration,
             routePath: routePathForTemplate(templateId),
           }),
       )) as { success: boolean; message?: string };
@@ -7857,9 +8372,19 @@ export function VisualEditorShell({
         history.record({
           label: "Use code default",
           scope: sectionHistoryScope(sectionId),
-          undo: () => contentChangeRef.current?.(sectionId, removed),
-          redo: () =>
-            void resetContentFieldsRef.current?.(sectionId, fieldKeys, false),
+          undo: () =>
+            contentChangeRef.current?.(sectionId, removed, {
+              historySourceGeneration: sourceGeneration,
+            }),
+          redo: async () => {
+            const replay = await handleResetContentFields(
+              sectionId,
+              fieldKeys,
+              false,
+              sourceGeneration,
+            );
+            if (!replay.success) throw sourceSelectionFailure();
+          },
         });
       }
       return { success: true };
@@ -7873,6 +8398,8 @@ export function VisualEditorShell({
       syncPreviewSectionProps,
       templateIdForSection,
       updatePropsMutation,
+      selectedFieldBaseline,
+      currentContentSourceGeneration,
     ],
   );
   resetContentFieldsRef.current = handleResetContentFields;
@@ -7883,6 +8410,16 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // A history record keeps its original version, even after reselection.
+      // Throw before changing the panel/preview so the history stays retryable.
+      if (
+        options?.historySourceGeneration !== undefined &&
+        (!Number.isSafeInteger(options.historySourceGeneration) ||
+          options.historySourceGeneration < 1 ||
+          options.historySourceGeneration !== currentContentSourceGeneration())
+      ) {
+        throw sourceSelectionFailure();
+      }
       // 1. Instant 0ms visual sync to iframe canvas
       const previewProps = parsePreviewSectionProps(nextProps);
       if (!options?.skipPreviewSync && previewProps) {
@@ -7899,12 +8436,36 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
       }
 
-      const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
-      const mergedProps = { ...existingProps, ...nextProps };
+      const prior = pendingPropsMapRef.current.get(key);
+      // A list action may use the clicked row's baseline, but must not turn
+      // retained inputs in the rest of that list into confirmed content.
+      if (
+        options?.selectionFieldPath &&
+        options.inputFieldPath &&
+        prior?.fields &&
+        Object.entries(prior.fields).some(
+          ([path, field]) =>
+            (path === options.inputFieldPath ||
+              path.startsWith(`${options.inputFieldPath}.`)) &&
+            (field.rejected ||
+              field.sourceGeneration !==
+                selectedFieldBaseline(sectionId, options.selectionFieldPath!)
+                  ?.sourceGeneration),
+        )
+      ) {
+        toast.error(RESELECT_CONTENT_MESSAGE, {
+          id: "selection-source-conflict",
+        });
+        return;
+      }
+      const existingProps = prior?.props ?? {};
       // A real change means the author is still here, and a navigation
       // waiting on the save is cancelled. A field re-emitting the value it
       // already holds (on blur, say, as focus moves to the question) is not.
-      const heldProps = { ...sectionPropsSnapshot(sectionId), ...existingProps };
+      const heldProps = {
+        ...sectionPropsSnapshot(sectionId),
+        ...existingProps,
+      };
       if (
         !requestedFinishCommitRef.current &&
         Object.entries(nextProps).some(
@@ -7922,11 +8483,25 @@ export function VisualEditorShell({
           sectionPropsSnapshot(sectionId),
         );
       }
-      pendingPropsMapRef.current.set(key, {
+      const staged = stageContentFields({
+        pending: prior,
         sectionId,
-        props: mergedProps,
+        next: nextProps,
+        stored: sectionPropsSnapshot(sectionId),
         routePath: routePathForTemplate(templateId),
+        inputPath: options?.inputFieldPath,
+        sourceForPath: (path) =>
+          options?.historySourceGeneration !== undefined
+            ? options.historySourceGeneration
+            : (selectedFieldBaseline(
+                sectionId,
+                options?.selectionFieldPath && path === options.inputFieldPath
+                  ? options.selectionFieldPath
+                  : path,
+              )?.sourceGeneration ?? null),
       });
+      if (!staged) return;
+      pendingPropsMapRef.current.set(key, staged);
 
       const timer = setTimeout(() => {
         pendingPropsTimersRef.current.delete(key);
@@ -7946,6 +8521,8 @@ export function VisualEditorShell({
       templateIdForSection,
       routePathForTemplate,
       updatePropsMutation,
+      selectedFieldBaseline,
+      currentContentSourceGeneration,
     ],
   );
 
@@ -8033,6 +8610,7 @@ export function VisualEditorShell({
         handleSectionPropsChange(
           message.sectionId,
           setFieldPathValue(currentProps, message.fieldPath, message.value),
+          { inputFieldPath: message.fieldPath },
         );
       } finally {
         requestedFinishCommitRef.current = false;
@@ -8136,11 +8714,37 @@ export function VisualEditorShell({
         clearTimeout(existingTimer);
         pendingPropsTimersRef.current.delete(key);
       }
-      const reorderPending = {
+      const arrayRoot = draggedFieldPath.split(".")[0]!;
+      const generation =
+        selectedFieldBaseline(sectionId, draggedFieldPath)?.sourceGeneration ??
+        selectedFieldBaseline(
+          sectionId,
+          activeSelection?.fieldPath ?? arrayRoot,
+        )?.sourceGeneration;
+      const priorPending = pendingPropsMapRef.current.get(key);
+      if (
+        !generation ||
+        generation !== currentContentSourceGeneration() ||
+        fieldsNeedingReselection(
+          priorPending ?? { sectionId, props: {}, fields: {} },
+          generation,
+        ).some((path) => path === arrayRoot || path.startsWith(`${arrayRoot}.`))
+      ) {
+        restoreSelectionAndProps();
+        toast.error(RESELECT_CONTENT_MESSAGE, {
+          id: "selection-source-conflict",
+        });
+        return;
+      }
+      const reorderPending = stageContentFields({
+        pending: priorPending,
         sectionId,
-        props: result.value,
+        stored: sectionPropsSnapshot(sectionId),
+        next: { [arrayRoot]: result.value[arrayRoot] },
         routePath: routePathForTemplate(templateId),
-      };
+        sourceForPath: () => generation,
+      });
+      if (!reorderPending) return;
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(key, { ...section.props });
       }
@@ -8167,16 +8771,23 @@ export function VisualEditorShell({
         history.record({
           label: "Reorder · item",
           scope: sectionHistoryScope(sectionId),
-          undo: () => handleSectionPropsChange(sectionId, currentProps),
-          redo: () => handleSectionPropsChange(sectionId, result.value),
+          undo: () =>
+            handleSectionPropsChange(
+              sectionId,
+              { [arrayRoot]: currentProps[arrayRoot] },
+              { historySourceGeneration: generation },
+            ),
+          redo: () =>
+            handleSectionPropsChange(
+              sectionId,
+              { [arrayRoot]: result.value[arrayRoot] },
+              { historySourceGeneration: generation },
+            ),
         });
       } catch {
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
-          pendingPropsMapRef.current.set(key, {
-            sectionId,
-            props: currentProps,
-            routePath: reorderPending.routePath,
-          });
+          if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
+          else pendingPropsMapRef.current.delete(key);
         }
         restoreSelectionAndProps();
       }
@@ -8192,6 +8803,10 @@ export function VisualEditorShell({
       routePathForTemplate,
       templateIdForSection,
       updatePropsMutation,
+      selectedFieldBaseline,
+      sectionPropsSnapshot,
+      activeSelection?.fieldPath,
+      currentContentSourceGeneration,
     ],
   );
 
@@ -8211,12 +8826,30 @@ export function VisualEditorShell({
 
   /** Lets a recorded toggle call back without pinning a stale closure. */
   const handleSectionToggleEnabledRef = useRef<
-    ((sectionId: string, enabled: boolean) => Promise<void>) | null
+    | ((
+        sectionId: string,
+        enabled: boolean,
+        historyGeneration?: number,
+      ) => Promise<void>)
+    | null
   >(null);
 
   const handleSectionToggleEnabled = useCallback(
-    async (sectionId: string, enabled: boolean) => {
-      invalidateSectionHistory(sectionId);
+    async (sectionId: string, enabled: boolean, historyGeneration?: number) => {
+      const generation = historyGeneration ?? freshContentSelectionGeneration();
+      if (
+        generation === null ||
+        !Number.isSafeInteger(generation) ||
+        generation < 1 ||
+        generation !== currentContentSourceGeneration()
+      ) {
+        if (historyGeneration !== undefined) throw sourceSelectionFailure();
+        toast.error(RESELECT_CONTENT_MESSAGE, {
+          id: "selection-source-conflict",
+        });
+        return;
+      }
+      if (historyGeneration === undefined) invalidateSectionHistory(sectionId);
       // 1. Instant 0ms visual toggle on canvas
       syncPreviewSectionProps(sectionId, undefined, enabled);
 
@@ -8230,13 +8863,15 @@ export function VisualEditorShell({
         pendingPropsTimersRef.current.delete(key);
       }
 
-      const existingProps = pendingPropsMapRef.current.get(key)?.props ?? {};
-      const mergedProps = { ...existingProps, enabled };
-      const togglePending = {
+      const togglePending = stageContentFields({
+        pending: pendingPropsMapRef.current.get(key),
         sectionId,
-        props: mergedProps,
+        stored: { ...sectionPropsSnapshot(sectionId), enabled: !enabled },
+        next: { enabled },
         routePath: routePathForTemplate(templateId),
-      };
+        sourceForPath: () => generation,
+      });
+      if (!togglePending) return;
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(
           key,
@@ -8247,17 +8882,26 @@ export function VisualEditorShell({
 
       try {
         await commitSectionPending(templateId, key, false);
-      } catch {
+      } catch (error) {
+        if (historyGeneration !== undefined) throw error;
         return;
       }
-      {
+      if (historyGeneration === undefined) {
         history.record({
           label: enabled ? "Show section" : "Hide section",
           scope: sectionHistoryScope(sectionId),
           undo: () =>
-            handleSectionToggleEnabledRef.current?.(sectionId, !enabled),
+            handleSectionToggleEnabledRef.current?.(
+              sectionId,
+              !enabled,
+              generation,
+            ),
           redo: () =>
-            handleSectionToggleEnabledRef.current?.(sectionId, enabled),
+            handleSectionToggleEnabledRef.current?.(
+              sectionId,
+              enabled,
+              generation,
+            ),
         });
       }
     },
@@ -8272,6 +8916,8 @@ export function VisualEditorShell({
       routePathForTemplate,
       templateIdForSection,
       updatePropsMutation,
+      currentContentSourceGeneration,
+      freshContentSelectionGeneration,
     ],
   );
 
@@ -8326,6 +8972,92 @@ export function VisualEditorShell({
     },
     [context.storefront.id, context.theme.id, queryClient],
   );
+
+  /**
+   * Discards the unsaved content of sections whose update stopped on a list
+   * both sides changed, and loads the latest version — only once the author
+   * has confirmed it in the dialog that names what will be lost.
+   *
+   * The whole section's unsaved content goes, not only the list: what is left
+   * would be an edit made against a version the author no longer sees. The
+   * Inspector's own copy is reset with it (`contentResetEpoch`), so nothing
+   * typed before is sent again by the next keystroke.
+   */
+  const discardListConflicts = useCallback(async () => {
+    const entries = Object.entries(listConflicts);
+    if (entries.length === 0 || discardingRef.current) return;
+    // What the author confirmed discarding, as it stood when they did. Every
+    // edit stores a new draft object, so one that differs after the wait is
+    // an edit made while the latest version was loading — not part of what
+    // was confirmed, and not to be dropped with it.
+    const confirmed = new Map(
+      entries.map(([key]) => [key, pendingPropsMapRef.current.get(key)]),
+    );
+    discardingRef.current = true;
+    setDiscarding(true);
+    // The latest version is read first. If it cannot be, nothing is
+    // discarded: dropping the draft without the version that replaces it
+    // would lose the author's work and leave them where they were.
+    const fresh = await queryClient
+      .fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      })
+      .catch(() => null)
+      .finally(() => {
+        discardingRef.current = false;
+        setDiscarding(false);
+      });
+    if (!fresh?.success) {
+      toast.error(
+        "The latest version could not be loaded, so nothing was discarded. Try again.",
+      );
+      return;
+    }
+    const editedMeanwhile = [...confirmed].some(
+      ([key, draft]) => pendingPropsMapRef.current.get(key) !== draft,
+    );
+    if (editedMeanwhile) {
+      toast.error(
+        "You edited this section while the latest version was loading, so nothing was discarded. Choose Discard mine again to discard your changes as they are now.",
+      );
+      return;
+    }
+
+    const keys = new Set(entries.map(([key]) => key));
+    for (const key of keys) {
+      pendingPropsMapRef.current.delete(key);
+      pendingPropsBaselineRef.current.delete(key);
+    }
+    setContentConflicts((current) => {
+      const next = { ...current };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+    setListConflicts({});
+    setDiscardDialogOpen(false);
+    // Edits from here on are made against the version just loaded.
+    for (const requestedTemplateId of new Set(
+      entries.map(([, entry]) => entry.templateId),
+    )) {
+      const templateId =
+        routeTemplateIdsRef.current.get(requestedTemplateId) ??
+        requestedTemplateId;
+      const template = fresh.data.templates.find(
+        (entry) => entry.id === templateId,
+      );
+      if (typeof template?.draftGeneration === "number") {
+        templateDraftGenerationRef.current.set(
+          templateId,
+          template.draftGeneration,
+        );
+      }
+    }
+    setContentResetEpoch((epoch) => epoch + 1);
+  }, [context.storefront.id, context.theme.id, listConflicts, queryClient]);
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
@@ -9435,7 +10167,10 @@ export function VisualEditorShell({
       {/* Keep the canvas controls in a dedicated auto-sized center track with
           equal flexible gutters. The storefront name stays left and the save
           and publish actions stay right without shifting the center controls. */}
-      <header className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4">
+      <header
+        inert={editorLock !== null}
+        className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b bg-component px-3 lg:px-4"
+      >
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon" asChild>
             <Link
@@ -9724,19 +10459,82 @@ export function VisualEditorShell({
                     Load latest, keep mine
                   </Button>
                 ) : draftSaveState === "error" || contentWrites.failed ? (
-                  // Nothing was rebased and nothing is in the way — the write
-                  // simply did not land, so sending it again is the whole fix.
+                  // Retry first confirms unknown outcomes. Retained source-
+                  // conflict fields still need explicit reselection/new input.
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     className="h-7 shrink-0 px-2 text-xs"
                     onClick={() => void retryFailedContent()}
-                    title="Send the content that did not save."
+                    title="Check unanswered saves and send only fields whose source version is still current."
                   >
                     Try again
                   </Button>
                 ) : null}
+                {fieldsAwaitingReselection.length > 0 ? (
+                  <span
+                    data-editor-source-reselection
+                    role="status"
+                    className="max-w-44 truncate text-xs text-muted-foreground"
+                    title={fieldsAwaitingReselection.join(", ")}
+                  >
+                    Refresh preview and reselect:{" "}
+                    {fieldsAwaitingReselection.join(", ")}
+                  </span>
+                ) : null}
+                {Object.keys(listConflicts).length > 0 ? (
+                  // The way out when an update stopped on a list both sides
+                  // changed. Nothing is discarded by the button itself: it
+                  // asks first, and says exactly what would be lost.
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    disabled={discarding}
+                    onClick={() => setDiscardDialogOpen(true)}
+                    title="Discard your unsaved changes to the sections whose lists were also changed elsewhere, and load the latest version."
+                  >
+                    Discard mine…
+                  </Button>
+                ) : null}
+                <AlertDialog
+                  open={discardDialogOpen}
+                  onOpenChange={setDiscardDialogOpen}
+                >
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Discard your unsaved changes?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Someone else changed{" "}
+                        {Object.values(listConflicts)
+                          .map(
+                            (entry) =>
+                              `${entry.lists.join(", ")} in ${entry.sectionId}`,
+                          )
+                          .join("; ")}{" "}
+                        since you edited it, so your version cannot be saved
+                        over theirs. Discarding removes all of your unsaved
+                        changes to{" "}
+                        {Object.values(listConflicts).length === 1
+                          ? "that section"
+                          : "those sections"}{" "}
+                        and loads the latest version. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep my changes</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => void discardListConflicts()}
+                      >
+                        Discard and load latest
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
                 {/* Splits the bar into what is true and what you can do. The
                     status was the only item here with no container of its own,
                     so against a row of icon buttons it read as loose text. */}
@@ -10003,17 +10801,24 @@ export function VisualEditorShell({
           onCheckAgain={() => void checkWriterAgain()}
           onSave={() => void resumePausedWrites()}
         />
-        <EditorUnconfirmedSavesNotice
-          count={unconfirmedFiles.length + unconfirmedContentCount}
-          checking={isCheckingUnconfirmed}
-          onCheck={() => void checkUnconfirmedSaves()}
+        <EditorThemeReadNotice
+          failed={currentThemeRead === "unavailable"}
+          onRetry={onRetryThemeRead}
         />
-        <EditorSourceConflictNotice
-          paths={pendingSourceConflicts}
-          saving={isSavingSourceConflicts}
-          onSave={() => void saveSourceConflicts()}
-        />
+        <div inert={editorLock !== null} className="flex flex-col">
+          <EditorUnconfirmedSavesNotice
+            count={unconfirmedFiles.length + unconfirmedContentCount}
+            checking={isCheckingUnconfirmed}
+            onCheck={() => void checkUnconfirmedSaves()}
+          />
+          <EditorSourceConflictNotice
+            paths={pendingSourceConflicts}
+            saving={isSavingSourceConflicts}
+            onSave={() => void saveSourceConflicts()}
+          />
+        </div>
       </div>
+      {editorLock ? <EditorLockedPanel reason={editorLock} /> : null}
 
       {/*
         A build is the compiled artifact, not something the editor can act
@@ -10022,7 +10827,8 @@ export function VisualEditorShell({
         as one more panel inside the editor, and so the artifact is seen at
         the size a visitor gets instead of inside a scaled canvas.
       */}
-      {releasePreview ? (
+      {/* Not over a closed editor: it would cover the notice that says why. */}
+      {editorLock ? null : releasePreview ? (
         <RouteFullscreenSurface
           label="Published release"
           onClose={returnToLivePreview}
@@ -10153,6 +10959,7 @@ export function VisualEditorShell({
       <EditorCodeModeSurface
         active={editorMode === "code"}
         preload={shouldPreloadCodeWorkspace}
+        locked={editorLock !== null}
       >
         <Suspense
           fallback={
@@ -10197,6 +11004,7 @@ export function VisualEditorShell({
 
       <EditorModeSurface
         active={editorMode === "design"}
+        locked={editorLock !== null}
         className="flex-1 overflow-hidden bg-muted/40 max-md:flex-col"
         surfaceRef={designSurfaceRef}
         style={
@@ -10617,6 +11425,7 @@ export function VisualEditorShell({
         </div>
 
         <EditorAssistantPanel
+          contentResetEpoch={contentResetEpoch}
           style={RIGHT_PANEL_STYLE}
           sharedLayoutPaths={sharedLayoutPaths}
           sectionTemplatePaths={sectionTemplatePaths}

@@ -251,6 +251,8 @@ function sendSelectionReport(item) {
           ? null
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
+      itemId: item.itemId,
+      contentUnavailable: item.contentUnavailable,
       ...selectionMetadata(item),
       styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,
@@ -382,6 +384,7 @@ function reportSelection(target) {
     elementKey: item.elementKey || undefined,
     fieldKey: item.fieldKey || undefined,
     fieldPath: item.fieldPath || undefined,
+    itemId: item.itemId || undefined,
     isSection: item.element === item.section,
   };
   if (selectedItem.element) {
@@ -775,6 +778,13 @@ if (channel) {
     html[data-storefront-editor-selection-enabled] [data-storefront-component] {
       cursor: pointer !important;
     }
+    /* Hiding a section sets the hidden attribute on its wrapper, whose inline
+       display: contents beats the browser's own [hidden] rule. Tailwind's
+       preflight happens to override that; a Theme without it kept showing
+       the section the author had just hidden. */
+    [data-storefront-section-id][hidden] {
+      display: none !important;
+    }
     [data-storefront-editor-drag-handle="true"] {
       cursor: grab !important;
     }
@@ -1061,6 +1071,14 @@ if (channel) {
           reportStructure();
         }, 0);
       }
+    }
+    if (message?.type === "morph:storefront-preview-refresh-content") {
+      // The preview's server confirmed it now reads the author's saved
+      // content. Loaders that read it there run again through the same
+      // coalesced refresh an edit uses; the editor holds this back while
+      // text is being typed on the page, so it never ends that edit.
+      refreshPreviewContent();
+      return;
     }
     if (message?.type === "morph:storefront-preview-update-section-props") {
       updatePreviewContent(

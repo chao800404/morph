@@ -19,8 +19,13 @@ import { TailwindClassTokenInput } from "./tailwind-class-token-input";
 import {
   getFieldPathValue,
   setFieldPathValue,
+  type ContentUnavailableReason,
   type EditorSelectionDescriptor,
 } from "@/lib/storefront/editor/selection-taxonomy";
+import {
+  rebaseSelectedRowPath,
+  type SelectedRowRefusal,
+} from "@/lib/storefront/editor/selected-row-identity";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -192,6 +197,12 @@ type EditorSection =
 
 export type InspectorPropsChangeOptions = {
   skipPreviewSync?: boolean;
+  /** A history replay retains its original source precondition. */
+  historySourceGeneration?: number;
+  /** Which control changed; the other props are only a display snapshot. */
+  inputFieldPath?: string;
+  /** Selected row whose explicit action changes its list or creates an id. */
+  selectionFieldPath?: string;
 };
 
 /**
@@ -309,6 +320,35 @@ type EditorStyleInspectorProps = {
  * only a URL, so it cannot say which library asset was chosen, and a library
  * URL saved there renders for the author and for no visitor.
  */
+/**
+ * Why a selection offers no content, in the author's terms.
+ *
+ * None of these is a rule the Theme broke: the code previews and builds as
+ * written. They say which edit the editor cannot yet place, and where it can
+ * be made instead.
+ */
+const CONTENT_BLOCKED_MESSAGES: Record<
+  ContentUnavailableReason | SelectedRowRefusal,
+  string
+> = {
+  "row-lost":
+    "This entry was moved or removed after it was selected, so an edit here would have no entry to go to. Select it again on the canvas.",
+  "row-id-missing":
+    "This entry has no id yet, so the editor cannot confirm which entry a canvas edit belongs to. Edit the list below instead; once the list has been saved, its entries can be edited one by one from the canvas.",
+  "row-id-duplicate":
+    "Another entry in this list has the same id, so the editor cannot tell which one an edit belongs to. Nothing is written until the ids are distinct.",
+  "value-not-from-row":
+    "This text comes from a value the list sets in code, not from this entry's own field, so editing it here could not change what the page shows. Edit it in Code; the entry's own fields are offered when the entry is selected.",
+  "row-not-passed":
+    "This list's entries are rendered by a component the editor cannot yet link to each entry (for example one that takes its props as a whole object, or is wrapped in memo()). The page previews and builds as written; edit this text in Code for now.",
+  "nested-list":
+    "This is a list inside one of the list's entries, which the editor cannot edit visually yet. The page previews and builds as written; edit it in Code for now.",
+  "marker-conflicts-source":
+    "This element's data-storefront-field names one field, but it shows another, so the editor will not guess which one an edit belongs to. The page previews and builds as written; edit this text in Code, or remove the attribute so the editor follows what the element shows.",
+  "marker-unproven":
+    "This element's data-storefront-field names a field, but the editor cannot trace what the element shows back to it (for example, the value passes through a local first). The page previews and builds as written; edit this text in Code for now.",
+};
+
 const STRING_IMAGE_FIELD_HINT =
   "This field stores the image as a URL, so it cannot use the Asset library. " +
   "To choose from Assets, declare it in the component's contentFields as " +
@@ -719,8 +759,6 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 }: EditorStyleInspectorProps) {
   const activeNodeId = selection?.nodeId;
   const activeElementKey = selection?.elementKey;
-  const activeFieldKey = selection?.fieldKey;
-  const activeFieldPath = selection?.fieldPath;
   const activeClassName = selection?.className;
   const activeSelectionIsSection = selection?.isSection;
   const activeComputedStyle = selection?.computed;
@@ -755,6 +793,47 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       sectionId: section.id,
       sectionProps: section.props,
     });
+  // The selected row, confirmed by its `id` against the rows as they are now:
+  // its index may have moved since the click, and a write to the index as
+  // selected would land on whichever row took its place.
+  const selectedRow = useMemo(
+    () => rebaseSelectedRowPath(selection?.fieldPath, selection?.itemId, props),
+    [props, selection?.fieldPath, selection?.itemId],
+  );
+  const selectedRowRefused = selectedRow.refused;
+  const activeFieldKey = selectedRowRefused ? null : selection?.fieldKey;
+  const activeFieldPath = selectedRow.fieldPath ?? undefined;
+  /**
+   * Why nothing here may be written, when something stops it: the selected
+   * row is gone, or the preview could not confirm where the element's content
+   * comes from. Either way the edit would have no confirmed destination, so
+   * there is none to offer — not a guess, and not a top-level field of the
+   * same name.
+   */
+  const contentBlockedReason:
+    ContentUnavailableReason | SelectedRowRefusal | null =
+    selectedRowRefused ?? selection?.contentUnavailable ?? null;
+  /**
+   * The list a row selected without an id belongs to.
+   *
+   * The row cannot be confirmed, so the selection's path is not written to —
+   * but the author is not left with nothing to do. The whole list is offered
+   * unscoped, where every write addresses the rows as the panel draws them
+   * now rather than an index remembered from the click. Rows nothing stores
+   * yet are the component's own defaults; saving the list once stores them,
+   * and the editor reads stored rows with ids (`normalizeDocumentRowIds`), so
+   * the canvas can address each one after that.
+   */
+  const unconfirmedRowListKey =
+    selectedRowRefused === "row-id-missing"
+      ? (selection?.fieldPath?.split(".")[0] ?? null)
+      : null;
+  /** Whether nothing may be written: blocked, with no list offered instead. */
+  const contentWritesBlocked = Boolean(
+    contentBlockedReason && !unconfirmedRowListKey,
+  );
+  const contentBlockedRef = useRef(contentWritesBlocked);
+  contentBlockedRef.current = contentWritesBlocked;
   // A commit seen when this panel mounted is already in the props it read.
   const appliedInlineCommitRef = useRef(inlineTextCommit?.id ?? 0);
   const [inlineCommitEpoch, setInlineCommitEpoch] = useState(0);
@@ -844,13 +923,26 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // Restricted to this section: a selected parent can span several components,
   // and two instances of one component expose the same field names. Editing
   // through an unfiltered list would write to whichever instance came first.
+  //
+  // Paths inside the selected row follow it by `id`, as the selection's own
+  // does; one whose row is gone is dropped rather than written elsewhere.
   const descendantFields = useMemo(
     () =>
-      (selection?.descendantFields ?? []).filter(
-        (binding) =>
-          binding.sectionId === null || binding.sectionId === section.id,
-      ),
-    [section.id, selection?.descendantFields],
+      (selection?.descendantFields ?? []).flatMap((binding) => {
+        if (binding.sectionId !== null && binding.sectionId !== section.id) {
+          return [];
+        }
+        const rebased = rebaseSelectedRowPath(
+          binding.fieldPath,
+          binding.itemId ?? selection?.itemId,
+          props,
+        );
+        if (rebased.refused) return [];
+        return rebased.fieldPath === binding.fieldPath
+          ? [binding]
+          : [{ ...binding, fieldPath: rebased.fieldPath ?? binding.fieldPath }];
+      }),
+    [props, section.id, selection?.descendantFields, selection?.itemId],
   );
   // Memoized because a `useMemo` downstream lists this among its dependencies,
   // and a Set rebuilt on every render is a new value every time — which made
@@ -985,30 +1077,59 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [themeFiles],
   );
 
-  const themeContentCapability = useMemo(() => {
-    // Resolved from the workspace rather than the manifest alone so a component
-    // that declares its own `contentFields` is editable without being
-    // registered anywhere. Server validation resolves the same way, so the form
-    // and what the server accepts cannot diverge.
-    if (!themeFiles) return null;
-    const { capabilities } =
-      resolveThemeContentCapabilitiesFromFiles(themeFiles);
-    // Falls back to the component's own source path so a component that was
-    // never registered anywhere — the case co-located declaration exists to
-    // support — still resolves what it declares.
-    return (
-      (section.componentRef ? capabilities[section.componentRef] : null) ??
-      (componentPath ? capabilities[componentPath] : null) ??
+  const { capability: themeContentCapability, sourcePath: contentSourcePath } =
+    useMemo(() => {
+      // Resolved from the workspace rather than the manifest alone so a
+      // component that declares its own `contentFields` is editable without
+      // being registered anywhere. Server validation resolves the same way, so
+      // the form and what the server accepts cannot diverge.
+      if (!themeFiles) return { capability: null, sourcePath: componentPath };
+      const { capabilities } =
+        resolveThemeContentCapabilitiesFromFiles(themeFiles);
+      const fromRef = section.componentRef
+        ? capabilities[section.componentRef]
+        : null;
+      if (fromRef) {
+        return {
+          capability: fromRef,
+          sourcePath: sectionComponentPath ?? componentPath,
+        };
+      }
+      // Falls back to the component's own source path so a component that was
+      // never registered anywhere — the case co-located declaration exists to
+      // support — still resolves what it declares.
+      const fromSelection = componentPath ? capabilities[componentPath] : null;
+      if (fromSelection) {
+        return { capability: fromSelection, sourcePath: componentPath };
+      }
       // Last, the section's own component. `componentPath` follows the
       // selection, so clicking a button rendered by a shared link component
       // asks that shared file what this section may edit — and it declares
       // nothing, because the fields belong to the section's component. Without
       // this the panel fell back to guessing fields from default props and the
       // declared link never appeared.
-      (sectionComponentPath ? capabilities[sectionComponentPath] : null) ??
-      null
-    );
-  }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
+      const fromSection = sectionComponentPath
+        ? capabilities[sectionComponentPath]
+        : null;
+      return fromSection
+        ? { capability: fromSection, sourcePath: sectionComponentPath }
+        : { capability: null, sourcePath: componentPath };
+    }, [componentPath, sectionComponentPath, section.componentRef, themeFiles]);
+  /**
+   * The source the content's defaults are read from: the component whose
+   * declaration answered above, not necessarily the clicked one.
+   *
+   * They differ when a row is rendered by a component of its own. The click
+   * lands in the row's component, which is right for styling it, but the rows
+   * a section shows before anything is stored are the list's own defaults —
+   * read from the row's component, the list had "No entries yet" beside a
+   * canvas showing two.
+   */
+  const contentMeta = useMemo(() => {
+    if (contentSourcePath === componentPath) return parsedMeta;
+    const file = themeFiles?.find((f) => f.path === contentSourcePath);
+    return file?.content ? parseComponentSource(file.content, file.path) : null;
+  }, [componentPath, contentSourcePath, parsedMeta, themeFiles]);
   const resolvedContentFields = useMemo<
     Record<string, ThemeContentFieldDefinition>
   >(() => {
@@ -1020,7 +1141,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // concrete editing contract: the source patcher can update exactly the
     // same literals, so the Inspector does not have to render an empty panel.
     return Object.fromEntries(
-      Object.keys(parsedMeta?.defaultProps ?? {}).map((fieldKey) => [
+      Object.keys(contentMeta?.defaultProps ?? {}).map((fieldKey) => [
         fieldKey,
         {
           type: "text" as const,
@@ -1031,7 +1152,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         },
       ]),
     ) as Record<string, ThemeContentFieldDefinition>;
-  }, [parsedMeta?.defaultProps, themeContentCapability?.fields]);
+  }, [contentMeta?.defaultProps, themeContentCapability?.fields]);
   /**
    * Whether a field can be saved where this section's content is stored.
    *
@@ -1211,6 +1332,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           (!isSelectedNode ||
             selectedField === fieldKey ||
             selectedArrayRow?.fieldKey === fieldKey ||
+            unconfirmedRowListKey === fieldKey ||
             // The selected element's own key counts as well. Selecting a
             // button reports the element as `action` while the field under the
             // cursor is its label, so the destination field — the whole reason
@@ -1242,9 +1364,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     // it. Falling back to the empty string for every type showed a list field
     // as "no entries" beside a page rendering the component's own — and the
     // first edit then saved that emptiness.
-    const declared = parsedMeta?.defaultPropValues[fieldKey];
+    const declared = contentMeta?.defaultPropValues[fieldKey];
     if (declared !== undefined) return declared;
-    return parsedMeta?.defaultProps[fieldKey] ?? "";
+    return contentMeta?.defaultProps[fieldKey] ?? "";
   };
   /**
    * The default the component renders when this page stores nothing, when the
@@ -1253,8 +1375,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    */
   const [resetEpoch, setResetEpoch] = useState(0);
   const codeDefaultFor = (fieldKey: string): unknown =>
-    parsedMeta?.defaultPropValues[fieldKey] ??
-    parsedMeta?.defaultProps[fieldKey];
+    contentMeta?.defaultPropValues[fieldKey] ??
+    contentMeta?.defaultProps[fieldKey];
   const resetHandlerFor = (fieldKey: string): (() => void) | undefined => {
     if (
       !onResetContentFields ||
@@ -2054,7 +2176,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       );
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, {
+        inputFieldPath: activeRepeatedItemPath + ".id",
+        selectionFieldPath: activeFieldPath,
+      });
     }
     return { sectionId: section.id, fieldPath: activeFieldPath, itemId };
   }, [activeFieldPath, activeRepeatedItemPath, onPropsChange, section.id]);
@@ -2147,6 +2272,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown, options?: InspectorPropsChangeOptions) => {
+      if (contentBlockedRef.current) return;
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) =>
@@ -2163,11 +2289,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       );
       localPropsRef.current = next;
       setLocalProps(next);
-      if (options) {
-        onPropsChange(next, options);
-      } else {
-        onPropsChange(next);
-      }
+      onPropsChange(next, { ...options, inputFieldPath: targetPath ?? field });
     },
     [activeFieldPath, onPropsChange, section.id, selection?.descendantFields],
   );
@@ -2198,9 +2320,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(result.value);
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, {
+        inputFieldPath: activeFieldPath?.split(".")[0],
+        selectionFieldPath: activeFieldPath ?? undefined,
+      });
     },
-    [onPropsChange],
+    [activeFieldPath, onPropsChange],
   );
 
   const handleNestedFieldChange = useCallback(
@@ -2219,6 +2344,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        */
       seed?: { key: string; value: unknown },
     ) => {
+      if (contentBlockedRef.current) return;
       const current = localPropsRef.current;
       const base =
         seed && current[seed.key] === undefined
@@ -2227,7 +2353,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, { inputFieldPath: path });
     },
     [onPropsChange],
   );
@@ -2383,32 +2509,33 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         !isSectionTemplateSource &&
         isDynamicClassName &&
         !instanceExpressionEditable && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
-          <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-          <div className="space-y-1">
-            <div className="font-semibold text-xs leading-none">
-              Code-Controlled ClassName ({targetElement})
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
+            <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+            <div className="space-y-1">
+              <div className="font-semibold text-xs leading-none">
+                Code-Controlled ClassName ({targetElement})
+              </div>
+              <p className="text-[11px] opacity-90 leading-relaxed">
+                This element uses a dynamic expression (e.g.{" "}
+                <code>cn(...)</code>
+                ). Direct style patching is disabled to protect component logic.
+              </p>
+              {componentPath ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="mt-1 h-6 gap-1.5 border-amber-500/40 bg-background/60 text-[11px] text-amber-900 hover:bg-background dark:text-amber-100"
+                  onClick={jumpToSelectedSource}
+                  disabled={disabled}
+                >
+                  <Code2 className="size-3" />
+                  Open source in Code
+                </Button>
+              ) : null}
             </div>
-            <p className="text-[11px] opacity-90 leading-relaxed">
-              This element uses a dynamic expression (e.g. <code>cn(...)</code>
-              ). Direct style patching is disabled to protect component logic.
-            </p>
-            {componentPath ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                className="mt-1 h-6 gap-1.5 border-amber-500/40 bg-background/60 text-[11px] text-amber-900 hover:bg-background dark:text-amber-100"
-                onClick={jumpToSelectedSource}
-                disabled={disabled}
-              >
-                <Code2 className="size-3" />
-                Open source in Code
-              </Button>
-            ) : null}
           </div>
-        </div>
-      )}
+        )}
 
       {/* Advanced source classes */}
       {view === "styles" && visibleModules.has("source-style") && (
@@ -2456,7 +2583,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
-      {view === "content" && textPromotion ? (
+      {view === "content" && contentBlockedReason ? (
+        <div
+          data-slot="inspector-content-unavailable"
+          className="rounded-xl border border-dashed p-3"
+        >
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {CONTENT_BLOCKED_MESSAGES[contentBlockedReason]}
+          </p>
+        </div>
+      ) : null}
+
+      {view === "content" && !contentWritesBlocked && textPromotion ? (
         <EditorCodeTextNotice
           key={`${componentPath}:${textPromotionTargetKey}`}
           analysis={textPromotion}
@@ -2468,7 +2606,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         />
       ) : null}
 
-      {view === "content" && !hasEditableContent && !textPromotion ? (
+      {view === "content" &&
+      !contentWritesBlocked &&
+      !hasEditableContent &&
+      !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">
             This element has no editable content.
@@ -2482,6 +2623,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
       {/* 1. Content & Text Fields */}
       {view === "content" &&
+        !contentWritesBlocked &&
         hasEditableContent &&
         (visibleModules.has("content") || visibleModules.has("media")) && (
           <InspectorGroup

@@ -2,6 +2,9 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { injectPreviewBindings } from "./inject-preview-bindings";
+import * as starterV3 from "../starter-theme-v3-files";
+import { STARTER_THEME_FILES } from "../starter-theme-files";
+import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
 
 const run = (content: string, path = "src/components/Hero.tsx") =>
   injectPreviewBindings([{ path, content }]).files[0]!.content;
@@ -364,8 +367,11 @@ export default function Hero({ heading }) {
   });
 
   it("never overwrites an attribute the author wrote by hand", () => {
-    // A hand-written marker exists where the analysis cannot see, so it is
-    // the only thing making that element editable.
+    // The author's marker stays exactly as written. It used to be taken as
+    // the element's field too, on the grounds that it marks what the analysis
+    // cannot see; it no longer is (2026-10-10 decision: a marker is a hint,
+    // never where an edit goes). `shown` cannot be traced to `heading`, so
+    // the element is refused beside the marker — see the describe below.
     const source = `${DECLARES}
 export default function Hero({ heading }) {
   const shown = heading ?? "";
@@ -374,6 +380,7 @@ export default function Hero({ heading }) {
 `;
     const out = run(source);
     expect(out.match(/data-storefront-field="heading"/g)).toHaveLength(1);
+    expect(out).toContain('data-morph-field-refused="unproven"');
   });
 
   it("leaves a row alone when the array is not something it can address", () => {
@@ -879,5 +886,336 @@ describe("a component whose fields are declared in <Name>.fields.ts", () => {
       { path: "src/components/Hero.fields.ts", content: DECLARES },
     ]);
     expect(result.files[1]!.content).toBe(DECLARES);
+  });
+});
+
+/**
+ * A hand-written `data-storefront-field` is a hint, never where an edit goes.
+ *
+ * It is kept as written. It is taken as the element's field only when the
+ * element provably renders that field (or is a row of the array it names);
+ * otherwise the element is refused beside it, and the author is told why.
+ */
+describe("a hand-written field marker", () => {
+  const TWO = `export const contentFields = {
+  title: { type: "text" },
+  description: { type: "text" },
+  items: { type: "array", fields: { label: { type: "text" } } },
+} as const;
+`;
+  const bind = (body: string) =>
+    injectPreviewBindings([
+      { path: "src/components/Widget.tsx", content: `${TWO}${body}` },
+    ]);
+  const refusalsIn = (content: string) =>
+    [...content.matchAll(/data-morph-field-refused="([a-z]+)"/g)].map(
+      (match) => match[1],
+    );
+  const refusalWarnings = (result: ReturnType<typeof bind>) =>
+    result.warnings.filter((warning) =>
+      warning.message.includes("Design will not edit it"),
+    );
+
+  it("stands when the element renders the field it names", () => {
+    const result = bind(`export default function Widget({ title = "T" }) {
+  return <h1 data-storefront-field="title">{title}</h1>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+    expect(refusalWarnings(result)).toEqual([]);
+  });
+
+  it("stands on a row element naming the array it is a row of", () => {
+    const result = bind(`export default function Widget({ items = [] }) {
+  return <ul>{items.map((item, index) => (
+    <li key={index} data-storefront-field="items"><b>{item.label}</b><i>{item.label}</i></li>
+  ))}</ul>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+  });
+
+  it("stands on a row field the element renders through the row", () => {
+    const result = bind(`export default function Widget({ items = [] }) {
+  return <ul>{items.map((item, index) => (
+    <li key={index}><span data-storefront-field="label">{item.label}</span></li>
+  ))}</ul>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual([]);
+  });
+
+  it("is refused as a conflict when the element renders another field", () => {
+    const source = `export default function Widget({ title = "T", description = "D" }) {
+  return <p data-storefront-field="title">{description}</p>;
+}`;
+    const result = bind(source);
+    const out = result.files[0]!.content;
+
+    expect(refusalsIn(out)).toEqual(["conflict"]);
+    // The author's own attribute is untouched, and nothing is added beside it.
+    expect(out.match(/data-storefront-field="[^"]*"/g)).toEqual([
+      'data-storefront-field="title"',
+    ]);
+    const [warning] = refusalWarnings(result);
+    expect(warning?.path).toBe("src/components/Widget.tsx");
+    expect(warning?.message).toContain('data-storefront-field="title"');
+    expect(warning?.message).toContain('"description"');
+    expect(warning?.message).toMatch(/^Line \d+: /);
+  });
+
+  it("is refused as unproven when what the element renders cannot be traced", () => {
+    const result = bind(`export default function Widget({ title = "T" }) {
+  const shown = "x" + title;
+  return <p data-storefront-field="title">{shown}</p>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual(["unproven"]);
+  });
+
+  it("is refused as unproven when the marker itself is computed", () => {
+    const result =
+      bind(`export default function Widget({ title = "T", name = "title" }) {
+  return <p data-storefront-field={name}>{title}</p>;
+}`);
+    expect(refusalsIn(result.files[0]!.content)).toEqual(["unproven"]);
+  });
+
+  it("checks the markers an attribute-forwarding link carries", () => {
+    const ok = injectPreviewBindings([
+      {
+        path: "src/components/Widget.tsx",
+        content: `import ThemeLink from "../morph/link";
+${TWO}export default function Widget({ items = [], title = "T", description = "D" }) {
+  return <nav>
+    {items.map((item, index) => (
+      <ThemeLink key={index} data-storefront-field="label">{item.label}</ThemeLink>
+    ))}
+    <ThemeLink data-storefront-field="title">{description}</ThemeLink>
+  </nav>;
+}`,
+      },
+    ]);
+    expect(refusalsIn(ok.files[0]!.content)).toEqual(["conflict"]);
+  });
+
+  it("leaves Morph's own starter sources, old and current, as they were", () => {
+    // Every Starter generation that still carries hand-written markers was
+    // written by Morph against its own declarations. Only one marker in all
+    // of them names a field through a local the analysis cannot trace
+    // (`displayImage = image ?? imageSrc`), and that one is refused.
+    const refused: string[] = [];
+    for (const [name, value] of Object.entries(starterV3)) {
+      if (typeof value !== "string" || !value.includes("data-storefront-field"))
+        continue;
+      const result = injectPreviewBindings([
+        { path: `src/components/${name}.tsx`, content: value },
+      ]);
+      for (const kind of refusalsIn(result.files[0]!.content)) {
+        refused.push(`${name}: ${kind}`);
+      }
+    }
+    for (const file of [
+      ...STARTER_THEME_FILES,
+      ...STARTER_THEME_CATALOG_FILES,
+    ]) {
+      const result = injectPreviewBindings([
+        { path: file.path, content: file.content },
+      ]);
+      for (const kind of refusalsIn(
+        result.files.find((out) => out.path === file.path)?.content ?? "",
+      )) {
+        refused.push(`${file.path}: ${kind}`);
+      }
+    }
+    expect(refused).toEqual([
+      "LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE: unproven",
+    ]);
+  });
+});
+
+describe("handing a row to the component that renders it", () => {
+  const CARD = `export const contentFields = {
+  title: { type: "text" },
+  body: { type: "textarea" },
+};
+export default function Card({ title = "", body = "" }) {
+  return <article><h3>{title}</h3><p>{body}</p></article>;
+}
+`;
+  const LIST = (
+    row: string,
+    items = `{ type: "array", of: "./Card" }`,
+  ) => `import Card from "./Card";
+export const contentFields = { items: ${items} };
+export default function List({ items = [] }) {
+  return <ul>{items.map((item, index) => ${row})}</ul>;
+}
+`;
+  const runBoth = (list: string, card = CARD) => {
+    const out = injectPreviewBindings([
+      { path: "src/components/List.tsx", content: list },
+      { path: "src/components/Card.tsx", content: card },
+    ]);
+    return {
+      list: out.files[0]!.content,
+      card: out.files[1]!.content,
+    };
+  };
+  const parses = async (source: string) => {
+    const { parse } = await import("@babel/parser");
+    return () =>
+      parse(source, { sourceType: "module", plugins: ["jsx", "typescript"] });
+  };
+
+  it("passes the row, and which props carry which of its fields", () => {
+    const { list } = runBoth(LIST(`<Card key={item.id} {...item} />`));
+    expect(list).toContain(
+      '<Card __morphRow={{ field: "items", path: `items.${index}`, fields: {"title":"title","body":"body"} }} key={item.id} {...item} />',
+    );
+  });
+
+  it("takes the row in the component's own props, out of reach of a rest spread", () => {
+    const { card } = runBoth(
+      LIST(`<Card key={item.id} {...item} />`),
+      CARD.replace('{ title = "", body = "" }', '{ title = "", ...rest }'),
+    );
+    expect(card).toContain(
+      '{ title = "", __morphRow: __morphRowContext, ...rest }',
+    );
+  });
+
+  it("names the row's field and path on the component's elements, its own otherwise", () => {
+    const { card } = runBoth(LIST(`<Card key={item.id} {...item} />`));
+    expect(card).toContain(
+      '{ title = "", body = "", __morphRow: __morphRowContext }',
+    );
+    expect(card).toContain(
+      'data-storefront-field={__morphRowContext ? (__morphRowContext.fields["title"] ?? "") : "title"}',
+    );
+    expect(card).toContain(
+      'data-storefront-field-path={__morphRowContext?.fields["title"] ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
+    );
+    // What the component returns is the row itself.
+    expect(card).toMatch(
+      /<article[^>]* data-storefront-field=\{__morphRowContext\?\.field\} data-storefront-field-path=\{__morphRowContext\?\.path\}/,
+    );
+  });
+
+  it("follows a field handed over under another name", () => {
+    const { list } = runBoth(
+      LIST(
+        `<Card key={item.id} heading={item.title} />`,
+        `{ type: "array", fields: { title: { type: "text" } } }`,
+      ),
+    );
+    expect(list).toContain('fields: {"heading":"title"}');
+  });
+
+  it("proves nothing for a prop set from anything but the row", () => {
+    expect(
+      runBoth(LIST(`<Card key={item.id} {...item} title="fixed" />`)).list,
+    ).toContain('fields: {"body":"body"}');
+    expect(
+      runBoth(LIST(`<Card key={item.id} title="fixed" {...item} />`)).list,
+    ).toContain('fields: {"body":"body"}');
+    expect(
+      runBoth(LIST(`<Card key={item.id} title={item.title.trim()} />`)).list,
+    ).toContain("fields: {}");
+    expect(
+      runBoth(LIST(`<Card key={item.id} {...item} {...other} />`)).list,
+    ).toContain("fields: {}");
+  });
+
+  it("follows a named export, an arrow component and a default export by name", () => {
+    const named = injectPreviewBindings([
+      {
+        path: "src/components/List.tsx",
+        content: LIST(`<Card key={item.id} {...item} />`).replace(
+          'import Card from "./Card";',
+          'import { Card } from "./Card";',
+        ),
+      },
+      {
+        path: "src/components/Card.tsx",
+        content: CARD.replace(
+          'export default function Card({ title = "", body = "" }) {',
+          'export const Card = ({ title = "", body = "" }) => {',
+        ),
+      },
+    ]);
+    expect(named.files[1]!.content).toContain("__morphRow: __morphRowContext");
+
+    const byName = runBoth(
+      LIST(`<Card key={item.id} {...item} />`),
+      CARD.replace("export default function Card", "function Card") +
+        "export default Card;\n",
+    );
+    expect(byName.card).toContain("__morphRow: __morphRowContext");
+  });
+
+  it("does not yet hand the row to props taken whole, memo() or an author's own __morphRow", () => {
+    // `props` taken whole could reach the page; `memo()` hides which function
+    // React calls; an author's own `__morphRow` is theirs.
+    for (const card of [
+      CARD.replace('{ title = "", body = "" }', "props"),
+      CARD.replace(
+        'export default function Card({ title = "", body = "" }) {\n  return <article><h3>{title}</h3><p>{body}</p></article>;\n}',
+        'import { memo } from "react";\nexport default memo(function Card({ title = "" }) { return <h3>{title}</h3>; });',
+      ),
+      CARD.replace('{ title = "", body = "" }', '{ title = "", __morphRow }'),
+    ]) {
+      const out = runBoth(LIST(`<Card key={item.id} {...item} />`), card);
+      expect(out.list).not.toContain("__morphRow=");
+      expect(out.card).not.toContain("__morphRowContext");
+    }
+  });
+
+  it("leaves a component no list renders as a row exactly as before", () => {
+    const out = injectPreviewBindings([
+      { path: "src/components/Card.tsx", content: CARD },
+    ]).files[0]!.content;
+    expect(out).toContain('data-storefront-field="title"');
+    expect(out).not.toContain("__morphRow");
+  });
+
+  it("chooses a name the component does not already use", () => {
+    const { card } = runBoth(
+      LIST(`<Card key={item.id} {...item} />`),
+      `const __morphRowContext = 1;\n${CARD}`,
+    );
+    expect(card).toContain("__morphRow: __morphRowContext0");
+  });
+
+  it("indexes a loop over a field declared by reference, as over one declared inline", () => {
+    const { list } = runBoth(
+      LIST(`<Card key={item.id} {...item} />`).replace(
+        "(item, index) =>",
+        "(item) =>",
+      ),
+    );
+    expect(list).toContain("items.map((item, __morphRow0) =>");
+    expect(list).toContain("path: `items.${__morphRow0}`");
+  });
+
+  it("still produces valid syntax on both sides", async () => {
+    const { list, card } = runBoth(LIST(`<Card key={item.id} {...item} />`));
+    expect(await parses(list)).not.toThrow();
+    expect(await parses(card)).not.toThrow();
+  });
+
+  it("leaves nothing of it in what a build compiles", async () => {
+    // A build never runs the preview's pass: it compiles the stored source,
+    // with the editor's markers stripped. The row hint exists only in the
+    // preview's copy.
+    const { prepareSourcesForBuild } =
+      await import("@/lib/storefront/source-language/tsx-source-language");
+    const built = prepareSourcesForBuild([
+      {
+        path: "src/components/List.tsx",
+        content: LIST(`<Card key={item.id} {...item} />`),
+      },
+      { path: "src/components/Card.tsx", content: CARD },
+    ]);
+    for (const file of built.files) {
+      expect(file.content).not.toContain("__morphRow");
+      expect(file.content).not.toContain("data-storefront-field");
+    }
   });
 });

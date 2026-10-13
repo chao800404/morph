@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import {
   SECTION_SOURCE_UNCONFIRMED,
+  SELECTION_SOURCE_CONFLICT,
   TEMPLATE_DRAFT_CONFLICT,
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
@@ -343,6 +344,8 @@ type TemplateDocumentWriteArgs = {
   publishedRevisionId: string | null;
   expectedDraftGeneration: number;
   createdBy: string;
+  /** Distinguish a visual baseline refusal from an ordinary draft conflict. */
+  selectionSourceBaseline?: boolean;
 };
 
 /**
@@ -491,6 +494,14 @@ async function writeTemplateDocument(args: TemplateDocumentWriteArgs) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("malformed JSON") || message.includes("constraint")) {
+      if (args.selectionSourceBaseline) {
+        const current = await env.DATABASE.prepare(
+          "SELECT source_generation AS generation FROM storefront_themes WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL",
+        ).bind(args.themeId, args.storefrontId).first<{ generation: number }>();
+        if (current && current.generation !== args.sourceGeneration) {
+          throw new Error(SELECTION_SOURCE_CONFLICT);
+        }
+      }
       throw new Error(
         `${TEMPLATE_DRAFT_GENERATION_MISMATCH}: Template was modified concurrently.`,
       );
@@ -1188,6 +1199,7 @@ export const storefrontThemeDal = {
     sectionId: string;
     props: Record<string, unknown>;
     expectedDraftGeneration: number;
+    expectedSourceGeneration: number;
     createdBy: string;
     /** The route the editor is showing; see `resolveSectionSourceComponent`. */
     routePath?: string;
@@ -1202,6 +1214,18 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
+
+    // This is the selection's generation, not whatever a refetch last saw.
+    // The final document batch repeats this precondition atomically, so a
+    // source edit after this read cannot race through the preliminary check.
+    const selectedSource = await env.DATABASE.prepare(
+      "SELECT source_generation AS generation FROM storefront_themes WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL",
+    ).bind(data.themeId, data.storefrontId).first<{ generation: number }>();
+    if (!selectedSource) return null;
+    if (!Number.isSafeInteger(data.expectedSourceGeneration) ||
+      data.expectedSourceGeneration < 1 || selectedSource.generation !== data.expectedSourceGeneration) {
+      throw new Error(SELECTION_SOURCE_CONFLICT);
+    }
 
     const targetSection = template.document.sections.find(
       (section) => section.id === data.sectionId,
@@ -1248,6 +1272,9 @@ export const storefrontThemeDal = {
       .bind(data.themeId, data.storefrontId)
       .first<{ sourceGeneration: number; manifestContent: string | null }>();
     if (!manifestState) return null;
+    if (manifestState.sourceGeneration !== data.expectedSourceGeneration) {
+      throw new Error(SELECTION_SOURCE_CONFLICT);
+    }
     // Components may declare their editable fields in their own source, so the
     // manifest alone no longer answers what this mutation is allowed to write.
     // Only the sources the manifest references are read, never the whole
@@ -1395,7 +1422,8 @@ export const storefrontThemeDal = {
       themeId: data.themeId,
       templateId: data.templateId,
       document,
-      sourceGeneration: manifestState.sourceGeneration,
+      sourceGeneration: data.expectedSourceGeneration,
+      selectionSourceBaseline: true,
       draftRevisionId: template.draftRevisionId,
       publishedRevisionId: template.publishedRevisionId,
       expectedDraftGeneration: data.expectedDraftGeneration,

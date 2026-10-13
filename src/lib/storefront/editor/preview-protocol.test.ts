@@ -155,6 +155,22 @@ describe("preview protocol", () => {
     expect(parseEditorToPreviewMessage({ ...response, status: 99 })).toBeNull();
   });
 
+  it("accepts a content refresh that carries no content", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-refresh-content",
+      }),
+    ).toEqual({ type: "morph:storefront-preview-refresh-content" });
+    // Anything sent beside it is not passed on: the page reads its content
+    // where it always does, never from this message.
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-refresh-content",
+        slots: { hero: { title: "injected" } },
+      }),
+    ).toEqual({ type: "morph:storefront-preview-refresh-content" });
+  });
+
   it("accepts a bounded in-place route change", () => {
     const message = {
       type: "morph:storefront-preview-set-route",

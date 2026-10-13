@@ -66,6 +66,8 @@ export type PreviewSelectionAcceptance =
       target: PreviewSelectionRestoreTarget;
       /** Whether this report is the answer that asked the canvas to move. */
       reveal: boolean;
+      /** A newer canvas intent, not an automatic restore of the old target. */
+      newCanvasIntent: boolean;
     };
 
 export type PreviewSelectionPorts = Readonly<{
@@ -224,6 +226,7 @@ export function usePreviewSelection({
         sourceLocation: message.sourceLocation ?? undefined,
         nodeId: message.nodeId ?? undefined,
         fieldPath: message.fieldPath ?? undefined,
+        itemId: message.itemId ?? undefined,
         elementKey: message.elementKey ?? undefined,
         fieldKey: message.fieldKey ?? message.field ?? undefined,
         isSection: message.isSection,
@@ -242,6 +245,7 @@ export function usePreviewSelection({
         return { accepted: false };
       }
 
+      const newCanvasIntent = responseRevision > revisionRef.current;
       revisionRef.current = Math.max(revisionRef.current, responseRevision);
 
       const revealRequest = revealRef.current;
@@ -265,7 +269,7 @@ export function usePreviewSelection({
       pendingRef.current = null;
       lastRef.current = target;
 
-      return { accepted: true, target, reveal };
+      return { accepted: true, target, reveal, newCanvasIntent };
     },
     [latestStyleRevision, previewKey],
   );

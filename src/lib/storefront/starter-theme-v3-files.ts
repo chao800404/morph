@@ -1583,16 +1583,15 @@ export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
 `;
 
 /**
- * The page shell every route renders inside.
+ * The slot-bound shell that never asked whether a slot was hidden.
  *
- * Header and footer content reaches the components the same way a section's
- * does — through a slot the Document holds — so one editor, one store and one
- * publish path serve all of it. The shell owning its own `storeName` came
- * first and was worse twice over: the call-site attribute beat the default
- * props the inspector patches, and source defaults cannot hold a list or a
- * link at all.
+ * Hiding the Header in the editor dropped its stored values and listed it in
+ * `hiddenSlots`, and this shell then rendered it anyway with the component's
+ * own defaults: on reload and on the published site the author saw a Header
+ * they had hidden, showing text they had replaced. Kept verbatim so an
+ * untouched copy can be upgraded and an edited one left alone.
  */
-export const STARTER_THEME_LAYOUT_SOURCE = `import type { ReactNode } from "react";
+export const LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE = `import type { ReactNode } from "react";
 import { content } from "../morph/content";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
@@ -1607,6 +1606,43 @@ export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
       <Header {...content("starter-header")} />
       {children}
       <Footer {...content("starter-footer")} />
+    </div>
+  );
+}
+`;
+
+/**
+ * The page shell every route renders inside.
+ *
+ * Header and footer content reaches the components the same way a section's
+ * does — through a slot the Document holds — so one editor, one store and one
+ * publish path serve all of it. The shell owning its own `storeName` came
+ * first and was worse twice over: the call-site attribute beat the default
+ * props the inspector patches, and source defaults cannot hold a list or a
+ * link at all.
+ *
+ * Visibility is asked for the same way the home route asks: spreading props
+ * cannot cancel a render, so a hidden slot has to be checked here.
+ */
+export const STARTER_THEME_LAYOUT_SOURCE = `import type { ReactNode } from "react";
+import { content, isSectionHidden } from "../morph/content";
+import Header from "../components/Header";
+import Footer from "../components/Footer";
+
+export type StorefrontLayoutProps = {
+  children?: ReactNode;
+};
+
+export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
+  return (
+    <div className="min-h-screen bg-stone-50 text-neutral-950">
+      {!isSectionHidden("starter-header") && (
+        <Header {...content("starter-header")} />
+      )}
+      {children}
+      {!isSectionHidden("starter-footer") && (
+        <Footer {...content("starter-footer")} />
+      )}
     </div>
   );
 }

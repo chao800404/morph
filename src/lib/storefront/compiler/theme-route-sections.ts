@@ -13,10 +13,15 @@ import {
   resolveThemeContentCapabilitiesFromFiles,
 } from "@/lib/storefront/theme-content-capability-resolver";
 import {
+  NO_LOADER_SLOT_BINDINGS,
   NO_PAGE_VARIABLES,
+  collectLoaderSlotBindings,
   collectPageVariables,
   isPageBindingExpression,
   readPageBindingKey,
+  resolveThemeSourceImport,
+  themeImportBase,
+  type LoaderSlotBindings,
 } from "@/lib/storefront/ast/theme-content-binding";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 
@@ -127,7 +132,6 @@ type PositionedSection = ThemeRouteSection &
     parent: any;
   }>;
 
-const SOURCE_EXTENSIONS = ["", ".tsx", ".ts", ".jsx", ".js"] as const;
 
 function normalizePath(path: string): string {
   const stack: string[] = [];
@@ -154,26 +158,17 @@ function resolveLocalImport(
   specifier: string,
   filePaths: ReadonlySet<string>,
 ): string | { missing: string } | null {
-  if (!specifier.startsWith(".")) return null;
-  const base = normalizePath(`${dirname(sourcePath)}/${specifier}`);
-  if (!base.startsWith("src/")) return null;
-  // Remembered before the file check so a relative import of a file that is
-  // gone can be told apart from something that was never a local module.
-  const localBase = base;
-  for (const extension of SOURCE_EXTENSIONS) {
-    const candidate = `${base}${extension}`;
-    if (filePaths.has(candidate)) return candidate;
-  }
-  for (const extension of [
-    "/index.tsx",
-    "/index.ts",
-    "/index.jsx",
-    "/index.js",
-  ] as const) {
-    const candidate = `${base}${extension}`;
-    if (filePaths.has(candidate)) return candidate;
-  }
-  return { missing: `${localBase}.tsx` };
+  // The same resolution the loader binding analysis uses, so a section and
+  // the server function feeding it are never found in different files.
+  const base = themeImportBase(sourcePath, specifier);
+  if (!base) return null;
+  // A relative import of a file that is gone is told apart from something
+  // that was never a local module.
+  return (
+    resolveThemeSourceImport(sourcePath, specifier, filePaths) ?? {
+      missing: `${base}.tsx`,
+    }
+  );
 }
 
 function kebabCase(value: string): string {
@@ -223,8 +218,13 @@ function walkWithParent(
 function readSlotId(
   node: any,
   pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
+  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
 ): string | null {
   if (node?.type !== "JSXElement") return null;
+  const loaderSlot = loaderSlots.get(node.start);
+  if (loaderSlot !== undefined) {
+    return isValidThemeContentSlotId(loaderSlot) ? loaderSlot : null;
+  }
   for (const attribute of node.openingElement?.attributes ?? []) {
     const spread =
       attribute?.type === "JSXSpreadAttribute" ? attribute.argument : null;
@@ -288,6 +288,19 @@ function isDirectSectionPosition(parent: any): boolean {
   return parent?.type === "ReturnStatement";
 }
 
+/**
+ * Why a route's sections may not be added, moved, rebound, swapped or removed
+ * from the editor, or null when they may.
+ *
+ * Those edits rewrite the route, and the only binding they know how to write
+ * is `{...content("x")}`, a self-contained call site. A route whose sections
+ * come from its loader names them in one destructuring the whole page shares;
+ * rewriting it would mean editing the author's data flow, which the content
+ * binding contract (§5.1) keeps out of the first version.
+ */
+const LOADER_STRUCTURE_LOCKED =
+  "This page reads its content through its route loader. Add, move or remove its sections in Code; their content can still be edited here.";
+
 function parsePositionedSections(
   files: readonly ThemeSourceFile[],
   routeSourcePath: string,
@@ -297,6 +310,7 @@ function parsePositionedSections(
   diagnostics: string[];
   ast: any | null;
   hasContentImport: boolean;
+  structureLocked: string | null;
 } {
   const normalizedRoutePath = normalizePath(routeSourcePath);
   const routeFile = files.find(
@@ -309,6 +323,7 @@ function parsePositionedSections(
       diagnostics: [`Theme route "${normalizedRoutePath}" is unavailable.`],
       ast: null,
       hasContentImport: false,
+      structureLocked: null,
     };
   }
 
@@ -327,6 +342,7 @@ function parsePositionedSections(
       ],
       ast: null,
       hasContentImport: false,
+      structureLocked: null,
     };
   }
 
@@ -376,9 +392,13 @@ function parsePositionedSections(
       normalizePath(sourcePath) === "src/morph/content.ts",
   );
   const pageVariables = collectPageVariables(ast);
+  const loaderSlots = collectLoaderSlotBindings(ast, {
+    path: normalizedRoutePath,
+    files: files.map((file) => ({ ...file, path: normalizePath(file.path) })),
+  });
   const seenSlots = new Set<string>();
   walkWithParent(ast.program, null, (node, parent) => {
-    const slotId = readSlotId(node, pageVariables);
+    const slotId = readSlotId(node, pageVariables, loaderSlots);
     if (!slotId) return;
     const componentName = jsxIdentifier(node);
     const imported = componentName ? imports.get(componentName) : null;
@@ -448,7 +468,7 @@ function parsePositionedSections(
     const imported = imports.get(componentName);
     if (!imported || imported.missing) return;
     const option = addableBySource.get(normalizePath(imported.sourcePath));
-    if (!option || readSlotId(node, pageVariables)) return;
+    if (!option || readSlotId(node, pageVariables, loaderSlots)) return;
     const sourceStart = node.start;
     const sourceEnd = node.end;
     const sourceLocation = sourceLocationFor(normalizedRoutePath, node);
@@ -485,7 +505,14 @@ function parsePositionedSections(
     });
   });
 
-  return { sections, unboundSections, diagnostics, ast, hasContentImport };
+  return {
+    sections,
+    unboundSections,
+    diagnostics,
+    ast,
+    hasContentImport,
+    structureLocked: loaderSlots.size > 0 ? LOADER_STRUCTURE_LOCKED : null,
+  };
 }
 
 /**
@@ -882,6 +909,13 @@ export function replaceThemeRouteSectionComponent(args: {
       diagnostic: parsed.diagnostics[0] ?? "Invalid route source.",
     };
   }
+  if (parsed.structureLocked) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: parsed.structureLocked,
+    };
+  }
 
   const section = parsed.sections.find(
     (candidate) => candidate.slotId === args.slotId,
@@ -1069,6 +1103,9 @@ export function reorderThemeRouteSections(
       : file,
   );
   const parsed = parsePositionedSections(sourceFiles, routeSourcePath);
+  if (parsed.structureLocked) {
+    return { code: source, changed: false, diagnostic: parsed.structureLocked };
+  }
   const currentIds = parsed.sections.map((section) => section.slotId);
   if (
     currentIds.length !== orderedSlotIds.length ||
@@ -1220,6 +1257,9 @@ export function removeThemeRouteSection(
       changed: false,
       diagnostic: parsed.diagnostics[0],
     };
+  }
+  if (parsed.structureLocked) {
+    return { code: source, changed: false, diagnostic: parsed.structureLocked };
   }
 
   const section = parsed.sections.find(
@@ -1622,6 +1662,13 @@ export function bindThemeRouteSection(args: {
     ),
     args.routeSourcePath,
   );
+  if (current.structureLocked) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: current.structureLocked,
+    };
+  }
   if (current.sections.some((section) => section.slotId === args.slotId)) {
     return {
       code: args.source,
@@ -1707,6 +1754,13 @@ export function addThemeRouteSection(args: {
       : file,
   );
   const current = parsePositionedSections(sourceFiles, normalizedRoutePath);
+  if (current.structureLocked) {
+    return {
+      code: args.source,
+      changed: false,
+      diagnostic: current.structureLocked,
+    };
+  }
   if (current.sections.some((section) => section.slotId === args.slotId)) {
     return {
       code: args.source,
