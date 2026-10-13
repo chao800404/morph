@@ -23,6 +23,16 @@ const SERVER_FN_MODULE =
 
 export type ThemeScope = Readonly<{ storefrontId: string; themeId: string }>;
 
+/** Fixture/explicit server writes freeze the same existing workspace version. */
+export async function themeSourceGeneration(page: Page, scope: ThemeScope): Promise<number> {
+  return page.evaluate(async ({module,scope}) => {
+    const fns = await import(/* @vite-ignore */ module);
+    const listed = await fns.listStorefrontThemeFiles({data:scope});
+    if (!listed.success) throw new Error("Cannot read the Theme source baseline");
+    return listed.data.sourceGeneration;
+  }, {module:SERVER_FN_MODULE,scope});
+}
+
 /** The storefront and theme `E2E_EDITOR_PATH` opens. */
 export function themeScopeFromEditorPath(editorPath: string): ThemeScope {
   const match = /\/store\/([^/]+)\/themes\/([^/]+)\/editor/.exec(editorPath);

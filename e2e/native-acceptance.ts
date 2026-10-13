@@ -11,6 +11,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { unstable_startWorker } from "wrangler";
+import { themeSourceGeneration } from "./native-compat";
 
 import {
   queryRunD1,
@@ -370,6 +371,7 @@ export async function writeDraftField(
       sectionId: field.sectionId,
       props: { [field.key]: value },
       expectedDraftGeneration: field.template.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page,scope),
     },
   )) as { success: boolean; message?: string };
   expect(written.success, written.message).toBe(true);

@@ -200,16 +200,40 @@ test.describe("unsaved work when the signed-in account changes", () => {
     }
   });
 
-  test("a landed write that another writer changed around cannot be confirmed: sent once, refused, rebased without overwriting", async ({
+  test("a landed write is confirmed when another writer changed another field of its section", async ({
     browser,
   }) => {
     test.setTimeout(420_000);
     // The other tab writes another field of the same section. A content
-    // write carries the section's whole props, so the server no longer holds
-    // every value this tab sent and the check cannot say it landed.
+    // write carries only the fields typed into, so the server still holds
+    // every value this tab sent and the check can say it landed.
     const run = await landedThenAnotherWriter(browser, {
       section: "hero",
       index: 1,
+    });
+    try {
+      // Confirmed by the check: nothing sent again.
+      expect(run.resentByCheck).toBe(0);
+      // This tab never took the document's generation from the check, and
+      // the other tab moved it: the next edit is refused, kept, and rebased
+      // on a press. Both writers' changes are what the server holds.
+      await nextEditThroughConflict(run.page, run.value("next"));
+      await run.finish();
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  test("a landed write that another writer overwrote cannot be confirmed: sent once, refused, kept, rebased on the author's choice", async ({
+    browser,
+  }) => {
+    test.setTimeout(420_000);
+    // The other tab writes the very field this tab's unanswered write wrote,
+    // so the server no longer holds the value this tab sent and the check
+    // cannot say it landed.
+    const run = await landedThenAnotherWriter(browser, {
+      section: "hero",
+      index: 0,
     });
     try {
       // Sent once more, under the generation this tab holds: refused.
@@ -218,9 +242,22 @@ test.describe("unsaved work when the signed-in account changes", () => {
       await expect(
         run.page.locator("[data-editor-save-status]"),
       ).toHaveAttribute("aria-label", "Out of date", { timeout: 30_000 });
+      // Refused, and kept: the author's edit is still here.
+      await expect(await heroContentField(run.page, 0)).toHaveValue(
+        run.value("landed"),
+      );
+      // Keeping mine on the same field replaces the other tab's value: the
+      // author chose it on the conflict, nothing did it silently.
       await loadLatestKeepMine(run.page);
       await nextEditThroughConflictOrSave(run.page, run.value("next"));
-      await run.finish();
+      const check = await sharedEditor(browser);
+      try {
+        await expect(await heroContentField(check.page, 0)).toHaveValue(
+          run.value("next"),
+        );
+      } finally {
+        await check.context.close();
+      }
     } finally {
       await run.cleanup();
     }

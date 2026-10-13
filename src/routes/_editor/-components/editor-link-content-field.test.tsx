@@ -146,6 +146,7 @@ describe("a declared link field in the Inspector", () => {
       expect.objectContaining({
         action: expect.objectContaining({ href: "/collections/all" }),
       }),
+      { inputFieldPath: "action" },
     );
   });
 
@@ -159,6 +160,7 @@ describe("a declared link field in the Inspector", () => {
       expect.objectContaining({
         action: expect.objectContaining({ href: "/about", target: "_blank" }),
       }),
+      { inputFieldPath: "action" },
     );
   });
 
@@ -175,6 +177,7 @@ describe("a declared link field in the Inspector", () => {
       expect.objectContaining({
         action: expect.objectContaining({ title: "Our story" }),
       }),
+      { inputFieldPath: "action" },
     );
   });
 

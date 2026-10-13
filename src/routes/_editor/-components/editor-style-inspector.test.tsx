@@ -191,7 +191,7 @@ describe("code-authored text content", () => {
     fireEvent.blur(storeName);
     expect(onPropsChange).toHaveBeenCalledWith(
       { storeName: "Studio Store" },
-      { skipPreviewSync: true },
+      { skipPreviewSync: true, inputFieldPath: "storeName" },
     );
   });
 
@@ -230,10 +230,13 @@ describe("code-authored text content", () => {
       "Designed with purpose",
     );
     fireEvent.blur(label);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [],
-      label: "Designed with purpose",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [],
+        label: "Designed with purpose",
+      },
+      { inputFieldPath: "label" },
+    );
   });
 
   it("uses Theme manifest contentFields for a custom code-authored heading", () => {
@@ -307,9 +310,12 @@ describe("code-authored text content", () => {
       "Designed for everyday use",
     );
     fireEvent.blur(heading);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      heading: "Designed for everyday use",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        heading: "Designed for everyday use",
+      },
+      { inputFieldPath: "heading" },
+    );
   });
 
   it("does not persist untouched default text controls but does persist an intentional clear", () => {
@@ -375,7 +381,10 @@ describe("code-authored text content", () => {
 
     fireEvent.input(heading, { target: { value: "" } });
     fireEvent.blur(heading);
-    expect(onPropsChange).toHaveBeenCalledWith({ heading: "" });
+    expect(onPropsChange).toHaveBeenCalledWith(
+      { heading: "" },
+      { inputFieldPath: "heading" },
+    );
   });
 
   it("persists a custom text field while it is edited", () => {
@@ -447,7 +456,7 @@ describe("code-authored text content", () => {
         items: [],
         nn: "saved nn",
       },
-      { skipPreviewSync: true },
+      { skipPreviewSync: true, inputFieldPath: "nn" },
     );
   });
 
@@ -667,9 +676,12 @@ describe("EditorStyleInspector selection content", () => {
     );
     fireEvent.blur(alt);
 
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      image: { src: "/image.png", alt: "Updated alt" },
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        image: { src: "/image.png", alt: "Updated alt" },
+      },
+      { inputFieldPath: "image" },
+    );
   });
 
   it("shows an empty state for a layout element with no content fields", () => {
@@ -1099,6 +1111,7 @@ describe("EditorStyleInspector selection content", () => {
         description: "Description",
         imageSrc: "/image.png",
       }),
+      { inputFieldPath: "heading" },
     );
   });
 
@@ -1154,12 +1167,15 @@ describe("EditorStyleInspector selection content", () => {
       "Updated second title",
     );
     fireEvent.blur(title);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [
-        { id: "r0", title: "First title", body: "First body" },
-        { id: "r1", title: "Updated second title", body: "Second body" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: "r0", title: "First title", body: "First body" },
+          { id: "r1", title: "Updated second title", body: "Second body" },
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
   });
 
   it("shows fill controls for text and commits text color only after editing finishes", () => {
@@ -1525,12 +1541,15 @@ describe("EditorStyleInspector selection content", () => {
     );
     expect(onPropsChange).not.toHaveBeenCalled();
     fireEvent.blur(input);
-    expect(onPropsChange).toHaveBeenCalledWith({
-      items: [
-        { id: "r0", title: "One", body: "First" },
-        { id: "r1", title: "Changed", body: "Second" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenCalledWith(
+      {
+        items: [
+          { id: "r0", title: "One", body: "First" },
+          { id: "r1", title: "Changed", body: "Second" },
+        ],
+      },
+      { inputFieldPath: "items.1.title" },
+    );
   });
 
   it("renders a nested category image field and hides unrelated section fields", () => {
@@ -2573,12 +2592,15 @@ describe("EditorStyleInspector selection content", () => {
       "Changed body",
     );
     fireEvent.blur(body);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      items: [
-        { id: "r0", title: "One", body: "First" },
-        { id: "r1", title: "Two", body: "Changed body" },
-      ],
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        items: [
+          { id: "r0", title: "One", body: "First" },
+          { id: "r1", title: "Two", body: "Changed body" },
+        ],
+      },
+      { inputFieldPath: "items.1.body" },
+    );
   });
 
   it("keeps the top-level body field behavior unchanged", () => {
@@ -2608,9 +2630,12 @@ describe("EditorStyleInspector selection content", () => {
       "Updated section body",
     );
     fireEvent.blur(body);
-    expect(onPropsChange).toHaveBeenLastCalledWith({
-      body: "Updated section body",
-    });
+    expect(onPropsChange).toHaveBeenLastCalledWith(
+      {
+        body: "Updated section body",
+      },
+      { inputFieldPath: "body" },
+    );
   });
 
   it("does not render a standalone Design accordion while retaining nested design controls", () => {
