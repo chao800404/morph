@@ -181,3 +181,59 @@ describe("Live Preview draft content", () => {
     expect(module).toContain('error: "Invalid product handle"');
   });
 });
+// #218: a route's document is created empty on first use, before the content
+// write it precedes. If that write is refused, the empty document stays; it
+// must preview exactly as the route with no document of its own.
+describe("an empty route document", () => {
+  it("previews exactly as a route with no document, shell included", async () => {
+    const section = (id: string, heading: string, enabled = true) => ({
+      id,
+      type: id,
+      enabled,
+      props: { heading },
+    });
+    const snapshot = await createThemePreviewContentSnapshot({
+      templates: [
+        {
+          type: "layout",
+          document: {
+            version: 1,
+            sections: [
+              section("header", "Shell"),
+              section("footer", "Hidden footer", false),
+            ],
+          },
+        },
+        {
+          type: "page",
+          routePath: "/aboutus",
+          document: { version: 1, sections: [] },
+        },
+      ],
+    });
+
+    expect(snapshot.routes?.["/aboutus"]).toEqual(snapshot.shell);
+    expect(snapshot.shell).toEqual({
+      slots: { header: { heading: "Shell" } },
+      hiddenSlots: ["footer"],
+    });
+
+    // The resolver the preview runs: the route with the empty document and a
+    // route with none answer the same.
+    const source = themePreviewContentModuleSource();
+    const body = source
+      .slice(
+        source.indexOf("function templateTypeForPath"),
+        source.indexOf("export function updatePreviewContent"),
+      )
+      .replace(
+        "export function previewContentForPath",
+        "function previewContentForPath",
+      );
+    const resolve = new Function(
+      "snapshot",
+      `${body}; return previewContentForPath;`,
+    )(JSON.parse(JSON.stringify(snapshot))) as (path: string) => unknown;
+    expect(resolve("/aboutus")).toEqual(resolve("/contact"));
+  });
+});
