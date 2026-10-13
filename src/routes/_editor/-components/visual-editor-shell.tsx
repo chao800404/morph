@@ -1440,6 +1440,60 @@ export function VisualEditorShell({
     },
     [search.routePath],
   );
+  // Re-renders when the source moves or local edits start, so a control that
+  // reads its target out of the current source is re-asked.
+  const sourceFreshnessKey = useThemeWorkspaceStore((state) => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    return [
+      state.getAcceptedSourceGeneration(scope),
+      state.getObservedSourceGeneration(scope),
+      state.hasUnsavedEdits(scope),
+      state.hasActiveConflictsOrErrors(scope),
+    ].join(":");
+  });
+  /**
+   * Whether a selection was taken at the source the workspace holds now, with
+   * nothing unsaved over it: the same condition a content write is held to,
+   * asked before the Inspector reads a binding out of the current file.
+   */
+  const isSelectionSourceCurrent = useCallback(
+    (
+      selection: Readonly<{
+        sectionId: string;
+        fieldPath?: string | null;
+        fieldKey?: string | null;
+      }> | null,
+    ): boolean => {
+      void sourceFreshnessKey;
+      if (!selection?.sectionId) return false;
+      const path = selection.fieldPath ?? selection.fieldKey;
+      if (!path) return false;
+      const baseline = selectedFieldBaseline(selection.sectionId, path);
+      if (!baseline) return false;
+      const scope = {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+      };
+      const state = useThemeWorkspaceStore.getState();
+      if (
+        state.hasUnsavedEdits(scope) ||
+        state.hasActiveConflictsOrErrors(scope)
+      ) {
+        return false;
+      }
+      return baseline.sourceGeneration === currentContentSourceGeneration();
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      currentContentSourceGeneration,
+      selectedFieldBaseline,
+      sourceFreshnessKey,
+    ],
+  );
   useEffect(() => {
     selectionSourceBaselinesRef.current.clear();
     confirmedPreviewSourceRef.current = null;
@@ -11516,6 +11570,7 @@ export function VisualEditorShell({
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
+          selectionSourceCurrent={isSelectionSourceCurrent(editableSelection)}
         />
 
         <EditorSmallScreenNotice />

@@ -116,6 +116,8 @@ type EditorAssistantPanelProps = {
   ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
+  /** See the Inspector's prop of the same name. */
+  selectionSourceCurrent?: boolean;
 };
 
 export type EditorAssistantPanelTab =
@@ -239,6 +241,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -516,6 +519,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onPropsChange={handleInspectorPropsChange}
               inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
+              selectionSourceCurrent={selectionSourceCurrent}
             />
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">

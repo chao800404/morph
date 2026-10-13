@@ -603,9 +603,21 @@ describe("a hidden section's Document-backed style controls", () => {
   });
 
   // The Inspector on its own, at the boundary every Document write from it
-  // crosses (`onPropsChange`): in the shell harness a shown section's
-  // object-position write is held by the source-baseline rules (#217) once its
-  // source half is patched, which is not what these two compare.
+  // crosses (`onPropsChange`), with an image whose position is provably the
+  // declared `imagePosition` field: the only kind of image the control writes.
+  const positionSource = `export const contentFields = {
+  image: { type: "image", label: "Image" },
+  imagePosition: { type: "text", label: "Image position", maxLength: 100 },
+};
+export default function Hero({ image, imagePosition = "center" }) {
+  return <section><img src={image?.src} style={{ objectPosition: imagePosition }} className="object-cover" /></section>;
+}`;
+  const positionImageLine = positionSource
+    .split("\n")
+    .findIndex((line) => line.includes("<img"));
+  const positionImageLocation = `${HERO_PATH}:${positionImageLine + 1}:${
+    positionSource.split("\n")[positionImageLine]!.indexOf("<img") + 1
+  }`;
   it.each([
     { refused: true, writes: 0 },
     { refused: false, writes: 1 },
@@ -617,13 +629,14 @@ describe("a hidden section's Document-backed style controls", () => {
         <EditorStyleInspector
           view="styles"
           documentWritesRefused={refused}
+          selectionSourceCurrent
           onPropsChange={onPropsChange}
           onUpdateThemeFileStyle={vi.fn()}
           section={{
             id: "hero",
             type: "hero",
             enabled: !refused,
-            props: { imageSrc: "/hero.png", imagePosition: "center" },
+            props: { image: { src: "/hero.png" }, imagePosition: "center" },
           }}
           themeFiles={[
             {
@@ -631,7 +644,7 @@ describe("a hidden section's Document-backed style controls", () => {
               storefrontId: "storefront-1",
               themeId: "theme-1",
               path: HERO_PATH,
-              content: source,
+              content: positionSource,
               mimeType: "text/typescript",
               isEntry: false,
               version: 1,
@@ -644,12 +657,12 @@ describe("a hidden section's Document-backed style controls", () => {
               sectionId: "hero",
               componentType: "hero",
               kind: "image",
-              nodeId: "image",
               sourceFilePath: HERO_PATH,
-              elementKey: "image",
-              fieldKey: "imageSrc",
-              field: "imageSrc",
-              fieldPath: "imageSrc",
+              sourceLocation: positionImageLocation,
+              elementKey: null,
+              fieldKey: "image",
+              field: "image",
+              fieldPath: "image",
               descendantFields: [],
               tagName: "img",
               className: "object-cover",

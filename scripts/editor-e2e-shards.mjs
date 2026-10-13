@@ -76,6 +76,8 @@ export const EDITOR_SHARDS = [
     // Unmeasured; two editor opens on a throwaway Theme. Its publish half
     // runs only with the container transport.
     "section-visibility-layout.spec.ts",
+    // Unmeasured until the next rebalance; two tests, three editor opens.
+    "object-position.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

@@ -72,6 +72,11 @@ import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-the
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import {
+  resolveObjectPositionTarget,
+  type ObjectPositionTarget,
+  type ObjectPositionUnavailableReason,
+} from "@/lib/storefront/ast/object-position-binding";
 import { analyzeTextPromotion } from "@/lib/storefront/editor/text-promotion";
 import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 import { EditorCodeTextNotice } from "./editor-code-text-notice";
@@ -320,6 +325,13 @@ type EditorStyleInspectorProps = {
    * affected.
    */
   documentWritesRefused?: boolean;
+  /**
+   * Whether the selection was taken at the source generation the workspace
+   * holds now, with nothing unsaved over it: the condition for reading the
+   * selected element's binding out of the current file. Without it a control
+   * that derives its write target from the source stays unavailable.
+   */
+  selectionSourceCurrent?: boolean;
 };
 
 /**
@@ -439,32 +451,53 @@ const IMAGE_POSITION_OPTIONS = [
   "left",
   "right",
 ] as const;
-type ImagePosition = (typeof IMAGE_POSITION_OPTIONS)[number];
+/** The options' computed `object-position`, as the browser reports it. */
+const COMPUTED_IMAGE_POSITIONS: Readonly<Record<string, string>> = {
+  "50% 50%": "center",
+  "50% 0%": "top",
+  "50% 100%": "bottom",
+  "0% 50%": "left",
+  "100% 50%": "right",
+};
 
-function imagePositionFromClassName(className: string): ImagePosition | null {
-  const token = className
-    .split(/\s+/)
-    .map((value) => value.replace(/^.*:/, ""))
-    .reverse()
-    .find((value) =>
-      IMAGE_POSITION_OPTIONS.some((position) => value === `object-${position}`),
-    );
-  return token ? (token.slice("object-".length) as ImagePosition) : null;
+/**
+ * What the canvas shows when nothing is stored and the source names no
+ * fallback: one of the options when it is one, else the value as computed.
+ */
+function displayedImagePosition(computed: string | undefined): string {
+  if (!computed) return "center";
+  return COMPUTED_IMAGE_POSITIONS[computed.trim()] ?? computed.trim();
 }
 
-function normalizeImagePosition(value: unknown): ImagePosition {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (IMAGE_POSITION_OPTIONS.includes(normalized as ImagePosition)) {
-    return normalized as ImagePosition;
-  }
-  if (normalized.includes("top")) return "top";
-  if (normalized.includes("bottom")) return "bottom";
-  if (normalized.includes("left")) return "left";
-  if (normalized.includes("right")) return "right";
-  return "center";
-}
+type InspectorObjectPositionTarget =
+  | Extract<ObjectPositionTarget, { kind: "document" }>
+  | Readonly<{
+      kind: "unavailable";
+      reason: ObjectPositionUnavailableReason | "hidden" | "source-stale";
+    }>;
+
+/** Why Position is unavailable, worded as what Morph cannot do, not an error. */
+const OBJECT_POSITION_UNAVAILABLE_MESSAGES: Readonly<
+  Record<
+    Extract<InspectorObjectPositionTarget, { kind: "unavailable" }>["reason"],
+    string
+  >
+> = {
+  hidden: "This section is hidden. Show it to change the image position.",
+  "source-stale":
+    "The source changed since this image was selected. Select it again to change its position.",
+  "row-unconfirmed": "Select the image again to change its position.",
+  "no-inline-position":
+    "Position isn't editable here for this image yet. You can change it in Code.",
+  "field-not-declared":
+    "This image's position is set in code, not by an editable field. You can change it in Code.",
+  "position-not-a-field-read":
+    "Morph can't confirm which field sets this image's position. You can change it in Code.",
+  "binding-unproven":
+    "Morph can't confirm which field sets this image's position. You can change it in Code.",
+  "source-unreadable":
+    "Morph can't read where this image's position comes from. You can change it in Code.",
+};
 
 const BORDER_RADIUS_CORNER_CONFIG = {
   topLeft: {
@@ -764,6 +797,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   view = "styles",
   disabled: disabledProp = false,
   documentWritesRefused = false,
+  selectionSourceCurrent = false,
 }: EditorStyleInspectorProps) {
   const activeNodeId = selection?.nodeId;
   const activeElementKey = selection?.elementKey;
@@ -1601,12 +1635,124 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     editableBaseClassName ??
     targetElementMeta?.className ??
     "";
-  const effectiveImagePosition = normalizeImagePosition(
-    activeComputedStyle?.objectPosition ??
-      imagePositionFromClassName(targetClassName) ??
-      selectedFieldValue("imagePosition") ??
-      "center",
-  );
+  /**
+   * Where the Position control writes: the declared Document field the
+   * selected image's inline position provably reads, or nowhere.
+   *
+   * An inline `objectPosition` overrides every class, so a class edit beside
+   * one has no effect, and writing both — as this control used to — let its
+   * own source save move the selection's source generation under the Document
+   * write it had just queued. Only the field is written now, at the selected
+   * field's baseline. Whatever cannot be proven from the current source (an
+   * undeclared prop, a computed value, an image with no inline position, a
+   * selection older than the source) leaves the control unavailable with the
+   * reason; Code, preview, build and Fit are untouched by it.
+   */
+  const objectPositionTarget = useMemo((): InspectorObjectPositionTarget => {
+    if (documentWritesRefused) return { kind: "unavailable", reason: "hidden" };
+    if (!selectionSourceCurrent) {
+      return { kind: "unavailable", reason: "source-stale" };
+    }
+    if (contentWritesBlocked) {
+      return { kind: "unavailable", reason: "row-unconfirmed" };
+    }
+    const location = parseThemeSourceLocation(activeSourceLocation);
+    const declaredFields = themeContentCapability?.fields;
+    if (!declaredFields) {
+      return { kind: "unavailable", reason: "field-not-declared" };
+    }
+    // The file that declares the fields is the one whose binding is read: a
+    // row drawn by another component is not followed into it.
+    if (!location || location.filePath !== contentSourcePath) {
+      return { kind: "unavailable", reason: "source-unreadable" };
+    }
+    const source = themeFiles?.find(
+      (file) => file.path === location.filePath,
+    )?.content;
+    if (!source) return { kind: "unavailable", reason: "source-unreadable" };
+    const target = resolveObjectPositionTarget({
+      source,
+      line: location.line,
+      column: location.column,
+      declaredFields,
+      selectedFieldPath: activeFieldPath ?? null,
+    });
+    if (target.kind !== "document") return target;
+    // A row nothing stores yet is the component's own default: writing one
+    // field of it would store a list holding only that row.
+    const rowPath = target.fieldPath.split(".").slice(0, -1).join(".");
+    if (rowPath) {
+      const row = getFieldPathValue(props, rowPath);
+      if (!row || typeof row !== "object") {
+        return { kind: "unavailable", reason: "row-unconfirmed" };
+      }
+    }
+    return target;
+  }, [
+    activeFieldPath,
+    activeSourceLocation,
+    contentSourcePath,
+    contentWritesBlocked,
+    documentWritesRefused,
+    props,
+    selectionSourceCurrent,
+    themeContentCapability?.fields,
+    themeFiles,
+  ]);
+  const objectPositionStored =
+    objectPositionTarget.kind === "document"
+      ? getFieldPathValue(props, objectPositionTarget.fieldPath)
+      : undefined;
+  // Shown as stored, never normalized: `30% center` is not `center`, and
+  // offering it as one would overwrite it the first time anything is chosen.
+  const objectPositionValue =
+    typeof objectPositionStored === "string" && objectPositionStored !== ""
+      ? objectPositionStored
+      : objectPositionTarget.kind === "document" &&
+          objectPositionTarget.fallback !== null
+        ? objectPositionTarget.fallback
+        : displayedImagePosition(activeComputedStyle?.objectPosition);
+  const objectPositionChoices: readonly string[] =
+    objectPositionTarget.kind === "document" &&
+    objectPositionTarget.definition.type === "select"
+      ? IMAGE_POSITION_OPTIONS.filter((option) =>
+          (
+            objectPositionTarget.definition as { options: { value: string }[] }
+          ).options.some((declared) => declared.value === option),
+        )
+      : IMAGE_POSITION_OPTIONS;
+  const objectPositionOptions = objectPositionChoices.includes(
+    objectPositionValue,
+  )
+    ? objectPositionChoices
+    : [objectPositionValue, ...objectPositionChoices];
+  const handleObjectPositionChange = (value: string) => {
+    if (objectPositionTarget.kind !== "document") return;
+    if (value === objectPositionValue) return;
+    if (!objectPositionChoices.includes(value)) return;
+    const definition = objectPositionTarget.definition;
+    if (
+      definition.type === "text" &&
+      typeof definition.maxLength === "number" &&
+      value.length > definition.maxLength
+    ) {
+      return;
+    }
+    if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
+    const next = toStorableContentProps(
+      setFieldPathValue(
+        localPropsRef.current,
+        objectPositionTarget.fieldPath,
+        value,
+      ),
+    );
+    localPropsRef.current = next;
+    setLocalProps(next);
+    onPropsChange(next, {
+      inputFieldPath: objectPositionTarget.fieldPath,
+      selectionFieldPath: activeFieldPath,
+    });
+  };
   const sectionClassName = sectionElementMeta?.className || "";
   const hasResolvedContainerSource = isSelectedNode
     ? Boolean(targetElementMeta)
@@ -3834,29 +3980,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <InspectorSelectControl
                   label="Position"
                   ariaLabel="Object position"
-                  value={effectiveImagePosition}
-                  options={[...IMAGE_POSITION_OPTIONS]}
+                  value={objectPositionValue}
+                  options={objectPositionOptions}
                   formatOption={(value) =>
-                    value.charAt(0).toUpperCase() + value.slice(1)
+                    objectPositionChoices.includes(value)
+                      ? value.charAt(0).toUpperCase() + value.slice(1)
+                      : `Custom (${value})`
                   }
-                  onValueChange={(value) => {
-                    previewStyle({ "object-position": value });
-                    nestedFieldPath("imagePosition")
-                      ? handleNestedFieldChange(
-                          nestedFieldPath("imagePosition")!,
-                          value,
-                        )
-                      : handleFieldChange("imagePosition", value);
-                    patchStyle((prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "object-position",
-                        value: "object-" + value,
-                      }),
-                    );
-                  }}
-                  // Writes the Document as well as the source.
+                  onValueChange={handleObjectPositionChange}
+                  // Writes only the Document field the image provably reads.
                   disabled={
-                    disabled || sourceStyleLocked || documentWritesRefused
+                    disabled || objectPositionTarget.kind !== "document"
                   }
                 />
                 <InspectorSelectControl
@@ -3922,6 +4056,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   disabled={disabled || sourceStyleLocked}
                 />
               </div>
+              {objectPositionTarget.kind === "unavailable" ? (
+                <p
+                  data-inspector-note="object-position"
+                  className="mt-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  {
+                    OBJECT_POSITION_UNAVAILABLE_MESSAGES[
+                      objectPositionTarget.reason
+                    ]
+                  }
+                </p>
+              ) : null}
             </InspectorGroup>
           )}
           <InspectorModuleStaticSections>

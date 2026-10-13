@@ -4360,3 +4360,84 @@ describe("publishing after a rollback", () => {
     ).toEqual({ count: 2 });
   });
 });
+
+describe("the object position control's write, against the real Starter source", () => {
+  it("stores one row's declared imagePosition and reads it back, leaving the other row alone", async () => {
+    const { STARTER_THEME_V3_NEW_FILES } =
+      await import("@/lib/storefront/starter-theme-v3-files");
+    const showcase = STARTER_THEME_V3_NEW_FILES.find(
+      (file) => file.path === "src/components/CategoryShowcase.tsx",
+    )!;
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES ('file-showcase', 'storefront-a', 'theme-a', ?, ?, 'now', 'now')`,
+      )
+      .run(showcase.path, showcase.content);
+    const rowA = {
+      id: "row-a",
+      title: "First",
+      image: { src: "/a.png", alt: "A" },
+      imagePosition: "30% center",
+    };
+    const rowB = {
+      id: "row-b",
+      title: "Second",
+      image: { src: "/b.png", alt: "B" },
+    };
+    const stored = JSON.stringify({
+      version: 1,
+      sections: [
+        {
+          id: "collections",
+          type: "category-showcase",
+          componentRef: showcase.path,
+          enabled: true,
+          props: { heading: "Collections", items: [rowA, rowB] },
+        },
+      ],
+    });
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-showcase', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+      )
+      .run(stored);
+
+    // What the Inspector sends: the whole section, one row's position changed.
+    const result = await storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-showcase",
+      sectionId: "collections",
+      props: {
+        heading: "Collections",
+        items: [rowA, { ...rowB, imagePosition: "top" }],
+      },
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+    expect(result?.droppedProps).toEqual([]);
+
+    // Read back the way the editor does, from the draft the write produced.
+    const editor = await storefrontThemeDal.findEditorContext(
+      "storefront-a",
+      "theme-a",
+    );
+    const template = editor?.templates.find(
+      (candidate) => candidate.id === "template-showcase",
+    );
+    const items = (
+      template?.document.sections.find(
+        (section) => section.id === "collections",
+      )?.props as { items?: Array<Record<string, unknown>> } | undefined
+    )?.items;
+    expect(items?.map((item) => [item.id, item.imagePosition])).toEqual([
+      ["row-a", "30% center"],
+      ["row-b", "top"],
+    ]);
+  });
+});

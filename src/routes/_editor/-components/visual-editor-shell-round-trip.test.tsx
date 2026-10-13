@@ -9,7 +9,15 @@ import {
 } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -21,6 +29,38 @@ import {
   INLINE_TEXT_REFUSED_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
+import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
+import {
+  resolveSelectable as objposResolveSelectable,
+  selectionMetadata as objposSelectionMetadata,
+} from "@/lib/storefront/editor/preview-dom";
+import {
+  livePreviewPlatformFiles as objposPlatformFiles,
+  mountLivePreview as objposMount,
+  renderLivePreviewRoute as objposRenderRoute,
+} from "@/lib/test-utils/live-preview-render";
+
+/**
+ * Every Theme file save the shell starts, recorded and then made as usual:
+ * the object position tests assert that the control saves no source.
+ */
+const objposSavedFiles = vi.hoisted((): unknown[] => []);
+vi.mock(
+  "@/server/storefront/storefront-theme-files.serverFn",
+  async (importOriginal) => {
+    const actual = await importOriginal<Record<string, unknown>>();
+    const save = actual.saveStorefrontThemeFile as (
+      ...args: unknown[]
+    ) => unknown;
+    return {
+      ...actual,
+      saveStorefrontThemeFile: (...args: unknown[]) => {
+        objposSavedFiles.push(args[0]);
+        return save(...args);
+      },
+    };
+  },
+);
 
 /**
  * The selection round trip through the shell, rather than through the rules.
@@ -2027,5 +2067,393 @@ describe("an inline edit of text the Theme changed", () => {
       INLINE_TEXT_REFUSED_MESSAGE,
       expect.anything(),
     );
+  });
+});
+
+/**
+ * The Inspector's object position control, through the real shell.
+ *
+ * The control writes one place: the Document field the selected image's inline
+ * `objectPosition` provably reads. It used to write that and patch the class
+ * too, and the class save moved the selection's source generation under the
+ * Document write it had queued, so on the Starter neither landed. The canvas
+ * selection here is produced by the real preview pass over the real Starter
+ * components, not written by hand.
+ */
+describe("the object position control", () => {
+  const SHOWCASE_PATH = "src/components/CategoryShowcase.tsx";
+  const STORY_PATH = "src/components/ImageWithText.tsx";
+  const PLAIN_PATH = "src/components/PlainImage.tsx";
+  const PLAIN_SOURCE = `export const contentFields = {
+  image: { type: "image", label: "Image" },
+} as const;
+export default function PlainImage({ image }: { image?: { src?: string } }) {
+  return <section><img src={image?.src} className="size-full object-cover" /></section>;
+}`;
+  const starterSource = (path: string) =>
+    OBJPOS_STARTER_FILES.find((file) => file.path === path)!.content;
+  const rows = () => [
+    {
+      id: "row-a",
+      title: "First",
+      image: { src: "/a.png", alt: "A" },
+      imagePosition: "30% center",
+    },
+    { id: "row-b", title: "Second", image: { src: "/b.png", alt: "B" } },
+  ];
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+
+  type Fixture = {
+    path: string;
+    source: string;
+    type: string;
+    props: Record<string, unknown>;
+    /** What the editor's Document holds, when it differs from the canvas's. */
+    storedProps?: Record<string, unknown>;
+  };
+
+  /** The canvas's report for one image, from the real preview pass. */
+  async function reportImage(fixture: Fixture, imageIndex: number) {
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Section from "../components/${fixture.path.split("/").pop()!.replace(".tsx", "")}";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Section {...content("section")} /></main>;
+}`;
+    const { html } = await objposRenderRoute({
+      files: [
+        ...objposPlatformFiles(),
+        { path: fixture.path, content: fixture.source },
+        { path: "src/routes/index.tsx", content: route },
+      ],
+      documents: {
+        index: {
+          version: 1,
+          sections: [
+            {
+              id: "section",
+              type: fixture.type,
+              enabled: true,
+              props: fixture.props,
+            },
+          ],
+        } as never,
+      },
+    });
+    const root = objposMount(html);
+    const item = objposResolveSelectable(
+      root.querySelectorAll("img")[imageIndex] ?? null,
+    );
+    document.body.replaceChildren();
+    expect(item).toBeTruthy();
+    return {
+      type: "morph:storefront-preview-select-section",
+      sectionId: item!.sectionId,
+      componentType: item!.type,
+      // `kind` comes from `selectionMetadata` below, which the bridge spreads
+      // over the same key.
+      sourceLocation: item!.element.dataset.morphLoc ?? null,
+      nodeId: item!.element.getAttribute("data-morph-node") || undefined,
+      elementKey: item!.elementKey,
+      fieldKey: item!.fieldKey,
+      field:
+        item!.descendantFields.length > 0
+          ? null
+          : (item!.fieldKey ?? item!.elementKey),
+      descendantFields: item!.descendantFields,
+      itemId: item!.itemId,
+      contentUnavailable: item!.contentUnavailable,
+      ...objposSelectionMetadata(item!),
+      styleRevision: 0,
+      selectionRevision: 1,
+      className: item!.element.getAttribute("class") ?? "",
+      isSection: item!.element === item!.section,
+      inspectorOverride: item!.element.dataset.morphInspector ?? null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      documentRect: { top: 0, height: 100 },
+    };
+  }
+
+  function renderEditor(fixture: Fixture) {
+    const editorContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "section",
+                type: fixture.type,
+                componentRef: fixture.path,
+                enabled: true,
+                props: fixture.storedProps ?? fixture.props,
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    const client = readyQueryClient();
+    client.setQueryData(
+      storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+      {
+        files: [
+          {
+            id: "file-section",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: fixture.path,
+            content: fixture.source,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ],
+        tree: [],
+        sourceGeneration: 1,
+        latestPublishedRevision: null,
+      } as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={editorContext}
+          search={{ ...baseSearch, section: "section" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  async function selectAndOpenStyles(
+    report: Awaited<ReturnType<typeof reportImage>>,
+  ) {
+    await flushFrames();
+    fromPreview(report);
+    await flushFrames();
+    const stylesTab = screen.queryByRole("button", { name: /^Styles$/ });
+    if (stylesTab) fireEvent.click(stylesTab);
+    await flushFrames();
+    return screen.getByRole("combobox", { name: "Object position" });
+  }
+
+  async function choose(trigger: HTMLElement, label: string) {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    const option = screen.getByRole("option", { name: label });
+    fireEvent.keyDown(option, { key: "Enter" });
+    fireEvent.click(option);
+    // Past the content write's 300 ms debounce and its answer.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  }
+
+  const note = () =>
+    document.querySelector('[data-inspector-note="object-position"]')
+      ?.textContent ?? null;
+  const sent = () =>
+    updateSectionProps.mock.calls.map(
+      (call) => call[0].data as Record<string, unknown>,
+    );
+  const reselectNotices = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((call) =>
+      String(call[0]).startsWith("The source code has changed"),
+    ).length;
+
+  beforeAll(() => {
+    // Every browser this runs in has CSS.escape; this jsdom does not.
+    if (typeof CSS === "undefined" || typeof CSS.escape !== "function") {
+      (globalThis as { CSS?: unknown }).CSS = {
+        escape: (value: string) => value.replace(/([^\w-])/g, "\\$1"),
+      };
+    }
+  });
+  let draftGeneration = 1;
+  beforeEach(() => {
+    draftGeneration = 1;
+    updateSectionProps.mockReset();
+    updateSectionProps.mockImplementation(async () => {
+      draftGeneration += 1;
+      return { success: true, data: { draftGeneration, droppedProps: [] } };
+    });
+    objposSavedFiles.length = 0;
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const showcase = (overrides: Partial<Fixture> = {}): Fixture => ({
+    path: SHOWCASE_PATH,
+    source: starterSource(SHOWCASE_PATH),
+    type: "category-showcase",
+    props: { heading: "Collections", items: rows() },
+    ...overrides,
+  });
+
+  it("writes only the selected Starter row's declared field, at the selection's baseline", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    expect(report).toMatchObject({
+      fieldPath: "items.1.image",
+      itemId: "row-b",
+    });
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(false);
+    expect(note()).toBeNull();
+
+    await choose(trigger, "Top");
+
+    expect(sent()).toHaveLength(1);
+    const items = sent()[0]!.props as { items: Array<Record<string, unknown>> };
+    expect(items.items[1]).toMatchObject({ id: "row-b", imagePosition: "top" });
+    expect(items.items[0]).toMatchObject({
+      id: "row-a",
+      imagePosition: "30% center",
+    });
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    expect(objposSavedFiles).toHaveLength(0);
+    expect(reselectNotices(toasts)).toBe(0);
+  });
+
+  it("keeps writing at the same baseline across consecutive changes", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    await choose(trigger, "Top");
+    await choose(trigger, "Bottom");
+
+    expect(sent()).toHaveLength(2);
+    const second = sent()[1]!.props as {
+      items: Array<Record<string, unknown>>;
+    };
+    expect(second.items[1]).toMatchObject({ imagePosition: "bottom" });
+    expect(second.items[0]).toMatchObject({ imagePosition: "30% center" });
+    expect(sent().map((data) => data.expectedSourceGeneration)).toEqual([1, 1]);
+    expect(objposSavedFiles).toHaveLength(0);
+    expect(reselectNotices(toasts)).toBe(0);
+  });
+
+  it("stops offering the change once the source moves on elsewhere", async () => {
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(false);
+
+    act(() => {
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope);
+    });
+    await flushFrames();
+
+    const after = screen.getByRole("combobox", { name: "Object position" });
+    expect(after.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain(
+      "The source changed since this image was selected",
+    );
+    fireEvent.keyDown(after, { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // The row is found again by its id, but the selection's baseline was taken
+  // under its old index: the write is held for a fresh selection, as any row
+  // field's is (#217), rather than sent to whichever row took that index.
+  it("never writes another row when the rows moved after the click", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    // The canvas drew A, B; the Document now holds B, A.
+    const fixture = showcase({
+      props: { heading: "Collections", items: [rowA, rowB] },
+      storedProps: { heading: "Collections", items: [rowB, rowA] },
+    });
+    const report = await reportImage(fixture, 1);
+    expect(report).toMatchObject({
+      fieldPath: "items.1.image",
+      itemId: "row-b",
+    });
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    await choose(trigger, "Top");
+
+    expect(sent()).toHaveLength(0);
+    expect(reselectNotices(toasts)).toBe(1);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  it("shows a stored custom position as it is and writes nothing until one is chosen", async () => {
+    const fixture = showcase();
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.textContent).toContain("Custom (30% center)");
+
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    await flushFrames();
+    fireEvent.blur(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(
+      screen.getByRole("combobox", { name: "Object position" }).textContent,
+    ).toContain("Custom (30% center)");
+  });
+
+  it("leaves the Starter story image's position to Code: it is not a declared field", async () => {
+    const fixture: Fixture = {
+      path: STORY_PATH,
+      source: starterSource(STORY_PATH),
+      type: "image-with-text",
+      props: {
+        heading: "Story",
+        image: { src: "/story.png", alt: "Story" },
+        imagePosition: "center center",
+      },
+    };
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain("set in code, not by an editable field");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  it("leaves an image with no inline position alone: a class edit is not proven yet", async () => {
+    const fixture: Fixture = {
+      path: PLAIN_PATH,
+      source: PLAIN_SOURCE,
+      type: "plain-image",
+      props: { image: { src: "/plain.png" } },
+    };
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain("isn't editable here for this image yet");
+    expect(
+      screen
+        .getByRole("combobox", { name: "Object fit" })
+        .hasAttribute("data-disabled"),
+    ).toBe(false);
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
   });
 });
