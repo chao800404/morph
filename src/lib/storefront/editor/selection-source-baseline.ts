@@ -4,6 +4,33 @@ export type SelectionSourceBaseline = Readonly<{
   sourceGeneration: number;
 }>;
 
+/** Field selection must not grant a baseline to another field in its section. */
+export function fieldSelectionKey(
+  sectionId: string,
+  path: string,
+  routePath = "/",
+): string {
+  return JSON.stringify([routePath, sectionId, path]);
+}
+
+/** A fresh content selection does not accept remote source for Code saves. */
+export function sourceGenerationForFreshSelection(args: {
+  accepted: number;
+  observed: number;
+  confirmedPreview: number | null;
+  hasLocalSourceChanges: boolean;
+}): number | null {
+  const current = Math.max(args.accepted, args.observed);
+  if (
+    !Number.isSafeInteger(current) ||
+    current < 1 ||
+    args.hasLocalSourceChanges
+  )
+    return null;
+  if (current === args.accepted) return current;
+  return args.confirmedPreview === current ? current : null;
+}
+
 export function captureSelectionSourceBaseline(
   selectionKey: string,
   sourceGeneration: number,

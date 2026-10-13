@@ -3,9 +3,52 @@ import {
   advanceSelectionAfterTextPromotion,
   captureSelectionSourceBaseline,
   selectionSourceIsCurrent,
+  fieldSelectionKey,
+  sourceGenerationForFreshSelection,
 } from "./selection-source-baseline";
 
 describe("selection source baseline", () => {
+  it("a new observed version needs preview confirmation and never accepts Code's generation", () => {
+    const state = {
+      accepted: 8,
+      observed: 10,
+      confirmedPreview: null,
+      hasLocalSourceChanges: false,
+    };
+    expect(sourceGenerationForFreshSelection(state)).toBeNull();
+    expect(
+      sourceGenerationForFreshSelection({ ...state, confirmedPreview: 9 }),
+    ).toBeNull();
+    expect(
+      sourceGenerationForFreshSelection({ ...state, confirmedPreview: 10 }),
+    ).toBe(10);
+    expect(state.accepted).toBe(8);
+    expect(
+      sourceGenerationForFreshSelection({
+        ...state,
+        confirmedPreview: 10,
+        hasLocalSourceChanges: true,
+      }),
+    ).toBeNull();
+    expect(
+      sourceGenerationForFreshSelection({
+        accepted: 2,
+        observed: 1,
+        confirmedPreview: null,
+        hasLocalSourceChanges: false,
+      }),
+    ).toBe(2);
+  });
+  it("selecting another field cannot upgrade the first field's baseline", () => {
+    const selected = new Map([[fieldSelectionKey("hero", "heading"), 1]]);
+    selected.set(fieldSelectionKey("hero", "subheading"), 2);
+    expect(selected.get(fieldSelectionKey("hero", "heading"))).toBe(1);
+    expect(selected.get(fieldSelectionKey("hero", "subheading"))).toBe(2);
+    expect(selected.get(fieldSelectionKey("other", "heading"))).toBeUndefined();
+    expect(fieldSelectionKey("hero", "heading", "/a")).not.toBe(
+      fieldSelectionKey("hero", "heading", "/b"),
+    );
+  });
   const key = "index:hero:title";
   it("keeps the same source baseline for consecutive content-only saves", () => {
     const baseline = captureSelectionSourceBaseline(key, 1);

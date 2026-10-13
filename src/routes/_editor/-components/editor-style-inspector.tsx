@@ -197,6 +197,12 @@ type EditorSection =
 
 export type InspectorPropsChangeOptions = {
   skipPreviewSync?: boolean;
+  /** A history replay retains its original source precondition. */
+  historySourceGeneration?: number;
+  /** Which control changed; the other props are only a display snapshot. */
+  inputFieldPath?: string;
+  /** Selected row whose explicit action changes its list or creates an id. */
+  selectionFieldPath?: string;
 };
 
 /**
@@ -791,8 +797,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   // its index may have moved since the click, and a write to the index as
   // selected would land on whichever row took its place.
   const selectedRow = useMemo(
-    () =>
-      rebaseSelectedRowPath(selection?.fieldPath, selection?.itemId, props),
+    () => rebaseSelectedRowPath(selection?.fieldPath, selection?.itemId, props),
     [props, selection?.fieldPath, selection?.itemId],
   );
   const selectedRowRefused = selectedRow.refused;
@@ -806,9 +811,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
    * same name.
    */
   const contentBlockedReason:
-    | ContentUnavailableReason
-    | SelectedRowRefusal
-    | null = selectedRowRefused ?? selection?.contentUnavailable ?? null;
+    ContentUnavailableReason | SelectedRowRefusal | null =
+    selectedRowRefused ?? selection?.contentUnavailable ?? null;
   /**
    * The list a row selected without an id belongs to.
    *
@@ -2172,7 +2176,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       );
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, {
+        inputFieldPath: activeRepeatedItemPath + ".id",
+        selectionFieldPath: activeFieldPath,
+      });
     }
     return { sectionId: section.id, fieldPath: activeFieldPath, itemId };
   }, [activeFieldPath, activeRepeatedItemPath, onPropsChange, section.id]);
@@ -2282,11 +2289,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       );
       localPropsRef.current = next;
       setLocalProps(next);
-      if (options) {
-        onPropsChange(next, options);
-      } else {
-        onPropsChange(next);
-      }
+      onPropsChange(next, { ...options, inputFieldPath: targetPath ?? field });
     },
     [activeFieldPath, onPropsChange, section.id, selection?.descendantFields],
   );
@@ -2317,9 +2320,12 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(result.value);
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, {
+        inputFieldPath: activeFieldPath?.split(".")[0],
+        selectionFieldPath: activeFieldPath ?? undefined,
+      });
     },
-    [onPropsChange],
+    [activeFieldPath, onPropsChange],
   );
 
   const handleNestedFieldChange = useCallback(
@@ -2347,7 +2353,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
       localPropsRef.current = next;
       setLocalProps(next);
-      onPropsChange(next);
+      onPropsChange(next, { inputFieldPath: path });
     },
     [onPropsChange],
   );
@@ -2503,32 +2509,33 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         !isSectionTemplateSource &&
         isDynamicClassName &&
         !instanceExpressionEditable && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
-          <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-          <div className="space-y-1">
-            <div className="font-semibold text-xs leading-none">
-              Code-Controlled ClassName ({targetElement})
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5 shadow-xs">
+            <Code2 className="size-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+            <div className="space-y-1">
+              <div className="font-semibold text-xs leading-none">
+                Code-Controlled ClassName ({targetElement})
+              </div>
+              <p className="text-[11px] opacity-90 leading-relaxed">
+                This element uses a dynamic expression (e.g.{" "}
+                <code>cn(...)</code>
+                ). Direct style patching is disabled to protect component logic.
+              </p>
+              {componentPath ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="mt-1 h-6 gap-1.5 border-amber-500/40 bg-background/60 text-[11px] text-amber-900 hover:bg-background dark:text-amber-100"
+                  onClick={jumpToSelectedSource}
+                  disabled={disabled}
+                >
+                  <Code2 className="size-3" />
+                  Open source in Code
+                </Button>
+              ) : null}
             </div>
-            <p className="text-[11px] opacity-90 leading-relaxed">
-              This element uses a dynamic expression (e.g. <code>cn(...)</code>
-              ). Direct style patching is disabled to protect component logic.
-            </p>
-            {componentPath ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                className="mt-1 h-6 gap-1.5 border-amber-500/40 bg-background/60 text-[11px] text-amber-900 hover:bg-background dark:text-amber-100"
-                onClick={jumpToSelectedSource}
-                disabled={disabled}
-              >
-                <Code2 className="size-3" />
-                Open source in Code
-              </Button>
-            ) : null}
           </div>
-        </div>
-      )}
+        )}
 
       {/* Advanced source classes */}
       {view === "styles" && visibleModules.has("source-style") && (
