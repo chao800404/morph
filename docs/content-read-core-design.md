@@ -294,15 +294,32 @@ const { hero } = home;
 - `src/lib/storefront/theme-framework/astro-case-a-fixture.test.ts`：Astro Theme 只含作者的檔案、純 Astro 與反向案例、加上平台檔案後原樣通過建置 materializer、`planNativeAstroBuild`、`planAstroPreviewWorkspace`、sidecar 可解析。
 - `src/lib/storefront/compiler/local-vite-preview-server.content-read-parity.test.ts`，**真實執行**：同一份草稿下 `astro dev` 與 Start dev server：兩邊工作區的核心 sha256 相同；讀取成功且兩邊 hero 相同；頁面不含內容來源位址或標頭名稱；新草稿在下一次渲染出現；隱藏時兩邊都不顯示儲存的值且結果相同；讀取被拒（`invalid_path`）時兩邊都回 500、顯示該代碼的字句、不顯示元件預設值。
 - `src/lib/storefront/compiler/native-astro-case-a.build.test.ts`，**真實執行**：經 build runner 的 `astro build`；`/about` 預先渲染為封存值；反向一，不加 integration 時建置因 `no_content_source` 失敗；反向二，元件 import 未核准的套件時被同一個 import guard 拒絕。
+- `src/lib/storefront/compiler/content-read-isolation.workerd.test.ts`，**真實執行，建置後在 workerd**（2026-10-15）：
+  - **建置與執行**：Astro 與 Start Theme 都經 build runner 建置。建置出的 Worker 以 Wrangler 的本機 runtime（workerd）執行，跟 `native-compat.test.ts` 一樣用 `runtime/server/wrangler.json`。
+  - **請求方式**：每個請求像正式 runtime 那樣，自己帶 `x-morph-content-origin`（`theme-runtimes.ts` 的 `applyStorefrontContext`），指向兩個不同的本機內容服務 A、B。
+  - **測試頁**：一個讀兩次的作者頁（`/isolation`：先讀 `/about`，再讀 `/`）。這是測試頁，不改 case A fixture。
+  - **強制順序**：A 停在第一次讀取，直到 B 從頭到尾渲染完才放行。兩個方向各一次。
+  - **驗證內容**：兩個請求都只顯示自己來源的內容；每個內容服務只收到自己那個請求的兩次讀取。沒有來源的請求在 A 等待時回 500，也沒有從任一服務讀取。
+  - **反向檢查**：每一項都只讓預期的框架變紅，還原後 sha256 相同。
+    - Astro 接線把請求存在模組變數：只有 Astro 紅，第二次讀取讀到 B。
+    - 核心快取第一次的內容來源：兩者都紅，讀取被送到 A 的服務。
+    - Start 接線快取內容來源：只有 Start 紅。
 
 ## 11. 未驗證
 
-- 正式 Cloudflare：建置出的 Worker 在正式環境經 Core 轉送執行 SSR（本輪只建置，沒有執行建置出的 Worker）；Build Preview。
+- 正式 Cloudflare：建置出的 Worker 在正式環境經 Core 轉送執行 SSR；Build Preview。（2026-10-15 已在 Wrangler 本機 workerd 執行建置出的 Worker，見 §10；不是正式環境，也沒有走 Core 的 `applyStorefrontContext`，標頭由測試直接帶入。）
 - 預覽權限撤銷（#214），以及完整 Design 驗收（點選、Inspector、寫入、重新載入）。
-- 真實框架中「兩個並行請求、不同預覽上下文」：Live Preview 的 Worker 對每個請求設定同一個 origin，harness 無法給出不同上下文。並行隔離只在核心原型與 Astro 接線（Node 的 ALS）證明；workerd 中的 ALS、Start `getRequest()` 的並行隔離都未直接測。
+- 真實框架中「兩個並行請求、不同預覽上下文」：
+  - **2026-10-15 已證明**（§10 的 workerd 測試）：建置出的 Astro Worker（workerd 中的 ALS）與 Start Worker（`getRequest()`），在強制交錯的兩個並行請求下，各自讀自己標頭指向的內容服務。
+  - **仍未證明**：
+    - 正式 Cloudflare 與 Core 轉送；
+    - 超過兩個請求或高負載；
+    - 不同 Theme 共用同一個 isolate（每個 Theme 是自己的 Worker，這裡沒有測）；
+    - 內容讀取以外的請求憑證。目前核心沒有可變的全域 client，§9 的待決 4、5 仍待決。
+  - Live Preview 的 Worker 仍然對每個請求設定同一個 origin，所以預覽路徑本身無法給出不同上下文。
 - 真實框架中的網路錯誤與上游拒絕（`content_not_found` 等）：只在核心原型測；真實執行只測了 `invalid_path`。
 - Start 接線在 Node 中直接執行（需要 Start 編譯器處理 `createIsomorphicFn`），以及 Start 的用戶端導覽讀取（`same-origin` 分支）。
-- Start 的建置（本輪只有 dev server）。
+- Start 的建置：2026-10-15 已證明純 Start fixture 能經 build runner 建置，SSR 在 workerd 中讀取（§10）；用戶端導覽與預先渲染仍未測。
 - Morph 自己的 wrapper 呼叫 `addMiddleware`（§4.5，目前是測試替代）；§4.5 驗收第 1、3、4、5 點；作者另有 `src/middleware.ts` 時的順序。
 - SDK 交付（§4.6）：兩個做法都只是比較，沒有原型。
 - 作者自己電腦執行 Astro 與本機讀草稿（§4.7）：延後，未驗證。
