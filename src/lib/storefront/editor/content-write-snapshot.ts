@@ -124,6 +124,16 @@ export function basisWithinOwnRange(
   return basis >= snapshot.ownSince && basis <= snapshot.draftGeneration;
 }
 
+/** The older of two copies an input may have been made on; either may be unknown. */
+export function earlierBasis(
+  a: number | undefined,
+  b: number | undefined,
+): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
+
 /** One section's stored props in a snapshot. */
 export function snapshotSectionProps(
   snapshot: ContentSnapshot,

@@ -108,6 +108,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** See the Inspector's `contentBasis`; asked by the section's id. */
+  contentBasisForSection?: (sectionId: string) => number | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   onCodeComponentPropsChange?: (
@@ -236,6 +238,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  contentBasisForSection,
   inlineTextCommit,
   onCodeComponentPropsChange,
   onJumpToCode,
@@ -341,6 +344,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       selection?.sourceFilePath,
       themeFiles,
     ],
+  );
+  const inspectorContentBasis = useCallback(
+    () =>
+      documentSection
+        ? contentBasisForSection?.(documentSection.id)
+        : undefined,
+    [contentBasisForSection, documentSection],
   );
 
   useEffect(() => {
@@ -518,6 +528,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onRepairThemeLinkBinding={onRepairThemeLinkBinding}
               onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
+              contentBasis={inspectorContentBasis}
               inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
               selectionSourceCurrent={selectionSourceCurrent}

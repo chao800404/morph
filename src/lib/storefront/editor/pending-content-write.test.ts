@@ -5,6 +5,7 @@ import {
   stageContentFields,
   selectCurrentContentFields,
   acknowledgeContentFields,
+  rebaseFieldBasis,
   type PendingContentEntry,
 } from "./pending-content-write";
 
@@ -423,6 +424,71 @@ describe("a content write composed on one snapshot", () => {
     expect(() =>
       selectCurrentContentFields(entry, 1, stored, snapshot(6, 6)),
     ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+  });
+
+  it("keeps a field on the copy its first pending input was made on while it is typed into again", () => {
+    const stored = { heading: "Old", items: rows() };
+    const first = typed(stored, { heading: "Mine" }, "heading", 4);
+    // Typed again after the editor read someone else's change at 6.
+    const again = stageContentFields({
+      pending: first,
+      sectionId: "hero",
+      stored,
+      next: { heading: "Mine again" },
+      inputPath: "heading",
+      sourceForPath: () => 1,
+      basisDraftGeneration: 6,
+    })!;
+    expect(again.fields!.heading!.basisDraftGeneration).toBe(4);
+    expect(again.fields!.heading!.value).toBe("Mine again");
+    expect(() =>
+      selectCurrentContentFields(again, 1, stored, snapshot(6, 6)),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+    // Not only after a refusal: it holds from the first pending input.
+    expect(first.fields!.heading!.rejected).toBeUndefined();
+  });
+
+  it("gives a structural change the oldest copy of the inputs it replaces", () => {
+    const stored = { items: rows() };
+    const titled = typed(
+      stored,
+      {
+        items: [
+          { id: "a", title: "A" },
+          { id: "b", title: "B edited" },
+        ],
+      },
+      "items.1.title",
+      3,
+    );
+    const reordered = stageContentFields({
+      pending: titled,
+      sectionId: "hero",
+      stored,
+      next: {
+        items: [
+          { id: "b", title: "B edited" },
+          { id: "a", title: "A" },
+        ],
+      },
+      inputPath: "items",
+      sourceForPath: () => 1,
+      basisDraftGeneration: 7,
+    })!;
+    expect(Object.keys(reordered.fields!)).toEqual(["items"]);
+    expect(reordered.fields!.items!.basisDraftGeneration).toBe(3);
+  });
+
+  it("moves a field's copy only when it leaves the pending set or the author keeps it", () => {
+    const stored = { heading: "Old" };
+    const first = typed(stored, { heading: "Mine" }, "heading", 4);
+    // Answered and acknowledged: a new input starts from the copy it is on.
+    const fresh = typed(stored, { heading: "Next" }, "heading", 6);
+    expect(fresh.fields!.heading!.basisDraftGeneration).toBe(6);
+    // Kept by the author on the latest copy.
+    expect(
+      rebaseFieldBasis(first, 6).fields!.heading!.basisDraftGeneration,
+    ).toBe(6);
   });
 
   it("refuses a row field whose row is no longer at its path", () => {

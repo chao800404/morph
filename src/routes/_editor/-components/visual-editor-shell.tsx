@@ -28,6 +28,7 @@ import {
 import {
   acceptOwnSnapshot,
   acceptReadSnapshot,
+  earlierBasis,
   snapshotSectionProps,
   type ContentSnapshot,
   type SnapshotSection,
@@ -8711,6 +8712,14 @@ export function VisualEditorShell({
       )?.draftGeneration,
     [],
   );
+  /** The same, for the template a section's content is written to. */
+  const contentBasisForSection = useCallback(
+    (sectionId: string): number | undefined => {
+      const templateId = templateIdForSection(sectionId);
+      return templateId ? contentBasisFor(templateId) : undefined;
+    },
+    [contentBasisFor, templateIdForSection],
+  );
 
   /** See `provenFieldSourceGeneration`. */
   const provenFieldGeneration = useCallback(
@@ -8818,7 +8827,12 @@ export function VisualEditorShell({
         stored: sectionPropsSnapshot(sectionId),
         routePath: routePathForTemplate(templateId),
         inputPath: options?.inputFieldPath,
-        basisDraftGeneration: contentBasisFor(templateId),
+        // The copy the author was looking at when they began this input, if
+        // the Inspector knows it is older than the one the editor holds now.
+        basisDraftGeneration: earlierBasis(
+          options?.basisDraftGeneration,
+          contentBasisFor(templateId),
+        ),
         sourceForPath: (path) =>
           options?.historySourceGeneration !== undefined
             ? options.historySourceGeneration
@@ -11801,6 +11815,7 @@ export function VisualEditorShell({
           onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
+          contentBasisForSection={contentBasisForSection}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}

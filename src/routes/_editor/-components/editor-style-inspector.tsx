@@ -27,6 +27,7 @@ import {
   type SelectedRowRefusal,
 } from "@/lib/storefront/editor/selected-row-identity";
 import { normalizeRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import { earlierBasis } from "@/lib/storefront/editor/content-write-snapshot";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
@@ -110,6 +111,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -221,6 +223,12 @@ export type InspectorPropsChangeOptions = {
     selectionFieldPath: string;
     itemId: string | null;
   }>;
+  /**
+   * The draft generation of the copy the author was looking at when they
+   * began this input (`contentBasis` when the field was focused), when that
+   * may be older than the one the editor holds by the time it is staged.
+   */
+  basisDraftGeneration?: number;
 };
 
 /**
@@ -321,6 +329,12 @@ type EditorStyleInspectorProps = {
     next: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /**
+   * The draft generation of the document this section's content is being
+   * shown from, as the editor holds it now. Read when a content input is
+   * focused, so what the author types there counts as made on that copy.
+   */
+  contentBasis?: () => number | undefined;
   /**
    * The last value an inline canvas edit wrote. Applied to this section's
    * fields before the save and refetch bring it back as stored props.
@@ -809,7 +823,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPreviewSelectionField,
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
-  onPropsChange,
+  onPropsChange: emitPropsChange,
+  contentBasis,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
@@ -850,12 +865,96 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setSectionsExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const { contentResourceKey, setLocalProps, localPropsRef, props } =
-    useInspectorContentProps({
-      resourceKey,
-      sectionId: section.id,
-      sectionProps: section.props,
+  const {
+    contentResourceKey,
+    setLocalProps,
+    localPropsRef,
+    props,
+    externalEpochs,
+  } = useInspectorContentProps({
+    resourceKey,
+    sectionId: section.id,
+    sectionProps: section.props,
+  });
+
+  /**
+   * The content input the author is in, with what it showed and the copy it
+   * was showing when they entered it.
+   *
+   * Inputs hold their own value, so while the author is in one nothing
+   * replaces it — not their text, not an IME composition. A newer stored value
+   * for a field is shown once no content input has focus. Until then the
+   * author may still be typing on the older copy, so what they type counts as
+   * made on it: the earliest copy shown since an update was held back.
+   */
+  const contentFocusRef = useRef<{
+    element: HTMLElement;
+    value: string;
+    basis: number | undefined;
+  } | null>(null);
+  /** The copy shown when the first update still held back was read. */
+  const heldBackBasisRef = useRef<number | undefined>(undefined);
+  const [shownEpochs, setShownEpochs] = useState<
+    Readonly<Record<string, number>>
+  >({});
+  const shownEpochsRef = useRef(shownEpochs);
+  shownEpochsRef.current = shownEpochs;
+  const externalEpochsRef = useRef(externalEpochs);
+  externalEpochsRef.current = externalEpochs;
+  const syncShownEpochs = useCallback(() => {
+    const pending = Object.entries(externalEpochsRef.current).filter(
+      ([key, epoch]) => shownEpochsRef.current[key] !== epoch,
+    );
+    if (pending.length === 0) {
+      heldBackBasisRef.current = undefined;
+      return;
+    }
+    if (contentFocusRef.current) {
+      heldBackBasisRef.current ??= contentFocusRef.current.basis;
+      return;
+    }
+    heldBackBasisRef.current = undefined;
+    setShownEpochs((current) => {
+      const next = { ...current };
+      for (const [key, epoch] of pending) next[key] = epoch;
+      return next;
     });
+  }, []);
+  useLayoutEffect(() => {
+    syncShownEpochs();
+  }, [externalEpochs, syncShownEpochs]);
+  const isContentInput = (target: EventTarget | null): target is HTMLElement =>
+    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+  const handleContentFocus = (event: React.FocusEvent<HTMLElement>) => {
+    if (!isContentInput(event.target)) return;
+    contentFocusRef.current = {
+      element: event.target,
+      value: (event.target as HTMLInputElement | HTMLTextAreaElement).value,
+      basis: earlierBasis(contentBasis?.(), heldBackBasisRef.current),
+    };
+  };
+  const handleContentBlur = (event: React.FocusEvent<HTMLElement>) => {
+    if (contentFocusRef.current?.element !== event.target) return;
+    contentFocusRef.current = null;
+    // After focus settles: moving into another input keeps updates held.
+    setTimeout(syncShownEpochs, 0);
+  };
+  /** Every content change, with the copy the focused input was made on. */
+  const onPropsChange = useCallback(
+    (next: Record<string, unknown>, options?: InspectorPropsChangeOptions) => {
+      const basis = earlierBasis(
+        options?.basisDraftGeneration,
+        contentFocusRef.current?.basis,
+      );
+      emitPropsChange(
+        next,
+        basis === undefined
+          ? options
+          : { ...options, basisDraftGeneration: basis },
+      );
+    },
+    [emitPropsChange],
+  );
   // The selected row, confirmed by its `id` against the rows as they are now:
   // its index may have moved since the click, and a write to the index as
   // selected would land on whichever row took its place.
@@ -1065,9 +1164,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     return path ? getFieldPathValue(props, path) : props[key];
   };
   // Inputs hold their own value. An inline canvas edit changes a stored value
-  // underneath them, so they are remounted to show it.
-  const contentFieldInputKey = (fieldKey: string) =>
-    `${contentResourceKey}:${fieldKey}:${inlineCommitEpoch}`;
+  // underneath them, and so does a newer read of a value the author has not
+  // changed here, so they are remounted to show it — per field, by the
+  // top-level key the value is stored under, and never while the author is
+  // in a content input (see `shownEpochs`).
+  const contentFieldInputKey = (fieldKey: string, path?: string) => {
+    const root = (path ?? nestedFieldPath(fieldKey) ?? fieldKey).split(".")[0]!;
+    return `${contentResourceKey}:${fieldKey}:${inlineCommitEpoch}:${shownEpochs[root] ?? 0}`;
+  };
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
   const optimisticString = (key: string): string | undefined => {
@@ -2571,6 +2675,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const handleTextFieldBlur = useCallback(
     (field: string, displayedValue: unknown, nextValue: string) => {
       if (nextValue === String(displayedValue ?? "")) return;
+      // Left as it was entered: nothing was typed. A newer stored value read
+      // meanwhile is not something the author changed, and the older text
+      // still in the input is not a change to write back over it.
+      if (contentFocusRef.current?.value === nextValue) return;
       handleFieldChange(field, nextValue);
     },
     [handleFieldChange],
@@ -2601,7 +2709,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   return (
-    <div className="min-w-0 space-y-3 p-3 text-xs">
+    <div
+      className="min-w-0 space-y-3 p-3 text-xs"
+      onFocus={handleContentFocus}
+      onBlur={handleContentBlur}
+    >
       {/* Component Header & Code Bridge */}
       <div className="space-y-2 rounded-xl border bg-muted/40 p-3">
         <div className="flex items-center justify-between">
@@ -3144,7 +3256,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                       >
                                         {rowDefinition.type === "textarea" ? (
                                           <Textarea
-                                            key={contentFieldInputKey(rowKey)}
+                                            key={contentFieldInputKey(
+                                              rowKey,
+                                              fieldKey,
+                                            )}
                                             defaultValue={String(
                                               row?.[rowKey] ?? "",
                                             )}
@@ -3161,6 +3276,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                           />
                                         ) : (
                                           <Input
+                                            key={contentFieldInputKey(
+                                              rowKey,
+                                              fieldKey,
+                                            )}
                                             type={
                                               rowDefinition.type === "url"
                                                 ? "url"
@@ -3980,7 +4099,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         label={binding.fieldKey.replace(/[-_]/g, " ")}
                       >
                         <Textarea
-                          key={contentFieldInputKey(binding.fieldKey)}
+                          key={contentFieldInputKey(
+                            binding.fieldKey,
+                            binding.fieldPath ?? binding.fieldKey,
+                          )}
                           rows={2}
                           defaultValue={String(value ?? "")}
                           onInput={(event) =>

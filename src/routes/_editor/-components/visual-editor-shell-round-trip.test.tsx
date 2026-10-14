@@ -3020,6 +3020,342 @@ function Home() {
     ).toBeTruthy();
   });
 
+  // The same field typed into again, once someone else's change to it has
+  // been read: the new keystrokes are made on the author's own copy, not on
+  // the document that was read, so they are not a reason to write over it.
+
+  /** Opens the section heading in Content and returns its field. */
+  async function openHeading(fixture: Fixture) {
+    const heading = await reportImage(fixture, 0, "h2");
+    const editor = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(heading);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Collections");
+    return { ...editor, field };
+  }
+  /** The read a refetch hands the editor: someone else's heading, at 2. */
+  const theirsAt2 = (
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+  ) =>
+    editorWith(editorContext, fixture, { heading: "Theirs", items: rows() }, 2)
+      .data as unknown as StorefrontThemeEditorDTO;
+
+  it("does not write over someone else's change when the author keeps typing in the field after it was refused", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Mine" } });
+    fireEvent.blur(field);
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await releaseQueued();
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+
+    // The author goes on typing in the same field, conflict shown.
+    const again = screen.getByDisplayValue("Mine");
+    fireEvent.input(again, { target: { value: "Mine again" } });
+    fireEvent.blur(again);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
+  });
+
+  /**
+   * Presses Load latest, keep mine on the document holding "Theirs" at 2:
+   * one write, at 2, carrying the author's newest heading, then saved.
+   */
+  async function keepMineAndExpectSaved(
+    client: QueryClient,
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+    mine: string,
+  ) {
+    if (echo) echo.props = { heading: "Theirs", items: rows() };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Theirs", items: rows() },
+        2,
+      ) as never,
+    );
+    const before = sent().length;
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(before + 1);
+    const write = sent()[before]!;
+    expect(write.expectedDraftGeneration).toBe(2);
+    expect(write.props).toEqual({ heading: mine });
+    await waitFor(() => expect(saveStatus()).toBe("Unpublished"));
+  }
+
+  it("does not write over someone else's change read while the author's edit waits, when the field is typed into again before it leaves", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Mine" } });
+    fireEvent.blur(field);
+    // Read before the edit leaves; nothing has said "out of date" yet.
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    expect(saveStatus()).not.toBe("Out of date");
+    const again = screen.getByDisplayValue("Mine");
+    fireEvent.input(again, { target: { value: "Mine again" } });
+    fireEvent.blur(again);
+    // Restores real timers.
+    await releaseQueued();
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
+  });
+
+  // The author is in the field when someone else's change to it is read:
+  // the input is not replaced under them, and what they type there was
+  // typed on the copy they were looking at.
+
+  it("does not replace the field the author is in, and refuses what they typed there on the older copy", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    // Typed, not yet left: a heading is written when the field is left.
+    (field as HTMLTextAreaElement).value = "Mine typed";
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // The same element, with the author's text.
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("Mine typed");
+
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine typed").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine typed");
+  });
+
+  it("writes nothing when the author leaves the field unchanged, and then shows someone else's change", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { editorContext, receive, field } = await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("Collections");
+
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(screen.queryByDisplayValue("Collections")).toBeNull();
+    expect(await screen.findByDisplayValue("Theirs")).toBeTruthy();
+  });
+
+  it("keeps an IME composition in the field going when someone else's change is read", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    fireEvent.compositionStart(field);
+    (field as HTMLTextAreaElement).value = "中";
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // Not remounted mid-composition: the same element, the composing text.
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("中");
+    (field as HTMLTextAreaElement).value = "中文";
+    fireEvent.compositionEnd(field, { data: "中文" });
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    await keepMineAndExpectSaved(client, editorContext, fixture, "中文");
+  });
+
+  it("counts what the author types in another field as made on the older copy while an update is held back", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const title = await reportImage(fixture, 1, "h3");
+    const { editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(title);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    // The selected row's own field, then the list editor's field for it.
+    const [selectedTitle, listTitle] =
+      await screen.findAllByDisplayValue("Second");
+    act(() => {
+      selectedTitle!.focus();
+    });
+    // Someone else retitles row B while the author is in its field: the
+    // update is held back, so both fields still show "Second".
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          {
+            heading: "Collections",
+            items: [rowA, { ...rowB, title: "Second, theirs" }],
+          },
+          2,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    await flushFrames();
+    const rowTitle = listTitle!;
+    expect((rowTitle as HTMLInputElement).value).toBe("Second");
+    act(() => {
+      rowTitle.focus();
+    });
+    fireEvent.input(rowTitle, { target: { value: "Second, mine" } });
+    act(() => {
+      rowTitle.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    // Typed on the copy that still showed "Second": not sent over theirs.
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+  });
+
+  it("shows someone else's change to one field without touching what the author holds in another", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const title = await reportImage(fixture, 1, "h3");
+    const { client, editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(title);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const rowTitle = (await screen.findAllByDisplayValue("Second"))[0]!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(rowTitle, { target: { value: "Second, mine" } });
+    fireEvent.blur(rowTitle);
+    // Someone else changes the heading only.
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await releaseQueued();
+
+    // The row title is still the author's; it was typed on the older copy,
+    // so it waits as out of date rather than going out over that read.
+    expect(screen.getAllByDisplayValue("Second, mine").length).toBeGreaterThan(
+      0,
+    );
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+
+    if (echo) echo.props = { heading: "Theirs", items: rows() };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Theirs", items: rows() },
+        2,
+      ) as never,
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    // Only the author's field: the other writer's heading is not sent back.
+    expect(Object.keys(sent()[0]!.props as object)).toEqual(["items"]);
+    expect(itemsOf(sent()[0]!).map(([id, title]) => [id, title])).toEqual([
+      ["row-a", "First"],
+      ["row-b", "Second, mine"],
+    ]);
+    await waitFor(() => expect(saveStatus()).toBe("Unpublished"));
+  });
+
+  it("shows someone else's change to the field once it is read, when the author has nothing waiting", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { editorContext, receive } = await openHeading(fixture);
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // What the author types next is typed on what they can see.
+    expect(screen.queryByDisplayValue("Collections")).toBeNull();
+    const field = await screen.findByDisplayValue("Theirs");
+    fireEvent.input(field, { target: { value: "Theirs, edited" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.expectedDraftGeneration).toBe(2);
+    expect((sent()[0]!.props as { heading?: string }).heading).toBe(
+      "Theirs, edited",
+    );
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("saves the author's consecutive edits to the field, each at the generation the last one returned", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { field } = await openHeading(fixture);
+    fireEvent.input(field, { target: { value: "First" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const next = screen.getAllByDisplayValue("First")[0]!;
+    fireEvent.input(next, { target: { value: "Second" } });
+    fireEvent.blur(next);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([1, 2]);
+    expect(
+      sent().map((data) => (data.props as { heading?: string }).heading),
+    ).toEqual(["First", "Second"]);
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
   it("reads the page first when an answer brought no document, and sends nothing if it cannot", async () => {
     vi.spyOn(toast, "error").mockImplementation(() => "");
     const fixture = showcase();

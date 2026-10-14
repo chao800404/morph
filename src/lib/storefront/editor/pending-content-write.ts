@@ -108,6 +108,20 @@ export function stageContentFields(args: {
   const fields = { ...args.pending?.fields };
   for (const path of changed) {
     const rows = rowIdentitiesAt(view, path);
+    // The copy this field's pending input was first made on. Typing into it
+    // again does not move it onto a later copy the editor has read since:
+    // the author kept typing on their own text, not on that copy. Only an
+    // answered write (the field leaves the pending set) or the author's
+    // "keep mine" (`rebaseFieldBasis`) moves it.
+    const earlier = Object.entries(fields)
+      .filter(([old]) => old === path || old.startsWith(`${path}.`))
+      .map(([, field]) => field.basisDraftGeneration)
+      .filter((basis): basis is number => basis !== undefined);
+    if (args.basisDraftGeneration !== undefined) {
+      earlier.push(args.basisDraftGeneration);
+    }
+    const basisDraftGeneration =
+      earlier.length > 0 ? Math.min(...earlier) : undefined;
     // A structural change owns the whole field, not stale descendant edits.
     for (const old of Object.keys(fields)) {
       if (old.startsWith(`${path}.`)) delete fields[old];
@@ -128,9 +142,7 @@ export function stageContentFields(args: {
       (generation === null || generation <= (prior.sourceGeneration ?? 0))
         ? { rejected: true }
         : {}),
-      ...(args.basisDraftGeneration !== undefined
-        ? { basisDraftGeneration: args.basisDraftGeneration }
-        : {}),
+      ...(basisDraftGeneration !== undefined ? { basisDraftGeneration } : {}),
       ...(rows.length > 0 ? { rows } : {}),
     };
   }
