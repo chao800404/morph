@@ -375,3 +375,165 @@ describe("sectionContentLanded", () => {
     );
   });
 });
+describe("a content write composed on one snapshot", () => {
+  const rows = () => [
+    { id: "a", title: "A" },
+    { id: "b", title: "B" },
+  ];
+  const snapshot = (draftGeneration: number, ownSince = draftGeneration) => ({
+    draftGeneration,
+    ownSince,
+    sections: [],
+  });
+  const typed = (
+    stored: Record<string, unknown>,
+    next: Record<string, unknown>,
+    inputPath: string,
+    basisDraftGeneration: number,
+  ) =>
+    stageContentFields({
+      sectionId: "hero",
+      stored,
+      next,
+      inputPath,
+      sourceForPath: () => 1,
+      basisDraftGeneration,
+    })!;
+
+  it("takes the snapshot's draft generation with what it composed", () => {
+    const stored = { heading: "Old", items: rows() };
+    const entry = typed(stored, { heading: "New" }, "heading", 4);
+    const sent = selectCurrentContentFields(entry, 1, stored, snapshot(4));
+    expect(sent.props).toEqual({ heading: "New" });
+    expect(sent.expectedDraftGeneration).toBe(4);
+  });
+
+  it("composes an input onto a copy our own writes moved on", () => {
+    const stored = { heading: "Old" };
+    const entry = typed(stored, { heading: "New" }, "heading", 4);
+    expect(
+      selectCurrentContentFields(entry, 1, stored, snapshot(6, 3))
+        .expectedDraftGeneration,
+    ).toBe(6);
+  });
+
+  it("refuses, as out of date, an input older than someone else's change", () => {
+    const stored = { heading: "Theirs" };
+    const entry = typed(stored, { heading: "Mine" }, "heading", 4);
+    expect(() =>
+      selectCurrentContentFields(entry, 1, stored, snapshot(6, 6)),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+  });
+
+  it("refuses a row field whose row is no longer at its path", () => {
+    const madeOn = { items: rows() };
+    const next = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B edited" },
+      ],
+    };
+    const entry = typed(madeOn, next, "items.1.title", 4);
+    const reordered = { items: [rows()[1], rows()[0]] };
+    expect(() =>
+      selectCurrentContentFields(entry, 1, reordered, snapshot(4)),
+    ).toThrow(expect.objectContaining({ code: "TEMPLATE_DRAFT_CONFLICT" }));
+    // In place, it is written to that row.
+    expect(
+      selectCurrentContentFields(entry, 1, madeOn, snapshot(4)).props,
+    ).toEqual({ items: next.items });
+  });
+
+  it("checks a list nothing stores yet against the author's own copy of it", () => {
+    const next = {
+      items: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B edited" },
+      ],
+    };
+    const entry = typed({}, next, "items.1.title", 4);
+    expect(selectCurrentContentFields(entry, 1, {}, snapshot(4)).props).toEqual(
+      { items: next.items },
+    );
+  });
+
+  it("is prepared when sent, so input typed meanwhile goes with it", async () => {
+    const pending = new Map<string, PendingContentEntry>();
+    const baselines = new Map<string, Record<string, unknown>>();
+    const stored = { heading: "Old", subheading: "Old" };
+    pending.set("key", typed(stored, { heading: "New" }, "heading", 1));
+    let release!: () => void;
+    const queued = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sent: PendingContentEntry[] = [];
+    const commit = commitPendingContent({
+      key: "key",
+      pending,
+      baselines,
+      failureCode: () => undefined,
+      select: (entry) =>
+        selectCurrentContentFields(entry, 1, stored, snapshot(1)),
+      saveWhenSent: async (prepare) => {
+        await queued;
+        sent.push(prepare());
+        return { success: true };
+      },
+    });
+    // Typed while the write waits behind another.
+    pending.set(
+      "key",
+      stageContentFields({
+        pending: pending.get("key"),
+        sectionId: "hero",
+        stored,
+        next: { subheading: "Newer" },
+        inputPath: "subheading",
+        sourceForPath: () => 1,
+        basisDraftGeneration: 1,
+      })!,
+    );
+    release();
+    await commit;
+    expect(sent[0]!.props).toEqual({ heading: "New", subheading: "Newer" });
+    expect(pending.has("key")).toBe(false);
+  });
+
+  it("keeps input typed after it was prepared when its answer comes", async () => {
+    const pending = new Map<string, PendingContentEntry>();
+    const baselines = new Map<string, Record<string, unknown>>();
+    const stored = { heading: "Old" };
+    pending.set("key", typed(stored, { heading: "First" }, "heading", 1));
+    let answer!: (value: { success: boolean }) => void;
+    const commit = commitPendingContent({
+      key: "key",
+      pending,
+      baselines,
+      failureCode: () => undefined,
+      select: (entry) =>
+        selectCurrentContentFields(entry, 1, stored, snapshot(1)),
+      saveWhenSent: (prepare) => {
+        prepare();
+        return new Promise<{ success: boolean }>((resolve) => {
+          answer = resolve;
+        });
+      },
+    });
+    // Typed again after the first was sent, before it was answered.
+    pending.set(
+      "key",
+      stageContentFields({
+        pending: pending.get("key"),
+        sectionId: "hero",
+        stored,
+        next: { heading: "Second" },
+        inputPath: "heading",
+        sourceForPath: () => 1,
+        basisDraftGeneration: 1,
+      })!,
+    );
+    answer({ success: true });
+    await commit;
+    expect(pending.get("key")?.fields?.heading?.value).toBe("Second");
+  });
+});

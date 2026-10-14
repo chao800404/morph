@@ -498,6 +498,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               sharedLayoutPaths={sharedLayoutPaths}
               sectionTemplatePaths={sectionTemplatePaths}
               resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
+              rowIdTemplateId={activeTemplate?.id}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}

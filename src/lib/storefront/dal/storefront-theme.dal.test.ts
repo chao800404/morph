@@ -4441,3 +4441,99 @@ describe("the object position control's write, against the real Starter source",
     ]);
   });
 });
+
+describe("a list nothing stores yet, first edited from the Inspector", () => {
+  it("keeps the row ids the editor gave its default rows, through the next write", async () => {
+    const { normalizeRowIds } =
+      await import("@/lib/storefront/editor/normalize-row-ids");
+    const path = "src/components/Entries.tsx";
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES ('file-entries', 'storefront-a', 'theme-a', ?, ?, 'now', 'now')`,
+      )
+      .run(
+        path,
+        `export const contentFields = {
+  items: {
+    type: "array",
+    label: "Entries",
+    fields: { title: { type: "text", label: "Title", maxLength: 150 } },
+  },
+} as const;
+export default function Entries({ items = [{ title: "One" }, { title: "Two" }] }: { items?: { id?: string; title?: string }[] }) {
+  return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
+}`,
+      );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-entries', 'theme-a', 'index', 'Home', ?, 'now', 'now')`,
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "entries",
+              type: "entries",
+              componentRef: path,
+              enabled: true,
+              props: {},
+            },
+          ],
+        }),
+      );
+    // The ids the Inspector gives the component's defaults before the edit.
+    const [one, two] = normalizeRowIds(
+      { items: [{ title: "One" }, { title: "Two" }] },
+      { templateId: "template-entries", sectionId: "entries" },
+    ).value.items as Array<Record<string, unknown>>;
+    const read = async () => {
+      const editor = await storefrontThemeDal.findEditorContext(
+        "storefront-a",
+        "theme-a",
+      );
+      const template = editor?.templates.find(
+        (candidate) => candidate.id === "template-entries",
+      );
+      return (
+        template?.document.sections.find((section) => section.id === "entries")
+          ?.props as { items?: Array<Record<string, unknown>> } | undefined
+      )?.items?.map((item) => [item.id, item.title]);
+    };
+    const write = (items: unknown[], expectedDraftGeneration: number) =>
+      storefrontThemeDal.updateSectionProps({
+        expectedSourceGeneration: 1,
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-entries",
+        sectionId: "entries",
+        props: { items },
+        expectedDraftGeneration,
+        createdBy: "user-1",
+      });
+
+    const first = await write([one, { ...two, title: "Two edited" }], 1);
+    expect(first?.droppedProps).toEqual([]);
+    expect(await read()).toEqual([
+      [one!.id, "One"],
+      [two!.id, "Two edited"],
+    ]);
+
+    const second = await write(
+      [
+        { ...one, title: "One edited" },
+        { ...two, title: "Two edited" },
+      ],
+      first!.draftGeneration,
+    );
+    expect(second?.droppedProps).toEqual([]);
+    expect(await read()).toEqual([
+      [one!.id, "One edited"],
+      [two!.id, "Two edited"],
+    ]);
+  });
+});

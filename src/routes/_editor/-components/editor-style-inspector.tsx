@@ -26,6 +26,8 @@ import {
   rebaseSelectedRowPath,
   type SelectedRowRefusal,
 } from "@/lib/storefront/editor/selected-row-identity";
+import { normalizeRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -238,6 +240,13 @@ export type InspectorInlineTextCommit = Readonly<{
 type EditorStyleInspectorProps = {
   /** Storefront/theme/template identity; section ids are only locally unique. */
   resourceKey?: string;
+  /**
+   * The template this section belongs to, which the rows of a list nothing
+   * stores yet are identified under before their first edit — the ids the
+   * server would give the same rows (`normalizeRowIds`). Without it those
+   * rows keep no id, and an edit to one of them is refused when it is sent.
+   */
+  rowIdTemplateId?: string;
   /**
    * Modules the layout supplies rather than the previewed route.
    *
@@ -805,6 +814,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onJumpToCode,
   sharedLayoutPaths,
   sectionTemplatePaths,
+  rowIdTemplateId,
   view = "styles",
   disabled: disabledProp = false,
   documentWritesRefused = false,
@@ -2524,16 +2534,38 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     ) => {
       if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
       const current = localPropsRef.current;
-      const base =
-        seed && current[seed.key] === undefined
-          ? { ...current, [seed.key]: seed.value }
-          : current;
+      let base = current;
+      if (seed && current[seed.key] === undefined) {
+        // Nothing changed: the defaults stay the component's, unstored.
+        if (
+          sameContent(
+            getFieldPathValue({ [seed.key]: seed.value }, path),
+            value,
+          )
+        )
+          return;
+        // The rows are given their ids as shown, before the edit touches
+        // them: an id is derived partly from the row's content, so deriving
+        // it after the edit would name a different row than the one typed
+        // in. Done once — from here on the list is the author's copy, and
+        // later input, a retry or the send never derives an id again.
+        const seeded = { [seed.key]: seed.value };
+        base = {
+          ...current,
+          [seed.key]: (rowIdTemplateId
+            ? normalizeRowIds(seeded, {
+                templateId: rowIdTemplateId,
+                sectionId: section.id,
+              }).value
+            : seeded)[seed.key],
+        };
+      }
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next, { inputFieldPath: path });
     },
-    [onPropsChange],
+    [onPropsChange, rowIdTemplateId, section.id],
   );
 
   const handleTextFieldBlur = useCallback(

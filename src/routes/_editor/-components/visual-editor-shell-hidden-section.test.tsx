@@ -87,6 +87,7 @@ const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
 /** The editor's context with the stored sections given. */
 function contextWith(
   sections: Array<{ id: string; enabled: boolean; heading: string }>,
+  draftGeneration = 1,
 ): StorefrontThemeEditorDTO {
   return {
     previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
@@ -111,7 +112,7 @@ function contextWith(
             props: { heading },
           })),
         },
-        draftGeneration: 1,
+        draftGeneration,
         version: 1,
       },
     ],
@@ -430,17 +431,36 @@ describe("a hidden section's selection", () => {
   });
 
   it("is not given back when the section is shown again; a fresh selection works", async () => {
-    updateSectionProps.mockResolvedValue(saved);
+    // The generations as the server moves them: this tab's hide is 2, and
+    // the section shown again is read back at 3.
+    const hiddenAt2 = contextWith(
+      [{ id: "hero", enabled: false, heading: "Welcome" }],
+      2,
+    );
+    const shownAt3 = contextWith(
+      [{ id: "hero", enabled: true, heading: "Welcome" }],
+      3,
+    );
+    updateSectionProps
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          draftGeneration: 2,
+          droppedProps: [],
+          document: hiddenAt2.templates[0]!.document,
+        },
+      })
+      .mockResolvedValue(saved);
     const shell = renderShell();
     await openHeadingField();
     fireEvent.click(hideButton());
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    shell.storedAs(HIDDEN);
+    shell.storedAs(hiddenAt2);
     await waitFor(() =>
       expect(screen.queryByDisplayValue("Welcome")).toBeNull(),
     );
 
-    shell.storedAs(SHOWN);
+    shell.storedAs(shownAt3);
     await flushFrames();
     expect(screen.queryByDisplayValue("Welcome")).toBeNull();
 
