@@ -2112,8 +2112,12 @@ export default function PlainImage({ image }: { image?: { src?: string } }) {
     storedProps?: Record<string, unknown>;
   };
 
-  /** The canvas's report for one image, from the real preview pass. */
-  async function reportImage(fixture: Fixture, imageIndex: number) {
+  /** The canvas's report for one element, from the real preview pass. */
+  async function reportImage(
+    fixture: Fixture,
+    imageIndex: number,
+    selector = "img",
+  ) {
     const route = `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
 import Section from "../components/${fixture.path.split("/").pop()!.replace(".tsx", "")}";
@@ -2143,7 +2147,7 @@ function Home() {
     });
     const root = objposMount(html);
     const item = objposResolveSelectable(
-      root.querySelectorAll("img")[imageIndex] ?? null,
+      root.querySelectorAll(selector)[imageIndex] ?? null,
     );
     document.body.replaceChildren();
     expect(item).toBeTruthy();
@@ -2221,15 +2225,56 @@ function Home() {
         latestPublishedRevision: null,
       } as never,
     );
-    render(
+    const shell = (current: StorefrontThemeEditorDTO) => (
       <QueryClientProvider client={client}>
         <VisualEditorShell
-          context={editorContext}
+          context={current}
           search={{ ...baseSearch, section: "section" }}
           onSearchChange={vi.fn()}
         />
-      </QueryClientProvider>,
+      </QueryClientProvider>
     );
+    const { rerender } = render(shell(editorContext));
+    return {
+      client,
+      editorContext,
+      /** The editor handed a newer read of the Theme, as a refetch does. */
+      receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
+    };
+  }
+
+  /** The editor's read of the Theme, holding the section with `props`. */
+  function editorWith(
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+    props: Record<string, unknown>,
+    draftGeneration: number,
+  ) {
+    return {
+      success: true,
+      message: "ok",
+      data: {
+        ...editorContext,
+        templates: [
+          {
+            ...editorContext.templates[0]!,
+            draftGeneration,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: fixture.type,
+                  componentRef: fixture.path,
+                  enabled: true,
+                  props,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
   }
 
   async function selectAndOpenStyles(
@@ -2368,10 +2413,28 @@ function Home() {
     expect(objposSavedFiles).toHaveLength(0);
   });
 
-  // The row is found again by its id, but the selection's baseline was taken
-  // under its old index: the write is held for a fresh selection, as any row
-  // field's is (#217), rather than sent to whichever row took that index.
-  it("never writes another row when the rows moved after the click", async () => {
+  const itemsOf = (data: Record<string, unknown>) =>
+    (data.props as { items: Array<Record<string, unknown>> }).items.map(
+      (row) => [row.id, row.title, row.imagePosition],
+    );
+
+  /** Types into the section heading's own field, the way the author does. */
+  async function typeHeading(
+    report: Awaited<ReturnType<typeof reportImage>>,
+    from: string,
+    to: string,
+  ) {
+    fromPreview(report);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue(from);
+    fireEvent.input(field, { target: { value: to } });
+    fireEvent.blur(field);
+  }
+
+  // The selected row is found again by its id after the rows moved; the
+  // write goes to it, at the selection's baseline, and to nothing else.
+  it("writes the selected row by its id when the rows moved after the click", async () => {
     const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
     const [rowA, rowB] = rows();
     // The canvas drew A, B; the Document now holds B, A.
@@ -2389,8 +2452,130 @@ function Home() {
 
     await choose(trigger, "Top");
 
-    expect(sent()).toHaveLength(0);
-    expect(reselectNotices(toasts)).toBe(1);
+    expect(sent()).toHaveLength(1);
+    expect(itemsOf(sent()[0]!)).toEqual([
+      ["row-b", "Second", "top"],
+      ["row-a", "First", "30% center"],
+    ]);
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    expect(Object.keys(sent()[0]!.props as object)).toEqual(["items"]);
+    expect(reselectNotices(toasts)).toBe(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // A refused write recovers only through a fresh selection and a new choice
+  // in that field, and that choice confirms that field alone: another field's
+  // refused input stays kept, unsent, at its own generation.
+  it("recovers a refused choice after reselection and a new choice, and confirms nothing else", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockImplementation(async ({ data }) =>
+      data.expectedSourceGeneration === 2
+        ? { success: true, data: { draftGeneration: 2, droppedProps: [] } }
+        : {
+            success: false,
+            error: "SELECTION_SOURCE_CONFLICT",
+            message:
+              "The source code has changed. Select the field again. Your changes are kept.",
+          },
+    );
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    expect(heading).toMatchObject({ fieldKey: "heading" });
+    const image = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    await flushFrames();
+
+    // Another field's input, refused at the old source and kept.
+    await typeHeading(heading, "Collections", "Kept heading");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    // The Position choice, refused the same way.
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.expectedSourceGeneration).toBe(1);
+
+    // The source moves on. The old selection no longer offers a change.
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await flushFrames();
+    expect(
+      screen
+        .getByRole("combobox", { name: "Object position" })
+        .hasAttribute("data-disabled"),
+    ).toBe(true);
+
+    // A fresh selection and a new choice: that field alone, at the new source.
+    const again = await selectAndOpenStyles({ ...image, selectionRevision: 3 });
+    expect(again.hasAttribute("data-disabled")).toBe(false);
+    await choose(again, "Bottom");
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.expectedSourceGeneration).toBe(2);
+    expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
+    expect(itemsOf(sent()[2]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "bottom"],
+    ]);
+
+    // The kept heading was neither sent with it nor sent again afterwards,
+    // and it is still the author's, waiting for its own confirmation.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(3);
+    await typeHeadingKeptCheck(heading);
+    expect(reselectNotices(toasts)).toBeGreaterThan(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  async function typeHeadingKeptCheck(
+    report: Awaited<ReturnType<typeof reportImage>>,
+  ) {
+    fromPreview({ ...report, selectionRevision: 4 });
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    expect(await screen.findByDisplayValue("Kept heading")).toBeTruthy();
+  }
+
+  // A write whose outcome is unknown (no answer) is not upgraded, cleared or
+  // sent again because a Position choice is made beside it. The shell holds
+  // every later content write until an unanswered one is read back (#217's
+  // existing rule, not this control's); this read-back never answers here, so
+  // the choice waits, kept on screen, and the unanswered input is not resent.
+  it("does not resend or carry an unanswered input when a position is chosen", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      if ((data.props as Record<string, unknown>).heading !== undefined) {
+        throw new Error("offline");
+      }
+      draftGeneration += 1;
+      return { success: true, data: { draftGeneration, droppedProps: [] } };
+    });
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const image = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    await flushFrames();
+
+    await typeHeading(heading, "Collections", "Unanswered heading");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    // Only the one unanswered request, never repeated, and nothing carrying
+    // it at a newer baseline.
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.props).toEqual({ heading: "Unanswered heading" });
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    // The choice is held, not dropped.
+    expect(
+      screen.getByRole("combobox", { name: "Object position" }).textContent,
+    ).toContain("Top");
     expect(objposSavedFiles).toHaveLength(0);
   });
 
@@ -2454,6 +2639,72 @@ function Home() {
         .hasAttribute("data-disabled"),
     ).toBe(false);
     expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // The control for the held choice: once the unanswered input is read back
+  // as stored, it is acknowledged, not sent again, and the held choice leaves
+  // on its own, at the selection's baseline, with nothing else in it.
+  it("sends a held choice on its own once the unanswered input reads back as stored", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    let headingCalls = 0;
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      if ((data.props as Record<string, unknown>).heading !== undefined) {
+        headingCalls += 1;
+        throw new Error("offline");
+      }
+      draftGeneration += 1;
+      return { success: true, data: { draftGeneration, droppedProps: [] } };
+    });
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const image = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    let answer!: (value: unknown) => void;
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    await flushFrames();
+    await typeHeading(heading, "Collections", "Unanswered heading");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(1);
+    expect(saveStatus()).not.toBe("Saved");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    // The heading did land, unanswered: the read-back shows it stored.
+    act(() =>
+      answer(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Unanswered heading", items: rows() },
+          2,
+        ),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    expect(headingCalls).toBe(1);
+    const after = sent().slice(1);
+    expect(after).toHaveLength(1);
+    expect(Object.keys(after[0]!.props as object)).toEqual(["items"]);
+    expect(after[0]!.expectedSourceGeneration).toBe(1);
+    expect(itemsOf(after[0]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "top"],
+    ]);
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(1);
     expect(objposSavedFiles).toHaveLength(0);
   });
 });

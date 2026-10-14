@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFieldPathValue } from "./selection-taxonomy";
 import {
+  provenFieldSourceGeneration,
   advanceSelectionAfterTextPromotion,
   captureSelectionSourceBaseline,
   selectionSourceIsCurrent,
@@ -121,5 +123,54 @@ describe("selection source baseline", () => {
         1,
       ),
     ).toBe(false);
+  });
+});
+describe("a proven field's source generation", () => {
+  const baseline = { selectionKey: "selected", sourceGeneration: 3 };
+  const rows = {
+    items: [
+      { id: "row-a", imagePosition: "30% center" },
+      { id: "row-b", imagePosition: "72% center" },
+    ],
+  };
+  const resolve = (
+    overrides: Partial<Parameters<typeof provenFieldSourceGeneration>[0]>,
+  ) =>
+    provenFieldSourceGeneration({
+      stored: rows,
+      path: "items.1.imagePosition",
+      itemId: "row-b",
+      selectionBaseline: baseline,
+      readPath: getFieldPathValue,
+      ...overrides,
+    });
+
+  it("is the selection's baseline while the row at the index is the selected one", () => {
+    expect(resolve({})).toBe(3);
+  });
+
+  it("is none once another row is stored at that index", () => {
+    expect(resolve({ itemId: "row-a" })).toBeNull();
+    expect(
+      resolve({
+        stored: { items: [rows.items[1], rows.items[0]] },
+      }),
+    ).toBeNull();
+  });
+
+  it("is none for a row without an id, or one that is not stored", () => {
+    expect(resolve({ itemId: null })).toBeNull();
+    expect(resolve({ stored: {} })).toBeNull();
+    expect(resolve({ path: "items.5.imagePosition" })).toBeNull();
+  });
+
+  it("is none without a selection baseline", () => {
+    expect(resolve({ selectionBaseline: null })).toBeNull();
+  });
+
+  it("needs no row for a top-level field", () => {
+    expect(resolve({ path: "imagePosition", itemId: null, stored: {} })).toBe(
+      3,
+    );
   });
 });

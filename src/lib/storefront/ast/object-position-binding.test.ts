@@ -367,3 +367,57 @@ describe("the object position control is unavailable where it cannot prove the f
     ).toEqual({ kind: "unavailable", reason: "source-unreadable" });
   });
 });
+// A destructuring assignment writes every name in its pattern: `[item] = …`
+// replaces the row as surely as `item = …`, and `({ x: item.imagePosition } =
+// …)` writes the field. Each is a write the binding must refuse.
+describe("the object position control refuses writes made by destructuring", () => {
+  it.each([
+    [
+      "the row replaced by an array pattern",
+      { bodyBefore: "[item] = others;" },
+    ],
+    [
+      "the row replaced by an object pattern",
+      { bodyBefore: "({ item } = holder);" },
+    ],
+    [
+      "the field written by an object pattern",
+      { bodyBefore: "({ position: item.imagePosition } = defaults);" },
+    ],
+    [
+      "the field written by an array pattern",
+      { bodyBefore: '[item.imagePosition] = ["top"];' },
+    ],
+    [
+      "the field written by a nested pattern default",
+      { bodyBefore: '({ a: [item.imagePosition = "top"] } = source);' },
+    ],
+    [
+      "the row replaced in a for-of pattern",
+      { bodyBefore: "for ([item] of pairs) {}" },
+    ],
+    ["the list replaced by an array pattern", { before: "[items] = [other];" }],
+    [
+      "the list replaced by an object pattern",
+      { before: "({ items } = other);" },
+    ],
+    ["the list replaced by a rest pattern", { before: "[...items] = other;" }],
+  ])("refuses %s", (_name, options) => {
+    expect(resolveRow(rowSource(options))).toEqual({
+      kind: "unavailable",
+      reason: "binding-unproven",
+    });
+  });
+
+  it.each([
+    ["an array pattern", '[imagePosition] = ["top"];'],
+    ["an object pattern", "({ imagePosition } = other);"],
+    ["a renamed object pattern", "({ position: imagePosition } = other);"],
+    ["a pattern default", '[imagePosition = "top"] = [];'],
+  ])("refuses a top-level prop rewritten by %s", (_name, before) => {
+    expect(resolveTop(topSource({ before }))).toEqual({
+      kind: "unavailable",
+      reason: "binding-unproven",
+    });
+  });
+});

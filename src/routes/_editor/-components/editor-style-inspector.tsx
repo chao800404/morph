@@ -208,6 +208,17 @@ export type InspectorPropsChangeOptions = {
   inputFieldPath?: string;
   /** Selected row whose explicit action changes its list or creates an id. */
   selectionFieldPath?: string;
+  /**
+   * A field the selected element provably binds without being its selected
+   * field (the image position beside its `image`): the write is held to the
+   * baseline the selection captured, and, for a row, only while the row at
+   * that index still has the id the selection named. Only this one field is
+   * staged at that baseline; nothing else pending is confirmed by it.
+   */
+  provenFieldBaseline?: Readonly<{
+    selectionFieldPath: string;
+    itemId: string | null;
+  }>;
 };
 
 /**
@@ -1746,11 +1757,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         value,
       ),
     );
+    const selectionFieldPath = selection?.fieldPath;
+    if (!selectionFieldPath) return;
     localPropsRef.current = next;
     setLocalProps(next);
     onPropsChange(next, {
       inputFieldPath: objectPositionTarget.fieldPath,
-      selectionFieldPath: activeFieldPath,
+      // The selection as the canvas reported it: that is what its baseline
+      // was captured under. The row is checked again by id when it is staged.
+      provenFieldBaseline: {
+        selectionFieldPath,
+        itemId: selection?.itemId ?? null,
+      },
     });
   };
   const sectionClassName = sectionElementMeta?.className || "";

@@ -234,7 +234,7 @@ function usesOf(
   walk(root, (node) => {
     if (node?.type !== "Identifier" || node.name !== name) return;
     const parent = parents.get(node);
-    if (isBindingPosition(node, parent, parents)) return;
+    if (isBindingPosition(node, parents)) return;
     if (inTypePosition(node, parents)) return;
     if (isReference(node, parent)) found.push(node);
   });
@@ -271,41 +271,60 @@ function inTypePosition(
   return false;
 }
 
-function isBindingPosition(
+/**
+ * What a binding target belongs to: a declaration (`const { a } = …`, a
+ * parameter, a catch clause), an assignment (`({ a } = …)`, `[a] = …`,
+ * `for ([a] of …)`), or neither.
+ *
+ * The same patterns serve both. A name inside one is declared only when the
+ * pattern is a declaration's; inside an assignment's it is written, exactly
+ * as `a = …` writes it — and so is a member expression there, as in
+ * `({ x: row.field } = …)`. Walks up through the pattern to its owner.
+ */
+function patternTarget(
   node: AnyNode,
-  parent: AnyNode,
   parents: ReadonlyMap<AnyNode, AnyNode>,
-): boolean {
-  if (parent?.type === "VariableDeclarator" && parent.id === node) return true;
-  if (FUNCTION_TYPES.has(parent?.type) && parent.params?.includes(node)) {
-    return true;
+): "declaration" | "assignment" | null {
+  let child = node;
+  let parent = parents.get(child);
+  for (;;) {
+    if (parent?.type === "VariableDeclarator") {
+      return parent.id === child ? "declaration" : null;
+    }
+    if (FUNCTION_TYPES.has(parent?.type)) {
+      return parent.params?.includes(child) ? "declaration" : null;
+    }
+    if (parent?.type === "CatchClause") {
+      return parent.param === child ? "declaration" : null;
+    }
+    if (parent?.type === "AssignmentExpression") {
+      return parent.left === child ? "assignment" : null;
+    }
+    if (
+      parent?.type === "ForOfStatement" ||
+      parent?.type === "ForInStatement"
+    ) {
+      return parent.left === child ? "assignment" : null;
+    }
+    const insidePattern =
+      parent?.type === "ArrayPattern" ||
+      parent?.type === "ObjectPattern" ||
+      parent?.type === "RestElement" ||
+      (parent?.type === "AssignmentPattern" && parent.left === child) ||
+      (parent?.type === "ObjectProperty" &&
+        parent.value === child &&
+        parents.get(parent)?.type === "ObjectPattern");
+    if (!insidePattern) return null;
+    child = parent;
+    parent = parents.get(child);
   }
-  if (parent?.type === "AssignmentPattern" && parent.left === node) {
-    return isBindingPattern(parent, parents);
-  }
-  if (
-    parent?.type === "ObjectProperty" &&
-    parent.value === node &&
-    parents.get(parent)?.type === "ObjectPattern"
-  ) {
-    return true;
-  }
-  if (parent?.type === "ArrayPattern" || parent?.type === "RestElement") {
-    return true;
-  }
-  return false;
 }
 
-function isBindingPattern(
+function isBindingPosition(
   node: AnyNode,
   parents: ReadonlyMap<AnyNode, AnyNode>,
 ): boolean {
-  const parent = parents.get(node);
-  if (FUNCTION_TYPES.has(parent?.type)) return parent.params?.includes(node);
-  return (
-    parent?.type === "ObjectProperty" &&
-    parents.get(parent)?.type === "ObjectPattern"
-  );
+  return patternTarget(node, parents) === "declaration";
 }
 
 /** Whether a use writes the name itself rather than reading it. */
@@ -318,7 +337,8 @@ function isWrite(
     (parent?.type === "AssignmentExpression" && parent.left === use) ||
     parent?.type === "UpdateExpression" ||
     ((parent?.type === "ForOfStatement" || parent?.type === "ForInStatement") &&
-      parent.left === use)
+      parent.left === use) ||
+    patternTarget(use, parents) === "assignment"
   );
 }
 
@@ -345,6 +365,8 @@ function isRowRead(
   if (outer?.type === "AssignmentExpression" && outer.left === member) {
     return false;
   }
+  // A destructuring assignment writes it too: `({ x: row.field } = …)`.
+  if (patternTarget(member, parents) === "assignment") return false;
   if (outer?.type === "UpdateExpression") return false;
   if (outer?.type === "UnaryExpression" && outer.operator === "delete") {
     return false;

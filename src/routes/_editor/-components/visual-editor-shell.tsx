@@ -3,6 +3,7 @@ import {
   advanceSelectionAfterTextPromotion,
   captureSelectionSourceBaseline,
   fieldSelectionKey,
+  provenFieldSourceGeneration,
   sourceGenerationForFreshSelection,
   type SelectionSourceBaseline,
 } from "@/lib/storefront/editor/selection-source-baseline";
@@ -8507,6 +8508,26 @@ export function VisualEditorShell({
   );
   resetContentFieldsRef.current = handleResetContentFields;
 
+  /** See `provenFieldSourceGeneration`. */
+  const provenFieldGeneration = useCallback(
+    (
+      sectionId: string,
+      path: string,
+      proven: NonNullable<InspectorPropsChangeOptions["provenFieldBaseline"]>,
+    ): number | null =>
+      provenFieldSourceGeneration({
+        stored: sectionPropsSnapshot(sectionId),
+        path,
+        itemId: proven.itemId,
+        selectionBaseline: selectedFieldBaseline(
+          sectionId,
+          proven.selectionFieldPath,
+        ),
+        readPath: getFieldPathValue,
+      }),
+    [sectionPropsSnapshot, selectedFieldBaseline],
+  );
+
   const handleSectionPropsChange = useCallback(
     (
       sectionId: string,
@@ -8596,12 +8617,18 @@ export function VisualEditorShell({
         sourceForPath: (path) =>
           options?.historySourceGeneration !== undefined
             ? options.historySourceGeneration
-            : (selectedFieldBaseline(
-                sectionId,
-                options?.selectionFieldPath && path === options.inputFieldPath
-                  ? options.selectionFieldPath
-                  : path,
-              )?.sourceGeneration ?? null),
+            : options?.provenFieldBaseline && path === options.inputFieldPath
+              ? provenFieldGeneration(
+                  sectionId,
+                  path,
+                  options.provenFieldBaseline,
+                )
+              : (selectedFieldBaseline(
+                  sectionId,
+                  options?.selectionFieldPath && path === options.inputFieldPath
+                    ? options.selectionFieldPath
+                    : path,
+                )?.sourceGeneration ?? null),
       });
       if (!staged) return;
       pendingPropsMapRef.current.set(key, staged);
@@ -8626,6 +8653,7 @@ export function VisualEditorShell({
       updatePropsMutation,
       selectedFieldBaseline,
       currentContentSourceGeneration,
+      provenFieldGeneration,
     ],
   );
 

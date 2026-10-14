@@ -141,9 +141,14 @@ describe("the object position control's refusals", () => {
     expect(onPropsChange.mock.calls[0]![0].items[0].imagePosition).toBe(
       "bottom",
     );
-    expect(onPropsChange.mock.calls[0]![1]).toMatchObject({
+    // The field's own path at the selection's baseline, checked by row id;
+    // never the list-action route, which holds a refused input forever.
+    expect(onPropsChange.mock.calls[0]![1]).toEqual({
       inputFieldPath: "items.0.imagePosition",
-      selectionFieldPath: "items.0.image",
+      provenFieldBaseline: {
+        selectionFieldPath: "items.0.image",
+        itemId: "row-1",
+      },
     });
   });
 
