@@ -99,6 +99,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
     "preview-error-recovery.spec.ts",
+    // Unmeasured until the next rebalance; placed with the files above. One
+    // test on a throwaway Theme, two editor opens. Local sidecar only.
+    "preview-instance-reattach.spec.ts",
   ],
 ];
 

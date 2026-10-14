@@ -8,6 +8,11 @@ import { createLogger, createServer, type ViteDevServer } from "vite";
 import { LocalThemeWorkspaceWriter } from "./local-theme-workspace-writer";
 import { boundedPreviewLogAppender } from "./bounded-preview-log";
 import {
+  PREVIEW_SERVED_INSTANCE_TIMING,
+  formatPreviewServedInstance,
+  type PreviewServedInstance,
+} from "../editor/preview-protocol";
+import {
   isLoopbackPreviewHostname,
   LOCAL_PREVIEW_HOST,
 } from "./local-preview-host";
@@ -161,6 +166,15 @@ type RunningPreview = Readonly<{
    * sync. Null for a preview that confirms nothing.
    */
   instance: string | null;
+  /**
+   * Which start of this preview in this process the server is, named on
+   * every response it gives (`Server-Timing: morph-instance`) so an open page
+   * can say which one it was served by. Separate from `instance`, which is
+   * the content snapshot's stamp and stays null where nothing confirms
+   * content. Null where this process does not serve the page itself (a
+   * Start preview's child process).
+   */
+  servedInstance: PreviewServedInstance | null;
 }>;
 
 
@@ -327,6 +341,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
   private readonly stagedTtlMs: number;
   private readonly staleTempMs: number;
   private readonly stagedGraceMs: number;
+  /**
+   * This process's session, for `servedInstance`: a fresh value whenever the
+   * transport starts, so a serial is only ever compared with another from
+   * the same run.
+   */
+  private readonly servedSession = randomUUID();
+  /** Per preview, how many servers this session has started for it. */
+  private readonly servedSerials = new Map<string, number>();
 
   constructor(options: LocalVitePreviewServerOptions = {}) {
     this.workspacesRoot = path.resolve(
@@ -706,6 +728,8 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
               server: child.handle,
               confirmsContent: true,
               instance,
+              // Served by the child process, which names nothing.
+              servedInstance: null,
             });
             return {
               ok: true,
@@ -741,6 +765,12 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           }
         }
         let server: ViteDevServer | null = null;
+        const servedInstance: PreviewServedInstance = {
+          session: this.servedSession,
+          serial: (this.servedSerials.get(input.previewId) ?? 0) + 1,
+        };
+        this.servedSerials.set(input.previewId, servedInstance.serial);
+        const servedTiming = `${PREVIEW_SERVED_INSTANCE_TIMING};desc="${formatPreviewServedInstance(servedInstance)}"`;
         try {
           server = await createServer({
             // The same generated config the container runs, pointed at this root.
@@ -773,6 +803,20 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             },
             clearScreen: false,
             customLogger: this.previewLogger(addLog),
+            // Added here, in this process, rather than to the generated
+            // config: the workspace — and so its fingerprint — stays exactly
+            // the plan's, while every response says which start served it.
+            plugins: [
+              {
+                name: "morph-preview-served-instance",
+                configureServer(dev) {
+                  dev.middlewares.use((_request, response, next) => {
+                    response.setHeader("Server-Timing", servedTiming);
+                    next();
+                  });
+                },
+              },
+            ],
           });
           // Asserted on the merged configuration rather than trusted from the
           // options passed in: the generated config asks for polling, these
@@ -818,6 +862,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             // The client-only preview has no Worker to read a snapshot.
             confirmsContent: false,
             instance: null,
+            servedInstance,
           });
 
           return {
@@ -884,6 +929,14 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
     if (!input.expectedOrigin) return true;
     const expected = safeOrigin(input.expectedOrigin);
     return expected !== null && expected === running.origin;
+  }
+
+  /**
+   * The instance registered for `previewId` now, or null for none (or one
+   * that names none). Whether it is still serving is `isServing`'s to say.
+   */
+  servedInstanceFor(previewId: string): PreviewServedInstance | null {
+    return this.running.get(previewId)?.servedInstance ?? null;
   }
 
   /**
