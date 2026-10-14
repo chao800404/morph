@@ -74,10 +74,14 @@ function newServer() {
   return server;
 }
 
-async function start(server: LocalVitePreviewServer, page = PAGE) {
+async function start(
+  server: LocalVitePreviewServer,
+  page = PAGE,
+  extra: { path: string; content: string }[] = [],
+) {
   const started = await server.start({
     previewId: "theme-a-user-1",
-    files: [{ path: "src/pages/index.tsx", content: page }],
+    files: [{ path: "src/pages/index.tsx", content: page }, ...extra],
     entry: "src/pages/index.tsx",
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
@@ -144,6 +148,72 @@ describe("the instance a local preview names on its responses", () => {
     });
     expect(namedBy(await fetch(replaced.url))).toEqual(replacedInstance);
   }, 180_000);
+
+  it("names the server answering a revalidation, whether or not the content changed", async () => {
+    // A module with no imports, so its transformed code — and Vite's ETag
+    // for it — depends on its own source only, not on a dependency hash a
+    // new server may compute differently.
+    const label = {
+      path: "src/lib/label.ts",
+      content: `export const label = "served-instance";\n`,
+    };
+    const page = `import { label } from "../lib/label";
+
+export default function Page() {
+  return <h1>{label}</h1>;
+}
+`;
+    const server = newServer();
+    const first = await start(server, page, [label]);
+    const firstInstance = server.servedInstanceFor("theme-a-user-1");
+
+    const fetched = await fetch(under(first.url, label.path));
+    expect(fetched.status).toBe(200);
+    await fetched.text();
+    const etag = fetched.headers.get("etag");
+    expect(etag).toBeTruthy();
+    expect(namedBy(fetched)).toEqual(firstInstance);
+
+    // The same server, answering from what it already served.
+    const revalidated = await fetch(under(first.url, label.path), {
+      headers: { "if-none-match": etag! },
+    });
+    expect(revalidated.status).toBe(304);
+    expect(namedBy(revalidated)).toEqual(firstInstance);
+
+    // Replaced, the module unchanged: still 304 — the browser keeps its copy —
+    // but answered, and named, by the server serving now.
+    const replaced = await start(server, page.replace("<h1>", "<h1 id=\"b\">"), [
+      label,
+    ]);
+    expect(replaced.timings.reusedProcess).toBe(false);
+    const replacedInstance = server.servedInstanceFor("theme-a-user-1");
+    expect(replacedInstance).toEqual({
+      session: firstInstance!.session,
+      serial: firstInstance!.serial + 1,
+    });
+    const unchanged = await fetch(under(replaced.url, label.path), {
+      headers: { "if-none-match": etag! },
+    });
+    expect(unchanged.status).toBe(304);
+    expect(namedBy(unchanged)).toEqual(replacedInstance);
+
+    // Replaced with the module changed: the old copy does not match, and the
+    // new content comes with the name of the server that sent it.
+    const changed = await start(server, page, [
+      { ...label, content: label.content.replace("served-instance", "changed") },
+    ]);
+    expect(changed.timings.reusedProcess).toBe(false);
+    const changedInstance = server.servedInstanceFor("theme-a-user-1");
+    expect(changedInstance!.serial).toBe(replacedInstance!.serial + 1);
+    const answered = await fetch(under(changed.url, label.path), {
+      headers: { "if-none-match": etag! },
+    });
+    expect(answered.status).toBe(200);
+    expect(await answered.text()).toContain('"changed"');
+    expect(answered.headers.get("etag")).not.toBe(etag);
+    expect(namedBy(answered)).toEqual(changedInstance);
+  }, 240_000);
 
   it("names a different session for another process's server", async () => {
     const one = newServer();

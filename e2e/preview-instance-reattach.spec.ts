@@ -38,7 +38,15 @@ import {
  *
  * What has to hold: this tab replaces its frame — and only its frame, with
  * no start of its own — once its sync names a later instance, and then
- * stays on the new one. Local sidecar only: the instance is named there.
+ * stays on the new one. The ready messages are read as the editor received
+ * them: the first frame and the new one each name the instance that served
+ * them, and the reload names exactly that difference. An edit waiting on the
+ * server across the replacement stays one request and keeps its text. Once
+ * released it is refused by the source version guard — the other tab changed
+ * the source it was made against — without being sent again or rewriting the
+ * stored field. The route's Document is made before the edit, so the held
+ * edit is not also the write that creates it.
+ * Local sidecar only: the instance is named there.
  */
 test.skip(
   !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
@@ -171,6 +179,42 @@ async function markFrame(page: Page, mark: string) {
   }, mark);
 }
 
+const titleField = (page: Page, label: string) =>
+  page
+    .locator('[data-slot="inspector-content-field"]')
+    .filter({ hasText: label })
+    .locator("input");
+
+type ReadyReport = {
+  kind: string;
+  instance?: { session: string; serial: number };
+} | null;
+
+/**
+ * Runs in every document of the page; records, in the editor's own window
+ * only, each ready message a preview frame posts to it, with what it says
+ * about the instance that served it. Observation only: nothing is changed
+ * about how the editor receives or checks the message.
+ */
+function recordReadyMessages() {
+  if (window.top !== window) return;
+  const reports: unknown[] = [];
+  (window as unknown as { __readyReports: unknown[] }).__readyReports = reports;
+  window.addEventListener("message", (event) => {
+    const data = event.data as { type?: string; servedInstance?: unknown };
+    if (data?.type === "morph:storefront-preview-ready") {
+      reports.push(data.servedInstance ?? null);
+    }
+  });
+}
+
+const readyReports = (page: Page) =>
+  page.evaluate(
+    () =>
+      (window as unknown as { __readyReports?: ReadyReport[] }).__readyReports ??
+      [],
+  );
+
 /** What the browser fires when the author switches back to this tab. */
 async function returnToTab(page: Page) {
   await page.evaluate(() => {
@@ -182,6 +226,34 @@ async function returnToTab(page: Page) {
       window.dispatchEvent(new Event("visibilitychange"));
     }
   });
+}
+
+let routeDocumentId: string | null = null;
+
+/** The stored editor read of this Theme, as the server answers it now. */
+async function storedEditor(page: Page) {
+  const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+    ...scope!,
+  })) as {
+    success: boolean;
+    data?: {
+      templates: Array<{
+        id: string;
+        routePath?: string | null;
+        document: { sections: Array<{ id: string; props?: Record<string, unknown> }> };
+      }>;
+    };
+  };
+  expect(result.success, JSON.stringify(result)).toBe(true);
+  return result.data!;
+}
+
+async function storedRouteDocumentId(page: Page) {
+  const editor = await storedEditor(page);
+  return (
+    editor.templates.find((template) => template.routePath === ROUTE_PATH)?.id ??
+    null
+  );
 }
 
 test.describe("a preview frame whose server another tab replaced", () => {
@@ -204,6 +276,18 @@ test.describe("a preview frame whose server another tab replaced", () => {
       editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
       const saved = await writeThemeFiles(page, scope, FILES);
       expect(saved.success, JSON.stringify(saved)).toBe(true);
+      // The route's own Document, made and read back before any edit: the
+      // held edit below must not be the write that creates it, which changes
+      // the Inspector's template under the typed text (tracked separately).
+      const ensured = (await serverFn(
+        page,
+        THEMES,
+        "ensureStorefrontThemeRouteTemplate",
+        { ...scope, routePath: ROUTE_PATH },
+      )) as { success: boolean; data?: { id: string } };
+      expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+      routeDocumentId = ensured.data!.id;
+      expect(await storedRouteDocumentId(page)).toBe(routeDocumentId);
     } finally {
       await page.context().close();
     }
@@ -227,6 +311,28 @@ test.describe("a preview frame whose server another tab replaced", () => {
       }
     });
 
+    // Preparation is counted apart from the held edit: before the hold,
+    // nothing may be waiting or on its way, and no write may create the
+    // route's Document at any point.
+    let preparing = true;
+    const preparationSaves: string[] = [];
+    const routeDocumentCreations: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (isServerFunctionCall(url, "ensureStorefrontThemeRouteTemplate")) {
+        routeDocumentCreations.push(url);
+      }
+      if (
+        preparing &&
+        isServerFunctionCall(url, "updateStorefrontThemeSectionProps")
+      ) {
+        preparationSaves.push(url);
+      }
+    });
+
+    // What each frame's page said served it, as the editor received it.
+    await page.addInitScript(recordReadyMessages);
+
     await page.goto(routeUrl(), { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
       timeout: 45_000,
@@ -240,13 +346,64 @@ test.describe("a preview frame whose server another tab replaced", () => {
     ) {
       await enableSelection(page);
     }
-    const target = cardTitle(page, RETURN_SLOT);
+    const target = cardTitle(page, KEPT_SLOT);
     await target.scrollIntoViewIfNeeded();
     expect(await clickExposedElement(page, target)).not.toBeNull();
     await openContentTab(page);
     const firstMark = randomUUID();
     await markFrame(page, firstMark);
     expect(starts).toHaveLength(1);
+    const [firstReady] = await readyReports(page);
+    expect(firstReady, "the first frame named the instance that served it").toMatchObject({
+      kind: "known",
+    });
+    const servedFirst = firstReady!.instance!;
+
+    // Settled before the hold: no edit waiting or in flight, and the route's
+    // Document the one made and read back above.
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      /^(Unpublished|Published)$/,
+    );
+    expect(preparationSaves).toEqual([]);
+    expect(await storedRouteDocumentId(page)).toBe(routeDocumentId);
+    preparing = false;
+
+    // An edit of the field that keeps its declaration, waiting on the server
+    // across the replacement: held here, released once the frame is new.
+    const pending = `Pending across the reload ${Date.now()}`;
+    const contentSaves: string[] = [];
+    const heldTargets: boolean[] = [];
+    let saveHeld!: () => void;
+    const saveIsHeld = new Promise<void>((resolve) => (saveHeld = resolve));
+    let releaseSave!: () => void;
+    const saveReleased = new Promise<void>((resolve) => (releaseSave = resolve));
+    await page.route("**/_serverFn/**", async (route) => {
+      const request = route.request();
+      if (
+        !isServerFunctionCall(request.url(), "updateStorefrontThemeSectionProps") ||
+        !(request.postData() ?? "").includes(pending)
+      ) {
+        return route.fallback();
+      }
+      contentSaves.push(request.url());
+      heldTargets.push((request.postData() ?? "").includes(routeDocumentId!));
+      saveHeld();
+      await saveReleased;
+      return route.continue();
+    });
+    const field = titleField(page, "ReattachKept title");
+    await expect(field).toBeVisible();
+    await field.fill(pending);
+    await field.press("Tab");
+    await saveIsHeld;
+    // Sent to the route's existing Document, not through a placeholder.
+    expect(heldTargets).toEqual([true]);
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Saving…",
+    );
+    await expect(field).toHaveValue(pending);
 
     // The other tab: its preview start is held until the delete has landed.
     const other = await signedInPage(browser);
@@ -300,7 +457,62 @@ test.describe("a preview frame whose server another tab replaced", () => {
     }).toPass({ timeout: 120_000, intervals: [5_000] });
     expect(await frameMark(page)).not.toBe(firstMark);
     await expect(cardTitle(page, KEPT_SLOT)).toHaveCount(1);
-    expect(reloads).toHaveLength(1);
+    // The author's text is in the field across the replacement, the edit is
+    // still the one request, waiting, and nothing was started.
+    await expect(field).toHaveValue(pending);
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      "Saving…",
+    );
+    expect(contentSaves).toHaveLength(1);
+    expect(starts).toHaveLength(1);
+
+    // The new frame was served by the new instance — a later start of the
+    // same sidecar — and the reload says it was that difference.
+    await expect.poll(async () => (await readyReports(page)).length).toBe(2);
+    const [, secondReady] = await readyReports(page);
+    expect(secondReady, "the new frame named the instance that served it").toMatchObject({
+      kind: "known",
+      instance: { session: servedFirst.session },
+    });
+    const servedSecond = secondReady!.instance!;
+    expect(servedSecond.serial).toBeGreaterThan(servedFirst.serial);
+    expect(reloads).toEqual([
+      `[preview-instance] reload frame | served by ${servedFirst.session}.${servedFirst.serial}, serving ${servedSecond.session}.${servedSecond.serial}`,
+    ]);
+    // Still so once the new frame has reported.
+    expect(starts).toHaveLength(1);
+    expect(contentSaves).toHaveLength(1);
+    await expect(field).toHaveValue(pending);
+
+    // Released, it is refused: it was made against the source the other
+    // tab has since changed. The text stays, nothing is sent again, and
+    // the stored field is not rewritten.
+    const answered = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
+        (response.request().postData() ?? "").includes(pending),
+      { timeout: 30_000 },
+    );
+    releaseSave();
+    expect(await (await answered).text()).toContain("SELECTION_SOURCE_CONFLICT");
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "aria-label",
+      /^Save failed/,
+    );
+    await expect(
+      page
+        .getByText(/The source code has changed\. Select the field again/)
+        .first(),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(field).toHaveValue(pending);
+    expect(contentSaves).toHaveLength(1);
+    const stored = await storedEditor(page);
+    const keptStored = stored.templates
+      .find((template) => template.id === routeDocumentId)
+      ?.document.sections.find((section) => section.id === KEPT_SLOT);
+    expect(keptStored?.props?.title).not.toBe(pending);
+    expect(JSON.stringify(stored)).not.toContain(pending);
 
     // And it stays there: no second reload, and no start from this tab.
     const secondMark = randomUUID();
@@ -309,6 +521,10 @@ test.describe("a preview frame whose server another tab replaced", () => {
     await page.waitForTimeout(20_000);
     expect(await frameMark(page)).toBe(secondMark);
     expect(reloads).toHaveLength(1);
+    expect(await readyReports(page)).toHaveLength(2);
     expect(starts).toHaveLength(1);
+    expect(contentSaves).toHaveLength(1);
+    await expect(field).toHaveValue(pending);
+    expect(routeDocumentCreations).toEqual([]);
   });
 });
