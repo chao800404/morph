@@ -313,6 +313,13 @@ type EditorStyleInspectorProps = {
    */
   view?: "styles" | "content";
   disabled?: boolean;
+  /**
+   * The section's Document takes no writes from here: it is hidden (content
+   * binding contract §6). Controls that would write it are shown disabled
+   * through the same `disabled` they already take; source patches are not
+   * affected.
+   */
+  documentWritesRefused?: boolean;
 };
 
 /**
@@ -755,7 +762,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   sharedLayoutPaths,
   sectionTemplatePaths,
   view = "styles",
-  disabled = false,
+  disabled: disabledProp = false,
+  documentWritesRefused = false,
 }: EditorStyleInspectorProps) {
   const activeNodeId = selection?.nodeId;
   const activeElementKey = selection?.elementKey;
@@ -891,6 +899,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     themeFiles?.some((file) => file.path === selection.sourceFilePath)
       ? selection.sourceFilePath
       : null) ?? sectionComponentPath;
+  // With no component file every style control writes the Document, so a
+  // section whose Document is refused has nothing here to edit.
+  const disabled = disabledProp || (documentWritesRefused && !componentPath);
+  const documentWritesRefusedRef = useRef(documentWritesRefused);
+  documentWritesRefusedRef.current = documentWritesRefused;
   // Told apart from CMS-only, so the author is pointed at the missing file
   // instead of told there never was one.
   const missingComponentPath = useMemo(
@@ -2272,7 +2285,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown, options?: InspectorPropsChangeOptions) => {
-      if (contentBlockedRef.current) return;
+      if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) =>
@@ -2306,6 +2319,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         props: Record<string, unknown>,
       ) => ReturnType<typeof addArrayRowAtFieldPath<Record<string, unknown>>>,
     ) => {
+      if (documentWritesRefusedRef.current) return;
       const result = mutate(localPropsRef.current);
       if (!result.editable) {
         const message =
@@ -2344,7 +2358,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        */
       seed?: { key: string; value: unknown },
     ) => {
-      if (contentBlockedRef.current) return;
+      if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
       const current = localPropsRef.current;
       const base =
         seed && current[seed.key] === undefined
@@ -3840,7 +3854,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       }),
                     );
                   }}
-                  disabled={disabled || sourceStyleLocked}
+                  // Writes the Document as well as the source.
+                  disabled={
+                    disabled || sourceStyleLocked || documentWritesRefused
+                  }
                 />
                 <InspectorSelectControl
                   label="Fit"

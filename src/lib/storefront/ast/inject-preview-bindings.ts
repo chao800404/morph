@@ -5,11 +5,12 @@ import {
   readComponentContentFields,
 } from "./theme-content-fields-declaration";
 import {
-  collectLoaderSlotBindings,
+  collectLoaderSlotBindingDetails,
   collectPageVariables,
   NO_LOADER_SLOT_BINDINGS,
   readPageBindingKey,
   type LoaderSlotBindings,
+  type LoaderSlotPage,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import type { ThemeContentFieldDefinition } from "@/lib/storefront/theme-content-capabilities";
@@ -55,6 +56,17 @@ const SOURCE_FILE_ATTRIBUTE = "data-morph-source-file";
  * is the author's source — and this is put beside it for the editor to read.
  */
 export const FIELD_REFUSED_ATTRIBUTE = "data-morph-field-refused";
+
+/**
+ * Put on a loader slot's section wrapper while the page the route's loader
+ * returned lists that slot in `_hidden`: the author hid the section, so what
+ * renders inside is the component's defaults and none of it is the section's
+ * content (content binding contract §6). Read from the loader's own data on
+ * every render, so it is gone again as soon as the section is shown. It does
+ * not change how the page looks; it only tells the editor to offer nothing
+ * there (`PREVIEW_SECTION_HIDDEN_ATTRIBUTE` in `preview-dom.ts`).
+ */
+export const SECTION_HIDDEN_ATTRIBUTE = "data-morph-section-hidden";
 
 export type FieldMarkerRefusal = "conflict" | "unproven";
 
@@ -1170,11 +1182,38 @@ export function injectPreviewBindings(
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
     const pageVariables = collectPageVariables(ast);
-    const loaderSlots = collectLoaderSlotBindings(ast, {
+    const loaderSlotDetails = collectLoaderSlotBindingDetails(ast, {
       path: file.path,
       files,
     });
+    const loaderSlots: LoaderSlotBindings =
+      loaderSlotDetails.size === 0
+        ? NO_LOADER_SLOT_BINDINGS
+        : new Map(
+            [...loaderSlotDetails].map(([start, { slot }]) => [start, slot]),
+          );
     const insertions: Insertion[] = [];
+
+    // The `_hidden` list of the page a loader slot came from, as an expression
+    // the slot's call site can read. A page held whole is already in scope; a
+    // destructured one is not, so its pattern takes `_hidden` too, under a
+    // name nothing in the module uses. Reading it from the same object the
+    // slot came from is what keeps the two from disagreeing.
+    const loaderHiddenLocals = new Map<number, string>();
+    const loaderHiddenRead = (page: LoaderSlotPage): string => {
+      if (page.kind === "local") return `${page.name}?._hidden`;
+      let local = loaderHiddenLocals.get(page.start);
+      if (!local) {
+        local = "__morphLoaderHidden";
+        for (let suffix = 0; usedIdentifierNames.has(local); suffix += 1) {
+          local = `__morphLoaderHidden${suffix}`;
+        }
+        usedIdentifierNames.add(local);
+        loaderHiddenLocals.set(page.start, local);
+        insertions.push({ at: page.start + 1, text: `_hidden: ${local}, ` });
+      }
+      return local;
+    };
 
     // This module's components that render some list's rows: each takes the
     // row through its own props, under a name nothing in the module uses.
@@ -1373,11 +1412,20 @@ export function injectPreviewBindings(
         const slotId = readSectionSlotId(opening, pageVariables, loaderSlots);
         if (slotId && node.start != null && node.end != null) {
           slotIds.push(slotId);
+          // A loader slot the author hid still renders here, with the
+          // component's defaults; `content("x")` call sites are guarded by
+          // the author (`isSectionHidden`) and never render at all.
+          const loaderSlot = loaderSlotDetails.get(opening?.start);
+          let hidden = "";
+          if (loaderSlot?.slot === slotId) {
+            const read = loaderHiddenRead(loaderSlot.page);
+            hidden = ` ${SECTION_HIDDEN_ATTRIBUTE}={Array.isArray(${read}) && ${read}.includes(${JSON.stringify(slotId)}) ? "" : undefined}`;
+          }
           wrap(
             "section",
             node.start,
             node.end,
-            `<div ${SECTION_ID_ATTRIBUTE}="${escapeAttribute(slotId)}" style={{ display: "contents" }}>`,
+            `<div ${SECTION_ID_ATTRIBUTE}="${escapeAttribute(slotId)}"${hidden} style={{ display: "contents" }}>`,
             "</div>",
           );
         }

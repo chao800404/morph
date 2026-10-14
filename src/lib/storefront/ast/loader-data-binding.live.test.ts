@@ -27,7 +27,13 @@ import {
   removeThemeRouteSection,
   reorderThemeRouteSections,
 } from "@/lib/storefront/compiler/theme-route-sections";
-import { resolveSelectable } from "@/lib/storefront/editor/preview-dom";
+import { SECTION_HIDDEN_ATTRIBUTE } from "@/lib/storefront/ast/inject-preview-bindings";
+import {
+  collectEditableDescendantFields,
+  collectPreviewEditableNodes,
+  PREVIEW_SECTION_HIDDEN_ATTRIBUTE,
+  resolveSelectable,
+} from "@/lib/storefront/editor/preview-dom";
 import { prepareSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
 import { isValidThemeContentSlotId } from "@/lib/storefront/theme-content-slots";
 import {
@@ -174,6 +180,69 @@ describe("case B: server function → loader → useLoaderData", () => {
     expect(subtitle?.fieldKey).toBe("subtitle");
   });
 
+  it("does not offer a disabled loader slot as a selectable content field", async () => {
+    // Same valid route and component as the positive case above. Only the
+    // stored section's enabled state changes: the normal loader chain must
+    // not turn a hidden Document slot into an editable default-valued Hero.
+    const hidden: StorefrontPageDocument = {
+      ...HOME,
+      sections: HOME.sections.map((section) => ({
+        ...section,
+        enabled: false,
+      })),
+    };
+    const { html, prepared } = await renderLivePreviewRoute({
+      files: themeFiles(CASE_B_ROUTE),
+      documents: { index: hidden },
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    // A missing fixture or failed content read cannot satisfy this test:
+    // Core did exclude the hidden value, while the positive case renders it.
+    expect(html).not.toContain("Stored title");
+    const root = mountLivePreview(html);
+    const heading = root.querySelector("h1");
+    expect(heading).not.toBeNull();
+    expect(heading?.textContent).toBe("Default title");
+    expect(resolveSelectable(heading)).toBeNull();
+  });
+
+  it("keeps two loader slot instances of the same component distinct", async () => {
+    const source = route({ body: '  const { hero, promo } = Route.useLoaderData();\n  return <main><Hero {...hero} /><Hero {...promo} /></main>;' });
+    const { html, prepared } = await renderLivePreviewRoute({
+      files: themeFiles(source),
+      documents: { index: {
+        ...HOME,
+        sections: [...HOME.sections, { id: "promo", type: "hero", enabled: true, props: { title: "Promo title", subtitle: "Promo subtitle" } }],
+      } as StorefrontPageDocument },
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    const root = mountLivePreview(html);
+    const headings = root.querySelectorAll("h1");
+    expect(headings).toHaveLength(2);
+    expect(headings[0]?.textContent).toBe("Stored title");
+    expect(headings[1]?.textContent).toBe("Promo title");
+    expect(resolveSelectable(headings[0]!)?.sectionId).toBe("hero");
+    expect(resolveSelectable(headings[1]!)?.sectionId).toBe("promo");
+    expect(resolveSelectable(headings[0]!)?.fieldPath).toBe("title");
+    expect(resolveSelectable(headings[1]!)?.fieldPath).toBe("title");
+  });
+
+  it("refuses a handwritten marker conflicting with the loader component's source", async () => {
+    const files = themeFiles(CASE_B_ROUTE).map((file) => file.path === HERO
+      ? { ...file, content: file.content.replace("<h1>", '<h1 data-storefront-field="subtitle">') }
+      : file);
+    const { html, prepared } = await renderLivePreviewRoute({ files, documents: { index: HOME } });
+    expect(prepared.bindings.skipped).toEqual([]);
+    const root = mountLivePreview(html);
+    const heading = root.querySelector("h1");
+    expect(heading?.textContent).toBe("Stored title");
+    expect(heading?.getAttribute("data-morph-field-refused")).toBe("conflict");
+    const selection = resolveSelectable(heading);
+    expect(selection?.sectionId).toBe("hero");
+    expect(selection?.contentUnavailable).toBe("marker-conflicts-source");
+    expect(selection?.fieldKey).toBeNull();
+  });
+
   it("still names no Document section where the source cannot be confirmed, so nothing can be written there", async () => {
     // The handler changes what it read, so the link from `hero` to the page's
     // `hero` slot is not proven. The page still renders; a click on the
@@ -220,6 +289,157 @@ describe("case B: server function → loader → useLoaderData", () => {
     const removed = removeThemeRouteSection(source, files, ROUTE, "promo");
     expect(removed.changed).toBe(false);
     expect(removed.diagnostic).toMatch(/route loader/);
+  });
+});
+
+/**
+ * A hidden section is not selectable (§6). The content runtime leaves a
+ * hidden slot out of the page and lists it in `_hidden`; the author's
+ * `<Hero {...hero} />` still renders, with the component's defaults. The
+ * preview reads `_hidden` from the same loader data the slot came from and
+ * marks the section's wrapper; the editor offers nothing inside it.
+ */
+describe("case B: a hidden section", () => {
+  const withSections = (
+    ...sections: Array<{ id: string; enabled: boolean; title: string }>
+  ) =>
+    ({
+      version: 1,
+      sections: sections.map(({ id, enabled, title }) => ({
+        id,
+        type: "hero",
+        enabled,
+        props: { title, subtitle: `${title} subtitle` },
+      })),
+    }) as StorefrontPageDocument;
+
+  const renderRoute = async (
+    routeSource: string,
+    document: StorefrontPageDocument,
+  ) => {
+    const { html, prepared } = await renderLivePreviewRoute({
+      files: themeFiles(routeSource),
+      documents: { index: document },
+    });
+    expect(prepared.bindings.skipped).toEqual([]);
+    return mountLivePreview(html);
+  };
+
+  const wrapperOf = (root: HTMLElement, slotId: string) =>
+    root.querySelector<HTMLElement>(`[data-storefront-section-id="${slotId}"]`);
+
+  it("names the same attribute the editor reads", () => {
+    expect(PREVIEW_SECTION_HIDDEN_ATTRIBUTE).toBe(SECTION_HIDDEN_ATTRIBUTE);
+  });
+
+  it("is selectable again as `hero.title` once the same section is shown", async () => {
+    const hiddenRoot = await renderRoute(
+      CASE_B_ROUTE,
+      withSections({ id: "hero", enabled: false, title: "Stored title" }),
+    );
+    expect(wrapperOf(hiddenRoot, "hero")?.hasAttribute(SECTION_HIDDEN_ATTRIBUTE)).toBe(true);
+    expect(resolveSelectable(hiddenRoot.querySelector("h1"))).toBeNull();
+
+    const shownRoot = await renderRoute(
+      CASE_B_ROUTE,
+      withSections({ id: "hero", enabled: true, title: "Stored title" }),
+    );
+    expect(wrapperOf(shownRoot, "hero")?.hasAttribute(SECTION_HIDDEN_ATTRIBUTE)).toBe(false);
+    const heading = resolveSelectable(shownRoot.querySelector("h1"));
+    expect(heading?.element.textContent).toBe("Stored title");
+    expect(heading?.sectionId).toBe("hero");
+    expect(heading?.fieldKey).toBe("title");
+    expect(heading?.fieldPath).toBe("title");
+  });
+
+  it("leaves a visible section next to it selectable, and only that one", async () => {
+    const root = await renderRoute(
+      route({
+        body: "  const { hero, promo } = Route.useLoaderData();\n  return <main><Hero {...hero} /><Promo {...promo} /></main>;",
+      }),
+      withSections(
+        { id: "hero", enabled: false, title: "Stored title" },
+        { id: "promo", enabled: true, title: "Promo title" },
+      ),
+    );
+    const [heroHeading, promoHeading] = Array.from(root.querySelectorAll("h1"));
+    expect(heroHeading?.textContent).toBe("Default title");
+    expect(promoHeading?.textContent).toBe("Promo title");
+    expect(wrapperOf(root, "hero")?.hasAttribute(SECTION_HIDDEN_ATTRIBUTE)).toBe(true);
+    expect(wrapperOf(root, "promo")?.hasAttribute(SECTION_HIDDEN_ATTRIBUTE)).toBe(false);
+
+    expect(resolveSelectable(heroHeading!)).toBeNull();
+    expect(resolveSelectable(wrapperOf(root, "hero"))).toBeNull();
+    const promo = resolveSelectable(promoHeading!);
+    expect(promo?.sectionId).toBe("promo");
+    expect(promo?.fieldKey).toBe("title");
+
+    // The tree and a container's fields read the same way a click does.
+    const treeSections = new Set(
+      collectPreviewEditableNodes(root).map((node) => node.sectionId),
+    );
+    expect(treeSections.has("promo")).toBe(true);
+    expect(treeSections.has("hero")).toBe(false);
+    expect(
+      collectEditableDescendantFields(root).map(
+        (field) => `${field.sectionId}.${field.fieldPath}`,
+      ),
+    ).toEqual(["promo.title", "promo.subtitle"]);
+  });
+
+  it("is not selectable when the whole page is read as `home.hero`, and is once shown", async () => {
+    const source = route({
+      body: "  const home = Route.useLoaderData();\n  return <main><Hero {...home.hero} /></main>;",
+    });
+    const hiddenRoot = await renderRoute(
+      source,
+      withSections({ id: "hero", enabled: false, title: "Stored title" }),
+    );
+    expect(hiddenRoot.querySelector("h1")?.textContent).toBe("Default title");
+    expect(resolveSelectable(hiddenRoot.querySelector("h1"))).toBeNull();
+
+    const shownRoot = await renderRoute(
+      source,
+      withSections({ id: "hero", enabled: true, title: "Stored title" }),
+    );
+    const heading = resolveSelectable(shownRoot.querySelector("h1"));
+    expect(heading?.sectionId).toBe("hero");
+    expect(heading?.fieldKey).toBe("title");
+  });
+
+  it('leaves the `content("x")` path as it was: the author\'s guard, no marker', async () => {
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Hero from "../components/Hero";
+
+export const Route = createFileRoute("/")({ component: Home });
+
+function Home() {
+  return <main>{!isSectionHidden("hero") && <Hero {...content("hero")} />}</main>;
+}`;
+    const previewed =
+      prepareSourcesForLivePreview(themeFiles(source)).files.find(
+        (file) => file.path === ROUTE,
+      )?.content ?? "";
+    expect(previewed).toContain(HERO_WRAPPER);
+    expect(previewed).not.toContain(SECTION_HIDDEN_ATTRIBUTE);
+    expect(previewed).not.toContain("_hidden");
+
+    const hiddenRoot = await renderRoute(
+      source,
+      withSections({ id: "hero", enabled: false, title: "Stored title" }),
+    );
+    expect(hiddenRoot.querySelector("h1")).toBeNull();
+
+    const shownRoot = await renderRoute(
+      source,
+      withSections({ id: "hero", enabled: true, title: "Stored title" }),
+    );
+    expect(wrapperOf(shownRoot, "hero")?.hasAttribute(SECTION_HIDDEN_ATTRIBUTE)).toBe(false);
+    const heading = resolveSelectable(shownRoot.querySelector("h1"));
+    expect(heading?.element.textContent).toBe("Stored title");
+    expect(heading?.sectionId).toBe("hero");
+    expect(heading?.fieldKey).toBe("title");
   });
 });
 
