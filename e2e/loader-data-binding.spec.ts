@@ -874,18 +874,28 @@ export default function MarkedHero({
 
     await clickOnCanvas(page, marked);
     await openContentTab(page);
-    await expect(
-      page.getByText("names one field, but it shows another", { exact: false }),
-    ).toBeVisible();
-    // Neither field is offered for this element.
-    await expect(
-      page
-        .locator('[data-slot="inspector-content-field"]')
-        .filter({ hasText: /Marked (title|subtitle)/ })
-        .locator("input"),
-    ).toHaveCount(0);
+    // How the refusal shows is checked softly: the claim under test is the
+    // write boundary below, which every path is then tried against.
+    await expect
+      .soft(
+        page.getByText("names one field, but it shows another", {
+          exact: false,
+        }),
+      )
+      .toBeVisible();
+    const offered = page
+      .locator('[data-slot="inspector-content-field"]')
+      .filter({ hasText: /Marked (title|subtitle)/ })
+      .locator("input");
+    await expect.soft(offered).toHaveCount(0);
 
-    // Typing on the canvas does not open an edit either.
+    // Every field the panel does offer for this element is edited anyway:
+    // were the refusal ever to stop holding, this is the edit that would land.
+    for (const input of await offered.all()) {
+      await input.fill(`Leaked through the panel ${Date.now()}`);
+      await input.press("Tab");
+    }
+    // And typing on the canvas.
     await marked.dblclick();
     await page.keyboard.type(" typed");
     await page.keyboard.press("Enter");
