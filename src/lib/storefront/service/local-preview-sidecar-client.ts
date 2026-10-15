@@ -17,6 +17,10 @@ import {
   type LocalPreviewSidecarOperations,
 } from "./local-preview-sidecar.protocol";
 import { pickPlatformHostnameEnv } from "./storefront-request-routing";
+import {
+  parsePreviewServedInstance,
+  type PreviewServedInstance,
+} from "@/lib/storefront/editor/preview-protocol";
 
 /**
  * The Worker's half of the local preview sidecar.
@@ -240,6 +244,28 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
   }): Promise<boolean> {
     const call = await this.call("isServing", input);
     return call.ok && call.result.serving;
+  }
+
+  /**
+   * `isServing`, with the instance serving there: the same request, read for
+   * the one more thing it answers.
+   */
+  async describeServing(input: {
+    previewId: string;
+    previewHostname: string;
+    expectedOrigin?: string | null;
+  }): Promise<{
+    serving: boolean;
+    servedInstance: PreviewServedInstance | null;
+  }> {
+    const call = await this.call("isServing", input);
+    if (!call.ok) return { serving: false, servedInstance: null };
+    return {
+      serving: call.result.serving,
+      servedInstance: call.result.serving
+        ? parsePreviewServedInstance(call.result.servedInstance)
+        : null,
+    };
   }
 
   async stop(previewId: string, processId?: string): Promise<void> {
