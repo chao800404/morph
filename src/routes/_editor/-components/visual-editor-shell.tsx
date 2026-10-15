@@ -26,9 +26,10 @@ import {
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import {
-  acceptOwnSnapshot,
+  acceptAnsweredWrite,
   acceptReadSnapshot,
   earlierBasis,
+  newestAcceptedCopy,
   snapshotSectionProps,
   type ContentSnapshot,
   type SnapshotSection,
@@ -1989,8 +1990,11 @@ export function VisualEditorShell({
                 ).data;
                 // The document our write produced, with its generation: the
                 // next write composes on it, not on a read from before it.
+                // Accepted here, before the write's pending input is
+                // acknowledged, so this editor's copy is never older than
+                // what it has just stopped holding as pending.
                 if (result.success && data) {
-                  const next = acceptOwnSnapshot(
+                  const next = acceptAnsweredWrite(
                     contentSnapshotsRef.current.get(sentTemplateId),
                     {
                       sentAt: sentDraftGeneration,
@@ -9215,10 +9219,34 @@ export function VisualEditorShell({
       // what is written still goes through the server's authorization, field
       // validation and draft generation check. Nothing is written back to
       // the canvas: the preview already restored what the Theme rendered.
+      //
+      // "This editor's own copy" is the newest one it has accepted. A write's
+      // answer reaches the accepted snapshot before its pending input is
+      // dropped, while the editor context only catches up on the next render;
+      // reading the context alone in between compares the page's text with
+      // the copy from before that write. The snapshot is read only when it
+      // is strictly newer (`newestAcceptedCopy`), so a later read of someone
+      // else's change still refuses.
+      const ownerId = routeTemplateIdsRef.current.get(
+        templateIdForSection(message.sectionId) ?? activeTemplate.id,
+      ) ?? templateIdForSection(message.sectionId) ?? activeTemplate.id;
+      const newest = newestAcceptedCopy({
+        templateId: ownerId,
+        snapshots: contentSnapshotsRef.current,
+        contextTemplates: context.templates,
+      });
+      const storedProps =
+        newest.from === "snapshot"
+          ? snapshotSectionProps(newest.snapshot, message.sectionId)
+          : sectionPropsSnapshot(message.sectionId);
+      const comparedProps = {
+        ...storedProps,
+        ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
+      };
       if (
         !inlineTextMatchesStoredValue(
           message.originalValue,
-          getFieldPathValue(currentProps, message.fieldPath),
+          getFieldPathValue(comparedProps, message.fieldPath),
         )
       ) {
         toast.info(INLINE_TEXT_NOT_SAVED_MESSAGE, {

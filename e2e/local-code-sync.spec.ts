@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,12 +29,27 @@ const SERVER_FN_MODULE =
 
 type Cli = { child: ChildProcess; output: () => string; stop: () => Promise<void> };
 
+/**
+ * The CLI finds its credentials under `os.homedir()`: HOME on Linux and
+ * macOS, USERPROFILE on Windows. Both point at the temporary home, and
+ * nothing starts if a child would still see the real home and read or
+ * overwrite the developer's own credentials.
+ */
 function cliEnv(home: string, token?: string) {
-  return {
+  const env = {
     ...process.env,
     HOME: home,
+    USERPROFILE: home,
     ...(token ? { MORPH_SYNC_TOKEN: token } : {}),
   };
+  const childHome = spawnSync(process.execPath, ["-e", "process.stdout.write(require('node:os').homedir())"], {
+    env,
+    encoding: "utf8",
+  }).stdout;
+  if (childHome !== home) {
+    throw new Error(`The CLI would run with home ${childHome}, not the test's ${home}.`);
+  }
+  return env;
 }
 
 function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; output: string }> {
