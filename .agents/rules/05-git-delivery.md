@@ -9,6 +9,7 @@
 5. **任何非成功 CI 狀態都不得合併。** `FAILURE`、`CANCELLED`、`TIMED_OUT`、`STARTUP_FAILURE`、`ACTION_REQUIRED`、空的 check rollup 或尚未完成的 required check 都不能被當成通過。
 6. **不得使用破壞性 Git 指令整理流程。** 不得用 `git reset --hard`、`git checkout --`、force push 或刪除不明確目標來「清理」阻塞；先保留現況並說明衝突。
 7. **合併完成就收尾清理，但不能只憑 `prunable` 刪除。** 依下方「合併後收尾清理」逐項確認後再刪遠端分支、本機分支與 worktree。以 Windows 路徑登記的 worktree（`//wsl$/…`、`//wsl.localhost/…`、`C:/…`）在 WSL 的 Git 看來是 `prunable`，但目錄可能仍在、甚至有 session 正在使用；不得因此執行 `git worktree prune`。
+8. **本機驗證後 `main` 前進，不擋草稿推送，但合併前要重新核對。** 草稿 PR 可以推送已驗證的版本；PR 要分開寫本機驗證的 base 與 CI 實際測的 head、base、merge checkout，不得預先宣稱 CI 測到最新 `main`。詳見下方「本機驗證後 `main` 已前進」。
 
 ## 標準流程
 
@@ -43,6 +44,26 @@
    ```
 
 `pnpm ship` 預設等待所有 CI check。只有使用者明確要求縮短等待、且已理解其他 check 仍可能 pending 時，才可使用 `MORPH_SHIP_REQUIRED_ONLY=1 pnpm ship`；即使如此，已回報的任何失敗仍必須拒絕合併。
+
+## 本機驗證後 `main` 已前進
+
+本機完整驗證要十幾分鐘，這段時間其他 PR 合進 `main` 很常見。若每次都要重新整合、重跑完整驗證才能推送，草稿會一直推不出去；而 PR 的 CI 本來就會測 PR 與 base 的合併結果。
+
+**推送草稿 PR。** `main` 前進時，不必先重新整合、重跑本機完整驗證，但推送前要確認：
+
+- worktree 乾淨，沒有未提交或 staged 的內容；
+- 提交範圍就是本次範圍：`git log origin/main..HEAD` 只有預期的提交，`git diff --name-only <本機驗證的 base> HEAD` 只有預期的檔案；
+- 要推的就是驗證過的那個提交：commit SHA 與 tree 相同（以匯出目錄驗證時，連 `git archive` 的雜湊一起比）；
+- 一般推送：遠端分支不存在或可以 fast-forward，不得 force push。
+
+`main` 新進來的變更若和本次修改有衝突，先停下回報，不推送。
+
+**PR 裡分開寫兩組證據。**
+
+- 本機驗證：凍結的 SHA、驗證時的 base、實際跑了哪些檢查、當時的環境狀況（例如機器是否忙碌）。
+- CI：從實際的 run 讀出 head、base、各 job checkout 的 merge ref（`refs/pull/<n>/merge` 及其兩個 parent）與每個 job 的結果。CI 跑完前不得寫成「CI 已測過最新 `main`」；CI 跑完後 `main` 再前進，那次 run 就不涵蓋新的 `main`。
+
+**合併前重新核對。** 合併時再看一次當下的 `main`，以及 CI 是否在包含它的合併結果上全部通過。不是的話先回報，由使用者決定要重新整合、重跑 CI，或照現況處理；舊的 run 不能代替。合併的時機與先後依使用者安排：使用者宣告暫停合併時不合併，也不為了準備合併而轉 ready，準備好就回報。
 
 ## 合併後收尾清理
 
