@@ -54,15 +54,21 @@
 4. 確認沒有依賴與未存工作（各類條件如下）。
 5. 清理。
 
-三類目標分開判斷：
+三類目標分開判斷；任何一項無法確認已無人使用，就不清理：
 
 - **遠端分支**：PR 已合併，且沒有其他開著的 PR 以它為 head 或 base、沒有其他工作依賴它，就可以 `git push origin --delete <branch>`。已合併的提交仍保留在 `main` 與 PR 紀錄。
-- **本機分支**：tip 已包含在 `origin/main`，且沒有 worktree checkout 它、沒有執行中的 session 以它為工作分支，才以 `git branch -d` 刪除；不用 `-D`。
+- **本機分支**：tip 已包含在 `origin/main`，且沒有 worktree checkout 它、確認已無人以它為工作分支，才以 `git branch -d` 刪除；不用 `-D`。
 - **worktree**：以下全部確認後才 `git worktree remove`：
   - `git status --porcelain` 為空（沒有追蹤中的修改，也沒有 untracked 檔）。
   - `git status --porcelain --ignored` 列出的 ignored 資料不需保留。特別確認：`.env*`、`.dev.vars*`（本機憑證）、`.wrangler`（本機 D1／R2 狀態）、`e2e` 底下的登入狀態、`.morph-*`、`sandbox`。
   - 不是診斷用 worktree，也不含尚未保存的診斷證據。
-  - 沒有程序的工作目錄在其中，也沒有 session 以它為工作目錄。
+  - 沒有程序的工作目錄在其中，且確認已無人以它為工作目錄。
+
+刪除順序與停止條件：
+
+1. 刪除任何一項之前，先 `git fetch origin`，確認 tip 已包含在 `origin/main`（`git merge-base --is-ancestor <tip> origin/main`）；不成立就停止。
+2. 先移除 worktree，再刪本機分支，最後才刪遠端分支。`git branch -d` 可能因 upstream 仍在而通過、遠端分支刪除並 prune 後卻拒絕（本機 checkout 的 `HEAD` 不一定是最新 `main`），所以本機分支要在遠端分支之前刪。
+3. `git branch -d` 拒絕時就停止並回報，不改用 `-D`。
 
 判斷 worktree 是否存在時，先把登記路徑換成實際路徑（`//wsl$/<distro>/…`、`//wsl.localhost/<distro>/…` → `/…`；`C:/…` → `/mnt/c/…`）再檢查，不能只看 `git worktree list` 的 `prunable`。
 
