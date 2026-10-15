@@ -9,6 +9,7 @@ import type {
 import { handleThemeSyncRequest, type ThemeSyncApiDeps } from "@/server/storefront/theme-sync-api";
 import { createThemeSyncClient } from "./sync-client";
 import { syncContentHash } from "./sync-content";
+import { isIgnored, parseMorphIgnore } from "./sync-local-fs";
 import type { LocalScanEntry, SyncLocalFolder } from "./sync-session";
 
 /**
@@ -166,18 +167,24 @@ export function createHarnessClient(
   });
 }
 
-/** A local folder in memory, with the same contract as the one on disk. */
+/**
+ * A local folder in memory, with the same contract as the one on disk,
+ * including a `.morphignore` among its files.
+ */
 export function createMemoryFolder(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
   const conflictCopies = new Map<string, string>();
   const trash: string[] = [];
   const folder: SyncLocalFolder = {
     async scan() {
+      const rules = parseMorphIgnore(files.get(".morphignore") ?? "");
+      const ignored = (path: string) => isIgnored(path, rules);
       const scanned = new Map<string, LocalScanEntry>();
       for (const [path, text] of files) {
+        if (ignored(path)) continue;
         scanned.set(path, { text, hash: await syncContentHash(text) });
       }
-      return { files: scanned, skipped: [] };
+      return { files: scanned, skipped: [], ignored, ignoreKey: JSON.stringify(rules) };
     },
     read: async (path) => files.get(path) ?? null,
     async write(path, text) {
