@@ -18,6 +18,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  INLINE_TEXT_NOT_SAVED_MESSAGE,
   PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE,
   PREVIEW_RELOAD_DEFERRED_MESSAGE,
   VisualEditorShell,
@@ -856,6 +857,61 @@ describe("the frame brought up after the reload", () => {
     expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
   });
 
+  // With #243: the replayed text is this editor's newest accepted copy (the
+  // write's answer), while the editor context still holds the copy from
+  // before the write. An edit begun on the new frame from the replayed text
+  // is saved; one claiming the text from before the write is refused.
+  it("takes the replayed text as stored before the editor context catches up", async () => {
+    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
+      order.push(`save:${JSON.stringify(request.data.props)}`);
+      serverHolds(TYPED, 2);
+      return landed(TYPED);
+    });
+    await frameUp();
+    await heldWhileTyping();
+    commitAndClose(TYPED);
+    await tick(400);
+    await tick(400);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    const from = await newFrameUp();
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    // Precondition: the editor context was never given the newer copy.
+    expect(activeContext.templates[0]!.draftGeneration).toBe(1);
+
+    const commitOnNewFrame = (value: string, originalValue: string) => {
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        value,
+        originalValue,
+      });
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+    };
+    const refusedNotices = () =>
+      vi.mocked(toast.info).mock.calls.filter((call) => call[0] === INLINE_TEXT_NOT_SAVED_MESSAGE);
+
+    commitOnNewFrame("Stale claim", "Welcome");
+    await tick(400);
+    await tick(400);
+    expect(refusedNotices()).toHaveLength(1);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+
+    commitOnNewFrame("Edited on the new frame", TYPED);
+    await tick(400);
+    await tick(400);
+    expect(refusedNotices()).toHaveLength(1);
+    expect(updateSectionProps).toHaveBeenCalledTimes(2);
+    const second = updateSectionProps.mock.calls[1]![0] as {
+      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+    };
+    expect(second.data.props).toEqual({ heading: "Edited on the new frame" });
+    expect(second.data.expectedDraftGeneration).toBe(2);
+  });
+
   describe("an image signed after the content was sent", () => {
     const ASSET = "0b9f3a52-2f7e-4c1a-9d4b-6a1f2e3d4c5b";
     const SIGNED_URL = "https://media.morph.test/signed.png";
@@ -939,7 +995,8 @@ describe("the frame brought up after the reload", () => {
     it("does not cover a newer edit made while the image was being signed", async () => {
       const from = await replayedWithUnsignedImage();
       // Text typed again on the new canvas, finished as the page finishes it.
-      // `originalValue` is the stored value this editor holds for the field.
+      // `originalValue` is the text the new frame shows: the replayed,
+      // stored value.
       fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
       fromPreview({
         type: "morph:storefront-preview-commit-inline-text",
@@ -947,7 +1004,7 @@ describe("the frame brought up after the reload", () => {
         fieldKey: "heading",
         fieldPath: "heading",
         value: "Newer",
-        originalValue: "Welcome",
+        originalValue: TYPED,
       });
       fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
       await tick(0);
@@ -1278,8 +1335,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       await replayedWithUnsignedImage();
       await frameReplaced();
       const before = posted().length;
-      // `originalValue` is the stored value this editor's copy holds.
-      await canvasHeading("Final", "Welcome");
+      // `originalValue` is the stored value this editor's newest copy holds:
+      // the answered write, which the replay's read also brought.
+      await canvasHeading("Final", TYPED);
       expect(heroPosts(before).at(-1)?.props?.heading).toBe("Final");
       await releaseSigning();
       const after = heroPosts(before);
@@ -1290,7 +1348,7 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     it("T6c-d: an Inspector edit on the new frame replaces that frame's own waiting post", async () => {
       await replayedWithUnsignedImage();
       await frameReplaced();
-      await canvasHeading("Final", "Welcome");
+      await canvasHeading("Final", TYPED);
       const before = posted().length;
       await inspectorSubheading("Sub newer");
       expect(heroPosts(before)).toEqual([]);
