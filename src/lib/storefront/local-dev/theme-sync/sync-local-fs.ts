@@ -106,7 +106,7 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
       }
     }
     await walk(root);
-    return { files, skipped };
+    return { files, skipped, ignored: (path: string) => isIgnored(path, rules) };
   }
 
   async function read(path: string): Promise<string | null> {

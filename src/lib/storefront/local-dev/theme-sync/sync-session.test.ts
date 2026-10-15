@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConfirmPolicy } from "./sync-confirm";
+import { createLocalSyncFolder } from "./sync-local-fs";
 import { createSyncSession, type CyclePlanSummary, type SyncState } from "./sync-session";
 import {
   createFakeWorkspace,
@@ -525,4 +529,99 @@ describe("a local folder linked to a Theme", () => {
     expect(local.files.has("src/routeTree.gen.ts")).toBe(false);
     expect(workspace.files.has("__entry.tsx")).toBe(false);
   });
+});
+
+describe(".morphignore paths in a folder on disk", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "morph-sync-ignore-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function put(path: string, content: string) {
+    await mkdir(join(root, path, ".."), { recursive: true });
+    await writeFile(join(root, path), content);
+  }
+
+  const onDisk = (path: string) => readFile(join(root, path), "utf8").catch(() => null);
+
+  function open(workspace: ReturnType<typeof createFakeWorkspace>) {
+    return createSyncSession({
+      client: createHarnessClient(workspace),
+      folder: createLocalSyncFolder(root),
+      state: emptyState(),
+      saveState: async () => {},
+      confirm: async () => true,
+    });
+  }
+
+  it("are never downloaded, and so never deleted from Morph", async () => {
+    const workspace = createFakeWorkspace({ "a.tsx": "a", "notes/plan.md": "from Morph" });
+    await put(".morphignore", "notes/\n");
+    const session = open(workspace);
+
+    const first = await session.runCycle();
+    expect(first.summary.downloads).toEqual(["a.tsx"]);
+    expect(await onDisk("notes/plan.md")).toBeNull();
+
+    const second = await session.runCycle();
+    expect(second.summary.remoteDeletions).toEqual([]);
+    expect(morphText(workspace, "notes/plan.md")).toBe("from Morph");
+
+    // Neither side's edits cross over either.
+    workspace.editInMorph("notes/plan.md", "edited in Morph");
+    await put("notes/plan.md", "my own notes");
+    const third = await session.runCycle();
+    expect(third.summary).toMatchObject({ uploads: [], downloads: [], conflicts: [] });
+    expect(morphText(workspace, "notes/plan.md")).toBe("edited in Morph");
+    expect(await onDisk("notes/plan.md")).toBe("my own notes");
+    expect(session.state.files).not.toHaveProperty("notes/plan.md");
+  });
+
+  it("deletes nothing on either side when a synced path becomes ignored later", async () => {
+    const workspace = createFakeWorkspace({
+      "a.tsx": "a",
+      "notes/plan.md": "plan",
+      "notes/todo.md": "todo",
+    });
+    const session = open(workspace);
+    await session.runCycle();
+    expect(session.state.files).toHaveProperty("notes/plan.md");
+    expect(await onDisk("notes/todo.md")).toBe("todo");
+
+    await put(".morphignore", "notes/\n");
+    // Gone locally, gone in Morph: each would be a deletion on the other side.
+    await rm(join(root, "notes", "plan.md"));
+    workspace.editInMorph("notes/todo.md", null);
+    const after = await session.runCycle();
+    expect(after.summary).toMatchObject({ remoteDeletions: [], localDeletions: [], conflicts: [] });
+    expect(morphText(workspace, "notes/plan.md")).toBe("plan");
+    expect(await onDisk("notes/todo.md")).toBe("todo");
+    // The base entries are dropped, not kept for later.
+    expect(Object.keys(session.state.files).filter((path) => path.startsWith("notes/"))).toEqual([]);
+
+    // Synced again, each side's copy is new to the other: copied, not deleted.
+    await rm(join(root, ".morphignore"));
+    workspace.editInMorph(".morphignore", null);
+    const resumed = await session.runCycle();
+    expect(resumed.summary).toMatchObject({ remoteDeletions: [], localDeletions: [] });
+    expect(await onDisk("notes/plan.md")).toBe("plan");
+    expect(morphText(workspace, "notes/todo.md")).toBe("todo");
+  });
+});
+
+it("keeps a memory folder's .morphignore paths out of sync too", async () => {
+  const { workspace, local, session } = setup({
+    morph: { "a.tsx": "a", "notes/plan.md": "from Morph" },
+    local: { ".morphignore": "notes/\n" },
+  });
+  await session.runCycle();
+  expect(local.files.has("notes/plan.md")).toBe(false);
+  const again = await session.runCycle();
+  expect(again.summary.remoteDeletions).toEqual([]);
+  expect(morphText(workspace, "notes/plan.md")).toBe("from Morph");
 });

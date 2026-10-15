@@ -65,7 +65,17 @@ export type LocalSkip = Readonly<{
 
 /** The local side, as the session needs it; `sync-local-fs.ts` on disk. */
 export interface SyncLocalFolder {
-  scan(): Promise<{ files: Map<string, LocalScanEntry>; skipped: LocalSkip[] }>;
+  /**
+   * `ignored` is the folder's `.morphignore` as this scan read and applied
+   * it. An ignored path is out of sync in both directions: the scan leaves
+   * it out, and the session leaves out the workspace's copy and the base
+   * entry by the same rules, never by a second read that may differ.
+   */
+  scan(): Promise<{
+    files: Map<string, LocalScanEntry>;
+    skipped: LocalSkip[];
+    ignored: (path: string) => boolean;
+  }>;
   /** The file's current text, or null when it is absent or unreadable. */
   read(path: string): Promise<string | null>;
   /** Writes the workspace's text, keeping the file's own line endings. */
@@ -188,9 +198,9 @@ export function createSyncSession(options: SyncSessionOptions) {
     planned: ReadonlyMap<string, LocalScanEntry>,
   ): Promise<boolean> {
     if ((await client.generation()) !== generation) return false;
-    const { files } = await folder.scan();
+    const { files, ignored } = await folder.scan();
     const now = new Map(
-      [...files].filter(([path]) => themeSyncPathExclusion(path) === null),
+      [...files].filter(([path]) => themeSyncPathExclusion(path) === null && !ignored(path)),
     );
     if (now.size !== planned.size) return false;
     for (const [path, entry] of now) {
@@ -218,23 +228,33 @@ export function createSyncSession(options: SyncSessionOptions) {
 
   async function runCycle(): Promise<CycleResult> {
     const listed = await client.list();
+    const scanned = await folder.scan();
+    // `.morphignore` holds on all three sides. Leaving it to the scan alone
+    // made an ignored file read as deleted locally, and deleted it in Morph.
+    const { ignored } = scanned;
     const remote = new Map<string, SyncRemoteEntry>();
     for (const file of listed.files) {
-      if (themeSyncPathExclusion(file.path) === null) {
+      if (themeSyncPathExclusion(file.path) === null && !ignored(file.path)) {
         remote.set(file.path, { id: file.id, version: file.version, kind: file.kind });
       }
     }
-    const scanned = await folder.scan();
     const skipped = [...scanned.skipped];
-    // The same rule again on whatever the folder reported, so a folder that
-    // forgets it cannot send a platform file up.
+    // The same rules again on whatever the folder reported, so a folder that
+    // forgets them cannot send a platform or ignored file up.
     const local = new Map<string, LocalScanEntry>();
     for (const [path, entry] of scanned.files) {
       const exclusion = themeSyncPathExclusion(path);
+      if (ignored(path)) continue;
       if (exclusion === null) local.set(path, entry);
       else if (exclusion !== "local-only") {
         skipped.push({ path, reason: "not-synced", detail: exclusion });
       }
+    }
+    // A path ignored after it was synced loses its base entry: kept, it
+    // would turn either side's absence into a deletion once the path is
+    // synced again. Without it, each side's copy reads as new to the other.
+    for (const path of Object.keys(state.files)) {
+      if (ignored(path)) delete state.files[path];
     }
     const base = new Map(
       Object.entries(state.files).filter(([path]) => themeSyncPathExclusion(path) === null),
