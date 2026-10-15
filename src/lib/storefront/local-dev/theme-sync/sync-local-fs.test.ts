@@ -76,6 +76,19 @@ describe("the local folder on disk", () => {
   });
 });
 
+describe("reading .morphignore", () => {
+  it("has no rules when there is none", async () => {
+    expect(await createLocalSyncFolder(root).ignoreRules()).toEqual([]);
+  });
+
+  it("fails the scan when it is there but cannot be read", async () => {
+    await mkdir(join(root, ".morphignore"));
+    await expect(createLocalSyncFolder(root).scan()).rejects.toThrow(
+      /\.morphignore could not be read/,
+    );
+  });
+});
+
 describe(".morphignore", () => {
   const rules = parseMorphIgnore("# c\nexact.ts\ndrafts/\n*.log\n./lead.ts\n");
 
