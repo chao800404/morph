@@ -112,6 +112,31 @@ function deferred<T>() {
 
 const SAVED = { success: true, data: { draftGeneration: 2, droppedProps: [] } };
 
+/**
+ * A saved answer as the server gives it: with the document it now holds,
+ * one generation past the one the write was sent at. A write that follows is
+ * composed on that document; without it, the editor reads the page first.
+ */
+function savedWith(heading: string, sentAt = 1) {
+  return {
+    success: true,
+    data: {
+      draftGeneration: sentAt + 1,
+      droppedProps: [],
+      document: {
+        version: 1,
+        sections: [{ id: "hero", type: "hero", props: { heading } }],
+      },
+    },
+  };
+}
+const savedEcho = async ({
+  data,
+}: {
+  data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+}) =>
+  savedWith(String(data.props.heading ?? "Welcome"), data.expectedDraftGeneration);
+
 function editorHolding(props: Record<string, unknown>) {
   return {
     success: true,
@@ -265,14 +290,16 @@ describe("the save state while an edit waits out its debounce", () => {
 
   it("does not take an older write's answer as saving a newer edit", async () => {
     const first = deferred<unknown>();
-    updateSectionProps.mockReturnValueOnce(first.promise).mockResolvedValue(SAVED);
+    updateSectionProps
+      .mockReturnValueOnce(first.promise)
+      .mockImplementation(savedEcho);
     await editBeforeDebounce();
     await tick(300);
     expect(sentHeadings()).toEqual(["Hello"]);
 
     // Typed again while the first write is out.
     typeHeading("Hello again", "Hello");
-    first.resolve(SAVED);
+    first.resolve(savedWith("Hello"));
     await tick();
 
     // The answer was for "Hello"; "Hello again" has not been sent.
@@ -393,7 +420,9 @@ describe("navigating before the debounce fired", () => {
 
   it("cancels the navigation when the author types again while it waits", async () => {
     const write = deferred<unknown>();
-    updateSectionProps.mockReturnValueOnce(write.promise).mockResolvedValue(SAVED);
+    updateSectionProps
+      .mockReturnValueOnce(write.promise)
+      .mockImplementation(savedEcho);
     const { navigate } = await editBeforeDebounce();
 
     const outcome = navigate("switch-page");
@@ -410,7 +439,7 @@ describe("navigating before the debounce fired", () => {
 
     // The first save landing does not revive the navigation, and the newer
     // edit is saved on its own schedule.
-    write.resolve(SAVED);
+    write.resolve(savedWith("Hello"));
     await tick(300);
     expect(sentHeadings()).toEqual(["Hello", "Hello again"]);
     expect(outcome.blocked).toBe(true);
