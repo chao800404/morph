@@ -108,6 +108,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** See the Inspector's `contentBasis`; asked by the section's id. */
+  contentBasisForSection?: (sectionId: string) => number | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   onCodeComponentPropsChange?: (
@@ -116,6 +118,8 @@ type EditorAssistantPanelProps = {
   ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
+  /** See the Inspector's prop of the same name. */
+  selectionSourceCurrent?: boolean;
 };
 
 export type EditorAssistantPanelTab =
@@ -234,11 +238,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  contentBasisForSection,
   inlineTextCommit,
   onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -338,6 +344,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       selection?.sourceFilePath,
       themeFiles,
     ],
+  );
+  const inspectorContentBasis = useCallback(
+    () =>
+      documentSection
+        ? contentBasisForSection?.(documentSection.id)
+        : undefined,
+    [contentBasisForSection, documentSection],
   );
 
   useEffect(() => {
@@ -495,6 +508,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               sharedLayoutPaths={sharedLayoutPaths}
               sectionTemplatePaths={sectionTemplatePaths}
               resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
+              rowIdTemplateId={activeTemplate?.id}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}
@@ -514,8 +528,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onRepairThemeLinkBinding={onRepairThemeLinkBinding}
               onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
+              contentBasis={inspectorContentBasis}
               inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
+              selectionSourceCurrent={selectionSourceCurrent}
             />
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">

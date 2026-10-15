@@ -84,4 +84,47 @@ describe("useInspectorContentProps", () => {
 
     expect(result.current.props).toEqual({ title: "Footer" });
   });
+
+  it("counts a newer server value only for the keys the author had not changed", () => {
+    const { result, rerender } = renderHook(
+      ({ props }) =>
+        useInspectorContentProps({
+          resourceKey: "store:theme",
+          sectionId: "hero",
+          sectionProps: props,
+        }),
+      {
+        initialProps: {
+          props: { title: "Original", body: "Body", color: "black" } as Record<
+            string,
+            unknown
+          >,
+        },
+      },
+    );
+    expect(result.current.externalEpochs).toEqual({});
+
+    act(() => {
+      const typing = { title: "Typing", body: "Body", color: "black" };
+      result.current.localPropsRef.current = typing;
+      result.current.setLocalProps(typing);
+    });
+    // Someone else changes title and body; color is unchanged.
+    rerender({
+      props: { title: "Theirs", body: "Their body", color: "black" },
+    });
+
+    expect(result.current.props).toEqual({
+      title: "Typing",
+      body: "Their body",
+      color: "black",
+    });
+    expect(result.current.externalEpochs).toEqual({ body: 1 });
+
+    // The same read again changes nothing shown.
+    rerender({
+      props: { title: "Theirs", body: "Their body", color: "black" },
+    });
+    expect(result.current.externalEpochs).toEqual({ body: 1 });
+  });
 });

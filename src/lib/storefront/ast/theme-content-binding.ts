@@ -23,7 +23,7 @@ const CONTENT_MODULE_SPECIFIER = /(?:^|\/)morph\/content(?:\.[cm]?[jt]sx?)?$/;
 
 type AnyNode = any;
 
-function walk(node: AnyNode, visit: (node: AnyNode) => void): void {
+export function walk(node: AnyNode, visit: (node: AnyNode) => void): void {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
     for (const item of node) walk(item, visit);
@@ -522,7 +522,7 @@ function staticPagePath(path: string): string | null {
 }
 
 /** Every name a binding in this module declares, with how many times. */
-function declarationCounts(ast: AnyNode): Map<string, number> {
+export function declarationCounts(ast: AnyNode): Map<string, number> {
   const counts = new Map<string, number>();
   const add = (name: unknown) => {
     if (typeof name === "string") counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -653,7 +653,7 @@ function soleSpreadElement(
   return element?.type === "JSXElement" ? element : null;
 }
 
-function parentMap(ast: AnyNode): Map<AnyNode, AnyNode> {
+export function parentMap(ast: AnyNode): Map<AnyNode, AnyNode> {
   const parents = new Map<AnyNode, AnyNode>();
   const visit = (node: AnyNode, parent: AnyNode) => {
     if (!node || typeof node !== "object") return;
@@ -672,7 +672,7 @@ function parentMap(ast: AnyNode): Map<AnyNode, AnyNode> {
 }
 
 /** Whether an identifier node is a reference to a variable, not a key or label. */
-function isReference(node: AnyNode, parent: AnyNode): boolean {
+export function isReference(node: AnyNode, parent: AnyNode): boolean {
   if (node?.type !== "Identifier") return false;
   if (
     (parent?.type === "MemberExpression" ||

@@ -24,6 +24,14 @@ import type { LocalScanEntry, LocalSkip, SyncLocalFolder } from "./sync-session"
 
 export const SYNC_DIRECTORY = ".morph";
 
+/** A problem in the local folder itself, not in Morph or the network. */
+export class LocalSyncFolderError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "LocalSyncFolderError";
+  }
+}
+
 type IgnoreRule =
   | { kind: "exact"; path: string }
   | { kind: "prefix"; path: string }
@@ -60,12 +68,23 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
 } {
   const absolute = (path: string) => join(root, ...path.split("/"));
 
+  /**
+   * No `.morphignore` means no rules. One that is there but cannot be read
+   * fails the scan: read as no rules, a path just ignored and removed here
+   * would be deleted in Morph.
+   */
   async function ignoreRules(): Promise<IgnoreRule[]> {
+    let text: string;
     try {
-      return parseMorphIgnore(await fs.readFile(join(root, ".morphignore"), "utf8"));
-    } catch {
-      return [];
+      text = await fs.readFile(join(root, ".morphignore"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw new LocalSyncFolderError(
+        `.morphignore could not be read, so nothing was synced: ${(error as Error).message}`,
+        { cause: error },
+      );
     }
+    return parseMorphIgnore(text);
   }
 
   async function scan() {
@@ -106,7 +125,12 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
       }
     }
     await walk(root);
-    return { files, skipped };
+    return {
+      files,
+      skipped,
+      ignored: (path: string) => isIgnored(path, rules),
+      ignoreKey: JSON.stringify(rules),
+    };
   }
 
   async function read(path: string): Promise<string | null> {
