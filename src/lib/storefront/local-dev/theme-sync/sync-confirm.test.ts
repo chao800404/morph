@@ -33,6 +33,14 @@ describe("what morph-sync may approve without asking", () => {
     expect(policy.decide("mass-deletion")).toBe("no");
   });
 
+  it("lets --yes approve a restore, and asks or refuses like startup otherwise", () => {
+    expect(createConfirmPolicy({ yes: true, allowMassDelete: false, interactive: false }).decide("restore")).toBe("yes");
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: false, interactive: true }).decide("restore")).toBe("ask");
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: false, interactive: false }).decide("restore")).toBe("no");
+    // --allow-mass-delete is not a yes to anything else.
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: true, interactive: false }).decide("restore")).toBe("no");
+  });
+
   it("refuses what it cannot ask about", () => {
     const policy = createConfirmPolicy({ yes: false, allowMassDelete: false, interactive: false });
     expect(policy.decide("startup")).toBe("no");

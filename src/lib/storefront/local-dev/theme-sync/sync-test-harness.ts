@@ -167,10 +167,15 @@ export function createHarnessClient(
 }
 
 /** A local folder in memory, with the same contract as the one on disk. */
-export function createMemoryFolder(initial: Record<string, string> = {}) {
+export function createMemoryFolder(
+  initial: Record<string, string> = {},
+  /** Paths `.morphignore` would keep out of the scan. */
+  ignored: readonly string[] = [],
+) {
   const files = new Map(Object.entries(initial));
   const conflictCopies = new Map<string, string>();
   const trash: string[] = [];
+  const backups: Array<{ path: string; text: string }> = [];
   const folder: SyncLocalFolder = {
     async scan() {
       const scanned = new Map<string, LocalScanEntry>();
@@ -189,6 +194,11 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
       trash.push(path);
       files.delete(path);
     },
+    ignores: async (path) => ignored.includes(path),
+    async backup(path) {
+      const text = files.get(path);
+      if (text !== undefined) backups.push({ path, text });
+    },
     async writeConflictCopy(path, text) {
       conflictCopies.set(path, text);
     },
@@ -196,5 +206,5 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
       conflictCopies.delete(path);
     },
   };
-  return { files, conflictCopies, trash, folder };
+  return { files, conflictCopies, trash, backups, folder };
 }
