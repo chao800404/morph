@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -20,9 +20,24 @@ let home: string;
 let dir: string;
 let server: Server | null = null;
 
+/**
+ * The CLI finds its credentials under `os.homedir()`: HOME on Linux and
+ * macOS, USERPROFILE on Windows. Both point at the temporary home.
+ */
+const cliEnv = () => ({ ...process.env, HOME: home, USERPROFILE: home });
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "morph-sync-cli-home-"));
   dir = await mkdtemp(join(tmpdir(), "morph-sync-cli-dir-"));
+  // Stop before the CLI runs if a child would still see the real home and
+  // read the developer's own credentials.
+  const childHome = spawnSync(process.execPath, ["-e", "process.stdout.write(require('node:os').homedir())"], {
+    env: cliEnv(),
+    encoding: "utf8",
+  }).stdout;
+  if (childHome !== home) {
+    throw new Error(`The CLI would run with home ${childHome}, not the test's ${home}.`);
+  }
 });
 
 afterEach(async () => {
@@ -85,7 +100,7 @@ async function linkFolder(origin: string, options: { unreadableIgnore: boolean }
 function runCli(args: string[], until?: RegExp) {
   const child = spawn(process.execPath, ["--import", "tsx", "scripts/morph-sync.ts", ...args, "--dir", dir], {
     cwd: process.cwd(),
-    env: { ...process.env, HOME: home },
+    env: cliEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
