@@ -360,8 +360,14 @@ function sendInlineCommit(
   });
 }
 
-/** The editor's read of the Theme, with the hero holding `props`. */
-function editorHolding(props: Record<string, unknown>) {
+/**
+ * The editor's read of the Theme, with the hero holding `props` — at
+ * `draftGeneration` when given, otherwise at the fixture's own.
+ */
+function editorHolding(
+  props: Record<string, unknown>,
+  draftGeneration?: number,
+) {
   return {
     success: true,
     message: "ok",
@@ -370,6 +376,7 @@ function editorHolding(props: Record<string, unknown>) {
       templates: [
         {
           ...context.templates[0],
+          ...(draftGeneration === undefined ? {} : { draftGeneration }),
           document: {
             version: 1,
             sections: [{ id: "hero", type: "hero", props }],
@@ -1929,6 +1936,46 @@ describe("an inline edit of text the Theme changed", () => {
     expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
   });
 
+  it("is not saved when another tab's save, at a newer generation, changed the field", async () => {
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    const client = readyQueryClient();
+    const view = renderShell(client);
+    await selectHeading();
+
+    // Another tab's save, read back at the generation it produced.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={
+            editorHolding({ heading: "Theirs" }, 2)
+              .data as unknown as StorefrontThemeEditorDTO
+          }
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    sendInlineCommit("Welcome, mine", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+
+    // The control: an edit begun from the newer stored value is saved, on
+    // the generation that read brought.
+    sendInlineCommit("Theirs, edited", "Theirs");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+    };
+    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
+    expect(sent.data.expectedDraftGeneration).toBe(2);
+  });
+
   it("is not saved when it names a field other than the one selected", async () => {
     saved();
     renderShell();
@@ -1987,13 +2034,45 @@ describe("an inline edit of text the Theme changed", () => {
     await selectHeading();
     sendInlineCommit("First own save", "Welcome");
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    sendInlineCommit("Second own save", "Welcome");
+    // The second edit begins from the text the first save left on the page.
+    sendInlineCommit("Second own save", "First own save");
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
     expect(
       updateSectionProps.mock.calls.map(
         (call) => call[0].data.expectedSourceGeneration,
       ),
     ).toEqual([1, 1]);
+  });
+
+  it("refuses a second edit that claims the text from before the first own save", async () => {
+    const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    sendInlineCommit("First own save", "Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sourceBaseline = () => {
+      const state = useThemeWorkspaceStore.getState();
+      return {
+        accepted: state.getAcceptedSourceGeneration(scope),
+        observed: state.getObservedSourceGeneration(scope),
+      };
+    };
+    const before = sourceBaseline();
+
+    // The first save's answer is the stored value now; the editor context
+    // has not caught up. A claim of the older text is out of date.
+    sendInlineCommit("Second own save", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+    expect(sourceBaseline()).toEqual(before);
   });
 
   it("keeps Inspector text visible after a source baseline refusal without resending", async () => {
