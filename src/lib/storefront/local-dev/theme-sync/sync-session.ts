@@ -331,11 +331,23 @@ export function createSyncSession(options: SyncSessionOptions) {
 
     // A yes is for the plan that was shown. Asking can take minutes; if
     // either side moved meanwhile, that plan is not applied — the next cycle
-    // plans from what is there now and asks again. The hold stays.
-    if (
-      asked &&
-      !(await unchangedSincePlanned(listed.sourceGeneration, local, scanned.ignoreKey))
-    ) {
+    // plans from what is there now and asks again. The hold stays. A check
+    // that fails (the rules unreadable, Morph unreachable) applies nothing
+    // either, so a startup yes is not spent on it: the next plan is asked.
+    let unchanged = true;
+    if (asked) {
+      try {
+        unchanged = await unchangedSincePlanned(
+          listed.sourceGeneration,
+          local,
+          scanned.ignoreKey,
+        );
+      } catch (error) {
+        if (startup) firstCycle = true;
+        throw error;
+      }
+    }
+    if (!unchanged) {
       if (startup) firstCycle = true;
       return {
         status: "retry",

@@ -553,12 +553,13 @@ describe(".morphignore paths in a folder on disk", () => {
 
   function open(
     workspace: ReturnType<typeof createFakeWorkspace>,
-    confirm: () => Promise<boolean> = async () => true,
+    confirm: (summary: CyclePlanSummary, why: string) => Promise<boolean> = async () => true,
+    state: SyncState = emptyState(),
   ) {
     return createSyncSession({
       client: createHarnessClient(workspace),
       folder: createLocalSyncFolder(root),
-      state: emptyState(),
+      state,
       saveState: async () => {},
       confirm,
     });
@@ -732,6 +733,54 @@ describe(".morphignore paths in a folder on disk", () => {
     const second = await session.runCycle();
     expect(second.summary.downloads).toEqual(["a.tsx"]);
     expect(await onDisk("notes/plan.md")).toBeNull();
+  });
+
+  describe("when the rules cannot be read on the check after a startup yes", () => {
+    /**
+     * A second run of the CLI over a synced folder, with an edit in Morph to
+     * ask about and a path ignored since the last run, whose base entry a
+     * cycle that went through would drop. The rules read on the check after
+     * the yes fails once.
+     */
+    async function restartWithFailingCheck() {
+      const workspace = createFakeWorkspace({ "a.tsx": "a", "notes/plan.md": "plan" });
+      const earlier = open(workspace);
+      await earlier.runCycle();
+      await put(".morphignore", "notes/\n");
+      workspace.editInMorph("a.tsx", "a2");
+      const asked: string[] = [];
+      const session = open(
+        workspace,
+        async (_summary, why) => {
+          asked.push(why);
+          return true;
+        },
+        structuredClone(earlier.state),
+      );
+      const reads = watchRuleReads(() => reads.reads === 2);
+      return { workspace, session, asked };
+    }
+
+    it("stops before applying, and leaves both sides and the base as they were", async () => {
+      const { workspace, session, asked } = await restartWithFailingCheck();
+      const base = structuredClone(session.state.files);
+      const saves = workspace.saves.length;
+      await expect(session.runCycle()).rejects.toThrow(/\.morphignore could not be read/);
+      expect(asked).toEqual(["startup"]);
+      expect(workspace.saves.length).toBe(saves);
+      expect(await onDisk("a.tsx")).toBe("a");
+      expect(session.state.files).toEqual(base);
+      expect(session.state.files).toHaveProperty("notes/plan.md");
+    });
+
+    it("asks the startup question again before the next plan is applied", async () => {
+      const { session, asked } = await restartWithFailingCheck();
+      await expect(session.runCycle()).rejects.toThrow(/\.morphignore could not be read/);
+      const next = await session.runCycle();
+      expect(asked).toEqual(["startup", "startup"]);
+      expect(next.status).toBe("applied");
+      expect(await onDisk("a.tsx")).toBe("a2");
+    });
   });
 
   it("reads the rules once to plan, and once more only to check a yes", async () => {
