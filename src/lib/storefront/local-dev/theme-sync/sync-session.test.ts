@@ -1,3 +1,4 @@
+import { promises as fsp } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -539,6 +540,7 @@ describe(".morphignore paths in a folder on disk", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -549,14 +551,31 @@ describe(".morphignore paths in a folder on disk", () => {
 
   const onDisk = (path: string) => readFile(join(root, path), "utf8").catch(() => null);
 
-  function open(workspace: ReturnType<typeof createFakeWorkspace>) {
+  function open(
+    workspace: ReturnType<typeof createFakeWorkspace>,
+    confirm: () => Promise<boolean> = async () => true,
+  ) {
     return createSyncSession({
       client: createHarnessClient(workspace),
       folder: createLocalSyncFolder(root),
       state: emptyState(),
       saveState: async () => {},
-      confirm: async () => true,
+      confirm,
     });
+  }
+
+  /** Counts reads of the rules (the scan reads the file's bytes separately). */
+  function watchRuleReads(failNext?: () => boolean) {
+    const read = fsp.readFile.bind(fsp);
+    const count = { reads: 0 };
+    vi.spyOn(fsp, "readFile").mockImplementation((async (path: unknown, ...rest: unknown[]) => {
+      if (String(path).endsWith(".morphignore") && rest[0] === "utf8") {
+        count.reads += 1;
+        if (failNext?.()) throw Object.assign(new Error("EIO: i/o error"), { code: "EIO" });
+      }
+      return (read as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as never);
+    return count;
   }
 
   it("are never downloaded, and so never deleted from Morph", async () => {
@@ -611,6 +630,121 @@ describe(".morphignore paths in a folder on disk", () => {
     expect(resumed.summary).toMatchObject({ remoteDeletions: [], localDeletions: [] });
     expect(await onDisk("notes/plan.md")).toBe("plan");
     expect(morphText(workspace, "notes/todo.md")).toBe("todo");
+  });
+
+  it("settles a path synced again by its text: a conflict if it differs, adopted if not", async () => {
+    const workspace = createFakeWorkspace({
+      "a.tsx": "a",
+      "notes/plan.md": "plan",
+      "notes/same.md": "same 0",
+    });
+    const session = open(workspace);
+    await session.runCycle();
+    await put(".morphignore", "notes/\n");
+    await session.runCycle();
+
+    await put("notes/plan.md", "mine");
+    workspace.editInMorph("notes/plan.md", "theirs");
+    await put("notes/same.md", "same");
+    workspace.editInMorph("notes/same.md", "same");
+    const ignored = await session.runCycle();
+    expect(ignored.summary).toMatchObject({ uploads: [], downloads: [], conflicts: [] });
+
+    await rm(join(root, ".morphignore"));
+    workspace.editInMorph(".morphignore", null);
+    const resumed = await session.runCycle();
+    expect(resumed.summary).toMatchObject({
+      uploads: [],
+      downloads: [],
+      remoteDeletions: [],
+      localDeletions: [],
+      conflicts: [{ path: "notes/plan.md", reason: "both-changed" }],
+    });
+    expect(await onDisk("notes/plan.md")).toBe("mine");
+    expect(await onDisk("notes/plan.md.morph-remote")).toBe("theirs");
+    expect(morphText(workspace, "notes/plan.md")).toBe("theirs");
+    expect(session.state.files["notes/same.md"]).toMatchObject({
+      id: workspace.files.get("notes/same.md")!.id,
+      version: workspace.files.get("notes/same.md")!.version,
+    });
+  });
+
+  it("still deletes paths it does not ignore, both ways", async () => {
+    const workspace = createFakeWorkspace({ "a.tsx": "a", "b.tsx": "b", "notes/x.md": "x" });
+    await put(".morphignore", "notes/\n");
+    const session = open(workspace);
+    await session.runCycle();
+
+    await rm(join(root, "b.tsx"));
+    workspace.editInMorph("a.tsx", null);
+    const result = await session.runCycle();
+    expect(result.summary).toMatchObject({ remoteDeletions: ["b.tsx"], localDeletions: ["a.tsx"] });
+    expect(workspace.files.has("b.tsx")).toBe(false);
+    expect(await onDisk("a.tsx")).toBeNull();
+    expect(morphText(workspace, "notes/x.md")).toBe("x");
+  });
+
+  it("syncs nothing when the rules cannot be read, and leaves the base as it was", async () => {
+    const workspace = createFakeWorkspace({ "a.tsx": "a", "notes/plan.md": "plan" });
+    const session = open(workspace);
+    await session.runCycle();
+    // Ignored and removed here in one go: read as no rules, it would be
+    // deleted in Morph.
+    await put(".morphignore", "notes/\n");
+    await rm(join(root, "notes", "plan.md"));
+    const base = structuredClone(session.state.files);
+    const saves = workspace.saves.length;
+    let fail = true;
+    watchRuleReads(() => {
+      const now = fail;
+      fail = false;
+      return now;
+    });
+
+    await expect(session.runCycle()).rejects.toThrow(/\.morphignore could not be read/);
+    expect(workspace.saves.length).toBe(saves);
+    expect(morphText(workspace, "notes/plan.md")).toBe("plan");
+    expect(session.state.files).toEqual(base);
+
+    const next = await session.runCycle();
+    expect(next.summary.remoteDeletions).toEqual([]);
+    expect(morphText(workspace, "notes/plan.md")).toBe("plan");
+  });
+
+  it("plans again when the rules change while it waits for a yes", async () => {
+    const workspace = createFakeWorkspace({ "a.tsx": "a", "notes/plan.md": "plan" });
+    // The rules leave themselves out, so only their content shows the change.
+    await put(".morphignore", ".morphignore\n");
+    let edited = false;
+    const session = open(workspace, async () => {
+      if (!edited) {
+        edited = true;
+        await put(".morphignore", ".morphignore\nnotes/\n");
+      }
+      return true;
+    });
+
+    const first = await session.runCycle();
+    expect(first.status).toBe("retry");
+    expect(await onDisk("a.tsx")).toBeNull();
+    expect(await onDisk("notes/plan.md")).toBeNull();
+
+    const second = await session.runCycle();
+    expect(second.summary.downloads).toEqual(["a.tsx"]);
+    expect(await onDisk("notes/plan.md")).toBeNull();
+  });
+
+  it("reads the rules once to plan, and once more only to check a yes", async () => {
+    const workspace = createFakeWorkspace({ "a.tsx": "a" });
+    await put(".morphignore", "notes/\n");
+    const session = open(workspace);
+    const count = watchRuleReads();
+    await session.runCycle(); // the first cycle asks
+    expect(count.reads).toBe(2);
+    count.reads = 0;
+    await put("b.tsx", "b");
+    await session.runCycle();
+    expect(count.reads).toBe(1);
   });
 });
 

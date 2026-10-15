@@ -184,7 +184,7 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
         if (ignored(path)) continue;
         scanned.set(path, { text, hash: await syncContentHash(text) });
       }
-      return { files: scanned, skipped: [], ignored };
+      return { files: scanned, skipped: [], ignored, ignoreKey: JSON.stringify(rules) };
     },
     read: async (path) => files.get(path) ?? null,
     async write(path, text) {
