@@ -78,7 +78,10 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 
 - **同步過之後才加進 `.morphignore`：** 該路徑在 `.morph/sync-state.json` 的基準直接丟掉，不據此動作。之後任一邊刪掉或改了它，都不會傳到另一邊。
 - **之後又從 `.morphignore` 拿掉：** 因為沒有基準，兩邊的檔案都當成新檔：只有一邊有就複製到另一邊（不會刪除），兩邊內容相同就直接記為一致，不同就標成衝突、兩份都保留。
-- **讀不到 `.morphignore`：** 檔案不存在才當成沒有規則。檔案在但讀取失敗（權限、I/O 錯誤等），這一輪整個中止：兩邊檔案與基準都不動，下一輪重新讀取再規劃。不會把讀取失敗當成「沒有規則」繼續同步或刪除。`start` 會顯示 `Local folder problem, not Morph; trying again: …`，修好後自動恢復；`status` 印出一行 `Local folder problem, not Morph: …` 並以非零碼結束。連不到 Morph 等遠端錯誤仍顯示 `Sync failed; reading Morph again …`。
+- **要取消忽略，請把 `.morphignore` 寫成空檔或刪掉那幾行，不要刪掉檔案。** 見下一點。
+- **`.morphignore` 消失（檔案消失保護）：** 每一輪成功套用後，工具會在 `.morph/sync-state.json` 記下這一輪從檔案讀到的規則（`ignoreHistory`）。之後檔案不見了（編輯器先刪後寫、`git checkout` 到沒有這個檔的分支、誤刪），工具沿用上次的規則，不會因此把原本忽略的本機檔案送上 Morph，也不會把 Morph 的拿下來；`start` 會提醒一次、`status` 每次都提醒：`.morphignore is missing; still leaving out what it listed at the last sync. …`。紀錄只在一輪真正套用完成時更新，被問、重試、失敗的輪次都不更新；沿用上次規則的輪次也不重記。`status` 本來在沒有待確認變更時就會寫入 state，紀錄只隨那次寫入一起存，不另外寫入；有待確認變更時 `status` 什麼都不寫。確認期間規則的來源改變（例如檔案又出現，文字相同），這次規劃也作廢重來。
+  **這個保護不涵蓋：** 檔案被清空（空檔就是明確取消忽略）、沒有 `ignoreHistory` 的舊 state（檔案不存在時仍當成沒有規則，直到成功同步一輪）、以及從 Morph 下載下來、放寬了規則的 `.morphignore`。
+- **讀不到 `.morphignore`：** 檔案不存在時依上一點處理（沒有紀錄就當成沒有規則）。檔案在但讀取失敗（權限、I/O 錯誤等），這一輪整個中止：兩邊檔案與基準都不動，下一輪重新讀取再規劃。不會把讀取失敗當成「沒有規則」繼續同步或刪除。`start` 會顯示 `Local folder problem, not Morph; trying again: …`，修好後自動恢復；`status` 印出一行 `Local folder problem, not Morph: …` 並以非零碼結束。連不到 Morph 等遠端錯誤仍顯示 `Sync failed; reading Morph again …`。
 - **等待確認時改了 `.morphignore`：** 規劃用的規則和套用前重新掃描讀到的不同，這次的規劃作廢，下一輪用新規則重新規劃、需要時再問。規劃只用一份規則，不混用前後兩次讀取。
 - 伺服器端不知道 `.morphignore`：它只是本機工具的設定，不是權限邊界。
 

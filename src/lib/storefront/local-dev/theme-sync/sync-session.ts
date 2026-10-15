@@ -53,7 +53,20 @@ export type SyncState = {
    * back), since then there is nothing left that it holds back.
    */
   deletionHold?: { since: string; reason: string };
+  /**
+   * The `.morphignore` text the last applied cycle read from the file. Set
+   * only when a cycle has gone through, never while one is asked about,
+   * retried or failed, and never from rules carried over in its absence.
+   * A missing file falls back to it; absent (older state), nothing does.
+   */
+  ignoreHistory?: { text: string };
 };
+
+/**
+ * Where a scan's `.morphignore` rules came from: the file (even empty), the
+ * last sync's rules because the file is missing, or nowhere.
+ */
+export type IgnoreSource = "file" | "last-sync" | "none";
 
 export type LocalScanEntry = Readonly<{ text: string; hash: string }>;
 
@@ -71,13 +84,17 @@ export interface SyncLocalFolder {
    * it out, and the session leaves out the workspace's copy and the base
    * entry by the same rules, never by a second read that may differ.
    * `ignoreKey` names those rules: two scans with equal keys applied the
-   * same ones. A `.morphignore` that is there but unreadable fails the scan.
+   * same ones, from the same source. A `.morphignore` that is there but
+   * unreadable fails the scan; one that is missing is ruled by `whenAbsent`
+   * (`resolveIgnoreRules`). `ignoreText` is the text the rules came from.
    */
-  scan(): Promise<{
+  scan(options?: { whenAbsent?: string }): Promise<{
     files: Map<string, LocalScanEntry>;
     skipped: LocalSkip[];
     ignored: (path: string) => boolean;
     ignoreKey: string;
+    ignoreSource: IgnoreSource;
+    ignoreText: string;
   }>;
   /** The file's current text, or null when it is absent or unreadable. */
   read(path: string): Promise<string | null>;
@@ -98,6 +115,7 @@ export type CyclePlanSummary = Readonly<{
   binarySkipped: string[];
   localSkipped: LocalSkip[];
   massDeletion: string | null;
+  ignoreRulesFrom: IgnoreSource;
 }>;
 
 export type CycleResult =
@@ -123,6 +141,7 @@ function summarize(
   actions: readonly SyncAction[],
   localSkipped: LocalSkip[],
   massDeletion: string | null,
+  ignoreRulesFrom: IgnoreSource,
 ): CyclePlanSummary {
   const of = (kind: SyncAction["kind"]) =>
     actions.filter((action) => action.kind === kind).map((action) => action.path);
@@ -137,6 +156,7 @@ function summarize(
     binarySkipped: of("skip-binary"),
     localSkipped,
     massDeletion,
+    ignoreRulesFrom,
   };
 }
 
@@ -203,7 +223,9 @@ export function createSyncSession(options: SyncSessionOptions) {
     plannedIgnoreKey: string,
   ): Promise<boolean> {
     if ((await client.generation()) !== generation) return false;
-    const { files, ignored, ignoreKey } = await folder.scan();
+    const { files, ignored, ignoreKey } = await folder.scan({
+      whenAbsent: state.ignoreHistory?.text,
+    });
     if (ignoreKey !== plannedIgnoreKey) return false;
     const now = new Map(
       [...files].filter(([path]) => themeSyncPathExclusion(path) === null && !ignored(path)),
@@ -234,7 +256,7 @@ export function createSyncSession(options: SyncSessionOptions) {
 
   async function runCycle(): Promise<CycleResult> {
     const listed = await client.list();
-    const scanned = await folder.scan();
+    const scanned = await folder.scan({ whenAbsent: state.ignoreHistory?.text });
     // `.morphignore` holds on all three sides. Leaving it to the scan alone
     // made an ignored file read as deleted locally, and deleted it in Morph.
     const { ignored } = scanned;
@@ -267,7 +289,11 @@ export function createSyncSession(options: SyncSessionOptions) {
       contents = await readRemote(remoteChangedTextPaths(base, remote));
     } catch (error) {
       if (error instanceof ThemeSyncApiRefusal && error.isConflict) {
-        return { status: "retry", summary: summarize([], skipped, null), reason: error.message };
+        return {
+          status: "retry",
+          summary: summarize([], skipped, null, scanned.ignoreSource),
+          reason: error.message,
+        };
       }
       throw error;
     }
@@ -278,7 +304,7 @@ export function createSyncSession(options: SyncSessionOptions) {
       if (!listedFile || listedFile.id !== file.id || listedFile.version !== file.version) {
         return {
           status: "retry",
-          summary: summarize([], skipped, null),
+          summary: summarize([], skipped, null, scanned.ignoreSource),
           reason: "The workspace changed while it was being read.",
         };
       }
@@ -307,7 +333,7 @@ export function createSyncSession(options: SyncSessionOptions) {
       (state.deletionHold
         ? `Deletions were stopped at ${state.deletionHold.since} (${state.deletionHold.reason}) and still need a yes: this would delete ${plannedDeletions} files.`
         : null);
-    const summary = summarize(actions, skipped, massDeletion);
+    const summary = summarize(actions, skipped, massDeletion, scanned.ignoreSource);
 
     let deletionsApproved = false;
     let asked = false;
@@ -485,6 +511,10 @@ export function createSyncSession(options: SyncSessionOptions) {
       state.deletionLog = [];
       state.deletionHold = undefined;
     }
+    // The rules this cycle went through with become the ones a missing
+    // file falls back to; carried-over rules are not recorded again. Part of
+    // the save every applied cycle makes, never a save of its own.
+    if (scanned.ignoreSource === "file") state.ignoreHistory = { text: scanned.ignoreText };
     await persist();
     return { status: "applied", summary, sourceGeneration: state.sourceGeneration };
   }
