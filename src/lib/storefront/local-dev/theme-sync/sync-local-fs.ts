@@ -24,6 +24,14 @@ import type { LocalScanEntry, LocalSkip, SyncLocalFolder } from "./sync-session"
 
 export const SYNC_DIRECTORY = ".morph";
 
+/** A problem in the local folder itself, not in Morph or the network. */
+export class LocalSyncFolderError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "LocalSyncFolderError";
+  }
+}
+
 type IgnoreRule =
   | { kind: "exact"; path: string }
   | { kind: "prefix"; path: string }
@@ -71,7 +79,7 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
       text = await fs.readFile(join(root, ".morphignore"), "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw new Error(
+      throw new LocalSyncFolderError(
         `.morphignore could not be read, so nothing was synced: ${(error as Error).message}`,
         { cause: error },
       );
