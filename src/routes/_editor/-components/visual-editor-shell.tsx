@@ -248,6 +248,10 @@ import {
   type PreviewSourceCopy,
 } from "@/lib/storefront/editor/preview-compile-failure";
 import { createPreviewCompileRecovery } from "@/lib/storefront/editor/preview-compile-recovery";
+import {
+  createPreviewInstanceWatch,
+  type PreviewInstanceWatch,
+} from "@/lib/storefront/editor/preview-instance-watch";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
   describeThemeSourceChanges,
@@ -286,6 +290,7 @@ import {
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
   parsePreviewSectionProps,
+  parsePreviewServedInstance,
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
@@ -2202,6 +2207,47 @@ export function VisualEditorShell({
   }, [previewKey, reportInlineEdit]);
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
+  /**
+   * A frame whose dev server was restarted on the same address gets a new
+   * frame, and only that — see `createPreviewInstanceWatch`. Fed by the ready
+   * message and by the sync and renewal answers below.
+   */
+  const previewInstanceWatchRef = useRef<PreviewInstanceWatch | null>(null);
+  useEffect(() => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    const watch = createPreviewInstanceWatch({
+      currentKey: () => previewKeyRef.current,
+      // Called only for the frame on screen (`currentKey`).
+      reloadFrame: () => {
+        initialPreviewSyncRef.current = null;
+        setPreviewRevision((revision) => revision + 1);
+      },
+      // The renewal's own question, asked once now.
+      confirm: async () => {
+        const previewOrigin = previewSourceOriginRef.current;
+        if (!previewOrigin || editorSignedOut(scope)) return null;
+        const result = await touchThemePreviewServer({
+          data: { ...scope, previewOrigin },
+        });
+        return result?.success === true &&
+          result.data.serving &&
+          "servedInstance" in result.data
+          ? parsePreviewServedInstance(result.data.servedInstance)
+          : null;
+      },
+      log: (line) => console.info(line),
+    });
+    previewInstanceWatchRef.current = watch;
+    return () => {
+      watch.dispose();
+      if (previewInstanceWatchRef.current === watch) {
+        previewInstanceWatchRef.current = null;
+      }
+    };
+  }, [context.storefront.id, context.theme.id]);
 
   useEffect(() => {
     dispatchPreviewLifecycle({ type: "reset" });
@@ -3824,6 +3870,14 @@ export function VisualEditorShell({
         },
       })
         .then((result) => {
+          // Which instance wrote, compared with the one this frame came
+          // from. It may replace the frame; it changes nothing below.
+          previewInstanceWatchRef.current?.observe(
+            targetPreviewKey,
+            result?.success === true
+              ? parsePreviewServedInstance(result.data.servedInstance)
+              : null,
+          );
           // Nothing to update means nothing to wait for. The container was
           // started from this source, so the page is already showing it, and
           // no hot update is coming to say so. Confirming here is reporting
@@ -4169,6 +4223,7 @@ export function VisualEditorShell({
         })
       )
         return;
+      const sentKey = previewKeyRef.current;
       void touchThemePreviewServer({
         data: {
           storefrontId: context.storefront.id,
@@ -4178,6 +4233,16 @@ export function VisualEditorShell({
       })
         .then((result) => {
           if (cancelled) return;
+          if (
+            result?.success === true &&
+            result.data.serving &&
+            "servedInstance" in result.data
+          ) {
+            previewInstanceWatchRef.current?.observe(
+              sentKey,
+              parsePreviewServedInstance(result.data.servedInstance),
+            );
+          }
           // Only a definite "not serving" is acted on. A request that failed
           // for its own reasons says nothing about the sandbox, and tearing
           // down a working preview over a lost network call would be worse
@@ -7192,6 +7257,10 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-ready") {
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
+        previewInstanceWatchRef.current?.frameReady(
+          previewKey,
+          message.servedInstance ?? null,
+        );
         // A frame that arrives late answers the only question that notice
         // asked. Cleared by message, so a slower sandbox than the timeout
         // allows for corrects itself instead of needing a retry.
