@@ -92,6 +92,11 @@ if (tool === "vite") {
     writeFileSync(process.env.FAKE_PLAYWRIGHT_PID_FILE, String(process.pid));
     setInterval(() => {}, 1000);
   } else {
+    // Before each exit, the way the runner's exitAfterFlush does it. This
+    // process writes to the runner's own stdout, which the runner is filling
+    // with the dev server's output; when that pipe is full a line is queued,
+    // and a bare process.exit drops it.
+    const flushed = () => new Promise((resolve) => process.stdout.write("", resolve));
     const base = process.env.E2E_BASE_URL;
     const rounds = mode === "fail" ? 1 : 10;
     let answered = 0;
@@ -103,6 +108,7 @@ if (tool === "vite") {
       await fetch(base + "/done", { signal: AbortSignal.timeout(10_000) }).then((r) => r.text());
     } catch (error) {
       console.log("FAKE_PLAYWRIGHT_REQUEST_FAILED after " + answered + ": " + error.message);
+      await flushed();
       process.exit(1);
     }
     console.log("FAKE_PLAYWRIGHT_ANSWERED " + answered);
@@ -113,6 +119,7 @@ if (tool === "vite") {
         })) }]
       }));
     }
+    await flushed();
     process.exit(mode === "fail" ? 1 : 0);
   }
 } else {
