@@ -8366,6 +8366,35 @@ export function VisualEditorShell({
     }),
   );
   const previewPropsRevisionRef = useRef(new Map<string, number>());
+  /**
+   * Per section, the revision whose post is still waiting on media signing.
+   * An edit that posts no section content of its own replaces that post
+   * (`supersedeAwaitingSignedPost`); nothing else reads it.
+   */
+  const awaitingSignedPostRef = useRef(new Map<string, number>());
+  const postPreviewSectionProps = useCallback(
+    (
+      sectionId: string,
+      resolvedProps: PreviewSectionProps | undefined,
+      enabled: boolean | undefined,
+      resetKeys?: string[],
+    ) => {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-section-props",
+        sectionId,
+        props: resolvedProps,
+        enabled,
+        ...(resetKeys?.length ? { resetKeys } : {}),
+      });
+      // Anything that changes what the canvas renders has to re-measure,
+      // not just a file write. The theme's own `min-h-screen` resolves
+      // against the frame, so content that becomes shorter cannot report
+      // itself shorter — hiding a section or shortening a heading would
+      // otherwise leave the space it used to occupy behind.
+      schedulePreviewRemeasureRef.current();
+    },
+    [],
+  );
   const syncPreviewSectionProps = useCallback(
     (
       sectionId: string,
@@ -8373,24 +8402,6 @@ export function VisualEditorShell({
       enabled?: boolean,
       resetKeys?: string[],
     ) => {
-      const post = (
-        resolvedProps: PreviewSectionProps | undefined,
-        nextEnabled: boolean | undefined,
-      ) => {
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          type: "morph:storefront-preview-update-section-props",
-          sectionId,
-          props: resolvedProps,
-          enabled: nextEnabled,
-          ...(resetKeys?.length ? { resetKeys } : {}),
-        });
-        // Anything that changes what the canvas renders has to re-measure,
-        // not just a file write. The theme's own `min-h-screen` resolves
-        // against the frame, so content that becomes shorter cannot report
-        // itself shorter — hiding a section or shortening a heading would
-        // otherwise leave the space it used to occupy behind.
-        schedulePreviewRemeasureRef.current();
-      };
       const revisions = previewPropsRevisionRef.current;
       const revision = (revisions.get(sectionId) ?? 0) + 1;
       revisions.set(sectionId, revision);
@@ -8398,19 +8409,51 @@ export function VisualEditorShell({
       const first = props
         ? previewMediaCache.resolve(props)
         : { content: props, missing: [] };
-      post(first.content, enabled);
+      postPreviewSectionProps(sectionId, first.content, enabled, resetKeys);
       if (!props || first.missing.length === 0) return;
       // Posted again once the new assets are signed, unless a later edit to
-      // the same section has been posted meanwhile.
+      // the same section has been posted, or has replaced it, meanwhile.
+      awaitingSignedPostRef.current.set(sectionId, revision);
       void previewMediaCache.ensure(first.missing).then(() => {
         if (revisions.get(sectionId) !== revision) return;
+        awaitingSignedPostRef.current.delete(sectionId);
         const signed = previewMediaCache.resolve(props);
         if (signed.missing.length < first.missing.length) {
-          post(signed.content, undefined);
+          postPreviewSectionProps(sectionId, signed.content, undefined, resetKeys);
         }
       });
     },
-    [previewMediaCache],
+    [previewMediaCache, postPreviewSectionProps],
+  );
+  /**
+   * An edit that posts no section content of its own — an Inspector text
+   * field previews on the element itself (`skipPreviewSync`) — still makes
+   * the section's content newer than a post waiting on media signing, which
+   * would otherwise put the older text back once signed. That post is
+   * replaced by one with `props`, the edit's own, sent once the same media is
+   * signed. With no post waiting, nothing is posted or signed: the edit stays
+   * the element-level preview it is.
+   */
+  const supersedeAwaitingSignedPost = useCallback(
+    (sectionId: string, props: PreviewSectionProps) => {
+      const revisions = previewPropsRevisionRef.current;
+      const waiting = awaitingSignedPostRef.current.get(sectionId);
+      if (waiting === undefined || revisions.get(sectionId) !== waiting) return;
+      const revision = waiting + 1;
+      revisions.set(sectionId, revision);
+      awaitingSignedPostRef.current.set(sectionId, revision);
+      const { missing } = previewMediaCache.resolve(props);
+      void previewMediaCache.ensure(missing).then(() => {
+        if (revisions.get(sectionId) !== revision) return;
+        awaitingSignedPostRef.current.delete(sectionId);
+        postPreviewSectionProps(
+          sectionId,
+          previewMediaCache.resolve(props).content,
+          undefined,
+        );
+      });
+    },
+    [previewMediaCache, postPreviewSectionProps],
   );
 
   // A content write the server took only in part: the source it checked no
@@ -8830,6 +8873,8 @@ export function VisualEditorShell({
       const previewProps = parsePreviewSectionProps(nextProps);
       if (!options?.skipPreviewSync && previewProps) {
         syncPreviewSectionProps(sectionId, previewProps);
+      } else if (previewProps) {
+        supersedeAwaitingSignedPost(sectionId, previewProps);
       }
 
       const templateId = templateIdForSection(sectionId);
@@ -8936,6 +8981,7 @@ export function VisualEditorShell({
       sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
+      supersedeAwaitingSignedPost,
       templateIdForSection,
       routePathForTemplate,
       updatePropsMutation,
