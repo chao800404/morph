@@ -287,6 +287,31 @@ describe("the object position control is unavailable where it cannot prove the f
     });
   });
 
+  it("refuses a style that names the position twice under plain keys, and writes it when named once", () => {
+    // Both keys read as `objectPosition`, and the last one is what renders:
+    // writing the field the first one reads would change nothing on screen.
+    // (A computed key is refused earlier, by name; these are plain keys.)
+    expect(
+      resolveRow(
+        rowSource({
+          style: '{ objectPosition: item.imagePosition, "objectPosition": "top" }',
+        }),
+      ),
+    ).toEqual({ kind: "unavailable", reason: "position-not-a-field-read" });
+    expect(
+      resolveRow(
+        rowSource({
+          style:
+            "{ objectPosition: item.imagePosition, objectPosition: item.imagePosition }",
+        }),
+      ),
+    ).toEqual({ kind: "unavailable", reason: "position-not-a-field-read" });
+    // The same element naming it once is written.
+    expect(
+      resolveRow(rowSource({ style: "{ objectPosition: item.imagePosition }" })),
+    ).toMatchObject({ kind: "document", fieldPath: "items.1.imagePosition" });
+  });
+
   it.each([
     ["reassigned", 'imagePosition = "top";'],
     ["aliased", "const position = imagePosition;"],
