@@ -77,6 +77,30 @@ vi.mock("@/server/storefront/storefront-preview-media.serverFn", async (importOr
   ...(await importOriginal<Record<string, unknown>>()),
   signThemePreviewMedia: vi.fn(),
 }));
+// The media library picker opens a dialog jsdom cannot drive; this stands in
+// for it with one button that picks a fixed library asset. Everything after
+// the pick — the field's onChange, the Inspector, the save, the preview post
+// and signing — is the real path.
+const PICKED_ASSET = vi.hoisted(() => "7c1e2d3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f");
+vi.mock("./editor-media-picker-popover", () => ({
+  EditorMediaPickerPopover: ({
+    onSelect,
+    disabled,
+  }: {
+    onSelect: (asset: { id: string; url: string; name?: string }) => void;
+    disabled?: boolean;
+  }) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() =>
+        onSelect({ id: PICKED_ASSET, url: `/assets/${PICKED_ASSET}.png`, name: "picked.png" })
+      }
+    >
+      Pick test asset
+    </button>
+  ),
+}));
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   postEditorToPreviewMessage: vi.fn(),
@@ -172,6 +196,12 @@ const REFUSED = {
   message: "The source code has changed. Select the field again. Your changes are kept.",
 };
 
+/** The editor context and Theme files the shell renders with; reset per test. */
+let activeContext: StorefrontThemeEditorDTO = context;
+let activeTree: () => ReturnType<typeof tree> = tree;
+/** `onSearchChange` is a mock here, so a selection never reaches `search` by itself. */
+let activeSearch: StorefrontThemeEditorSearch = baseSearch;
+
 let serving = { session: SESSION, serial: 1 };
 let order: string[] = [];
 const infoLines: string[] = [];
@@ -188,11 +218,11 @@ function renderShell() {
   );
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
-    tree() as never,
+    activeTree() as never,
   );
   const view = render(
     <QueryClientProvider client={client}>
-      <VisualEditorShell context={context} search={baseSearch} onSearchChange={vi.fn()} />
+      <VisualEditorShell context={activeContext} search={activeSearch} onSearchChange={vi.fn()} />
     </QueryClientProvider>,
   );
   return { client, view };
@@ -303,6 +333,9 @@ function commitAndClose(value: string) {
 }
 
 beforeEach(() => {
+  activeContext = context;
+  activeTree = tree;
+  activeSearch = baseSearch;
   serving = { session: SESSION, serial: 1 };
   order = [];
   infoLines.length = 0;
@@ -342,7 +375,7 @@ beforeEach(() => {
   });
   vi.mocked(listStorefrontThemeFiles).mockReset();
   vi.mocked(listStorefrontThemeFiles).mockImplementation(
-    async () => ({ success: true, message: "ok", data: tree() }) as never,
+    async () => ({ success: true, message: "ok", data: activeTree() }) as never,
   );
   vi.mocked(startThemePreviewServer).mockReset();
   vi.mocked(startThemePreviewServer).mockResolvedValue({
@@ -825,6 +858,17 @@ describe("the frame brought up after the reload", () => {
 
   describe("an image signed after the content was sent", () => {
     const ASSET = "0b9f3a52-2f7e-4c1a-9d4b-6a1f2e3d4c5b";
+    const SIGNED_URL = "https://media.morph.test/signed.png";
+    /** An image field's stored value, as the media picker stores a library asset. */
+    const STORED_IMAGE = {
+      source: "asset",
+      mediaType: "image",
+      assetId: ASSET,
+      url: `/assets/${ASSET}.png`,
+      name: "hero.png",
+    };
+    const imageSigned = (message: Posted | undefined) =>
+      JSON.stringify(message?.props?.image ?? null).includes(SIGNED_URL);
     let signed!: (value: unknown) => void;
 
     async function replayedWithUnsignedImage() {
@@ -854,7 +898,7 @@ describe("the frame brought up after the reload", () => {
                   {
                     id: "hero",
                     type: "hero",
-                    props: { heading: TYPED, image: { source: "asset", assetId: ASSET } },
+                    props: { heading: TYPED, image: STORED_IMAGE },
                   },
                 ],
               },
@@ -865,6 +909,7 @@ describe("the frame brought up after the reload", () => {
       });
       const from = await newFrameUp();
       expect(heroPosts(from)).toHaveLength(1);
+      expect(imageSigned(heroPosts(from)[0])).toBe(false);
       expect(signThemePreviewMedia).toHaveBeenCalled();
       return from;
     }
@@ -873,7 +918,7 @@ describe("the frame brought up after the reload", () => {
         signed({
           success: true,
           data: {
-            urls: { [ASSET]: "https://media.morph.test/signed.png" },
+            urls: { [ASSET]: SIGNED_URL },
             expiresAt: Date.now() + 24 * 60 * 60 * 1000,
           },
         }),
@@ -884,6 +929,9 @@ describe("the frame brought up after the reload", () => {
       await sign();
       await tick(0);
       expect(heroPosts(from)).toHaveLength(2);
+      // The second post carries the signed address, and the same content.
+      expect(imageSigned(heroPosts(from)[1])).toBe(true);
+      expect(heroPosts(from)[1]?.props?.heading).toBe(TYPED);
     });
 
     // G3. A newer edit to the section while its image is being signed: the
@@ -926,6 +974,7 @@ describe("the frame brought up after the reload", () => {
       await sign();
       await tick(0);
       expect(heroPosts(from)).toHaveLength(1);
+      expect(heroPosts(from).some(imageSigned)).toBe(false);
     });
   });
 
@@ -944,5 +993,330 @@ describe("the frame brought up after the reload", () => {
     const from = await newFrameUp();
     expect(heroPosts(from)).toEqual([]);
     expect(replayedLines()).toEqual([]);
+  });
+
+  /**
+   * T6 and T6c: an Inspector edit while the replay's image is being signed,
+   * with a declared source and a valid stored image.
+   *
+   * A declared text field that is not the selected one previews on the
+   * element and saves with `skipPreviewSync`, so it replaces a section post
+   * still waiting on signing (#235). A replay's waiting post belongs to the
+   * frame it was for: once that frame is replaced, nothing of the replay is
+   * posted, superseded or not (T6c, option b). New work on the frame that
+   * replaced it — a canvas edit, an Inspector edit, a new image — is its own
+   * and is never held back by the expired replay.
+   *
+   * The shell's `context` is a fixed prop in this harness (no refetch after a
+   * save), so the Inspector's copy of fields the test does not type into can
+   * lag behind what the server holds; only fields the test sets are asserted.
+   */
+  describe("T6: an Inspector edit while the replayed image is being signed", () => {
+    const ASSET = "0b9f3a52-2f7e-4c1a-9d4b-6a1f2e3d4c5b";
+    const STORED_IMAGE = {
+      source: "asset",
+      mediaType: "image",
+      assetId: ASSET,
+      url: `/assets/${ASSET}.png`,
+      name: "hero.png",
+    };
+    const signedUrl = (id: string) => `https://media.morph.test/signed-${id}.png`;
+    const imageSignedWith = (message: Posted | undefined, id: string) =>
+      JSON.stringify(message?.props?.image ?? null).includes(signedUrl(id));
+    const HERO_SOURCE = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+  subheading: { type: "text", label: "Subheading" },
+  image: { type: "image", label: "Image" }
+};
+export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
+  return <section><h1>{heading}</h1><p>{subheading}</p>{image ? <img src={image.url} alt="" /> : null}</section>;
+}`;
+    const heroSection = (props: Record<string, unknown>) => ({
+      id: "hero",
+      type: "hero",
+      enabled: true,
+      props,
+    });
+    const declaredContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          document: {
+            version: 1,
+            sections: [heroSection({ heading: "Welcome", subheading: "Summary", image: STORED_IMAGE })],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    const declaredTree = () => {
+      const base = tree();
+      return {
+        ...base,
+        files: [
+          ...base.files,
+          { ...routeFile, id: "file-hero", path: "src/components/Hero.tsx", content: HERO_SOURCE },
+        ],
+        tree: [
+          {
+            name: "src",
+            path: "src",
+            isDirectory: true,
+            children: [
+              ...base.tree[0]!.children,
+              {
+                name: "components",
+                path: "src/components",
+                isDirectory: true,
+                children: [
+                  { name: "Hero.tsx", path: "src/components/Hero.tsx", isDirectory: false },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+    };
+
+    let answers: Array<{ ids: string[]; resolve: (value: unknown) => void }> = [];
+    let canvasRevision = 0;
+    beforeEach(() => {
+      activeContext = declaredContext;
+      activeTree = declaredTree as typeof tree;
+      // The hero section is the document section the Inspector writes to, as
+      // it is once the editor's search follows a selection.
+      activeSearch = { ...baseSearch, section: "hero" } as StorefrontThemeEditorSearch;
+      answers = [];
+      canvasRevision = 0;
+      vi.mocked(signThemePreviewMedia).mockReset();
+      vi.mocked(signThemePreviewMedia).mockImplementation(
+        (request: unknown) =>
+          new Promise((resolve) =>
+            answers.push({
+              ids: (request as { data: { assetIds: string[] } }).data.assetIds,
+              resolve,
+            }),
+          ) as never,
+      );
+    });
+    /** Answers every signing request made so far. */
+    const releaseSigning = async () => {
+      await act(async () => {
+        for (const answer of answers.splice(0)) {
+          answer.resolve({
+            success: true,
+            data: {
+              urls: Object.fromEntries(answer.ids.map((id) => [id, signedUrl(id)])),
+              expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+            },
+          });
+        }
+      });
+      await tick(0);
+      await tick(0);
+    };
+    const signedIds = () =>
+      vi
+        .mocked(signThemePreviewMedia)
+        .mock.calls.flatMap((call) => (call[0] as { data: { assetIds: string[] } }).data.assetIds);
+
+    /** The reload's frame is replayed into; its image is still being signed. */
+    async function replayedWithUnsignedImage() {
+      await frameUp();
+      await heldWhileTyping();
+      commitAndClose(TYPED);
+      await tick(400);
+      await tick(400);
+      getThemeEditor.mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: {
+          ...declaredContext,
+          templates: [
+            {
+              ...declaredContext.templates[0]!,
+              document: {
+                version: 1,
+                sections: [heroSection({ heading: TYPED, subheading: "Summary", image: STORED_IMAGE })],
+              },
+              draftGeneration: 2,
+            },
+          ],
+        },
+      });
+      const from = await newFrameUp();
+      expect(heroPosts(from)).toHaveLength(1);
+      expect(heroPosts(from)[0]?.props?.heading).toBe(TYPED);
+      expect(imageSignedWith(heroPosts(from)[0], ASSET)).toBe(false);
+      return from;
+    }
+    /** The page reports a selection: the section itself (null) or the heading. */
+    async function canvasSelect(field: "heading" | null) {
+      const messages = vi
+        .mocked(postEditorToPreviewMessage)
+        .mock.calls.map(([, message]) => message as Record<string, unknown>);
+      const revision =
+        Math.max(
+          canvasRevision,
+          ...messages.map((m) => (typeof m.selectionRevision === "number" ? m.selectionRevision : 0)),
+        ) + 1;
+      canvasRevision = revision;
+      fromPreview({
+        type: "morph:storefront-preview-select-section",
+        sectionId: "hero",
+        componentType: "hero",
+        kind: field ? "heading" : "section",
+        nodeId: field ? `hero:node:${field}` : "hero",
+        sourceFilePath: "src/components/Hero.tsx",
+        sourceLocation: null,
+        elementKey: field,
+        fieldKey: field,
+        field,
+        fieldPath: field,
+        descendantFields: [],
+        tagName: field ? "h1" : "section",
+        role: null,
+        inputType: null,
+        styleRevision: Math.max(
+          0,
+          ...messages.map((m) => (typeof m.styleRevision === "number" ? m.styleRevision : 0)),
+        ),
+        className: "",
+        isSection: field === null,
+        inspectorOverride: null,
+        computedStyle: null,
+        parentComputedStyle: null,
+        sectionComputedStyle: null,
+        selectionRevision: revision,
+      });
+      await tick(0);
+      await tick(0);
+    }
+    /** The section selected on the canvas, its declared subheading typed in the Inspector. */
+    async function inspectorSubheading(to: string) {
+      await canvasSelect(null);
+      // Timers are faked here; findBy* would poll on a clock that never moves.
+      const field = screen.getByDisplayValue("Summary");
+      fireEvent.focus(field);
+      fireEvent.input(field, { target: { value: to } });
+      fireEvent.blur(field);
+      await tick(0);
+    }
+    /** Text finished on the canvas, as the page finishes it. */
+    async function canvasHeading(value: string, originalValue: string) {
+      await canvasSelect("heading");
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        value,
+        originalValue,
+      });
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      await tick(0);
+    }
+    /** The frame is replaced for another reason: a new ready round. */
+    async function frameReplaced() {
+      fromPreview({
+        type: "morph:storefront-preview-ready",
+        servedInstance: { kind: "known", instance: serving },
+      });
+      await tick(0);
+    }
+
+    it("T6: ends with the newest text and the signed image, never the older subheading", async () => {
+      await replayedWithUnsignedImage();
+      const before = posted().length;
+      await inspectorSubheading("Sub newer");
+      // Previewed on the element; no section post yet.
+      expect(heroPosts(before)).toEqual([]);
+      await tick(400);
+      await releaseSigning();
+      const after = heroPosts(before);
+      expect(after).toHaveLength(1);
+      expect(after.map((m) => m.props?.subheading)).not.toContain("Summary");
+      expect(after[0]?.props?.subheading).toBe("Sub newer");
+      expect(imageSignedWith(after[0], ASSET)).toBe(true);
+      expect(startThemePreviewServer).not.toHaveBeenCalled();
+      expect(reloadLines()).toHaveLength(1);
+    });
+
+    it("T6-binding: the replay's late post does not reach a frame that replaced it", async () => {
+      const from = await replayedWithUnsignedImage();
+      await frameReplaced();
+      await releaseSigning();
+      expect(heroPosts(from)).toHaveLength(1);
+      expect(heroPosts(from).some((m) => imageSignedWith(m, ASSET))).toBe(false);
+    });
+
+    it("T6c-a: an Inspector edit after the frame was replaced posts and signs nothing for the replay", async () => {
+      await replayedWithUnsignedImage();
+      await frameReplaced();
+      const signedBefore = signedIds().length;
+      const before = posted().length;
+      await inspectorSubheading("Sub newer");
+      await tick(400);
+      await releaseSigning();
+      expect(heroPosts(before)).toEqual([]);
+      expect(signedIds().length).toBe(signedBefore);
+    });
+
+    it("T6c-b: a replacement made before the frame was replaced is not posted to the new frame", async () => {
+      await replayedWithUnsignedImage();
+      const before = posted().length;
+      await inspectorSubheading("Sub newer");
+      expect(heroPosts(before)).toEqual([]);
+      await frameReplaced();
+      await tick(400);
+      await releaseSigning();
+      expect(heroPosts(before)).toEqual([]);
+    });
+
+    it("T6c-c: a canvas edit on the new frame is posted and signed as usual", async () => {
+      await replayedWithUnsignedImage();
+      await frameReplaced();
+      const before = posted().length;
+      // `originalValue` is the stored value this editor's copy holds.
+      await canvasHeading("Final", "Welcome");
+      expect(heroPosts(before).at(-1)?.props?.heading).toBe("Final");
+      await releaseSigning();
+      const after = heroPosts(before);
+      expect(after.map((m) => m.props?.heading).filter((h) => h !== "Final")).toEqual([]);
+      expect(imageSignedWith(after.at(-1), ASSET)).toBe(true);
+    });
+
+    it("T6c-d: an Inspector edit on the new frame replaces that frame's own waiting post", async () => {
+      await replayedWithUnsignedImage();
+      await frameReplaced();
+      await canvasHeading("Final", "Welcome");
+      const before = posted().length;
+      await inspectorSubheading("Sub newer");
+      expect(heroPosts(before)).toEqual([]);
+      await tick(400);
+      await releaseSigning();
+      const after = heroPosts(before);
+      expect(after).toHaveLength(1);
+      expect(after[0]?.props?.subheading).toBe("Sub newer");
+      expect(after[0]?.props?.heading).not.toBe(TYPED);
+      expect(imageSignedWith(after[0], ASSET)).toBe(true);
+    });
+
+    it("T6c-e: a new image chosen on the new frame is posted and signed as usual", async () => {
+      await replayedWithUnsignedImage();
+      await frameReplaced();
+      await canvasSelect(null);
+      const before = posted().length;
+      fireEvent.click(screen.getByRole("button", { name: "Pick test asset" }));
+      await tick(0);
+      expect(JSON.stringify(heroPosts(before).at(-1)?.props?.image ?? null)).toContain(PICKED_ASSET);
+      expect(signedIds()).toContain(PICKED_ASSET);
+      await releaseSigning();
+      const after = heroPosts(before);
+      expect(imageSignedWith(after.at(-1), PICKED_ASSET)).toBe(true);
+      // Nothing of the expired replay follows the pick.
+      expect(after.some((m) => imageSignedWith(m, ASSET))).toBe(false);
+    });
   });
 });

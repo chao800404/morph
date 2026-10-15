@@ -8434,11 +8434,15 @@ export function VisualEditorShell({
   );
   const previewPropsRevisionRef = useRef(new Map<string, number>());
   /**
-   * Per section, the revision whose post is still waiting on media signing.
-   * An edit that posts no section content of its own replaces that post
+   * Per section, the post still waiting on media signing: its revision, and
+   * the validity of the work that made it — a replay's frame, ready round and
+   * route (`stillCurrent`); none for an ordinary edit. An edit that posts no
+   * section content of its own replaces that post
    * (`supersedeAwaitingSignedPost`); nothing else reads it.
    */
-  const awaitingSignedPostRef = useRef(new Map<string, number>());
+  const awaitingSignedPostRef = useRef(
+    new Map<string, Readonly<{ revision: number; stillCurrent?: () => boolean }>>(),
+  );
   const postPreviewSectionProps = useCallback(
     (
       sectionId: string,
@@ -8483,10 +8487,14 @@ export function VisualEditorShell({
       if (!props || first.missing.length === 0) return;
       // Posted again once the new assets are signed, unless a later edit to
       // the same section has been posted, or has replaced it, meanwhile.
-      awaitingSignedPostRef.current.set(sectionId, revision);
+      const waiting = { revision, stillCurrent };
+      awaitingSignedPostRef.current.set(sectionId, waiting);
       void previewMediaCache.ensure(first.missing).then(() => {
         if (revisions.get(sectionId) !== revision) return;
-        awaitingSignedPostRef.current.delete(sectionId);
+        // Only its own entry: a newer one belongs to newer work.
+        if (awaitingSignedPostRef.current.get(sectionId) === waiting) {
+          awaitingSignedPostRef.current.delete(sectionId);
+        }
         if (stillCurrent && !stillCurrent()) return;
         const signed = previewMediaCache.resolve(props);
         if (signed.missing.length < first.missing.length) {
@@ -8504,19 +8512,34 @@ export function VisualEditorShell({
    * replaced by one with `props`, the edit's own, sent once the same media is
    * signed. With no post waiting, nothing is posted or signed: the edit stays
    * the element-level preview it is.
+   *
+   * A waiting post made by a replay belongs to the frame that replay was for.
+   * Once that frame, its ready round or its route is gone, there is nothing
+   * left to replace: the edit posts nothing, as with no post waiting. The
+   * replacement keeps the same limit, checked again once signed.
    */
   const supersedeAwaitingSignedPost = useCallback(
     (sectionId: string, props: PreviewSectionProps) => {
       const revisions = previewPropsRevisionRef.current;
       const waiting = awaitingSignedPostRef.current.get(sectionId);
-      if (waiting === undefined || revisions.get(sectionId) !== waiting) return;
-      const revision = waiting + 1;
-      revisions.set(sectionId, revision);
-      awaitingSignedPostRef.current.set(sectionId, revision);
+      if (!waiting || revisions.get(sectionId) !== waiting.revision) return;
+      if (waiting.stillCurrent && !waiting.stillCurrent()) {
+        awaitingSignedPostRef.current.delete(sectionId);
+        return;
+      }
+      const replacement = {
+        revision: waiting.revision + 1,
+        stillCurrent: waiting.stillCurrent,
+      };
+      revisions.set(sectionId, replacement.revision);
+      awaitingSignedPostRef.current.set(sectionId, replacement);
       const { missing } = previewMediaCache.resolve(props);
       void previewMediaCache.ensure(missing).then(() => {
-        if (revisions.get(sectionId) !== revision) return;
-        awaitingSignedPostRef.current.delete(sectionId);
+        if (revisions.get(sectionId) !== replacement.revision) return;
+        if (awaitingSignedPostRef.current.get(sectionId) === replacement) {
+          awaitingSignedPostRef.current.delete(sectionId);
+        }
+        if (replacement.stillCurrent && !replacement.stillCurrent()) return;
         postPreviewSectionProps(
           sectionId,
           previewMediaCache.resolve(props).content,
