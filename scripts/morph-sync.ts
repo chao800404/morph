@@ -23,7 +23,11 @@ import {
   ThemeSyncApiRefusal,
 } from "../src/lib/storefront/local-dev/theme-sync/sync-client";
 import { createConfirmPolicy, describeMassDeletion } from "../src/lib/storefront/local-dev/theme-sync/sync-confirm";
-import { createLocalSyncFolder, SYNC_DIRECTORY } from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
+import {
+  createLocalSyncFolder,
+  LocalSyncFolderError,
+  SYNC_DIRECTORY,
+} from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
 import { themeSyncPathExclusion } from "../src/lib/storefront/local-dev/theme-sync/sync-paths";
 import {
   createSyncSession,
@@ -207,7 +211,10 @@ function sessionFor(state: SyncState, client: ReturnType<typeof createThemeSyncC
 async function status() {
   const state = await readState();
   const session = sessionFor(state, await clientFor(state), true);
-  const result = await session.runCycle();
+  const result = await session.runCycle().catch((error: unknown) => {
+    if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
+    throw error;
+  });
   if (result.status === "applied") log("In step: nothing to do.");
   if (result.status === "retry") log(`The workspace changed while reading (${result.reason}); run again.`);
 }
@@ -302,9 +309,14 @@ async function start() {
       if (error instanceof ThemeSyncApiRefusal && error.status === 401) {
         fail(`Morph refused the token (${error.message}). Link again from the editor.`);
       }
-      // A request that failed may still have landed. Nothing is re-sent: the
-      // next cycle reads the workspace back and plans from what is there.
-      log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof LocalSyncFolderError) {
+        // Nothing was sent: the cycle stopped before it planned.
+        log(`Local folder problem, not Morph; trying again: ${error.message}`);
+      } else {
+        // A request that failed may still have landed. Nothing is re-sent: the
+        // next cycle reads the workspace back and plans from what is there.
+        log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      }
       dirty = true;
       delay = Math.min(delay * 2, POLL_IDLE_MAX_MS);
     } finally {
