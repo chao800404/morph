@@ -65,7 +65,20 @@ export type LocalSkip = Readonly<{
 
 /** The local side, as the session needs it; `sync-local-fs.ts` on disk. */
 export interface SyncLocalFolder {
-  scan(): Promise<{ files: Map<string, LocalScanEntry>; skipped: LocalSkip[] }>;
+  /**
+   * `ignored` is the folder's `.morphignore` as this scan read and applied
+   * it. An ignored path is out of sync in both directions: the scan leaves
+   * it out, and the session leaves out the workspace's copy and the base
+   * entry by the same rules, never by a second read that may differ.
+   * `ignoreKey` names those rules: two scans with equal keys applied the
+   * same ones. A `.morphignore` that is there but unreadable fails the scan.
+   */
+  scan(): Promise<{
+    files: Map<string, LocalScanEntry>;
+    skipped: LocalSkip[];
+    ignored: (path: string) => boolean;
+    ignoreKey: string;
+  }>;
   /** The file's current text, or null when it is absent or unreadable. */
   read(path: string): Promise<string | null>;
   /** Writes the workspace's text, keeping the file's own line endings. */
@@ -181,16 +194,19 @@ export function createSyncSession(options: SyncSessionOptions) {
 
   /**
    * Whether both sides are as the plan saw them: the workspace at the same
-   * generation, and the folder holding the same files with the same text.
+   * generation, and the folder holding the same files with the same text
+   * under the same `.morphignore` rules.
    */
   async function unchangedSincePlanned(
     generation: number,
     planned: ReadonlyMap<string, LocalScanEntry>,
+    plannedIgnoreKey: string,
   ): Promise<boolean> {
     if ((await client.generation()) !== generation) return false;
-    const { files } = await folder.scan();
+    const { files, ignored, ignoreKey } = await folder.scan();
+    if (ignoreKey !== plannedIgnoreKey) return false;
     const now = new Map(
-      [...files].filter(([path]) => themeSyncPathExclusion(path) === null),
+      [...files].filter(([path]) => themeSyncPathExclusion(path) === null && !ignored(path)),
     );
     if (now.size !== planned.size) return false;
     for (const [path, entry] of now) {
@@ -218,26 +234,32 @@ export function createSyncSession(options: SyncSessionOptions) {
 
   async function runCycle(): Promise<CycleResult> {
     const listed = await client.list();
+    const scanned = await folder.scan();
+    // `.morphignore` holds on all three sides. Leaving it to the scan alone
+    // made an ignored file read as deleted locally, and deleted it in Morph.
+    const { ignored } = scanned;
     const remote = new Map<string, SyncRemoteEntry>();
     for (const file of listed.files) {
-      if (themeSyncPathExclusion(file.path) === null) {
+      if (themeSyncPathExclusion(file.path) === null && !ignored(file.path)) {
         remote.set(file.path, { id: file.id, version: file.version, kind: file.kind });
       }
     }
-    const scanned = await folder.scan();
     const skipped = [...scanned.skipped];
-    // The same rule again on whatever the folder reported, so a folder that
-    // forgets it cannot send a platform file up.
+    // The same rules again on whatever the folder reported, so a folder that
+    // forgets them cannot send a platform or ignored file up.
     const local = new Map<string, LocalScanEntry>();
     for (const [path, entry] of scanned.files) {
       const exclusion = themeSyncPathExclusion(path);
+      if (ignored(path)) continue;
       if (exclusion === null) local.set(path, entry);
       else if (exclusion !== "local-only") {
         skipped.push({ path, reason: "not-synced", detail: exclusion });
       }
     }
     const base = new Map(
-      Object.entries(state.files).filter(([path]) => themeSyncPathExclusion(path) === null),
+      Object.entries(state.files).filter(
+        ([path]) => themeSyncPathExclusion(path) === null && !ignored(path),
+      ),
     );
 
     let contents: Map<string, { id: string; version: number; content: string }>;
@@ -309,14 +331,36 @@ export function createSyncSession(options: SyncSessionOptions) {
 
     // A yes is for the plan that was shown. Asking can take minutes; if
     // either side moved meanwhile, that plan is not applied — the next cycle
-    // plans from what is there now and asks again. The hold stays.
-    if (asked && !(await unchangedSincePlanned(listed.sourceGeneration, local))) {
+    // plans from what is there now and asks again. The hold stays. A check
+    // that fails (the rules unreadable, Morph unreachable) applies nothing
+    // either, so a startup yes is not spent on it: the next plan is asked.
+    let unchanged = true;
+    if (asked) {
+      try {
+        unchanged = await unchangedSincePlanned(
+          listed.sourceGeneration,
+          local,
+          scanned.ignoreKey,
+        );
+      } catch (error) {
+        if (startup) firstCycle = true;
+        throw error;
+      }
+    }
+    if (!unchanged) {
       if (startup) firstCycle = true;
       return {
         status: "retry",
         summary,
         reason: "Morph or the folder changed while waiting for the answer; planning again.",
       };
+    }
+    // A path ignored after it was synced loses its base entry: kept, it
+    // would turn either side's absence into a deletion once the path is
+    // synced again. Without it, each side's copy reads as new to the other.
+    // Dropped only here, so a cycle that stops earlier leaves the base as is.
+    for (const path of Object.keys(state.files)) {
+      if (ignored(path)) delete state.files[path];
     }
     // Approved deletions are the developer's own and are not logged. The hold
     // and the count are cleared only once they have all landed (end of the
