@@ -681,8 +681,8 @@ OCC）→ 該實例更新、其他實例不變**。
 `GET <origin>/_morph/content?path=<pathname>`。**平台管線中（店面、Build Preview、Live Preview、預先渲染），Astro 不新增任何管道**：
 不新增環境變數、不用虛擬模組、不用 `Astro.locals`。
 
-**作者在自己電腦執行時的 `MORPH_CONTENT_ORIGIN`：延後，不是不採用**（2026-10-15，與 `docs/content-read-core-design.md` §4.7 一致）。
-Start 已用它（DEV 限定，讀 Core 公開的已發布快照）；Astro 要用同一個讀取核心、同一個 `localOrigin` 欄位，
+**作者在自己電腦執行時的 `MORPH_CONTENT_ORIGIN`：延後，不是不採用**（2026-10-15，與草稿 #221 的 `docs/content-read-core-design.md` §4.7 一致；該文件尚未合併進 main）。
+Start 已用它（DEV 限定，讀 Core 公開的已發布快照）；Astro 要用同一個讀取核心、同一個 `localOrigin` 欄位（兩者目前只在 #221 的測試原型中，見 ROADMAP 1.3、1.4），
 差別只在 Astro 接線怎麼取得這個值，具體方案與實作延後。現在的設計不能排除它：核心不得寫死只認平台標頭；
 平台標頭缺席時，作者端要有不改作者設定檔的取得方式；標頭存在但不可用時仍是 `invalid_content_origin`，絕不退回本機位址。
 （2026-10-13 更正：`MORPH_CONTENT_ORIGIN` 已在 Start 的開發模式使用，見 `src/lib/storefront/local-dev/morph-dev-content-proxy.ts` 與 Starter 的內容模組。作者在自己的電腦執行網站（localhost）仍是產品目標，Astro 的具體方案與實作延後；設計須保留用同一套 SDK 讀已發布內容，以及經授權、可撤銷地讀草稿。跨框架讀取核心的設計見 ROADMAP 1.3。）
