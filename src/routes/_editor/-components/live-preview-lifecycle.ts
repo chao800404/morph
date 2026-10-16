@@ -132,6 +132,13 @@ function reduce(
         recoveryId: state.recoveryId,
       };
     case "server-ready":
+      // A reconnect in progress is ended only by its own request finishing
+      // (or a reset). The shell's server-state effect dispatches this after
+      // every commit, from the phase that commit rendered; when a restart was
+      // dispatched in between, that answer belongs to the frame the restart
+      // replaces. Taking it here would leave "reconnecting" before any render
+      // committed it, so the recovery request would never be sent.
+      if (state.phase === "reconnecting") return state;
       // A preview that already failed stays failed until something actually
       // changes for it. The server query keeps holding its last successful
       // answer, so this event arrives again on every render; treating it as
@@ -156,6 +163,8 @@ function reduce(
         message: null,
       };
     case "server-failed":
+      // The same stale answer as above: the reconnect's own request decides.
+      if (state.phase === "reconnecting") return state;
       if (
         state.phase === "failed" &&
         state.key === null &&
