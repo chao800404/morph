@@ -25,7 +25,11 @@ import {
   ThemeSyncApiRefusal,
 } from "../src/lib/storefront/local-dev/theme-sync/sync-client";
 import { createConfirmPolicy, describeMassDeletion } from "../src/lib/storefront/local-dev/theme-sync/sync-confirm";
-import { createLocalSyncFolder, SYNC_DIRECTORY } from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
+import {
+  createLocalSyncFolder,
+  LocalSyncFolderError,
+  SYNC_DIRECTORY,
+} from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
 import { themeSyncPathExclusion } from "../src/lib/storefront/local-dev/theme-sync/sync-paths";
 import {
   createSyncSession,
@@ -39,6 +43,8 @@ const POLL_ACTIVE_MS = 3_000;
 // thirty, which reads as broken while someone is working in Morph.
 const POLL_IDLE_MAX_MS = 10_000;
 const LOCAL_DEBOUNCE_MS = 400;
+const IGNORE_FALLBACK_WARNING =
+  ".morphignore is missing; still leaving out what it listed at the last sync. Write an empty .morphignore to sync those paths.";
 
 const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
@@ -211,7 +217,11 @@ function sessionFor(state: SyncState, client: ReturnType<typeof createThemeSyncC
 async function status() {
   const state = await readState();
   const session = sessionFor(state, await clientFor(state), true);
-  const result = await session.runCycle();
+  const result = await session.runCycle().catch((error: unknown) => {
+    if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
+    throw error;
+  });
+  if (result.summary.ignoreRulesFrom === "last-sync") log(IGNORE_FALLBACK_WARNING);
   if (result.status === "applied") log("In step: nothing to do.");
   if (result.status === "retry") log(`The workspace changed while reading (${result.reason}); run again.`);
 }
@@ -266,6 +276,7 @@ async function restoreFromMorph() {
   log(`Restoring from Theme ${state.themeId} at ${state.origin} into ${root}. Make sure "start" is not running.`);
   const result = await session.restore(flags.all ? "all" : paths, async (plan) => {
     printRestorePlan(plan);
+    if (plan.ignoreRulesFrom === "last-sync") log(IGNORE_FALLBACK_WARNING);
     const decision = policy.decide("restore");
     if (decision === "yes") return true;
     if (decision === "no") {
@@ -273,6 +284,10 @@ async function restoreFromMorph() {
       return false;
     }
     return /^y(es)?$/i.test(await ask("Restore these files from Morph? [y/N] "));
+  }).catch((error: unknown) => {
+    // Nothing was written: the rules are read before anything else.
+    if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
+    throw error;
   });
   if (result.status === "retry") return fail(`${result.reason} Run restore again.`);
   if (result.status === "declined") return process.exit(1);
@@ -304,6 +319,7 @@ async function start() {
   const session = sessionFor(state, client, false);
   const reportedConflicts = new Set<string>();
   let reportedSkips = false;
+  let reportedIgnoreFallback = false;
   let dirty = true;
   let delay = POLL_ACTIVE_MS;
   let timer: NodeJS.Timeout | null = null;
@@ -334,6 +350,12 @@ async function start() {
       log(`CONFLICT ${conflict.path} (${conflict.reason}). Morph's copy is in ${conflict.path}.morph-remote; settle with: pnpm morph:sync resolve ${conflict.path} --keep local|remote --dir ${flags.dir}`);
     }
     for (const path of reportedConflicts) if (!current.has(path)) reportedConflicts.delete(path);
+    // Once each time the file goes missing, not on every cycle while it is.
+    if (summary.ignoreRulesFrom !== "last-sync") reportedIgnoreFallback = false;
+    else if (!reportedIgnoreFallback) {
+      reportedIgnoreFallback = true;
+      log(IGNORE_FALLBACK_WARNING);
+    }
     if (!reportedSkips && (summary.localSkipped.length || summary.binarySkipped.length)) {
       reportedSkips = true;
       const counts = new Map<string, number>();
@@ -365,9 +387,14 @@ async function start() {
       if (error instanceof ThemeSyncApiRefusal && error.status === 401) {
         fail(`Morph refused the token (${error.message}). Link again from the editor.`);
       }
-      // A request that failed may still have landed. Nothing is re-sent: the
-      // next cycle reads the workspace back and plans from what is there.
-      log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof LocalSyncFolderError) {
+        // Nothing was sent: the cycle stopped before it planned.
+        log(`Local folder problem, not Morph; trying again: ${error.message}`);
+      } else {
+        // A request that failed may still have landed. Nothing is re-sent: the
+        // next cycle reads the workspace back and plans from what is there.
+        log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      }
       dirty = true;
       delay = Math.min(delay * 2, POLL_IDLE_MAX_MS);
     } finally {

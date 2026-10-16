@@ -8,7 +8,7 @@ import {
 } from "./sync-content";
 import { THEME_SYNC_CONFLICT_SUFFIX, themeSyncPathExclusion } from "./sync-paths";
 import { THEME_SYNC_LIMITS } from "./sync-protocol";
-import type { LocalScanEntry, LocalSkip, SyncLocalFolder } from "./sync-session";
+import type { IgnoreSource, LocalScanEntry, LocalSkip, SyncLocalFolder } from "./sync-session";
 
 /**
  * The local side of sync on disk.
@@ -24,6 +24,14 @@ import type { LocalScanEntry, LocalSkip, SyncLocalFolder } from "./sync-session"
  */
 
 export const SYNC_DIRECTORY = ".morph";
+
+/** A problem in the local folder itself, not in Morph or the network. */
+export class LocalSyncFolderError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "LocalSyncFolderError";
+  }
+}
 
 type IgnoreRule =
   | { kind: "exact"; path: string }
@@ -53,6 +61,30 @@ export function isIgnored(path: string, rules: readonly IgnoreRule[]): boolean {
   );
 }
 
+/**
+ * The rules a scan applies. A `.morphignore` that is there, even empty, is
+ * the rule. One that is missing falls back to the rules of the last sync,
+ * when there were any: a file that went away (an editor rewriting it, a
+ * checkout, a slip) must not let what it kept out be sent to Morph. An
+ * empty file is how rules are cleared.
+ */
+export function resolveIgnoreRules(fileText: string | null, whenAbsent?: string) {
+  const fallback = fileText === null ? parseMorphIgnore(whenAbsent ?? "") : [];
+  const source: IgnoreSource =
+    fileText !== null ? "file" : fallback.length > 0 ? "last-sync" : "none";
+  const text = fileText ?? (source === "last-sync" ? whenAbsent! : "");
+  const rules = source === "last-sync" ? fallback : parseMorphIgnore(text);
+  return {
+    source,
+    text,
+    ignored: (path: string) => isIgnored(path, rules),
+    // The source too: rules read from the file and the same rules carried
+    // over from the last sync are not the same state of the folder.
+    key: JSON.stringify([source, rules]),
+    rules,
+  };
+}
+
 const toSyncPath = (root: string, absolute: string) =>
   relative(root, absolute).split(sep).join(posix.sep);
 
@@ -61,18 +93,33 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
 } {
   const absolute = (path: string) => join(root, ...path.split("/"));
 
-  async function ignoreRules(): Promise<IgnoreRule[]> {
+  /**
+   * The `.morphignore` text, or null when there is none (what that means is
+   * `resolveIgnoreRules`'s to say). One that is there but cannot be read
+   * fails the scan: read as no rules, a path just ignored and removed here
+   * would be deleted in Morph.
+   */
+  async function ignoreFileText(): Promise<string | null> {
     try {
-      return parseMorphIgnore(await fs.readFile(join(root, ".morphignore"), "utf8"));
-    } catch {
-      return [];
+      return await fs.readFile(join(root, ".morphignore"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new LocalSyncFolderError(
+        `.morphignore could not be read, so nothing was synced: ${(error as Error).message}`,
+        { cause: error },
+      );
     }
   }
 
-  async function scan() {
+  async function ignoreRules(): Promise<IgnoreRule[]> {
+    return parseMorphIgnore((await ignoreFileText()) ?? "");
+  }
+
+  async function scan(options: { whenAbsent?: string } = {}) {
     const files = new Map<string, LocalScanEntry>();
     const skipped: LocalSkip[] = [];
-    const rules = await ignoreRules();
+    const ignore = resolveIgnoreRules(await ignoreFileText(), options.whenAbsent);
+    const { rules } = ignore;
     async function walk(directory: string) {
       const entries = await fs.readdir(directory, { withFileTypes: true });
       for (const entry of entries) {
@@ -107,7 +154,14 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
       }
     }
     await walk(root);
-    return { files, skipped };
+    return {
+      files,
+      skipped,
+      ignored: ignore.ignored,
+      ignoreKey: ignore.key,
+      ignoreSource: ignore.source,
+      ignoreText: ignore.text,
+    };
   }
 
   async function read(path: string): Promise<string | null> {
@@ -153,10 +207,6 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
     await fs.copyFile(absolute(path), target);
   }
 
-  async function ignores(path: string) {
-    return isIgnored(path, await ignoreRules());
-  }
-
   async function writeConflictCopy(path: string, remoteText: string) {
     const target = absolute(`${path}${THEME_SYNC_CONFLICT_SUFFIX}`);
     const existing = await fs.readFile(target, "utf8").catch(() => null);
@@ -168,5 +218,5 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
     await fs.rm(absolute(`${path}${THEME_SYNC_CONFLICT_SUFFIX}`), { force: true });
   }
 
-  return { scan, read, write, remove, backup, ignores, writeConflictCopy, removeConflictCopy, ignoreRules };
+  return { scan, read, write, remove, backup, writeConflictCopy, removeConflictCopy, ignoreRules };
 }

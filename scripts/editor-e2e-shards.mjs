@@ -48,6 +48,10 @@ export const EDITOR_SHARDS = [
     // shards do not run: skipped on every shard, like the gated files above,
     // and run by the full Start job instead (editor-e2e-start.mjs).
     "loader-data-binding.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // shortest run. Two tests on throwaway Themes, each waiting out one
+    // preview renewal (about 60 s). Local sidecar only.
+    "preview-inline-reload-defer.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -76,6 +80,8 @@ export const EDITOR_SHARDS = [
     // Unmeasured; two editor opens on a throwaway Theme. Its publish half
     // runs only with the container transport.
     "section-visibility-layout.spec.ts",
+    // Unmeasured until the next rebalance; two tests, three editor opens.
+    "object-position.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",

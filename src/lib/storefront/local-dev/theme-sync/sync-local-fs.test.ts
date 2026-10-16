@@ -92,14 +92,6 @@ describe("the local folder on disk", () => {
     expect(await readdir(join(root, ".morph", "trash"))).toHaveLength(1);
   });
 
-  it("answers whether .morphignore keeps a path out of the scan", async () => {
-    await put(".morphignore", "notes/\n*.log\n");
-    const folder = createLocalSyncFolder(root);
-    expect(await folder.ignores("notes/plan.md")).toBe(true);
-    expect(await folder.ignores("debug.log")).toBe(true);
-    expect(await folder.ignores("src/a.tsx")).toBe(false);
-  });
-
   it("writes and removes the conflict copy beside the file", async () => {
     await put("a.tsx", "mine");
     const folder = createLocalSyncFolder(root);
@@ -108,6 +100,19 @@ describe("the local folder on disk", () => {
     expect((await folder.scan()).files.has("a.tsx.morph-remote")).toBe(false);
     await folder.removeConflictCopy("a.tsx");
     expect(await readdir(root)).toEqual(["a.tsx"]);
+  });
+});
+
+describe("reading .morphignore", () => {
+  it("has no rules when there is none", async () => {
+    expect(await createLocalSyncFolder(root).ignoreRules()).toEqual([]);
+  });
+
+  it("fails the scan when it is there but cannot be read", async () => {
+    await mkdir(join(root, ".morphignore"));
+    await expect(createLocalSyncFolder(root).scan()).rejects.toThrow(
+      /\.morphignore could not be read/,
+    );
   });
 });
 

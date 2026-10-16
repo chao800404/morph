@@ -1,5 +1,9 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { syncContentHash } from "./sync-content";
+import { createLocalSyncFolder, LocalSyncFolderError } from "./sync-local-fs";
 import {
   createSyncSession,
   type CyclePlanSummary,
@@ -32,10 +36,12 @@ const emptyState = (): SyncState => ({
 function setup(options: {
   morph: Record<string, string>;
   confirmCycle?: (summary: CyclePlanSummary, why: string) => boolean;
-  ignored?: string[];
+  /** Local files before the first cycle, `.morphignore` included. */
+  local?: Record<string, string>;
+  state?: Partial<SyncState>;
 }) {
   const workspace = createFakeWorkspace(options.morph);
-  const local = createMemoryFolder({}, options.ignored);
+  const local = createMemoryFolder(options.local);
   const client = createHarnessClient(workspace);
   const confirmCycle = vi.fn(async (summary: CyclePlanSummary, why: string) =>
     options.confirmCycle ? options.confirmCycle(summary, why) : true,
@@ -43,7 +49,7 @@ function setup(options: {
   const session = createSyncSession({
     client,
     folder: local.folder,
-    state: emptyState(),
+    state: { ...emptyState(), ...options.state },
     saveState: async () => {},
     confirm: confirmCycle,
   });
@@ -202,18 +208,51 @@ describe("restoring local files from Morph", () => {
     expect(local.files.get("only-local.tsx")).toBe("mine");
   });
 
-  it("does not restore a path .morphignore keeps out of sync, which the next cycle would delete in Morph", async () => {
+  it("leaves a path .morphignore keeps out alone: ignored paths are out of sync both ways", async () => {
     const { workspace, local, session, answer } = setup({
       morph: { "a.tsx": "a", "notes/plan.md": "from Morph" },
-      ignored: ["notes/plan.md"],
+      local: { ".morphignore": "notes/\n" },
     });
     const result = await session.restore("all", answer(true));
     expect(result.status).toBe("applied");
     const plan = (result as Extract<typeof result, { status: "applied" }>).plan;
     expect(plan.notRestorable).toEqual([{ path: "notes/plan.md", reason: ".morphignore" }]);
+    expect(plan.ignoreRulesFrom).toBe("file");
     expect(local.files.has("notes/plan.md")).toBe(false);
     expect(session.state.files["notes/plan.md"]).toBeUndefined();
     expect(workspace.files.get("notes/plan.md")?.content).toBe("from Morph");
+  });
+
+  it("keeps leaving out what the last sync's rules listed when .morphignore is missing", async () => {
+    const { local, session, answer } = setup({
+      morph: { "a.tsx": "a", "notes/plan.md": "from Morph" },
+      state: { ignoreHistory: { text: "notes/\n" } },
+    });
+    const result = await session.restore(["a.tsx", "notes/plan.md"], answer(true));
+    expect(result.status).toBe("applied");
+    const plan = (result as Extract<typeof result, { status: "applied" }>).plan;
+    expect(plan.ignoreRulesFrom).toBe("last-sync");
+    expect(plan.notRestorable).toEqual([{ path: "notes/plan.md", reason: ".morphignore" }]);
+    expect(plan.write).toEqual(["a.tsx"]);
+    expect(local.files.has("notes/plan.md")).toBe(false);
+    // Restore is not a cycle: it does not record the rules it used.
+    expect(session.state.ignoreHistory).toEqual({ text: "notes/\n" });
+  });
+
+  it("restores nothing when .morphignore changes while waiting for the answer", async () => {
+    const { local, session, answer } = setup({
+      morph: { "a.tsx": "a", "notes/plan.md": "from Morph" },
+      local: { ".morphignore": "notes/\n" },
+    });
+    const before = structuredClone(session.state.files);
+    const result = await session.restore(
+      "all",
+      answer(true, () => local.files.set(".morphignore", "")),
+    );
+    expect(result.status).toBe("retry");
+    expect(local.files.has("a.tsx")).toBe(false);
+    expect(local.files.has("notes/plan.md")).toBe(false);
+    expect(session.state.files).toEqual(before);
   });
 
   it("asks nothing and writes nothing when every file already matches Morph", async () => {
@@ -247,5 +286,32 @@ describe("restoring local files from Morph", () => {
     expect(next.summary.remoteDeletions).toEqual([]);
     expect(session.state.deletionHold).toBeUndefined();
     expect(workspace.files.size).toBe(30);
+  });
+});
+
+describe("restoring when .morphignore cannot be read", () => {
+  it("fails before anything is written, on the folder on disk", async () => {
+    const root = await mkdtemp(join(tmpdir(), "morph-restore-"));
+    try {
+      // A directory where the file should be: present, but not readable as one.
+      await mkdir(join(root, ".morphignore"));
+      await writeFile(join(root, "a.tsx"), "broken");
+      const workspace = createFakeWorkspace({ "a.tsx": "good" });
+      const state = emptyState();
+      const session = createSyncSession({
+        client: createHarnessClient(workspace),
+        folder: createLocalSyncFolder(root),
+        state,
+        saveState: async () => {},
+        confirm: async () => true,
+      });
+      const confirm = vi.fn(async () => true);
+      await expect(session.restore(["a.tsx"], confirm)).rejects.toBeInstanceOf(LocalSyncFolderError);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(await readFile(join(root, "a.tsx"), "utf8")).toBe("broken");
+      expect(state.files).toEqual({});
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

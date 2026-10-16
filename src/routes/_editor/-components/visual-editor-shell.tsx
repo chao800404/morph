@@ -3,6 +3,7 @@ import {
   advanceSelectionAfterTextPromotion,
   captureSelectionSourceBaseline,
   fieldSelectionKey,
+  provenFieldSourceGeneration,
   sourceGenerationForFreshSelection,
   type SelectionSourceBaseline,
 } from "@/lib/storefront/editor/selection-source-baseline";
@@ -21,8 +22,18 @@ import {
   ObservedPendingContent,
   sameContent,
   sectionContentLanded,
+  rebaseFieldBasis,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
+import {
+  acceptAnsweredWrite,
+  acceptReadSnapshot,
+  earlierBasis,
+  newestAcceptedCopy,
+  snapshotSectionProps,
+  type ContentSnapshot,
+  type SnapshotSection,
+} from "@/lib/storefront/editor/content-write-snapshot";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
 import { createDebouncedWrites } from "@/lib/storefront/editor/debounced-writes";
 import {
@@ -252,6 +263,11 @@ import {
   createPreviewInstanceWatch,
   type PreviewInstanceWatch,
 } from "@/lib/storefront/editor/preview-instance-watch";
+import {
+  createInstanceContentReplay,
+  instanceReplaySection,
+  type InstanceContentReplay,
+} from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
   describeThemeSourceChanges,
@@ -468,6 +484,19 @@ export const INLINE_TEXT_REFUSED_MESSAGE =
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
+/**
+ * Said, without interrupting, when the preview's dev server was replaced
+ * while text is being typed on the canvas: the canvas is kept until the text
+ * is finished, and reloaded then.
+ */
+export const PREVIEW_RELOAD_DEFERRED_MESSAGE =
+  "The preview server was updated. The canvas will reload after you finish this text.";
+/**
+ * After that reload, the content could not be read, so the canvas was not
+ * brought up to date: it may show what the preview last started with.
+ */
+export const PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE =
+  "The canvas was reloaded but your latest content could not be loaded into it, so it may show older content. Your changes are kept.";
 
 /** A route's own document before its first write: no sections stored yet. */
 const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
@@ -1445,6 +1474,60 @@ export function VisualEditorShell({
     },
     [search.routePath],
   );
+  // Re-renders when the source moves or local edits start, so a control that
+  // reads its target out of the current source is re-asked.
+  const sourceFreshnessKey = useThemeWorkspaceStore((state) => {
+    const scope = {
+      storefrontId: context.storefront.id,
+      themeId: context.theme.id,
+    };
+    return [
+      state.getAcceptedSourceGeneration(scope),
+      state.getObservedSourceGeneration(scope),
+      state.hasUnsavedEdits(scope),
+      state.hasActiveConflictsOrErrors(scope),
+    ].join(":");
+  });
+  /**
+   * Whether a selection was taken at the source the workspace holds now, with
+   * nothing unsaved over it: the same condition a content write is held to,
+   * asked before the Inspector reads a binding out of the current file.
+   */
+  const isSelectionSourceCurrent = useCallback(
+    (
+      selection: Readonly<{
+        sectionId: string;
+        fieldPath?: string | null;
+        fieldKey?: string | null;
+      }> | null,
+    ): boolean => {
+      void sourceFreshnessKey;
+      if (!selection?.sectionId) return false;
+      const path = selection.fieldPath ?? selection.fieldKey;
+      if (!path) return false;
+      const baseline = selectedFieldBaseline(selection.sectionId, path);
+      if (!baseline) return false;
+      const scope = {
+        storefrontId: context.storefront.id,
+        themeId: context.theme.id,
+      };
+      const state = useThemeWorkspaceStore.getState();
+      if (
+        state.hasUnsavedEdits(scope) ||
+        state.hasActiveConflictsOrErrors(scope)
+      ) {
+        return false;
+      }
+      return baseline.sourceGeneration === currentContentSourceGeneration();
+    },
+    [
+      context.storefront.id,
+      context.theme.id,
+      currentContentSourceGeneration,
+      selectedFieldBaseline,
+      sourceFreshnessKey,
+    ],
+  );
   useEffect(() => {
     selectionSourceBaselinesRef.current.clear();
     confirmedPreviewSourceRef.current = null;
@@ -1455,6 +1538,47 @@ export function VisualEditorShell({
   );
   const templateDraftGenerationRef = useRef<Map<string, number>>(new Map());
   const templateDraftRevisionIdRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Per template, the document a content write is composed on, kept whole
+   * with its draft generation (`content-write-snapshot.ts`): replaced only by
+   * a newer read or by the document one of our own writes returned.
+   */
+  const contentSnapshotsRef = useRef<Map<string, ContentSnapshot>>(new Map());
+  /** Per template, each own write's sent generation to the one it returned. */
+  const ownDraftStepsRef = useRef<Map<string, Map<number, number>>>(new Map());
+  const ownDraftSteps = useCallback((templateId: string) => {
+    let steps = ownDraftStepsRef.current.get(templateId);
+    if (!steps) {
+      steps = new Map();
+      ownDraftStepsRef.current.set(templateId, steps);
+    }
+    return steps;
+  }, []);
+  const acceptReadTemplates = useCallback(
+    (
+      templates: ReadonlyArray<{
+        id: string;
+        draftGeneration?: number;
+        document?: { sections?: readonly SnapshotSection[] } | null;
+      }>,
+    ) => {
+      for (const template of templates) {
+        const sections = template.document?.sections;
+        if (!sections) continue;
+        const next = acceptReadSnapshot(
+          contentSnapshotsRef.current.get(template.id),
+          { draftGeneration: template.draftGeneration, sections },
+          ownDraftSteps(template.id),
+        );
+        if (next) contentSnapshotsRef.current.set(template.id, next);
+      }
+    },
+    [ownDraftSteps],
+  );
+  // Every read of the Theme the editor is given is a candidate snapshot.
+  useEffect(() => {
+    acceptReadTemplates(context.templates);
+  }, [acceptReadTemplates, context.templates]);
   /**
    * Content writes sent and never answered, by pending key, with the entry
    * that was sent. While any is here no content is sent on its own; see
@@ -1599,6 +1723,12 @@ export function VisualEditorShell({
       op: (
         generation: number,
         templateId: string,
+        /**
+         * For a write that sends another generation than `generation` (a
+         * content write sends its snapshot's): which one it sent, so the
+         * step it produced is recorded from the right place.
+         */
+        reportSent: (sent: number) => void,
       ) => Promise<ServerResult<unknown>>,
     ) => {
       // A placeholder stands for a route document not created yet. Once it
@@ -1657,6 +1787,7 @@ export function VisualEditorShell({
             observed: templateDraftGenerationRef.current,
             templates: context.templates,
           });
+          let sentDraftGeneration = expectedDraftGeneration;
           // Every document write queued here — content, rename, promote —
           // meets the paused-writes check at the one place it is sent.
           const result = await sendEditorWrite(
@@ -1665,7 +1796,10 @@ export function VisualEditorShell({
               themeId: context.theme.id,
             },
             "theme",
-            () => op(expectedDraftGeneration, templateId),
+            () =>
+              op(expectedDraftGeneration, templateId, (sent) => {
+                sentDraftGeneration = sent;
+              }),
           );
           if (
             result.success &&
@@ -1678,6 +1812,14 @@ export function VisualEditorShell({
                 templateId,
                 data.draftGeneration,
               );
+              // This session's own step: a later read reaching it brings
+              // nothing from anyone else.
+              if (data.draftGeneration > sentDraftGeneration) {
+                ownDraftSteps(templateId).set(
+                  sentDraftGeneration,
+                  data.draftGeneration,
+                );
+              }
             }
             if (typeof data.draftRevisionId === "string") {
               templateDraftRevisionIdRef.current.set(
@@ -1691,7 +1833,13 @@ export function VisualEditorShell({
       templateMutationQueueRef.current.set(queueKey, nextPromise);
       return nextPromise;
     },
-    [context.storefront.id, context.templates, context.theme.id, queryClient],
+    [
+      context.storefront.id,
+      context.templates,
+      context.theme.id,
+      ownDraftSteps,
+      queryClient,
+    ],
   );
 
   const contentChangeRef = useRef<
@@ -1706,6 +1854,42 @@ export function VisualEditorShell({
   const storedSectionPropsRef = useRef<
     (sectionId: string, templateId?: string) => Record<string, unknown>
   >(() => ({}));
+  /**
+   * The snapshot a content write to `templateId` is composed on, when sent.
+   *
+   * Another of our writes (a rename, a promotion) can move the template's
+   * draft generation without returning the document it produced. Composing
+   * on the older copy at the newer generation is exactly the mismatch the
+   * snapshot exists to prevent, so the document is read first; if it cannot
+   * be read, nothing is sent and the input stays. A template with no
+   * snapshot yet (a route document created by this write) composes as before.
+   */
+  const contentSnapshotForWrite = useCallback(
+    async (templateId: string): Promise<ContentSnapshot | undefined> => {
+      const snapshot = contentSnapshotsRef.current.get(templateId);
+      if (!snapshot) return undefined;
+      const observed = templateDraftGenerationRef.current.get(templateId);
+      if (observed === undefined || observed <= snapshot.draftGeneration) {
+        return snapshot;
+      }
+      const unreadable =
+        "Could not read the latest version of this page before saving. Your changes are kept.";
+      const fresh = await queryClient.fetchQuery({
+        ...storefrontThemeQueries.detail(
+          context.storefront.id,
+          context.theme.id,
+        ),
+        staleTime: 0,
+      });
+      if (!fresh.success) throw new Error(fresh.message ?? unreadable);
+      acceptReadTemplates(fresh.data.templates);
+      const now = contentSnapshotsRef.current.get(templateId);
+      if (!now || now.draftGeneration < observed) throw new Error(unreadable);
+      return now;
+    },
+    [acceptReadTemplates, context.storefront.id, context.theme.id, queryClient],
+  );
+
   const commitSectionPending = useCallback(
     async (
       tid: string,
@@ -1742,6 +1926,13 @@ export function VisualEditorShell({
       contentSendingRef.current += 1;
       syncContentWritesRef.current();
       try {
+        // The snapshot the write is composed on, taken when it is sent.
+        let writeSnapshot: ContentSnapshot | undefined;
+        // What was actually sent, once it was: a write that failed before
+        // leaving is not one that may have landed.
+        let sentEntry: PendingContentEntry | undefined;
+        let sentDraftGeneration = 0;
+        let sentTemplateId = tid;
         const result = await commitPendingContent({
           key,
           pending: pendingPropsMapRef.current,
@@ -1751,26 +1942,67 @@ export function VisualEditorShell({
             selectCurrentContentFields(
               entry,
               currentContentSourceGeneration(),
-              storedSectionPropsRef.current(entry.sectionId, tid),
+              writeSnapshot
+                ? snapshotSectionProps(writeSnapshot, entry.sectionId)
+                : storedSectionPropsRef.current(entry.sectionId, tid),
+              writeSnapshot,
             ),
-          save: (entry) =>
-            enqueueTemplateMutation(tid, (generation, templateId) =>
-              updatePropsMutation.mutateAsync({
-                templateId,
-                sectionId: entry.sectionId,
-                props: entry.props,
-                expectedDraftGeneration: generation,
-                routePath: entry.routePath,
-                // A queued edit must keep the generation captured when typed.
-                // Missing bookkeeping fails validation, never borrows a later
-                // selection's generation when this queue eventually runs.
-                expectedSourceGeneration: entry.expectedSourceGeneration!,
-              }),
+          saveWhenSent: (prepare) =>
+            enqueueTemplateMutation(
+              tid,
+              async (generation, templateId, reportSent) => {
+                // Composed here, after anything queued ahead of it: the
+                // stored copy, its draft generation and the rows checked are
+                // the ones current now, all from one snapshot.
+                writeSnapshot = await contentSnapshotForWrite(templateId);
+                const entry = prepare();
+                sentDraftGeneration =
+                  entry.expectedDraftGeneration ?? generation;
+                reportSent(sentDraftGeneration);
+                sentTemplateId = templateId;
+                sentEntry = entry;
+                return updatePropsMutation.mutateAsync({
+                  templateId,
+                  sectionId: entry.sectionId,
+                  props: entry.props,
+                  expectedDraftGeneration: sentDraftGeneration,
+                  routePath: entry.routePath,
+                  // A queued edit must keep the generation captured when typed.
+                  // Missing bookkeeping fails validation, never borrows a later
+                  // selection's generation when this queue eventually runs.
+                  expectedSourceGeneration: entry.expectedSourceGeneration!,
+                });
+              },
             ).then(
               (result) => {
                 // Answered, either way: nothing is left to find out.
                 if (unconfirmedContentRef.current.delete(key)) {
                   syncUnconfirmedContentCount();
+                }
+                const data = (
+                  result as {
+                    success: boolean;
+                    data?: {
+                      draftGeneration?: unknown;
+                      document?: { sections?: readonly SnapshotSection[] };
+                    };
+                  }
+                ).data;
+                // The document our write produced, with its generation: the
+                // next write composes on it, not on a read from before it.
+                // Accepted here, before the write's pending input is
+                // acknowledged, so this editor's copy is never older than
+                // what it has just stopped holding as pending.
+                if (result.success && data) {
+                  const next = acceptAnsweredWrite(
+                    contentSnapshotsRef.current.get(sentTemplateId),
+                    {
+                      sentAt: sentDraftGeneration,
+                      draftGeneration: data.draftGeneration,
+                      sections: data.document?.sections,
+                    },
+                  );
+                  if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
                 }
                 return result;
               },
@@ -1778,12 +2010,13 @@ export function VisualEditorShell({
                 // Sent, and no answer came back: it may have landed. A
                 // refusal answered for an earlier sign-in is an answer.
                 if (
+                  sentEntry &&
                   !isEditorWritePaused(error) &&
                   !isEditorWriteRefusedEarlier(error) &&
                   (error as { code?: string }).code !==
                     "SELECTION_SOURCE_CONFLICT"
                 ) {
-                  unconfirmedContentRef.current.set(key, entry);
+                  unconfirmedContentRef.current.set(key, sentEntry);
                   syncUnconfirmedContentCount();
                 }
                 throw error;
@@ -1849,6 +2082,7 @@ export function VisualEditorShell({
       context.storefront.id,
       context.theme.id,
       currentContentSourceGeneration,
+      contentSnapshotForWrite,
     ],
   );
 
@@ -1877,6 +2111,29 @@ export function VisualEditorShell({
         fresh.message ?? "Could not check whether your changes were saved.",
       );
     }
+    // An unanswered write found to have landed is our own step, but only
+    // when the document is exactly one generation past the one it was sent
+    // at: anything more means someone else wrote too, and is theirs.
+    for (const [key, sent] of unconfirmed) {
+      const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
+      if (!templateId || sent.expectedDraftGeneration === undefined) continue;
+      const realId = routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const template = fresh.data.templates.find((entry) => entry.id === realId);
+      const section = template?.document.sections.find(
+        (entry) => entry.id === sent.sectionId,
+      );
+      if (
+        template &&
+        template.draftGeneration === sent.expectedDraftGeneration + 1 &&
+        sectionContentLanded(sent, section)
+      ) {
+        ownDraftSteps(realId).set(
+          sent.expectedDraftGeneration,
+          template.draftGeneration,
+        );
+      }
+    }
+    acceptReadTemplates(fresh.data.templates);
     for (const [key, sent] of unconfirmed) {
       const templateId = templateIdOfPendingContentKey(key, sent.sectionId);
       if (!templateId) continue;
@@ -1920,8 +2177,10 @@ export function VisualEditorShell({
     }
     syncUnconfirmedContentCount();
   }, [
+    acceptReadTemplates,
     context.storefront.id,
     context.theme.id,
+    ownDraftSteps,
     queryClient,
     syncUnconfirmedContentCount,
   ]);
@@ -1954,6 +2213,7 @@ export function VisualEditorShell({
       );
     const freshTemplates = fresh?.success ? fresh.data.templates : null;
     if (!freshTemplates) return;
+    acceptReadTemplates(freshTemplates);
 
     for (const [key, templateId] of conflicts) {
       const pending = pendingPropsMapRef.current.get(key);
@@ -1990,7 +2250,7 @@ export function VisualEditorShell({
         continue;
       }
 
-      pendingPropsMapRef.current.set(key, {
+      const rebased: PendingContentEntry = {
         ...pending,
         sectionId: pending.sectionId,
         routePath: pending.routePath,
@@ -2000,7 +2260,16 @@ export function VisualEditorShell({
           baseline,
           local: pending.props,
         }),
-      });
+      };
+      // "Keep mine" is the author's answer to the other writer's change: the
+      // kept input now counts as made on the latest copy. Its rows are not
+      // re-pointed — one no longer at its path still refuses.
+      pendingPropsMapRef.current.set(
+        key,
+        typeof template.draftGeneration === "number"
+          ? rebaseFieldBasis(rebased, template.draftGeneration)
+          : rebased,
+      );
       pendingPropsBaselineRef.current.set(key, { ...incoming });
       // The refused write left this session's observed generation behind the
       // document's, and reusing it would be refused for the same reason.
@@ -2016,6 +2285,7 @@ export function VisualEditorShell({
       });
     }
   }, [
+    acceptReadTemplates,
     commitSectionPending,
     context.storefront.id,
     context.theme.id,
@@ -2175,6 +2445,10 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  const previewUrlRef = useRef(previewUrl);
+  previewUrlRef.current = previewUrl;
+  const previewRevisionRef = useRef(previewRevision);
+  previewRevisionRef.current = previewRevision;
   /**
    * Text is being typed on the canvas. It lives only in the preview until it
    * is committed, so it counts as unsaved and leaving asks the author first.
@@ -2198,6 +2472,9 @@ export function VisualEditorShell({
     inlineEditEndedRef.current.clear();
     // A content refresh held back while it was open can be shown now.
     previewContentSyncRef.current?.editEnded();
+    // So can a frame reload held for the same reason. Any commit of the edit
+    // arrived before this (the page sends it first) and is already pending.
+    previewInstanceWatchRef.current?.editEnded();
   }, []);
   // A new preview document has no edit open, whatever the last one said.
   // An edit that was open went with the old one, unfinished: a frame
@@ -2213,6 +2490,17 @@ export function VisualEditorShell({
    * message and by the sync and renewal answers below.
    */
   const previewInstanceWatchRef = useRef<PreviewInstanceWatch | null>(null);
+  /**
+   * The content the frame that watch brings up is given once it is on its
+   * route (`createInstanceContentReplay`). Set below, beside the content
+   * messages it sends.
+   */
+  const instanceContentReplayRef = useRef<InstanceContentReplay | null>(null);
+  /** Counts every ready message, of any frame: a frame's ready round. */
+  const previewReadyRoundRef = useRef(0);
+  /** The route on screen, for that replay's binding. */
+  const replayRoutePathRef = useRef(search.routePath ?? "/");
+  replayRoutePathRef.current = search.routePath ?? "/";
   useEffect(() => {
     const scope = {
       storefrontId: context.storefront.id,
@@ -2222,6 +2510,17 @@ export function VisualEditorShell({
       currentKey: () => previewKeyRef.current,
       // Called only for the frame on screen (`currentKey`).
       reloadFrame: () => {
+        // The key the reloaded frame comes up under: the next revision of
+        // this address. Anything else replacing the frame meanwhile moves
+        // the revision further, and the replay is dropped.
+        const url = previewUrlRef.current;
+        if (url) {
+          instanceContentReplayRef.current?.frameReloaded(
+            `${url}-${previewRevisionRef.current + 1}`,
+            previewReadyRoundRef.current,
+            replayRoutePathRef.current,
+          );
+        }
         initialPreviewSyncRef.current = null;
         setPreviewRevision((revision) => revision + 1);
       },
@@ -2239,6 +2538,14 @@ export function VisualEditorShell({
           : null;
       },
       log: (line) => console.info(line),
+      // Text being typed on the canvas lives only in the frame until it is
+      // committed; replacing the frame now would lose it.
+      canReload: () => !inlineEditOpenRef.current,
+      onDeferred: () => {
+        toast.info(PREVIEW_RELOAD_DEFERRED_MESSAGE, {
+          id: "preview-reload-deferred",
+        });
+      },
     });
     previewInstanceWatchRef.current = watch;
     return () => {
@@ -7257,6 +7564,11 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-ready") {
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
+        previewReadyRoundRef.current += 1;
+        instanceContentReplayRef.current?.frameReady(
+          previewKey,
+          previewReadyRoundRef.current,
+        );
         previewInstanceWatchRef.current?.frameReady(
           previewKey,
           message.servedInstance ?? null,
@@ -7279,6 +7591,13 @@ export function VisualEditorShell({
           routePath: search.routePath ?? "/",
           nodes: message.nodes,
         });
+        // The frame is on the selected route: content addressed to it now
+        // lands on this route's content, not the one it booted on.
+        instanceContentReplayRef.current?.structure(
+          previewKey,
+          previewReadyRoundRef.current,
+          search.routePath ?? "/",
+        );
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-applied") {
@@ -8118,31 +8437,49 @@ export function VisualEditorShell({
     }),
   );
   const previewPropsRevisionRef = useRef(new Map<string, number>());
+  /**
+   * Per section, the post still waiting on media signing: its revision, and
+   * the validity of the work that made it — a replay's frame, ready round and
+   * route (`stillCurrent`); none for an ordinary edit. An edit that posts no
+   * section content of its own replaces that post
+   * (`supersedeAwaitingSignedPost`); nothing else reads it.
+   */
+  const awaitingSignedPostRef = useRef(
+    new Map<string, Readonly<{ revision: number; stillCurrent?: () => boolean }>>(),
+  );
+  const postPreviewSectionProps = useCallback(
+    (
+      sectionId: string,
+      resolvedProps: PreviewSectionProps | undefined,
+      enabled: boolean | undefined,
+      resetKeys?: string[],
+    ) => {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-update-section-props",
+        sectionId,
+        props: resolvedProps,
+        enabled,
+        ...(resetKeys?.length ? { resetKeys } : {}),
+      });
+      // Anything that changes what the canvas renders has to re-measure,
+      // not just a file write. The theme's own `min-h-screen` resolves
+      // against the frame, so content that becomes shorter cannot report
+      // itself shorter — hiding a section or shortening a heading would
+      // otherwise leave the space it used to occupy behind.
+      schedulePreviewRemeasureRef.current();
+    },
+    [],
+  );
   const syncPreviewSectionProps = useCallback(
     (
       sectionId: string,
       props?: PreviewSectionProps,
       enabled?: boolean,
       resetKeys?: string[],
+      /** False once these values no longer belong to the frame on screen. */
+      stillCurrent?: () => boolean,
     ) => {
-      const post = (
-        resolvedProps: PreviewSectionProps | undefined,
-        nextEnabled: boolean | undefined,
-      ) => {
-        postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
-          type: "morph:storefront-preview-update-section-props",
-          sectionId,
-          props: resolvedProps,
-          enabled: nextEnabled,
-          ...(resetKeys?.length ? { resetKeys } : {}),
-        });
-        // Anything that changes what the canvas renders has to re-measure,
-        // not just a file write. The theme's own `min-h-screen` resolves
-        // against the frame, so content that becomes shorter cannot report
-        // itself shorter — hiding a section or shortening a heading would
-        // otherwise leave the space it used to occupy behind.
-        schedulePreviewRemeasureRef.current();
-      };
+      if (stillCurrent && !stillCurrent()) return;
       const revisions = previewPropsRevisionRef.current;
       const revision = (revisions.get(sectionId) ?? 0) + 1;
       revisions.set(sectionId, revision);
@@ -8150,20 +8487,153 @@ export function VisualEditorShell({
       const first = props
         ? previewMediaCache.resolve(props)
         : { content: props, missing: [] };
-      post(first.content, enabled);
+      postPreviewSectionProps(sectionId, first.content, enabled, resetKeys);
       if (!props || first.missing.length === 0) return;
       // Posted again once the new assets are signed, unless a later edit to
-      // the same section has been posted meanwhile.
+      // the same section has been posted, or has replaced it, meanwhile.
+      const waiting = { revision, stillCurrent };
+      awaitingSignedPostRef.current.set(sectionId, waiting);
       void previewMediaCache.ensure(first.missing).then(() => {
         if (revisions.get(sectionId) !== revision) return;
+        // Only its own entry: a newer one belongs to newer work.
+        if (awaitingSignedPostRef.current.get(sectionId) === waiting) {
+          awaitingSignedPostRef.current.delete(sectionId);
+        }
+        if (stillCurrent && !stillCurrent()) return;
         const signed = previewMediaCache.resolve(props);
         if (signed.missing.length < first.missing.length) {
-          post(signed.content, undefined);
+          postPreviewSectionProps(sectionId, signed.content, undefined, resetKeys);
         }
       });
     },
-    [previewMediaCache],
+    [previewMediaCache, postPreviewSectionProps],
   );
+  /**
+   * An edit that posts no section content of its own — an Inspector text
+   * field previews on the element itself (`skipPreviewSync`) — still makes
+   * the section's content newer than a post waiting on media signing, which
+   * would otherwise put the older text back once signed. That post is
+   * replaced by one with `props`, the edit's own, sent once the same media is
+   * signed. With no post waiting, nothing is posted or signed: the edit stays
+   * the element-level preview it is.
+   *
+   * A waiting post made by a replay belongs to the frame that replay was for.
+   * Once that frame, its ready round or its route is gone, there is nothing
+   * left to replace: the edit posts nothing, as with no post waiting. The
+   * replacement keeps the same limit, checked again once signed.
+   */
+  const supersedeAwaitingSignedPost = useCallback(
+    (sectionId: string, props: PreviewSectionProps) => {
+      const revisions = previewPropsRevisionRef.current;
+      const waiting = awaitingSignedPostRef.current.get(sectionId);
+      if (!waiting || revisions.get(sectionId) !== waiting.revision) return;
+      if (waiting.stillCurrent && !waiting.stillCurrent()) {
+        awaitingSignedPostRef.current.delete(sectionId);
+        return;
+      }
+      const replacement = {
+        revision: waiting.revision + 1,
+        stillCurrent: waiting.stillCurrent,
+      };
+      revisions.set(sectionId, replacement.revision);
+      awaitingSignedPostRef.current.set(sectionId, replacement);
+      const { missing } = previewMediaCache.resolve(props);
+      void previewMediaCache.ensure(missing).then(() => {
+        if (revisions.get(sectionId) !== replacement.revision) return;
+        if (awaitingSignedPostRef.current.get(sectionId) === replacement) {
+          awaitingSignedPostRef.current.delete(sectionId);
+        }
+        if (replacement.stillCurrent && !replacement.stillCurrent()) return;
+        postPreviewSectionProps(
+          sectionId,
+          previewMediaCache.resolve(props).content,
+          undefined,
+        );
+      });
+    },
+    [previewMediaCache, postPreviewSectionProps],
+  );
+
+  // The frame `createPreviewInstanceWatch` brought up is given, once it is on
+  // the route it was reloaded on, the latest accepted content with the
+  // pending fields the write path would still send on its own
+  // (`createInstanceContentReplay`). Its page renders from the snapshot of
+  // the last start, which this tab's saves since then do not reach. Only
+  // content messages: no save, no start, no baseline moved.
+  const sectionModelRef = useRef(sectionModel);
+  sectionModelRef.current = sectionModel;
+  useEffect(() => {
+    const replay = createInstanceContentReplay({
+      readLatest: async () => {
+        const fresh = await queryClient.fetchQuery({
+          ...storefrontThemeQueries.detail(
+            context.storefront.id,
+            context.theme.id,
+          ),
+          staleTime: 0,
+        });
+        if (!fresh.success) {
+          throw new Error(fresh.message ?? "Could not read the Theme.");
+        }
+        acceptReadTemplates(fresh.data.templates);
+      },
+      current: () => {
+        const key = previewKeyRef.current;
+        return key
+          ? {
+              key,
+              round: previewReadyRoundRef.current,
+              routePath: replayRoutePathRef.current,
+            }
+          : null;
+      },
+      replay: (_frame, isCurrent) => {
+        const sourceGeneration = currentContentSourceGeneration();
+        for (const [sectionId, binding] of sectionModelRef.current.bindings) {
+          const templateId = binding.templateId;
+          const key = `${templateId}:${sectionId}`;
+          const section = instanceReplaySection({
+            snapshot: contentSnapshotsRef.current.get(
+              routeTemplateIdsRef.current.get(templateId) ?? templateId,
+            ),
+            sectionId,
+            pending: pendingPropsMapRef.current.get(key),
+            unconfirmed: unconfirmedContentRef.current.get(key),
+            sourceGeneration,
+          });
+          if (!section) continue;
+          syncPreviewSectionProps(
+            sectionId,
+            parsePreviewSectionProps(section.props) ?? undefined,
+            section.enabled,
+            undefined,
+            isCurrent,
+          );
+        }
+      },
+      onReadFailed: () => {
+        toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
+          id: "preview-reload-content-unread",
+          duration: 10_000,
+        });
+      },
+      log: (line) => console.info(line),
+    });
+    instanceContentReplayRef.current = replay;
+    return () => {
+      replay.dispose();
+      if (instanceContentReplayRef.current === replay) {
+        instanceContentReplayRef.current = null;
+      }
+    };
+  }, [
+    acceptReadTemplates,
+    context.storefront.id,
+    context.theme.id,
+    currentContentSourceGeneration,
+    queryClient,
+    syncPreviewSectionProps,
+  ]);
 
   // A content write the server took only in part: the source it checked no
   // longer declares the fields named, so their values went nowhere — the way
@@ -8522,6 +8992,46 @@ export function VisualEditorShell({
   );
   resetContentFieldsRef.current = handleResetContentFields;
 
+  /**
+   * The draft generation of the document an input is being made on now: the
+   * snapshot a write to this template would compose on.
+   */
+  const contentBasisFor = useCallback(
+    (templateId: string): number | undefined =>
+      contentSnapshotsRef.current.get(
+        routeTemplateIdsRef.current.get(templateId) ?? templateId,
+      )?.draftGeneration,
+    [],
+  );
+  /** The same, for the template a section's content is written to. */
+  const contentBasisForSection = useCallback(
+    (sectionId: string): number | undefined => {
+      const templateId = templateIdForSection(sectionId);
+      return templateId ? contentBasisFor(templateId) : undefined;
+    },
+    [contentBasisFor, templateIdForSection],
+  );
+
+  /** See `provenFieldSourceGeneration`. */
+  const provenFieldGeneration = useCallback(
+    (
+      sectionId: string,
+      path: string,
+      proven: NonNullable<InspectorPropsChangeOptions["provenFieldBaseline"]>,
+    ): number | null =>
+      provenFieldSourceGeneration({
+        stored: sectionPropsSnapshot(sectionId),
+        path,
+        itemId: proven.itemId,
+        selectionBaseline: selectedFieldBaseline(
+          sectionId,
+          proven.selectionFieldPath,
+        ),
+        readPath: getFieldPathValue,
+      }),
+    [sectionPropsSnapshot, selectedFieldBaseline],
+  );
+
   const handleSectionPropsChange = useCallback(
     (
       sectionId: string,
@@ -8542,6 +9052,8 @@ export function VisualEditorShell({
       const previewProps = parsePreviewSectionProps(nextProps);
       if (!options?.skipPreviewSync && previewProps) {
         syncPreviewSectionProps(sectionId, previewProps);
+      } else if (previewProps) {
+        supersedeAwaitingSignedPost(sectionId, previewProps);
       }
 
       const templateId = templateIdForSection(sectionId);
@@ -8608,15 +9120,27 @@ export function VisualEditorShell({
         stored: sectionPropsSnapshot(sectionId),
         routePath: routePathForTemplate(templateId),
         inputPath: options?.inputFieldPath,
+        // The copy the author was looking at when they began this input, if
+        // the Inspector knows it is older than the one the editor holds now.
+        basisDraftGeneration: earlierBasis(
+          options?.basisDraftGeneration,
+          contentBasisFor(templateId),
+        ),
         sourceForPath: (path) =>
           options?.historySourceGeneration !== undefined
             ? options.historySourceGeneration
-            : (selectedFieldBaseline(
-                sectionId,
-                options?.selectionFieldPath && path === options.inputFieldPath
-                  ? options.selectionFieldPath
-                  : path,
-              )?.sourceGeneration ?? null),
+            : options?.provenFieldBaseline && path === options.inputFieldPath
+              ? provenFieldGeneration(
+                  sectionId,
+                  path,
+                  options.provenFieldBaseline,
+                )
+              : (selectedFieldBaseline(
+                  sectionId,
+                  options?.selectionFieldPath && path === options.inputFieldPath
+                    ? options.selectionFieldPath
+                    : path,
+                )?.sourceGeneration ?? null),
       });
       if (!staged) return;
       pendingPropsMapRef.current.set(key, staged);
@@ -8636,11 +9160,13 @@ export function VisualEditorShell({
       sectionPropsSnapshot,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
+      supersedeAwaitingSignedPost,
       templateIdForSection,
       routePathForTemplate,
       updatePropsMutation,
       selectedFieldBaseline,
       currentContentSourceGeneration,
+      provenFieldGeneration,
     ],
   );
 
@@ -8693,10 +9219,34 @@ export function VisualEditorShell({
       // what is written still goes through the server's authorization, field
       // validation and draft generation check. Nothing is written back to
       // the canvas: the preview already restored what the Theme rendered.
+      //
+      // "This editor's own copy" is the newest one it has accepted. A write's
+      // answer reaches the accepted snapshot before its pending input is
+      // dropped, while the editor context only catches up on the next render;
+      // reading the context alone in between compares the page's text with
+      // the copy from before that write. The snapshot is read only when it
+      // is strictly newer (`newestAcceptedCopy`), so a later read of someone
+      // else's change still refuses.
+      const ownerId = routeTemplateIdsRef.current.get(
+        templateIdForSection(message.sectionId) ?? activeTemplate.id,
+      ) ?? templateIdForSection(message.sectionId) ?? activeTemplate.id;
+      const newest = newestAcceptedCopy({
+        templateId: ownerId,
+        snapshots: contentSnapshotsRef.current,
+        contextTemplates: context.templates,
+      });
+      const storedProps =
+        newest.from === "snapshot"
+          ? snapshotSectionProps(newest.snapshot, message.sectionId)
+          : sectionPropsSnapshot(message.sectionId);
+      const comparedProps = {
+        ...storedProps,
+        ...(pendingPropsMapRef.current.get(key)?.props ?? {}),
+      };
       if (
         !inlineTextMatchesStoredValue(
           message.originalValue,
-          getFieldPathValue(currentProps, message.fieldPath),
+          getFieldPathValue(comparedProps, message.fieldPath),
         )
       ) {
         toast.info(INLINE_TEXT_NOT_SAVED_MESSAGE, {
@@ -8861,6 +9411,7 @@ export function VisualEditorShell({
         next: { [arrayRoot]: result.value[arrayRoot] },
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
+        basisDraftGeneration: contentBasisFor(templateId),
       });
       if (!reorderPending) return;
       if (!pendingPropsBaselineRef.current.has(key)) {
@@ -8988,6 +9539,7 @@ export function VisualEditorShell({
         next: { enabled },
         routePath: routePathForTemplate(templateId),
         sourceForPath: () => generation,
+        basisDraftGeneration: contentBasisFor(templateId),
       });
       if (!togglePending) return;
       if (!pendingPropsBaselineRef.current.has(key)) {
@@ -11581,10 +12133,12 @@ export function VisualEditorShell({
           onRepairThemeLinkBinding={handleRepairThemeLinkBinding}
           onSwitchThemeLinkElement={handleSwitchThemeLinkElement}
           onSectionPropsChange={handleSectionPropsChange}
+          contentBasisForSection={contentBasisForSection}
           inlineTextCommit={inlineTextCommit}
           onCodeComponentPropsChange={handleCodeComponentPropsChange}
           onJumpToCode={handleJumpToCode}
           onTabChange={setAssistantPanelTab}
+          selectionSourceCurrent={isSelectionSourceCurrent(editableSelection)}
         />
 
         <EditorSmallScreenNotice />

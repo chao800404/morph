@@ -9,6 +9,7 @@ import type {
 import { handleThemeSyncRequest, type ThemeSyncApiDeps } from "@/server/storefront/theme-sync-api";
 import { createThemeSyncClient } from "./sync-client";
 import { syncContentHash } from "./sync-content";
+import { resolveIgnoreRules } from "./sync-local-fs";
 import type { LocalScanEntry, SyncLocalFolder } from "./sync-session";
 
 /**
@@ -166,23 +167,31 @@ export function createHarnessClient(
   });
 }
 
-/** A local folder in memory, with the same contract as the one on disk. */
-export function createMemoryFolder(
-  initial: Record<string, string> = {},
-  /** Paths `.morphignore` would keep out of the scan. */
-  ignored: readonly string[] = [],
-) {
+/**
+ * A local folder in memory, with the same contract as the one on disk,
+ * including a `.morphignore` among its files.
+ */
+export function createMemoryFolder(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
   const conflictCopies = new Map<string, string>();
   const trash: string[] = [];
   const backups: Array<{ path: string; text: string }> = [];
   const folder: SyncLocalFolder = {
-    async scan() {
+    async scan(options = {}) {
+      const ignore = resolveIgnoreRules(files.get(".morphignore") ?? null, options.whenAbsent);
       const scanned = new Map<string, LocalScanEntry>();
       for (const [path, text] of files) {
+        if (ignore.ignored(path)) continue;
         scanned.set(path, { text, hash: await syncContentHash(text) });
       }
-      return { files: scanned, skipped: [] };
+      return {
+        files: scanned,
+        skipped: [],
+        ignored: ignore.ignored,
+        ignoreKey: ignore.key,
+        ignoreSource: ignore.source,
+        ignoreText: ignore.text,
+      };
     },
     read: async (path) => files.get(path) ?? null,
     async write(path, text) {
@@ -194,7 +203,6 @@ export function createMemoryFolder(
       trash.push(path);
       files.delete(path);
     },
-    ignores: async (path) => ignored.includes(path),
     async backup(path) {
       const text = files.get(path);
       if (text !== undefined) backups.push({ path, text });
