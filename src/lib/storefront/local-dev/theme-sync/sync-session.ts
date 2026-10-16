@@ -53,7 +53,20 @@ export type SyncState = {
    * back), since then there is nothing left that it holds back.
    */
   deletionHold?: { since: string; reason: string };
+  /**
+   * The `.morphignore` text the last applied cycle read from the file. Set
+   * only when a cycle has gone through, never while one is asked about,
+   * retried or failed, and never from rules carried over in its absence.
+   * A missing file falls back to it; absent (older state), nothing does.
+   */
+  ignoreHistory?: { text: string };
 };
+
+/**
+ * Where a scan's `.morphignore` rules came from: the file (even empty), the
+ * last sync's rules because the file is missing, or nowhere.
+ */
+export type IgnoreSource = "file" | "last-sync" | "none";
 
 export type LocalScanEntry = Readonly<{ text: string; hash: string }>;
 
@@ -71,13 +84,17 @@ export interface SyncLocalFolder {
    * it out, and the session leaves out the workspace's copy and the base
    * entry by the same rules, never by a second read that may differ.
    * `ignoreKey` names those rules: two scans with equal keys applied the
-   * same ones. A `.morphignore` that is there but unreadable fails the scan.
+   * same ones, from the same source. A `.morphignore` that is there but
+   * unreadable fails the scan; one that is missing is ruled by `whenAbsent`
+   * (`resolveIgnoreRules`). `ignoreText` is the text the rules came from.
    */
-  scan(): Promise<{
+  scan(options?: { whenAbsent?: string }): Promise<{
     files: Map<string, LocalScanEntry>;
     skipped: LocalSkip[];
     ignored: (path: string) => boolean;
     ignoreKey: string;
+    ignoreSource: IgnoreSource;
+    ignoreText: string;
   }>;
   /** The file's current text, or null when it is absent or unreadable. */
   read(path: string): Promise<string | null>;
@@ -85,6 +102,11 @@ export interface SyncLocalFolder {
   write(path: string, text: string): Promise<void>;
   /** Moves the file aside rather than deleting it outright. */
   remove(path: string): Promise<void>;
+  /**
+   * Copies the file into the trash, leaving it where it is; nothing when
+   * there is no file. Also for a file `read` cannot decode.
+   */
+  backup(path: string): Promise<void>;
   writeConflictCopy(path: string, remoteText: string): Promise<void>;
   removeConflictCopy(path: string): Promise<void>;
 }
@@ -98,12 +120,45 @@ export type CyclePlanSummary = Readonly<{
   binarySkipped: string[];
   localSkipped: LocalSkip[];
   massDeletion: string | null;
+  ignoreRulesFrom: IgnoreSource;
 }>;
 
 export type CycleResult =
   | Readonly<{ status: "applied"; summary: CyclePlanSummary; sourceGeneration: number }>
   | Readonly<{ status: "declined"; summary: CyclePlanSummary }>
   | Readonly<{ status: "retry"; summary: CyclePlanSummary; reason: string }>;
+
+/**
+ * What `restore` would do, shown before it does it.
+ *
+ * - `replace`: the local file differs from Morph's and is overwritten with
+ *   Morph's copy; the local copy is kept in `.morph/trash/` first.
+ * - `write`: the file is missing locally and is written from Morph.
+ * - `inStep`: already the same text as Morph; only the base is set.
+ * - `notInMorph`: named, but Morph holds no such text file; left alone.
+ * - `notRestorable`: named, but sync never carries it (binary in Morph, a
+ *   path that does not sync, or one `.morphignore` keeps out); left alone.
+ * - `ignoreRulesFrom`: where the `.morphignore` rules it applied came from,
+ *   as a cycle reports it.
+ */
+export type RestorePlan = Readonly<{
+  replace: string[];
+  write: string[];
+  inStep: string[];
+  notInMorph: string[];
+  notRestorable: Array<{ path: string; reason: string }>;
+  ignoreRulesFrom: IgnoreSource;
+}>;
+
+export type RestoreResult =
+  | Readonly<{
+      status: "applied";
+      plan: RestorePlan;
+      /** Changed locally after the plan was shown; left for another run. */
+      skipped: string[];
+    }>
+  | Readonly<{ status: "declined"; plan: RestorePlan }>
+  | Readonly<{ status: "retry"; reason: string }>;
 
 export type SyncSessionOptions = Readonly<{
   client: ThemeSyncClient;
@@ -123,6 +178,7 @@ function summarize(
   actions: readonly SyncAction[],
   localSkipped: LocalSkip[],
   massDeletion: string | null,
+  ignoreRulesFrom: IgnoreSource,
 ): CyclePlanSummary {
   const of = (kind: SyncAction["kind"]) =>
     actions.filter((action) => action.kind === kind).map((action) => action.path);
@@ -137,6 +193,7 @@ function summarize(
     binarySkipped: of("skip-binary"),
     localSkipped,
     massDeletion,
+    ignoreRulesFrom,
   };
 }
 
@@ -203,7 +260,9 @@ export function createSyncSession(options: SyncSessionOptions) {
     plannedIgnoreKey: string,
   ): Promise<boolean> {
     if ((await client.generation()) !== generation) return false;
-    const { files, ignored, ignoreKey } = await folder.scan();
+    const { files, ignored, ignoreKey } = await folder.scan({
+      whenAbsent: state.ignoreHistory?.text,
+    });
     if (ignoreKey !== plannedIgnoreKey) return false;
     const now = new Map(
       [...files].filter(([path]) => themeSyncPathExclusion(path) === null && !ignored(path)),
@@ -234,7 +293,7 @@ export function createSyncSession(options: SyncSessionOptions) {
 
   async function runCycle(): Promise<CycleResult> {
     const listed = await client.list();
-    const scanned = await folder.scan();
+    const scanned = await folder.scan({ whenAbsent: state.ignoreHistory?.text });
     // `.morphignore` holds on all three sides. Leaving it to the scan alone
     // made an ignored file read as deleted locally, and deleted it in Morph.
     const { ignored } = scanned;
@@ -267,7 +326,11 @@ export function createSyncSession(options: SyncSessionOptions) {
       contents = await readRemote(remoteChangedTextPaths(base, remote));
     } catch (error) {
       if (error instanceof ThemeSyncApiRefusal && error.isConflict) {
-        return { status: "retry", summary: summarize([], skipped, null), reason: error.message };
+        return {
+          status: "retry",
+          summary: summarize([], skipped, null, scanned.ignoreSource),
+          reason: error.message,
+        };
       }
       throw error;
     }
@@ -278,7 +341,7 @@ export function createSyncSession(options: SyncSessionOptions) {
       if (!listedFile || listedFile.id !== file.id || listedFile.version !== file.version) {
         return {
           status: "retry",
-          summary: summarize([], skipped, null),
+          summary: summarize([], skipped, null, scanned.ignoreSource),
           reason: "The workspace changed while it was being read.",
         };
       }
@@ -307,7 +370,7 @@ export function createSyncSession(options: SyncSessionOptions) {
       (state.deletionHold
         ? `Deletions were stopped at ${state.deletionHold.since} (${state.deletionHold.reason}) and still need a yes: this would delete ${plannedDeletions} files.`
         : null);
-    const summary = summarize(actions, skipped, massDeletion);
+    const summary = summarize(actions, skipped, massDeletion, scanned.ignoreSource);
 
     let deletionsApproved = false;
     let asked = false;
@@ -485,6 +548,10 @@ export function createSyncSession(options: SyncSessionOptions) {
       state.deletionLog = [];
       state.deletionHold = undefined;
     }
+    // The rules this cycle went through with become the ones a missing
+    // file falls back to; carried-over rules are not recorded again. Part of
+    // the save every applied cycle makes, never a save of its own.
+    if (scanned.ignoreSource === "file") state.ignoreHistory = { text: scanned.ignoreText };
     await persist();
     return { status: "applied", summary, sourceGeneration: state.sourceGeneration };
   }
@@ -518,5 +585,135 @@ export function createSyncSession(options: SyncSessionOptions) {
     await persist();
   }
 
-  return { runCycle, resolve, state };
+  /**
+   * Takes files back from Morph after the local copies were deleted or
+   * broken, without relinking (docs/local-code-sync.md, "從 Morph 還原").
+   *
+   * Morph is only read. Each restored file is written from the workspace at
+   * the version just read, and the base is set to that version and text, so
+   * the next cycle sees both sides in step instead of reading the local
+   * deletion or the broken edit as a change to send up. A local copy that is
+   * replaced is copied into `.morph/trash/` first.
+   *
+   * Paths `.morphignore` keeps out are left alone, judged by the same rules
+   * a cycle would apply (`scan`, with the last sync's rules when the file is
+   * missing): an ignored path is out of sync in both directions, and restore
+   * is no exception. A `.morphignore` that cannot be read fails the restore
+   * before anything is written.
+   *
+   * Nothing is written before `confirm` says yes, and a yes is for the plan
+   * it was shown: if the workspace generation or the ignore rules moved, the
+   * result is `retry` and nothing is written; a file edited locally since the
+   * plan is skipped.
+   */
+  async function restore(
+    targets: readonly string[] | "all",
+    confirm: (plan: RestorePlan) => Promise<boolean>,
+  ): Promise<RestoreResult> {
+    const rules = await folder.scan({ whenAbsent: state.ignoreHistory?.text });
+    const listed = await client.list();
+    const remote = new Map<string, SyncRemoteEntry>();
+    for (const file of listed.files) {
+      if (themeSyncPathExclusion(file.path) === null) {
+        remote.set(file.path, { id: file.id, version: file.version, kind: file.kind });
+      }
+    }
+    const notInMorph: string[] = [];
+    const notRestorable: Array<{ path: string; reason: string }> = [];
+    const wanted: string[] = [];
+    const named =
+      targets === "all"
+        ? [...remote.keys()].filter((path) => remote.get(path)!.kind === "text")
+        : [...new Set(targets.map((path) => path.replace(/\\/g, "/").replace(/^\.\//, "")))];
+    for (const path of named.sort()) {
+      const exclusion = themeSyncPathExclusion(path);
+      const entry = remote.get(path);
+      if (exclusion !== null) notRestorable.push({ path, reason: exclusion });
+      else if (rules.ignored(path)) notRestorable.push({ path, reason: ".morphignore" });
+      else if (!entry) notInMorph.push(path);
+      else if (entry.kind === "binary") notRestorable.push({ path, reason: "binary in Morph" });
+      else wanted.push(path);
+    }
+
+    let contents: Map<string, { id: string; version: number; content: string }>;
+    try {
+      contents = await readRemote(wanted);
+    } catch (error) {
+      if (error instanceof ThemeSyncApiRefusal && error.isConflict) {
+        return { status: "retry", reason: error.message };
+      }
+      throw error;
+    }
+    const restorable = new Map<string, { entry: SyncBaseEntry; content: string; localHash: string | null }>();
+    const replace: string[] = [];
+    const write: string[] = [];
+    const inStep: string[] = [];
+    for (const path of wanted) {
+      const file = contents.get(path);
+      const listedFile = remote.get(path);
+      if (!file || !listedFile || listedFile.id !== file.id || listedFile.version !== file.version) {
+        return { status: "retry", reason: "The workspace changed while it was being read." };
+      }
+      const hash = await syncContentHash(file.content);
+      const localText = await folder.read(path);
+      const localHash = localText === null ? null : await syncContentHash(localText);
+      restorable.set(path, {
+        entry: { id: file.id, version: file.version, hash },
+        content: file.content,
+        localHash,
+      });
+      if (localHash === hash) inStep.push(path);
+      else if (localHash === null) write.push(path);
+      else replace.push(path);
+    }
+    const plan: RestorePlan = {
+      replace,
+      write,
+      inStep,
+      notInMorph,
+      notRestorable,
+      ignoreRulesFrom: rules.ignoreSource,
+    };
+
+    if (replace.length + write.length > 0) {
+      if (!(await confirm(plan))) return { status: "declined", plan };
+      // A yes is for the plan shown; Morph or the rules moving meanwhile
+      // void it.
+      if ((await client.generation()) !== listed.sourceGeneration) {
+        return {
+          status: "retry",
+          reason: "Morph changed while waiting for the answer; nothing was restored.",
+        };
+      }
+      const rescanned = await folder.scan({ whenAbsent: state.ignoreHistory?.text });
+      if (rescanned.ignoreKey !== rules.ignoreKey) {
+        return {
+          status: "retry",
+          reason: ".morphignore changed while waiting for the answer; nothing was restored.",
+        };
+      }
+    }
+
+    const skipped: string[] = [];
+    for (const [path, planned] of restorable) {
+      const now = await folder.read(path);
+      const nowHash = now === null ? null : await syncContentHash(now);
+      if (nowHash !== planned.localHash) {
+        skipped.push(path);
+        continue;
+      }
+      if (nowHash !== planned.entry.hash) {
+        // Unconditionally: a file that does not decode reads as absent, and
+        // must not be overwritten without a copy.
+        await folder.backup(path);
+        await folder.write(path, planned.content);
+      }
+      state.files[path] = planned.entry;
+      await folder.removeConflictCopy(path);
+      await persist();
+    }
+    return { status: "applied", plan, skipped };
+  }
+
+  return { runCycle, resolve, restore, state };
 }

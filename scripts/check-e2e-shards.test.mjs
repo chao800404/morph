@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   latestShardReports,
   verifyCoverage,
+  verifyPlanShape,
   verifyPlannedFilesExist,
   verifyWorkflowWiring,
 } from "./check-e2e-shards.mjs";
@@ -40,6 +41,31 @@ test("balanced whole-file plan contains each file once and matches exact paths",
   }
 });
 
+test("the plan has no empty shard and no file on two shards", () => {
+  verifyPlanShape();
+});
+test("a file planned on two shards fails, naming it and both shards", () => {
+  assert.throws(
+    () =>
+      verifyPlanShape([
+        ["a.spec.ts", "b.spec.ts"],
+        ["c.spec.ts", "a.spec.ts"],
+      ]),
+    /more than one shard: a\.spec\.ts \(shards 1 and 2\)/,
+  );
+  // The real plan with one file copied onto the last shard.
+  const copied = EDITOR_SHARDS.map((files) => [...files]);
+  copied[N - 1].push(copied[0][0]);
+  assert.throws(() => verifyPlanShape(copied), /more than one shard/);
+});
+test("an empty shard, or no shard at all, fails", () => {
+  assert.throws(
+    () => verifyPlanShape([["a.spec.ts"], []]),
+    /shard 2\/2 is empty/,
+  );
+  assert.throws(() => verifyPlanShape([]), /at least one shard/);
+});
+
 test("every file the plan allocates exists in e2e/", () => {
   verifyPlannedFilesExist();
 });
@@ -68,6 +94,8 @@ test("invalid and duplicate shard flags fail rather than silently losing coverag
     [`--shard=1/${N + 1}`],
     [`--shard=1/${N}`, `--shard=2/${N}`],
     ["--shard=1"],
+    // The previous three-shard spelling, from a stale caller.
+    ...(N === 3 ? [] : [["--shard=1/3"]]),
   ]) {
     assert.throws(() => editorShardArguments(args), /EDITOR_SHARD_INVALID/);
   }
@@ -180,6 +208,83 @@ test("a matrix, job name or runner flag left at another count fails", () => {
     /--shard=N/,
   );
 });
+test("a workflow wired for another count than the plan's fails", () => {
+  assert.throws(
+    () => verifyWorkflowWiring(workflow, N - 1),
+    /matrix must list/,
+  );
+  assert.throws(
+    () => verifyWorkflowWiring(workflow, N + 1),
+    /matrix must list/,
+  );
+});
+test("a shard listed twice in the matrix, or a second matrix, fails", () => {
+  const ones = Array.from({ length: N }, (_, i) => i + 1);
+  const twice = [...ones.slice(0, -1), ones.at(-2)].join(", ");
+  assert.throws(
+    () =>
+      verifyWorkflowWiring(
+        workflow.replace(`shard: [${ones.join(", ")}]`, `shard: [${twice}]`),
+      ),
+    /matrix must list/,
+  );
+  assert.throws(
+    () =>
+      verifyWorkflowWiring(
+        workflow.replace(
+          `shard: [${ones.join(", ")}]`,
+          `shard: [${ones.join(", ")}]\n        shard: [1, 2, 3]`,
+        ),
+      ),
+    /exactly one editor E2E shard matrix/,
+  );
+});
+// The current spellings stay in place; an old one is added next to them, as a
+// leftover job, step or comment would be.
+test("a job name, runner flag or artifact name left at the old count fails", () => {
+  for (const leftover of [
+    "    name: Editor E2E shard ${{ matrix.shard }}/3\n",
+    "        run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/3\n",
+    "        run: pnpm test:e2e:local-preview -- --shard=2/3\n",
+    "# Editor E2E shard 3/3\n",
+  ])
+    assert.throws(
+      () => verifyWorkflowWiring(`${workflow}${leftover}`),
+      /another count remain/,
+      leftover,
+    );
+  for (const leftover of [
+    "          name: editor-e2e-results-3-attempt-1\n",
+    "          name: editor-e2e-results-${{ matrix.shard }}\n",
+  ])
+    assert.throws(
+      () => verifyWorkflowWiring(`${workflow}${leftover}`),
+      /per-attempt name only/,
+      leftover,
+    );
+});
+test("an acceptance job that does not gate on every shard fails", () => {
+  for (const [from, to] of [
+    ["needs: editor-e2e-local-preview\n", "needs: validate\n"],
+    [
+      "SHARD_RESULT: ${{ needs.editor-e2e-local-preview.result }}\n",
+      "SHARD_RESULT: success\n",
+    ],
+    ['run: test "$SHARD_RESULT" = success\n', "run: true\n"],
+    ["pattern: editor-e2e-results-*\n", "pattern: editor-e2e-full-start-*\n"],
+    [
+      "node scripts/check-e2e-shards.mjs shard-artifacts\n",
+      "node scripts/check-e2e-shards.mjs\n",
+    ],
+  ]) {
+    assert.ok(workflow.includes(from), from);
+    assert.throws(
+      () => verifyWorkflowWiring(workflow.replace(from, to)),
+      /acceptance job must/,
+      from,
+    );
+  }
+});
 test("shard artifacts left with one name per shard fail", () => {
   assert.throws(
     () =>
@@ -219,6 +324,29 @@ test("a shard with no report fails", () =>
     () => latestShardReports(downloaded([1, 1], [3, 1]), 3),
     /shard 2 is required/,
   ));
+test("at the plan's count, every shard's report is required and read once", () => {
+  const all = downloaded(...Array.from({ length: N }, (_, i) => [i + 1, 1]));
+  assert.deepEqual(latestShardReports(all), all);
+  // The last shard never reported (not run, or its upload lost).
+  assert.throws(
+    () => latestShardReports(all.slice(0, -1)),
+    new RegExp(`shard ${N} is required`),
+  );
+  // A shard in the middle missing, with the others intact.
+  assert.throws(
+    () => latestShardReports(all.filter((_, i) => i !== 1)),
+    /shard 2 is required/,
+  );
+  // Two reports for the same shard and attempt.
+  assert.throws(
+    () =>
+      latestShardReports([
+        ...all,
+        path.join("elsewhere", path.dirname(all[0]), "shard-1.json"),
+      ]),
+    /Exactly one report for shard 1/,
+  );
+});
 test("a report outside an attempt-named artifact is not read", () =>
   assert.throws(
     () =>

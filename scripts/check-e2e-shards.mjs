@@ -34,18 +34,56 @@ export function verifyPlannedFilesExist(
 }
 
 /**
+ * The plan itself: at least one shard, no empty shard (the runner would turn
+ * it into a run of nothing, and the acceptance job would refuse it only after
+ * a whole CI run), and no file on two shards (its tests would run twice, on
+ * two databases). The full-suite comparison below catches both too, but only
+ * with Playwright collecting; this fails first, naming the file.
+ */
+export function verifyPlanShape(shards = EDITOR_SHARDS) {
+  assert.ok(
+    Array.isArray(shards) && shards.length > 0,
+    "EDITOR_SHARDS must list at least one shard",
+  );
+  for (const [index, files] of shards.entries())
+    assert.ok(
+      Array.isArray(files) && files.length > 0,
+      `Editor E2E shard ${index + 1}/${shards.length} is empty`,
+    );
+  const seen = new Map();
+  const duplicates = [];
+  for (const [index, files] of shards.entries())
+    for (const file of files) {
+      if (seen.has(file))
+        duplicates.push(`${file} (shards ${seen.get(file)} and ${index + 1})`);
+      else seen.set(file, index + 1);
+    }
+  assert.deepEqual(
+    duplicates,
+    [],
+    `A file is planned on more than one shard: ${duplicates.join(", ")}`,
+  );
+}
+
+/**
  * The workflow cannot import the plan, so its three shard-count spellings are
  * compared with it: the matrix, the job name `pnpm ship` waits for, and the
  * flag the runner expands. Changing the count means changing all of them in
  * one pull request; a partial change fails here instead of losing a shard.
+ * A spelling left at another count anywhere in the workflow fails too, so an
+ * old job or step kept next to the new one cannot pass.
  */
 export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
-  const matrix = /^\s+shard:\s*\[([^\]]*)\]/m.exec(workflow);
-  assert.ok(matrix, "The editor E2E job must declare a shard matrix");
+  const matrices = [...workflow.matchAll(/^\s+shard:\s*\[([^\]]*)\]/gm)];
+  assert.equal(
+    matrices.length,
+    1,
+    "The workflow must declare exactly one editor E2E shard matrix",
+  );
   assert.deepEqual(
-    matrix[1].split(",").map((value) => Number(value.trim())),
+    matrices[0][1].split(",").map((value) => Number(value.trim())),
     Array.from({ length: count }, (_, index) => index + 1),
-    `The shard matrix must list 1..${count}, as EDITOR_SHARDS has ${count} shards`,
+    `The shard matrix must list 1..${count} once each, as EDITOR_SHARDS has ${count} shards`,
   );
   assert.ok(
     workflow.includes(`name: Editor E2E shard \${{ matrix.shard }}/${count}\n`),
@@ -55,12 +93,63 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     workflow.includes(`--shard=\${{ matrix.shard }}/${count}\n`),
     `The shard job must pass --shard=N/${count} to the runner`,
   );
+  const stale = [
+    ...workflow.matchAll(/Editor E2E shard [^\n/]*\/(\d+)/g),
+    ...workflow.matchAll(/--shard=[^\n/]*\/(\d+)/g),
+  ]
+    .filter((match) => Number(match[1]) !== count)
+    .map((match) => match[0]);
+  assert.deepEqual(
+    stale,
+    [],
+    `Shard names or flags for another count remain in the workflow: ${stale.join(", ")}`,
+  );
   assert.ok(
     workflow.includes(
       "name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}\n",
     ),
     "Shard artifacts must be named per run attempt, or a re-run's report is read from the failed attempt",
   );
+  // Uploaded and downloaded names only; a comment may mention the pattern.
+  const artifacts = [
+    ...workflow.matchAll(
+      /^\s*(?:name|pattern):\s*(editor-e2e-results-[^\n]*?)\s*$/gm,
+    ),
+  ]
+    .map((match) => match[1])
+    .filter(
+      (name) =>
+        name !==
+          "editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}" &&
+        name !== "editor-e2e-results-*",
+    );
+  assert.deepEqual(
+    artifacts,
+    [],
+    `Shard artifacts must use the per-attempt name only: ${artifacts.join(", ")}`,
+  );
+  // The acceptance job is the check that says every shard ran: it must wait
+  // for the whole matrix, refuse anything but success, and read every report.
+  for (const [wiring, reason] of [
+    ["needs: editor-e2e-local-preview\n", "wait for the shard matrix"],
+    [
+      "SHARD_RESULT: ${{ needs.editor-e2e-local-preview.result }}\n",
+      "read the matrix result",
+    ],
+    [
+      'run: test "$SHARD_RESULT" = success\n',
+      "refuse a matrix that did not succeed",
+    ],
+    ["pattern: editor-e2e-results-*\n", "download every shard's report"],
+    [
+      "node scripts/check-e2e-shards.mjs shard-artifacts\n",
+      "check the downloaded reports",
+    ],
+  ])
+    assert.ok(
+      workflow.includes(wiring),
+      `The acceptance job must ${reason} (${wiring.trim()})`,
+    );
 }
 
 /**
@@ -204,6 +293,7 @@ if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
+  verifyPlanShape();
   verifyWorkflowWiring(readFileSync(WORKFLOW_FILE, "utf8"));
   verifyPlannedFilesExist();
   const indexes = Array.from(

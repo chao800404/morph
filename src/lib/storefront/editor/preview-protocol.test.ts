@@ -1123,3 +1123,58 @@ describe("an inline edit left open on the page", () => {
     ).toBeNull();
   });
 });
+
+describe("the page confirming the route it was asked for", () => {
+  const setRoute = {
+    type: "morph:storefront-preview-set-route",
+    templateId: "template-page",
+    routePath: "/inline-reload-defer",
+  } as const;
+
+  it("carries the request id a set-route is answered with", () => {
+    expect(
+      parseEditorToPreviewMessage({ ...setRoute, routeRequestId: 7 }),
+    ).toEqual({ ...setRoute, routeRequestId: 7 });
+    // Without one, as an editor from before the answer sends it.
+    expect(parseEditorToPreviewMessage(setRoute)).toEqual(setRoute);
+    for (const routeRequestId of [-1, 1.5, "7", null]) {
+      expect(
+        parseEditorToPreviewMessage({ ...setRoute, routeRequestId }),
+      ).toBeNull();
+    }
+  });
+
+  it("accepts the answer naming the route the router matched", () => {
+    const answer = {
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: 7,
+      routePath: "/products/$slug",
+    } as const;
+    expect(parsePreviewToEditorMessage(answer)).toEqual(answer);
+  });
+
+  it("accepts null, which says the page has no router", () => {
+    const answer = {
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: 0,
+      routePath: null,
+    } as const;
+    expect(parsePreviewToEditorMessage(answer)).toEqual(answer);
+  });
+
+  it("refuses an answer with no request id or no stated route", () => {
+    const answer = {
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: 7,
+      routePath: "/about",
+    };
+    for (const routeRequestId of [undefined, -1, 1.5, "7"]) {
+      expect(
+        parsePreviewToEditorMessage({ ...answer, routeRequestId }),
+      ).toBeNull();
+    }
+    for (const routePath of [undefined, "", "about", "javascript:alert(1)", `/${"x".repeat(512)}`]) {
+      expect(parsePreviewToEditorMessage({ ...answer, routePath })).toBeNull();
+    }
+  });
+});

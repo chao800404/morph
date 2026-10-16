@@ -1,113 +1,82 @@
 import path from "node:path";
 
 // Fixed, reviewable whole-file allocation, balanced longest-first by
-// scripts/rebalance-e2e-shards.mjs from the per-file test durations of CI run
-// 37322994193 (main 2e03703), recorded in editor-e2e-durations.json. That run
-// measured 486 / 380 / 456 s of test bodies on the previous plan; this one
-// projects 439 / 443 / 441 s. Projections, not a measured new run; setup is
-// additional. Environment-gated files remain included.
+// scripts/rebalance-e2e-shards.mjs --shards=6 from the per-file test durations
+// of CI run 38902225114 (main 41ef184), recorded in editor-e2e-durations.json.
+// That run measured 451 / 786 / 631 s of test bodies on the previous three-shard
+// plan; this one projects 311 / 308 / 317 / 314 / 308 / 310 s. Projections, not
+// a measured six-shard run; setup is additional. Applied to four earlier report
+// runs (10-15) the same plan sums to at most 446 s per shard, so the budget
+// below holds on every run measured so far, which is no guarantee for the next.
+// Environment-gated files remain included (see shard 5).
 // New tests/files must still pass check-e2e-shards' full-suite ID comparison.
 // The number of shards is this array's length; the CI matrix, the job names
 // and `pnpm ship`'s required checks are checked against it.
 export const EDITOR_SHARDS = [
   [
-    "editor-writes-auth.spec.ts",
-    "accessibility.spec.ts",
+    "recovery-editor-writes.spec.ts",
+    "preview-error-recovery.spec.ts",
     "native-compat-preview.spec.ts",
-    "text-promotion.spec.ts",
-    "public-text-code.spec.ts",
-    "catalog.spec.ts",
-    "auth-failure.spec.ts",
-    "authored-content.spec.ts",
-    "native-compat-published.spec.ts",
-    "performance.spec.ts",
-    "publish.spec.ts",
-    // Container transport only, so skipped on every CI shard; placed with
-    // publish.spec.ts, the other container-only file.
-    "build-preview-isolated.spec.ts",
-    // Container transport only, like the two above: skipped on every CI shard.
-    "native-publish-acceptance.spec.ts",
-    "native-content-dependency.spec.ts",
-    // Container transport only, like the three above: skipped on every CI shard.
-    "source-asset-publish.spec.ts",
-    // Container transport and MORPH_ASTRO_THEMES=1 only: skipped on every CI
-    // shard, like the container-only files above.
-    "astro-publish-acceptance.spec.ts",
-    // Container transport and MORPH_ASTRO_THEMES=1 only, like the one above.
-    "astro-preview-container.spec.ts",
-    // Container transport and MORPH_ASTRO_THEMES=1 only, like the two above.
-    "astro-island-hmr.spec.ts",
-    // Unmeasured until the next rebalance; the other two shards already hold
-    // several unmeasured files. One test on a throwaway Theme, two editor
-    // opens.
+    "public-svg.spec.ts",
     "starter-shell-content.spec.ts",
-    // Container transport only, like the publish files above: skipped on
-    // every CI shard.
-    "publish-layout-edit.spec.ts",
-    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which the
-    // shards do not run: skipped on every shard, like the gated files above,
-    // and run by the full Start job instead (editor-e2e-start.mjs).
-    "loader-data-binding.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // shortest run. Two tests on throwaway Themes, each waiting out one
-    // preview renewal (about 60 s). Local sidecar only.
-    "preview-inline-reload-defer.spec.ts",
+    "theme-path-refused.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
-    "recovery-editor-writes.spec.ts",
+    "leave-before-save.spec.ts",
     "structure-editor-writes.spec.ts",
-    "responsive.spec.ts",
-    "public-root-url.spec.ts",
-    "media-svg.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest tests.
-    "content-fields-sidecar.spec.ts",
-    // Unmeasured too, and on the same shard for the same reason. Its Build
-    // Preview steps run only with the container transport.
-    "starter-upgrade.spec.ts",
-    // Unmeasured until the next rebalance; placed here with the other
-    // unmeasured files. Three tests, about 3 minutes locally.
-    "content-module-restore.spec.ts",
-    // Unmeasured; a few server function calls and no editor, so seconds.
-    "theme-path-refused.spec.ts",
-    // Unmeasured; two editor opens and one right-click on a throwaway Theme.
-    "code-tree-context-menu.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest tests. Four tests on a throwaway Theme, each loading the editor
-    // two or three times.
-    "content-module-transform.spec.ts",
-    // Unmeasured; two editor opens on a throwaway Theme. Its publish half
-    // runs only with the container transport.
-    "section-visibility-layout.spec.ts",
-    // Unmeasured until the next rebalance; two tests, three editor opens.
+    "initial-code-publish.spec.ts",
     "object-position.spec.ts",
   ],
   [
-    "lost-editor-writes.spec.ts",
-    "session-editor-writes.spec.ts",
-    "editor.spec.ts",
-    "public-svg.spec.ts",
-    "initial-code-publish.spec.ts",
+    "editor-writes-auth.spec.ts",
+    "starter-upgrade.spec.ts",
+    "content-module-transform.spec.ts",
+    "text-promotion.spec.ts",
+    "code-tree-context-menu.spec.ts",
     "route-capabilities.spec.ts",
-    // Unmeasured until the next rebalance; like public-root-url.spec.ts,
-    // which it follows, about 25 s.
-    "source-asset.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files. Two tests, about 4 minutes locally.
+  ],
+  [
+    "preview-inline-reload-defer.spec.ts",
     "local-code-sync.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files. Two tests, each loading the editor once or twice.
+    "content-module-restore.spec.ts",
+    "public-root-url.spec.ts",
+    "public-text-code.spec.ts",
+    "catalog.spec.ts",
+  ],
+  [
+    "lost-editor-writes.spec.ts",
+    "editor.spec.ts",
+    "accessibility.spec.ts",
+    "responsive.spec.ts",
+    "source-asset.spec.ts",
     "row-component-content.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files. Three tests, each opening the editor twice.
-    "leave-before-save.spec.ts",
-    // Unmeasured until the next rebalance; placed on the shard with the
-    // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
-    "preview-error-recovery.spec.ts",
-    // Unmeasured until the next rebalance; placed with the files above. One
-    // test on a throwaway Theme, two editor opens. Local sidecar only.
+    // The files below measured zero seconds: every test in them is gated on
+    // an environment the shards do not have (the container transport,
+    // MORPH_ASTRO_THEMES=1 or the full Start preview), so they skip on every
+    // CI shard. They stay in the plan so coverage remains complete; the full
+    // Start ones are run by the full Start job (editor-e2e-start.mjs).
+    "astro-island-hmr.spec.ts",
+    "astro-preview-container.spec.ts",
+    "astro-publish-acceptance.spec.ts",
+    "authored-content.spec.ts",
+    "build-preview-isolated.spec.ts",
+    "loader-data-binding.spec.ts",
+    "native-compat-published.spec.ts",
+    "native-content-dependency.spec.ts",
+    "native-publish-acceptance.spec.ts",
+    "performance.spec.ts",
+    "publish-layout-edit.spec.ts",
+    "publish.spec.ts",
+    "source-asset-publish.spec.ts",
+  ],
+  [
+    "session-editor-writes.spec.ts",
+    "content-fields-sidecar.spec.ts",
     "preview-instance-reattach.spec.ts",
+    "media-svg.spec.ts",
+    "section-visibility-layout.spec.ts",
+    "auth-failure.spec.ts",
   ],
 ];
 

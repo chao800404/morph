@@ -2397,6 +2397,158 @@ function Home() {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
   }
 
+  /** The toolbar's save state, as the shell renders it. */
+  const saveState = () =>
+    document
+      .querySelector("[data-editor-save-status]")
+      ?.getAttribute("data-save-state");
+
+  /**
+   * What the caller expects of one content write:
+   * - "saved": the server accepted this write, and the shell raised nothing;
+   * - `{ refused: code }`: the server refused this write for `code`, and the
+   *   shell said so. Any other code, a lost request or a success is not it;
+   * - "unconfirmed": the request was sent and no answer came (it rejected),
+   *   and the shell said so. Whether it landed is unknown until a read-back.
+   */
+  type ExpectedWrite = "saved" | "unconfirmed" | { refused: string };
+
+  /**
+   * Chooses an option and waits for the one content write it sends to be
+   * answered and handled, rather than for a fixed time; then checks that
+   * what happened to that write is `expected`, and fails with what did
+   * happen if not. Returns the outcome it read: "saved", "unconfirmed" or
+   * `refused:<code>`.
+   *
+   * Only for a choice that is sent: a choice the shell holds back (behind an
+   * unanswered write, or a page it could not read) sends nothing, and `choose`
+   * above is the one that waits that case out.
+   *
+   * Waits for, in order:
+   * - exactly one more call to the server function. That call is this write:
+   *   its payload must carry the option chosen;
+   * - that call's own answer to settle (not any earlier one's). Waited for
+   *   outside `act`, so a test can hold the answer and look meanwhile;
+   * - the toolbar's save state to leave "saving". The shell counts a write as
+   *   sending from before it leaves until after its answer has been handled,
+   *   and the `act` before this flushes what that queued, so a state left
+   *   over from before the click cannot pass for it;
+   * - one more pair of frames, for what that render scheduled.
+   *
+   * "Saved" is bound to this write, not to the toolbar's word (which another
+   * field's kept refusal can hold at "failed", and which may be left from
+   * before the click): this call's answer is a success, at the draft
+   * generation one past the one this call was sent at; the document it
+   * returned, when it returned one, holds what this call sent; and the shell
+   * raised no error notice since the click. A refusal is bound to this call's
+   * own answer code, and to a notice (or the out-of-date state) the shell
+   * raised for it. Needs `toast.error` spied, to count the notices.
+   */
+  async function chooseAndAwaitWrite(
+    trigger: HTMLElement,
+    label: string,
+    expected: ExpectedWrite,
+  ): Promise<string> {
+    if (!vi.isMockFunction(toast.error)) {
+      throw new Error(
+        "chooseAndAwaitWrite: spy on toast.error first; refusals and failures are read from the notices the shell raises",
+      );
+    }
+    const notices = () => vi.mocked(toast.error).mock.calls.length;
+    const before = updateSectionProps.mock.calls.length;
+    const noticesBefore = notices();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    const option = screen.getByRole("option", { name: label });
+    fireEvent.keyDown(option, { key: "Enter" });
+    fireEvent.click(option);
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+
+    const request = sent()[before]!;
+    const chosen = `"imagePosition":"${label.toLowerCase()}"`;
+    if (!JSON.stringify(request.props).includes(chosen)) {
+      throw new Error(
+        `chooseAndAwaitWrite("${label}"): the write sent does not carry the choice: ${JSON.stringify(request.props)}`,
+      );
+    }
+    const own = Promise.resolve(
+      updateSectionProps.mock.results[before]!.value as unknown,
+    ).then(
+      (value) => ({ rejected: false as const, value }),
+      () => ({ rejected: true as const, value: undefined }),
+    );
+    const held: { answer?: Awaited<typeof own> } = {};
+    void own.then((settled) => {
+      held.answer = settled;
+    });
+    await waitFor(() => expect(held.answer).toBeDefined());
+    await act(async () => {
+      await own;
+    });
+    await waitFor(() =>
+      expect(["saved", "unsaved", "out-of-date", "failed"]).toContain(
+        saveState(),
+      ),
+    );
+    await flushFrames();
+
+    const settled = held.answer!;
+    const raised = notices() - noticesBefore;
+    const state = saveState();
+    const answer = settled.value as
+      | {
+          success?: unknown;
+          error?: unknown;
+          data?: {
+            draftGeneration?: unknown;
+            document?: {
+              sections?: Array<{ id: string; props?: Record<string, unknown> }>;
+            };
+          };
+        }
+      | undefined;
+    let observed: string;
+    if (settled.rejected) {
+      observed =
+        raised > 0 && state === "failed"
+          ? "unconfirmed"
+          : `sent and not answered, but the shell raised ${raised} notice(s) with state "${state}"`;
+    } else if (answer?.success === true) {
+      const sentAt = request.expectedDraftGeneration as number;
+      const stored = answer.data?.document?.sections?.find(
+        (section) => section.id === request.sectionId,
+      );
+      const storedAsSent =
+        !answer.data?.document ||
+        Object.entries(request.props as Record<string, unknown>).every(
+          ([key, value]) =>
+            JSON.stringify(stored?.props?.[key]) === JSON.stringify(value),
+        );
+      observed =
+        answer.data?.draftGeneration !== sentAt + 1
+          ? `answered as saved at draft generation ${String(answer.data?.draftGeneration)}, not the one after the ${sentAt} it was sent at`
+          : !storedAsSent
+            ? "answered as saved with a document that does not hold what it sent"
+            : raised > 0
+              ? `answered as saved, but the shell raised ${raised} error notice(s) (state "${state}")`
+              : "saved";
+    } else {
+      const code = String(answer?.error);
+      observed =
+        raised > 0 || state === "out-of-date"
+          ? `refused:${code}`
+          : `answered with a refusal (${code}) the shell did not report (state "${state}")`;
+    }
+    const wanted =
+      typeof expected === "string" ? expected : `refused:${expected.refused}`;
+    if (observed !== wanted) {
+      throw new Error(
+        `chooseAndAwaitWrite("${label}"): expected the write to be ${wanted}; it was ${observed}`,
+      );
+    }
+    return observed;
+  }
+
   const note = () =>
     document.querySelector('[data-inspector-note="object-position"]')
       ?.textContent ?? null;
@@ -2487,7 +2639,7 @@ function Home() {
     expect(trigger.hasAttribute("data-disabled")).toBe(false);
     expect(note()).toBeNull();
 
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top", "saved");
 
     expect(sent()).toHaveLength(1);
     const items = sent()[0]!.props as { items: Array<Record<string, unknown>> };
@@ -2508,8 +2660,8 @@ function Home() {
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
 
-    await choose(trigger, "Top");
-    await choose(trigger, "Bottom");
+    await chooseAndAwaitWrite(trigger, "Top", "saved");
+    await chooseAndAwaitWrite(trigger, "Bottom", "saved");
 
     expect(sent()).toHaveLength(2);
     const second = sent()[1]!.props as {
@@ -2582,7 +2734,7 @@ function Home() {
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
 
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top", "saved");
 
     expect(sent()).toHaveLength(1);
     expect(itemsOf(sent()[0]!)).toEqual([
@@ -2625,7 +2777,9 @@ function Home() {
       ...image,
       selectionRevision: 2,
     });
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top", {
+      refused: "SELECTION_SOURCE_CONFLICT",
+    });
     expect(sent()).toHaveLength(2);
     expect(sent()[1]!.expectedSourceGeneration).toBe(1);
 
@@ -2643,18 +2797,36 @@ function Home() {
     // A fresh selection and a new choice: that field alone, at the new source.
     const again = await selectAndOpenStyles({ ...image, selectionRevision: 3 });
     expect(again.hasAttribute("data-disabled")).toBe(false);
-    await choose(again, "Bottom");
-    expect(sent()).toHaveLength(3);
-    expect(sent()[2]!.expectedSourceGeneration).toBe(2);
-    expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
-    expect(itemsOf(sent()[2]!)).toEqual([
-      ["row-a", "First", "30% center"],
-      ["row-b", "Second", "bottom"],
-    ]);
+    // The clock is faked from before this choice, not only for the window
+    // below: a resend the shell schedules while it sends or answers this
+    // write is then a fake timer the window advances through. Faked only
+    // after the answer, such a timer would be a real one the instant window
+    // never waits for. `shouldAdvanceTime` keeps the debounce and `waitFor`
+    // running on their own until then.
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout"],
+      shouldAdvanceTime: true,
+    });
+    try {
+      await chooseAndAwaitWrite(again, "Bottom", "saved");
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]!.expectedSourceGeneration).toBe(2);
+      expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
+      expect(itemsOf(sent()[2]!)).toEqual([
+        ["row-a", "First", "30% center"],
+        ["row-b", "Second", "bottom"],
+      ]);
 
-    // The kept heading was neither sent with it nor sent again afterwards,
-    // and it is still the author's, waiting for its own confirmation.
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+      // The kept heading was neither sent with it nor sent again afterwards,
+      // and it is still the author's, waiting for its own confirmation. The
+      // same 1.2 s window as a real wait, with the clock moved instead of
+      // waited on; only that far, so the preview's long timers do not fire.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_200);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(sent()).toHaveLength(3);
     await typeHeadingKeptCheck(heading);
     expect(reselectNotices(toasts)).toBeGreaterThan(0);
@@ -2669,6 +2841,287 @@ function Home() {
     fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
     expect(await screen.findByDisplayValue("Kept heading")).toBeTruthy();
   }
+
+  // `chooseAndAwaitWrite` itself: it completes on the write's own answer and
+  // nothing earlier, and says what that answer was.
+
+  const REFUSED_AT_OLD_SOURCE = {
+    success: false,
+    error: "SELECTION_SOURCE_CONFLICT",
+    message:
+      "The source code has changed. Select the field again. Your changes are kept.",
+  };
+  const SELECTION_REFUSAL = { refused: "SELECTION_SOURCE_CONFLICT" };
+
+  /** The next write's answer, held until the test releases it. */
+  function holdNextAnswer() {
+    const held: { release?: (answer: unknown) => void } = {};
+    updateSectionProps.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          held.release = resolve;
+        }),
+    );
+    return held;
+  }
+
+  /** Whether a promise has settled, and how, readable at any moment. */
+  function track<T>(promise: Promise<T>) {
+    const state: { done: boolean; value?: T; error?: unknown } = {
+      done: false,
+    };
+    promise.then(
+      (value) => {
+        state.done = true;
+        state.value = value;
+      },
+      (error: unknown) => {
+        state.done = true;
+        state.error = error;
+      },
+    );
+    return state;
+  }
+
+  /**
+   * Polls without `act` or `waitFor`, so it can run beside a helper that is
+   * inside either without overlapping it.
+   */
+  async function until(check: () => boolean, what: string) {
+    for (let attempt = 0; attempt < 250; attempt += 1) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+
+  /** Moves a faked clock exactly `ms`, inside `act`. */
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("completes a chosen write only on its own answer, and reads a held success and a held refusal as what they are", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout"],
+      shouldAdvanceTime: true,
+    });
+    try {
+      // A success, held: not complete when chosen, when sent, or a second
+      // and more later; complete, as saved, once the answer is released.
+      const success = holdNextAnswer();
+      const first = track(chooseAndAwaitWrite(trigger, "Top", "saved"));
+      expect(first.done).toBe(false);
+      await until(() => sent().length === 1, "the first write to be sent");
+      expect(first.done).toBe(false);
+      // Outside `act`: the helper is waiting inside `waitFor`.
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(first.done).toBe(false);
+      expect(saveState()).toBe("saving");
+      success.release!(savedEcho(sent()[0] as never));
+      await until(() => first.done, "the first write to complete");
+      expect(first.error).toBeUndefined();
+      expect(first.value).toBe("saved");
+
+      // A refusal, held the same way: complete only once released, and only
+      // as this refusal.
+      const refusal = holdNextAnswer();
+      const second = track(
+        chooseAndAwaitWrite(trigger, "Bottom", SELECTION_REFUSAL),
+      );
+      await until(() => sent().length === 2, "the second write to be sent");
+      expect(second.done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(second.done).toBe(false);
+      refusal.release!(REFUSED_AT_OLD_SOURCE);
+      await until(() => second.done, "the second write to complete");
+      expect(second.error).toBeUndefined();
+      expect(second.value).toBe("refused:SELECTION_SOURCE_CONFLICT");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("fails a chosen write that came out other than the caller expected", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    // Saved, where a refusal was expected.
+    await expect(
+      chooseAndAwaitWrite(trigger, "Top", SELECTION_REFUSAL),
+    ).rejects.toThrow(
+      "expected the write to be refused:SELECTION_SOURCE_CONFLICT; it was saved",
+    );
+    // A server error is not the refusal that was expected.
+    updateSectionProps.mockImplementationOnce(async () => ({
+      success: false,
+      error: "INTERNAL_ERROR",
+      message: "Something went wrong",
+    }));
+    await expect(
+      chooseAndAwaitWrite(trigger, "Bottom", SELECTION_REFUSAL),
+    ).rejects.toThrow(
+      "expected the write to be refused:SELECTION_SOURCE_CONFLICT; it was refused:INTERNAL_ERROR",
+    );
+    // Refused, where a save was expected.
+    updateSectionProps.mockImplementationOnce(async () => REFUSED_AT_OLD_SOURCE);
+    await expect(
+      chooseAndAwaitWrite(trigger, "Top", "saved"),
+    ).rejects.toThrow(
+      "expected the write to be saved; it was refused:SELECTION_SOURCE_CONFLICT",
+    );
+    expect(sent()).toHaveLength(3);
+  });
+
+  it("does not take a request with no answer for the refusal that was expected", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    await expect(
+      chooseAndAwaitWrite(trigger, "Top", SELECTION_REFUSAL),
+    ).rejects.toThrow(
+      "expected the write to be refused:SELECTION_SOURCE_CONFLICT; it was unconfirmed",
+    );
+    expect(sent()).toHaveLength(1);
+  });
+
+  /**
+   * Sent, and the connection lost before an answer: the request rejects, so
+   * from here it is unknown whether it landed. The server's own state is
+   * what the read-back (`getThemeEditor`) returns; `sentWhenRead` records how
+   * many requests had gone out when the shell first asked.
+   */
+  function lostAnswer(
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+    storedAfter: { items: unknown[]; draftGeneration: number },
+  ) {
+    const read = { sentWhenRead: null as number | null };
+    getThemeEditor.mockImplementation(async () => {
+      read.sentWhenRead ??= sent().length;
+      return editorWith(
+        editorContext,
+        fixture,
+        { heading: "Collections", items: storedAfter.items },
+        storedAfter.draftGeneration,
+      );
+    });
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    return read;
+  }
+
+  async function chooseWithLostAnswer(trigger: HTMLElement) {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout"],
+      shouldAdvanceTime: true,
+    });
+    try {
+      expect(await chooseAndAwaitWrite(trigger, "Top", "unconfirmed")).toBe(
+        "unconfirmed",
+      );
+      // Not sent again, and not called saved, on its own.
+      await advance(1_200);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sent()).toHaveLength(1);
+    expect(saveState()).toBe("failed");
+  }
+
+  // (a) It landed; only the answer was lost. The read-back shows it stored,
+  // so nothing is sent again, and the next write composes on what it read.
+  it("takes a lost answer's read-back as stored when the write landed, and sends nothing again", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    const priorRead = getThemeEditor.getMockImplementation();
+    try {
+      const [rowA, rowB] = rows();
+      const read = lostAnswer(editorContext, fixture, {
+        items: [rowA, { ...rowB, imagePosition: "top" }],
+        draftGeneration: 2,
+      });
+      await chooseWithLostAnswer(trigger);
+
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+      await waitFor(() => expect(saveState()).toBe("saved"));
+      expect(read.sentWhenRead).toBe(1);
+      vi.useFakeTimers({
+        toFake: ["setTimeout", "clearTimeout"],
+        shouldAdvanceTime: true,
+      });
+      try {
+        await advance(1_200);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sent()).toHaveLength(1);
+
+      // What it read counts: the next write is sent at the generation the
+      // read-back returned, on the rows it returned.
+      expect(await chooseAndAwaitWrite(trigger, "Bottom", "saved")).toBe(
+        "saved",
+      );
+      expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+      expect(itemsOf(sent()[1]!)).toEqual([
+        ["row-a", "First", "30% center"],
+        ["row-b", "Second", "bottom"],
+      ]);
+    } finally {
+      if (priorRead) getThemeEditor.mockImplementation(priorRead);
+      else getThemeEditor.mockReset();
+    }
+  });
+
+  // (b) It did not land; the connection dropped. The read-back shows the rows
+  // as they were, and only then is the choice sent again.
+  it("reads a lost answer back before sending again when the write did not land", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    const priorRead = getThemeEditor.getMockImplementation();
+    try {
+      const read = lostAnswer(editorContext, fixture, {
+        items: rows(),
+        draftGeneration: 1,
+      });
+      await chooseWithLostAnswer(trigger);
+
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await waitFor(() => expect(sent()).toHaveLength(2));
+      // Read back while only the lost request had gone out.
+      expect(read.sentWhenRead).toBe(1);
+      expect(sent()[1]!.expectedSourceGeneration).toBe(1);
+      expect(sent()[1]!.expectedDraftGeneration).toBe(1);
+      expect(itemsOf(sent()[1]!)).toEqual([
+        ["row-a", "First", "30% center"],
+        ["row-b", "Second", "top"],
+      ]);
+    } finally {
+      if (priorRead) getThemeEditor.mockImplementation(priorRead);
+      else getThemeEditor.mockReset();
+    }
+  });
 
   // A write whose outcome is unknown (no answer) is not upgraded, cleared or
   // sent again because a Position choice is made beside it. The shell holds
@@ -3004,8 +3457,8 @@ function Home() {
     const report = await reportImage(fixture, 1);
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
-    await choose(trigger, "Top");
-    await choose(trigger, "Bottom");
+    await chooseAndAwaitWrite(trigger, "Top", "saved");
+    await chooseAndAwaitWrite(trigger, "Bottom", "saved");
     expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([1, 2]);
     expect(itemsOf(sent()[1]!)).toEqual([
       ["row-a", "First", "30% center"],

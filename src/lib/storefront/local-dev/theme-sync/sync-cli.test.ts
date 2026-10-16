@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -77,7 +77,10 @@ async function deadOrigin(): Promise<string> {
 }
 
 /** A folder linked to theme-a at `origin`, whose `.morphignore` cannot be read. */
-async function linkFolder(origin: string, options: { unreadableIgnore: boolean }) {
+async function linkFolder(
+  origin: string,
+  options: { unreadableIgnore: boolean; ignoreHistory?: string },
+) {
   const state: SyncState = {
     protocol: 1,
     origin,
@@ -85,6 +88,7 @@ async function linkFolder(origin: string, options: { unreadableIgnore: boolean }
     themeId: "theme-a",
     sourceGeneration: null,
     files: {},
+    ...(options.ignoreHistory === undefined ? {} : { ignoreHistory: { text: options.ignoreHistory } }),
   };
   await mkdir(join(dir, ".morph"), { recursive: true });
   await writeFile(join(dir, ".morph", "sync-state.json"), JSON.stringify(state));
@@ -139,6 +143,21 @@ describe("morph-sync when the local folder stops a cycle", () => {
     expect(stderr).not.toMatch(STACK_FRAME);
   }, 30_000);
 
+  it("restore prints one line naming the local folder, writes nothing and exits non-zero", async () => {
+    await linkFolder(await serveMorph(), { unreadableIgnore: true });
+    await writeFile(join(dir, "a.tsx"), "broken");
+    const { code, stdout, stderr } = await runCli(["restore", "a.tsx", "--yes"]);
+    expect(code).toBe(1);
+    expect(stdout).not.toMatch(/Restored/);
+    expect(stderr.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^\[morph-sync\] Local folder problem, not Morph: \.morphignore could not be read, so nothing was synced: EISDIR/,
+      ),
+    ]);
+    expect(stderr).not.toMatch(STACK_FRAME);
+    expect(await readFile(join(dir, "a.tsx"), "utf8")).toBe("broken");
+  }, 30_000);
+
   it("start says the problem is local, not Morph, and keeps running", async () => {
     await linkFolder(await serveMorph(), { unreadableIgnore: true });
     const { stdout, stderr } = await runCli(["start", "--yes"], /Local folder problem/);
@@ -147,6 +166,18 @@ describe("morph-sync when the local folder stops a cycle", () => {
     );
     expect(stdout).not.toMatch(/reading Morph again/);
     expect(stderr).not.toMatch(STACK_FRAME);
+  }, 30_000);
+
+  it("status says the last sync's rules still hold when .morphignore is missing", async () => {
+    await linkFolder(await serveMorph(), { unreadableIgnore: false, ignoreHistory: "notes/\n" });
+    await mkdir(join(dir, "notes"));
+    await writeFile(join(dir, "notes", "mine.md"), "private");
+    const { code, stdout } = await runCli(["status"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain(
+      "[morph-sync] .morphignore is missing; still leaving out what it listed at the last sync. Write an empty .morphignore to sync those paths.",
+    );
+    expect(stdout).not.toContain("notes/mine.md");
   }, 30_000);
 
   it("start still blames Morph when Morph cannot be reached", async () => {
