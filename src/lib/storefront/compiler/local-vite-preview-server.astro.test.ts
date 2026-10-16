@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -20,7 +21,20 @@ const ASTRO_TOOLCHAIN = path.join(
   process.cwd(),
   "sandbox/toolchains/astro-7.3/node_modules/astro/package.json",
 );
-const WORKSPACES_ROOT = path.join(process.cwd(), ".morph-previews-astro-test");
+/**
+ * One directory per run. A run stopped before `afterAll` leaves its workspace
+ * on disk, and `start()` keeps a content snapshot it finds there when that
+ * snapshot's ticket is higher (a sync newer than the start; by design). With
+ * a fixed path the next run started on that leftover state: it read the old
+ * `A6B-C` page and its first write (101) was superseded by 103. Restarts
+ * within this run share the directory; `afterAll` removes only this run's
+ * own directory and leaves anything else under the parent alone.
+ */
+const WORKSPACES_ROOT = path.join(
+  process.cwd(),
+  ".morph-previews-astro-test",
+  `run-${randomUUID()}`,
+);
 const PREVIEW_ID = "astro-local-preview";
 const DRAFT = "A6-DRAFT-HEADLINE";
 
