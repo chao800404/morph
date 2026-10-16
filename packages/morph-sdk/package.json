@@ -1,0 +1,10 @@
+{
+  "name": "@morph/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Framework-agnostic read core for published Morph content and public products. v0: not published.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
