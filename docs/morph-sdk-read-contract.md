@@ -2,30 +2,46 @@
 
 ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244（ROADMAP 1.4，草稿）；共用讀取核心的原型與設計見 #221（草稿，`docs/content-read-core-design.md` 只在該 PR，main 上沒有，本文只引用 PR 編號，不複製其內容）。
 
-**範圍。** 只寫設計，不含程式、測試或設定變更。不授權實作、部署、npm 發布。契約只描述既有能力；尚未實作的能力一律標為【延後】，不寫成已支援。
+**範圍。** 只寫設計，不含程式、測試或設定變更。不授權實作、部署、npm 發布或合併。
 
 **核對基準。** main `52d1e3a`。
 
 ## 0. 標記
 
+本文把「現在的 API 怎麼做」和「SDK 將來要怎麼做」分開寫。凡是【目標】都**尚未實作**，不得當成可用的功能引用。
+
 | 標記             | 意思                                                       |
 | ---------------- | ---------------------------------------------------------- |
+| 【現況】         | 現在的程式就是這樣運作。後面附核對程度。                   |
 | 【已核對】       | 讀過所列程式碼。不等於執行過。                             |
 | 【已核對＋測試】 | 讀過程式碼，並有既有測試涵蓋（列出測試名）。本輪沒有重跑。 |
 | 【推論，未執行】 | 由程式碼推得，沒有用瀏覽器或真實請求驗證。                 |
-| 【提案】         | 本文提出的契約，待審閱。                                   |
-| 【延後】         | 不在首版契約內。                                           |
-| 【待決】         | 需要使用者決定，見 §6。                                    |
+| 【首版】         | 提案：首版 SDK 只包裝【現況】，不改伺服器行為。            |
+| 【目標】         | 提案：將來的行為，需要改 API、Starter 或發布模型；未實作。 |
+| 【延後】         | 不在首版，也還沒有設計。                                   |
+| 【待決】         | 需要使用者決定，見 §9。                                    |
 
-## 1. 一句話結論
+## 1. 已決定的方向（使用者，2026-10-16）
 
-已發布頁面與公開商品**在商家網域上已經用同一種方式決定範圍**：都由 Core 依網域解析商店，都不接受訪客的 key。差異在三處：頁面端點沒有 CORS、平台網域上的 Store API 另有一條用 publishable key 的路徑、兩邊的錯誤與查無資料的語意不同。統一 SDK 首版可以只包裝這些既有能力；外部網域從瀏覽器讀頁面、圖片網址跨網域可用，是首版前必須決定的缺口（§3、§6）。
+- 首版重用商家網域的既有 API；頁面先限伺服器端讀取；不額外強制加 key。
+- **正式目標：Morph 作為獨立內容後台，外部網站不必在 Morph 建置或發布 Theme。** 現有 Theme／build 依賴只是首版限制，不是長期前提；也不得直接移除既有發布安全檢查來繞過（§4）。
+- SDK 採一份框架無關核心，平台薄入口與外部套件共用（§7 是分階段方案）。
+- `products.get` 查無商品回 `null`，其他錯誤一律拋出（§6.3）。
+- 頁面「空內容」與「不存在」須分清楚。現況做不到，列為【目標】（§6.2）。
 
-## 2. 既有能力盤點
+## 2. 一句話結論
 
-### 2.1 已發布頁面：`GET /_morph/content?path=`
+- **【現況】** 在商家網域上，已發布頁面與公開商品用同一種方式決定範圍：Core 依網域解析商店，都不接受訪客的 key。
+- **【首版】** SDK 可以只包裝這些 API，但有兩個限制：
+  - 來源網域必須有已發布的 Theme release；
+  - 頁面只能在伺服器端讀。
+- **【目標】** 要做到「不必有 Theme」與「分清楚空內容和不存在」，必須改動發布模型與 API 回應，不只是改文件。
 
-【已核對】`src/lib/storefront/service/storefront-production.service.ts`（`handleRequest`、`serveContent` 約 286 行起）、`storefront-content-runtime.ts`、`storefront-host-resolver.ts`。
+## 3. 現況盤點
+
+### 3.1 已發布頁面：`GET /_morph/content?path=`
+
+【現況，已核對】`src/lib/storefront/service/storefront-production.service.ts`（`handleRequest`、`serveContent` 約 286 行起）、`storefront-content-runtime.ts`、`storefront-host-resolver.ts`。
 
 - **只在商家網域。** 由 `StorefrontProductionService` 服務：先依 `Host` 執行 `resolveStorefrontHost`，再進入 `/_morph/content`。
 - **範圍由網域決定。** 網域 → 商店 → `active_release_id` → release → 成功的 Theme build。內容只讀該 release 的 `contentPublicationId`，不讀草稿。不需要也不讀任何 key。
@@ -40,7 +56,10 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
   - 停用的 section 列入 `hiddenSlots`，不給值。
   - 最多 `MAX_THEME_CONTENT_SLOTS = 200` 個 slot。
   - 路徑對應規則：`/pages/<handle>` 先找該 Page，找不到時退回 page template；沒有 template type 的路徑用 route document；其他用 template type。
-- **查無資料。** 路徑沒有任何文件時回 `200 { slots: {}, hiddenSlots: [] }`，不是 404。程式註解明確說這不是錯誤：元件預設值就是正確結果。
+- **空內容與不存在無法區分。**
+  - 路徑沒有自己的文件時，仍回 200，不是 404。回應只含 layout 文件的內容；layout 也沒有時才是 `{ slots: {}, hiddenSlots: [] }`。程式註解說明這不是錯誤：對託管 Theme 而言，沒有 Document 的路由用元件預設值才正確。
+  - 路徑有自己的文件但沒有任何 section 時，回應與上面相同。
+  - 回應中沒有任何欄位能區分「這個路徑有文件」與「沒有」。
 - **快取。**
   - 回應帶 `Cache-Control: public, max-age=60, must-revalidate`。
   - ETag 為 `"<releaseId>:<path>"`，路徑取請求的原字串。
@@ -52,23 +71,23 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
   - 測試：`storefront-production.service.test.ts` 的 "never lets a client spoof the content origin"、"strips a spoofed content publication header when the release has none"。
   - 正式 Cloudflare 上 Core 轉送到 Theme Worker 的完整信任邊界仍未驗證，見 #221 的驗證狀態。
 
-### 2.2 公開商品：Store API
+### 3.2 公開商品：Store API
 
 同一個處理函式 `handleStoreCatalogGet`（`src/lib/storefront/service/store-catalog-request.ts`）有**兩個入口**，範圍決定方式不同。
 
-#### 2.2.1 商家網域上的 `/api/store/products`
+#### 3.2.1 商家網域上的 `/api/store/products`
 
-【已核對＋測試】`storefront-production.service.ts` 約 245 行、`src/server.ts` 的 `catalogHandler`；測試 "routes only read-only catalog requests using the resolved storefront"。
+【現況，已核對＋測試】`storefront-production.service.ts` 約 245 行、`src/server.ts` 的 `catalogHandler`；測試 "routes only read-only catalog requests using the resolved storefront"。
 
-- 同樣先經 `resolveStorefrontHost`，所以前提與 §2.1 相同：需要已發布的 Theme release。
+- 同樣先經 `resolveStorefrontHost`，所以前提與 §3.1 相同：需要已發布的 Theme release。網域解析失敗時回純文字 404／503。
 - `catalogHandler` 只用解析出的 `hostname` 呼叫 `storeContextDal.resolveCatalog`，註解為 "Do not accept a visitor's publishable key, channel, or host override."
-- 解析出的 `storefrontId` 與網域不符時回 503。
+- 解析出的 `storefrontId` 與網域不符時，回純文字 503 "Catalog context unavailable"。
 - 只接受 GET（405）。
 - **結論：商家網域上，商品與頁面一樣由網域決定範圍，不用 key。** Starter 的 `src/morph/catalog.ts` 就是讀這個入口：伺服器端用 `x-morph-content-origin`，瀏覽器用相對路徑。
 
-#### 2.2.2 平台網域上的 `/api/store/products`
+#### 3.2.2 平台網域上的 `/api/store/products`
 
-【已核對】`src/routes/_backend/api/store/$.ts` 的 `contextOf`、`src/lib/storefront/dal/store-context.dal.ts` 的 `resolveCatalog`。
+【現況，已核對】`src/routes/_backend/api/store/$.ts` 的 `contextOf`、`src/lib/storefront/dal/store-context.dal.ts` 的 `resolveCatalog`。
 
 - **範圍來源。**
   - `x-publishable-api-key`：驗證 key 存在、`type = publishable`、未撤銷、未刪除，並驗證 salt／token。取得 key 連結的銷售通路；沒有連結時拒絕。
@@ -80,9 +99,9 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 - **CORS。** `Access-Control-Allow-Origin: *`；允許標頭 `content-type, x-publishable-api-key, x-storefront-host`；OPTIONS 回 204。
 - **快取。** 公開回應 `public, max-age=0, s-maxage=30, stale-while-revalidate=60`，`Vary: x-publishable-api-key, x-storefront-host`；錯誤的 context 為 `private, no-store`。
 
-#### 2.2.3 參數與回應（兩個入口相同）
+#### 3.2.3 參數與回應（兩個入口相同）
 
-【已核對】`src/lib/validations/store-api.ts`、`src/lib/storefront/dal/store-catalog.dal.ts`。
+【現況，已核對】`src/lib/validations/store-api.ts`、`src/lib/storefront/dal/store-catalog.dal.ts`。
 
 - **`GET products`**
   - 參數：
@@ -97,19 +116,40 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 - **`GET products/<handle>`**
   - handle 規則：小寫英數與連字號，最多 255 字元。不合法時 400。
   - 找到時回 `{ product, context }`，價格依 context 的 region／currency。
-  - 找不到時回 `404 { error: "NOT_FOUND", message: "Product not found" }`。這個 404 走公開快取（30 秒）。
+  - 找不到時回 `404 { error: "NOT_FOUND", message: "Product not found" }`，JSON 格式。這個 404 走公開快取（30 秒）。
+  - **商家網域上另有一種 404**：網域解析失敗的純文字 404（§3.1），不是 JSON。
 - **`GET assets/<uuid>`**：只給該銷售通路已發布商品引用的資產。
 - **`context`** 為 `StoreCatalogContextDTO`：`storeId, storefrontId, salesChannelId, regionId|null, currencyCode|null, automaticTaxes, isTaxInclusive, countryCode, localeCode`。
   - 平台入口可用 `region_id`、`country_code` 參數指定。商家入口不轉交這兩個參數。
 
-### 2.3 Starter 的讀取模組
+### 3.3 發布模型對 Theme 的依賴
 
-【已核對】`src/lib/storefront/starter-theme-v3-files.ts` 的 `STARTER_THEME_CONTENT_MODULE_SOURCE`（約 2136 行起）、`starter-theme-catalog-files.ts`。
+【現況，已核對】`src/db/storefront.schema.ts`、ROADMAP「Content-only release」。
+
+- `storefront_releases` 的 `theme_id`、`source_revision_id`、`theme_build_id` 都是 `NOT NULL`；`content_publication_id` 可為 null。也就是說，**release 一定綁著一個 Theme build**。
+- `storefront_content_publications` 只綁 `storefront_id`，不綁 Theme。
+- **內容的歸屬分兩類。**
+  - Page（`storefront_pages`）屬於商店。
+  - template 文件（`storefront_theme_templates`，包含 layout 與 route document）屬於 Theme（`theme_id NOT NULL`）。
+  - 因此首頁、layout 等非 Page 內容，目前在資料模型上依附某個 Theme。
+- **純內容發布（content-only release）。** 不重新 build，但仍產生新的 release，並沿用「既有的成功 Theme build」。所以它沒有脫離 Theme。
+- **既有發布安全檢查。** §4 的目標必須保留這些檢查：
+  - 網域 → 商店 → release → build 的 fail-closed 解析鏈；
+  - build 必須屬於同一商店與 Theme 的歸屬檢查；
+  - `active_release_id` 是唯一的 live 指標；
+  - publication 不可變；
+  - 啟用時的 CAS；
+  - 草稿不進公開讀取。
+
+### 3.4 Starter 的讀取模組
+
+【現況，已核對】`src/lib/storefront/starter-theme-v3-files.ts` 的 `STARTER_THEME_CONTENT_MODULE_SOURCE`（約 2136 行起）、`starter-theme-catalog-files.ts`。
 
 - **頁面有兩套讀法並存。**
   - `content()`／`isSectionHidden()`：讀不到時回 `EMPTY_CONTENT`，也就是靜默顯示元件預設值。
   - `morph.pages.get(path)`／`morph.pages.isHidden()`：失敗一律丟 `MorphContentError`，不退回預設值。
 - **`MorphPage` 形狀。** slot 值直接攤平在頁面物件上，隱藏清單放 `_hidden`。若回應含名為 `_hidden` 的 slot，丟 `reserved_slot`。
+- **回應驗證只看 `slots` 與 `hiddenSlots`，其他欄位不影響。** 這讓 §6.2 的「新增欄位」對既有 Starter 相容。
 - **10 個錯誤碼。**
   - `no_content_source`、`invalid_content_origin`、`invalid_path`、`store_unreachable`、`content_not_found`、`store_error`、`redirect_refused`、`invalid_response`、`response_too_large`、`reserved_slot`。
   - 錯誤文字寫死在模組內，不帶上游內容、網址或堆疊；細節只寫進伺服器 log。
@@ -120,10 +160,10 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 - **兩個錯誤碼宣告了但不會產生。** `fetchPage` 沒有設 `redirect`，所以採預設的跟隨轉址；也沒有回應大小上限。因此 `redirect_refused`、`response_too_large` 只會由本機開發代理以 JSON `code` 送出。
   - 同一個 Starter 的 `catalog.ts` 則用了 `redirect: "error"`。
   - 這就是 #221 待決問題 4。
-- **`content_not_found` 的語意與實際不符。** 只在 HTTP 404 時產生。Core 的 404 只來自網域／release 解析（§2.1）；不存在的頁面路徑回 200 空內容。所以這個碼實際代表「這個網域沒有可讀的已發布商店」，不是「這頁沒有內容」。
-- **商品讀取不在 `morph` 物件上。** 由 `loadProducts`／`loadProduct` 提供；查無商品回 `{ product: null }`，其他失敗丟一般 `Error`，沒有錯誤碼。
+- **`content_not_found` 的語意與實際不符。** 只在 HTTP 404 時產生。Core 的 404 只來自網域／release 解析（§3.1），所以這個碼實際代表「這個網域沒有可讀的已發布商店」，不是「這頁不存在」。
+- **商品讀取不在 `morph` 物件上。** 由 `loadProducts`／`loadProduct` 提供；任何 404 都回 `{ product: null }`，包括網域解析失敗的 404。其他失敗丟一般 `Error`，沒有錯誤碼。
 
-### 2.4 #221 原型
+### 3.5 #221 原型
 
 只引用，不複製：#221 的 `fixtures/morph/content-read-core/core.ts`（測試原型）與 `docs/content-read-core-design.md`。契約設計依賴其中的這些部分：
 
@@ -134,132 +174,228 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 - 失敗不回預設值；
 - workerd 並行隔離（測試原型層級）。
 
-## 3. 缺口
+## 4. 正式目標：Morph 作為獨立內容後台
 
-| #   | 缺口                                                                                                                                          | 依據                                                                  | 影響                                                                                       |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| G1  | 頁面與商家網域商品的前提是「網域有已發布的 Theme release」。完全不由 Morph 託管 Theme 的外部網站，目前讀不到內容。                            | 【已核對】`resolveStorefrontHost` 對所有路徑都先檢查 release 與 build | 外部網站必須先有一個已發布的 Morph storefront 作為來源；是否放寬屬於另一項設計，本文不提案 |
-| G2  | `/_morph/content` 沒有 CORS，外部網域的瀏覽器讀取會被擋。                                                                                     | 【已核對】沒有標頭；【推論，未執行】瀏覽器行為                        | 外部網站在瀏覽器切頁時無法直接讀頁面（§6 Q2）                                              |
-| G3  | 圖片網址都是相對路徑：頁面媒體為 `/_storefront-media/<id>?version=…`，商品圖為 `/api/store/assets/<id>`。外部網域直接使用會解析到自己的網域。 | 【已核對】`publishedMediaPath`、`store-catalog.dal.ts`                | SDK 必須以來源網址補成絕對網址（§4.7）                                                     |
-| G4  | 在平台網域上，`<img>` 不會帶 key 或 `x-storefront-host`；這時 `contextOf` 退回 `Host`，也就是平台網域，商品圖可能回 401。                     | 【推論，未執行】                                                      | 外部網站的商品圖應指向商家網域，而不是平台網域（§4.7）                                     |
-| G5  | 查無資料語意不一：未知頁面回 200 空內容；網域／release 不存在回 404 純文字；商品回 404 JSON。                                                 | 【已核對】                                                            | SDK 需要統一對外語意（§4.5）                                                               |
-| G6  | 錯誤格式不一：內容端點是純文字；Store API 是 `{ error, message, details? }`；Starter 用自己的碼。                                             | 【已核對】                                                            | 統一錯誤模型（§4.4）                                                                       |
-| G7  | 頁面讀取有宣告但未實作的轉址拒絕與大小上限。                                                                                                  | 【已核對】§2.3                                                        | 對應 #221 待決 4；不在首版契約宣稱已支援                                                   |
-| G8  | 內容端點有 ETag 但不回 304。                                                                                                                  | 【已核對】                                                            | 只影響效能；首版不依賴條件請求                                                             |
-| G9  | 舊讀法 `content()` 會靜默退回預設值，與 SDK「失敗不回預設」原則衝突。                                                                         | 【已核對】                                                            | Starter 遷移路徑（#221 待決 5）                                                            |
-| G10 | 商品讀取沒有錯誤碼，失敗是一般 `Error`。                                                                                                      | 【已核對】                                                            | 統一錯誤模型（§4.4）                                                                       |
+**目標。** 外部網站不必在 Morph 建置或發布 Theme，也能用 SDK 讀已發布內容與公開商品。
 
-## 4. 契約提案
+**這是架構變更，不只是文件。** 現況的讀取鏈是：網域 → 目前的 release → 內容發布版本，而 release 一定綁 Theme build（§3.3）。要達成目標，至少要先解決下面三件事，都需要另行設計與授權。
 
-以下全部是【提案】，只包裝 §2 的既有能力。
+### 4.1 發布模型：內容發布必須能不靠 Theme build 被找到
 
-### 4.1 設定與來源
+兩個方向，都還沒有設計，本文不選定：
+
+- **(A) 不含 Theme build 的 release。** 例如一種「純內容」release，讓 `theme_build_id` 在這種 release 上可以為空。這會改到 release 的 schema，以及所有假設 release 必有 build 的地方：解析、部署、rollback、release history。
+- **(B) 讓內容發布版本有自己的 live 指標，與 release 分開。** 例如商店或內容網域上的「目前內容發布版本」。這需要定義它和 release 指標之間的一致性，以及 rollback 時兩者如何一起動。
+
+兩者都必須：
+
+- 保留 §3.3 列出的每一項發布安全檢查。不能用「跳過 build 檢查」來達成；要改成對新的發布種類做等價的檢查。
+- 不建立第二條平行的發布路徑，要延伸既有的發布與 CAS 核心。
+- 遷移在獨立 PR 進行，不碰遠端 D1。
+
+### 4.2 內容的歸屬：非 Page 的內容目前屬於 Theme
+
+- 首頁、layout、route document 屬於 Theme 的 template（§3.3）。
+- 沒有 Theme 的商店目前只有 Page 這一類內容可以發布。
+- 要決定的事：不靠 Theme 時，這些內容的「容器」是什麼（商店層的 template，或內容專用的結構），以及既有 Theme 的內容如何不遷移就繼續運作。
+- 這與 #187（隱藏區塊）、#221（程式碼與 Document 的分工）都相關。
+
+### 4.3 內容網域與網站網域分開
+
+- 外部網站自己的網域（例如 `www.example.com`）指向外部主機，不能同時由 Morph 服務。
+- 因此外部網站需要一個**由 Morph 服務的內容網域**，SDK 的 `baseUrl` 指向它。可以是：
+  - 商家自訂的子網域，例如 `cms.example.com`；
+  - 或平台提供的網址。
+- **【首版】** 這個內容網域就是現有的商家網域，所以上面必須有已發布的 Theme release（首版限制）。
+- **【目標】** 內容網域上有內容可讀，但不需要有 Theme。這和 §4.1 是同一件事。
+- 要決定：
+  - 內容網域是否沿用 `storefront_domains`（狀態、驗證、active 規則都沿用），或另一種網域種類；
+  - 內容網域上要不要服務 Theme 頁面，或只服務 `/_morph/*` 與 Store API。
+
+### 4.4 依賴與順序
+
+- §4.1–§4.3 都依賴發布模型的設計審閱，排在 SDK 首版之後。首版不等它們。
+- 外部網域的真實驗收需要部署好、外部可達的 Morph（另行授權）。
+- ROADMAP 的描述由 #244 負責更新。本 PR 不改 #244。
+
+## 5. 缺口
+
+| #   | 缺口                                                                                                                                          | 依據                                                   | 處理                             |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------- |
+| G1  | 讀內容與商家網域的商品，都要求網域有已發布的 Theme release。                                                                                  | 【已核對】`resolveStorefrontHost`、release schema      | 首版限制；【目標】§4             |
+| G2  | `/_morph/content` 沒有 CORS，外部網域的瀏覽器讀取會被擋。                                                                                     | 【已核對】沒有標頭；【推論，未執行】瀏覽器行為         | 首版只在伺服器端讀頁面（§6.7）   |
+| G3  | 圖片網址都是相對路徑：頁面媒體為 `/_storefront-media/<id>?version=…`，商品圖為 `/api/store/assets/<id>`。外部網域直接使用會解析到自己的網域。 | 【已核對】`publishedMediaPath`、`store-catalog.dal.ts` | §6.5                             |
+| G4  | 在平台網域上，`<img>` 不會帶 key 或 `x-storefront-host`；這時 `contextOf` 退回 `Host`，也就是平台網域，商品圖可能回 401。                     | 【推論，未執行】                                       | 首版圖片指向內容網域（§6.5）     |
+| G5  | 頁面空內容與不存在無法區分。                                                                                                                  | 【已核對】§3.1                                         | 【目標】§6.2                     |
+| G6  | `content_not_found` 的語意是「沒有可讀的已發布商店」。                                                                                        | 【已核對】§3.4                                         | 【目標】§6.2                     |
+| G7  | 錯誤格式不一：內容端點是純文字；Store API 是 `{ error, message, details? }`；Starter 用自己的碼。                                             | 【已核對】                                             | §6.4                             |
+| G8  | 商家網域上「網域解析失敗的 404」與「查無商品的 404」狀態碼相同；Starter 的 `loadProduct` 把兩者都當成查無商品。                               | 【已核對】                                             | §6.3                             |
+| G9  | 頁面讀取有宣告但未實作的轉址拒絕與大小上限。                                                                                                  | 【已核對】§3.4                                         | 對應 #221 待決 4；首版不宣稱支援 |
+| G10 | 內容端點有 ETag 但不回 304。                                                                                                                  | 【已核對】                                             | 只影響效能；首版不依賴           |
+| G11 | 舊讀法 `content()` 會靜默退回預設值，與 SDK「失敗不回預設」原則衝突。                                                                         | 【已核對】                                             | §7 第 2 階段的遷移               |
+| G12 | 首頁、layout 等內容屬於 Theme。                                                                                                               | 【已核對】§3.3                                         | 【目標】§4.2                     |
+
+## 6. 契約
+
+每一項分成【首版】（只包裝現況，不改伺服器）與【目標】（未實作）。
+
+### 6.1 設定與來源
 
 ```ts
 type MorphSource =
   // Hosted Theme: the origin comes from the request, set by Core
   // (x-morph-content-origin). The wiring supplies it per request.
   | { kind: "platform" }
-  // An explicitly named merchant storefront origin, e.g. https://shop.example.
-  | { kind: "origin"; origin: string };
+  // A content domain served by Morph, e.g. https://cms.example.com.
+  | { kind: "origin"; baseUrl: string };
 
-createMorph({ source: MorphSource /* , publishableKey? see §6 Q1 */ });
+createMorph({ source: MorphSource });
 ```
 
 - `createMorph` 只保存不變的設定。每次請求的來源由平台或 integration 接線提供（沿用 #221），不得放進可變的全域狀態。
-- `origin` 必須是 http／https、不含帳密、等於 `new URL(origin).origin`，與 Starter 的 `catalog.ts` 檢查一致。不合法時丟 `invalid_content_origin`。
-- **首版以商家網域作為頁面與商品的單一來源。** 理由：
-  - §2.2.1 已證明商家網域上兩者範圍相同，都由網域決定、都不用 key。
-  - 這不需要新端點，也不需要為頁面加 key。
-  - 平台網域的 key 路徑保留給 §6 Q1 決定。
+- `baseUrl` 必須是 http／https、不含帳密，並且等於 `new URL(baseUrl).origin`，與 Starter 的 `catalog.ts` 檢查一致。不合法時丟 `invalid_content_origin`。
+- **【首版】**
+  - `baseUrl` 是現有的商家網域；頁面與商品都從這裡讀。
+  - 不用 key，也不接受 key 設定。
+  - 限制：該網域必須有已發布的 Theme release（G1）。
+- **【目標】** `baseUrl` 是不需要 Theme 的內容網域（§4.3）。SDK 介面不變。
+- 平台網域的 publishable key 路徑首版不包裝。若之後要支援，作為選填設定另提，不能變成頁面讀取的必要條件。
 
-### 4.2 `pages.get(path)`
+### 6.2 `pages.get(path)`
 
-- 對應 `GET <origin>/_morph/content?path=`。
-- 參數規則沿用：以 `/` 開頭、最多 500 字元；違反時在發請求前丟 `invalid_path`。
-- 回傳 `MorphPage`：沿用 Starter 的形狀（slot 攤平＋`_hidden`）與 `isHidden()`。
-- 隱藏區塊的最終形狀依 #187 決定，本契約不改。
-- 只讀已發布內容。草稿讀取【延後】，依賴 #214。
+- **【首版】**
+  - 對應 `GET <baseUrl>/_morph/content?path=`。只在伺服器端執行，原因見 §6.7。
+  - 參數規則沿用：以 `/` 開頭、最多 500 字元；違反時在發請求前丟 `invalid_path`。
+  - 回傳 `MorphPage`：沿用 Starter 的形狀（slot 攤平＋`_hidden`）與 `isHidden()`。
+  - **限制：無法區分空內容與不存在。** 兩種情況都回傳同一種頁面：只有 layout 的 slot，layout 也沒有時就是空頁面。文件與型別都要寫明這點，不得宣稱可以判斷頁面是否存在。
+  - 網域、商店或 release 不存在：丟 `content_not_found`，沿用碼名。說明文字更正為「這個網域沒有可讀的已發布內容」。
+  - release build 不可用（503）：丟 `store_error`。
+- **【目標】空內容與不存在分清楚。**
+  - 在 200 回應**新增**欄位，例如 `document: "found" | "none"`，不改狀態碼。
+  - 不改狀態碼的原因：託管 Theme 上沒有 Document 的路由用預設值是正確結果；若改成回 404，既有 Starter 會把它變成 `content_not_found` 並報錯，等於把正常頁面變成錯誤。
+  - 既有 Starter 只驗證 `slots` 與 `hiddenSlots`，新增欄位對它相容（§3.4）。
+  - SDK 依新欄位：`none` 時回 `null`，或丟 `page_not_found`（見 §9 Q3）。
+  - 需要：
+    - 定義「頁面存在」：在獨立內容後台情境下，指發布版本中有文件涵蓋該路徑；託管 Theme 情境是否沿用，同列 §9 Q3。
+    - Core 回應變更（含測試與反向檢查）。
+    - Starter 升版，並經既有 Starter 升級流程。
+- **【目標】改名 `content_not_found`。**
+  - 改成符合實際語意的碼，例如 `content_source_unavailable`；`content_not_found` 改留給「頁面不存在」。
+  - 這會改變錯誤碼集合，要 Starter 升版，並與 #221 的「錯誤碼逐字相同」一起改。
+  - 必須和上一項同一個 Starter 版本發布，避免同一個碼在兩個版本代表不同意思。
+- 草稿讀取【延後】，依賴 #214。
 
-### 4.3 `products.list(params)`／`products.get(handle)`
+### 6.3 `products.list(params)`／`products.get(handle)`
 
-- `products.list({ q?, page?, limit?, order? })` 對應 `GET <origin>/api/store/products`。
-  - 參數範圍與預設值完全沿用 §2.2.3，包含 `order`。
+- **【首版】`products.list({ q?, page?, limit?, order? })`**
+  - 對應 `GET <baseUrl>/api/store/products`。
+  - 參數範圍與預設值完全沿用 §3.2.3，包含 `order`。
   - SDK 端先做相同驗證，不合法時丟 `invalid_request`，不送出請求。
   - 回傳 `{ products, pagination: { page, limit, total, totalPages }, context }`，欄位沿用 DTO，不新增、不改名。
-- `products.get(handle)` 對應 `GET <origin>/api/store/products/<handle>`。
-  - handle 規則沿用。
-  - 回傳 `{ product, context }`；查無時回 `null`，見 §4.5。
+  - 沒有結果時回空陣列與 `total: 0`，不是錯誤。
+- **【首版】`products.get(handle)`**
+  - 對應 `GET <baseUrl>/api/store/products/<handle>`。handle 規則沿用；不合法時丟 `invalid_request`，不送出請求。
+  - **只有「找不到商品」回 `null`。** 條件：狀態 404，而且回應是 JSON，`error === "NOT_FOUND"`。
+  - 其他情況都拋出：
+
+    | 情況                                               | 碼                      |
+    | -------------------------------------------------- | ----------------------- |
+    | 網域解析失敗的 404（純文字）                       | `content_not_found`     |
+    | 401 `INVALID_STORE_CONTEXT`（範圍或權限不成立）    | `invalid_store_context` |
+    | 400 `INVALID_REQUEST`                              | `invalid_request`       |
+    | 網路失敗或逾時                                     | `store_unreachable`     |
+    | 非 JSON 或形狀不符                                 | `invalid_response`      |
+    | 其他非 2xx，包括 503 "Catalog context unavailable" | `store_error`           |
+
+  - 這與 Starter 現行的 `loadProduct` 不同：它把任何 404 都當成查無商品（G8）。Starter 遷移到 SDK 時採用新規則。
 - 價格、庫存與銷售通路沿用商務服務的結果。SDK 不計算、不快取價格。
 
-### 4.4 錯誤模型
+### 6.4 錯誤模型
 
-- 一個錯誤類別 `MorphError`：
+- **【首版】** 一個錯誤類別 `MorphError`：
   - `code`：封閉集合。
   - `resource`：`"page" | "product"`。
   - `message`：寫死的文字。
   - 錯誤物件不含上游內容、網址、key 或堆疊；細節只進伺服器 log。
-- **頁面的碼：** 沿用 Starter 的 10 個碼，逐字相同（#221 的要求）。
-- **商品的碼：**
+- **【首版】頁面的碼：** 沿用 Starter 的 10 個碼，逐字相同。
+  - `redirect_refused`、`response_too_large` 保留在集合內，但首版不宣稱會產生，要等 #221 待決 4 決定。
+- **【首版】商品新增兩個碼：** `invalid_request`、`invalid_store_context`。其他與頁面共用：`store_unreachable`、`invalid_response`、`store_error`、`content_not_found`，語意相同。
+- **【目標】** §6.2 的改名與 `page_not_found`。
+- **不變的原則：** 任何失敗都丟錯，不回空陣列、`{}` 或預設頁面。例外只有：
+  - 首版頁面在路徑沒有自己的文件時的回應（§6.2 的限制）；
+  - `products.get` 的 `null`；
+  - `products.list` 的空結果。
 
-  | 情況                        | 碼                                |
-  | --------------------------- | --------------------------------- |
-  | 400 `INVALID_REQUEST`       | `invalid_request`                 |
-  | 401 `INVALID_STORE_CONTEXT` | `invalid_store_context`           |
-  | 網路失敗                    | `store_unreachable`（與頁面共用） |
-  | 非 JSON 或形狀不符          | `invalid_response`（共用）        |
-  | 其他非 2xx                  | `store_error`（共用）             |
-  - 共用的碼語意相同。新增的碼只有 `invalid_request`、`invalid_store_context`。
+### 6.5 相對網址
 
-- **不變的原則：** 任何失敗都丟錯，不回空陣列、`{}` 或預設頁面。
-  - 例外只有 §4.5 列出的「查無資料」。
-
-### 4.5 查無資料
-
-| 情況                        | 既有回應        | SDK 行為                                                                   |
-| --------------------------- | --------------- | -------------------------------------------------------------------------- |
-| 頁面路徑沒有文件            | 200 空內容      | 回傳空頁面（`_hidden: []`、無 slot）。這是既有語意：元件預設值是正確結果。 |
-| 網域、商店或 release 不存在 | 404 純文字      | 丟錯。碼為 `content_not_found`（沿用）；是否改名為更貼切的碼見 §6 Q4       |
-| release build 不可用        | 503 純文字      | 丟 `store_error`                                                           |
-| `products.get` 查無商品     | 404 `NOT_FOUND` | 回 `null`，與 Starter `loadProduct` 一致                                   |
-| `products.list` 沒有結果    | 200 空陣列      | 回空陣列，`total: 0`                                                       |
-
-### 4.6 分頁
-
-- 只有商品有分頁：頁碼式（`page`／`limit`），回應帶 `total`、`totalPages`，上限沿用（`page ≤ 10000`、`limit ≤ 100`）。
-- 不提供 cursor。之後 `pages.list` 等列表要沿用同一個慣例，但各資源保留自己的上限（ROADMAP 1.4 第 4 階段）。
-
-### 4.7 相對網址
-
-- **規則：** SDK 把回應中以 `/` 開頭的媒體網址，以讀取時使用的來源補成絕對網址。
+- **【首版】規則：** SDK 把回應中以 `/` 開頭的媒體網址，以讀取時使用的來源補成絕對網址。
   - 範圍是 `_storefront-media/…`，以及商品的 `thumbnailUrl`、資產 `url`。
   - 已是 http／https 的網址不動。
   - 其他協定沿用 `isSafeThemeMediaUrl` 的結果（伺服器已過濾）。
-- **託管 Theme（`platform`）：** 瀏覽器端維持相對網址，同網域，與現況相同。伺服器端渲染輸出的網址也維持相對，避免把 Core 內部轉送用的 origin 寫進頁面。
-- **外部網站（`origin`）：** 一律補成 `<origin>/…`。商品圖因此指向商家網域，避開 G4。
-- 連結值（`resolveThemeLinksInSlotValues`）不屬於媒體。是否補成絕對網址要看連結指向的是商家站內頁還是外部網站自己的頁面，留到第 3 階段驗收時決定，首版不改寫。
+- **託管 Theme（`platform`）：** 維持相對網址，同網域，與現況相同。伺服器端渲染的輸出也維持相對，避免把 Core 內部轉送用的 origin 寫進頁面。
+- **外部網站（`origin`）：** 一律補成 `<baseUrl>/…`。商品圖因此指向內容網域，避開 G4。
+- 連結值（`resolveThemeLinksInSlotValues`）不屬於媒體。是否補成絕對網址要看連結指向商家站內頁還是外部網站自己的頁面，留到 §7 第 4 階段驗收時決定，首版不改寫。
 
-### 4.8 快取
+### 6.6 分頁、快取、key
 
-- SDK 首版**不自建快取**，沿用 HTTP 快取：
-  - 頁面為 `public, max-age=60, must-revalidate`，ETag 以 release 區分；
-  - 商品為 `s-maxage=30, stale-while-revalidate=60`，`Vary` 依 key 與 host。
-- 不在模組層快取任何回應，避免並行請求串資料。這與 #221 的反向檢查「core caches the source」同一原則。
-- 不送憑證（`credentials: "omit"`），回應可以安全進入公開快取。
-- 草稿讀取（延後）必須 `no-store`，且不得進入公開快取。
+- **分頁【首版】：**
+  - 只有商品有分頁：頁碼式（`page`／`limit`），回應帶 `total`、`totalPages`。
+  - 上限沿用：`page ≤ 10000`、`limit ≤ 100`。
+  - 不提供 cursor。之後的列表要沿用同一慣例，各資源保留自己的上限。
+- **快取【首版】：**
+  - SDK 不自建快取，沿用 HTTP 快取（§3.1、§3.2.2）。
+  - 不在模組層保存任何回應，避免並行請求串資料。這與 #221 的反向檢查「core caches the source」同一原則。
+  - 一律 `credentials: "omit"`。
+  - 草稿讀取（延後）必須 `no-store`，且不得進入公開快取。
+- **key：**
 
-### 4.9 key 種類
+  | 種類                   | 現況                                   | SDK                                                |
+  | ---------------------- | -------------------------------------- | -------------------------------------------------- |
+  | 無 key，由網域決定範圍 | 商家網域上的頁面與商品                 | 【首版】唯一的來源方式                             |
+  | publishable key        | 只有平台網域的 Store API；屬於範圍設定 | 首版不包裝；之後若加，只能是選填，不能限制頁面讀取 |
+  | 私密或草稿憑證         | 不存在（#214 草稿）                    | 【延後】不得進瀏覽器程式包、網址或日誌             |
+  | 後台或寫入             | 不在公開讀取 SDK                       | 不提供                                             |
 
-| 種類                   | 現況                                             | 首版 SDK                                 |
-| ---------------------- | ------------------------------------------------ | ---------------------------------------- |
-| 無 key，由網域決定範圍 | 商家網域上的頁面與商品                           | 預設來源（§4.1）                         |
-| publishable key        | 只有平台網域的 Store API；屬於範圍設定，不是秘密 | 【待決】§6 Q1                            |
-| 私密或草稿憑證         | 不存在（#214 草稿）                              | 【延後】。不得進瀏覽器程式包、網址或日誌 |
-| 後台或寫入             | 不在公開讀取 SDK                                 | 不提供                                   |
+### 6.7 伺服器端與瀏覽器
 
-## 5. 延後
+- **【首版】頁面只在伺服器端讀。**
+  - `source: platform`：維持現況。瀏覽器端讀同網域的相對路徑（託管 Theme 的切頁），不受 CORS 影響。
+  - `source: origin`：只在伺服器端讀。在瀏覽器端呼叫 `pages.get` 時直接丟 `invalid_content_origin`，不送出跨網域請求。
+- **【首版】商品：** 商家網域的 Store API 已有 `Access-Control-Allow-Origin: *`（§3.2.2，由同一個 `handleStoreCatalogGet` 回應），瀏覽器端可以照現況讀。
+- **【延後】** 頁面的瀏覽器跨網域讀取。可能做法是在 `/_morph/content` 加 CORS，或由外部網站自己的伺服器轉送。前者會改變 Core 的回應政策，需要另做安全審閱。
 
-以下不在首版契約內，SDK 不得宣稱支援：
+## 7. 分階段接線與版本交付
+
+原則：
+
+- **一份核心。** 核心原始碼只存在一處，不依賴框架，也不 import 平台程式碼。
+- **兩種入口。** 平台薄入口與外部套件只做接線，不帶讀取邏輯。
+- **任何階段都不得出現被修改過的核心副本。** 這延續 #221 的結構測試做法：核心 sha256 比對、Theme 不得自帶 reader。
+
+| 階段 | 內容                                                                                                                                                            | 交付物                           | 驗收                                                                      | 授權                      |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- | ------------------------- |
+| 0    | #221 測試原型                                                                                                                                                   | 原型（現況）                     | 已完成原型層級的並行隔離                                                  | 已完成，草稿              |
+| 1    | 核心定稿：依本契約實作 `pages.get`、`products.list`、`products.get`、錯誤與網址規則；核心在 repo 內單一位置                                                     | repo 內的核心模組，未發布        | 單元測試＋反向檢查：快取來源、靜默預設、null 誤用、錯誤帶網址             | 實作需授權                |
+| 2    | 託管 Start Theme 接線：Starter 的 `src/morph/` 改為引用核心的薄入口，接線放在 `.morph/` wrapper（#221 §4.5）；舊讀法 `content()` 經 Starter 升級流程遷移（G11） | 新 Starter 版本                  | 不改作者設定檔；真實 Start 執行；並行請求不串資料；升級衝突走既有衝突流程 | 實作與 Starter 升版需授權 |
+| 3    | 託管 Astro 接線：integration 掛在 Morph 的 Astro wrapper                                                                                                        | 同上                             | 真實 `astro dev`／`astro build`                                           | 需授權；排在 L1.5 之前    |
+| 4    | 外部套件：同一份核心建置成可安裝套件，提供 `source: origin` 的伺服器端接線                                                                                      | 套件（先在 repo 內建置，不發布） | 外部 Start 專案從獨立網域讀內容網域；圖片網址補全；瀏覽器端拒絕           | npm 發布與部署另行授權    |
+| 5    | 【目標】獨立內容後台：發布模型（§4.1）、內容歸屬（§4.2）、內容網域（§4.3）                                                                                      | 另一份設計與遷移                 | 沒有 Theme 的內容網域可讀；既有發布安全檢查全部保留，並有反向檢查         | 設計審閱後另行授權        |
+| 6    | 【目標】API 變更：§6.2 的空內容／不存在、改名                                                                                                                   | Core 變更＋Starter 版本          | 舊 Starter 不受影響；新 Starter 能區分                                    | 需授權                    |
+
+**版本規則【提案】：**
+
+- **核心帶契約版本號。** 套件版本的 major 對應契約版本。
+- **什麼算 breaking。**
+  - 錯誤碼集合、`MorphPage` 形狀、null 規則的變更都算 breaking，要升 major。
+  - 新增選填設定或回應欄位算 minor。
+- **平台薄入口與外部套件從同一個 commit 的核心建置。** CI 比對兩者核心的 sha256；薄入口隨 Starter 版本鎖定精確版本。
+- **伺服器 API 只做相容的新增**，例如 §6.2 的新欄位，讓仍在使用的舊版 Starter 與舊版套件繼續可用。
+  - 不相容的變更要先讓所有支援中的版本升級，並且另行審閱。
+- 第 6 階段的改名與新欄位必須在同一個 Starter 版本、同一個契約 major 發布。
+
+## 8. 延後
+
+以下不在首版，SDK 不得宣稱支援：
 
 - `pages.list`；
 - 商品的分類、系列、價格區間等進階過濾；
@@ -268,28 +404,24 @@ createMorph({ source: MorphSource /* , publishableKey? see §6 Q1 */ });
 - 草稿讀取（#214）；
 - GraphQL；
 - 條件請求（304）；
-- 轉址拒絕與大小上限的正式行為（#221 待決 4）；
-- 平台網域以外的商品圖存取方式（G4）。
+- 頁面的瀏覽器跨網域讀取；
+- 平台網域的 publishable key 路徑；
+- 轉址拒絕與大小上限的正式行為（#221 待決 4）。
 
-## 6. 待使用者決定
+## 9. 待使用者決定
 
-1. **頁面與商品如何統一來源設定；頁面要不要用 key。**
-   - (a) 【建議】首版以商家網域 `origin` 作為兩者的單一來源，不用 key。這是現有行為，不需新端點。
-   - (b) 外部網站改用平台網域，加上 publishable key。這只對商品可行；頁面要用 key 就得在平台網域新增讀取路徑，違反「不預設另建端點」。
-   - (c) 兩者並存：`createMorph` 接受選填的 `publishableKey`，只用在平台網域的商品讀取。
-   - 代價：(a) 外部網站必須有一個已發布的 Morph storefront 網域（G1）；(c) 會出現兩條範圍規則，需要寫清楚衝突時以誰為準。
-2. **外部網域從瀏覽器讀頁面時，跨網域怎麼處理。**
-   - (a) 【建議首版】外部網站只在伺服器端讀頁面；SDK 在瀏覽器端遇到跨網域來源時直接丟 `invalid_content_origin`，不嘗試讀取。
-   - (b) `/_morph/content` 加 `Access-Control-Allow-Origin: *`。內容本來就公開在該網域，但這會改變 Core 的回應政策，需要另做安全審閱，並決定 `Vary`、OPTIONS 與 ETag 的處理。
-   - (c) 由外部網站自己的伺服器轉送。不需改 Core，但 SDK 要提供轉送用的路徑設定。
-3. **平台薄入口和外部套件怎麼共用同一份核心。**
-   - (a) 一個套件，平台薄入口依賴同一版本；Starter 鎖定版本，由既有的 Starter 升級工具更新。
-   - (b) 平台由同一份原始碼產生檔案放進 Theme，外部套件從同一份原始碼建置，以 sha256 比對保證相同（沿用 #221 的結構測試做法）。
-   - 兩者都要符合「不得出現被修改過的核心副本」。#221 §4.6 的比較建議平台維護核心＋作者薄入口；本文不重複其論證。
-4. **`content_not_found` 是否改名。** 實際語意是「網域沒有可讀的已發布商店」（§2.3）。改名需要 Starter 升版，並與 #221 的「錯誤碼逐字相同」一起改。建議：首版沿用，只更正說明文字。
-5. **`products.get` 查無時回 `null` 還是丟錯。** 建議回 `null`，與 Starter 一致；頁面則因既有語意回空頁面。
+1. **發布模型方向（§4.1）。** 選 (A) 不含 Theme build 的 release，或 (B) 內容發布版本有自己的 live 指標。兩者都還沒有設計。建議先就這兩個方向做一份發布模型設計，再決定。
+2. **內容網域（§4.3）。**
+   - 沿用 `storefront_domains`，還是另一種網域種類。
+   - 內容網域上是否也服務 Theme 頁面。
+3. **「頁面不存在」的定義與 SDK 行為（§6.2 目標）。**
+   - 託管 Theme 上沒有 Document 的路由算不算存在。建議算存在，維持現況的預設值行為。
+   - `pages.get` 對不存在的頁面回 `null` 還是丟 `page_not_found`。建議丟錯，因為頁面讀取一向以失敗即拋出為原則；這與 `products.get` 不同，需要你確認。
+4. **改名後的碼名（§6.2 目標）。** 建議 `content_source_unavailable`。
+5. **核心在 repo 內的位置（§7 第 1 階段）。** 例如獨立的 workspace 套件目錄，或 `src/lib` 下的一個模組。這會影響第 4 階段建置套件的方式。
 
-## 7. 下一步（都需另行授權）
+## 10. 與其他 PR 的關係
 
-- 依 ROADMAP 順序：案例 B 剩下的項目 → 本契約審閱（與 #244 一起看）→ 共用讀取核心正式接線（#221）→ 第 2 階段實作。
-- 本文不改 #244、#221，也不改任何程式。
+- #244（ROADMAP，由本機主線負責）：本 PR 不修改。「外部網站不必建置或發布 Theme」這項目標與依賴，等本契約更新後由 #244 補上，避免兩邊各寫一份。
+- #221：只引用 PR 編號。
+- #214、#187：依賴，不在本 PR 處理。
