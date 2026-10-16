@@ -132,6 +132,23 @@ function resolveRelativeFile(
   return candidates.find((path) => files.has(path)) ?? null;
 }
 
+/**
+ * Parses one Theme source module the way every check in this module reads
+ * it. Throws on a syntax error; callers decide what an unparsable file means.
+ */
+export function parseThemeSourceModule(content: string): any {
+  return parse(content, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
+    errorRecovery: false,
+  });
+}
+
+/** Whether a path is a module source file these checks read. */
+export function isThemeSourceModulePath(path: string): boolean {
+  return isSourceFile(normalizePath(path));
+}
+
 function collectImportEdges(content: string): {
   edges: ThemeImportEdge[];
   markerBoundaries: Array<{
@@ -146,11 +163,7 @@ function collectImportEdges(content: string): {
   }> = [];
   let ast: any;
   try {
-    ast = parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
-      errorRecovery: false,
-    });
+    ast = parseThemeSourceModule(content);
   } catch {
     // The syntax scanner reports parse errors separately. Do not manufacture
     // import-boundary errors from a partially parsed file.
@@ -325,7 +338,7 @@ function isIdentifierBinding(node: any, parent: any): boolean {
   return false;
 }
 
-function packageImportUsesOnlySafeBoundary(
+export function packageImportUsesOnlySafeBoundary(
   content: string,
   source: string,
   target: ThemeImportProtectionTarget,
@@ -333,11 +346,7 @@ function packageImportUsesOnlySafeBoundary(
 ): boolean {
   let ast: any;
   try {
-    ast = parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
-      errorRecovery: false,
-    });
+    ast = parseThemeSourceModule(content);
   } catch {
     return false;
   }

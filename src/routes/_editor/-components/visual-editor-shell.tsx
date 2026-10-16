@@ -270,6 +270,10 @@ import {
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
+  PreviewClientOnlyNotice,
+  previewClientOnlyNoticeLimits,
+} from "./preview-client-only-notice";
+import {
   describeThemeSourceChanges,
   describeContentChanges,
   describeUnpublishedChanges,
@@ -2377,6 +2381,11 @@ export function VisualEditorShell({
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const refetchPreviewServer = previewServer.refetch;
+  // What the client-only preview cannot run in this Theme, as the start that
+  // is serving it reported; empty for the full Start preview.
+  const previewClientOnlyLimits = previewClientOnlyNoticeLimits(
+    previewServer.data,
+  );
   const previewServerUrl =
     previewLifecycle.phase !== "reconnecting" &&
     !previewServer.isFetching &&
@@ -12039,6 +12048,16 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {previewClientOnlyLimits.length > 0 ? (
+              <PreviewClientOnlyNotice
+                // One notice per start: a new start's answer replaces it,
+                // and brings it back if the author dismissed the last one.
+                key={previewServer.dataUpdatedAt}
+                limits={previewClientOnlyLimits}
+                onOpenFile={handleJumpToCode}
+              />
+            ) : null}
 
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
