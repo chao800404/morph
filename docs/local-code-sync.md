@@ -145,5 +145,5 @@ pnpm morph:sync restore --all --dir ../my-theme
 ## 驗證
 
 - `e2e/local-code-sync.spec.ts`：真實 dev server 與 D1，編輯器產生 token，真正的 CLI 連結暫存資料夾，驗證兩個方向、CRLF 不回傳、平台檔不上傳、衝突保留兩份與 `resolve`、logout 後 token 失效。
-- `restore`：`src/lib/storefront/local-dev/theme-sync/sync-restore.test.ts`（真實 client 與 sync API handler、記憶體中的工作區與資料夾）與 `sync-local-fs.test.ts`（磁碟上的備份）。經真實 dev server 的 CLI 驗收還沒加進 `e2e/local-code-sync.spec.ts`。
+- `restore`：`src/lib/storefront/local-dev/theme-sync/sync-restore.test.ts`（真實 client 與 sync API handler、記憶體中的工作區與資料夾）與 `sync-local-fs.test.ts`（磁碟上的備份）。經真實 dev server 的 CLI 驗收在 `e2e/local-code-sync.spec.ts`（「restore brings local files back from Morph without relinking」：誤刪、改壞、清空後大量刪除被擋下再 `restore --all`）。
 - 單元與整合測試在 `src/lib/storefront/local-dev/theme-sync/`、`src/server/storefront/theme-sync-api.test.ts`、`src/lib/storefront/service/theme-sync/`。
