@@ -1,97 +1,161 @@
 # 預覽存取與撤銷規格
 
-狀態：**設計草稿，尚未實作或安全驗收。** 2026-10-12 最初以 main `145a3ec` 唯讀核對程式，後續一般 merge main `48330aa` 並更新 #216 的交付狀態。目標是「預設私人草稿；分享是明確建立、可到期與撤銷的能力」，不是宣稱目前的預覽已符合此模型。
+狀態：**設計草稿，尚未實作或安全驗收。**
+
+- 2026-10-12：最初以 main `145a3ec` 唯讀核對程式，之後一般 merge main `48330aa`，並更新 #216 的交付狀態。
+- 2026-10-16：一般 merge main `9d64095`。依使用者決定的方向，以及 #251 的現況盤點（唯讀，草稿 PR，未合併）更新。
+
+本文不宣稱目前的預覽已符合此模型。
+
+**已決定的方向（使用者，2026-10-16）：作者預設私有；分享必須明確建立，而且可以撤銷。** 本文其餘的具體作法仍是提案，要逐項核准；實作、部署與合併另行授權。
 
 ## 1. 產品界線
 
-| 入口                   | 目標讀取權限                                                               | 可改什麼                                                               |
-| ---------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Live Authoring Preview | 目前有權操作該 storefront／Theme 的作者；不得單憑持有 Sandbox URL 視為作者 | 所有儲存仍回既有 Morph server、欄位宣告與 OCC；iframe 不能自行授權寫入 |
-| 私人 Build Preview     | 指定的成功 immutable build／必要的內容 publication，加上有效作者授權       | 唯讀，不包含編輯通道                                                   |
-| 明確分享的 preview     | 作者刻意核發、有目的／資源／期限且可撤銷的 read-only capability            | 不可儲存、啟動／同步預覽、取得其他 Theme 或 admin 能力                 |
-| 已發布網站             | 依既有 production release 的公開規則                                       | 不以草稿或分享能力代替正式發布                                         |
-| 本機開發               | loopback 開發模式，不能當 production 的授權替代                            | 控制通道沿用本機 token；不要將開發執行器公開到 LAN／Internet           |
+| 入口                   | 目標讀取權限                                                                   | 可改什麼                                                               |
+| ---------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| Live Authoring Preview | 目前有權操作該 storefront／Theme 的作者本人；不得單憑持有 Sandbox URL 視為作者 | 所有儲存仍回既有 Morph server、欄位宣告與 OCC；iframe 不能自行授權寫入 |
+| 私人 Build Preview     | 指定的成功 immutable build／必要的內容 publication，加上有效的作者授權         | 唯讀，不包含編輯通道                                                   |
+| 明確分享的 preview     | 作者刻意核發、有目的／資源／期限，而且可撤銷的唯讀能力                         | 不可儲存、啟動／同步預覽，也不能取得其他 Theme 或 admin 能力           |
+| 已發布網站             | 依既有 production release 的公開規則                                           | 不以草稿或分享能力代替正式發布                                         |
+| 本機開發               | loopback 開發模式，不能當作 production 的授權替代                              | 控制通道沿用本機 token；不要把開發執行器公開到 LAN／Internet           |
 
-分享第一版優先使用 immutable build／內容快照，而不是隨作者修改而變動的 Live Preview；這是待核准的選擇。若要分享 live draft，必須另行明確決定可看到哪些未來修改及撤銷語意，不能默認。
+- **私有是預設，不是選項。** 作者沒有做「建立分享」這個動作時，任何網址都不視為分享。私人預覽的網址被別人取得，也不因此變成分享。
+- **分享第一版優先用 immutable build／內容快照**，而不是會隨作者修改而變動的 Live Preview。這仍是待核准的選擇（§10）。若要分享 live draft，必須另外明確決定對方能看到哪些未來的修改，以及撤銷的語意，不能預設。
+- **現行權限模型（#251 §3）：** 角色是全域的（`admin`／`user`／`guest`），沒有商店成員或 organization 資料表。所以目前的「失去權限」只有三種：全域角色改變、被封鎖、被刪除。之後若加入商店層級的成員模型，本文的撤銷規則要一併涵蓋「被移出商店」。
 
 ## 2. 已核對的現況與證據限制
 
-| 項目                    | 程式證據                                                                                                 | 本次能下的結論                                                                                                                               |
-| ----------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| 容器 Live Preview 入口  | `src/server.ts` 的 `proxyPreviewRequest`，轉交 Sandbox SDK `proxyToSandbox`                              | 此函式本身沒有 Morph 作者 session／Theme read 授權判定；不能把 URL 的不可猜測性當成撤銷能力                                                  |
-| 平台憑證隔離            | `preview-proxy-credentials.ts` 的 `previewRequestFor`／`previewRequestHeaders`／`withoutPlatformCookies` | 去除 Morph 的平台憑證 cookie 與 `x-morph-*`；不是 preview read 的授權檢查。Theme 自己的 Authorization 與 cookie 另有用途，不能全刪來替代授權 |
-| 本機 sidecar 控制通道   | `local-preview-sidecar.ts`／`.protocol.ts`                                                               | 控制 API 有 process token、loopback 和 production refusal；不能誤寫成「sidecar 所有接口都沒有認證」                                          |
-| 本機 Theme 預覽內容     | 前次 #206 的瀏覽器觀察：iframe 對 preview 的請求未帶 Morph cookie，已同步內容在鎖定後仍可載入            | 是前次本機證據；本次沒有重跑，不能推定容器也完全相同                                                                                         |
-| 編輯器帳號鎖            | `editor-read-lock.ts`、`send-editor-write.ts`、shell 的現行 gate                                         | 保留草稿在記憶體，隱藏／inert 與禁止儲存不是資料隔離。不能保證另一帳號用 devtools 讀不到原資料                                               |
-| 私人 Build Preview 能力 | `build-preview/build-preview-capability.ts` 的 `verifyBuildPreviewCapability`                            | 有 stored token hash、期限、撤銷、user／build／release 檢查，可作延伸起點，不代表容器 Live Preview 已套用                                    |
-| 其他 preview token      | `theme-build-preview-token.ts`、preview-media 簽章及各自的 consumer                                      | 各自有範圍；不能把一條已驗證路徑當成所有入口都受同樣保護                                                                                     |
+**2026-10-12 的核對：**
 
-容器權限撤銷、URL 的實際生命週期、直接 SDK endpoint／預覽 host 是否存在繞過、長連線的撤銷，以及跨 origin 作者認證，均未在本次實測。先前對 token 位元數的描述不是本規格的安全證明。
+| 項目                    | 程式證據                                                                                                 | 本次能下的結論                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 容器 Live Preview 入口  | `src/server.ts` 的 `proxyPreviewRequest`，轉交 Sandbox SDK `proxyToSandbox`                              | 這個函式本身沒有 Morph 作者 session／Theme 讀取授權的判定；不能把網址難以猜中當成撤銷能力                                                      |
+| 平台憑證隔離            | `preview-proxy-credentials.ts` 的 `previewRequestFor`／`previewRequestHeaders`／`withoutPlatformCookies` | 移除 Morph 的平台憑證 cookie 與 `x-morph-*`，但這不是預覽讀取的授權檢查。Theme 自己的 Authorization 與 cookie 另有用途，不能全部刪掉來代替授權 |
+| 本機 sidecar 控制通道   | `local-preview-sidecar.ts`／`.protocol.ts`                                                               | 控制 API 有 process token、loopback 和 production refusal；不能誤寫成「sidecar 所有接口都沒有認證」                                            |
+| 本機 Theme 預覽內容     | 前次 #206 的瀏覽器觀察：iframe 對預覽的請求沒有帶 Morph cookie，已同步的內容在鎖定後仍可載入             | 這是前次的本機證據，本次沒有重跑，不能推定容器也完全相同                                                                                       |
+| 編輯器帳號鎖            | `editor-read-lock.ts`、`send-editor-write.ts`、shell 現行的 gate                                         | 草稿保留在記憶體；隱藏／inert 與禁止儲存不是資料隔離，不能保證另一個帳號用 devtools 讀不到原資料                                               |
+| 私人 Build Preview 能力 | `build-preview/build-preview-capability.ts` 的 `verifyBuildPreviewCapability`                            | 有存放的 token 雜湊、期限、撤銷，以及 user／build／release 檢查，可作為延伸起點；不代表容器 Live Preview 已套用                                |
+| 其他預覽 token          | `theme-build-preview-token.ts`、preview-media 簽章，以及各自的使用端                                     | 各自有範圍；不能因為一條路徑已驗證，就當成所有入口都受同樣保護                                                                                 |
 
-## 3. 私人預覽的必要條件
+**2026-10-16 依 #251 補充：** #251 對照 main `468a9f4` 與 `@cloudflare/sandbox` 0.12.7 讀程式碼。下表的 A／B／C 沿用 #251 的定義：
 
-1. Core 是授權來源，使用既有登入／角色／ownership helper；不能相信 iframe 傳來的帳號、Theme、權限或 cookie 名稱。
-2. 驗證 storefront、Theme、preview session／build，以及存取目的；其他帳號或資源的能力不可混用。
-3. 私人 preview 的開啟或續期，必須來自目前有效作者授權。跨 origin iframe 所需的 credential exchange 留待實作設計，不能把 admin cookie 送進 Theme，也不能僅靠 editor 的鎖定畫面保護資源。
-4. 撤銷 Theme 權限、偵測換帳號、Theme 刪除、preview 停止後，舊憑證不能讀取新回應；不因「之前驗證過」或 keepalive 自動延長。
-5. 登出政策要區分私人作者預覽與另行核發的分享。私人作者憑證在登出／帳號切換後失效；明確分享能否獨立存在由分享政策決定，不能讓私人 URL 默默變成分享 URL。
-6. 網路／500／驗證無回應不是已撤銷的證據，但也不能當成授權成功；既有 UI 保留草稿，受保護資源驗證不明時 fail closed。
+- **A**：有實際執行的測試證明舊網址或 token 失效；
+- **B**：程式有撤銷動作，但沒有人證明舊網址之後確實失效；
+- **C**：沒有處理，或刻意保留。
 
-「權限撤銷後不能再讀」指伺服器發出的新資料，不保證抹除已交付的 bytes、瀏覽器 DOM、記憶體、截圖或下載檔案。
+| 項目                                 | 現況                                                                                                                                                                                                                                 | 狀態                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Live Preview 的授權                  | **只有 token**：代理只檢查主機名稱的形狀，SDK 只比對 port token，不檢查 Morph 登入、使用者或角色                                                                                                                                     | C                                               |
+| 預覽與作者的對應                     | `previewId` 由 storefront＋Theme＋使用者推導（`theme-preview-session-id.ts`）。**每位作者各自一個 sandbox**；同一位作者的所有分頁與所有登入 session **共用同一個 sandbox 與網址**                                                    | 已核對，程式碼                                  |
+| token 的沿用與刪除                   | 再次 expose 同一個 port 時沿用既有 token；只有 `unexposePort`／`destroy()` 會刪除 token                                                                                                                                              | 程式碼；未執行                                  |
+| 停止預覽                             | `stopThemePreviewServer` 會 unexpose 並 destroy，但**編輯器介面從不呼叫它**，只有 E2E 與啟動失敗路徑會呼叫                                                                                                                           | B（產品中實際上不會觸發）                       |
+| 閒置休眠                             | 10 分鐘後休眠，**不刪除 token**。醒來後重新 expose，依 SDK 程式碼會沿用舊 token，舊網址可能再次提供內容；這和 Morph 的註解（`serverFn.ts:605–618`「re-exposing mints a new address」）互相矛盾                                       | C（推論，未驗證）                               |
+| 降級、封鎖、刪除、登出、撤銷 session | 沒有任何程式會去動預覽的狀態                                                                                                                                                                                                         | C                                               |
+| Build Preview                        | 每個請求都重新檢查持有者**目前**的角色與封鎖狀態，有真實 SQLite 測試；不檢查 session，所以登出後最多仍有效 1 小時                                                                                                                    | 函式層 A；經過 HTTP 的 `bp-` 主機為 B；登出為 C |
+| 網址外洩                             | 以下為主要路徑，完整清單見 #251 §4：<br>• Build Preview 的出站 log 會寫入含 token 的主機名稱；<br>• 預覽回應沒有 `Referrer-Policy`（推論：可能經 `Referer`／`Origin` 送出）；<br>• 發布截圖會把舊式 token 網址送到 Browser Rendering | C                                               |
 
-## 4. 分享能力的必要條件
+容器權限撤銷、網址實際的生命週期、直接 SDK endpoint／預覽 host 是否能繞過、長連線的撤銷，以及跨 origin 的作者認證，都還沒有實測。先前對 token 位元數的描述不是本規格的安全證明。
 
-- 明確的核發動作、可辨識的分享狀態、到期時間、作者與稽核紀錄；尚未做這個動作的 URL 不視為公開分享。
-- resource scope 至少涵蓋 storefront、Theme、固定 build／publication（若是 live，另含 session）；purpose 固定 preview-read。
-- 過期、撤銷、資源消失或建立者不再有核發權限時拒絕；預設不得自動續期。可否轉移核發者、哪些權限變更使分享失效，需明確定案並測試。
-- 不暴露原始碼、其他草稿、其他 preview、內部控制 API、資產庫查詢或一般 admin token；正常供 Theme 執行的必要資源另訂 bounded allowlist。
-- 持有分享 URL 的人可能轉傳；不宣稱 bearer URL 等同「僅某位受邀者可看」。若要指定收件人，另加身分要求。
-- 不允許 share holder 透過 postMessage 或 browser request 保存、建置、發布、延長／重啟 session。
+## 3. 停用、休眠、撤銷：三件不同的事
 
-## 5. 所有資料入口都要受同一邊界保護
+這三個詞在本文中的意思固定如下，不得混用：
 
-必須盤點 document、內容 JSON、JS／CSS／圖片、Vite 模組、source map、HTTP HMR relay、WebSocket／SSE、preview media 與重啟後的舊 URL。
+| 名稱     | 誰觸發                                                                                        | 意義                                         | 舊的私人預覽網址／憑證                                                                                                                                              | 草稿資料                   |
+| -------- | --------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| **停用** | 作者明確停止預覽，或系統因為沒有任何人在使用而回收                                            | 預覽的執行環境結束                           | 必須失效。之後重新開啟，產生新的網址與憑證，不能沿用舊的                                                                                                            | 保留在 Morph，不受影響     |
+| **休眠** | 閒置期限到了，系統自動進行                                                                    | 只是節省資源，**不是撤銷，也不改變誰有權限** | 休眠期間不提供內容。醒來時，只有在每次請求都會重新確認目前授權的前提下，才可以沿用同一個網址；做不到每次確認時，醒來就必須換新網址（待決，§10）。不得默默恢復舊網址 | 保留                       |
+| **撤銷** | 作者失去權限（角色改變、封鎖、刪除），或某個 session 結束（登出、撤銷 session、閒置自動登出） | 與該權限或該 session 綁定的私人憑證都失效    | 下一個請求就必須被拒絕，不等休眠、不等到期；已建立的長連線要中止                                                                                                    | 保留；只是失去讀取它的憑證 |
 
-- 即使只取得 JS／JSON，也可能得到草稿；不能只保護 HTML。
-- Worker 檢查只有在所有可達入口都經過它時才有效。直接 Sandbox／SDK origin 或別名能繞過時，先關閉繞過或讓同一授權檢查覆蓋它，不新增第二套 auth。
-- SDK 的 port token 是基礎設施能力，不自動等於 Morph 的作者／分享授權。只輪換它可能影響其他作者的共用 session，須先證明資源粒度。
-- 撤銷後拒絕新請求並終止已建立的授權資料流；選擇可保證的期限／檢查機制。未完成長連線與 cache 驗證前不得宣稱即時撤銷。
-- 私人回應不能落入可被別人命中的共享 cache。測試含撤銷後 cache hit、conditional GET／304、跨資源能力重放；必要標頭與快取政策由 serving shared primitive 收斂。
-- URL、token、credential exchange 與 referer／log 的處理需避免外流；報告只保留去識別化資料。短期限不取代撤銷。
+- **分享的撤銷**是另一回事：作者撤銷某個分享、分享到期、核發者失去核發權限，或分享的資源消失時，該分享憑證失效（§5）。私人預覽的撤銷不自動等於分享的撤銷，反過來也一樣，兩者的關係要由分享政策明確定義。
+- **只回收資源不算撤銷。** 撤銷必須讓舊憑證被拒；只是讓容器停下來，在它被重新喚醒時可能又恢復可用（§2 休眠一列）。
 
-## 6. 延伸既有架構，不新增平行通道
+## 4. 同一位作者的多個分頁與多個 session
 
-實作前追查各入口的 route → server／proxy → service → DAL／capability → preview runtime。以現有 Build Preview capability、授權與 serving 邊界作候選延伸點，而不是新造通用 token service。
+現況：同一位作者的所有分頁與所有登入 session 共用同一個 sandbox 與同一個網址（§2）。因此有下列要求：
 
-需要另外確認：跨 origin 私人預覽如何拿到受約束的 browser credential；現有 verifier 是否覆蓋目前 Theme 的 ownership／角色撤銷；SDK URL 是否可繞過；撤銷事件如何與 request、已送出的寫入與 session 終止競態配合。
+- **關閉一個分頁不等於停用。** 同一位作者在其他分頁或其他裝置仍開著編輯器時，不得因為某一個分頁關閉就停用預覽。系統回收（停用）只在確定沒有任何仍有效的使用者時才進行。
+- **私人憑證要能以 session 為單位撤銷。** 作者在 A 裝置登出時，A 的私人預覽憑證要失效，B 裝置上仍登入的編輯器不受影響。目前共用的 sandbox token 做不到這點：換掉它會同時打斷 B。所以私人預覽需要在 sandbox token 之上，有一層綁定到 session 的授權，由 Core 在每次請求時確認；不能只靠更換 sandbox token。
+- **失去權限時，所有 session 的私人憑證一起失效。** 角色改變、封鎖、刪除影響的是這位作者本人，不分分頁或 session。
+- **同一個瀏覽器切換帳號：** 換成另一個帳號後，前一個帳號的私人預覽憑證不得繼續提供內容；沿用 #206 的編輯器鎖定行為，並且明確區分畫面上留存的資料與伺服器的新回應。
+- **其他作者不受影響：** 每位作者各自一個 sandbox，所以停用或撤銷某位作者，不會打斷另一位作者的預覽。若之後改成多位作者共用預覽，本節要重新審閱。
 
-既有 Document／source 儲存、OCC、content ticket、fenced workspace 寫入、發布與 rollback 不變。A6b-2 的內容同步已在 #216 合併，不在本規格實作；完整 Start 的主要流程與本機 Astro 容器同步／island HMR 有驗收證據，但不等於 Astro Design、正式 Cloudflare 全面支援或 preview read 授權已完成。
+## 5. 私人預覽的必要條件
 
-## 7. 專用資源驗收矩陣
+1. Core 是授權來源，使用既有的登入／角色／ownership helper；不能相信 iframe 傳來的帳號、Theme、權限或 cookie 名稱。
+2. 驗證 storefront、Theme、預覽 session／build 與存取目的；其他帳號或資源的能力不能混用。
+3. 私人預覽的開啟或續期，必須來自目前有效的作者授權。跨 origin iframe 需要的 credential exchange 留到實作設計，不能把 admin cookie 送進 Theme，也不能只靠編輯器的鎖定畫面保護資源。
+4. 撤銷權限、偵測到換帳號、刪除 Theme、停用預覽之後，舊憑證不能讀到新的回應；不因為「之前驗證過」或 keepalive 而自動延長。
+5. 登出政策要區分私人作者預覽與另外核發的分享。私人作者憑證在登出／切換帳號後失效；明確分享能不能獨立存在，由分享政策決定。不能讓私人網址默默變成分享網址。
+6. 網路錯誤、500 或驗證沒有回應，都不是「已撤銷」的證據，也不能當成授權成功。既有 UI 保留草稿；受保護資源的驗證結果不明時，fail closed。
 
-本表是**未執行的驗收計畫**。先另行取得本機／Cloudflare 專用資源與部署授權，不使用正式商店、其他 session 的容器或共用 credential。
+「權限撤銷後不能再讀」指伺服器發出的新資料，不保證抹除已經交付的 bytes、瀏覽器 DOM、記憶體、截圖或下載的檔案。
 
-| 案例                             | 必須觀察                                                                            |
-| -------------------------------- | ----------------------------------------------------------------------------------- |
-| 作者 A 正常開啟私人 preview      | HTML、JSON、模組等必要請求可用；Theme 不收到平台 session／secret                    |
-| 帳號 B、未登入、其他 Theme 能力  | 不交付 A 的私人 bytes；不得依賴 UI 隱藏作判定                                       |
-| A 的 Theme 權限撤銷              | 原 URL／credential 的 HTML、內容與模組請求被拒；不是僅讓保存失敗                    |
-| 帳號切換／登出後重開舊 URL       | 私人憑證不能繼續取得原帳號的草稿；UI 留存資料與伺服器新回應分開記錄                 |
-| 關閉、重啟、重建預覽             | 舊 session 能力無效；新 session、其他作者的 preview 不被錯殺                        |
-| 明確分享                         | 指定快照唯讀可看，其他資源拒絕；到期、撤銷及核發者失去權限後舊 URL 被拒             |
-| 撤銷時仍有 HMR／長連線           | 既有資料流終止，重連被拒；不能繼續接收後續草稿                                      |
-| 已快取、304、直接 SDK／替代 host | 不能透過 cache／別名繞過驗證；已下載內容不宣稱能收回                                |
-| debounce／佇列／已送出的寫入     | 保留 #206 的 gate 行為；新保存不送出，既有請求結果不解鎖／自動重送                  |
-| 本機 sidecar                     | 控制 token、loopback、production refusal 不退步；另量測 Theme dev-server 的內容入口 |
-| transport 差異                   | 本機證據不當成 Cloudflare 容器證據；兩種傳輸分開驗收                                |
+## 6. 分享能力的必要條件
 
-每次記錄固定 head、transport、角色／資源狀態、回應與去識別化 trace；有 output 但缺平台證據時不當成正式通過。
+- 要有明確的核發動作、可辨識的分享狀態、到期時間、作者與稽核紀錄；沒有經過這個動作的網址不視為公開分享。
+- resource scope 至少涵蓋 storefront、Theme、固定的 build／publication（若分享 live 內容，另外包含 session）；purpose 固定為 preview-read。
+- 過期、撤銷、資源消失，或建立者不再有核發權限時拒絕；預設不得自動續期。能不能轉移核發者、哪些權限變更會讓分享失效，都要明確定案並測試。
+- 不暴露原始碼、其他草稿、其他預覽、內部控制 API、資產庫查詢或一般 admin token；Theme 執行所需的必要資源，另訂有界的 allowlist。
+- 持有分享網址的人可能轉傳；不宣稱 bearer URL 等於「只有受邀者能看」。若要指定收件人，另外加上身分要求。
+- 不允許分享持有者透過 postMessage 或瀏覽器請求儲存、建置、發布，或延長／重啟 session。
 
-## 8. 仍待決與本次不做
+## 7. 所有資料入口都要受同一個邊界保護
 
-- 首版分享只接受 immutable build／publication，或要包含 live draft。
-- 私人預覽 credential 的期限、撤銷檢查與長連線截止機制；不把 SDK token 熵當產品授權。
-- 舊預覽 URL／已存在能力的遷移政策，不能在未驗證時假裝它們已撤銷。
-- cloud 資源、實測、程式變更、migration、部署與合併均需另外授權。
+必須盤點 document、內容 JSON、JS／CSS／圖片、Vite 模組、source map、HTTP HMR relay、WebSocket／SSE、preview media，以及重新啟動或醒來後的舊網址。
 
-本 PR 只有規格。沒有新增權限路徑、建立分享 UI、輪換 token、關閉 preview 或處理既有使用者資料。
+- 即使只拿到 JS／JSON，也可能得到草稿；不能只保護 HTML。
+- Worker 檢查只有在所有可達入口都經過它時才有效。直接 Sandbox／SDK origin 或別名能繞過時，先關閉繞過，或讓同一個授權檢查涵蓋它，不另建第二套 auth。
+- SDK 的 port token 是基礎設施能力，不等於 Morph 的作者／分享授權。#251 確認不同作者不共用 sandbox，但**同一位作者的分頁與 session 共用**；只更換 sandbox token 會同時打斷該作者的其他分頁與裝置（§4）。
+- 撤銷後要拒絕新的請求，並中止已建立的資料流；選擇能保證的期限／檢查機制。長連線與快取還沒驗證完之前，不得宣稱可以即時撤銷。
+- 私人回應不能進入別人能命中的共享快取。測試要包含撤銷後的 cache hit、conditional GET／304，以及跨資源重放能力；必要的標頭與快取政策由提供回應的共用 primitive 統一處理。
+- 網址、token、credential exchange、referer 與 log 都要避免外流。#251 找到兩條需要另外處理的外洩路徑：Build Preview 出站 log 寫入完整主機名稱，以及預覽回應沒有 `Referrer-Policy`。報告只保留去識別化的資料。短期限不能取代撤銷。
+
+## 8. 延伸既有架構，不另建平行通道
+
+實作前，追查每個入口的 route → server／proxy → service → DAL／capability → preview runtime。以現有的 Build Preview capability、授權與 serving 邊界作為候選延伸點，不另造通用的 token service。
+
+需要另外確認：
+
+- 跨 origin 的私人預覽如何取得受約束的瀏覽器憑證；
+- 現有的 verifier 是否涵蓋目前 Theme 的 ownership／角色撤銷；
+- SDK 網址是否能被繞過；
+- 撤銷事件如何與請求、已送出的寫入以及 session 結束之間的競態配合；
+- 「以 session 為單位的私人憑證」（§4）放在哪一層：沿用 Build Preview 那種每次請求都驗證的作法，或沿用既有的預覽 ticket。
+
+既有的 Document／source 儲存、OCC、content ticket、fenced workspace 寫入、發布與 rollback 都不變。A6b-2 的內容同步已在 #216 合併，不在本規格實作；完整 Start 的主要流程與本機 Astro 容器同步／island HMR 有驗收證據，但不等於 Astro Design、正式 Cloudflare 全面支援或預覽讀取授權已經完成。
+
+## 9. 專用資源驗收矩陣
+
+本表是**未執行的驗收計畫**。執行前要先另外取得本機／Cloudflare 專用資源與部署授權，不使用正式商店、其他 session 的容器或共用 credential。各缺口的詳細測試設計見 #251 §5。
+
+| 案例                                 | 必須觀察                                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 作者 A 正常開啟私人預覽              | HTML、JSON、模組等必要請求可用；Theme 收不到平台 session／secret                                                |
+| 帳號 B、未登入、其他 Theme 的能力    | 不交付 A 的私人 bytes；不得依賴 UI 隱藏來判定                                                                   |
+| A 失去權限（降級、封鎖、刪除）       | A 所有分頁與 session 的原網址／憑證，其 HTML、內容與模組請求都被拒；不是只讓儲存失敗                            |
+| A 在一台裝置登出，另一台仍登入       | 登出那一台的私人憑證失效；另一台的預覽持續可用                                                                  |
+| A 關閉其中一個分頁，另一個分頁仍開著 | 預覽不被停用，另一個分頁持續可用                                                                                |
+| 切換帳號／登出後重開舊網址           | 私人憑證不能繼續取得原帳號的草稿；UI 留存的資料與伺服器的新回應分開記錄                                         |
+| 停用（明確停止，或沒有使用者而回收） | 舊網址被拒；重新開啟後新網址的 token 雜湊與舊的不同；其他作者的預覽不被打斷                                     |
+| 休眠後醒來                           | 休眠期間舊網址不提供內容；醒來後依 §10 待決的政策：換新網址，或沿用但每次請求都重新確認授權；不得默默恢復舊網址 |
+| 明確分享                             | 指定的快照唯讀可看，其他資源被拒；到期、撤銷、核發者失去權限後，舊網址被拒                                      |
+| 撤銷時仍有 HMR／長連線               | 既有的資料流中止，重新連線被拒；不能繼續收到後續的草稿                                                          |
+| 已快取、304、直接 SDK／替代 host     | 不能透過快取或別名繞過驗證；已下載的內容不宣稱能收回                                                            |
+| debounce／佇列／已送出的寫入         | 保留 #206 的 gate 行為；新的儲存不送出，既有請求的結果不解鎖、不自動重送                                        |
+| 本機 sidecar                         | 控制 token、loopback、production refusal 不退步；另外量測 Theme dev server 的內容入口                           |
+| transport 差異                       | 本機的證據不當成 Cloudflare 容器的證據；兩種傳輸分開驗收                                                        |
+
+每次都記錄固定的 head、transport、角色／資源狀態、回應與去識別化的 trace；有輸出但缺少平台證據時，不當成正式通過。
+
+## 10. 仍待決與本次不做
+
+**待使用者決定：**
+
+1. 首版分享只接受 immutable build／publication，還是也包含 live draft。
+2. 休眠後醒來：一律換新網址，或在每次請求都重新確認授權的前提下沿用（#251 §7 第 4 題）。
+3. 私人預覽憑證的期限、撤銷檢查與長連線截止機制；不把 SDK token 的熵當成產品授權。
+4. 系統何時判定「沒有任何人在使用」而回收預覽（§4），以及這個判定需要哪些訊號。
+5. 本機開發的預覽沒有 token，是否可以接受（#251 G11）。
+6. 舊預覽網址／既有能力的遷移政策；未驗證之前不能假裝它們已被撤銷。
+
+**本次不做：** cloud 資源、實測、程式變更、migration、部署與合併都需要另外授權。本 PR 只有規格，沒有新增權限路徑、建立分享 UI、更換 token、關閉預覽或處理既有的使用者資料。
