@@ -175,6 +175,7 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial));
   const conflictCopies = new Map<string, string>();
   const trash: string[] = [];
+  const backups: Array<{ path: string; text: string }> = [];
   const folder: SyncLocalFolder = {
     async scan(options = {}) {
       const ignore = resolveIgnoreRules(files.get(".morphignore") ?? null, options.whenAbsent);
@@ -202,6 +203,10 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
       trash.push(path);
       files.delete(path);
     },
+    async backup(path) {
+      const text = files.get(path);
+      if (text !== undefined) backups.push({ path, text });
+    },
     async writeConflictCopy(path, text) {
       conflictCopies.set(path, text);
     },
@@ -209,5 +214,5 @@ export function createMemoryFolder(initial: Record<string, string> = {}) {
       conflictCopies.delete(path);
     },
   };
-  return { files, conflictCopies, trash, folder };
+  return { files, conflictCopies, trash, backups, folder };
 }

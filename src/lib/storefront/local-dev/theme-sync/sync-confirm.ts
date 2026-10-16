@@ -4,15 +4,16 @@ import type { CyclePlanSummary } from "./sync-session";
  * What `morph-sync` may approve without a person, and what a person is shown
  * when they are asked.
  *
- * - `--yes` approves only the changes made while sync was not running. It
- *   never approves a mass deletion.
+ * - `--yes` approves only the changes made while sync was not running, and a
+ *   restore from Morph (which keeps every local copy it replaces in the
+ *   trash). It never approves a mass deletion.
  * - `--allow-mass-delete` approves one mass deletion: the first one of this
  *   run. A second one in the same run stops like any other, so the flag
  *   cannot become a standing permission.
  * - A terminal that cannot be asked gets "no".
  */
 
-export type ConfirmReason = "startup" | "mass-deletion";
+export type ConfirmReason = "startup" | "restore" | "mass-deletion";
 export type ConfirmDecision = "yes" | "no" | "ask";
 
 export function createConfirmPolicy(options: {
@@ -25,7 +26,7 @@ export function createConfirmPolicy(options: {
   return {
     decide(why: ConfirmReason): ConfirmDecision {
       if (options.dryRun) return "no";
-      if (why === "startup") {
+      if (why === "startup" || why === "restore") {
         if (options.yes) return "yes";
         return options.interactive ? "ask" : "no";
       }

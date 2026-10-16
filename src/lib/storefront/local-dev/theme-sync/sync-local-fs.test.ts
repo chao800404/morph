@@ -65,6 +65,33 @@ describe("the local folder on disk", () => {
     );
   });
 
+  it("copies a file into .morph/trash before a restore overwrites it, leaving it in place", async () => {
+    await put("src/broken.tsx", "broken\r\n");
+    const folder = createLocalSyncFolder(root);
+    await folder.backup("src/broken.tsx");
+    await folder.write("src/broken.tsx", "good\n");
+    const stamps = await readdir(join(root, ".morph", "trash"));
+    expect(stamps).toHaveLength(1);
+    expect(
+      await readFile(join(root, ".morph", "trash", stamps[0]!, "src", "broken.tsx"), "utf8"),
+    ).toBe("broken\r\n");
+    // Overwritten in place, so the file's own line endings survive.
+    expect(await readFile(join(root, "src", "broken.tsx"), "utf8")).toBe("good\r\n");
+  });
+
+  it("keeps a copy of a file it cannot decode, and does nothing for a file that is not there", async () => {
+    const bytes = new Uint8Array([0xff, 0xfe, 0x00, 0x41]);
+    await put("src/odd.tsx", bytes);
+    const folder = createLocalSyncFolder(root);
+    expect(await folder.read("src/odd.tsx")).toBeNull();
+    await folder.backup("src/odd.tsx");
+    const stamps = await readdir(join(root, ".morph", "trash"));
+    expect(new Uint8Array(await readFile(join(root, ".morph", "trash", stamps[0]!, "src", "odd.tsx")))).toEqual(bytes);
+
+    await folder.backup("src/missing.tsx");
+    expect(await readdir(join(root, ".morph", "trash"))).toHaveLength(1);
+  });
+
   it("writes and removes the conflict copy beside the file", async () => {
     await put("a.tsx", "mine");
     const folder = createLocalSyncFolder(root);

@@ -15,7 +15,8 @@ import type { IgnoreSource, LocalScanEntry, LocalSkip, SyncLocalFolder } from ".
  *
  * Writes go to a temporary file beside the target and are renamed over it,
  * so a dev server watching the folder never reads half a file. Nothing is
- * deleted outright: a file sync removes is moved under `.morph/trash/`.
+ * deleted outright: a file sync removes is moved under `.morph/trash/`, and
+ * one a restore overwrites is copied there first.
  *
  * `.morphignore` lists more paths to leave alone, one per line: an exact
  * path, a folder ending in `/`, or `*.ext`. Lines starting with `#` are
@@ -184,11 +185,26 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
     await writeAtomically(absolute(path), textForLocal(text, ending));
   }
 
-  async function remove(path: string) {
+  function trashPath(path: string) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const target = join(root, SYNC_DIRECTORY, "trash", stamp, ...path.split("/"));
+    return join(root, SYNC_DIRECTORY, "trash", stamp, ...path.split("/"));
+  }
+
+  async function remove(path: string) {
+    const target = trashPath(path);
     await fs.mkdir(dirname(target), { recursive: true });
     await fs.rename(absolute(path), target);
+  }
+
+  async function backup(path: string) {
+    try {
+      await fs.access(absolute(path));
+    } catch {
+      return;
+    }
+    const target = trashPath(path);
+    await fs.mkdir(dirname(target), { recursive: true });
+    await fs.copyFile(absolute(path), target);
   }
 
   async function writeConflictCopy(path: string, remoteText: string) {
@@ -202,5 +218,5 @@ export function createLocalSyncFolder(root: string): SyncLocalFolder & {
     await fs.rm(absolute(`${path}${THEME_SYNC_CONFLICT_SUFFIX}`), { force: true });
   }
 
-  return { scan, read, write, remove, writeConflictCopy, removeConflictCopy, ignoreRules };
+  return { scan, read, write, remove, backup, writeConflictCopy, removeConflictCopy, ignoreRules };
 }
