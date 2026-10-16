@@ -24,6 +24,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertNoRemovedSwitches,
   decide,
   describeMissing,
   nextStep,
@@ -45,8 +46,7 @@ const other = (conclusion, status = "COMPLETED") => ({
   status,
   conclusion,
 });
-const verdict = (checks, requiredOnly = false) =>
-  decide(checks, requiredOnly).verdict;
+const verdict = (checks) => decide(checks).verdict;
 // One successful check per shard, named the way the workflow names them.
 const shardChecks = (count = EDITOR_SHARD_COUNT) =>
   Array.from({ length: count }, (_, index) => ({
@@ -93,24 +93,21 @@ describe("the expected set of checks", () => {
       verdict: v,
       reason,
       missing,
-    } = decide(without(allGreen(), "Typecheck, test, build"), false);
+    } = decide(without(allGreen(), "Typecheck, test, build"));
     assert.equal(v, "refuse");
     assert.equal(reason, "EXPECTED_CHECK_MISSING");
     assert.deepEqual(missing, ["Typecheck, test, build"]);
   });
 
   it("does not merge without the full Start job", () => {
-    const { verdict: v, missing } = decide(
-      without(allGreen(), FULL_START),
-      false,
-    );
+    const { verdict: v, missing } = decide(without(allGreen(), FULL_START));
     assert.equal(v, "refuse");
     assert.deepEqual(missing, [FULL_START]);
   });
 
   it("does not merge when no shard check was reported at all", () => {
     const checks = [...baseGreen(), success(ACCEPTANCE)];
-    const { verdict: v, missing } = decide(checks, false);
+    const { verdict: v, missing } = decide(checks);
     assert.equal(v, "refuse");
     assert.deepEqual(
       missing,
@@ -124,7 +121,7 @@ describe("the expected set of checks", () => {
     const renamed = replaced(allGreen(), "Typecheck, test, build", {
       name: "Typecheck and test",
     });
-    const result = decide(renamed, false);
+    const result = decide(renamed);
     assert.equal(result.verdict, "refuse");
     assert.equal(result.reason, "EXPECTED_CHECK_MISSING");
     assert.deepEqual(result.missing, ["Typecheck, test, build"]);
@@ -132,7 +129,7 @@ describe("the expected set of checks", () => {
 
   it("refuses a rollup with the old three-shard names", () => {
     const old = [...baseGreen(), ...shardChecks(3), success(ACCEPTANCE)];
-    const result = decide(old, false);
+    const result = decide(old);
     assert.equal(result.verdict, "refuse");
     assert.deepEqual(
       result.unhappy.map((check) => check.conclusion),
@@ -190,13 +187,9 @@ describe("the expected set of checks", () => {
 describe("waiting for every check", () => {
   it("waits when a dependent acceptance job has not appeared yet", () => {
     const shards = shardChecks();
-    for (const requiredOnly of [false, true]) {
-      assert.equal(verdict([...baseGreen(), ...shards], requiredOnly), "wait");
-    }
-    // Under MORPH_SHIP_REQUIRED_ONLY a reported shard still waits for the rest.
-    assert.equal(verdict([guard("SUCCESS"), shards[0]], true), "wait");
-    // Without it, the other shards' absence once all present checks ended is
-    // a refusal, not an endless wait.
+    assert.equal(verdict([...baseGreen(), ...shards]), "wait");
+    // The other shards' absence once all present checks ended is a refusal,
+    // not an endless wait.
     assert.equal(verdict([...baseGreen(), shards[0]]), "refuse");
     for (const conclusion of ["SKIPPED", "NEUTRAL"]) {
       assert.equal(
@@ -310,7 +303,6 @@ describe("an expected check passes only on SUCCESS", () => {
   it("refuses a SKIPPED Typecheck, test, build", () => {
     const result = decide(
       replaced(allGreen(), "Typecheck, test, build", { conclusion: "SKIPPED" }),
-      false,
     );
     assert.equal(result.verdict, "refuse");
     assert.deepEqual(
@@ -342,27 +334,13 @@ describe("an expected check passes only on SUCCESS", () => {
           `${name} ${conclusion}`,
         );
   });
-
-  it("refuses a SKIPPED expected check under MORPH_SHIP_REQUIRED_ONLY too", () => {
-    // A reported non-success still refuses with the switch on (rule 05).
-    assert.equal(
-      verdict(
-        replaced(allGreen(), "Typecheck, test, build", {
-          conclusion: "SKIPPED",
-        }),
-        true,
-      ),
-      "refuse",
-    );
-  });
 });
 
 describe("the polling loop's next step", () => {
   const DEADLINE = 1_000;
   const before = DEADLINE - 1;
   const after = DEADLINE + 1;
-  const step = (checks, now, requiredOnly = false) =>
-    nextStep(decide(checks, requiredOnly), now, DEADLINE);
+  const step = (checks, now) => nextStep(decide(checks), now, DEADLINE);
 
   it("merges a complete green rollup", () => {
     assert.deepEqual(step(allGreen(), before), { action: "merge" });
@@ -458,7 +436,7 @@ describe("refusing anything that did not report success", () => {
   });
 
   it("names what was not green, with its conclusion", () => {
-    const { unhappy } = decide([guard("SUCCESS"), other("TIMED_OUT")], false);
+    const { unhappy } = decide([guard("SUCCESS"), other("TIMED_OUT")]);
     assert.deepEqual(
       unhappy.map((check) => `${check.name}:${check.conclusion}`),
       ["Typecheck, test, build:TIMED_OUT"],
@@ -466,50 +444,84 @@ describe("refusing anything that did not report success", () => {
   });
 });
 
-describe("MORPH_SHIP_REQUIRED_ONLY", () => {
-  it("merges once the required check passes, ignoring the rest", () => {
-    assert.equal(
-      verdict([guard("SUCCESS"), other(null, "IN_PROGRESS")], true),
-      "merge",
+describe("checks outside the expected list", () => {
+  it("refuses one that reports FAILURE, with every expected check green", () => {
+    const result = decide([
+      ...allGreen(),
+      { name: "Some other job", status: "COMPLETED", conclusion: "FAILURE" },
+    ]);
+    assert.equal(result.verdict, "refuse");
+    assert.deepEqual(
+      result.unhappy.map((check) => `${check.name}:${check.conclusion}`),
+      ["Some other job:FAILURE"],
     );
   });
 
-  it("does not merge before the required check exists", () => {
-    // `[].every(...)` is true, and a rollup is empty for the first seconds after
-    // a pull request opens — so this was the ordinary path, not an edge case.
-    assert.equal(verdict([], true), "wait");
-  });
-
-  it("does not merge while the required check is still running", () => {
-    assert.equal(verdict([guard(null, "IN_PROGRESS")], true), "wait");
-  });
-
-  it("still refuses a failure elsewhere", () => {
-    assert.equal(verdict([guard("SUCCESS"), other("FAILURE")], true), "refuse");
-  });
-
-  // The expected set is bypassed on purpose: the flag exists for when the rest
-  // are known-irrelevant. What it keeps is listed beside decide() in ship.mjs.
-  it("bypasses the expected set: missing checks neither wait nor refuse", () => {
-    assert.equal(verdict([guard("SUCCESS")], true), "merge");
-    assert.equal(verdict(without(allGreen(), FULL_START), true), "merge");
-    const result = decide([guard("SUCCESS"), other("SUCCESS")], true);
-    assert.equal(result.verdict, "merge");
-    assert.deepEqual(result.missing, []);
-  });
-
-  it("still refuses old three-shard names", () => {
+  it("waits for one still running", () => {
     assert.equal(
-      verdict([guard("SUCCESS"), ...shardChecks(3)], true),
-      "refuse",
+      verdict([
+        ...allGreen(),
+        { name: "Some other job", status: "IN_PROGRESS", conclusion: null },
+      ]),
+      "wait",
+    );
+  });
+});
+
+describe("the removed MORPH_SHIP_REQUIRED_ONLY switch", () => {
+  it("stops ship when it is set to any value", () => {
+    for (const value of ["1", "0", "", "true"])
+      assert.throws(
+        () => assertNoRemovedSwitches({ MORPH_SHIP_REQUIRED_ONLY: value }),
+        (error) =>
+          /^SWITCH_REMOVED: MORPH_SHIP_REQUIRED_ONLY was removed/.test(
+            error.message,
+          ) &&
+          /Unset it/.test(error.message) &&
+          /always waits for every expected check/.test(error.message),
+        JSON.stringify(value),
+      );
+  });
+
+  it("lets ship run when it is not set", () => {
+    assert.doesNotThrow(() => assertNoRemovedSwitches({}));
+    assert.doesNotThrow(() =>
+      assertNoRemovedSwitches({ PATH: "/usr/bin", MORPH_OTHER: "1" }),
     );
   });
 
-  it("still waits for every shard and the acceptance job once a shard reported", () => {
-    assert.equal(verdict([guard("SUCCESS"), ...shardChecks()], true), "wait");
-    assert.equal(
-      verdict([guard("SUCCESS"), ...shardChecks(), success(ACCEPTANCE)], true),
-      "merge",
+  // Structural, not behavioural: ship() is not run here, since it pushes and
+  // calls gh. Every command ship runs goes through run() or runVisible(), the
+  // spawnSync wrappers, so the check must be called in ship()'s body before
+  // the first of them — and before any await, so nothing is scheduled first.
+  it("is the first thing ship() does, before any command runs", () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "ship.mjs"),
+      "utf8",
+    );
+    const start = source.indexOf("\nasync function ship() {\n");
+    assert.ok(start >= 0, "ship.mjs must define async function ship()");
+    const body = source.slice(start);
+    const check = body.indexOf("assertNoRemovedSwitches(process.env);");
+    assert.ok(check >= 0, "ship() must call assertNoRemovedSwitches");
+    const firstEffect = Math.min(
+      ...[
+        /\brun\(/,
+        /\brunVisible\(/,
+        /\bspawnSync\(/,
+        /\bawait\b/,
+        /\blog\(/,
+      ].map((pattern) => pattern.exec(body)?.index ?? Infinity),
+    );
+    assert.ok(
+      check < firstEffect,
+      "assertNoRemovedSwitches must come before ship()'s first command",
+    );
+    // The process.env read in ship() goes through the check only.
+    assert.deepEqual(
+      [...body.matchAll(/MORPH_SHIP_REQUIRED_ONLY/g)].length,
+      0,
+      "ship() must not read the removed switch itself",
     );
   });
 });

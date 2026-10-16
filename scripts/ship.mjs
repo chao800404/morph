@@ -12,10 +12,9 @@
  * Playwright job should not decide whether a rule holds. But "may merge" and
  * "should merge" are different questions, so this waits for every check and
  * refuses if any of them failed, or if a check ci-required-checks.mjs expects
- * never reported. `MORPH_SHIP_REQUIRED_ONLY=1` merges as soon as
- * the required ones pass, for when the rest are known-irrelevant. A check counts
- * as passed only if it says so; every other conclusion, including a cancellation,
- * means it did not.
+ * never reported. There is no shortcut: every expected check must be present
+ * and report SUCCESS, every time. A check counts as passed only if it says so;
+ * every other conclusion, including a cancellation, means it did not.
  */
 import { spawnSync } from "node:child_process";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
@@ -23,7 +22,6 @@ import {
   CHECK_DEPENDENCIES,
   EXPECTED_CI_CHECKS,
   REQUIRED_CHECK,
-  EDITOR_E2E_CHECKS,
 } from "./ci-required-checks.mjs";
 
 const log = (message) => console.log(`[ship] ${message}`);
@@ -81,9 +79,9 @@ export function latestChecks(checks) {
  * Lifted out of the polling loop so it can be driven without opening a pull
  * request. The bug that put it here was invisible in the loop and obvious in a
  * table: `required.every(...)` is true for an empty list, and a rollup *is* empty
- * for the first seconds after a pull request opens, so `MORPH_SHIP_REQUIRED_ONLY=1`
- * said "merge" on the ordinary path. The other branch had guarded against exactly
- * that with `checks.length > 0`; the asymmetry between them was the tell.
+ * for the first seconds after a pull request opens, so a mode that waited for
+ * the required check alone (since removed) said "merge" on the ordinary path.
+ * An empty rollup still waits here.
  *
  * Refusal is a whitelist. `FAILURE` alone was too narrow: `CANCELLED`,
  * `TIMED_OUT`, `STARTUP_FAILURE` and `ACTION_REQUIRED` all mean a check did not
@@ -92,11 +90,10 @@ export function latestChecks(checks) {
  * that should not merge. Anything GitHub adds later is refused rather than
  * silently accepted.
  */
-export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
+export function decide(checks, expected = EXPECTED_CI_CHECKS) {
   const settled = checks.filter((check) => check.status === "COMPLETED");
   const unhappy = settled.filter((check) => !passed(check));
   const pending = checks.filter((check) => check.status !== "COMPLETED");
-  const required = checks.filter((check) => check.name === REQUIRED_CHECK);
   const present = (name) => checks.some((check) => check.name === name);
   const green = (name) =>
     checks.some(
@@ -110,7 +107,6 @@ export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
   // reported: a workflow left at the old count would otherwise look complete.
   // check-e2e-shards keeps the workflow's job names in step with the plan.
   const shardName = /^Editor E2E shard \d+\/(\d+)$/;
-  const anyShard = checks.some((check) => shardName.test(check.name));
   for (const check of checks) {
     const match = shardName.exec(check.name);
     if (
@@ -135,30 +131,8 @@ export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
   // Every expected check must be in the rollup, not just the ones that are.
   // Dependent jobs may not appear until their dependencies finish, so a green
   // partial rollup is not proof that CI has completed.
-  //
-  // MORPH_SHIP_REQUIRED_ONLY bypasses this expected set on purpose: it merges as
-  // soon as the required check passes, for when the rest are known-irrelevant.
-  // What it keeps: a failure anywhere, and any expected check reporting other
-  // than SUCCESS, still refuses (above), and
-  // once any shard has reported, it still waits for every shard and the
-  // acceptance job and for every pending check, as it did since #253.
-  const awaited = requiredOnly ? (anyShard ? EDITOR_E2E_CHECKS : []) : expected;
-  const missing = awaited.filter((name) => !present(name));
+  const missing = expected.filter((name) => !present(name));
   const queued = (name) => ({ name, status: "QUEUED", conclusion: null });
-
-  if (requiredOnly) {
-    const waiting = [...pending, ...missing.map(queued)];
-    const merge =
-      !(anyShard && waiting.length > 0) &&
-      required.length > 0 &&
-      required.every(passed);
-    return {
-      verdict: merge ? "merge" : "wait",
-      unhappy,
-      pending: waiting,
-      missing: [],
-    };
-  }
 
   // Not created yet, rather than gone: everything it needs is present and green.
   const notYetCreated = missing.filter((name) => {
@@ -254,7 +228,25 @@ export function nextStep(result, now, deadline) {
   return { action: "wait" };
 }
 
+/**
+ * Refuses environment switches that no longer exist, before anything runs.
+ *
+ * `MORPH_SHIP_REQUIRED_ONLY` merged once the required check passed, while
+ * the others could still be pending. It was removed; ship always waits for
+ * every expected check. Set to any value — "1", "0" or empty — it stops here
+ * rather than being silently ignored by someone who still relies on it.
+ */
+export function assertNoRemovedSwitches(env) {
+  if (Object.hasOwn(env, "MORPH_SHIP_REQUIRED_ONLY")) {
+    throw new Error(
+      "SWITCH_REMOVED: MORPH_SHIP_REQUIRED_ONLY was removed. Unset it (`unset MORPH_SHIP_REQUIRED_ONLY`) and run again; pnpm ship always waits for every expected check and requires SUCCESS from each. Nothing was pushed or merged.",
+    );
+  }
+}
+
 async function ship() {
+  // First, before any command runs: nothing is pushed, opened or merged.
+  assertNoRemovedSwitches(process.env);
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
     quiet: true,
   });
@@ -321,10 +313,7 @@ async function ship() {
     run("gh", ["pr", "create", "--base", "main", "--fill"]);
   }
 
-  const requiredOnly = process.env.MORPH_SHIP_REQUIRED_ONLY === "1";
-  log(
-    requiredOnly ? "waiting for the required check" : "waiting for every check",
-  );
+  log("waiting for every check");
 
   // The 30-minute matrix is followed by a 10-minute aggregate acceptance job.
   // Allow both phases rather than abandoning an otherwise valid running CI.
@@ -343,7 +332,7 @@ async function ship() {
     // not tell us it passed, and one of them is not hypothetical here — the e2e
     // job was cancelled by its own timeout once, which is exactly a run that
     // should not merge.
-    const result = decide(checks, requiredOnly);
+    const result = decide(checks);
     const step = nextStep(result, Date.now(), deadline);
 
     if (step.action === "fail") throw new Error(step.message);
