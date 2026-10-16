@@ -5,6 +5,7 @@
   "description": "Framework-agnostic read core for published Morph content and public products. v0: not published.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./start": "./start/index.ts"
   }
 }

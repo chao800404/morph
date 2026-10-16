@@ -744,3 +744,111 @@ describe("runWithConcurrency", () => {
     expect(finished).toEqual([1]);
   });
 });
+
+describe("the Morph SDK in a Theme workspace (spike M1b/M1c)", () => {
+  const SDK_ROUTE = {
+    path: "src/routes/sdk.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "@morph/sdk/start";
+const read = createServerFn().handler(() => morph.pages.get("/"));
+export const Route = createFileRoute("/sdk")({ loader: () => read() });
+`,
+  };
+
+  const plan = (
+    mode: "build" | "preview-server",
+    hostWorkspaceRoot?: string,
+  ) => {
+    const planned = planThemeSandboxWorkspace({
+      files: [
+        ...STARTER_THEME_FILES,
+        SDK_ROUTE,
+        // A Theme file at the platform's path is replaced, never used.
+        {
+          path: ".morph/sdk/start/index.ts",
+          content: "export const morph = 1;",
+        },
+      ],
+      entry: "src/routes/index.tsx",
+      buildId: "morph-sdk-alias",
+      approvedDependencies: new Set(DEFAULT_APPROVED_DEPENDENCIES),
+      mode,
+      previewRuntime: "client",
+      hostWorkspaceRoot,
+      toolchainRoot: process.cwd(),
+    });
+    if (!planned.ok) throw new Error(planned.errorMessage);
+    return planned;
+  };
+
+  it.each(["build", "preview-server"] as const)(
+    "writes the platform's SDK copy and aliases both names to it: %s",
+    (mode) => {
+      const planned = plan(mode);
+      const byPath = new Map(
+        planned.workspaceFiles.map((file) => [
+          file.path,
+          "content" in file ? file.content : "",
+        ]),
+      );
+      const entry = byPath.get("/workspace/.morph/sdk/start/index.ts") ?? "";
+      expect(entry).toContain("x-morph-content-origin");
+      expect(entry).not.toContain("export const morph = 1;");
+      expect(byPath.has("/workspace/.morph/sdk/src/client.ts")).toBe(true);
+      const config = byPath.get("/workspace/vite.config.ts") ?? "";
+      expect(config).toContain(
+        'path.join("/workspace", ".morph/sdk/start/index.ts")',
+      );
+      expect(config).toContain("alias: [...morphSdkAliases, ...themeAliases]");
+    },
+  );
+
+  it("resolves @morph/sdk and @morph/sdk/start through the generated Vite config, and nothing else under the name", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const nodePath = await import("node:path");
+    const { createServer } = await import("vite");
+    const root = fs.realpathSync(
+      fs.mkdtempSync(nodePath.join(os.tmpdir(), "morph-sdk-alias-")),
+    );
+    const planned = plan("preview-server", root);
+    for (const file of planned.workspaceFiles) {
+      if (!("content" in file)) continue;
+      const target = nodePath.join(root, file.path.slice("/workspace/".length));
+      fs.mkdirSync(nodePath.dirname(target), { recursive: true });
+      fs.writeFileSync(target, file.content);
+    }
+    // The config's own imports (the Vite plugins) resolve from the toolchain.
+    fs.symlinkSync(
+      nodePath.join(process.cwd(), "node_modules"),
+      nodePath.join(root, "node_modules"),
+    );
+    const server = await createServer({
+      configFile: nodePath.join(root, "vite.config.ts"),
+      logLevel: "silent",
+      server: { middlewareMode: true, hmr: false, watch: null },
+    });
+    try {
+      const resolve = (source: string) =>
+        server.environments.client.pluginContainer.resolveId(
+          source,
+          nodePath.join(root, SDK_ROUTE.path),
+        );
+      expect((await resolve("@morph/sdk/start"))?.id).toBe(
+        nodePath.join(root, ".morph/sdk/start/index.ts"),
+      );
+      expect((await resolve("@morph/sdk"))?.id).toBe(
+        nodePath.join(root, ".morph/sdk/src/index.ts"),
+      );
+      // The aliases match exactly; another name under @morph is an
+      // unapproved package, not a path into the copy.
+      await expect(resolve("@morph/sdk/src/client")).rejects.toThrow(
+        "UNAPPROVED_DEPENDENCY",
+      );
+    } finally {
+      await server.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

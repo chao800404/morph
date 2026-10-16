@@ -9,8 +9,25 @@
  * a reason that exists nowhere but the test environment. Workers have one
  * realm and no DOM, and nothing here touches a document.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
+
+// The Theme side of a forwarded request: Start's request-scoped
+// `getRequest()`, stood in for by the same AsyncLocalStorage mechanism, so the
+// SDK's Start thin entry can run as the Theme Worker would.
+const themeRequest = vi.hoisted(() => ({
+  scope: null as null | { getStore(): Request | undefined },
+}));
+vi.mock("@tanstack/react-start/server", () => ({
+  getRequest: () => {
+    const request = themeRequest.scope?.getStore();
+    if (!request) throw new Error("No Start request in scope.");
+    return request;
+  },
+}));
+
+import { morph as startMorph } from "../../../../packages/morph-sdk/start/index";
 import { StorefrontProductionService } from "./storefront-production.service";
 import {
   DispatchNamespaceThemeRuntime,
@@ -124,14 +141,17 @@ describe("StorefrontProductionService", () => {
   it("exposes only token-authorized order transfer confirmation on the store host", async () => {
     const confirmationHandler = vi.fn(
       async () =>
-        new Response(JSON.stringify({ orderTransfer: { status: "accepted" } }), {
-          headers: {
-            "access-control-allow-origin": "*",
-            "access-control-allow-methods": "GET, POST, OPTIONS",
-            "cache-control": "private, no-store",
-            "content-type": "application/json",
+        new Response(
+          JSON.stringify({ orderTransfer: { status: "accepted" } }),
+          {
+            headers: {
+              "access-control-allow-origin": "*",
+              "access-control-allow-methods": "GET, POST, OPTIONS",
+              "cache-control": "private, no-store",
+              "content-type": "application/json",
+            },
           },
-        }),
+        ),
     );
     const accountApiHandler = vi.fn(
       async () =>
@@ -190,7 +210,8 @@ describe("StorefrontProductionService", () => {
             "access-control-allow-origin": "*",
             "cache-control": "public, max-age=60",
             "content-type": "application/json",
-            "set-cookie": "better-auth.session_token=opaque; HttpOnly; Secure; Path=/; SameSite=Lax",
+            "set-cookie":
+              "better-auth.session_token=opaque; HttpOnly; Secure; Path=/; SameSite=Lax",
           },
         }),
     );
@@ -643,6 +664,52 @@ describe("ThemeRuntime transports", () => {
 
     expect(result.success).toBe(true);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("a forged content origin never reaches the SDK's Start thin entry, on any transport", async () => {
+    const scope = new AsyncLocalStorage<Request>();
+    themeRequest.scope = scope;
+    const contentReads: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input instanceof Request ? input.url : input);
+        contentReads.push(url);
+        return Response.json({ slots: {}, hiddenSlots: [] });
+      }),
+    );
+    // What the Theme Worker does with a page request: read through the thin
+    // entry while serving it.
+    const theme = async (request: Request) =>
+      scope.run(request, async () => {
+        await startMorph.pages.get("/");
+        return new Response("ok");
+      });
+    const spoofed = {
+      ...invocation,
+      request: new Request(`https://${HOST}/about?x=1`, {
+        headers: { "x-morph-content-origin": "https://attacker.example" },
+      }),
+    };
+    const transports = [
+      new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      new DispatchNamespaceThemeRuntime({ get: () => ({ fetch: theme }) }),
+      new LocalDirectThemeRuntime("http://127.0.0.1:8788", (async (
+        input: RequestInfo | URL,
+      ) => theme(input as Request)) as typeof fetch),
+    ];
+    try {
+      for (const transport of transports) {
+        const result = await transport.handle(spoofed);
+        expect(result.success, transport.kind).toBe(true);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      themeRequest.scope = null;
+    }
+    expect(contentReads).toEqual(
+      transports.map(() => `https://${HOST}/_morph/content?path=%2F`),
+    );
   });
 });
 

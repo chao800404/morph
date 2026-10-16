@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -38,18 +40,23 @@ afterEach(() => {
  * Builds a project whose entry is `entry(workspace)`. A file holding
  * `SECRET` sits beside the workspace, outside it, at `secretPath`.
  */
+/** The workspace the last `build` ran in, for a test that reads its output. */
+let lastWorkspace = "";
+
 async function build(
   entry: (paths: { secretName: string; secretPath: string }) => string,
   extra: Record<string, string> = {},
+  viteConfig = VITE_CONFIG,
 ) {
   const workspace = mkdtempSync(join(tmpdir(), "native-guard-"));
+  lastWorkspace = workspace;
   const secretName = `${basename(workspace)}-secret.txt`;
   const secretPath = join(dirname(workspace), secretName);
   writeFileSync(secretPath, "SECRET");
   cleanup.push(workspace, secretPath);
 
   const plan = planNativeStartBuild([
-    { path: "vite.config.ts", content: VITE_CONFIG },
+    { path: "vite.config.ts", content: viteConfig },
     { path: "wrangler.jsonc", content: WRANGLER },
     { path: "src/entry.ts", content: entry({ secretName, secretPath }) },
     ...Object.entries(extra).map(([path, content]) => ({ path, content })),
@@ -85,6 +92,34 @@ describe("the native build's import guard", () => {
       { "src/lib/label.ts": `export const label = "ok";\n` },
     );
     expect(result).toEqual({ ok: true, output: "" });
+  }, 90_000);
+
+  it("resolves @morph/sdk and @morph/sdk/start to Morph's copy, past a project alias for the same name", async () => {
+    const result = await build(
+      () =>
+        `import { createMorph } from "@morph/sdk";\nimport { morph, MORPH_CONTENT_ORIGIN_HEADER } from "@morph/sdk/start";\nexport default [createMorph, morph, MORPH_CONTENT_ORIGIN_HEADER];\n`,
+      {
+        "src/forged.ts": `export const morph = "FORGED_SDK";\nexport const MORPH_CONTENT_ORIGIN_HEADER = "FORGED_SDK";\n`,
+      },
+      // The project claims the name for a file of its own; Morph's alias
+      // comes first, so that file is never what the Theme gets. Start's
+      // runtime stays external: this is a library bundle, not a Start build.
+      VITE_CONFIG.replace(
+        'alias: { "@":',
+        'alias: { "@morph/sdk/start": new URL("./src/forged.ts", import.meta.url).pathname, "@":',
+      ).replace(
+        'outDir: "out" }',
+        'outDir: "out", rollupOptions: { external: [/^@tanstack\\//] } }',
+      ),
+    );
+    expect(result).toEqual({ ok: true, output: "" });
+    const out = join(lastWorkspace, "out");
+    const bundle = readdirSync(out)
+      .map((name) => readFileSync(join(out, name), "utf8"))
+      .join("\n");
+    expect(bundle).toContain("x-morph-content-origin");
+    expect(bundle).toContain("no_content_source");
+    expect(bundle).not.toContain("FORGED_SDK");
   }, 90_000);
 
   it("refuses a package that is installed but not approved", async () => {

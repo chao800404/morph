@@ -37,6 +37,32 @@ import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner
  * Worker; here the preview answers the same requests the same way.
  */
 
+/**
+ * A route reading Morph content the way a hosted Start Theme would (spike
+ * M1b/M1c): loader → createServerFn → the SDK's Start thin entry, which takes
+ * its source from the request the preview Worker forwarded.
+ */
+const SDK_THIN_ENTRY_ROUTE = {
+  path: "src/routes/sdk-thin-entry.tsx",
+  content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "@morph/sdk/start";
+
+const readHome = createServerFn().handler(async () => {
+  const home = await morph.pages.get("/");
+  return { title: String(home["sdk-probe"]?.title ?? ""), hidden: [...home._hidden] };
+});
+
+export const Route = createFileRoute("/sdk-thin-entry")({
+  loader: () => readHome(),
+  component: function SdkThinEntry() {
+    return <p data-sdk="home">{JSON.stringify(Route.useLoaderData())}</p>;
+  },
+});
+`,
+};
+const SDK_SNAPSHOT_TITLE = "Draft title from the preview snapshot";
+
 const WORKSPACES_ROOT = path.join(process.cwd(), ".morph-previews-start-test");
 const PREVIEW_ID = "start-preview-test";
 let server: LocalVitePreviewServer;
@@ -71,6 +97,7 @@ beforeAll(async () => {
       ...NATIVE_COMPAT_FILES,
       ...NATIVE_COMPAT_COOKIE_HELPER_FILES,
       ...NATIVE_COMPAT_SERVER_HELPER_FILES,
+      SDK_THIN_ENTRY_ROUTE,
       ...NATIVE_COMPAT_PUBLIC_FILES.map((file) => {
         const bytes = new TextEncoder().encode(file.content);
         return {
@@ -86,6 +113,15 @@ beforeAll(async () => {
     previewHostname: "127.0.0.1",
     platformHostEnv: {},
     previewRuntime: "start",
+    previewContent: {
+      templates: {
+        index: {
+          slots: { "sdk-probe": { title: SDK_SNAPSHOT_TITLE } },
+          hiddenSlots: ["sdk-hidden"],
+        },
+      },
+      pages: {},
+    },
     loadBinary: async (ref) => {
       const file = NATIVE_COMPAT_PUBLIC_FILES.find(
         (file) =>
@@ -255,6 +291,35 @@ describe(
       expect(page).toContain(
         'data-compat="cookie">{&quot;value&quot;:&quot;set&quot;}',
       );
+    });
+
+    it("reads the draft snapshot through the SDK's Start thin entry from a loader's server function", async () => {
+      const read = async (init?: RequestInit) => {
+        const response = await request("/sdk-thin-entry", init);
+        const html = (await response.text()).replace(/<!-- -->/g, "");
+        return { status: response.status, html };
+      };
+      const expected = `data-sdk="home">${JSON.stringify({
+        title: SDK_SNAPSHOT_TITLE,
+        hidden: ["sdk-hidden"],
+      }).replace(/"/g, "&quot;")}`;
+      const plain = await read();
+      expect(plain.status, plain.html.slice(0, 2000)).toBe(200);
+      expect(plain.html).toContain(expected);
+      // A source named by the caller has no effect: the preview Worker sets
+      // the header on every request it forwards.
+      const forged = await read({
+        headers: { "x-morph-content-origin": "http://127.0.0.1:1" },
+      });
+      expect(forged.status).toBe(200);
+      expect(forged.html).toContain(expected);
+      // The thin entry's request access stays out of the browser's module.
+      const client = await request("/src/routes/sdk-thin-entry.tsx");
+      expect(client.status).toBe(200);
+      const javascript = await client.text();
+      expect(javascript).toContain("createFileRoute");
+      expect(javascript).not.toContain("@morph/sdk/start");
+      expect(javascript).not.toContain(".morph/sdk/start");
     });
 
     it("renders a loader error through errorComponent with Start's 500", async () => {

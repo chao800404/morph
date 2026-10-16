@@ -2,6 +2,7 @@ import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   themePrerenderContentPluginSource,
 } from "../compiler/theme-prerender-content";
+import { themeMorphSdkAliasesSource } from "../compiler/theme-morph-sdk";
 
 /**
  * The Vite config a native Start build runs with: the project's own, imported
@@ -156,6 +157,10 @@ export default async (env) => {
     plugins: [
 ${plugins.map((plugin) => `      ${plugin}`).join(",\n")},
     ],
+    // The Morph SDK names resolve to Morph's copy in .morph/sdk/
+    // (theme-morph-sdk.ts). mergeConfig puts these before the project's own
+    // aliases, so a project alias cannot claim them.
+    resolve: { alias: ${themeMorphSdkAliasesSource("workspaceRoot")} },
     // Start prerenders by fetching a Vite preview server it starts on
     // "localhost". In the build container that name binds one loopback
     // family while the fetch connects to the other (ECONNREFUSED), so the
