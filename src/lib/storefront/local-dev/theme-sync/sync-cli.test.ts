@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -141,6 +141,21 @@ describe("morph-sync when the local folder stops a cycle", () => {
       ),
     ]);
     expect(stderr).not.toMatch(STACK_FRAME);
+  }, 30_000);
+
+  it("restore prints one line naming the local folder, writes nothing and exits non-zero", async () => {
+    await linkFolder(await serveMorph(), { unreadableIgnore: true });
+    await writeFile(join(dir, "a.tsx"), "broken");
+    const { code, stdout, stderr } = await runCli(["restore", "a.tsx", "--yes"]);
+    expect(code).toBe(1);
+    expect(stdout).not.toMatch(/Restored/);
+    expect(stderr.trim().split("\n")).toEqual([
+      expect.stringMatching(
+        /^\[morph-sync\] Local folder problem, not Morph: \.morphignore could not be read, so nothing was synced: EISDIR/,
+      ),
+    ]);
+    expect(stderr).not.toMatch(STACK_FRAME);
+    expect(await readFile(join(dir, "a.tsx"), "utf8")).toBe("broken");
   }, 30_000);
 
   it("start says the problem is local, not Morph, and keeps running", async () => {
