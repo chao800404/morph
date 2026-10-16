@@ -60,6 +60,7 @@
     "check:generated-writes": "node --test scripts/write-if-changed.test.mjs",
     "check:e2e-runner": "node --test scripts/run-editor-e2e.test.mjs scripts/e2e-machine-lock.test.mjs",
     "check:theme-runtime-wiring": "node --test scripts/theme-runtime-wiring-scan.test.mjs && node scripts/check-theme-runtime-wiring.mjs",
+    "check:sdk-package": "node --test scripts/sdk-package-check.test.mjs && node scripts/check-sdk-package.mjs",
     "ship": "node scripts/ship.mjs"
   },
   "dependencies": {
