@@ -2397,6 +2397,46 @@ function Home() {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
   }
 
+  /**
+   * Chooses an option and waits for the one content write it sends to be
+   * answered and handled, rather than for a fixed time.
+   *
+   * Only for a choice that is sent: a choice the shell holds back (behind an
+   * unanswered write, or a page it could not read) sends nothing, and `choose`
+   * above is the one that waits that case out.
+   *
+   * Waits for, in order:
+   * - exactly one more call to the server function;
+   * - every answer it has given so far to settle;
+   * - the toolbar's save state to leave "saving". The shell counts a write as
+   *   sending from before it leaves until after its answer (saved, refused or
+   *   failed) has been handled, so this is the shell's own word that it is
+   *   done with the answer, not a guess at how long that takes.
+   * - one more pair of frames, for what that render scheduled.
+   */
+  async function chooseAndAwaitWrite(trigger: HTMLElement, label: string) {
+    const before = updateSectionProps.mock.calls.length;
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    const option = screen.getByRole("option", { name: label });
+    fireEvent.keyDown(option, { key: "Enter" });
+    fireEvent.click(option);
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+    await act(async () => {
+      await Promise.allSettled(
+        updateSectionProps.mock.results.map((result) => result.value),
+      );
+    });
+    await waitFor(() =>
+      expect(["saved", "unsaved", "out-of-date", "failed"]).toContain(
+        document
+          .querySelector("[data-editor-save-status]")
+          ?.getAttribute("data-save-state"),
+      ),
+    );
+    await flushFrames();
+  }
+
   const note = () =>
     document.querySelector('[data-inspector-note="object-position"]')
       ?.textContent ?? null;
@@ -2487,7 +2527,7 @@ function Home() {
     expect(trigger.hasAttribute("data-disabled")).toBe(false);
     expect(note()).toBeNull();
 
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top");
 
     expect(sent()).toHaveLength(1);
     const items = sent()[0]!.props as { items: Array<Record<string, unknown>> };
@@ -2508,8 +2548,8 @@ function Home() {
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
 
-    await choose(trigger, "Top");
-    await choose(trigger, "Bottom");
+    await chooseAndAwaitWrite(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Bottom");
 
     expect(sent()).toHaveLength(2);
     const second = sent()[1]!.props as {
@@ -2582,7 +2622,7 @@ function Home() {
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
 
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top");
 
     expect(sent()).toHaveLength(1);
     expect(itemsOf(sent()[0]!)).toEqual([
@@ -2625,7 +2665,7 @@ function Home() {
       ...image,
       selectionRevision: 2,
     });
-    await choose(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Top");
     expect(sent()).toHaveLength(2);
     expect(sent()[1]!.expectedSourceGeneration).toBe(1);
 
@@ -2643,18 +2683,36 @@ function Home() {
     // A fresh selection and a new choice: that field alone, at the new source.
     const again = await selectAndOpenStyles({ ...image, selectionRevision: 3 });
     expect(again.hasAttribute("data-disabled")).toBe(false);
-    await choose(again, "Bottom");
-    expect(sent()).toHaveLength(3);
-    expect(sent()[2]!.expectedSourceGeneration).toBe(2);
-    expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
-    expect(itemsOf(sent()[2]!)).toEqual([
-      ["row-a", "First", "30% center"],
-      ["row-b", "Second", "bottom"],
-    ]);
+    // The clock is faked from before this choice, not only for the window
+    // below: a resend the shell schedules while it sends or answers this
+    // write is then a fake timer the window advances through. Faked only
+    // after the answer, such a timer would be a real one the instant window
+    // never waits for. `shouldAdvanceTime` keeps the debounce and `waitFor`
+    // running on their own until then.
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout"],
+      shouldAdvanceTime: true,
+    });
+    try {
+      await chooseAndAwaitWrite(again, "Bottom");
+      expect(sent()).toHaveLength(3);
+      expect(sent()[2]!.expectedSourceGeneration).toBe(2);
+      expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
+      expect(itemsOf(sent()[2]!)).toEqual([
+        ["row-a", "First", "30% center"],
+        ["row-b", "Second", "bottom"],
+      ]);
 
-    // The kept heading was neither sent with it nor sent again afterwards,
-    // and it is still the author's, waiting for its own confirmation.
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+      // The kept heading was neither sent with it nor sent again afterwards,
+      // and it is still the author's, waiting for its own confirmation. The
+      // same 1.2 s window as a real wait, with the clock moved instead of
+      // waited on; only that far, so the preview's long timers do not fire.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_200);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(sent()).toHaveLength(3);
     await typeHeadingKeptCheck(heading);
     expect(reselectNotices(toasts)).toBeGreaterThan(0);
@@ -3004,8 +3062,8 @@ function Home() {
     const report = await reportImage(fixture, 1);
     renderEditor(fixture);
     const trigger = await selectAndOpenStyles(report);
-    await choose(trigger, "Top");
-    await choose(trigger, "Bottom");
+    await chooseAndAwaitWrite(trigger, "Top");
+    await chooseAndAwaitWrite(trigger, "Bottom");
     expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([1, 2]);
     expect(itemsOf(sent()[1]!)).toEqual([
       ["row-a", "First", "30% center"],
