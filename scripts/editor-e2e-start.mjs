@@ -3,7 +3,7 @@
  * The editor specs CI runs a second time, against the full TanStack Start
  * preview, in the "Editor E2E full Start preview" job (ci.yml).
  *
- * The three shards run the default, client-only preview, where every test
+ * The editor shards run the default, client-only preview, where every test
  * gated on `MORPH_E2E_PREVIEW_RUNTIME=start` skips itself. Before this job
  * those tests — case B of the content binding contract, the A6b-2 live canvas
  * refresh, the native Start compatibility checks — were proven by local runs

@@ -45,7 +45,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  EDITOR_SHARD_COUNT,
+  editorShardArguments,
+} from "./editor-e2e-shards.mjs";
+
+// Follows the plan's count, so a change of count cannot leave these tests
+// exercising a flag the runner now refuses.
+const FIRST_SHARD = `--shard=1/${EDITOR_SHARD_COUNT}`;
 
 const RUNNER = fileURLToPath(new URL("./run-editor-e2e.mjs", import.meta.url));
 
@@ -267,7 +274,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       const result = await runRunner(
         { FAKE_REPORT_STATUS: "skipped" },
         undefined,
-        ["--shard=1/3"],
+        [FIRST_SHARD],
       );
       assert.equal(result.code, 1);
       assert.match(result.stderr + result.stdout, /TOO_FEW_TESTS_RAN/);
@@ -288,7 +295,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
           FAKE_ARGS_FILE: argsFile,
         },
         undefined,
-        ["--shard=1/3"],
+        [FIRST_SHARD],
       );
       assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
       assert.match(result.stdout, /7 tests executed/);
@@ -296,7 +303,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
         "test",
         "--project=editor",
         "--reporter=line,json",
-        ...editorShardArguments(["--shard=1/3"]),
+        ...editorShardArguments([FIRST_SHARD]),
       ]);
       assert.equal(
         JSON.parse(await readFile(report, "utf8")).suites[0].specs.length,
@@ -307,7 +314,9 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
   );
 
   it("rejects an unsupported shard before starting services", async () => {
-    const result = await runRunner({}, undefined, ["--shard=1/4"]);
+    const result = await runRunner({}, undefined, [
+      `--shard=1/${EDITOR_SHARD_COUNT + 1}`,
+    ]);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /EDITOR_SHARD_INVALID/);
     assert.ok(!result.stdout.includes("starting the dev server"));
