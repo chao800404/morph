@@ -1,7 +1,7 @@
 # 內容讀取契約與隱藏區塊（設計草稿）
 
 狀態：**草稿。** 2026-10-12 審閱：方向（設計原則）獲認可，但尚未授權實作；§3、§4、§5 的具體決定仍要逐項核准才生效，隱藏能力的實作要等 §4.5 舊 build 政策定案。
-所述「現況」已於 2026-10-12 對照 `main`（`02024d9`）核對；§2.3 的實驗表是 2026-10-10 在 `149d185` 上做的，之後沒有重跑。§2.4 是 2026-10-13 在 `82b0bc6` 上的初步實驗紀錄，結論只限該次實作與已測案例；記錄它不代表核准任何新設計或實作。
+所述「現況」已於 2026-10-12 對照 `main`（`02024d9`）核對；2026-10-16 依已合併的 #224、#246 對照 `main`（`468a9f4`）重新核對，新增 §2.0，並更正 §2.1、§2.2、§3.2 已過時的描述。§2.3 的實驗表是 2026-10-10 在 `149d185` 上做的，之後沒有重跑。§2.4 是 2026-10-13 在 `82b0bc6` 上的初步實驗紀錄，結論只限該次實作與已測案例；記錄它不代表核准任何新設計或實作。
 
 **範圍。** 本文件只定義**讀取與隱藏**：Theme 讀內容時各種區塊狀態要回傳什麼，以及「隱藏」怎麼在不限制作者寫法的前提下成立。它**不是**完整的綁定契約。Design 如何確認畫面元素屬於哪個頁面、區塊實例、重複列與欄位，另見綁定契約草稿（`docs/content-binding-contract-design.md`，獨立 PR）。本文件核准，不代表綁定相關工作都可以開始；本文附錄的實驗是那份契約的證據，不是這份的一部分。
 
@@ -12,6 +12,7 @@
 - 作者用框架原本的寫法讀內容，包括逐欄傳值 `<Hero title={hero.title} />`，不必為了 Morph 改寫程式。
 - 編輯器裡的「隱藏」在正式網站真的不顯示，且不讓頁面崩潰。
 - 被隱藏的內容不出現在目前 release 的公開回應中。
+- **最終目標（不變）**：隱藏 = 預覽和發布結果都看不到；作者程式不必加任何 Morph 專用的判斷；頁面不會因此壞掉。只讓讀取回傳 `{}` 不算完成（§3.2、§4.7）。
 
 非目標：
 
@@ -22,6 +23,20 @@
 
 ## 2. 現況
 
+### 2.0 2026-10-16 更新：#224、#246 合併後的事實（main `468a9f4`）
+
+以下都是已合併的程式，不是提案。
+
+- **#224（隱藏選取，main `6779d01`）只處理編輯器，不改渲染。**
+  - 隱藏區塊在畫布、Sections 面板與網址都不能被選取，Inspector 不提供內容編輯，也不送出寫入 Document 的樣式修改（`visual-editor-shell.tsx`、`editor-assistant-panel.tsx`、`editor-style-inspector.tsx`）。
+  - 預覽編譯時，loader 取得的區塊若列在該頁的 `_hidden`，外層會加上 `data-morph-section-hidden`（`inject-preview-bindings.ts` 的 `SECTION_HIDDEN_ATTRIBUTE`；`preview-dom.ts` 的 `PREVIEW_SECTION_HIDDEN_ATTRIBUTE`、`isInHiddenPreviewSection`）。
+  - **這個標記不改變畫面**：程式註解寫明區塊內渲染的是元件預設值，標記只讓編輯器不提供選取。也就是說，預覽中被隱藏的區塊**仍然看得到**（以預設值顯示），§1 的最終目標沒有因 #224 達成。
+  - 沒有改伺服器、OCC、發布或內容契約。
+- **#246（SDK 讀取核心 v0，main `468a9f4`）新增一個平台擁有的讀取核心**，位置在 `packages/morph-sdk/`。
+  - `pages.get` 回傳的形狀與 Starter 的 `morph.pages.get()` 相同：slot 攤平在頁面物件上，隱藏區塊**不在**頁面物件上（`page.hero` 是 `undefined`），id 列在 `_hidden`（`packages/morph-sdk/src/client.ts` 的 `readPage`）。形狀的單一定義在 #245 `docs/morph-sdk-read-contract.md` §6.0、§6.2，本文引用，不另寫一份。
+  - 它只在伺服器端讀，沒有接進 app、Starter 或任何 Theme；託管 Theme 仍用 Starter 自己的 `src/morph/content.ts`。
+  - 因為形狀相同，§2.3 表中「被隱藏 → 逐欄存取整頁崩潰」同樣適用於 SDK v0 的回傳值。【推論，未執行】：SDK v0 沒有在 React 渲染中實測過這一列。
+
 ### 2.1 兩層：Core 的公開回應與作者端讀取
 
 內容經過兩層，兩層的形狀不同，本文件的每一條規則都會指明是哪一層：
@@ -30,10 +45,12 @@
 |---|---|---|
 | **Core 公開回應**：`/_morph/content`（`storefront-production.service.ts` `serveContent` → `resolveStorefrontContent`） | 平台 | 從 `slots` 移除，id 列在 `hiddenSlots`；**不含原始內容** |
 | **作者端讀取**：Theme 的 `src/morph/content.ts`（Starter 提供初版，之後屬於作者，規則 01 §4.4） | 作者 | `content(id)` 回 `slots[id] ?? {}`；`isSectionHidden(id)` 讀 `hiddenSlots`；`morph.pages.get(path)` 回 `{ ...slots, _hidden: hiddenSlots }`，所以隱藏區塊在 `page.hero` 是 `undefined` |
+| **SDK 讀取核心 v0**：`packages/morph-sdk/`（#246，2026-10-16 新增） | 平台 | `pages.get(path)` 與 Starter 的 `morph.pages.get()` 同形：隱藏區塊在 `page.hero` 是 `undefined`，id 在 `_hidden`。目前沒有任何 Theme 使用它 |
 
 其他已核對的事實：
 
-- Core 的 `/_morph/content` 對合法的路徑一律回 200 與 `resolveStorefrontContent` 的結果；沒有 Document 時是 `{ slots: {}, hiddenSlots: [] }`。只有方法不對（405）、路徑不合法（400）或未設定內容來源（503）才回錯誤。`MorphContentError("content_not_found")` 只在回應非 2xx 時產生（例如本機開發代理）；`docs/local-development.md`「讀不到時顯示明確的原因」對正式環境不成立。
+- Core 的 `/_morph/content` 對合法的路徑一律回 200 與 `resolveStorefrontContent` 的結果；沒有 Document 時是 `{ slots: {}, hiddenSlots: [] }`（有 layout 文件時只含 layout 的內容）。內容端點本身只在方法不對（405）、路徑不合法（400）或未設定內容來源（503）時回錯誤。
+- **更正 2026-10-12 稿（漏列）**：在進入內容端點之前，Core 先依網域解析商店與 release；網域、商店、release 或 build 不成立時回純文字 400／404／503（詳見 #245 §3.1）。因此 Starter 的 `MorphContentError("content_not_found")` 在正式環境代表「這個網域沒有可讀的已發布商店」，不是「這頁不存在」；SDK v0 沿用同一個碼與同一個語意（#245 §6.0）。`docs/local-development.md`「讀不到時顯示明確的原因」對正式環境仍不成立。
 - 預覽快照（`createThemePreviewContentSnapshot`）呼叫同一個 `resolveStorefrontContent`；預覽的即時隱藏（`theme-preview-content.ts` `updatePreviewContent`，`enabled === false`）是另一段程式，同樣移除該區塊。
 - 「恢復元件預設值」已存在：寫入時的 `resetProps`，Inspector 的「重設為程式碼預設值」。
 - 更正 2026-10-10 稿：當時寫「`content("x")` 經 `resolveThemeContentSlot` 回 `{}`」。`resolveThemeContentSlot` 只有相容性直譯器使用；作者的 `content()` 自己回 `?? {}`，結果相同，但這是作者檔案的行為，不是平台保證。
@@ -41,7 +58,8 @@
 ### 2.2 已修好與仍未支援
 
 - **已修好（#208，Starter 29）**：Starter 的 layout 與首頁路由在渲染前問 `isSectionHidden`，隱藏的 Header、Footer 與首頁區塊在重新載入與正式網站都不顯示。這只涵蓋 Starter 自己的寫法，以及升級時位元組未改的舊檔案。
-- **仍未支援**：作者用 `morph.pages.get()` 解構、loader → `useLoaderData()` 等原生資料流，而沒有自己判斷隱藏時，隱藏區塊是 `undefined`，逐欄存取會讓整頁崩潰。§3、§4 處理的就是這一類。
+- **已修好（#224，編輯器端）**：隱藏區塊不能被選取，也不接受 Inspector 的內容與 Document 寫入（§2.0）。這是編輯器的保護，**不是**渲染上的隱藏。
+- **仍未支援（2026-10-16 依 main `468a9f4` 核對，未改變）**：作者用 `morph.pages.get()` 解構、loader → `useLoaderData()` 等原生資料流，而沒有自己判斷隱藏時，隱藏區塊是 `undefined`，逐欄存取會讓整頁崩潰；只展開（`{...page.hero}`）時則顯示元件預設值。#224 與 #246 都沒有改變這一點。§3、§4 處理的就是這一類。
 
 ### 2.3 實驗（2026-10-10，`149d185`，未重跑）
 
@@ -130,7 +148,13 @@
 | 欄位為 `null`     | 依欄位型別契約決定是否允許 | 同左                  | 不做全域轉換 |
 | 恢復元件預設值    | 移除該欄位（既有 `resetProps`） | 同左            | 不用 `null` 或 `""` 表示 |
 
-**SDK 是作者的檔案。** 這一層的改變以新的 Starter 版本提供，升級時只替換位元組未改的 `content.ts`（與 #202、#208 相同的升級規則）；作者改過的模組保持原樣，Design 應能說明「這個 Theme 的讀取模組沒有這項行為」。不得改寫作者的模組。
+**這一層現在有兩種讀取模組，擁有者不同（2026-10-16 更新）：**
+
+- **Starter 的 `src/morph/content.ts` 是作者的檔案。** 這一層的改變以新的 Starter 版本提供，升級時只替換位元組未改的 `content.ts`（與 #202、#208 相同的升級規則）；作者改過的模組保持原樣，Design 應能說明「這個 Theme 的讀取模組沒有這項行為」。不得改寫作者的模組。
+- **SDK 讀取核心（`packages/morph-sdk/`，#246）是平台的程式。** 作者不在 Theme 裡修改它。它的 `pages.get` 形狀由 #245 契約定義（§6.0、§6.2），本表若核准，要改的是 #245 的契約與 SDK，而不是在本文另寫一份形狀。依 #245 §7 的版本規則，`MorphPage` 形狀的改變屬於 breaking，要升 major。
+- 兩者必須回傳同一種形狀；任何一方單獨改變，都會讓同一個頁面在兩種讀法下行為不同。
+
+**目前狀態**：上表「區塊被隱藏 → `page[id]` 為 `{}`」**尚未實作**。Starter 與 SDK v0 都仍回 `undefined`（§2.0、§2.1）。
 
 **`{}` 的作用僅限於保留區塊物件的形狀**：`page.hero.title` 會得到 `undefined` 而不是崩潰，但 `page.hero.title.toUpperCase()` 這類依賴值的表達式仍會出錯，而且沒有判斷的頁面會把隱藏的區塊用元件預設值顯示出來。避免執行隱藏區塊的表達式、讓區塊真的不顯示，都由 §4 的判斷負責，不由 `{}` 負責。
 
@@ -243,6 +267,8 @@ return <Hero title={title} />;
 
 ## 5. 不存在的內容（待核准）
 
+- 與 #245 §6.2 的【目標】是同一件事：在 200 回應新增欄位區分「有文件」與「沒有」，不改狀態碼；`content_not_found` 改名要和它同一個 Starter 版本發布。本節不另訂一套，兩份文件互相引用。
+
 - 合法的 Code 撰寫 route 可能還沒有 CMS 內容，不能一律回 404。
 - 先查清楚 Core 能否可靠區分：頁面存在但尚無內容、路徑不存在、頁面存在但引用了不存在的 slot。
 - 在能區分之前：修正 `docs/local-development.md` 的承諾，不讓 API 假裝能判定。
@@ -251,15 +277,20 @@ return <Hero title={title} />;
 ## 6. 前提與待決事項
 
 - **完整 Start 預覽尚非預設**：預設 Live Preview 是純前端模式，server function 不能執行（回傳 `undefined`，難以診斷）。完整 Start 預覽要設定 `MORPH_THEME_PREVIEW_RUNTIME=start`，是否改為預設需另做開放決策。純前端模式下對 `createServerFn` 給出明確錯誤，是一個可單獨處理的體驗改善。
-- **待決**：
-  - §3 的兩層契約，特別是 §3.2 在 SDK 補 `{}`；
-  - §3.2 作者改過的 `content.ts` 如何在 Design 說明；
-  - §4 由編譯流程注入隱藏判斷是否可以接受；
-  - §4.2 後續支援的順序；
-  - §4.3 能力檢查的位置；
-  - §4.5 舊 build 政策已有審閱提案，隨本文件一起核准；
-  - `null` 欄位的型別契約；
-  - §5 的區分方式。
+- **待決**（2026-10-16 附建議；都需要使用者決定，建議不等於核准）：
+
+| # | 問題 | 建議 | 理由 |
+| --- | --- | --- | --- |
+| 1 | §4 由編譯流程注入隱藏判斷（方案 B）是否可以接受 | 接受方向，先只做已能證明安全的寫法 | 已測寫法中只有 B 同時不改公開回應且 hydration 一致（§2.4）；A-wrap 已被排除，A-html 違反 §3.1 |
+| 2 | §4.5 舊 build 政策 | 依現有提案核准，並在實作隱藏能力之前定案 | 沒有這條政策，舊 build 會被誤認為已受保護 |
+| 3 | §3.2 讀取時是否把隱藏區塊補成 `{}` | 可以做，但只當作「不崩潰」的輔助；必須和 #1 一起交付，不能單獨宣稱隱藏完成 | 只補 `{}` 會讓隱藏區塊以預設值顯示，不符合 §1 的最終目標 |
+| 4 | §3.2 補 `{}` 若核准，Starter 與 SDK 如何同步 | 同一輪修改：#245 契約先改，再同時出 Starter 新版本與 SDK 新 major | 兩種讀法必須同形（§3.2） |
+| 5 | §4.3 能力檢查的位置 | 放在 §4.3 表中路徑共用的 service／DAL 邊界；實作前在當時的 main 重新逐一核對 | 只擋單一 server function 會留下其他寫入路徑 |
+| 6 | §4.2 後續支援的順序 | 先做「可證明的提前計算」，再談明確綁定出口 | 前者直接減少「暫不開放隱藏」的實例；後者不解決提前計算的崩潰 |
+| 7 | §3.2 作者改過的 `content.ts` 如何在 Design 說明 | 比對 Starter 已知版本的位元組，不符時在 Design 顯示「這個 Theme 的讀取模組由作者維護，沒有這項行為」 | 與既有升級規則一致，不改寫作者檔案 |
+| 8 | `null` 欄位的型別契約 | 依欄位型別逐一定義，不做全域轉換 | 與 §3.2 表一致 |
+| 9 | §5「不存在」的區分方式 | 採 #245 §6.2 的目標：200 回應新增欄位，不改狀態碼 | 改成 404 會讓既有 Starter 把正常頁面變成錯誤 |
+| 10 | 預覽中隱藏區塊目前仍以預設值顯示（§2.0） | 在 #1 實作前，Design 對隱藏區塊說明「已隱藏，但預覽與正式網站目前仍以元件預設值顯示」，不宣稱已隱藏 | 避免作者誤以為 #224 已經完成隱藏 |
 
 ## 附錄：綁定探測實驗（屬於綁定契約的證據，不屬於本契約）
 
