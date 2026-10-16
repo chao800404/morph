@@ -2,9 +2,11 @@
 
 ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244（ROADMAP 1.4，草稿）；共用讀取核心的原型與設計見 #221（草稿，`docs/content-read-core-design.md` 只在該 PR，main 上沒有，本文只引用 PR 編號，不複製其內容）。
 
-**範圍。** 只寫設計，不含程式、測試或設定變更。不授權實作、部署、npm 發布或合併。
+**範圍。** 只寫設計，不含程式、測試或設定變更。不授權部署、npm 發布或合併。
 
-**核對基準。** main `52d1e3a`。
+**實作狀態。** SDK 讀取核心 v0 已由 #246 合併進 main（`468a9f4`），位置在 `packages/morph-sdk/`。§6.0 列出 v0 實際做到的事，附檔案與行號；其餘各節的【首版】是 v0 依循的契約，【目標】仍未實作。
+
+**核對基準。** §3 的現況盤點核對於 main `52d1e3a`；§6.0 的 v0 行號核對於 main `468a9f4`。
 
 ## 0. 標記
 
@@ -16,6 +18,7 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 | 【已核對】       | 讀過所列程式碼。不等於執行過。                             |
 | 【已核對＋測試】 | 讀過程式碼，並有既有測試涵蓋（列出測試名）。本輪沒有重跑。 |
 | 【推論，未執行】 | 由程式碼推得，沒有用瀏覽器或真實請求驗證。                 |
+| 【已實作 v0】    | `packages/morph-sdk/` 已有的行為，附檔案與行號（§6.0）。   |
 | 【首版】         | 提案：首版 SDK 只包裝【現況】，不改伺服器行為。            |
 | 【目標】         | 提案：將來的行為，需要改 API、Starter 或發布模型；未實作。 |
 | 【延後】         | 不在首版，也還沒有設計。                                   |
@@ -35,6 +38,7 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 - **【首版】** SDK 可以只包裝這些 API，但有兩個限制：
   - 來源網域必須有已發布的 Theme release；
   - 頁面只能在伺服器端讀。
+- **【已實作 v0】** 一份不依賴框架的讀取核心已在 `packages/morph-sdk/`（#246）：`createMorph`、`pages.get`、`products.list`、`products.get`，只包裝上述現有 API，沒有改伺服器（§6.0）。
 - **【目標】** 要做到「不必有 Theme」與「分清楚空內容和不存在」，必須改動發布模型與 API 回應，不只是改文件。
 
 ## 3. 現況盤點
@@ -237,7 +241,66 @@ ROADMAP 1.4 第一階段「盤點與契約設計」的交付物。方向見 #244
 
 ## 6. 契約
 
-每一項分成【首版】（只包裝現況，不改伺服器）與【目標】（未實作）。
+每一項分成【首版】（只包裝現況，不改伺服器）與【目標】（未實作）。§6.0 是 v0 實際做到的部分；§6.1 起是契約本身。
+
+### 6.0 已實作：SDK 讀取核心 v0（#246，main `468a9f4`）
+
+以下都是【已實作 v0】。行號指 main `468a9f4` 上的 `packages/morph-sdk/src/`。
+
+**入口與方法**
+
+| 行為                                                                                                                                           | 位置                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `createMorph({ baseUrl, fetch? })` 只保存 origin 與 fetch，不保存任何每次請求的狀態（商店、預覽、憑證）                                        | `client.ts:130–133`                        |
+| `baseUrl` 必須是 http／https 的 origin，可帶**一個**結尾 `/`（會被去掉）；帶其他路徑、查詢、`#`、帳密或其他協定一律丟 `invalid_content_origin` | `client.ts:42–58`                          |
+| `pages.get(path)`：先驗證路徑（以 `/` 開頭、最多 500 字元，否則 `invalid_path`），再讀 `GET <baseUrl>/_morph/content?path=`                    | `client.ts:279–293`                        |
+| `pages.get` 只在伺服器端讀：`window` 與 `document` 都存在時，在送出前丟 `invalid_content_origin`                                               | `client.ts:70–73`、`287`                   |
+| `products.list({ q, page, limit, order })`：只接受這四個參數，送出前依 Store API 的範圍驗證，未知參數也拒絕（`invalid_request`）               | `client.ts:22`、`239–275`、`300–334`       |
+| `products.get(handle)`：handle 依 Store API 規則驗證；**只有** Store API 回 JSON `404 { error: "NOT_FOUND" }` 時回 `null`                      | `client.ts:336–375`（`null` 在 `350–357`） |
+| `products.get` 遇到網域查不到商店的純文字 404 時丟 `content_not_found`，不回 `null`                                                            | `client.ts:194–199`                        |
+| 一律 `credentials: "omit"`，逾時 15 秒                                                                                                         | `client.ts:13`、`141–149`                  |
+
+**每次讀取共用的規則**
+
+| 行為                                                                                                                                                                                                        | 位置                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| 不跟隨轉址：送出 `redirect: "manual"`；3xx（含 304）或 `opaqueredirect`（狀態 0）丟 `redirect_refused`，不讀回應內容。304 也算在內，因為 SDK 不送條件式請求，收到 304 只可能是異常                          | `client.ts:147`、`155–162` |
+| 回應上限 2 MB，與本機開發代理 `morph-dev-content-proxy.ts` 的 `DEFAULT_MAX_BYTES` 相同。宣告的 `content-length` 超過時不讀就拒絕；否則邊讀串流邊計數，超過即停止並丟 `response_too_large`。剛好 2 MB 可以讀 | `client.ts:15`、`85–119`   |
+| 只把兩種相對網址補成完整網址：`/_storefront-media/…`（頁面媒體）與 `/api/store/assets/…`（商品圖）。其他字串一律不動                                                                                        | `urls.ts:13–24`、`26–46`   |
+| 解析出的 `__proto__` 鍵維持為一般鍵，不改原型                                                                                                                                                               | `urls.ts:34–42`            |
+
+**錯誤碼與實際觸發條件**（`errors.ts:13–26`；判定在 `client.ts`）
+
+| 碼                       | 實際觸發條件                                                                                   |
+| ------------------------ | ---------------------------------------------------------------------------------------------- |
+| `invalid_content_origin` | `baseUrl` 不合法；或在瀏覽器中呼叫 `pages.get`                                                 |
+| `invalid_path`           | 頁面路徑不以 `/` 開頭、超過 500 字元或不是字串（送出前）                                       |
+| `invalid_request`        | 商品參數或 handle 不合法（送出前）；或 Store API 回 `400 INVALID_REQUEST`                      |
+| `invalid_store_context`  | Store API 回 `401 INVALID_STORE_CONTEXT`                                                       |
+| `content_not_found`      | 頁面讀取的任何 404；商品讀取的純文字 404（網域查不到已發布商店）。**不代表頁面不存在**（§6.2） |
+| `store_unreachable`      | 網路失敗、逾時，或回應內容讀到一半中斷                                                         |
+| `redirect_refused`       | 3xx（含 304）或 `opaqueredirect`                                                               |
+| `response_too_large`     | 宣告或實際讀到的內容超過 2 MB；錯誤回應也適用                                                  |
+| `store_error`            | 其他非 2xx，例如 503、500、非 `NOT_FOUND` 的 JSON 404                                          |
+| `invalid_response`       | 不是 JSON，或形狀不符                                                                          |
+| `reserved_slot`          | 回應含名為 `_hidden` 的 slot                                                                   |
+| `no_content_source`      | 型別中保留，與 Starter 一致；v0 不會產生，因為一定有 `baseUrl`                                 |
+
+- 錯誤訊息是固定字串，不帶回應內容、網址、查詢或底層錯誤，也不附 `cause`（`errors.ts:36–51`）。
+- 任何失敗都丟錯，不退回 `{}`、空頁或空列表。例外見 §6.4。
+
+**驗證（#246 的 PR 說明有完整紀錄）**
+
+- 單元測試（假的 `fetch`）、直接呼叫 Morph 真正 handler 的行程內測試（`src/lib/storefront/service/morph-sdk-real-handlers.test.ts`）、兩個不同 `baseUrl` 的並行隔離測試、import 邊界測試（`packages/morph-sdk/src/boundary.test.ts`）。
+- 反向檢查涵蓋：錯誤時退回空頁、請求狀態存在共用變數、任何 404 都回 `null`、核心 import React、媒體網址未補全、拿掉轉址處理、改回整份讀取。
+- 行程內測試的資料庫層是假的；沒有經過真正的網路，也沒有在真的瀏覽器、Deno 或 Bun 驗證。
+
+**交付限制【已實作 v0 的現況】**
+
+- 套件標成 `private: true`，沒有發布到 npm。
+- 不是 pnpm 工作區套件：`pnpm-workspace.yaml` 只列 `"."`，所以 repo 內不能用 `@morph/sdk` 這個名稱 import，測試以路徑引用。
+- **`pnpm build` 不涵蓋 SDK**：app 沒有 import 它，Vite 建置不會經過它。目前只有 `tsc`（`pnpm typecheck`）與測試涵蓋。
+- 沒有接進 app 或 Starter；託管 Theme 仍用 Starter 自己的讀取模組。
 
 ### 6.1 設定與來源
 
@@ -253,7 +316,8 @@ createMorph({ source: MorphSource });
 ```
 
 - `createMorph` 只保存不變的設定。每次請求的來源由平台或 integration 接線提供（沿用 #221），不得放進可變的全域狀態。
-- `baseUrl` 必須是 http／https、不含帳密，並且等於 `new URL(baseUrl).origin`，與 Starter 的 `catalog.ts` 檢查一致。不合法時丟 `invalid_content_origin`。
+- `baseUrl` 必須是 http／https、不含帳密，並且等於 `new URL(baseUrl).origin`；v0 另外接受一個結尾 `/` 並去掉它（§6.0）。不合法時丟 `invalid_content_origin`。
+- **【已實作 v0】** 只有 `source: origin` 這一種，介面寫成 `createMorph({ baseUrl, fetch? })`。`source: platform`（託管 Theme 由 Core 告知來源）屬於平台薄入口，仍是【目標】（§7 第 2 階段）。
 - **【首版】**
   - `baseUrl` 是現有的商家網域；頁面與商品都從這裡讀。
   - 不用 key，也不接受 key 設定。
@@ -308,6 +372,7 @@ createMorph({ source: MorphSource });
     | 其他非 2xx，包括 503 "Catalog context unavailable" | `store_error`           |
 
   - 這與 Starter 現行的 `loadProduct` 不同：它把任何 404 都當成查無商品（G8）。Starter 遷移到 SDK 時採用新規則。
+
 - 價格、庫存與銷售通路沿用商務服務的結果。SDK 不計算、不快取價格。
 
 ### 6.4 錯誤模型
@@ -318,7 +383,7 @@ createMorph({ source: MorphSource });
   - `message`：寫死的文字。
   - 錯誤物件不含上游內容、網址、key 或堆疊；細節只進伺服器 log。
 - **【首版】頁面的碼：** 沿用 Starter 的 10 個碼，逐字相同。
-  - `redirect_refused`、`response_too_large` 保留在集合內，但首版不宣稱會產生，要等 #221 待決 4 決定。
+  - **【已實作 v0】** `redirect_refused`、`response_too_large` 已會產生：轉址一律拒絕、回應上限 2 MB（§6.0）。這也回答了 #221 待決 4 在 SDK 這一側的部分；Starter 自己的讀取模組仍未實作這兩項。
 - **【首版】商品新增兩個碼：** `invalid_request`、`invalid_store_context`。其他與頁面共用：`store_unreachable`、`invalid_response`、`store_error`、`content_not_found`，語意相同。
 - **【目標】** §6.2 的改名與 `page_not_found`。
 - **不變的原則：** 任何失敗都丟錯，不回空陣列、`{}` 或預設頁面。例外只有：
@@ -328,10 +393,11 @@ createMorph({ source: MorphSource });
 
 ### 6.5 相對網址
 
-- **【首版】規則：** SDK 把回應中以 `/` 開頭的媒體網址，以讀取時使用的來源補成絕對網址。
-  - 範圍是 `_storefront-media/…`，以及商品的 `thumbnailUrl`、資產 `url`。
+- **【首版】規則：** SDK 把回應中 Morph 自己的媒體路徑，以讀取時使用的來源補成絕對網址。
+  - **【已實作 v0】** 以前綴判定，只處理 `/_storefront-media/…` 與 `/api/store/assets/…` 兩種，不論出現在哪個欄位（因此涵蓋商品的 `thumbnailUrl` 與資產 `url`）。其他以 `/` 開頭的字串不動，因為內容值沒有欄位型別，無法分辨媒體、連結和一般文字。
   - 已是 http／https 的網址不動。
   - 其他協定沿用 `isSafeThemeMediaUrl` 的結果（伺服器已過濾）。
+  - 限制：作者存成相對路徑的外部媒體（例如 `/images/a.png`，指向 Theme 自己的檔案）不會被補全。
 - **託管 Theme（`platform`）：** 維持相對網址，同網域，與現況相同。伺服器端渲染的輸出也維持相對，避免把 Core 內部轉送用的 origin 寫進頁面。
 - **外部網站（`origin`）：** 一律補成 `<baseUrl>/…`。商品圖因此指向內容網域，避開 G4。
 - 連結值（`resolveThemeLinksInSlotValues`）不屬於媒體。是否補成絕對網址要看連結指向商家站內頁還是外部網站自己的頁面，留到 §7 第 4 階段驗收時決定，首版不改寫。
@@ -372,15 +438,15 @@ createMorph({ source: MorphSource });
 - **兩種入口。** 平台薄入口與外部套件只做接線，不帶讀取邏輯。
 - **任何階段都不得出現被修改過的核心副本。** 這延續 #221 的結構測試做法：核心 sha256 比對、Theme 不得自帶 reader。
 
-| 階段 | 內容                                                                                                                                                            | 交付物                           | 驗收                                                                      | 授權                      |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- | ------------------------- |
-| 0    | #221 測試原型                                                                                                                                                   | 原型（現況）                     | 已完成原型層級的並行隔離                                                  | 已完成，草稿              |
-| 1    | 核心定稿：依本契約實作 `pages.get`、`products.list`、`products.get`、錯誤與網址規則；核心在 repo 內單一位置                                                     | repo 內的核心模組，未發布        | 單元測試＋反向檢查：快取來源、靜默預設、null 誤用、錯誤帶網址             | 實作需授權                |
-| 2    | 託管 Start Theme 接線：Starter 的 `src/morph/` 改為引用核心的薄入口，接線放在 `.morph/` wrapper（#221 §4.5）；舊讀法 `content()` 經 Starter 升級流程遷移（G11） | 新 Starter 版本                  | 不改作者設定檔；真實 Start 執行；並行請求不串資料；升級衝突走既有衝突流程 | 實作與 Starter 升版需授權 |
-| 3    | 託管 Astro 接線：integration 掛在 Morph 的 Astro wrapper                                                                                                        | 同上                             | 真實 `astro dev`／`astro build`                                           | 需授權；排在 L1.5 之前    |
-| 4    | 外部套件：同一份核心建置成可安裝套件，提供 `source: origin` 的伺服器端接線                                                                                      | 套件（先在 repo 內建置，不發布） | 外部 Start 專案從獨立網域讀內容網域；圖片網址補全；瀏覽器端拒絕           | npm 發布與部署另行授權    |
-| 5    | 【目標】獨立內容後台：發布模型（§4.1）、內容歸屬（§4.2）、內容網域（§4.3）                                                                                      | 另一份設計與遷移                 | 沒有 Theme 的內容網域可讀；既有發布安全檢查全部保留，並有反向檢查         | 設計審閱後另行授權        |
-| 6    | 【目標】API 變更：§6.2 的空內容／不存在、改名                                                                                                                   | Core 變更＋Starter 版本          | 舊 Starter 不受影響；新 Starter 能區分                                    | 需授權                    |
+| 階段 | 內容                                                                                                                                                            | 交付物                           | 驗收                                                                      | 授權                                           |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------- |
+| 0    | #221 測試原型                                                                                                                                                   | 原型（現況）                     | 已完成原型層級的並行隔離                                                  | 已完成，草稿                                   |
+| 1    | 核心定稿：依本契約實作 `pages.get`、`products.list`、`products.get`、錯誤與網址規則；核心在 repo 內單一位置                                                     | repo 內的核心模組，未發布        | 單元測試＋反向檢查：快取來源、靜默預設、null 誤用、錯誤帶網址             | **【已實作 v0】#246**（只有 `source: origin`） |
+| 2    | 託管 Start Theme 接線：Starter 的 `src/morph/` 改為引用核心的薄入口，接線放在 `.morph/` wrapper（#221 §4.5）；舊讀法 `content()` 經 Starter 升級流程遷移（G11） | 新 Starter 版本                  | 不改作者設定檔；真實 Start 執行；並行請求不串資料；升級衝突走既有衝突流程 | 實作與 Starter 升版需授權                      |
+| 3    | 託管 Astro 接線：integration 掛在 Morph 的 Astro wrapper                                                                                                        | 同上                             | 真實 `astro dev`／`astro build`                                           | 需授權；排在 L1.5 之前                         |
+| 4    | 外部套件：同一份核心建置成可安裝套件，提供 `source: origin` 的伺服器端接線                                                                                      | 套件（先在 repo 內建置，不發布） | 外部 Start 專案從獨立網域讀內容網域；圖片網址補全；瀏覽器端拒絕           | npm 發布與部署另行授權                         |
+| 5    | 【目標】獨立內容後台：發布模型（§4.1）、內容歸屬（§4.2）、內容網域（§4.3）                                                                                      | 另一份設計與遷移                 | 沒有 Theme 的內容網域可讀；既有發布安全檢查全部保留，並有反向檢查         | 設計審閱後另行授權                             |
+| 6    | 【目標】API 變更：§6.2 的空內容／不存在、改名                                                                                                                   | Core 變更＋Starter 版本          | 舊 Starter 不受影響；新 Starter 能區分                                    | 需授權                                         |
 
 **版本規則【提案】：**
 
@@ -403,10 +469,11 @@ createMorph({ source: MorphSource });
 - 欄位選取；
 - 草稿讀取（#214）；
 - GraphQL；
-- 條件請求（304）；
+- 條件請求（`If-None-Match`）。v0 不送條件式請求；收到 304 當成轉址拒絕（§6.0）；
 - 頁面的瀏覽器跨網域讀取；
 - 平台網域的 publishable key 路徑；
-- 轉址拒絕與大小上限的正式行為（#221 待決 4）。
+- 平台薄入口（託管 Theme 改用 SDK，`source: platform`）；
+- 套件發布、打包安裝、外部網站的部署驗收。
 
 ## 9. 待使用者決定
 
@@ -418,10 +485,14 @@ createMorph({ source: MorphSource });
    - 託管 Theme 上沒有 Document 的路由算不算存在。建議算存在，維持現況的預設值行為。
    - `pages.get` 對不存在的頁面回 `null` 還是丟 `page_not_found`。建議丟錯，因為頁面讀取一向以失敗即拋出為原則；這與 `products.get` 不同，需要你確認。
 4. **改名後的碼名（§6.2 目標）。** 建議 `content_source_unavailable`。
-5. **核心在 repo 內的位置（§7 第 1 階段）。** 例如獨立的 workspace 套件目錄，或 `src/lib` 下的一個模組。這會影響第 4 階段建置套件的方式。
+5. **核心在 repo 內的位置**：已由 #246 定為 `packages/morph-sdk/`（獨立目錄，`private: true`）。剩下要決定的是**何時把它列為 pnpm 工作區套件**。建議在第 2 階段（平台薄入口）開始時一起做，因為那時 app 才需要用套件名稱 import 它；現在加會改到 lockfile，卻沒有使用者。
+6. **瀏覽器呼叫 `pages.get` 的錯誤碼。** v0 沿用 `invalid_content_origin`（§6.0），訊息「來源位址不可用」對這個情況會誤導。建議等第 2 階段改動錯誤碼集合時，一起新增專用碼（例如 `server_only`），因為新增碼要和 Starter、#221 的「錯誤碼逐字相同」一起改。
+7. **`pnpm build` 不涵蓋 SDK。** 目前只有 typecheck 與測試保護它。建議在第 4 階段（建置可安裝套件）加上 SDK 自己的建置檢查；在那之前維持現狀。
 
 ## 10. 與其他 PR 的關係
 
 - #244（ROADMAP，由本機主線負責）：本 PR 不修改。「外部網站不必建置或發布 Theme」這項目標與依賴，等本契約更新後由 #244 補上，避免兩邊各寫一份。
 - #221：只引用 PR 編號。
-- #214、#187：依賴，不在本 PR 處理。
+- #246：SDK 讀取核心 v0 的實作，已合併（main `468a9f4`）。本文 §6.0 依它的程式更新。
+- #187：讀取契約與隱藏區塊設計。`pages.get` 回傳的隱藏區塊形狀以本文 §6.2 與 §6.0 為準，#187 引用這裡，不另寫一份；隱藏區塊的最終形狀由 #187 決定。
+- #214：草稿讀取的授權，依賴，不在本 PR 處理。
