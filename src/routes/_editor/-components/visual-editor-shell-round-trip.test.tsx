@@ -9,7 +9,15 @@ import {
 } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -21,6 +29,39 @@ import {
   INLINE_TEXT_REFUSED_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
+import { STARTER_THEME_FILES as OBJPOS_STARTER_FILES } from "@/lib/storefront/starter-theme-files";
+import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import {
+  resolveSelectable as objposResolveSelectable,
+  selectionMetadata as objposSelectionMetadata,
+} from "@/lib/storefront/editor/preview-dom";
+import {
+  livePreviewPlatformFiles as objposPlatformFiles,
+  mountLivePreview as objposMount,
+  renderLivePreviewRoute as objposRenderRoute,
+} from "@/lib/test-utils/live-preview-render";
+
+/**
+ * Every Theme file save the shell starts, recorded and then made as usual:
+ * the object position tests assert that the control saves no source.
+ */
+const objposSavedFiles = vi.hoisted((): unknown[] => []);
+vi.mock(
+  "@/server/storefront/storefront-theme-files.serverFn",
+  async (importOriginal) => {
+    const actual = await importOriginal<Record<string, unknown>>();
+    const save = actual.saveStorefrontThemeFile as (
+      ...args: unknown[]
+    ) => unknown;
+    return {
+      ...actual,
+      saveStorefrontThemeFile: (...args: unknown[]) => {
+        objposSavedFiles.push(args[0]);
+        return save(...args);
+      },
+    };
+  },
+);
 
 /**
  * The selection round trip through the shell, rather than through the rules.
@@ -319,8 +360,14 @@ function sendInlineCommit(
   });
 }
 
-/** The editor's read of the Theme, with the hero holding `props`. */
-function editorHolding(props: Record<string, unknown>) {
+/**
+ * The editor's read of the Theme, with the hero holding `props` — at
+ * `draftGeneration` when given, otherwise at the fixture's own.
+ */
+function editorHolding(
+  props: Record<string, unknown>,
+  draftGeneration?: number,
+) {
   return {
     success: true,
     message: "ok",
@@ -329,6 +376,7 @@ function editorHolding(props: Record<string, unknown>) {
       templates: [
         {
           ...context.templates[0],
+          ...(draftGeneration === undefined ? {} : { draftGeneration }),
           document: {
             version: 1,
             sections: [{ id: "hero", type: "hero", props }],
@@ -882,6 +930,7 @@ describe("a list both writers changed", () => {
         ).disabled,
       ).toBe(true),
     );
+    const sentBeforeEdit = updateSectionProps.mock.calls.length;
     sendInlineCommit("B edited again", "B edited", {
       fieldKey: "title",
       fieldPath: "items.1.title",
@@ -893,11 +942,11 @@ describe("a list both writers changed", () => {
       ),
     );
     expect(saveStatus()).toBe("Out of date");
-    // The newer edit's own save is answered (refused, as the document moved)
-    // before the author decides again.
-    await waitFor(() =>
-      expect(updateSectionProps.mock.calls.length).toBeGreaterThan(1),
-    );
+    // The newer edit is refused before it is sent: it was typed into B at
+    // index 1, and the latest version has A there. Sending it would have
+    // been refused as out of date at best, and at worst written A's title.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(sentBeforeEdit);
     await waitFor(() => expect(saveStatus()).toBe("Out of date"));
     const sentBeforeDiscard = updateSectionProps.mock.calls.length;
 
@@ -1795,11 +1844,26 @@ describe("a style patch the source cannot answer", () => {
  * the page; saving the typed text would store it changed, again on each pass.
  */
 describe("an inline edit of text the Theme changed", () => {
+  // Answered as the server answers: the document it now holds, one
+  // generation past the one the write was sent at.
   const saved = () =>
-    updateSectionProps.mockResolvedValue({
+    updateSectionProps.mockImplementation(async ({ data }) => ({
       success: true,
-      data: { draftGeneration: 2, droppedProps: [] },
-    } as never);
+      data: {
+        draftGeneration: data.expectedDraftGeneration + 1,
+        droppedProps: [],
+        document: {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              props: { heading: "Welcome", ...data.props },
+            },
+          ],
+        },
+      },
+    }));
 
   it("is not saved, and the canvas is left to what the Theme rendered", async () => {
     saved();
@@ -1872,6 +1936,46 @@ describe("an inline edit of text the Theme changed", () => {
     expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
   });
 
+  it("is not saved when another tab's save, at a newer generation, changed the field", async () => {
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    const client = readyQueryClient();
+    const view = renderShell(client);
+    await selectHeading();
+
+    // Another tab's save, read back at the generation it produced.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={
+            editorHolding({ heading: "Theirs" }, 2)
+              .data as unknown as StorefrontThemeEditorDTO
+          }
+          search={baseSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    sendInlineCommit("Welcome, mine", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+
+    // The control: an edit begun from the newer stored value is saved, on
+    // the generation that read brought.
+    sendInlineCommit("Theirs, edited", "Theirs");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sent = updateSectionProps.mock.calls[0]![0] as {
+      data: { props: Record<string, unknown>; expectedDraftGeneration: number };
+    };
+    expect(sent.data.props).toEqual({ heading: "Theirs, edited" });
+    expect(sent.data.expectedDraftGeneration).toBe(2);
+  });
+
   it("is not saved when it names a field other than the one selected", async () => {
     saved();
     renderShell();
@@ -1930,13 +2034,45 @@ describe("an inline edit of text the Theme changed", () => {
     await selectHeading();
     sendInlineCommit("First own save", "Welcome");
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
-    sendInlineCommit("Second own save", "Welcome");
+    // The second edit begins from the text the first save left on the page.
+    sendInlineCommit("Second own save", "First own save");
     await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(2));
     expect(
       updateSectionProps.mock.calls.map(
         (call) => call[0].data.expectedSourceGeneration,
       ),
     ).toEqual([1, 1]);
+  });
+
+  it("refuses a second edit that claims the text from before the first own save", async () => {
+    const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+    useThemeWorkspaceStore.getState().setBaseSourceGeneration(1, scope);
+    saved();
+    const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+    renderShell();
+    await selectHeading();
+    sendInlineCommit("First own save", "Welcome");
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const sourceBaseline = () => {
+      const state = useThemeWorkspaceStore.getState();
+      return {
+        accepted: state.getAcceptedSourceGeneration(scope),
+        observed: state.getObservedSourceGeneration(scope),
+      };
+    };
+    const before = sourceBaseline();
+
+    // The first save's answer is the stored value now; the editor context
+    // has not caught up. A claim of the older text is out of date.
+    sendInlineCommit("Second own save", "Welcome");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      INLINE_TEXT_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
+    expect(sourceBaseline()).toEqual(before);
   });
 
   it("keeps Inspector text visible after a source baseline refusal without resending", async () => {
@@ -2027,5 +2163,1716 @@ describe("an inline edit of text the Theme changed", () => {
       INLINE_TEXT_REFUSED_MESSAGE,
       expect.anything(),
     );
+  });
+});
+
+/**
+ * The Inspector's object position control, through the real shell.
+ *
+ * The control writes one place: the Document field the selected image's inline
+ * `objectPosition` provably reads. It used to write that and patch the class
+ * too, and the class save moved the selection's source generation under the
+ * Document write it had queued, so on the Starter neither landed. The canvas
+ * selection here is produced by the real preview pass over the real Starter
+ * components, not written by hand.
+ */
+describe("the object position control", () => {
+  const SHOWCASE_PATH = "src/components/CategoryShowcase.tsx";
+  const STORY_PATH = "src/components/ImageWithText.tsx";
+  const PLAIN_PATH = "src/components/PlainImage.tsx";
+  const PLAIN_SOURCE = `export const contentFields = {
+  image: { type: "image", label: "Image" },
+} as const;
+export default function PlainImage({ image }: { image?: { src?: string } }) {
+  return <section><img src={image?.src} className="size-full object-cover" /></section>;
+}`;
+  const starterSource = (path: string) =>
+    OBJPOS_STARTER_FILES.find((file) => file.path === path)!.content;
+  const rows = () => [
+    {
+      id: "row-a",
+      title: "First",
+      image: { src: "/a.png", alt: "A" },
+      imagePosition: "30% center",
+    },
+    { id: "row-b", title: "Second", image: { src: "/b.png", alt: "B" } },
+  ];
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+
+  type Fixture = {
+    path: string;
+    source: string;
+    type: string;
+    props: Record<string, unknown>;
+    /** What the editor's Document holds, when it differs from the canvas's. */
+    storedProps?: Record<string, unknown>;
+  };
+
+  /** The canvas's report for one element, from the real preview pass. */
+  async function reportImage(
+    fixture: Fixture,
+    imageIndex: number,
+    selector = "img",
+  ) {
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Section from "../components/${fixture.path.split("/").pop()!.replace(".tsx", "")}";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Section {...content("section")} /></main>;
+}`;
+    const { html } = await objposRenderRoute({
+      files: [
+        ...objposPlatformFiles(),
+        { path: fixture.path, content: fixture.source },
+        { path: "src/routes/index.tsx", content: route },
+      ],
+      documents: {
+        index: {
+          version: 1,
+          sections: [
+            {
+              id: "section",
+              type: fixture.type,
+              enabled: true,
+              props: fixture.props,
+            },
+          ],
+        } as never,
+      },
+    });
+    const root = objposMount(html);
+    const item = objposResolveSelectable(
+      root.querySelectorAll(selector)[imageIndex] ?? null,
+    );
+    document.body.replaceChildren();
+    expect(item).toBeTruthy();
+    return {
+      type: "morph:storefront-preview-select-section",
+      sectionId: item!.sectionId,
+      componentType: item!.type,
+      // `kind` comes from `selectionMetadata` below, which the bridge spreads
+      // over the same key.
+      sourceLocation: item!.element.dataset.morphLoc ?? null,
+      nodeId: item!.element.getAttribute("data-morph-node") || undefined,
+      elementKey: item!.elementKey,
+      fieldKey: item!.fieldKey,
+      field:
+        item!.descendantFields.length > 0
+          ? null
+          : (item!.fieldKey ?? item!.elementKey),
+      descendantFields: item!.descendantFields,
+      itemId: item!.itemId,
+      contentUnavailable: item!.contentUnavailable,
+      ...objposSelectionMetadata(item!),
+      styleRevision: 0,
+      selectionRevision: 1,
+      className: item!.element.getAttribute("class") ?? "",
+      isSection: item!.element === item!.section,
+      inspectorOverride: item!.element.dataset.morphInspector ?? null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      documentRect: { top: 0, height: 100 },
+    };
+  }
+
+  function renderEditor(fixture: Fixture, atDraftGeneration = 1) {
+    echo = { fixture, props: { ...(fixture.storedProps ?? fixture.props) } };
+    const editorContext = {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          draftGeneration: atDraftGeneration,
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "section",
+                type: fixture.type,
+                componentRef: fixture.path,
+                enabled: true,
+                props: fixture.storedProps ?? fixture.props,
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+    const client = readyQueryClient();
+    client.setQueryData(
+      storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+      {
+        files: [
+          {
+            id: "file-section",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: fixture.path,
+            content: fixture.source,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ],
+        tree: [],
+        sourceGeneration: 1,
+        latestPublishedRevision: null,
+      } as never,
+    );
+    const shell = (current: StorefrontThemeEditorDTO) => (
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={current}
+          search={{ ...baseSearch, section: "section" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(shell(editorContext));
+    return {
+      client,
+      editorContext,
+      /** The editor handed a newer read of the Theme, as a refetch does. */
+      receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
+    };
+  }
+
+  /** The editor's read of the Theme, holding the section with `props`. */
+  function editorWith(
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+    props: Record<string, unknown>,
+    draftGeneration: number,
+  ) {
+    return {
+      success: true,
+      message: "ok",
+      data: {
+        ...editorContext,
+        templates: [
+          {
+            ...editorContext.templates[0]!,
+            draftGeneration,
+            document: {
+              version: 1,
+              sections: [
+                {
+                  id: "section",
+                  type: fixture.type,
+                  componentRef: fixture.path,
+                  enabled: true,
+                  props,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  async function selectAndOpenStyles(
+    report: Awaited<ReturnType<typeof reportImage>>,
+  ) {
+    await flushFrames();
+    fromPreview(report);
+    await flushFrames();
+    const stylesTab = screen.queryByRole("button", { name: /^Styles$/ });
+    if (stylesTab) fireEvent.click(stylesTab);
+    await flushFrames();
+    return screen.getByRole("combobox", { name: "Object position" });
+  }
+
+  async function choose(trigger: HTMLElement, label: string) {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    const option = screen.getByRole("option", { name: label });
+    fireEvent.keyDown(option, { key: "Enter" });
+    fireEvent.click(option);
+    // Past the content write's 300 ms debounce and its answer.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  }
+
+  const note = () =>
+    document.querySelector('[data-inspector-note="object-position"]')
+      ?.textContent ?? null;
+  const sent = () =>
+    updateSectionProps.mock.calls.map(
+      (call) => call[0].data as Record<string, unknown>,
+    );
+  const reselectNotices = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((call) =>
+      String(call[0]).startsWith("The source code has changed"),
+    ).length;
+
+  beforeAll(() => {
+    // Every browser this runs in has CSS.escape; this jsdom does not.
+    if (typeof CSS === "undefined" || typeof CSS.escape !== "function") {
+      (globalThis as { CSS?: unknown }).CSS = {
+        escape: (value: string) => value.replace(/([^\w-])/g, "\\$1"),
+      };
+    }
+  });
+  let draftGeneration = 1;
+  /** The section the server answers for, as it holds it after each write. */
+  let echo: { fixture: Fixture; props: Record<string, unknown> } | null = null;
+  /**
+   * A saved answer as the server gives it: the document it now holds, one
+   * generation past the one the write was sent at.
+   */
+  const savedEcho = (data: {
+    props: Record<string, unknown>;
+    expectedDraftGeneration: number;
+  }) => {
+    if (echo) echo.props = { ...echo.props, ...data.props };
+    draftGeneration = data.expectedDraftGeneration + 1;
+    return {
+      success: true,
+      data: {
+        draftGeneration,
+        droppedProps: [],
+        ...(echo
+          ? {
+              document: {
+                version: 1,
+                sections: [
+                  {
+                    id: "section",
+                    type: echo.fixture.type,
+                    componentRef: echo.fixture.path,
+                    enabled: true,
+                    props: echo.props,
+                  },
+                ],
+              },
+            }
+          : {}),
+      },
+    };
+  };
+  beforeEach(() => {
+    draftGeneration = 1;
+    echo = null;
+    updateSectionProps.mockReset();
+    updateSectionProps.mockImplementation(async ({ data }) => savedEcho(data));
+    objposSavedFiles.length = 0;
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  const showcase = (overrides: Partial<Fixture> = {}): Fixture => ({
+    path: SHOWCASE_PATH,
+    source: starterSource(SHOWCASE_PATH),
+    type: "category-showcase",
+    props: { heading: "Collections", items: rows() },
+    ...overrides,
+  });
+
+  it("writes only the selected Starter row's declared field, at the selection's baseline", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    expect(report).toMatchObject({
+      fieldPath: "items.1.image",
+      itemId: "row-b",
+    });
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(false);
+    expect(note()).toBeNull();
+
+    await choose(trigger, "Top");
+
+    expect(sent()).toHaveLength(1);
+    const items = sent()[0]!.props as { items: Array<Record<string, unknown>> };
+    expect(items.items[1]).toMatchObject({ id: "row-b", imagePosition: "top" });
+    expect(items.items[0]).toMatchObject({
+      id: "row-a",
+      imagePosition: "30% center",
+    });
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    expect(objposSavedFiles).toHaveLength(0);
+    expect(reselectNotices(toasts)).toBe(0);
+  });
+
+  it("keeps writing at the same baseline across consecutive changes", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    await choose(trigger, "Top");
+    await choose(trigger, "Bottom");
+
+    expect(sent()).toHaveLength(2);
+    const second = sent()[1]!.props as {
+      items: Array<Record<string, unknown>>;
+    };
+    expect(second.items[1]).toMatchObject({ imagePosition: "bottom" });
+    expect(second.items[0]).toMatchObject({ imagePosition: "30% center" });
+    expect(sent().map((data) => data.expectedSourceGeneration)).toEqual([1, 1]);
+    expect(objposSavedFiles).toHaveLength(0);
+    expect(reselectNotices(toasts)).toBe(0);
+  });
+
+  it("stops offering the change once the source moves on elsewhere", async () => {
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(false);
+
+    act(() => {
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope);
+    });
+    await flushFrames();
+
+    const after = screen.getByRole("combobox", { name: "Object position" });
+    expect(after.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain(
+      "The source changed since this image was selected",
+    );
+    fireEvent.keyDown(after, { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  const itemsOf = (data: Record<string, unknown>) =>
+    (data.props as { items: Array<Record<string, unknown>> }).items.map(
+      (row) => [row.id, row.title, row.imagePosition],
+    );
+
+  /** Types into the section heading's own field, the way the author does. */
+  async function typeHeading(
+    report: Awaited<ReturnType<typeof reportImage>>,
+    from: string,
+    to: string,
+  ) {
+    fromPreview(report);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue(from);
+    fireEvent.input(field, { target: { value: to } });
+    fireEvent.blur(field);
+  }
+
+  // The selected row is found again by its id after the rows moved; the
+  // write goes to it, at the selection's baseline, and to nothing else.
+  it("writes the selected row by its id when the rows moved after the click", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    // The canvas drew A, B; the Document now holds B, A.
+    const fixture = showcase({
+      props: { heading: "Collections", items: [rowA, rowB] },
+      storedProps: { heading: "Collections", items: [rowB, rowA] },
+    });
+    const report = await reportImage(fixture, 1);
+    expect(report).toMatchObject({
+      fieldPath: "items.1.image",
+      itemId: "row-b",
+    });
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    await choose(trigger, "Top");
+
+    expect(sent()).toHaveLength(1);
+    expect(itemsOf(sent()[0]!)).toEqual([
+      ["row-b", "Second", "top"],
+      ["row-a", "First", "30% center"],
+    ]);
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    expect(Object.keys(sent()[0]!.props as object)).toEqual(["items"]);
+    expect(reselectNotices(toasts)).toBe(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // A refused write recovers only through a fresh selection and a new choice
+  // in that field, and that choice confirms that field alone: another field's
+  // refused input stays kept, unsent, at its own generation.
+  it("recovers a refused choice after reselection and a new choice, and confirms nothing else", async () => {
+    const toasts = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockImplementation(async ({ data }) =>
+      data.expectedSourceGeneration === 2
+        ? { success: true, data: { draftGeneration: 2, droppedProps: [] } }
+        : {
+            success: false,
+            error: "SELECTION_SOURCE_CONFLICT",
+            message:
+              "The source code has changed. Select the field again. Your changes are kept.",
+          },
+    );
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    expect(heading).toMatchObject({ fieldKey: "heading" });
+    const image = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    await flushFrames();
+
+    // Another field's input, refused at the old source and kept.
+    await typeHeading(heading, "Collections", "Kept heading");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    // The Position choice, refused the same way.
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.expectedSourceGeneration).toBe(1);
+
+    // The source moves on. The old selection no longer offers a change.
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, scope),
+    );
+    await flushFrames();
+    expect(
+      screen
+        .getByRole("combobox", { name: "Object position" })
+        .hasAttribute("data-disabled"),
+    ).toBe(true);
+
+    // A fresh selection and a new choice: that field alone, at the new source.
+    const again = await selectAndOpenStyles({ ...image, selectionRevision: 3 });
+    expect(again.hasAttribute("data-disabled")).toBe(false);
+    await choose(again, "Bottom");
+    expect(sent()).toHaveLength(3);
+    expect(sent()[2]!.expectedSourceGeneration).toBe(2);
+    expect(Object.keys(sent()[2]!.props as object)).toEqual(["items"]);
+    expect(itemsOf(sent()[2]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "bottom"],
+    ]);
+
+    // The kept heading was neither sent with it nor sent again afterwards,
+    // and it is still the author's, waiting for its own confirmation.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(3);
+    await typeHeadingKeptCheck(heading);
+    expect(reselectNotices(toasts)).toBeGreaterThan(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  async function typeHeadingKeptCheck(
+    report: Awaited<ReturnType<typeof reportImage>>,
+  ) {
+    fromPreview({ ...report, selectionRevision: 4 });
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    expect(await screen.findByDisplayValue("Kept heading")).toBeTruthy();
+  }
+
+  // A write whose outcome is unknown (no answer) is not upgraded, cleared or
+  // sent again because a Position choice is made beside it. The shell holds
+  // every later content write until an unanswered one is read back (#217's
+  // existing rule, not this control's); this read-back never answers here, so
+  // the choice waits, kept on screen, and the unanswered input is not resent.
+  it("does not resend or carry an unanswered input when a position is chosen", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      if ((data.props as Record<string, unknown>).heading !== undefined) {
+        throw new Error("offline");
+      }
+      return savedEcho(data);
+    });
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const image = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    await flushFrames();
+
+    await typeHeading(heading, "Collections", "Unanswered heading");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    // Only the one unanswered request, never repeated, and nothing carrying
+    // it at a newer baseline.
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.props).toEqual({ heading: "Unanswered heading" });
+    expect(sent()[0]!.expectedSourceGeneration).toBe(1);
+    // The choice is held, not dropped.
+    expect(
+      screen.getByRole("combobox", { name: "Object position" }).textContent,
+    ).toContain("Top");
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  it("shows a stored custom position as it is and writes nothing until one is chosen", async () => {
+    const fixture = showcase();
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.textContent).toContain("Custom (30% center)");
+
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    fireEvent.keyDown(document.activeElement ?? trigger, { key: "Escape" });
+    await flushFrames();
+    fireEvent.blur(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(
+      screen.getByRole("combobox", { name: "Object position" }).textContent,
+    ).toContain("Custom (30% center)");
+  });
+
+  it("leaves the Starter story image's position to Code: it is not a declared field", async () => {
+    const fixture: Fixture = {
+      path: STORY_PATH,
+      source: starterSource(STORY_PATH),
+      type: "image-with-text",
+      props: {
+        heading: "Story",
+        image: { src: "/story.png", alt: "Story" },
+        imagePosition: "center center",
+      },
+    };
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain("set in code, not by an editable field");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  it("leaves an image with no inline position alone: a class edit is not proven yet", async () => {
+    const fixture: Fixture = {
+      path: PLAIN_PATH,
+      source: PLAIN_SOURCE,
+      type: "plain-image",
+      props: { image: { src: "/plain.png" } },
+    };
+    const report = await reportImage(fixture, 0);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    expect(trigger.hasAttribute("data-disabled")).toBe(true);
+    expect(note()).toContain("isn't editable here for this image yet");
+    expect(
+      screen
+        .getByRole("combobox", { name: "Object fit" })
+        .hasAttribute("data-disabled"),
+    ).toBe(false);
+    expect(sent()).toHaveLength(0);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // The control for the held choice: once the unanswered input is read back
+  // as stored, it is acknowledged, not sent again, and the held choice leaves
+  // on its own, at the selection's baseline, with nothing else in it.
+  it("sends a held choice on its own once the unanswered input reads back as stored", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    let headingCalls = 0;
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      if ((data.props as Record<string, unknown>).heading !== undefined) {
+        headingCalls += 1;
+        throw new Error("offline");
+      }
+      return savedEcho(data);
+    });
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const image = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    let answer!: (value: unknown) => void;
+    getThemeEditor.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    await flushFrames();
+    await typeHeading(heading, "Collections", "Unanswered heading");
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(1);
+    expect(saveStatus()).not.toBe("Saved");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(getThemeEditor).toHaveBeenCalled());
+    // The heading did land, unanswered: the read-back shows it stored.
+    act(() =>
+      answer(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Unanswered heading", items: rows() },
+          2,
+        ),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    expect(headingCalls).toBe(1);
+    const after = sent().slice(1);
+    expect(after).toHaveLength(1);
+    expect(Object.keys(after[0]!.props as object)).toEqual(["items"]);
+    expect(after[0]!.expectedSourceGeneration).toBe(1);
+    expect(itemsOf(after[0]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "top"],
+    ]);
+    expect(
+      useThemeWorkspaceStore.getState().getAcceptedSourceGeneration(scope),
+    ).toBe(1);
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  /**
+   * Every write that left keeps row A as stored and, when it carries the
+   * choice, puts it on row B, the row that was selected.
+   */
+  function expectOnlySelectedRowWritten() {
+    for (const data of sent()) {
+      const items = (data.props as { items?: Array<Record<string, unknown>> })
+        .items;
+      if (!items) continue;
+      const a = items.find((row) => row.id === "row-a");
+      const b = items.find((row) => row.id === "row-b");
+      expect(a?.imagePosition).toBe("30% center");
+      expect(["top", undefined]).toContain(b?.imagePosition);
+    }
+  }
+
+  /** Chooses an option with the save debounce held, so it stays queued. */
+  async function chooseQueued(trigger: HTMLElement, label: string) {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await flushFrames();
+    const option = screen.getByRole("option", { name: label });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.keyDown(option, { key: "Enter" });
+    fireEvent.click(option);
+    expect(sent()).toHaveLength(0);
+  }
+
+  async function releaseQueued() {
+    try {
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+  }
+
+  // The editor reads the Theme again while the choice waits in the debounce:
+  // the rows it now holds are B, A. What leaves must still be row B's.
+  it("keeps a queued choice on its row when the editor reads the rows reordered before it leaves", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { editorContext, receive } = renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+
+    await chooseQueued(trigger, "Top");
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Collections", items: [rowB, rowA] },
+          2,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    await releaseQueued();
+
+    expectOnlySelectedRowWritten();
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // Another writer reorders the rows on the server while the choice waits:
+  // the write is refused as out of date, and taking the latest while keeping
+  // the author's change must not move the choice onto row A.
+  it("keeps a queued choice on its row when another writer reordered the rows and the latest is loaded", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { client, editorContext } = renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+
+    await chooseQueued(trigger, "Top");
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Collections", items: [rowB, rowA] },
+        7,
+      ) as never,
+    );
+    await releaseQueued();
+    expect(sent()).toHaveLength(1);
+    await waitFor(() => expect(saveStatus()).toBe("Out of date"));
+
+    updateSectionProps.mockResolvedValue({
+      success: true,
+      data: { draftGeneration: 8, droppedProps: [] },
+    } as never);
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expectOnlySelectedRowWritten();
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // The same race for an ordinary row field: a row's title typed in the
+  // Content panel, queued in the debounce, while the editor reads the rows
+  // back reordered. What leaves must still be row B's title, or nothing.
+  it("keeps a queued row title on its row when the editor reads the rows reordered before it leaves", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const title = await reportImage(fixture, 1, "h3");
+    expect(title).toMatchObject({
+      fieldPath: "items.1.title",
+      itemId: "row-b",
+    });
+    const { editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(title);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    // The selected row's own field comes first; the list editor below shows
+    // the same row's title again, written through the same pending path.
+    const field = (await screen.findAllByDisplayValue("Second"))[0]!;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Second edited" } });
+    fireEvent.blur(field);
+    expect(sent()).toHaveLength(0);
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Collections", items: [rowB, rowA] },
+          2,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    await releaseQueued();
+
+    for (const data of sent()) {
+      const items = (data.props as { items?: Array<Record<string, unknown>> })
+        .items;
+      if (!items) continue;
+      expect(items.find((row) => row.id === "row-a")?.title).toBe("First");
+      expect(["Second", "Second edited"]).toContain(
+        items.find((row) => row.id === "row-b")?.title,
+      );
+    }
+    expect(objposSavedFiles).toHaveLength(0);
+  });
+
+  // The composing snapshot, through the shell. Each write is composed on one
+  // read of the document and sent with that read's draft generation.
+
+  it("sends consecutive writes at the generations their own answers returned", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    renderEditor(fixture);
+    const trigger = await selectAndOpenStyles(report);
+    await choose(trigger, "Top");
+    await choose(trigger, "Bottom");
+    expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([1, 2]);
+    expect(itemsOf(sent()[1]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "bottom"],
+    ]);
+  });
+
+  it("refuses a write queued behind another once someone else's reorder is read, and ignores the late answer", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const image = await reportImage(fixture, 1);
+    const { editorContext, receive } = renderEditor(fixture);
+    let answerHeading!: (value: unknown) => void;
+    updateSectionProps.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerHeading = resolve;
+        }),
+    );
+    await flushFrames();
+    await typeHeading(heading, "Collections", "Mine");
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    // Chosen while the heading is still out: it waits behind it.
+    const trigger = await selectAndOpenStyles({
+      ...image,
+      selectionRevision: 2,
+    });
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(1);
+    // Someone else reorders the rows; the editor reads it.
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Collections", items: [rowB, rowA] },
+          5,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    // The heading's answer arrives late, for generation 1.
+    act(() => answerHeading(savedEcho(sent()[0] as never)));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    // Nothing reached row A, and the choice was not sent onto the reordered
+    // rows: it is out of date, kept for the author to decide.
+    expectOnlySelectedRowWritten();
+    expect(
+      sent().filter(
+        (data) => (data.props as Record<string, unknown>).items !== undefined,
+      ),
+    ).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(
+      screen.getByRole("combobox", { name: "Object position" }).textContent,
+    ).toContain("Top");
+  });
+
+  it("does not write over someone else's change to the same field", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const heading = await reportImage(fixture, 0, "h2");
+    const { editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(heading);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Collections");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Mine" } });
+    fireEvent.blur(field);
+    // Someone else changes the heading; the editor reads it.
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          { heading: "Theirs", items: rows() },
+          2,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    await releaseQueued();
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(
+      screen.getByRole("button", { name: "Load latest, keep mine" }),
+    ).toBeTruthy();
+  });
+
+  // The same field typed into again, once someone else's change to it has
+  // been read: the new keystrokes are made on the author's own copy, not on
+  // the document that was read, so they are not a reason to write over it.
+
+  /** Opens the section heading in Content and returns its field. */
+  async function openHeading(fixture: Fixture) {
+    const heading = await reportImage(fixture, 0, "h2");
+    const editor = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(heading);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const field = await screen.findByDisplayValue("Collections");
+    return { ...editor, field };
+  }
+  /** The read a refetch hands the editor: someone else's heading, at 2. */
+  const theirsAt2 = (
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+  ) =>
+    editorWith(editorContext, fixture, { heading: "Theirs", items: rows() }, 2)
+      .data as unknown as StorefrontThemeEditorDTO;
+
+  it("does not write over someone else's change when the author keeps typing in the field after it was refused", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Mine" } });
+    fireEvent.blur(field);
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await releaseQueued();
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+
+    // The author goes on typing in the same field, conflict shown.
+    const again = screen.getByDisplayValue("Mine");
+    fireEvent.input(again, { target: { value: "Mine again" } });
+    fireEvent.blur(again);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
+  });
+
+  /**
+   * Presses Load latest, keep mine on the document holding "Theirs" at 2:
+   * one write, at 2, carrying the author's newest heading, then saved.
+   */
+  async function keepMineAndExpectSaved(
+    client: QueryClient,
+    editorContext: StorefrontThemeEditorDTO,
+    fixture: Fixture,
+    mine: string,
+  ) {
+    if (echo) echo.props = { heading: "Theirs", items: rows() };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Theirs", items: rows() },
+        2,
+      ) as never,
+    );
+    const before = sent().length;
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(before + 1));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(before + 1);
+    const write = sent()[before]!;
+    expect(write.expectedDraftGeneration).toBe(2);
+    expect(write.props).toEqual({ heading: mine });
+    await waitFor(() => expect(saveStatus()).toBe("Unpublished"));
+  }
+
+  it("does not write over someone else's change read while the author's edit waits, when the field is typed into again before it leaves", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(field, { target: { value: "Mine" } });
+    fireEvent.blur(field);
+    // Read before the edit leaves; nothing has said "out of date" yet.
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    expect(saveStatus()).not.toBe("Out of date");
+    const again = screen.getByDisplayValue("Mine");
+    fireEvent.input(again, { target: { value: "Mine again" } });
+    fireEvent.blur(again);
+    // Restores real timers.
+    await releaseQueued();
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine again").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine again");
+  });
+
+  // The author is in the field when someone else's change to it is read:
+  // the input is not replaced under them, and what they type there was
+  // typed on the copy they were looking at.
+
+  it("does not replace the field the author is in, and refuses what they typed there on the older copy", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    // Typed, not yet left: a heading is written when the field is left.
+    (field as HTMLTextAreaElement).value = "Mine typed";
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // The same element, with the author's text.
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("Mine typed");
+
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Mine typed").length).toBeGreaterThan(0);
+
+    await keepMineAndExpectSaved(client, editorContext, fixture, "Mine typed");
+  });
+
+  it("writes nothing when the author leaves the field unchanged, and then shows someone else's change", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { editorContext, receive, field } = await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("Collections");
+
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).not.toBe("Out of date");
+    expect(screen.queryByDisplayValue("Collections")).toBeNull();
+    expect(await screen.findByDisplayValue("Theirs")).toBeTruthy();
+  });
+
+  it("keeps an IME composition in the field going when someone else's change is read", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { client, editorContext, receive, field } =
+      await openHeading(fixture);
+    act(() => {
+      field.focus();
+    });
+    fireEvent.compositionStart(field);
+    (field as HTMLTextAreaElement).value = "中";
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // Not remounted mid-composition: the same element, the composing text.
+    expect(field.isConnected).toBe(true);
+    expect((field as HTMLTextAreaElement).value).toBe("中");
+    (field as HTMLTextAreaElement).value = "中文";
+    fireEvent.compositionEnd(field, { data: "中文" });
+    act(() => {
+      field.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    await keepMineAndExpectSaved(client, editorContext, fixture, "中文");
+  });
+
+  it("counts what the author types in another field as made on the older copy while an update is held back", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const title = await reportImage(fixture, 1, "h3");
+    const { editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(title);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    // The selected row's own field, then the list editor's field for it.
+    const [selectedTitle, listTitle] =
+      await screen.findAllByDisplayValue("Second");
+    act(() => {
+      selectedTitle!.focus();
+    });
+    // Someone else retitles row B while the author is in its field: the
+    // update is held back, so both fields still show "Second".
+    act(() => {
+      receive(
+        editorWith(
+          editorContext,
+          fixture,
+          {
+            heading: "Collections",
+            items: [rowA, { ...rowB, title: "Second, theirs" }],
+          },
+          2,
+        ).data as unknown as StorefrontThemeEditorDTO,
+      );
+    });
+    await flushFrames();
+    const rowTitle = listTitle!;
+    expect((rowTitle as HTMLInputElement).value).toBe("Second");
+    act(() => {
+      rowTitle.focus();
+    });
+    fireEvent.input(rowTitle, { target: { value: "Second, mine" } });
+    act(() => {
+      rowTitle.blur();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    // Typed on the copy that still showed "Second": not sent over theirs.
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+  });
+
+  it("shows someone else's change to one field without touching what the author holds in another", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const title = await reportImage(fixture, 1, "h3");
+    const { client, editorContext, receive } = renderEditor(fixture);
+    await flushFrames();
+    fromPreview(title);
+    await flushFrames();
+    fireEvent.click(screen.getByRole("button", { name: /^Content$/ }));
+    const rowTitle = (await screen.findAllByDisplayValue("Second"))[0]!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fireEvent.input(rowTitle, { target: { value: "Second, mine" } });
+    fireEvent.blur(rowTitle);
+    // Someone else changes the heading only.
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await releaseQueued();
+
+    // The row title is still the author's; it was typed on the older copy,
+    // so it waits as out of date rather than going out over that read.
+    expect(screen.getAllByDisplayValue("Second, mine").length).toBeGreaterThan(
+      0,
+    );
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+
+    if (echo) echo.props = { heading: "Theirs", items: rows() };
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Theirs", items: rows() },
+        2,
+      ) as never,
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() => expect(sent()).toHaveLength(1));
+    // Only the author's field: the other writer's heading is not sent back.
+    expect(Object.keys(sent()[0]!.props as object)).toEqual(["items"]);
+    expect(itemsOf(sent()[0]!).map(([id, title]) => [id, title])).toEqual([
+      ["row-a", "First"],
+      ["row-b", "Second, mine"],
+    ]);
+    await waitFor(() => expect(saveStatus()).toBe("Unpublished"));
+  });
+
+  it("shows someone else's change to the field once it is read, when the author has nothing waiting", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { editorContext, receive } = await openHeading(fixture);
+    act(() => {
+      receive(theirsAt2(editorContext, fixture));
+    });
+    await flushFrames();
+    // What the author types next is typed on what they can see.
+    expect(screen.queryByDisplayValue("Collections")).toBeNull();
+    const field = await screen.findByDisplayValue("Theirs");
+    fireEvent.input(field, { target: { value: "Theirs, edited" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.expectedDraftGeneration).toBe(2);
+    expect((sent()[0]!.props as { heading?: string }).heading).toBe(
+      "Theirs, edited",
+    );
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("saves the author's consecutive edits to the field, each at the generation the last one returned", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const { field } = await openHeading(fixture);
+    fireEvent.input(field, { target: { value: "First" } });
+    fireEvent.blur(field);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const next = screen.getAllByDisplayValue("First")[0]!;
+    fireEvent.input(next, { target: { value: "Second" } });
+    fireEvent.blur(next);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([1, 2]);
+    expect(
+      sent().map((data) => (data.props as { heading?: string }).heading),
+    ).toEqual(["First", "Second"]);
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("reads the page first when an answer brought no document, and sends nothing if it cannot", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    // The first answer carries no document.
+    updateSectionProps.mockImplementationOnce(async ({ data }) => {
+      const answered = savedEcho(data);
+      return {
+        success: true,
+        data: {
+          draftGeneration: answered.data.draftGeneration,
+          droppedProps: [],
+        },
+      };
+    });
+    getThemeEditor.mockRejectedValueOnce(new Error("offline"));
+    const trigger = await selectAndOpenStyles(report);
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(1);
+    await choose(trigger, "Bottom");
+
+    // The page could not be read: the second choice is kept, not sent.
+    expect(sent()).toHaveLength(1);
+    expect(saveStatus()).toBe("Save failed");
+    expect(trigger.textContent).toContain("Bottom");
+
+    // Readable now: it is sent at the generation that read returned.
+    getThemeEditor.mockResolvedValue(
+      editorWith(
+        editorContext,
+        fixture,
+        {
+          heading: "Collections",
+          items: [rows()[0], { ...rows()[1], imagePosition: "top" }],
+        },
+        2,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(sent()).toHaveLength(2));
+    expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+    expect(itemsOf(sent()[1]!)).toEqual([
+      ["row-a", "First", "30% center"],
+      ["row-b", "Second", "bottom"],
+    ]);
+  });
+
+  it("does not resend an unanswered choice onto rows someone else reordered, found on Try again", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [rowA, rowB] = rows();
+    const fixture = showcase();
+    const report = await reportImage(fixture, 1);
+    const { editorContext } = renderEditor(fixture);
+    updateSectionProps.mockRejectedValueOnce(new Error("offline"));
+    const trigger = await selectAndOpenStyles(report);
+    await choose(trigger, "Top");
+    expect(sent()).toHaveLength(1);
+    await waitFor(() => expect(saveStatus()).toBe("Save failed"));
+
+    // Read back: it did not land, and someone else reordered the rows.
+    getThemeEditor.mockResolvedValue(
+      editorWith(
+        editorContext,
+        fixture,
+        { heading: "Collections", items: [rowB, rowA] },
+        4,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(sent()).toHaveLength(1);
+    expectOnlySelectedRowWritten();
+    expect(saveStatus()).toBe("Out of date");
+  });
+});
+
+describe("a list nothing stores yet, edited for the first time", () => {
+  // The rows on screen are the component's own defaults, without ids. The
+  // first edit gives them the ids the server would (normalizeRowIds), before
+  // the edit touches them; after that the list is the author's copy and the
+  // row identity guard applies to it like to any stored list.
+  const ENTRIES_PATH = "src/components/Entries.tsx";
+  const DEFAULTS = [{ title: "One" }, { title: "Two" }];
+  const entries = (storedProps?: Record<string, unknown>) => ({
+    path: ENTRIES_PATH,
+    type: "entries",
+    props: storedProps ?? {},
+    source: `export const contentFields = {
+  items: {
+    type: "array",
+    label: "Entries",
+    fields: { title: { type: "text", label: "Title", maxLength: 150 } },
+  },
+} as const;
+export default function Entries({ items = ${JSON.stringify(DEFAULTS)} }: { items?: { id?: string; title?: string }[] }) {
+  return <section>{items.map((item, index) => <h3 key={item.id ?? index}>{item.title}</h3>)}</section>;
+}`,
+  });
+  /** The ids the server would give the default rows of this section. */
+  const identified = () =>
+    normalizeDocumentRowIds(
+      {
+        version: 1,
+        sections: [{ id: "section", props: { items: DEFAULTS } }],
+      },
+      context.templates[0]!.id,
+    ).value.sections[0]!.props.items as Array<{ id: string; title: string }>;
+  const sent = () =>
+    updateSectionProps.mock.calls.map(
+      (call) => call[0].data as Record<string, unknown>,
+    );
+  const rowsSent = (data: Record<string, unknown>) =>
+    (
+      (data.props as { items?: Array<Record<string, unknown>> }).items ?? []
+    ).map((row) => [row.id, row.title]);
+
+  beforeAll(() => {
+    // Every browser this runs in has CSS.escape; this jsdom does not.
+    if (typeof CSS === "undefined" || typeof CSS.escape !== "function") {
+      (globalThis as { CSS?: unknown }).CSS = {
+        escape: (value: string) => value.replace(/([^\w-])/g, "\\$1"),
+      };
+    }
+  });
+  let draftGeneration = 1;
+  let stored: Record<string, unknown> = {};
+  beforeEach(() => {
+    draftGeneration = 1;
+    stored = {};
+    updateSectionProps.mockReset();
+    updateSectionProps.mockImplementation(async ({ data }) => {
+      stored = { ...stored, ...(data.props as Record<string, unknown>) };
+      draftGeneration = data.expectedDraftGeneration + 1;
+      return {
+        success: true,
+        data: {
+          draftGeneration,
+          droppedProps: [],
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "section",
+                type: "entries",
+                componentRef: ENTRIES_PATH,
+                enabled: true,
+                props: stored,
+              },
+            ],
+          },
+        },
+      };
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  async function reportTitle(props: Record<string, unknown>, index: number) {
+    const fixture = entries(props);
+    const route = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Section from "../components/Entries";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><Section {...content("section")} /></main>;
+}`;
+    const { html } = await objposRenderRoute({
+      files: [
+        ...objposPlatformFiles(),
+        { path: fixture.path, content: fixture.source },
+        { path: "src/routes/index.tsx", content: route },
+      ],
+      documents: {
+        index: {
+          version: 1,
+          sections: [{ id: "section", type: "entries", enabled: true, props }],
+        } as never,
+      },
+    });
+    const root = objposMount(html);
+    const item = objposResolveSelectable(
+      root.querySelectorAll("h3")[index] ?? null,
+    );
+    document.body.replaceChildren();
+    expect(item).toBeTruthy();
+    return {
+      type: "morph:storefront-preview-select-section",
+      sectionId: item!.sectionId,
+      componentType: item!.type,
+      sourceLocation: item!.element.dataset.morphLoc ?? null,
+      nodeId: item!.element.getAttribute("data-morph-node") || undefined,
+      elementKey: item!.elementKey,
+      fieldKey: item!.fieldKey,
+      field:
+        item!.descendantFields.length > 0
+          ? null
+          : (item!.fieldKey ?? item!.elementKey),
+      descendantFields: item!.descendantFields,
+      itemId: item!.itemId,
+      contentUnavailable: item!.contentUnavailable,
+      ...objposSelectionMetadata(item!),
+      styleRevision: 0,
+      selectionRevision: 1,
+      className: item!.element.getAttribute("class") ?? "",
+      isSection: item!.element === item!.section,
+      inspectorOverride: item!.element.dataset.morphInspector ?? null,
+      computedStyle: null,
+      parentComputedStyle: null,
+      sectionComputedStyle: null,
+      documentRect: { top: 0, height: 100 },
+    };
+  }
+
+  function renderEntries(props: Record<string, unknown>, atGeneration = 1) {
+    const fixture = entries(props);
+    const editorContext = editorAt(props, atGeneration);
+    const client = readyQueryClient();
+    client.setQueryData(
+      storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+      {
+        files: [
+          {
+            id: "file-section",
+            storefrontId: "storefront-1",
+            themeId: "theme-1",
+            path: fixture.path,
+            content: fixture.source,
+            mimeType: "text/typescript",
+            isEntry: false,
+            version: 1,
+            createdAt: "2026-08-20T00:00:00.000Z",
+            updatedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ],
+        tree: [],
+        sourceGeneration: 1,
+        latestPublishedRevision: null,
+      } as never,
+    );
+    const shell = (current: StorefrontThemeEditorDTO) => (
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={current}
+          search={{ ...baseSearch, section: "section" }}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(shell(editorContext));
+    return {
+      receive: (next: StorefrontThemeEditorDTO) => rerender(shell(next)),
+    };
+  }
+
+  function editorAt(props: Record<string, unknown>, atGeneration: number) {
+    return {
+      ...context,
+      templates: [
+        {
+          ...context.templates[0]!,
+          draftGeneration: atGeneration,
+          document: {
+            version: 1,
+            sections: [
+              {
+                id: "section",
+                type: "entries",
+                componentRef: ENTRIES_PATH,
+                enabled: true,
+                props,
+              },
+            ],
+          },
+        },
+      ],
+    } as unknown as StorefrontThemeEditorDTO;
+  }
+
+  /**
+   * Opens the editor on `props` and selects one title on the canvas. The
+   * canvas report is taken first: rendering it replaces the document body.
+   */
+  async function openTitle(
+    props: Record<string, unknown>,
+    index: number,
+    atGeneration = 1,
+  ) {
+    const report = await reportTitle(props, index);
+    const editor = renderEntries(props, atGeneration);
+    await flushFrames();
+    fromPreview(report);
+    await flushFrames();
+    const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+    if (contentTab) fireEvent.click(contentTab);
+    await flushFrames();
+    return { report, ...editor };
+  }
+
+  const type = async (shown: string, value: string) => {
+    const field = (await screen.findAllByDisplayValue(shown))[0]!;
+    fireEvent.input(field, { target: { value } });
+    fireEvent.blur(field);
+  };
+  // Past the content write's 300 ms debounce and its answer.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 1_200));
+
+  it("gives the default rows their ids before the first edit, and saves the whole list", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [one, two] = identified();
+    expect(one!.id.startsWith("morph-mig-")).toBe(true);
+    const { report } = await openTitle({}, 1);
+    // Nothing stores the rows, so the canvas cannot name the row it clicked.
+    expect(report).toMatchObject({ fieldPath: "items.1.title", itemId: null });
+
+    await type("Two", "Two edited");
+    await settle();
+
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]!.expectedDraftGeneration).toBe(1);
+    expect(rowsSent(sent()[0]!)).toEqual([
+      [one!.id, "One"],
+      [two!.id, "Two edited"],
+    ]);
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("stores nothing, and gives no row an id, when the first edit changes nothing", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    await openTitle({}, 1);
+
+    await type("Two", "Two");
+    await settle();
+
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).not.toBe("Out of date");
+  });
+
+  it("keeps the same ids through the edits that follow", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [one, two] = identified();
+    // The other row is selected on the canvas once the list is stored,
+    // which by then names it by its id. (Taken first: it replaces the body.)
+    const firstRow = await reportTitle(
+      { items: [one, { ...two, title: "Two edited" }] },
+      0,
+    );
+    expect(firstRow).toMatchObject({
+      fieldPath: "items.0.title",
+      itemId: one!.id,
+    });
+    await openTitle({}, 1);
+
+    await type("Two", "Two edited");
+    await settle();
+    await type("Two edited", "Two again");
+    await settle();
+    fromPreview(firstRow);
+    await flushFrames();
+    await type("One", "One edited");
+    await settle();
+
+    expect(sent().map((data) => data.expectedDraftGeneration)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(sent().map(rowsSent)).toEqual([
+      [
+        [one!.id, "One"],
+        [two!.id, "Two edited"],
+      ],
+      [
+        [one!.id, "One"],
+        [two!.id, "Two again"],
+      ],
+      [
+        [one!.id, "One edited"],
+        [two!.id, "Two again"],
+      ],
+    ]);
+    expect(saveStatus()).toBe("Unpublished");
+  });
+
+  it("addresses the same rows by those ids after a reload", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [one, two] = identified();
+    await openTitle({}, 1);
+    await type("Two", "Two edited");
+    await settle();
+    expect(sent()).toHaveLength(1);
+    cleanup();
+
+    // The editor opened again on what the server now holds.
+    const reloaded = { ...stored };
+    const { report } = await openTitle(reloaded, 1, draftGeneration);
+    expect(report).toMatchObject({
+      fieldPath: "items.1.title",
+      itemId: two!.id,
+    });
+    await type("Two edited", "Two after reload");
+    await settle();
+
+    expect(sent()).toHaveLength(2);
+    expect(sent()[1]!.expectedDraftGeneration).toBe(2);
+    expect(rowsSent(sent()[1]!)).toEqual([
+      [one!.id, "One"],
+      [two!.id, "Two after reload"],
+    ]);
+  });
+
+  it("refuses an edit still queued when the list is read back stored in another order", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    const [one, two] = identified();
+    const { receive } = await openTitle({}, 1);
+
+    const field = (await screen.findAllByDisplayValue("Two"))[0]!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.input(field, { target: { value: "Two edited" } });
+      fireEvent.blur(field);
+      expect(sent()).toHaveLength(0);
+      // Someone else stored the same rows, reordered, before this one left.
+      act(() => {
+        receive(editorAt({ items: [two, one] }, 2));
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+
+    // Nothing lands on the row now at index 1, and the input is kept.
+    expect(sent()).toHaveLength(0);
+    expect(saveStatus()).toBe("Out of date");
+    expect(screen.getAllByDisplayValue("Two edited").length).toBeGreaterThan(0);
   });
 });

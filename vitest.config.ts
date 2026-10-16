@@ -149,7 +149,9 @@ export default defineConfig({
           ...SHARED_TEST_OPTIONS,
           name: "unit",
           environment: "jsdom",
-          include: ["src/**/*.test.{ts,tsx}"],
+          // `packages/` holds code that ships apart from the app (the SDK) and
+          // is tested with it.
+          include: ["src/**/*.test.{ts,tsx}", "packages/*/src/**/*.test.ts"],
           // Vitest's own defaults are spread back in: setting `exclude`
           // replaces them, and dropping `node_modules` would collect the
           // world.

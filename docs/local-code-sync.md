@@ -38,7 +38,7 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 
 **確認的範圍。** 確認畫面列出 Morph 位址、商店、Theme、本機資料夾，以及**每一個**要刪除的檔案和方向；超過 50 個時完整清單寫到 `.morph/pending-deletions.txt` 並告訴你路徑。`--allow-mass-delete` 只核准該次執行的**第一個**大量刪除，同一次執行再遇到就照常停下，不會變成長期放行。
 
-**確認後重新比對。** 等待回答可能要幾分鐘。回答「是」之後、套用之前，工具會重新讀取 Morph 的 generation 並重新掃描本機；任一邊有變，這次的規劃就作廢，下一輪從最新狀態重新規劃、需要時再問一次，阻擋標記保留。刪 Morph 檔案本來就帶版本前提（OCC），這一步另外保護了「本機跟著刪」與「本機在等待期間又改回來」的情況。
+**確認後重新比對。** 等待回答可能要幾分鐘。回答「是」之後、套用之前，工具會重新讀取 Morph 的 generation 並重新掃描本機；任一邊有變，這次的規劃就作廢，下一輪從最新狀態重新規劃、需要時再問一次，阻擋標記保留。刪 Morph 檔案本來就帶版本前提（OCC），這一步另外保護了「本機跟著刪」與「本機在等待期間又改回來」的情況。重新比對本身失敗（例如 `.morphignore` 讀不到、連不到 Morph）時同樣什麼都不套用，而且啟動時的「是」不算用掉：下一輪要套用前會再問一次。
 
 **結果不明時不重送。** 工具不會自動重試存檔。核准的刪除如果請求失敗或回應遺失，阻擋標記保留（只有核准的刪除全部確認送達後才清除），下一輪先讀回 Morph：已經刪掉的就不再列入，剩下的依阻擋規則重新詢問。核准只屬於那一次嘗試，不會延用到重新規劃後的清單。
 
@@ -50,7 +50,27 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 | --- | --- |
 | `status` | 只列出現在會做什麼，不套用 |
 | `resolve <path> --keep local\|remote` | 決定衝突檔要保留哪一邊；下次同步時套用 |
+| `restore <path…>` 或 `restore --all` | 從 Morph 取回本機誤刪或改壞的檔案，不必重新 `link`（見下節） |
 | `logout` | 在伺服器撤銷 token，並從本機移除 |
+
+### 從 Morph 還原
+
+本機檔案誤刪或改壞時，用 `restore` 把 Morph 的版本取回，不必刪掉 `.morph/sync-state.json` 重新 `link`：
+
+```bash
+pnpm morph:sync restore src/routes/index.tsx --dir ../my-theme
+pnpm morph:sync restore --all --dir ../my-theme
+```
+
+- **先停掉 `start`。** 執行中的同步可能在基準更新前就把本機的刪除或改壞送上 Morph。
+- **只讀 Morph，不寫 Morph。** 每個取回的檔案寫成剛讀到的版本，並把基準設為該版本與內容；下次同步看到兩邊一致，不會把本機的刪除或改壞當成變更送上去。
+- **本機舊檔先備份。** 要被覆蓋的本機檔案先複製到 `.morph/trash/`；寫回時保留該檔原本的換行。
+- **先列出再套用。** 列出要覆蓋、要補回、已一致、Morph 沒有、不能還原（Morph 中的二進位檔、不同步的路徑）的檔案，確認後才寫。`--yes` 可在非互動環境核准；無法詢問又沒有 `--yes` 就不套用。
+- **確認後重新比對。** 回答「是」之後，Morph 的 generation 有變就整批作廢、什麼都不寫，請再執行一次；等待期間本機又改過的檔案會略過並列出，你的修改保留。
+- **只取回 Morph 有的檔案。** 只在本機的檔案不動；`--all` 也不會刪除任何本機檔案。`.morphignore` 排除的路徑不取回：被忽略的路徑兩個方向都不同步，`restore` 也一樣，判斷方式與同步相同（檔案不見時沿用上次同步的規則，並顯示同樣的提醒）。`restore` 不更新 `ignoreHistory`，那是同步輪次的事。
+- **讀不到 `.morphignore` 時不取回。** 檔案在但讀取失敗，`restore` 在寫入任何檔案前就停下，印出一行 `Local folder problem, not Morph: …` 並以非零碼結束。等待確認期間改了 `.morphignore`，這次的規劃也作廢，什麼都不寫，請再執行一次。
+- **無法解碼的本機檔案也先備份。** 不是 UTF-8 的檔案在工具看來像是不存在，覆蓋前一樣先複製到 `.morph/trash/`。
+- **大量刪除被擋下之後。** 本機被清空、同步因大量刪除停下時，`restore --all` 把檔案取回；下一次同步已沒有刪除要送出，阻擋標記隨之解除。
 
 ## 規則
 
@@ -74,6 +94,17 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 
 伺服器端用同一套規則拒絕寫入，不信任工具送來的內容。
 
+**`.morphignore` 兩個方向都不碰。** 被忽略的路徑不下載、不上傳，任一邊都不刪除；本機有、Morph 也有，各自保留各自的內容。規則只看本機資料夾的 `.morphignore`，每一輪重新讀取。
+
+- **同步過之後才加進 `.morphignore`：** 該路徑在 `.morph/sync-state.json` 的基準直接丟掉，不據此動作。之後任一邊刪掉或改了它，都不會傳到另一邊。
+- **之後又從 `.morphignore` 拿掉：** 因為沒有基準，兩邊的檔案都當成新檔：只有一邊有就複製到另一邊（不會刪除），兩邊內容相同就直接記為一致，不同就標成衝突、兩份都保留。
+- **要取消忽略，請把 `.morphignore` 寫成空檔或刪掉那幾行，不要刪掉檔案。** 見下一點。
+- **`.morphignore` 消失（檔案消失保護）：** 每一輪成功套用後，工具會在 `.morph/sync-state.json` 記下這一輪從檔案讀到的規則（`ignoreHistory`）。之後檔案不見了（編輯器先刪後寫、`git checkout` 到沒有這個檔的分支、誤刪），工具沿用上次的規則，不會因此把原本忽略的本機檔案送上 Morph，也不會把 Morph 的拿下來；`start` 會提醒一次、`status` 每次都提醒：`.morphignore is missing; still leaving out what it listed at the last sync. …`。紀錄只在一輪真正套用完成時更新，被問、重試、失敗的輪次都不更新；沿用上次規則的輪次也不重記。`status` 本來在沒有待確認變更時就會寫入 state，紀錄只隨那次寫入一起存，不另外寫入；有待確認變更時 `status` 什麼都不寫。確認期間規則的來源改變（例如檔案又出現，文字相同），這次規劃也作廢重來。
+  **這個保護不涵蓋：** 檔案被清空（空檔就是明確取消忽略）、沒有 `ignoreHistory` 的舊 state（檔案不存在時仍當成沒有規則，直到成功同步一輪）、以及從 Morph 下載下來、放寬了規則的 `.morphignore`。
+- **讀不到 `.morphignore`：** 檔案不存在時依上一點處理（沒有紀錄就當成沒有規則）。檔案在但讀取失敗（權限、I/O 錯誤等），這一輪整個中止：兩邊檔案與基準都不動，下一輪重新讀取再規劃。不會把讀取失敗當成「沒有規則」繼續同步或刪除。`start` 會顯示 `Local folder problem, not Morph; trying again: …`，修好後自動恢復；`status` 印出一行 `Local folder problem, not Morph: …` 並以非零碼結束。連不到 Morph 等遠端錯誤仍顯示 `Sync failed; reading Morph again …`。
+- **等待確認時改了 `.morphignore`：** 規劃用的規則和套用前重新掃描讀到的不同，這次的規劃作廢，下一輪用新規則重新規劃、需要時再問。規劃只用一份規則，不混用前後兩次讀取。
+- 伺服器端不知道 `.morphignore`：它只是本機工具的設定，不是權限邊界。
+
 ## 授權
 
 - token 只能讀寫**這一個 Theme 的原始碼檔案**：不能發布、不能 rollback、碰不到其他商店資料。
@@ -90,7 +121,7 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 - **編輯器不會即時顯示本機的修改。** 存進工作區了，但已開著的 Code 分頁要重新開啟才看得到。Code 模式內的衝突標示是第 2 階段。
 - **沒有請求速率限制。** 有單次批次與檔案大小上限（200 個檔案、單檔 1 MiB）。
 - 要從 Morph repo 執行，還不是獨立套件。
-- 本機誤刪後，沒有「從 Morph 還原」的指令；目前要刪掉 `.morph/sync-state.json` 再重新 `link`，缺少的檔案才會當成新檔下載。
+- `restore` 不能還原二進位檔（原型不同步二進位檔），也不會在 `start` 執行中偵測到它；兩者並行時以 `start` 的狀態為準，所以請先停掉 `start`。
 - 從 Morph 編輯器看到的過時檔案再存檔，會被 OCC 擋下並提示。提示說來源「可能」是另一個分頁、另一個人或本機同步；系統無法分辨實際是哪一個，所以只列出可能性。
 
 ## 輪詢與費用
@@ -114,4 +145,5 @@ Morph 的工作區仍是唯一的存放處；本機是它的工作副本。
 ## 驗證
 
 - `e2e/local-code-sync.spec.ts`：真實 dev server 與 D1，編輯器產生 token，真正的 CLI 連結暫存資料夾，驗證兩個方向、CRLF 不回傳、平台檔不上傳、衝突保留兩份與 `resolve`、logout 後 token 失效。
+- `restore`：`src/lib/storefront/local-dev/theme-sync/sync-restore.test.ts`（真實 client 與 sync API handler、記憶體中的工作區與資料夾）與 `sync-local-fs.test.ts`（磁碟上的備份）。經真實 dev server 的 CLI 驗收在 `e2e/local-code-sync.spec.ts`（「restore brings local files back from Morph without relinking」：誤刪、改壞、清空後大量刪除被擋下再 `restore --all`）。
 - 單元與整合測試在 `src/lib/storefront/local-dev/theme-sync/`、`src/server/storefront/theme-sync-api.test.ts`、`src/lib/storefront/service/theme-sync/`。

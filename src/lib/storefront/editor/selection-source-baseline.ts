@@ -58,6 +58,40 @@ export function selectionSourceIsCurrent(
 }
 
 /**
+ * The source generation a proven field's write is staged at.
+ *
+ * A field the selected element provably binds without being its selected
+ * field (an image's position beside its `image`) has no baseline of its own:
+ * it is held to the one its selection captured. In a list that holds only
+ * while the stored row at the field's index is still the row the selection
+ * named by id; a row moved since answers `null`, so the write is refused for
+ * a fresh selection rather than given to whichever row took the index.
+ * Nothing here advances or copies a baseline.
+ */
+export function provenFieldSourceGeneration(args: {
+  /** The section's props as stored, not as edited locally. */
+  stored: Readonly<Record<string, unknown>>;
+  path: string;
+  itemId: string | null;
+  selectionBaseline: SelectionSourceBaseline | null;
+  readPath: (props: Readonly<Record<string, unknown>>, path: string) => unknown;
+}): number | null {
+  const rowPath = args.path.split(".").slice(0, -1).join(".");
+  if (rowPath) {
+    const row = args.readPath(args.stored, rowPath);
+    if (
+      !args.itemId ||
+      !row ||
+      typeof row !== "object" ||
+      (row as { id?: unknown }).id !== args.itemId
+    ) {
+      return null;
+    }
+  }
+  return args.selectionBaseline?.sourceGeneration ?? null;
+}
+
+/**
  * Only the acknowledged text-promotion operation may advance source while
  * preserving its own selection. Ordinary source edits require reselection.
  * The caller supplies this operation's sent/returned generations, never a
