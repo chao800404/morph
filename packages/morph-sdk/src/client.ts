@@ -11,6 +11,8 @@ import type {
 import { absolutizeMorphPaths } from "./urls";
 
 const TIMEOUT_MS = 15_000;
+/** The same cap as the local development proxy (`DEFAULT_MAX_BYTES`). */
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PATH_LENGTH = 500;
 const MAX_QUERY_LENGTH = 200;
 const MAX_PAGE = 10_000;
@@ -33,8 +35,9 @@ function isInteger(value: unknown): value is number {
 
 /**
  * The origin every read goes to. Strict on purpose: an address with a path,
- * credentials or another scheme is refused rather than trimmed, so the
- * origin a site names is exactly the one it reads.
+ * query, credentials or another scheme is refused rather than trimmed, so
+ * the origin a site names is exactly the one it reads. The one exception is
+ * a single trailing `/`, which names the same origin.
  */
 function parseBaseUrl(value: unknown): string {
   if (typeof value !== "string") {
@@ -50,7 +53,7 @@ function parseBaseUrl(value: unknown): string {
     (url.protocol !== "https:" && url.protocol !== "http:") ||
     url.username ||
     url.password ||
-    url.origin !== value
+    (value !== url.origin && value !== url.origin + "/")
   ) {
     throw new MorphError("invalid_content_origin", null);
   }
@@ -67,6 +70,53 @@ function parseBaseUrl(value: unknown): string {
 function inBrowser(): boolean {
   const scope = globalThis as { window?: unknown; document?: unknown };
   return scope.window !== undefined && scope.document !== undefined;
+}
+
+/** Stops a body that will not be read, without waiting on it. */
+function discard(response: Response): void {
+  response.body?.cancel().catch(() => {});
+}
+
+/**
+ * Reads a body as text, counting bytes as they arrive and stopping at the
+ * cap rather than after it. A declared length over the cap is refused before
+ * anything is read.
+ */
+async function readCapped(
+  response: Response,
+  resource: Exclude<MorphErrorResource, null>,
+): Promise<string> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    discard(response);
+    throw new MorphError("response_too_large", resource, response.status);
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    let next: ReadableStreamReadResult<Uint8Array>;
+    try {
+      next = await reader.read();
+    } catch {
+      throw new MorphError("store_unreachable", resource, response.status);
+    }
+    if (next.done) break;
+    total += next.value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      reader.cancel().catch(() => {});
+      throw new MorphError("response_too_large", resource, response.status);
+    }
+    chunks.push(next.value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -92,18 +142,25 @@ export function createMorph(options: MorphOptions): Morph {
         method: "GET",
         headers: { accept: "application/json" },
         credentials: "omit",
+        // A redirect is not followed: the origin a site names is the only one
+        // it reads from.
+        redirect: "manual",
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch {
       // Not rethrown: the underlying error names the address.
       throw new MorphError("store_unreachable", resource);
     }
-    let text: string;
-    try {
-      text = await response.text();
-    } catch {
-      throw new MorphError("store_unreachable", resource, response.status);
+    // A browser reports a refused redirect as an opaque response with status
+    // 0; a server runtime returns the 3xx itself. Neither body is read.
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      discard(response);
+      throw new MorphError("redirect_refused", resource, response.status);
     }
+    const text = await readCapped(response, resource);
     let body: unknown;
     try {
       body = JSON.parse(text);

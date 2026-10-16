@@ -84,7 +84,11 @@ describe("createMorph", () => {
   it.each([
     ["not a URL", "shop.example.com"],
     ["a path", "https://shop.example.com/store"],
-    ["a trailing slash", "https://shop.example.com/"],
+    ["a second trailing slash", "https://shop.example.com//"],
+    ["a path ending in a slash", "https://shop.example.com/store/"],
+    ["a query after the slash", "https://shop.example.com/?x=1"],
+    ["a fragment", "https://shop.example.com/#top"],
+    ["credentials and a slash", "https://user:secret@shop.example.com/"],
     ["a query", "https://shop.example.com?x=1"],
     ["credentials", "https://user:secret@shop.example.com"],
     ["another scheme", "ftp://shop.example.com"],
@@ -104,6 +108,14 @@ describe("createMorph", () => {
     // The address is not repeated back, credentials included.
     expect((error as Error).message).not.toContain("secret");
     expect((error as Error).message).not.toContain("shop.example.com");
+  });
+
+  it("accepts one trailing slash and drops it", async () => {
+    const { fetch, calls } = fakeFetch(() =>
+      json({ slots: {}, hiddenSlots: [] }),
+    );
+    await createMorph({ baseUrl: BASE + "/", fetch }).pages.get("/");
+    expect(calls[0]!.url).toBe(BASE + "/_morph/content?path=%2F");
   });
 
   it("uses the global fetch when none is given", async () => {
@@ -140,6 +152,7 @@ describe("pages.get", () => {
     expect(calls[0]!.init).toMatchObject({
       method: "GET",
       credentials: "omit",
+      redirect: "manual",
     });
     expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
   });
@@ -300,13 +313,15 @@ describe("pages.get", () => {
 
   it("reports a body that breaks off as unreachable", async () => {
     const fetch: MorphFetch = async () =>
-      ({
-        status: 200,
-        ok: true,
-        text: async () => {
-          throw new Error("terminated");
-        },
-      }) as unknown as Response;
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"slots":'));
+            controller.error(new Error("terminated"));
+          },
+        }),
+        { status: 200 },
+      );
     const error = await failure(
       createMorph({ baseUrl: BASE, fetch }).pages.get("/"),
     );
@@ -321,6 +336,175 @@ describe("pages.get", () => {
       createMorph({ baseUrl: BASE, fetch }).pages.get("/"),
     );
     expect(error.message).not.toMatch(/token|abc123|srv/);
+  });
+});
+
+describe("redirects", () => {
+  /** A body that records whether anything read it. */
+  function watchedBody() {
+    const watch = { pulled: 0 };
+    const body = new ReadableStream(
+      {
+        pull(controller) {
+          watch.pulled += 1;
+          controller.enqueue(new TextEncoder().encode("{}"));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { watch, body };
+  }
+
+  it.each([301, 302, 303, 307, 308])(
+    "refuses a %i without following it or reading its body",
+    async (status) => {
+      const { watch, body } = watchedBody();
+      const { fetch, calls } = fakeFetch(
+        () =>
+          new Response(body, {
+            status,
+            headers: { location: "https://elsewhere.example/" },
+          }),
+      );
+      const morph = createMorph({ baseUrl: BASE, fetch });
+
+      const page = await failure(morph.pages.get("/"));
+      expect(page).toMatchObject({
+        code: "redirect_refused",
+        resource: "page",
+        status,
+      });
+      expect(page.message).not.toContain("elsewhere");
+      expect(calls).toHaveLength(1);
+      expect(watch.pulled).toBe(0);
+    },
+  );
+
+  it("refuses an opaque redirect, as a browser reports one", async () => {
+    // What `redirect: "manual"` yields in a browser: status 0, no body.
+    const fetch: MorphFetch = async () =>
+      ({
+        type: "opaqueredirect",
+        status: 0,
+        ok: false,
+        headers: new Headers(),
+        body: null,
+      }) as unknown as Response;
+    const morph = createMorph({ baseUrl: BASE, fetch });
+
+    expect(await failure(morph.products.get("linen-shirt"))).toMatchObject({
+      code: "redirect_refused",
+      resource: "product",
+      status: 0,
+    });
+    expect(await failure(morph.products.list())).toMatchObject({
+      code: "redirect_refused",
+    });
+  });
+
+  it("refuses a redirect for a product before deciding whether it exists", async () => {
+    const { fetch } = fakeFetch(
+      () => new Response(null, { status: 302, headers: { location: "/x" } }),
+    );
+    expect(
+      await failure(
+        createMorph({ baseUrl: BASE, fetch }).products.get("linen-shirt"),
+      ),
+    ).toMatchObject({ code: "redirect_refused", status: 302 });
+  });
+});
+
+describe("response size", () => {
+  const LIMIT = 2 * 1024 * 1024;
+
+  /** A page body of exactly `size` bytes. */
+  function pageOfSize(size: number): string {
+    const head = '{"slots":{"hero":{"text":"';
+    const tail = '"}},"hiddenSlots":[]}';
+    return head + "a".repeat(size - head.length - tail.length) + tail;
+  }
+
+  /** Streams `total` bytes in chunks, recording how many were pulled. */
+  function streamOf(total: number, chunk = 256 * 1024) {
+    const watch = { pulled: 0 };
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          watch.pulled += 1;
+          const size = Math.min(chunk, total - sent);
+          controller.enqueue(new Uint8Array(size).fill(0x61));
+          sent += size;
+          if (sent >= total) controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { watch, body };
+  }
+
+  it("reads a response of exactly 2 MB", async () => {
+    const text = pageOfSize(LIMIT);
+    expect(new TextEncoder().encode(text).byteLength).toBe(LIMIT);
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(text, {
+          status: 200,
+          headers: { "content-length": String(LIMIT) },
+        }),
+    );
+    const page = await createMorph({ baseUrl: BASE, fetch }).pages.get("/");
+    expect(page.hero.text).toHaveLength(LIMIT - 47);
+  });
+
+  it("refuses one byte over 2 MB", async () => {
+    const { fetch } = fakeFetch(
+      () => new Response(pageOfSize(LIMIT + 1), { status: 200 }),
+    );
+    expect(
+      await failure(createMorph({ baseUrl: BASE, fetch }).pages.get("/")),
+    ).toMatchObject({
+      code: "response_too_large",
+      resource: "page",
+      status: 200,
+    });
+  });
+
+  it("refuses a declared length over 2 MB without reading the body", async () => {
+    const { watch, body } = streamOf(LIMIT + 1);
+    const { fetch } = fakeFetch(
+      () =>
+        new Response(body, {
+          status: 200,
+          headers: { "content-length": String(LIMIT + 1) },
+        }),
+    );
+    expect(
+      await failure(createMorph({ baseUrl: BASE, fetch }).products.list()),
+    ).toMatchObject({ code: "response_too_large", resource: "product" });
+    expect(watch.pulled).toBe(0);
+  });
+
+  it("stops reading a stream with no declared length once it passes 2 MB", async () => {
+    // 16 MB on offer in 256 KB chunks; the cap is passed on the 9th.
+    const { watch, body } = streamOf(16 * LIMIT);
+    const { fetch } = fakeFetch(() => new Response(body, { status: 200 }));
+    expect(
+      await failure(
+        createMorph({ baseUrl: BASE, fetch }).products.get("linen-shirt"),
+      ),
+    ).toMatchObject({ code: "response_too_large", resource: "product" });
+    expect(watch.pulled).toBeLessThanOrEqual(10);
+  });
+
+  it("applies the cap to an error answer too", async () => {
+    const { watch, body } = streamOf(16 * LIMIT);
+    const { fetch } = fakeFetch(() => new Response(body, { status: 500 }));
+    expect(
+      await failure(createMorph({ baseUrl: BASE, fetch }).pages.get("/")),
+    ).toMatchObject({ code: "response_too_large", status: 500 });
+    expect(watch.pulled).toBeLessThanOrEqual(10);
   });
 });
 

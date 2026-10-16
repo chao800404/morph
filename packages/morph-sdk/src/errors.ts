@@ -3,11 +3,12 @@
  * and treat the rest alike.
  *
  * The first ten are the Starter's page codes, word for word, so a page read
- * through the SDK fails the way a page read through the Starter does. Two of
- * them are declared but not produced in v0, see `README.md`:
- * `no_content_source` (v0 always has a base URL) and the redirect / size pair
- * (`redirect_refused`, `response_too_large`), which wait on the decision
- * recorded in #221.
+ * through the SDK fails the way a page read through the Starter does. One of
+ * them is declared but not produced in v0: `no_content_source`, because v0
+ * always has a base URL.
+ *
+ * `invalid_content_origin` also covers `pages.get` called in a browser, where
+ * v0 does not read pages at all; see `README.md`.
  */
 export type MorphErrorCode =
   | "no_content_source"

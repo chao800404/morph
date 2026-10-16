@@ -113,8 +113,8 @@ export type MorphFetch = (
 export type MorphOptions = Readonly<{
   /**
    * The origin Morph serves the store's content on, e.g.
-   * `https://shop.example.com`. In v0 this is the merchant domain, which must
-   * have a published Theme release.
+   * `https://shop.example.com` (one trailing `/` is accepted). In v0 this is
+   * the merchant domain, which must have a published Theme release.
    */
   baseUrl: string;
   /** Defaults to the global `fetch`. */
@@ -123,7 +123,11 @@ export type MorphOptions = Readonly<{
 
 export type Morph = Readonly<{
   pages: Readonly<{
-    /** Published content for one path. Server-side only in v0. */
+    /**
+     * Published content for one path. Server side only in v0: called where
+     * `window` and `document` exist, it throws `invalid_content_origin`
+     * before sending anything.
+     */
     get(path: string): Promise<MorphPage>;
     /** Whether the author hid this section on the page. */
     isHidden(page: MorphPage, slotId: string): boolean;

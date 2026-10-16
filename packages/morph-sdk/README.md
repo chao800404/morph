@@ -19,11 +19,14 @@ const one = await morph.products.get("linen-shirt"); // null if not found
 - **`createMorph({ baseUrl, fetch? })`**
   - Keeps only the origin and the fetch.
   - Nothing about a request (store, preview, credential) is kept between calls.
-  - `baseUrl` must be exactly an `http(s)` origin: no path, trailing slash, query or credentials.
+  - `baseUrl` must be an `http(s)` origin, optionally with one trailing `/` (dropped). Any other path, a query or credentials are refused.
+- **Every read**
+  - Does not follow redirects (`redirect: "manual"`). A 3xx or an opaque redirect throws `redirect_refused`, and its body is not read.
+  - Reads at most 2 MB (the local development proxy's cap). A larger declared `content-length` is refused before reading; otherwise the body is counted as it streams and reading stops once the cap is passed.
 - **`pages.get(path)`**
   - Reads `GET <baseUrl>/_morph/content?path=`, which serves the active release's published content only.
   - Returns the Starter's `MorphPage` shape: slots spread onto one object, hidden slot ids in `_hidden`.
-  - Refused in a browser (`window` and `document` both present), because the endpoint sends no CORS headers.
+  - Refused in a browser (`window` and `document` both present), because the endpoint sends no CORS headers. This throws `invalid_content_origin` before anything is sent; v0 keeps the code set the same as the Starter's and #245's rather than adding one.
 - **`products.list({ q, page, limit, order })`**
   - Accepts only the parameters the Store API has, and checks them the way the API does before sending.
   - Returns `{ products, pagination, context }`.
@@ -50,11 +53,13 @@ Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"pro
 | `invalid_store_context`  | The API's `401 INVALID_STORE_CONTEXT`                                                                 |
 | `content_not_found`      | A plain 404 from the host lookup: the address has no published store. Any 404 on a page read.         |
 | `store_unreachable`      | Network failure, timeout (15 s), or a body that breaks off                                            |
+| `redirect_refused`       | A 3xx, or an opaque redirect (status 0); the body is not read                                         |
+| `response_too_large`     | A body, or a declared `content-length`, over 2 MB                                                     |
 | `store_error`            | Any other non-2xx                                                                                     |
 | `invalid_response`       | Not JSON, or not the expected shape                                                                   |
 | `reserved_slot`          | A slot named `_hidden`                                                                                |
 
-`no_content_source`, `redirect_refused` and `response_too_large` are in the type for parity with the Starter but are not produced in v0.
+`no_content_source` is in the type for parity with the Starter but is not produced in v0: there is always a `baseUrl`.
 
 ## Limits (current behaviour, not the target)
 
@@ -64,7 +69,6 @@ Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"pro
 - **Server only for pages.** Browser reads across origins are deferred.
 - **Other relative strings stay as sent.** Content values carry no field types, so a stored relative media URL (for example `/images/a.png`) or a link is not rewritten.
 - **Not implemented:**
-  - redirect refusal and a response size cap (#221, open question 4);
   - `If-None-Match` / 304;
   - `pages.list`, filters, other sorting, field selection;
   - draft reads (#214);
