@@ -3,7 +3,7 @@
 ## 本檔鐵則
 
 1. **目前 `main` 受 PR 與 branch protection 保護。** 未經明確授權，不得直接執行 `git push origin main`，也不得為了繞過拒絕而修改或停用 branch protection。
-2. **正常交付使用 feature branch + `pnpm ship`。** `pnpm ship` 負責 push branch、建立 PR、等待 CI、merge、刪除已合併分支並更新 `main`；不要手動拆成一半，造成遠端狀態不一致。
+2. **正常交付使用 feature branch + `pnpm ship`。** `pnpm ship` 負責 push branch、建立 PR、等待 CI、merge、刪除已合併分支並更新 `main`；不要手動拆成一半，造成遠端狀態不一致。多個 session 並行時，改用下方「本機驗證後 `main` 已前進」的草稿推送流程，合併由協調 session 依使用者授權執行；`pnpm ship` 的自動合併只在使用者明確要求時使用。
 3. **提交前必須有實際驗證結果。** 正常程式修改至少執行 `pnpm typecheck`、`pnpm test`、`pnpm build`；未執行或環境阻擋時必須明確標為未驗證，不得推測通過。
 4. **只提交本次範圍。** 使用 `git add -- <明確檔案>`，不得用 `git add .` 或 `git add -A` 把 WIP、generated files、暫存檔或其他 worktree 內容帶入 commit。
 5. **任何非成功 CI 狀態都不得合併。** `FAILURE`、`CANCELLED`、`TIMED_OUT`、`STARTUP_FAILURE`、`ACTION_REQUIRED`、空的 check rollup 或尚未完成的 required check 都不能被當成通過。
@@ -52,7 +52,7 @@
 **推送草稿 PR。** `main` 前進時，不必先重新整合、重跑本機完整驗證，但推送前要確認：
 
 - worktree 乾淨，沒有未提交或 staged 的內容；
-- 提交範圍就是本次範圍：`git log origin/main..HEAD` 只有預期的提交，`git diff --name-only <本機驗證的 base> HEAD` 只有預期的檔案；
+- 提交範圍就是本次範圍：`git log origin/main..HEAD` 只有預期的提交，`git diff --name-only <本機驗證的 base> HEAD` 只有預期的檔案；若推送前已把 `main` 合併進分支，改用 `git diff --name-only origin/main...HEAD` 確認範圍；
 - 要推的就是驗證過的那個提交：commit SHA 與 tree 相同（以匯出目錄驗證時，連 `git archive` 的雜湊一起比）；
 - 一般推送：遠端分支不存在或可以 fast-forward，不得 force push。
 
@@ -63,7 +63,7 @@
 - 本機驗證：凍結的 SHA、驗證時的 base、實際跑了哪些檢查、當時的環境狀況（例如機器是否忙碌）。
 - CI：從實際的 run 讀出 head、base、各 job checkout 的 merge ref（`refs/pull/<n>/merge` 及其兩個 parent）與每個 job 的結果。CI 跑完前不得寫成「CI 已測過最新 `main`」；CI 跑完後 `main` 再前進，那次 run 就不涵蓋新的 `main`。
 
-**合併前重新核對。** 合併時再看一次當下的 `main`，以及 CI 是否在包含它的合併結果上全部通過。不是的話先回報，由使用者決定要重新整合、重跑 CI，或照現況處理；舊的 run 不能代替。合併的時機與先後依使用者安排：使用者宣告暫停合併時不合併，也不為了準備合併而轉 ready，準備好就回報。
+**合併前重新核對。** 合併時再看一次當下的 `main`，以及 CI 是否在包含它的合併結果上全部通過。不是的話先回報，由使用者決定要重新整合、重跑 CI，或照現況處理；舊的 run 不能代替。合併的時機與先後依使用者安排：使用者宣告暫停合併時不合併，也不為了準備合併而轉 ready，準備好就回報。合併只在負責協調的 session 進行，且每個 PR 都要使用者逐一授權；其他 session 或 subagent 只推送草稿並回報，不合併、不轉 ready。
 
 ## 合併後收尾清理
 
