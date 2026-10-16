@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { CloudflareSandboxVitePreviewServer } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import { readLocalPreviewOrigin } from "@/lib/storefront/compiler/local-preview-host";
 import type { ThemePreviewServer } from "@/lib/storefront/compiler/theme-preview-server.types";
+import type { PreviewServedInstance } from "@/lib/storefront/editor/preview-protocol";
 import { isProductionEnvironment } from "./storefront-domain-provider";
 import { LocalPreviewSidecarClient } from "./local-preview-sidecar-client";
 import { previewSandboxBinding } from "./preview-sandbox-binding";
@@ -82,6 +83,18 @@ export type ThemePreviewServerSelection =
         previewId: string;
         ticket: number;
       }) => Promise<PreviewContentWriteResult>;
+      /**
+       * `isServing`, with the dev server instance serving there, for a
+       * transport that names its instances. Absent elsewhere.
+       */
+      describeServing?: (input: {
+        previewId: string;
+        previewHostname: string;
+        expectedOrigin?: string | null;
+      }) => Promise<{
+        serving: boolean;
+        servedInstance: PreviewServedInstance | null;
+      }>;
     }>
   | Readonly<{ enabled: false; reason: string; message: string }>;
 
@@ -155,6 +168,7 @@ export function createServerThemePreviewServer(
       applyFiles: (input) => client.applyFiles(input),
       writeContent: (input) => client.writeContent(input),
       confirmContent: (input) => client.confirmContent(input),
+      describeServing: (input) => client.describeServing(input),
     };
   }
 

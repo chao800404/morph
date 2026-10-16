@@ -108,6 +108,8 @@ type EditorAssistantPanelProps = {
     nextProps: Record<string, unknown>,
     options?: InspectorPropsChangeOptions,
   ) => void;
+  /** See the Inspector's `contentBasis`; asked by the section's id. */
+  contentBasisForSection?: (sectionId: string) => number | undefined;
   /** The last value an inline canvas edit wrote; see the Inspector's prop. */
   inlineTextCommit?: InspectorInlineTextCommit | null;
   onCodeComponentPropsChange?: (
@@ -116,6 +118,8 @@ type EditorAssistantPanelProps = {
   ) => void;
   onJumpToCode?: (filePath: string, line?: number, column?: number) => void;
   onTabChange?: (tab: EditorAssistantPanelTab) => void;
+  /** See the Inspector's prop of the same name. */
+  selectionSourceCurrent?: boolean;
 };
 
 export type EditorAssistantPanelTab =
@@ -234,11 +238,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
   onSectionPropsChange,
+  contentBasisForSection,
   inlineTextCommit,
   onCodeComponentPropsChange,
   onJumpToCode,
   onTabChange,
   contentResetEpoch = 0,
+  selectionSourceCurrent = false,
 }: EditorAssistantPanelProps) {
   // Seeded from the value the server already resolved, so both renders agree.
   const [tab, setTab] = useState<EditorAssistantPanelTab>(() =>
@@ -279,6 +285,14 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * of rendering a list editor over an empty object and discarding the edits.
    */
   const contentStore = storedSection ? "document" : "source";
+  /**
+   * A hidden section opens no content editing (content binding contract §6),
+   * whichever entry named it: a canvas selection, its Sections-panel row, or
+   * the URL. Read from the stored document the shell hands this panel
+   * (`routeBackedContext`, the section model), the same judgement the shell
+   * lets a selection go by when a hide is confirmed.
+   */
+  const contentRefused = storedSection?.enabled === false;
 
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const isInspectorTab = tab === "styles" || tab === "content";
@@ -303,6 +317,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // Nothing is written into a hidden section from this panel.
+      if (contentRefused) return;
       if (documentSection) {
         onSectionPropsChange?.(documentSection.id, nextProps, options);
         return;
@@ -320,6 +336,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       if (sourcePath) onCodeComponentPropsChange?.(sourcePath, nextProps);
     },
     [
+      contentRefused,
       documentSection,
       onCodeComponentPropsChange,
       onSectionPropsChange,
@@ -327,6 +344,13 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
       selection?.sourceFilePath,
       themeFiles,
     ],
+  );
+  const inspectorContentBasis = useCallback(
+    () =>
+      documentSection
+        ? contentBasisForSection?.(documentSection.id)
+        : undefined,
+    [contentBasisForSection, documentSection],
   );
 
   useEffect(() => {
@@ -479,14 +503,16 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
-          {selectedSection ? (
+          {selectedSection && !(contentRefused && tab === "content") ? (
             <EditorStyleInspector
               sharedLayoutPaths={sharedLayoutPaths}
               sectionTemplatePaths={sectionTemplatePaths}
               resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
+              rowIdTemplateId={activeTemplate?.id}
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}
+              documentWritesRefused={contentRefused}
               themeFiles={themeFiles}
               routeSourcePath={routeSourcePath}
               onPromoteText={onPromoteText}
@@ -502,8 +528,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               onRepairThemeLinkBinding={onRepairThemeLinkBinding}
               onSwitchThemeLinkElement={onSwitchThemeLinkElement}
               onPropsChange={handleInspectorPropsChange}
+              contentBasis={inspectorContentBasis}
               inlineTextCommit={inlineTextCommit}
               onJumpToCode={onJumpToCode}
+              selectionSourceCurrent={selectionSourceCurrent}
             />
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">

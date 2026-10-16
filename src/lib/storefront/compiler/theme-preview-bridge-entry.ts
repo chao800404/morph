@@ -24,6 +24,8 @@ export function themePreviewBridgeEntrySource(): string {
   postPreviewToEditorMessage,
   documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
+  PREVIEW_SERVED_INSTANCE_TIMING,
+  previewServedInstanceFromEntries,
 } from "./preview/preview-protocol";
 import {
   collectPreviewEditableNodes,
@@ -572,10 +574,41 @@ function endGesture() {
   drawOverlays();
 }
 
+// Which dev server served this page, from the page's own responses: the one
+// that answered its document and module requests, not whichever answers the
+// next request. The editor compares it with the server its syncs reach.
+function servedInstanceReport() {
+  try {
+    const timings = [
+      ...performance.getEntriesByType("navigation"),
+      ...performance.getEntriesByType("resource"),
+    ].map((entry) => ({
+      kind:
+        entry.entryType === "navigation"
+          ? "navigation"
+          : entry.initiatorType === "script"
+            ? "script"
+            : "other",
+      sameOrigin: entry.name.startsWith(location.origin + "/"),
+      transferSize: Number(entry.transferSize) || 0,
+      instance:
+        (entry.serverTiming || []).find(
+          (timing) => timing.name === PREVIEW_SERVED_INSTANCE_TIMING,
+        )?.description || null,
+    }));
+    return previewServedInstanceFromEntries(timings);
+  } catch {
+    return null;
+  }
+}
+
 function reportReady() {
   if (!channel) return;
+  const servedInstance = servedInstanceReport();
   postPreviewToEditorMessage(
-    { type: "morph:storefront-preview-ready" },
+    servedInstance
+      ? { type: "morph:storefront-preview-ready", servedInstance }
+      : { type: "morph:storefront-preview-ready" },
     channel,
   );
   reportStructure();

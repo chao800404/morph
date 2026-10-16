@@ -1,5 +1,15 @@
 import { getFieldPathValue, setFieldPathValue } from "./selection-taxonomy";
-import { SELECTION_SOURCE_CONFLICT } from "../theme-write-errors";
+import {
+  SELECTION_SOURCE_CONFLICT,
+  TEMPLATE_DRAFT_CONFLICT,
+} from "../theme-write-errors";
+import {
+  basisWithinOwnRange,
+  rowIdentitiesAt,
+  rowsStillMatch,
+  type ContentSnapshot,
+  type RowIdentity,
+} from "./content-write-snapshot";
 
 export const RESELECT_CONTENT_MESSAGE =
   "The source code has changed. Select the field again. Your changes are kept.";
@@ -8,6 +18,14 @@ export type PendingFieldEdit = Readonly<{
   value: unknown;
   sourceGeneration: number | null;
   rejected?: boolean;
+  /**
+   * The draft generation of the document this input was made on. A write may
+   * compose it onto a later copy only when every step since was this
+   * session's own (`ContentSnapshot.ownSince`).
+   */
+  basisDraftGeneration?: number;
+  /** The rows the field's path passed through when it was typed, by id. */
+  rows?: readonly RowIdentity[];
 }>;
 
 export type PendingContentEntry = {
@@ -17,6 +35,11 @@ export type PendingContentEntry = {
   routePath?: string;
   /** Captured with the edit, never replaced by a later workspace refetch. */
   expectedSourceGeneration?: number;
+  /**
+   * The draft generation of the snapshot `props` was composed on, set when a
+   * write is prepared: the generation and the stored copy come from one read.
+   */
+  expectedDraftGeneration?: number;
   /** Immutable per-field input snapshots; not upgraded by selection or retry. */
   fields?: Readonly<Record<string, PendingFieldEdit>>;
 };
@@ -66,8 +89,13 @@ export function stageContentFields(args: {
   next: Record<string, unknown>;
   inputPath?: string;
   sourceForPath: (path: string) => number | null;
+  /** The draft generation of the document the author was editing. */
+  basisDraftGeneration?: number;
 }): PendingContentEntry | null {
   const held = { ...args.stored, ...args.pending?.props };
+  // The rows as the author's input saw them: the input itself, over what was
+  // already held.
+  const view = { ...held, ...args.next };
   const changed = args.inputPath
     ? sameContent(
         getFieldPathValue(held, args.inputPath),
@@ -79,6 +107,21 @@ export function stageContentFields(args: {
   if (changed.length === 0) return args.pending ?? null;
   const fields = { ...args.pending?.fields };
   for (const path of changed) {
+    const rows = rowIdentitiesAt(view, path);
+    // The copy this field's pending input was first made on. Typing into it
+    // again does not move it onto a later copy the editor has read since:
+    // the author kept typing on their own text, not on that copy. Only an
+    // answered write (the field leaves the pending set) or the author's
+    // "keep mine" (`rebaseFieldBasis`) moves it.
+    const earlier = Object.entries(fields)
+      .filter(([old]) => old === path || old.startsWith(`${path}.`))
+      .map(([, field]) => field.basisDraftGeneration)
+      .filter((basis): basis is number => basis !== undefined);
+    if (args.basisDraftGeneration !== undefined) {
+      earlier.push(args.basisDraftGeneration);
+    }
+    const basisDraftGeneration =
+      earlier.length > 0 ? Math.min(...earlier) : undefined;
     // A structural change owns the whole field, not stale descendant edits.
     for (const old of Object.keys(fields)) {
       if (old.startsWith(`${path}.`)) delete fields[old];
@@ -99,6 +142,8 @@ export function stageContentFields(args: {
       (generation === null || generation <= (prior.sourceGeneration ?? 0))
         ? { rejected: true }
         : {}),
+      ...(basisDraftGeneration !== undefined ? { basisDraftGeneration } : {}),
+      ...(rows.length > 0 ? { rows } : {}),
     };
   }
   return {
@@ -124,18 +169,30 @@ export function fieldsNeedingReselection(
   );
 }
 
-/** Compose only current fields on stored data, never on other pending values. */
+/**
+ * Compose only current fields on stored data, never on other pending values.
+ *
+ * With a `snapshot`, `stored` is that snapshot's copy of the section and the
+ * write takes its draft generation, so what is composed and the generation
+ * it is sent with come from one read. Every field that would be sent must
+ * have been made on a copy this one only follows through this session's own
+ * writes, and in the same rows, found by id; otherwise nothing is sent and
+ * the section is out of date, the input kept, as if the server had refused it.
+ */
 export function selectCurrentContentFields(
   entry: PendingContentEntry,
   generation: number,
   stored: Record<string, unknown>,
+  snapshot?: ContentSnapshot,
 ): PendingContentEntry {
   if (!Number.isSafeInteger(generation) || generation < 1)
     throw sourceSelectionFailure();
   if (!entry.fields) {
     if (entry.expectedSourceGeneration !== generation)
       throw sourceSelectionFailure();
-    return entry;
+    return snapshot
+      ? { ...entry, expectedDraftGeneration: snapshot.draftGeneration }
+      : entry;
   }
   const fields = Object.fromEntries(
     Object.entries(entry.fields).filter(
@@ -165,6 +222,23 @@ export function selectCurrentContentFields(
       delete fields[path];
   }
   if (Object.keys(fields).length === 0) throw sourceSelectionFailure();
+  if (snapshot) {
+    for (const [path, field] of Object.entries(fields)) {
+      const root = path.split(".")[0]!;
+      // Checked against what the field is composed onto: a list nothing
+      // stores yet is the author's own copy of its defaults (below).
+      const base =
+        stored[root] === undefined
+          ? { ...stored, [root]: entry.props[root] }
+          : stored;
+      if (
+        !basisWithinOwnRange(snapshot, field.basisDraftGeneration) ||
+        !rowsStillMatch(base, path, field.rows)
+      ) {
+        throw draftConflictFailure();
+      }
+    }
+  }
   let merged = { ...stored };
   for (const [path, field] of Object.entries(fields)) {
     const root = path.split(".")[0]!;
@@ -179,6 +253,7 @@ export function selectCurrentContentFields(
     ...entry,
     fields,
     expectedSourceGeneration: generation,
+    ...(snapshot ? { expectedDraftGeneration: snapshot.draftGeneration } : {}),
     props: Object.fromEntries([...roots].map((root) => [root, merged[root]])),
   };
 }
@@ -187,6 +262,42 @@ export function sourceSelectionFailure(): PendingContentFailure {
   return Object.assign(new Error(RESELECT_CONTENT_MESSAGE), {
     code: SELECTION_SOURCE_CONFLICT,
   });
+}
+
+/**
+ * The section moved under a pending input in a way it cannot be composed
+ * onto: someone else's change since it was typed, or its row is no longer at
+ * its path. Reported as the out-of-date answer the server gives, so the
+ * existing update — load the latest, keep mine — is the way on.
+ */
+export function draftConflictFailure(): PendingContentFailure {
+  return Object.assign(
+    new Error(
+      "This section changed elsewhere since you edited it. Your changes are kept.",
+    ),
+    { code: TEMPLATE_DRAFT_CONFLICT },
+  );
+}
+
+/**
+ * The author chose to keep their pending input on the latest document (load
+ * the latest, keep mine): its fields now count as made on that copy. Their
+ * rows are not re-pointed; a row no longer at its path still refuses.
+ */
+export function rebaseFieldBasis(
+  entry: PendingContentEntry,
+  draftGeneration: number,
+): PendingContentEntry {
+  if (!entry.fields) return entry;
+  return {
+    ...entry,
+    fields: Object.fromEntries(
+      Object.entries(entry.fields).map(([path, field]) => [
+        path,
+        { ...field, basisDraftGeneration: draftGeneration },
+      ]),
+    ),
+  };
 }
 
 /** Remove only the exact field snapshots acknowledged, not newer/unsent edits. */
@@ -236,6 +347,7 @@ export async function commitPendingContent<
   pending,
   baselines,
   save,
+  saveWhenSent,
   onSaved,
   failureCode,
   select,
@@ -243,7 +355,15 @@ export async function commitPendingContent<
   key: string;
   pending: Map<string, PendingContentEntry>;
   baselines: Map<string, Record<string, unknown>>;
-  save: (entry: PendingContentEntry) => Promise<T>;
+  /** Sends a write composed now. Exactly one of this and `saveWhenSent`. */
+  save?: (entry: PendingContentEntry) => Promise<T>;
+  /**
+   * Sends a write composed when it is actually sent: `prepare` is called at
+   * that moment (after anything queued ahead of it), so the stored copy, the
+   * draft generation and the rows it is checked against are the ones current
+   * then, not when the save was asked for.
+   */
+  saveWhenSent?: (prepare: () => PendingContentEntry) => Promise<T>;
   onSaved?: (
     entry: PendingContentEntry,
     baseline: Record<string, unknown> | undefined,
@@ -263,9 +383,23 @@ export async function commitPendingContent<
 }): Promise<T | null> {
   const held = pending.get(key);
   if (!held) return null;
-  const entry = select ? select(held) : held;
   const baseline = baselines.get(key);
-  const result = await save(entry);
+  let prepared: PendingContentEntry | undefined;
+  const prepare = () => {
+    const now = pending.get(key) ?? held;
+    prepared = select ? select(now) : now;
+    return prepared;
+  };
+  let result: T;
+  if (saveWhenSent) {
+    result = await saveWhenSent(prepare);
+  } else {
+    result = await save!(prepare());
+  }
+  const entry = prepared;
+  if (!entry) {
+    throw new Error("A content write was sent without being prepared.");
+  }
   if (!result.success) {
     const failure: PendingContentFailure = new Error(
       result.message ?? "Content could not be saved. Retry before continuing.",

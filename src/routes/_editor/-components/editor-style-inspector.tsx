@@ -26,6 +26,9 @@ import {
   rebaseSelectedRowPath,
   type SelectedRowRefusal,
 } from "@/lib/storefront/editor/selected-row-identity";
+import { normalizeRowIds } from "@/lib/storefront/editor/normalize-row-ids";
+import { earlierBasis } from "@/lib/storefront/editor/content-write-snapshot";
+import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveInspectorModules } from "@/lib/storefront/editor/inspector-modules";
 import {
   findSourceLocation,
@@ -72,6 +75,11 @@ import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-the
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { resolveThemeContentCapabilitiesFromFiles } from "@/lib/storefront/theme-content-capability-resolver";
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import {
+  resolveObjectPositionTarget,
+  type ObjectPositionTarget,
+  type ObjectPositionUnavailableReason,
+} from "@/lib/storefront/ast/object-position-binding";
 import { analyzeTextPromotion } from "@/lib/storefront/editor/text-promotion";
 import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 import { EditorCodeTextNotice } from "./editor-code-text-notice";
@@ -103,6 +111,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -203,6 +212,23 @@ export type InspectorPropsChangeOptions = {
   inputFieldPath?: string;
   /** Selected row whose explicit action changes its list or creates an id. */
   selectionFieldPath?: string;
+  /**
+   * A field the selected element provably binds without being its selected
+   * field (the image position beside its `image`): the write is held to the
+   * baseline the selection captured, and, for a row, only while the row at
+   * that index still has the id the selection named. Only this one field is
+   * staged at that baseline; nothing else pending is confirmed by it.
+   */
+  provenFieldBaseline?: Readonly<{
+    selectionFieldPath: string;
+    itemId: string | null;
+  }>;
+  /**
+   * The draft generation of the copy the author was looking at when they
+   * began this input (`contentBasis` when the field was focused), when that
+   * may be older than the one the editor holds by the time it is staged.
+   */
+  basisDraftGeneration?: number;
 };
 
 /**
@@ -222,6 +248,13 @@ export type InspectorInlineTextCommit = Readonly<{
 type EditorStyleInspectorProps = {
   /** Storefront/theme/template identity; section ids are only locally unique. */
   resourceKey?: string;
+  /**
+   * The template this section belongs to, which the rows of a list nothing
+   * stores yet are identified under before their first edit — the ids the
+   * server would give the same rows (`normalizeRowIds`). Without it those
+   * rows keep no id, and an edit to one of them is refused when it is sent.
+   */
+  rowIdTemplateId?: string;
   /**
    * Modules the layout supplies rather than the previewed route.
    *
@@ -297,6 +330,12 @@ type EditorStyleInspectorProps = {
     options?: InspectorPropsChangeOptions,
   ) => void;
   /**
+   * The draft generation of the document this section's content is being
+   * shown from, as the editor holds it now. Read when a content input is
+   * focused, so what the author types there counts as made on that copy.
+   */
+  contentBasis?: () => number | undefined;
+  /**
    * The last value an inline canvas edit wrote. Applied to this section's
    * fields before the save and refetch bring it back as stored props.
    */
@@ -313,6 +352,20 @@ type EditorStyleInspectorProps = {
    */
   view?: "styles" | "content";
   disabled?: boolean;
+  /**
+   * The section's Document takes no writes from here: it is hidden (content
+   * binding contract §6). Controls that would write it are shown disabled
+   * through the same `disabled` they already take; source patches are not
+   * affected.
+   */
+  documentWritesRefused?: boolean;
+  /**
+   * Whether the selection was taken at the source generation the workspace
+   * holds now, with nothing unsaved over it: the condition for reading the
+   * selected element's binding out of the current file. Without it a control
+   * that derives its write target from the source stays unavailable.
+   */
+  selectionSourceCurrent?: boolean;
 };
 
 /**
@@ -432,32 +485,53 @@ const IMAGE_POSITION_OPTIONS = [
   "left",
   "right",
 ] as const;
-type ImagePosition = (typeof IMAGE_POSITION_OPTIONS)[number];
+/** The options' computed `object-position`, as the browser reports it. */
+const COMPUTED_IMAGE_POSITIONS: Readonly<Record<string, string>> = {
+  "50% 50%": "center",
+  "50% 0%": "top",
+  "50% 100%": "bottom",
+  "0% 50%": "left",
+  "100% 50%": "right",
+};
 
-function imagePositionFromClassName(className: string): ImagePosition | null {
-  const token = className
-    .split(/\s+/)
-    .map((value) => value.replace(/^.*:/, ""))
-    .reverse()
-    .find((value) =>
-      IMAGE_POSITION_OPTIONS.some((position) => value === `object-${position}`),
-    );
-  return token ? (token.slice("object-".length) as ImagePosition) : null;
+/**
+ * What the canvas shows when nothing is stored and the source names no
+ * fallback: one of the options when it is one, else the value as computed.
+ */
+function displayedImagePosition(computed: string | undefined): string {
+  if (!computed) return "center";
+  return COMPUTED_IMAGE_POSITIONS[computed.trim()] ?? computed.trim();
 }
 
-function normalizeImagePosition(value: unknown): ImagePosition {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (IMAGE_POSITION_OPTIONS.includes(normalized as ImagePosition)) {
-    return normalized as ImagePosition;
-  }
-  if (normalized.includes("top")) return "top";
-  if (normalized.includes("bottom")) return "bottom";
-  if (normalized.includes("left")) return "left";
-  if (normalized.includes("right")) return "right";
-  return "center";
-}
+type InspectorObjectPositionTarget =
+  | Extract<ObjectPositionTarget, { kind: "document" }>
+  | Readonly<{
+      kind: "unavailable";
+      reason: ObjectPositionUnavailableReason | "hidden" | "source-stale";
+    }>;
+
+/** Why Position is unavailable, worded as what Morph cannot do, not an error. */
+const OBJECT_POSITION_UNAVAILABLE_MESSAGES: Readonly<
+  Record<
+    Extract<InspectorObjectPositionTarget, { kind: "unavailable" }>["reason"],
+    string
+  >
+> = {
+  hidden: "This section is hidden. Show it to change the image position.",
+  "source-stale":
+    "The source changed since this image was selected. Select it again to change its position.",
+  "row-unconfirmed": "Select the image again to change its position.",
+  "no-inline-position":
+    "Position isn't editable here for this image yet. You can change it in Code.",
+  "field-not-declared":
+    "This image's position is set in code, not by an editable field. You can change it in Code.",
+  "position-not-a-field-read":
+    "Morph can't confirm which field sets this image's position. You can change it in Code.",
+  "binding-unproven":
+    "Morph can't confirm which field sets this image's position. You can change it in Code.",
+  "source-unreadable":
+    "Morph can't read where this image's position comes from. You can change it in Code.",
+};
 
 const BORDER_RADIUS_CORNER_CONFIG = {
   topLeft: {
@@ -749,13 +823,17 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   onPreviewSelectionField,
   onRepairThemeLinkBinding,
   onSwitchThemeLinkElement,
-  onPropsChange,
+  onPropsChange: emitPropsChange,
+  contentBasis,
   inlineTextCommit = null,
   onJumpToCode,
   sharedLayoutPaths,
   sectionTemplatePaths,
+  rowIdTemplateId,
   view = "styles",
-  disabled = false,
+  disabled: disabledProp = false,
+  documentWritesRefused = false,
+  selectionSourceCurrent = false,
 }: EditorStyleInspectorProps) {
   const activeNodeId = selection?.nodeId;
   const activeElementKey = selection?.elementKey;
@@ -787,12 +865,96 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setSectionsExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const { contentResourceKey, setLocalProps, localPropsRef, props } =
-    useInspectorContentProps({
-      resourceKey,
-      sectionId: section.id,
-      sectionProps: section.props,
+  const {
+    contentResourceKey,
+    setLocalProps,
+    localPropsRef,
+    props,
+    externalEpochs,
+  } = useInspectorContentProps({
+    resourceKey,
+    sectionId: section.id,
+    sectionProps: section.props,
+  });
+
+  /**
+   * The content input the author is in, with what it showed and the copy it
+   * was showing when they entered it.
+   *
+   * Inputs hold their own value, so while the author is in one nothing
+   * replaces it — not their text, not an IME composition. A newer stored value
+   * for a field is shown once no content input has focus. Until then the
+   * author may still be typing on the older copy, so what they type counts as
+   * made on it: the earliest copy shown since an update was held back.
+   */
+  const contentFocusRef = useRef<{
+    element: HTMLElement;
+    value: string;
+    basis: number | undefined;
+  } | null>(null);
+  /** The copy shown when the first update still held back was read. */
+  const heldBackBasisRef = useRef<number | undefined>(undefined);
+  const [shownEpochs, setShownEpochs] = useState<
+    Readonly<Record<string, number>>
+  >({});
+  const shownEpochsRef = useRef(shownEpochs);
+  shownEpochsRef.current = shownEpochs;
+  const externalEpochsRef = useRef(externalEpochs);
+  externalEpochsRef.current = externalEpochs;
+  const syncShownEpochs = useCallback(() => {
+    const pending = Object.entries(externalEpochsRef.current).filter(
+      ([key, epoch]) => shownEpochsRef.current[key] !== epoch,
+    );
+    if (pending.length === 0) {
+      heldBackBasisRef.current = undefined;
+      return;
+    }
+    if (contentFocusRef.current) {
+      heldBackBasisRef.current ??= contentFocusRef.current.basis;
+      return;
+    }
+    heldBackBasisRef.current = undefined;
+    setShownEpochs((current) => {
+      const next = { ...current };
+      for (const [key, epoch] of pending) next[key] = epoch;
+      return next;
     });
+  }, []);
+  useLayoutEffect(() => {
+    syncShownEpochs();
+  }, [externalEpochs, syncShownEpochs]);
+  const isContentInput = (target: EventTarget | null): target is HTMLElement =>
+    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+  const handleContentFocus = (event: React.FocusEvent<HTMLElement>) => {
+    if (!isContentInput(event.target)) return;
+    contentFocusRef.current = {
+      element: event.target,
+      value: (event.target as HTMLInputElement | HTMLTextAreaElement).value,
+      basis: earlierBasis(contentBasis?.(), heldBackBasisRef.current),
+    };
+  };
+  const handleContentBlur = (event: React.FocusEvent<HTMLElement>) => {
+    if (contentFocusRef.current?.element !== event.target) return;
+    contentFocusRef.current = null;
+    // After focus settles: moving into another input keeps updates held.
+    setTimeout(syncShownEpochs, 0);
+  };
+  /** Every content change, with the copy the focused input was made on. */
+  const onPropsChange = useCallback(
+    (next: Record<string, unknown>, options?: InspectorPropsChangeOptions) => {
+      const basis = earlierBasis(
+        options?.basisDraftGeneration,
+        contentFocusRef.current?.basis,
+      );
+      emitPropsChange(
+        next,
+        basis === undefined
+          ? options
+          : { ...options, basisDraftGeneration: basis },
+      );
+    },
+    [emitPropsChange],
+  );
   // The selected row, confirmed by its `id` against the rows as they are now:
   // its index may have moved since the click, and a write to the index as
   // selected would land on whichever row took its place.
@@ -891,6 +1053,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     themeFiles?.some((file) => file.path === selection.sourceFilePath)
       ? selection.sourceFilePath
       : null) ?? sectionComponentPath;
+  // With no component file every style control writes the Document, so a
+  // section whose Document is refused has nothing here to edit.
+  const disabled = disabledProp || (documentWritesRefused && !componentPath);
+  const documentWritesRefusedRef = useRef(documentWritesRefused);
+  documentWritesRefusedRef.current = documentWritesRefused;
   // Told apart from CMS-only, so the author is pointed at the missing file
   // instead of told there never was one.
   const missingComponentPath = useMemo(
@@ -997,9 +1164,14 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     return path ? getFieldPathValue(props, path) : props[key];
   };
   // Inputs hold their own value. An inline canvas edit changes a stored value
-  // underneath them, so they are remounted to show it.
-  const contentFieldInputKey = (fieldKey: string) =>
-    `${contentResourceKey}:${fieldKey}:${inlineCommitEpoch}`;
+  // underneath them, and so does a newer read of a value the author has not
+  // changed here, so they are remounted to show it — per field, by the
+  // top-level key the value is stored under, and never while the author is
+  // in a content input (see `shownEpochs`).
+  const contentFieldInputKey = (fieldKey: string, path?: string) => {
+    const root = (path ?? nestedFieldPath(fieldKey) ?? fieldKey).split(".")[0]!;
+    return `${contentResourceKey}:${fieldKey}:${inlineCommitEpoch}:${shownEpochs[root] ?? 0}`;
+  };
   const optimisticValue = (key: string): number | string | undefined =>
     optimisticStyleRef.current.values[key];
   const optimisticString = (key: string): string | undefined => {
@@ -1588,12 +1760,131 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     editableBaseClassName ??
     targetElementMeta?.className ??
     "";
-  const effectiveImagePosition = normalizeImagePosition(
-    activeComputedStyle?.objectPosition ??
-      imagePositionFromClassName(targetClassName) ??
-      selectedFieldValue("imagePosition") ??
-      "center",
-  );
+  /**
+   * Where the Position control writes: the declared Document field the
+   * selected image's inline position provably reads, or nowhere.
+   *
+   * An inline `objectPosition` overrides every class, so a class edit beside
+   * one has no effect, and writing both — as this control used to — let its
+   * own source save move the selection's source generation under the Document
+   * write it had just queued. Only the field is written now, at the selected
+   * field's baseline. Whatever cannot be proven from the current source (an
+   * undeclared prop, a computed value, an image with no inline position, a
+   * selection older than the source) leaves the control unavailable with the
+   * reason; Code, preview, build and Fit are untouched by it.
+   */
+  const objectPositionTarget = useMemo((): InspectorObjectPositionTarget => {
+    if (documentWritesRefused) return { kind: "unavailable", reason: "hidden" };
+    if (!selectionSourceCurrent) {
+      return { kind: "unavailable", reason: "source-stale" };
+    }
+    if (contentWritesBlocked) {
+      return { kind: "unavailable", reason: "row-unconfirmed" };
+    }
+    const location = parseThemeSourceLocation(activeSourceLocation);
+    const declaredFields = themeContentCapability?.fields;
+    if (!declaredFields) {
+      return { kind: "unavailable", reason: "field-not-declared" };
+    }
+    // The file that declares the fields is the one whose binding is read: a
+    // row drawn by another component is not followed into it.
+    if (!location || location.filePath !== contentSourcePath) {
+      return { kind: "unavailable", reason: "source-unreadable" };
+    }
+    const source = themeFiles?.find(
+      (file) => file.path === location.filePath,
+    )?.content;
+    if (!source) return { kind: "unavailable", reason: "source-unreadable" };
+    const target = resolveObjectPositionTarget({
+      source,
+      line: location.line,
+      column: location.column,
+      declaredFields,
+      selectedFieldPath: activeFieldPath ?? null,
+    });
+    if (target.kind !== "document") return target;
+    // A row nothing stores yet is the component's own default: writing one
+    // field of it would store a list holding only that row.
+    const rowPath = target.fieldPath.split(".").slice(0, -1).join(".");
+    if (rowPath) {
+      const row = getFieldPathValue(props, rowPath);
+      if (!row || typeof row !== "object") {
+        return { kind: "unavailable", reason: "row-unconfirmed" };
+      }
+    }
+    return target;
+  }, [
+    activeFieldPath,
+    activeSourceLocation,
+    contentSourcePath,
+    contentWritesBlocked,
+    documentWritesRefused,
+    props,
+    selectionSourceCurrent,
+    themeContentCapability?.fields,
+    themeFiles,
+  ]);
+  const objectPositionStored =
+    objectPositionTarget.kind === "document"
+      ? getFieldPathValue(props, objectPositionTarget.fieldPath)
+      : undefined;
+  // Shown as stored, never normalized: `30% center` is not `center`, and
+  // offering it as one would overwrite it the first time anything is chosen.
+  const objectPositionValue =
+    typeof objectPositionStored === "string" && objectPositionStored !== ""
+      ? objectPositionStored
+      : objectPositionTarget.kind === "document" &&
+          objectPositionTarget.fallback !== null
+        ? objectPositionTarget.fallback
+        : displayedImagePosition(activeComputedStyle?.objectPosition);
+  const objectPositionChoices: readonly string[] =
+    objectPositionTarget.kind === "document" &&
+    objectPositionTarget.definition.type === "select"
+      ? IMAGE_POSITION_OPTIONS.filter((option) =>
+          (
+            objectPositionTarget.definition as { options: { value: string }[] }
+          ).options.some((declared) => declared.value === option),
+        )
+      : IMAGE_POSITION_OPTIONS;
+  const objectPositionOptions = objectPositionChoices.includes(
+    objectPositionValue,
+  )
+    ? objectPositionChoices
+    : [objectPositionValue, ...objectPositionChoices];
+  const handleObjectPositionChange = (value: string) => {
+    if (objectPositionTarget.kind !== "document") return;
+    if (value === objectPositionValue) return;
+    if (!objectPositionChoices.includes(value)) return;
+    const definition = objectPositionTarget.definition;
+    if (
+      definition.type === "text" &&
+      typeof definition.maxLength === "number" &&
+      value.length > definition.maxLength
+    ) {
+      return;
+    }
+    if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
+    const next = toStorableContentProps(
+      setFieldPathValue(
+        localPropsRef.current,
+        objectPositionTarget.fieldPath,
+        value,
+      ),
+    );
+    const selectionFieldPath = selection?.fieldPath;
+    if (!selectionFieldPath) return;
+    localPropsRef.current = next;
+    setLocalProps(next);
+    onPropsChange(next, {
+      inputFieldPath: objectPositionTarget.fieldPath,
+      // The selection as the canvas reported it: that is what its baseline
+      // was captured under. The row is checked again by id when it is staged.
+      provenFieldBaseline: {
+        selectionFieldPath,
+        itemId: selection?.itemId ?? null,
+      },
+    });
+  };
   const sectionClassName = sectionElementMeta?.className || "";
   const hasResolvedContainerSource = isSelectedNode
     ? Boolean(targetElementMeta)
@@ -2272,7 +2563,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
   const handleFieldChange = useCallback(
     (field: string, value: unknown, options?: InspectorPropsChangeOptions) => {
-      if (contentBlockedRef.current) return;
+      if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
       const currentProps = localPropsRef.current;
       const descendantPath = selection?.descendantFields?.find(
         (binding) =>
@@ -2306,6 +2597,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         props: Record<string, unknown>,
       ) => ReturnType<typeof addArrayRowAtFieldPath<Record<string, unknown>>>,
     ) => {
+      if (documentWritesRefusedRef.current) return;
       const result = mutate(localPropsRef.current);
       if (!result.editable) {
         const message =
@@ -2344,23 +2636,49 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
        */
       seed?: { key: string; value: unknown },
     ) => {
-      if (contentBlockedRef.current) return;
+      if (contentBlockedRef.current || documentWritesRefusedRef.current) return;
       const current = localPropsRef.current;
-      const base =
-        seed && current[seed.key] === undefined
-          ? { ...current, [seed.key]: seed.value }
-          : current;
+      let base = current;
+      if (seed && current[seed.key] === undefined) {
+        // Nothing changed: the defaults stay the component's, unstored.
+        if (
+          sameContent(
+            getFieldPathValue({ [seed.key]: seed.value }, path),
+            value,
+          )
+        )
+          return;
+        // The rows are given their ids as shown, before the edit touches
+        // them: an id is derived partly from the row's content, so deriving
+        // it after the edit would name a different row than the one typed
+        // in. Done once — from here on the list is the author's copy, and
+        // later input, a retry or the send never derives an id again.
+        const seeded = { [seed.key]: seed.value };
+        base = {
+          ...current,
+          [seed.key]: (rowIdTemplateId
+            ? normalizeRowIds(seeded, {
+                templateId: rowIdTemplateId,
+                sectionId: section.id,
+              }).value
+            : seeded)[seed.key],
+        };
+      }
       const next = toStorableContentProps(setFieldPathValue(base, path, value));
       localPropsRef.current = next;
       setLocalProps(next);
       onPropsChange(next, { inputFieldPath: path });
     },
-    [onPropsChange],
+    [onPropsChange, rowIdTemplateId, section.id],
   );
 
   const handleTextFieldBlur = useCallback(
     (field: string, displayedValue: unknown, nextValue: string) => {
       if (nextValue === String(displayedValue ?? "")) return;
+      // Left as it was entered: nothing was typed. A newer stored value read
+      // meanwhile is not something the author changed, and the older text
+      // still in the input is not a change to write back over it.
+      if (contentFocusRef.current?.value === nextValue) return;
       handleFieldChange(field, nextValue);
     },
     [handleFieldChange],
@@ -2391,7 +2709,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
 
   return (
-    <div className="min-w-0 space-y-3 p-3 text-xs">
+    <div
+      className="min-w-0 space-y-3 p-3 text-xs"
+      onFocus={handleContentFocus}
+      onBlur={handleContentBlur}
+    >
       {/* Component Header & Code Bridge */}
       <div className="space-y-2 rounded-xl border bg-muted/40 p-3">
         <div className="flex items-center justify-between">
@@ -2934,7 +3256,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                       >
                                         {rowDefinition.type === "textarea" ? (
                                           <Textarea
-                                            key={contentFieldInputKey(rowKey)}
+                                            key={contentFieldInputKey(
+                                              rowKey,
+                                              fieldKey,
+                                            )}
                                             defaultValue={String(
                                               row?.[rowKey] ?? "",
                                             )}
@@ -2951,6 +3276,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                           />
                                         ) : (
                                           <Input
+                                            key={contentFieldInputKey(
+                                              rowKey,
+                                              fieldKey,
+                                            )}
                                             type={
                                               rowDefinition.type === "url"
                                                 ? "url"
@@ -3770,7 +4099,10 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                         label={binding.fieldKey.replace(/[-_]/g, " ")}
                       >
                         <Textarea
-                          key={contentFieldInputKey(binding.fieldKey)}
+                          key={contentFieldInputKey(
+                            binding.fieldKey,
+                            binding.fieldPath ?? binding.fieldKey,
+                          )}
                           rows={2}
                           defaultValue={String(value ?? "")}
                           onInput={(event) =>
@@ -3820,27 +4152,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 <InspectorSelectControl
                   label="Position"
                   ariaLabel="Object position"
-                  value={effectiveImagePosition}
-                  options={[...IMAGE_POSITION_OPTIONS]}
+                  value={objectPositionValue}
+                  options={objectPositionOptions}
                   formatOption={(value) =>
-                    value.charAt(0).toUpperCase() + value.slice(1)
+                    objectPositionChoices.includes(value)
+                      ? value.charAt(0).toUpperCase() + value.slice(1)
+                      : `Custom (${value})`
                   }
-                  onValueChange={(value) => {
-                    previewStyle({ "object-position": value });
-                    nestedFieldPath("imagePosition")
-                      ? handleNestedFieldChange(
-                          nestedFieldPath("imagePosition")!,
-                          value,
-                        )
-                      : handleFieldChange("imagePosition", value);
-                    patchStyle((prev) =>
-                      patchTailwindClasses(prev, {
-                        property: "object-position",
-                        value: "object-" + value,
-                      }),
-                    );
-                  }}
-                  disabled={disabled || sourceStyleLocked}
+                  onValueChange={handleObjectPositionChange}
+                  // Writes only the Document field the image provably reads.
+                  disabled={
+                    disabled || objectPositionTarget.kind !== "document"
+                  }
                 />
                 <InspectorSelectControl
                   label="Fit"
@@ -3905,6 +4228,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   disabled={disabled || sourceStyleLocked}
                 />
               </div>
+              {objectPositionTarget.kind === "unavailable" ? (
+                <p
+                  data-inspector-note="object-position"
+                  className="mt-2 text-[11px] leading-relaxed text-muted-foreground"
+                >
+                  {
+                    OBJECT_POSITION_UNAVAILABLE_MESSAGES[
+                      objectPositionTarget.reason
+                    ]
+                  }
+                </p>
+              ) : null}
             </InspectorGroup>
           )}
           <InspectorModuleStaticSections>

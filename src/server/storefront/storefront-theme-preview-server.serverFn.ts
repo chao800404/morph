@@ -1,4 +1,8 @@
 import { POSSIBLE_SAVE_SOURCES } from "@/lib/storefront/editor/source-saved-elsewhere";
+import {
+  parsePreviewServedInstance,
+  type PreviewServedInstance,
+} from "@/lib/storefront/editor/preview-protocol";
 import { astroThemesEnabled } from "@/lib/storefront/service/theme-build-service.factory";
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
@@ -637,16 +641,28 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
-    const serving = await selection.server.isServing({
+    const servingInput = {
       previewId,
       previewHostname: selection.previewHostname,
       expectedOrigin: previewOrigin,
-    });
+    };
+    // The same question; a transport that names its dev server instances
+    // also says which one is serving, so the editor can tell a restarted
+    // server on the same address from the one its frame was loaded from.
+    const described = selection.describeServing
+      ? await selection.describeServing(servingInput)
+      : {
+          serving: await selection.server.isServing(servingInput),
+          servedInstance: null,
+        };
     // Not a failure of this request: "the preview is gone" is an answer, and
     // the editor decides what to do about it.
     return ok("Live Preview server checked", {
       previewId: previewId as string | null,
-      serving,
+      serving: described.serving,
+      ...(described.servedInstance
+        ? { servedInstance: described.servedInstance }
+        : {}),
     });
   });
 
@@ -792,6 +808,9 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
     // were read at, handed over by `syncPreviewFiles` — never read again
     // here, where a save landing in between would stamp these files with a
     // generation they do not belong to.
+    // The dev server instance the sidecar wrote for, when it names one: the
+    // editor compares it with the one its frame was loaded from.
+    let servedInstance: PreviewServedInstance | null = null;
     const write = async (
       writable: readonly FencedPreviewFileWrite[],
       generation: number | null,
@@ -809,6 +828,7 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
           files: writable,
           generation,
         });
+        servedInstance = parsePreviewServedInstance(applied.servedInstance);
         return {
           changed: [...applied.changed],
           unchanged: [...applied.unchanged],
@@ -948,5 +968,6 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       changed: result.changed,
       unchanged: result.unchanged,
       skipped: result.skipped,
+      ...(servedInstance ? { servedInstance } : {}),
     });
   });
