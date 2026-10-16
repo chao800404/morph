@@ -492,8 +492,9 @@ export const INLINE_TEXT_NOT_SAVED_MESSAGE =
 export const PREVIEW_RELOAD_DEFERRED_MESSAGE =
   "The preview server was updated. The canvas will reload after you finish this text.";
 /**
- * After that reload, the content could not be read, so the canvas was not
- * brought up to date: it may show what the preview last started with.
+ * After that reload, the content could not be read, or the new frame did not
+ * confirm it was on the route, so the canvas was not brought up to date: it
+ * may show what the preview last started with.
  */
 export const PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE =
   "The canvas was reloaded but your latest content could not be loaded into it, so it may show older content. Your changes are kept.";
@@ -7579,6 +7580,13 @@ export function VisualEditorShell({
         return;
       }
       if (message.type === "morph:storefront-preview-structure") {
+        // Whether the frame names routes at all: one that does has a router,
+        // and its "no router" answer to a route request is no confirmation.
+        instanceContentReplayRef.current?.structure(
+          previewKey,
+          previewReadyRoundRef.current,
+          message.routePath,
+        );
         // A report sent while the preview was still on another route — it
         // boots on `/` — describes that route, not the selected one.
         if (
@@ -7591,12 +7599,16 @@ export function VisualEditorShell({
           routePath: search.routePath ?? "/",
           nodes: message.nodes,
         });
-        // The frame is on the selected route: content addressed to it now
-        // lands on this route's content, not the one it booted on.
-        instanceContentReplayRef.current?.structure(
+        return;
+      }
+      if (message.type === "morph:storefront-preview-route-applied") {
+        // The frame's answer to a route request: what a replay waits for
+        // before it sends content to a reloaded frame.
+        instanceContentReplayRef.current?.routeApplied(
           previewKey,
           previewReadyRoundRef.current,
-          search.routePath ?? "/",
+          message.routeRequestId,
+          message.routePath,
         );
         return;
       }
@@ -7755,20 +7767,37 @@ export function VisualEditorShell({
   // new object for the same document, and the route sent again would end an
   // inline edit open on the page (a Theme with a router finishes it first).
   const activeTemplateId = activeTemplate?.id;
-  const syncPreviewRoute = useCallback(() => {
-    if (!activeTemplateId) return;
+  /** Counts route requests, of any frame; the page echoes the one it answers. */
+  const routeRequestIdRef = useRef(0);
+  /** Sends the route on screen; the request's id, or null when none was sent. */
+  const syncPreviewRoute = useCallback((): number | null => {
+    if (!activeTemplateId) return null;
+    routeRequestIdRef.current += 1;
+    const routeRequestId = routeRequestIdRef.current;
     postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
       type: "morph:storefront-preview-set-route",
       templateId: activeTemplateId,
       routePath: search.routePath ?? null,
+      routeRequestId,
     });
+    return routeRequestId;
   }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
 
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
 
     const measurementRevision = beginPreviewSizeMeasurement();
-    syncPreviewRoute();
+    const routeRequestId = syncPreviewRoute();
+    if (routeRequestId !== null) {
+      // A reloaded frame's content waits for the answer to this request
+      // (`createInstanceContentReplay`); sending it is not the answer.
+      instanceContentReplayRef.current?.routeSent(
+        previewKey,
+        previewReadyRoundRef.current,
+        replayRoutePathRef.current,
+        routeRequestId,
+      );
+    }
     // Let the preview commit the route state before asking for its structure
     // and size. This avoids reading the previous page's DOM in the same task.
     const frame = window.requestAnimationFrame(() => {
@@ -8612,6 +8641,13 @@ export function VisualEditorShell({
         }
       },
       onReadFailed: () => {
+        toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
+          id: "preview-reload-content-unread",
+          duration: 10_000,
+        });
+      },
+      // Not on a route it confirmed: the same notice, for the same outcome.
+      onUnconfirmed: () => {
         toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
           id: "preview-reload-content-unread",
           duration: 10_000,

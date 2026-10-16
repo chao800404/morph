@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS } from "@/lib/storefront/editor/preview-instance-content";
 import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
@@ -601,7 +602,22 @@ describe("the frame brought up after the reload", () => {
     },
   });
 
-  /** The reloaded page comes up and reports the route. Returns where its posts start. */
+  /**
+   * The page answers the latest route it was sent, as a page whose router
+   * arrived on the home page does (`morph:storefront-preview-route-applied`).
+   */
+  function confirmRoute() {
+    const request = posted()
+      .filter((message) => message.type === "morph:storefront-preview-set-route")
+      .at(-1) as (Posted & { routeRequestId?: number }) | undefined;
+    fromPreview({
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId: request?.routeRequestId,
+      routePath: "/",
+    });
+  }
+
+  /** The reloaded page comes up and confirms the route. Returns where its posts start. */
   async function newFrameUp() {
     const from = posted().length;
     fromPreview({
@@ -611,6 +627,7 @@ describe("the frame brought up after the reload", () => {
     await tick(0);
     await tick(0);
     fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    confirmRoute();
     await tick(0);
     await tick(0);
     return from;
@@ -759,6 +776,59 @@ describe("the frame brought up after the reload", () => {
     expect(heroPosts(from)).toEqual([]);
   });
 
+  // A frame that never confirms its route, as one still running a bridge from
+  // before the confirmation existed: the replay is given up, once, with the
+  // notice — and nothing else. The author's text stays unsaved and with them,
+  // nothing is marked saved, no write is sent again, the frame is kept.
+  it("gives up only the replay, with a notice, when the frame never confirms its route", async () => {
+    updateSectionProps.mockImplementation(async (request: { data: { props: unknown } }) => {
+      order.push(`save:${JSON.stringify(request.data.props)}`);
+      return REFUSED;
+    });
+    await frameUp();
+    await heldWhileTyping();
+    act(() =>
+      useThemeWorkspaceStore.getState().acceptRemoteGeneration(2, {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      }),
+    );
+    commitAndClose(TYPED);
+    await tick(400);
+    await tick(1_000);
+    // Precondition: the text is with the author, not saved.
+    const status = saveStatus();
+    expect(status).not.toMatch(/^(Unpublished|Published)$/);
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
+    const warned = unloadWarned();
+    const sent = updateSectionProps.mock.calls.length;
+
+    const from = await newFrameReady();
+    fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    const frame = document.querySelector("iframe");
+    await live(INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS + 5_000, frame);
+
+    expect(heroPosts(from)).toEqual([]);
+    expect(replayedLines()).toEqual([]);
+    expect(
+      infoLines.filter((line) => line.startsWith("[preview-instance] content replay given up")),
+    ).toEqual([
+      "[preview-instance] content replay given up | the frame did not confirm its route in time",
+    ]);
+    expect(unreadNotices()).toHaveLength(1);
+    // Not cleared: the text is still the author's, still unsaved.
+    expect(screen.getByDisplayValue(TYPED)).toBeTruthy();
+    expect(unloadWarned()).toBe(warned);
+    // Not marked saved.
+    expect(saveStatus()).toBe(status);
+    // No write sent again.
+    expect(updateSectionProps).toHaveBeenCalledTimes(sent);
+    // No frame swapped or reloaded, nothing started.
+    expect(document.querySelector("iframe")).toBe(frame);
+    expect(reloadLines()).toHaveLength(1);
+    expect(startThemePreviewServer).not.toHaveBeenCalled();
+  });
+
   /** The reloaded page says it is ready; it has not reported its route yet. */
   async function newFrameReady() {
     const from = posted().length;
@@ -770,9 +840,10 @@ describe("the frame brought up after the reload", () => {
     await tick(0);
     return from;
   }
-  /** That page reports the route it is on. */
+  /** That page reports its structure and confirms the route it is on. */
   async function newFrameOnRoute() {
     fromPreview({ type: "morph:storefront-preview-structure", nodes: [heroNode] });
+    confirmRoute();
     await tick(0);
     await tick(0);
   }

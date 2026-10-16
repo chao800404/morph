@@ -766,3 +766,135 @@ describe("a field typed into in the Inspector", () => {
     expect(refresh).toContain("restoreSelectedTarget(lastRestoreTarget);");
   });
 });
+
+describe("answering the editor's request for a route", () => {
+  type Router = { navigate: (to: unknown) => Promise<void> } | undefined;
+  /** The bridge's route handler, run with stand-ins for the page around it. */
+  function routeHandler(options: { router: Router; matched: () => string | undefined }) {
+    const source = BRIDGE.slice(
+      BRIDGE.indexOf("function answerRouteRequest"),
+      BRIDGE.indexOf("function clearSelectionAttributes"),
+    );
+    const steps: string[] = [];
+    const posted: unknown[] = [];
+    const attributes: Record<string, string> = {};
+    const timers: Array<() => void> = [];
+    const apply = new Function(
+      "window",
+      "document",
+      "channel",
+      "postPreviewToEditorMessage",
+      "inlineEditor",
+      "selectedItem",
+      "hoveredItem",
+      "syncDragHandle",
+      "drawOverlays",
+      "restoreSelectedSection",
+      "reportStructure",
+      "currentRoutePattern",
+      source + "; return applyEditorRoute;",
+    )(
+      {
+        __morphPreviewRouter: options.router,
+        setTimeout: (callback: () => void) => timers.push(callback),
+      },
+      {
+        getElementById: () => ({
+          setAttribute: (name: string, value: string) => {
+            attributes[name] = value;
+          },
+        }),
+      },
+      { targetOrigin: "http://localhost:3000", previewSession: "session" },
+      (message: unknown) => {
+        steps.push("answer");
+        posted.push(message);
+      },
+      { finish: () => steps.push("finish-inline") },
+      null,
+      null,
+      () => {},
+      () => {},
+      () => {},
+      () => steps.push("structure"),
+      options.matched,
+    ) as (message: Record<string, unknown>) => void;
+    return { apply, steps, posted, attributes, timers };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("answers once the router has arrived, with the route it matched", async () => {
+    let arrive!: () => void;
+    const navigate = vi.fn(
+      (_to: unknown) =>
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+    );
+    let matched: string | undefined = "/";
+    const page = routeHandler({ router: { navigate }, matched: () => matched });
+    page.apply({ routePath: "/inline-reload-defer", routeRequestId: 3 });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({ to: "/inline-reload-defer" });
+    expect(page.attributes["data-morph-route-path"]).toBe("/inline-reload-defer");
+    await settle();
+    // Still on the way: nothing is said about where it is.
+    expect(page.posted).toEqual([]);
+    matched = "/inline-reload-defer";
+    arrive();
+    await settle();
+    expect(page.posted).toEqual([
+      {
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 3,
+        routePath: "/inline-reload-defer",
+      },
+    ]);
+    expect(page.steps).toEqual(["finish-inline", "structure", "answer"]);
+  });
+
+  it("says where it is when the navigation failed, never null", async () => {
+    const navigate = vi.fn(() => Promise.reject(new Error("no route")));
+    const page = routeHandler({ router: { navigate }, matched: () => "/" });
+    page.apply({ routePath: "/inline-reload-defer", routeRequestId: 4 });
+    await settle();
+    expect(page.posted).toEqual([
+      { type: "morph:storefront-preview-route-applied", routeRequestId: 4, routePath: "/" },
+    ]);
+  });
+
+  it("does not answer with a router that matched no route", async () => {
+    const navigate = vi.fn(() => Promise.resolve());
+    const page = routeHandler({ router: { navigate }, matched: () => undefined });
+    page.apply({ routePath: "/missing", routeRequestId: 5 });
+    await settle();
+    expect(page.posted).toEqual([]);
+  });
+
+  it("answers null at once without a router: it stays on its one page", async () => {
+    const page = routeHandler({ router: undefined, matched: () => undefined });
+    page.apply({ routePath: "/inline-reload-defer", routeRequestId: 6 });
+    expect(page.posted).toEqual([
+      { type: "morph:storefront-preview-route-applied", routeRequestId: 6, routePath: null },
+    ]);
+    expect(page.steps).toEqual(["answer"]);
+    expect(page.timers).toEqual([]);
+  });
+
+  it("answers nothing to a request that carries no id", async () => {
+    const navigate = vi.fn(() => Promise.resolve());
+    const routed = routeHandler({ router: { navigate }, matched: () => "/about" });
+    routed.apply({ routePath: "/about" });
+    const plain = routeHandler({ router: undefined, matched: () => undefined });
+    plain.apply({ routePath: "/about" });
+    await settle();
+    expect(routed.posted).toEqual([]);
+    expect(plain.posted).toEqual([]);
+  });
+
+  it("is what the page's message listener runs for set-route", () => {
+    const listener = BRIDGE.slice(BRIDGE.indexOf('window.addEventListener("message"'));
+    expect(listener).toContain(
+      'if (message?.type === "morph:storefront-preview-set-route") {\n      applyEditorRoute(message);',
+    );
+  });
+});

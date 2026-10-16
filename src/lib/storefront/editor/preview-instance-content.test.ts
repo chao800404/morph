@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createInstanceContentReplay,
+  INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS,
   instanceReplaySection,
   type InstanceReplayFrame,
 } from "./preview-instance-content";
@@ -202,7 +203,7 @@ describe("instanceReplaySection", () => {
   });
 });
 
-function replayHarness() {
+function replayHarness(options: { confirmTimeoutMs?: number } = {}) {
   let current: InstanceReplayFrame | null = {
     key: "frame-0",
     round: 1,
@@ -215,6 +216,8 @@ function replayHarness() {
   }> = [];
   const logs: string[] = [];
   let readFailures = 0;
+  let unconfirmed = 0;
+  let nextRequest = 0;
   const replay = createInstanceContentReplay({
     readLatest: () =>
       new Promise<void>((resolve, reject) => reads.push({ resolve, reject })),
@@ -222,8 +225,12 @@ function replayHarness() {
     onReadFailed: () => {
       readFailures += 1;
     },
+    onUnconfirmed: () => {
+      unconfirmed += 1;
+    },
     current: () => current,
     log: (line) => logs.push(line),
+    ...options,
   });
   return {
     replay,
@@ -231,6 +238,9 @@ function replayHarness() {
     replays,
     logs,
     readFailures: () => readFailures,
+    unconfirmed: () => unconfirmed,
+    givenUp: () =>
+      logs.filter((line) => line.startsWith("[preview-instance] content replay given up")),
     set(next: Partial<InstanceReplayFrame> | null) {
       current = next === null ? null : { ...current!, ...next };
     },
@@ -239,10 +249,18 @@ function replayHarness() {
       this.set({ round: 2 });
       replay.frameReady("frame-0", 2);
     },
-    /** That frame reports being on `routePath`, now the route on screen. */
-    onRoute(routePath = "/") {
+    /** The editor sends that frame `routePath`; returns the request id. */
+    sendRoute(routePath = "/") {
       this.set({ routePath });
-      replay.structure("frame-0", 2, routePath);
+      nextRequest += 1;
+      replay.routeSent("frame-0", 2, routePath, nextRequest);
+      return nextRequest;
+    },
+    /** The route is sent, and the frame confirms it is there. */
+    onRoute(routePath = "/") {
+      const request = this.sendRoute(routePath);
+      replay.routeApplied("frame-0", 2, request, routePath);
+      return request;
     },
   };
 }
@@ -250,6 +268,10 @@ function replayHarness() {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("createInstanceContentReplay", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reads once the reloaded frame is up, not when the reload is decided", async () => {
     const h = replayHarness();
     h.replay.frameReloaded("frame-0", 1, "/");
@@ -258,6 +280,8 @@ describe("createInstanceContentReplay", () => {
     expect(h.reads).toHaveLength(1);
     // More ready rounds or route reports read nothing more.
     h.replay.structure("frame-0", 2, "/");
+    const request = h.onRoute();
+    h.replay.routeApplied("frame-0", 2, request, "/");
     expect(h.reads).toHaveLength(1);
   });
 
@@ -268,11 +292,12 @@ describe("createInstanceContentReplay", () => {
     h.reads[0]!.resolve();
     await settle();
     expect(h.replays).toHaveLength(0);
-    h.onRoute();
+    const request = h.onRoute();
     expect(h.replays.map((r) => r.frame)).toEqual([
       { key: "frame-0", round: 2, routePath: "/" },
     ]);
-    // More reports of the route send nothing more.
+    // More confirmations, and more reports, send nothing more.
+    h.replay.routeApplied("frame-0", 2, request, "/");
     h.replay.structure("frame-0", 2, "/");
     expect(h.replays).toHaveLength(1);
   });
@@ -281,12 +306,12 @@ describe("createInstanceContentReplay", () => {
     const h = replayHarness();
     h.replay.frameReloaded("frame-0", 1, "/");
     h.ready();
-    h.onRoute();
+    const request = h.onRoute();
     expect(h.replays).toHaveLength(0);
     h.reads[0]!.resolve();
     await settle();
     expect(h.replays).toHaveLength(1);
-    h.replay.structure("frame-0", 2, "/");
+    h.replay.routeApplied("frame-0", 2, request, "/");
     expect(h.replays).toHaveLength(1);
   });
 
@@ -294,12 +319,12 @@ describe("createInstanceContentReplay", () => {
     const h = replayHarness();
     h.replay.frameReloaded("frame-0", 1, "/");
     h.ready();
-    h.onRoute();
+    const request = h.onRoute();
     h.reads[0]!.reject(new Error("offline"));
     await settle();
     expect(h.replays).toHaveLength(0);
     expect(h.readFailures()).toBe(1);
-    h.replay.structure("frame-0", 2, "/");
+    h.replay.routeApplied("frame-0", 2, request, "/");
     expect(h.replays).toHaveLength(0);
     expect(h.readFailures()).toBe(1);
   });
@@ -307,7 +332,9 @@ describe("createInstanceContentReplay", () => {
   it("waits for the reloaded frame, not a report from the one it replaces", async () => {
     const h = replayHarness();
     h.replay.frameReloaded("frame-0", 1, "/");
-    // The old frame, still round 1, reporting its route.
+    // The old frame, still round 1, sent its route and confirming it.
+    h.replay.routeSent("frame-0", 1, "/", 1);
+    h.replay.routeApplied("frame-0", 1, 1, "/");
     h.replay.structure("frame-0", 1, "/");
     expect(h.reads).toHaveLength(0);
     expect(h.replays).toHaveLength(0);
@@ -341,10 +368,11 @@ describe("createInstanceContentReplay", () => {
     const h = replayHarness();
     h.replay.frameReloaded("frame-0", 1, "/");
     h.ready();
-    // Replaced again, for another reason, before reporting its route.
+    // Replaced again, for another reason, before confirming its route.
     h.set({ round: 3 });
     h.replay.frameReady("frame-0", 3);
-    h.replay.structure("frame-0", 3, "/");
+    h.replay.routeSent("frame-0", 3, "/", 1);
+    h.replay.routeApplied("frame-0", 3, 1, "/");
     h.reads[0]!.resolve();
     await settle();
     expect(h.replays).toHaveLength(0);
@@ -355,7 +383,8 @@ describe("createInstanceContentReplay", () => {
     h.replay.frameReloaded("frame-0", 1, "/");
     h.set({ key: "frame-1", round: 2 });
     h.replay.frameReady("frame-1", 2);
-    h.replay.structure("frame-1", 2, "/");
+    h.replay.routeSent("frame-1", 2, "/", 1);
+    h.replay.routeApplied("frame-1", 2, 1, "/");
     expect(h.reads).toHaveLength(0);
     expect(h.replays).toHaveLength(0);
   });
@@ -398,5 +427,219 @@ describe("createInstanceContentReplay", () => {
     h.onRoute();
     expect(h.replays).toHaveLength(0);
     expect(h.reads).toHaveLength(0);
+  });
+
+  describe("only the frame's own confirmation of the route releases it", () => {
+    /** Reloaded on `routePath`, frame up, read landed: only the route is missing. */
+    async function waitingForRoute(routePath: string, options = {}) {
+      const h = replayHarness(options);
+      h.replay.frameReloaded("frame-0", 1, routePath);
+      h.ready();
+      h.reads[0]!.resolve();
+      await settle();
+      return h;
+    }
+
+    it("is not released by set-route having been sent", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      h.sendRoute("/inline-reload-defer");
+      expect(h.replays).toHaveLength(0);
+    });
+
+    it("is not released by a report that names no route", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      h.replay.structure("frame-0", 2, undefined);
+      h.sendRoute("/inline-reload-defer");
+      h.replay.structure("frame-0", 2, undefined);
+      expect(h.replays).toHaveLength(0);
+    });
+
+    it("is not released by a structure report, even one naming the route", async () => {
+      // Sent before the route was set, a report names the page the frame booted
+      // on; after, it is still not an answer to the request.
+      const h = await waitingForRoute("/");
+      h.replay.structure("frame-0", 2, "/");
+      expect(h.replays).toHaveLength(0);
+      h.sendRoute("/");
+      h.replay.structure("frame-0", 2, "/");
+      expect(h.replays).toHaveLength(0);
+      expect(h.givenUp()).toEqual([]);
+    });
+
+    it("waits through a slow navigation, then replays exactly once", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      const request = h.sendRoute("/inline-reload-defer");
+      // The boot page reports on the way: neither releases nor gives up.
+      h.replay.structure("frame-0", 2, "/");
+      await settle();
+      expect(h.replays).toHaveLength(0);
+      h.replay.routeApplied("frame-0", 2, request, "/inline-reload-defer");
+      expect(h.replays.map((r) => r.frame)).toEqual([
+        { key: "frame-0", round: 2, routePath: "/inline-reload-defer" },
+      ]);
+      h.replay.routeApplied("frame-0", 2, request, "/inline-reload-defer");
+      expect(h.replays).toHaveLength(1);
+    });
+
+    it("compares route patterns the way the router spells them", async () => {
+      const h = await waitingForRoute("/products");
+      const request = h.sendRoute("/products");
+      h.replay.routeApplied("frame-0", 2, request, "/products/");
+      expect(h.replays).toHaveLength(1);
+    });
+
+    it("ignores an answer to an older request, and to none", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      // Answers before any request this round.
+      h.replay.routeApplied("frame-0", 2, 0, "/inline-reload-defer");
+      const older = h.sendRoute("/inline-reload-defer");
+      const latest = h.sendRoute("/inline-reload-defer");
+      h.replay.routeApplied("frame-0", 2, older, "/inline-reload-defer");
+      expect(h.replays).toHaveLength(0);
+      h.replay.routeApplied("frame-0", 2, latest, "/inline-reload-defer");
+      expect(h.replays).toHaveLength(1);
+    });
+
+    it("waits for the answer to the latest request after one was confirmed", async () => {
+      const h = replayHarness();
+      h.replay.frameReloaded("frame-0", 1, "/");
+      h.ready();
+      const first = h.onRoute();
+      // The route is sent again before the read lands.
+      const second = h.sendRoute("/");
+      h.reads[0]!.resolve();
+      await settle();
+      expect(h.replays).toHaveLength(0);
+      h.replay.routeApplied("frame-0", 2, first, "/");
+      expect(h.replays).toHaveLength(0);
+      h.replay.routeApplied("frame-0", 2, second, "/");
+      expect(h.replays).toHaveLength(1);
+    });
+
+    it("ignores an answer from an earlier ready round or another frame", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      const request = h.sendRoute("/inline-reload-defer");
+      h.replay.routeApplied("frame-0", 1, request, "/inline-reload-defer");
+      h.replay.routeApplied("frame-1", 2, request, "/inline-reload-defer");
+      expect(h.replays).toHaveLength(0);
+      expect(h.givenUp()).toEqual([]);
+    });
+
+    it("gives up, and says so, when the frame confirms another route", async () => {
+      const h = await waitingForRoute("/inline-reload-defer");
+      const request = h.sendRoute("/inline-reload-defer");
+      h.replay.routeApplied("frame-0", 2, request, "/");
+      expect(h.replays).toHaveLength(0);
+      expect(h.givenUp()).toHaveLength(1);
+      expect(h.unconfirmed()).toBe(1);
+      h.replay.routeApplied("frame-0", 2, request, "/inline-reload-defer");
+      expect(h.replays).toHaveLength(0);
+      expect(h.unconfirmed()).toBe(1);
+    });
+
+    describe("an answer of null: the frame has no router", () => {
+      it("releases a frame that never named a route", async () => {
+        const h = await waitingForRoute("/");
+        h.replay.structure("frame-0", 2, undefined);
+        const request = h.sendRoute("/");
+        h.replay.routeApplied("frame-0", 2, request, null);
+        expect(h.replays).toHaveLength(1);
+      });
+
+      it("does not confirm the target of a frame that named a route", async () => {
+        const h = await waitingForRoute("/inline-reload-defer");
+        // A router frame: its boot page named a route.
+        h.replay.structure("frame-0", 2, "/");
+        const request = h.sendRoute("/inline-reload-defer");
+        h.replay.routeApplied("frame-0", 2, request, null);
+        expect(h.replays).toHaveLength(0);
+        expect(h.givenUp()).toHaveLength(1);
+        expect(h.unconfirmed()).toBe(1);
+      });
+
+      it("does not confirm the target of a frame that confirmed a route before", async () => {
+        const h = replayHarness();
+        h.replay.frameReloaded("frame-0", 1, "/");
+        h.ready();
+        h.onRoute("/");
+        const again = h.sendRoute("/");
+        h.replay.routeApplied("frame-0", 2, again, null);
+        h.reads[0]!.resolve();
+        await settle();
+        expect(h.replays).toHaveLength(0);
+        expect(h.unconfirmed()).toBe(1);
+      });
+    });
+
+    describe("when no confirmation comes", () => {
+      it("gives up once, with a notice, after the wait (a frame on an older bridge)", async () => {
+        vi.useFakeTimers();
+        const h = replayHarness({ confirmTimeoutMs: 1_000 });
+        h.replay.frameReloaded("frame-0", 1, "/inline-reload-defer");
+        h.ready();
+        h.reads[0]!.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        const request = h.sendRoute("/inline-reload-defer");
+        await vi.advanceTimersByTimeAsync(999);
+        expect(h.unconfirmed()).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.replays).toHaveLength(0);
+        expect(h.givenUp()).toEqual([
+          "[preview-instance] content replay given up | the frame did not confirm its route in time",
+        ]);
+        expect(h.unconfirmed()).toBe(1);
+        expect(h.readFailures()).toBe(0);
+        // A late answer changes nothing; nor does more time.
+        h.replay.routeApplied("frame-0", 2, request, "/inline-reload-defer");
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.replays).toHaveLength(0);
+        expect(h.unconfirmed()).toBe(1);
+      });
+
+      it("counts the wait from when the frame came up, with or without a route sent", async () => {
+        vi.useFakeTimers();
+        const h = replayHarness({ confirmTimeoutMs: 1_000 });
+        h.replay.frameReloaded("frame-0", 1, "/");
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(h.unconfirmed()).toBe(0);
+        h.ready();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(h.unconfirmed()).toBe(1);
+      });
+
+      it("says nothing once it replayed, was dropped, or was disposed", async () => {
+        vi.useFakeTimers();
+        const replayed = replayHarness({ confirmTimeoutMs: 1_000 });
+        replayed.replay.frameReloaded("frame-0", 1, "/");
+        replayed.ready();
+        replayed.onRoute();
+        replayed.reads[0]!.resolve();
+        const dropped = replayHarness({ confirmTimeoutMs: 1_000 });
+        dropped.replay.frameReloaded("frame-0", 1, "/");
+        dropped.ready();
+        dropped.replay.frameReady("frame-0", 3);
+        const disposed = replayHarness({ confirmTimeoutMs: 1_000 });
+        disposed.replay.frameReloaded("frame-0", 1, "/");
+        disposed.ready();
+        disposed.replay.dispose();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(replayed.replays).toHaveLength(1);
+        for (const h of [replayed, dropped, disposed]) {
+          expect(h.unconfirmed()).toBe(0);
+          expect(h.givenUp()).toEqual([]);
+        }
+      });
+
+      it("waits by default for the exported time", async () => {
+        vi.useFakeTimers();
+        const h = replayHarness();
+        h.replay.frameReloaded("frame-0", 1, "/");
+        h.ready();
+        await vi.advanceTimersByTimeAsync(INSTANCE_REPLAY_CONFIRM_TIMEOUT_MS - 1);
+        expect(h.unconfirmed()).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.unconfirmed()).toBe(1);
+      });
+    });
   });
 });
