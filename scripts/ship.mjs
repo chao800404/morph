@@ -23,7 +23,7 @@ import {
   CHECK_DEPENDENCIES,
   EXPECTED_CI_CHECKS,
   REQUIRED_CHECK,
-  STRICT_SUCCESS_CHECKS,
+  EDITOR_E2E_CHECKS,
 } from "./ci-required-checks.mjs";
 
 const log = (message) => console.log(`[ship] ${message}`);
@@ -120,10 +120,11 @@ export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
     )
       unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
   }
-  // The shards and their acceptance job must report SUCCESS itself.
+  // Every expected check must report SUCCESS itself: SKIPPED or NEUTRAL means
+  // the job did not run its work. Checks outside the list keep `passed`.
   for (const check of settled)
     if (
-      STRICT_SUCCESS_CHECKS.includes(check.name) &&
+      expected.includes(check.name) &&
       check.conclusion !== "SUCCESS" &&
       !unhappy.includes(check)
     )
@@ -137,14 +138,11 @@ export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
   //
   // MORPH_SHIP_REQUIRED_ONLY bypasses this expected set on purpose: it merges as
   // soon as the required check passes, for when the rest are known-irrelevant.
-  // What it keeps from before: a failure anywhere still refuses (above), and
+  // What it keeps: a failure anywhere, and any expected check reporting other
+  // than SUCCESS, still refuses (above), and
   // once any shard has reported, it still waits for every shard and the
   // acceptance job and for every pending check, as it did since #253.
-  const awaited = requiredOnly
-    ? anyShard
-      ? STRICT_SUCCESS_CHECKS
-      : []
-    : expected;
+  const awaited = requiredOnly ? (anyShard ? EDITOR_E2E_CHECKS : []) : expected;
   const missing = awaited.filter((name) => !present(name));
   const queued = (name) => ({ name, status: "QUEUED", conclusion: null });
 
@@ -218,6 +216,42 @@ export function describeUnhappy(unhappy) {
 /** Names the expected checks that never reported. */
 export function describeMissing(missing) {
   return `EXPECTED_CHECK_MISSING: every reported check has finished, but ${missing.join(", ")} never reported (renamed, removed or not created; see scripts/ci-required-checks.mjs). Nothing merged. The branch and its pull request are still there.`;
+}
+
+/**
+ * Why the deadline passed with nothing merged: the checks still running and
+ * the expected checks that never reported, each named.
+ */
+export function describeTimeout(pending, missing) {
+  const running = pending
+    .map((check) => check.name)
+    .filter((name) => !missing.includes(name));
+  return `CHECKS_TIMED_OUT: still waiting on ${running.join(", ") || "nothing reported as running"}; expected checks never reported: ${missing.join(", ") || "none"}. Nothing merged. The branch and its pull request are still there.`;
+}
+
+/**
+ * What the polling loop does with one decision, as a pure function of it and
+ * the clock, so the deadline path is driven without waiting or calling `gh`.
+ *
+ * `fail` is thrown by the loop, which exits non-zero with the message. A
+ * merge is only ever the decision's own `merge` with nothing missing: an
+ * expected check that never reported cannot become a merge here, and at the
+ * deadline it is named in the failure.
+ */
+export function nextStep(result, now, deadline) {
+  const { verdict, unhappy, pending, missing = [] } = result;
+  if (verdict === "refuse")
+    return {
+      action: "fail",
+      message:
+        unhappy.length > 0
+          ? describeUnhappy(unhappy)
+          : describeMissing(missing),
+    };
+  if (verdict === "merge" && missing.length === 0) return { action: "merge" };
+  if (now > deadline)
+    return { action: "fail", message: describeTimeout(pending, missing) };
+  return { action: "wait" };
 }
 
 async function ship() {
@@ -309,24 +343,14 @@ async function ship() {
     // not tell us it passed, and one of them is not hypothetical here — the e2e
     // job was cancelled by its own timeout once, which is exactly a run that
     // should not merge.
-    const { verdict, unhappy, pending, missing } = decide(checks, requiredOnly);
+    const result = decide(checks, requiredOnly);
+    const step = nextStep(result, Date.now(), deadline);
 
-    if (verdict === "refuse") {
-      throw new Error(
-        unhappy.length > 0
-          ? describeUnhappy(unhappy)
-          : describeMissing(missing),
-      );
-    }
-    if (verdict === "merge") break;
+    if (step.action === "fail") throw new Error(step.message);
+    if (step.action === "merge") break;
 
-    if (Date.now() > deadline) {
-      throw new Error(
-        `CHECKS_TIMED_OUT: still waiting on ${pending.map((check) => check.name).join(", ")}. Nothing merged.`,
-      );
-    }
     log(
-      `  still running: ${pending.map((check) => check.name).join(", ") || "(none reported yet)"}`,
+      `  still running: ${result.pending.map((check) => check.name).join(", ") || "(none reported yet)"}`,
     );
     await new Promise((resolve) => setTimeout(resolve, 20_000));
   }

@@ -36,11 +36,11 @@ export const EDITOR_SHARD_CHECKS = Array.from(
   (_, index) => editorShardCheckName(index + 1),
 );
 
-/** Checks that must report SUCCESS itself; a skip is not a run here. */
-export const STRICT_SUCCESS_CHECKS = [
-  ...EDITOR_SHARD_CHECKS,
-  E2E_ACCEPTANCE_CHECK,
-];
+/**
+ * The sharded acceptance: every shard and the job that says they all ran.
+ * Every expected check (below) must report SUCCESS itself; a skip is not a run.
+ */
+export const EDITOR_E2E_CHECKS = [...EDITOR_SHARD_CHECKS, E2E_ACCEPTANCE_CHECK];
 
 export const EXPECTED_CI_CHECKS = [
   REQUIRED_CHECK,
