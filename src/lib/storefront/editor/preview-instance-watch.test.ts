@@ -38,11 +38,15 @@ function harness() {
     answers.push(answer);
     return answer.promise;
   });
+  let editing = false;
+  const deferrals: string[] = [];
   const watch = createPreviewInstanceWatch({
     currentKey: () => key,
     reloadFrame: (reloaded) => reloads.push(reloaded),
     confirm,
     log: (line) => logs.push(line),
+    canReload: () => !editing,
+    onDeferred: (reason) => deferrals.push(reason),
   });
   return {
     watch,
@@ -50,8 +54,14 @@ function harness() {
     logs,
     confirm,
     answers,
+    deferrals,
     setKey(next: string | null) {
       key = next;
+    },
+    /** Text is being typed on the canvas (true), or that edit ended (false). */
+    setEditing(next: boolean) {
+      editing = next;
+      if (!next) watch.editEnded();
     },
   };
 }
@@ -256,5 +266,117 @@ describe("createPreviewInstanceWatch", () => {
     await settle();
     h.watch.observe("frame-0", instance(SESSION_A, 2));
     expect(h.reloads).toEqual([]);
+  });
+});
+
+describe("a reload held while text is typed on the canvas", () => {
+  it("is held, told once, and happens once when the edit ends", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    expect(h.reloads).toEqual([]);
+    expect(h.deferrals).toHaveLength(1);
+    expect(h.logs).toContain(
+      `[preview-instance] reload deferred | served by ${SESSION_A}.1, serving ${SESSION_A}.2`,
+    );
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+    // Ended again: nothing is left to do.
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+  });
+
+  it("merges later answers into the one held reload", async () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    h.watch.observe("frame-0", instance(SESSION_A, 3));
+    // Another session while held: no confirmation is asked for.
+    h.watch.observe("frame-0", instance(SESSION_B, 1));
+    await settle();
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.deferrals).toHaveLength(1);
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+  });
+
+  it("holds a reload a confirmation decided while text is typed", async () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.watch.observe("frame-0", instance(SESSION_B, 1));
+    h.setEditing(true);
+    h.answers[0]!.resolve(instance(SESSION_B, 1));
+    await settle();
+    expect(h.reloads).toEqual([]);
+    expect(h.deferrals).toHaveLength(1);
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+  });
+
+  it("drops the held reload when its frame is replaced for another reason", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    // Compile recovery, a reconnect, a route change: a new frame, before the
+    // edit ends. Its page will have come from the server serving.
+    h.setKey("frame-1");
+    h.setEditing(false);
+    expect(h.reloads).toEqual([]);
+    // And the new frame, once up, starts clean.
+    h.watch.frameReady("frame-1", known(instance(SESSION_A, 2)));
+    h.watch.observe("frame-1", instance(SESSION_A, 2));
+    expect(h.reloads).toEqual([]);
+  });
+
+  it("drops the held reload when a new frame comes up before the edit ends", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    h.setKey("frame-1");
+    h.watch.frameReady("frame-1", known(instance(SESSION_A, 2)));
+    h.setEditing(false);
+    expect(h.reloads).toEqual([]);
+  });
+
+  it("does nothing after it is disposed", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    h.watch.dispose();
+    h.setEditing(false);
+    expect(h.reloads).toEqual([]);
+  });
+
+  it("keeps holding, untold again, when the edit ends while the frame still cannot be replaced", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.setEditing(true);
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    expect(h.deferrals).toHaveLength(1);
+    // Told the edit ended while something still holds the frame.
+    h.watch.editEnded();
+    expect(h.reloads).toEqual([]);
+    expect(h.deferrals).toHaveLength(1);
+    // A later answer adds nothing to the held reload.
+    h.watch.observe("frame-0", instance(SESSION_A, 3));
+    expect(h.deferrals).toHaveLength(1);
+    // Once it can be replaced, it is, once.
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+    h.setEditing(false);
+    expect(h.reloads).toEqual(["frame-0"]);
+  });
+
+  it("reloads at once when nothing is being typed", () => {
+    const h = harness();
+    h.watch.frameReady("frame-0", known(instance(SESSION_A, 1)));
+    h.watch.observe("frame-0", instance(SESSION_A, 2));
+    expect(h.reloads).toEqual(["frame-0"]);
+    expect(h.deferrals).toEqual([]);
   });
 });

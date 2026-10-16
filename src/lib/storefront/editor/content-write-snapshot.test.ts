@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptAnsweredWrite,
   acceptOwnSnapshot,
   acceptReadSnapshot,
   basisWithinOwnRange,
+  newestAcceptedCopy,
   rowIdentitiesAt,
   rowsStillMatch,
   type ContentSnapshot,
@@ -132,6 +134,142 @@ describe("a content write's snapshot", () => {
     expect(basisWithinOwnRange(snapshot, 2)).toBe(false);
     expect(basisWithinOwnRange(snapshot, 6)).toBe(false);
     expect(basisWithinOwnRange(snapshot, undefined)).toBe(true);
+  });
+});
+
+describe("an answered write", () => {
+  it("is decided by acceptOwnSnapshot when a copy is held", () => {
+    const current = at(3, "Before", 2);
+    const ack = { sentAt: 3, draftGeneration: 4, sections: sections("Written") };
+    expect(acceptAnsweredWrite(current, ack)).toEqual(acceptOwnSnapshot(current, ack));
+    // A late answer to an older write still changes nothing.
+    const late = { sentAt: 1, draftGeneration: 2, sections: sections("Late") };
+    expect(acceptAnsweredWrite(current, late)).toBe(current);
+  });
+
+  it("is taken as a read of its generation when no copy is held", () => {
+    const ack = { sentAt: 1, draftGeneration: 2, sections: sections("Created") };
+    expect(acceptAnsweredWrite(undefined, ack)).toEqual({
+      draftGeneration: 2,
+      sections: sections("Created"),
+      // Nobody's own range: nothing typed on an earlier copy composes on it.
+      ownSince: 2,
+    });
+  });
+
+  it("leaves no copy when the answer brings no document or no valid generation", () => {
+    expect(
+      acceptAnsweredWrite(undefined, { sentAt: 1, draftGeneration: 2, sections: undefined }),
+    ).toBeUndefined();
+    expect(
+      acceptAnsweredWrite(undefined, { sentAt: 1, draftGeneration: 0, sections: sections("X") }),
+    ).toBeUndefined();
+  });
+});
+
+describe("the newer accepted copy of a document", () => {
+  const snapshots = (entries: Array<[string, ContentSnapshot]>) =>
+    new Map(entries);
+
+  it("is the context's copy when its generation is newer", () => {
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([["t1", at(2, "Snapshot")]]),
+        contextTemplates: [{ id: "t1", draftGeneration: 3 }],
+      }),
+    ).toEqual({ from: "context" });
+  });
+
+  it("is the snapshot when its generation is newer", () => {
+    const snapshot = at(3, "Snapshot");
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([["t1", snapshot]]),
+        contextTemplates: [{ id: "t1", draftGeneration: 2 }],
+      }),
+    ).toEqual({ from: "snapshot", snapshot });
+  });
+
+  it("is the context's copy on a tie", () => {
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([["t1", at(3, "Snapshot")]]),
+        contextTemplates: [{ id: "t1", draftGeneration: 3 }],
+      }),
+    ).toEqual({ from: "context" });
+  });
+
+  it("is the snapshot when the context holds no valid generation for the document", () => {
+    const snapshot = at(2, "Snapshot");
+    for (const contextTemplates of [
+      [],
+      [{ id: "t1" }],
+      [{ id: "t1", draftGeneration: 0 }],
+      [{ id: "t1", draftGeneration: "3" }],
+      [{ id: "t1", draftGeneration: Number.NaN }],
+    ]) {
+      expect(
+        newestAcceptedCopy({
+          templateId: "t1",
+          snapshots: snapshots([["t1", snapshot]]),
+          contextTemplates,
+        }),
+      ).toEqual({ from: "snapshot", snapshot });
+    }
+  });
+
+  it("is the context's copy when no snapshot of the document is held", () => {
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([]),
+        contextTemplates: [{ id: "t1", draftGeneration: 1 }],
+      }),
+    ).toEqual({ from: "context" });
+  });
+
+  it("never reads another document's snapshot or generation", () => {
+    // Another document's newer snapshot does not stand in for this one.
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([["t2", at(9, "Other document")]]),
+        contextTemplates: [{ id: "t1", draftGeneration: 1 }],
+      }),
+    ).toEqual({ from: "context" });
+    // Nor does another document's newer context generation outrank this
+    // document's snapshot, or an older one let this document's newer
+    // context lose.
+    const snapshot = at(3, "Snapshot");
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([
+          ["t1", snapshot],
+          ["t2", at(1, "Other document")],
+        ]),
+        contextTemplates: [
+          { id: "t2", draftGeneration: 9 },
+          { id: "t1", draftGeneration: 2 },
+        ],
+      }),
+    ).toEqual({ from: "snapshot", snapshot });
+    expect(
+      newestAcceptedCopy({
+        templateId: "t1",
+        snapshots: snapshots([
+          ["t1", at(3, "Snapshot")],
+          ["t2", at(9, "Other document")],
+        ]),
+        contextTemplates: [
+          { id: "t2", draftGeneration: 1 },
+          { id: "t1", draftGeneration: 4 },
+        ],
+      }),
+    ).toEqual({ from: "context" });
   });
 });
 
