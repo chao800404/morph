@@ -40,6 +40,8 @@ const POLL_ACTIVE_MS = 3_000;
 // thirty, which reads as broken while someone is working in Morph.
 const POLL_IDLE_MAX_MS = 10_000;
 const LOCAL_DEBOUNCE_MS = 400;
+const IGNORE_FALLBACK_WARNING =
+  ".morphignore is missing; still leaving out what it listed at the last sync. Write an empty .morphignore to sync those paths.";
 
 const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
@@ -215,6 +217,7 @@ async function status() {
     if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
     throw error;
   });
+  if (result.summary.ignoreRulesFrom === "last-sync") log(IGNORE_FALLBACK_WARNING);
   if (result.status === "applied") log("In step: nothing to do.");
   if (result.status === "retry") log(`The workspace changed while reading (${result.reason}); run again.`);
 }
@@ -248,6 +251,7 @@ async function start() {
   const session = sessionFor(state, client, false);
   const reportedConflicts = new Set<string>();
   let reportedSkips = false;
+  let reportedIgnoreFallback = false;
   let dirty = true;
   let delay = POLL_ACTIVE_MS;
   let timer: NodeJS.Timeout | null = null;
@@ -278,6 +282,12 @@ async function start() {
       log(`CONFLICT ${conflict.path} (${conflict.reason}). Morph's copy is in ${conflict.path}.morph-remote; settle with: pnpm morph:sync resolve ${conflict.path} --keep local|remote --dir ${flags.dir}`);
     }
     for (const path of reportedConflicts) if (!current.has(path)) reportedConflicts.delete(path);
+    // Once each time the file goes missing, not on every cycle while it is.
+    if (summary.ignoreRulesFrom !== "last-sync") reportedIgnoreFallback = false;
+    else if (!reportedIgnoreFallback) {
+      reportedIgnoreFallback = true;
+      log(IGNORE_FALLBACK_WARNING);
+    }
     if (!reportedSkips && (summary.localSkipped.length || summary.binarySkipped.length)) {
       reportedSkips = true;
       const counts = new Map<string, number>();

@@ -11,6 +11,7 @@ const summary = (remote: number, local = 0): CyclePlanSummary => ({
   binarySkipped: [],
   localSkipped: [],
   massDeletion: `This would delete ${remote} files from the workspace.`,
+  ignoreRulesFrom: "file",
 });
 
 describe("what morph-sync may approve without asking", () => {
