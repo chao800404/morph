@@ -8,6 +8,7 @@ import type {
   BuildPreviewStartWire,
 } from "./build-preview/build-preview-wire";
 import type { PreviewContentWriteResult } from "@/lib/storefront/compiler/preview-content-write";
+import type { PreviewServedInstance } from "@/lib/storefront/editor/preview-protocol";
 
 /**
  * The wire between the Worker and the local preview sidecar.
@@ -112,6 +113,8 @@ export type LocalPreviewSidecarApplyFilesResult = Readonly<{
   unchanged: readonly string[];
   /** Files the preview had already taken a newer version of; none written. */
   refused?: readonly string[];
+  /** The server instance serving the preview after the write, if it names one. */
+  servedInstance?: PreviewServedInstance | null;
 }>;
 
 /**
@@ -133,7 +136,8 @@ export type LocalPreviewSidecarOperations = Readonly<{
       previewHostname: string;
       expectedOrigin?: string | null;
     };
-    response: { serving: boolean };
+    /** `servedInstance`: the instance serving there, when it names one. */
+    response: { serving: boolean; servedInstance?: PreviewServedInstance | null };
   }>;
   stop: Readonly<{
     request: { previewId: string; processId?: string };

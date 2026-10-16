@@ -299,13 +299,19 @@ export async function startLocalPreviewSidecar(
           ),
         );
         return;
-      case "isServing":
+      case "isServing": {
+        const servingInput = input as Parameters<
+          LocalVitePreviewServer["isServing"]
+        >[0];
+        const serving = await previews.isServing(servingInput);
         respond(response, 200, {
-          serving: await previews.isServing(
-            input as Parameters<LocalVitePreviewServer["isServing"]>[0],
-          ),
+          serving,
+          servedInstance: serving
+            ? previews.servedInstanceFor(servingInput.previewId)
+            : null,
         });
         return;
+      }
       case "stop": {
         const stopInput = input as { previewId: string; processId?: string };
         await previews.stop(stopInput.previewId, stopInput.processId);
@@ -352,18 +358,18 @@ export async function startLocalPreviewSidecar(
           files: readonly { path: string; content: string; fence: number }[];
           generation?: unknown;
         };
-        respond(
-          response,
-          200,
-          await previews.writeFiles(
-            applyInput.previewId,
-            applyInput.files,
-            typeof applyInput.generation === "number" &&
-              Number.isInteger(applyInput.generation)
-              ? applyInput.generation
-              : null,
-          ),
+        const written = await previews.writeFiles(
+          applyInput.previewId,
+          applyInput.files,
+          typeof applyInput.generation === "number" &&
+            Number.isInteger(applyInput.generation)
+            ? applyInput.generation
+            : null,
         );
+        respond(response, 200, {
+          ...written,
+          servedInstance: previews.servedInstanceFor(applyInput.previewId),
+        });
         return;
       }
     }

@@ -7,6 +7,8 @@
  *   pnpm morph:sync start --dir ../my-theme
  *   pnpm morph:sync status --dir ../my-theme
  *   pnpm morph:sync resolve src/routes/index.tsx --keep local --dir ../my-theme
+ *   pnpm morph:sync restore src/routes/index.tsx --dir ../my-theme
+ *   pnpm morph:sync restore --all --dir ../my-theme
  *   pnpm morph:sync logout --dir ../my-theme
  *
  * The token comes from the editor's "Link local folder", via the
@@ -23,11 +25,16 @@ import {
   ThemeSyncApiRefusal,
 } from "../src/lib/storefront/local-dev/theme-sync/sync-client";
 import { createConfirmPolicy, describeMassDeletion } from "../src/lib/storefront/local-dev/theme-sync/sync-confirm";
-import { createLocalSyncFolder, SYNC_DIRECTORY } from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
+import {
+  createLocalSyncFolder,
+  LocalSyncFolderError,
+  SYNC_DIRECTORY,
+} from "../src/lib/storefront/local-dev/theme-sync/sync-local-fs";
 import { themeSyncPathExclusion } from "../src/lib/storefront/local-dev/theme-sync/sync-paths";
 import {
   createSyncSession,
   type CyclePlanSummary,
+  type RestorePlan,
   type SyncState,
 } from "../src/lib/storefront/local-dev/theme-sync/sync-session";
 
@@ -36,6 +43,8 @@ const POLL_ACTIVE_MS = 3_000;
 // thirty, which reads as broken while someone is working in Morph.
 const POLL_IDLE_MAX_MS = 10_000;
 const LOCAL_DEBOUNCE_MS = 400;
+const IGNORE_FALLBACK_WARNING =
+  ".morphignore is missing; still leaving out what it listed at the last sync. Write an empty .morphignore to sync those paths.";
 
 const { values: flags, positionals } = parseArgs({
   allowPositionals: true,
@@ -45,6 +54,7 @@ const { values: flags, positionals } = parseArgs({
     keep: { type: "string" },
     yes: { type: "boolean", default: false },
     "allow-mass-delete": { type: "boolean", default: false },
+    all: { type: "boolean", default: false },
   },
 });
 const command = positionals[0] ?? "start";
@@ -207,7 +217,11 @@ function sessionFor(state: SyncState, client: ReturnType<typeof createThemeSyncC
 async function status() {
   const state = await readState();
   const session = sessionFor(state, await clientFor(state), true);
-  const result = await session.runCycle();
+  const result = await session.runCycle().catch((error: unknown) => {
+    if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
+    throw error;
+  });
+  if (result.summary.ignoreRulesFrom === "last-sync") log(IGNORE_FALLBACK_WARNING);
   if (result.status === "applied") log("In step: nothing to do.");
   if (result.status === "retry") log(`The workspace changed while reading (${result.reason}); run again.`);
 }
@@ -219,6 +233,70 @@ async function resolveConflict() {
   const session = sessionFor(state, await clientFor(state), false);
   await session.resolve(path, keep);
   log(`Will keep the ${keep} copy of ${path} on the next sync.`);
+}
+
+function printRestorePlan(plan: RestorePlan) {
+  const list = (label: string, paths: readonly string[]) => {
+    if (paths.length === 0) return;
+    log(`${label} (${paths.length}):`);
+    for (const path of paths.slice(0, 50)) log(`  ${path}`);
+    if (paths.length > 50) log(`  … and ${paths.length - 50} more`);
+  };
+  list("replace with Morph's copy (local copy kept in .morph/trash)", plan.replace);
+  list("missing locally, write Morph's copy", plan.write);
+  list("already the same as Morph", plan.inStep);
+  list("not in Morph, left alone", plan.notInMorph);
+  list("not restorable, left alone", plan.notRestorable.map((entry) => `${entry.path} (${entry.reason})`));
+}
+
+/**
+ * Takes files back from Morph after local copies were deleted or broken,
+ * without relinking. Reads Morph only; run it while `start` is stopped, or
+ * the running sync may act on the folder before the base is updated.
+ */
+async function restoreFromMorph() {
+  const paths = positionals.slice(1);
+  if (flags.all && paths.length > 0) fail("Name files or use --all, not both.");
+  if (!flags.all && paths.length === 0) fail("Name the files to restore, or use --all: restore <path…> | restore --all");
+  const state = await readState();
+  const client = await clientFor(state);
+  const policy = createConfirmPolicy({
+    yes: flags.yes ?? false,
+    allowMassDelete: false,
+    interactive: Boolean(process.stdin.isTTY),
+  });
+  const session = createSyncSession({
+    client,
+    folder: createLocalSyncFolder(root),
+    state,
+    saveState,
+    // Not reached: restore never runs a sync cycle.
+    confirm: async () => false,
+  });
+  log(`Restoring from Theme ${state.themeId} at ${state.origin} into ${root}. Make sure "start" is not running.`);
+  const result = await session.restore(flags.all ? "all" : paths, async (plan) => {
+    printRestorePlan(plan);
+    if (plan.ignoreRulesFrom === "last-sync") log(IGNORE_FALLBACK_WARNING);
+    const decision = policy.decide("restore");
+    if (decision === "yes") return true;
+    if (decision === "no") {
+      log("Not restored. Rerun with --yes or in a terminal.");
+      return false;
+    }
+    return /^y(es)?$/i.test(await ask("Restore these files from Morph? [y/N] "));
+  }).catch((error: unknown) => {
+    // Nothing was written: the rules are read before anything else.
+    if (error instanceof LocalSyncFolderError) return fail(`Local folder problem, not Morph: ${error.message}`);
+    throw error;
+  });
+  if (result.status === "retry") return fail(`${result.reason} Run restore again.`);
+  if (result.status === "declined") return process.exit(1);
+  const skipped = new Set(result.skipped);
+  const written = [...result.plan.replace, ...result.plan.write].filter((path) => !skipped.has(path));
+  // Nothing needed asking, so the plan was not printed yet.
+  if (written.length === 0 && skipped.size === 0) printRestorePlan(result.plan);
+  for (const path of result.skipped) log(`skipped ${path}: it changed locally while waiting; run restore again.`);
+  log(`Restored ${written.length} file(s) from Morph.`);
 }
 
 async function logout() {
@@ -241,6 +319,7 @@ async function start() {
   const session = sessionFor(state, client, false);
   const reportedConflicts = new Set<string>();
   let reportedSkips = false;
+  let reportedIgnoreFallback = false;
   let dirty = true;
   let delay = POLL_ACTIVE_MS;
   let timer: NodeJS.Timeout | null = null;
@@ -271,6 +350,12 @@ async function start() {
       log(`CONFLICT ${conflict.path} (${conflict.reason}). Morph's copy is in ${conflict.path}.morph-remote; settle with: pnpm morph:sync resolve ${conflict.path} --keep local|remote --dir ${flags.dir}`);
     }
     for (const path of reportedConflicts) if (!current.has(path)) reportedConflicts.delete(path);
+    // Once each time the file goes missing, not on every cycle while it is.
+    if (summary.ignoreRulesFrom !== "last-sync") reportedIgnoreFallback = false;
+    else if (!reportedIgnoreFallback) {
+      reportedIgnoreFallback = true;
+      log(IGNORE_FALLBACK_WARNING);
+    }
     if (!reportedSkips && (summary.localSkipped.length || summary.binarySkipped.length)) {
       reportedSkips = true;
       const counts = new Map<string, number>();
@@ -302,9 +387,14 @@ async function start() {
       if (error instanceof ThemeSyncApiRefusal && error.status === 401) {
         fail(`Morph refused the token (${error.message}). Link again from the editor.`);
       }
-      // A request that failed may still have landed. Nothing is re-sent: the
-      // next cycle reads the workspace back and plans from what is there.
-      log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof LocalSyncFolderError) {
+        // Nothing was sent: the cycle stopped before it planned.
+        log(`Local folder problem, not Morph; trying again: ${error.message}`);
+      } else {
+        // A request that failed may still have landed. Nothing is re-sent: the
+        // next cycle reads the workspace back and plans from what is there.
+        log(`Sync failed; reading Morph again before anything else: ${error instanceof Error ? error.message : String(error)}`);
+      }
       dirty = true;
       delay = Math.min(delay * 2, POLL_IDLE_MAX_MS);
     } finally {
@@ -342,8 +432,9 @@ const commands: Record<string, () => Promise<void>> = {
   start,
   status,
   resolve: resolveConflict,
+  restore: restoreFromMorph,
   logout,
 };
 
-const run = commands[command] ?? (() => fail(`Unknown command ${command}. Use link, start, status, resolve or logout.`));
+const run = commands[command] ?? (() => fail(`Unknown command ${command}. Use link, start, status, resolve, restore or logout.`));
 await run();
