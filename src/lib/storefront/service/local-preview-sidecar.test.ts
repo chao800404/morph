@@ -138,6 +138,18 @@ describe("the local preview sidecar boundary", () => {
         expectedOrigin: url.origin,
       }),
     ).resolves.toBe(true);
+    // The same question names the instance serving, which is the one the
+    // page's own responses name.
+    const described = await client.describeServing({
+      previewId: "preview-1",
+      previewHostname: "127.0.0.1",
+      expectedOrigin: url.origin,
+    });
+    expect(described.serving).toBe(true);
+    expect(described.servedInstance?.serial).toBe(1);
+    expect(document.headers.get("server-timing")).toContain(
+      `desc="${described.servedInstance!.session}.${described.servedInstance!.serial}"`,
+    );
 
     // Applying an edit through the client is what makes the page change, and
     // the sidecar reports what it wrote rather than what it intended.
@@ -152,6 +164,7 @@ describe("the local preview sidecar boundary", () => {
       ],
     });
     expect(applied.changed).toEqual(["src/pages/index.tsx"]);
+    expect(applied.servedInstance).toEqual(described.servedInstance);
     // Written, and then *served* — which are two different facts. The workspace
     // watcher polls, so an edit arrives a moment later rather than at the instant
     // the write returns; asserting it immediately would be asserting the poll
@@ -183,6 +196,7 @@ describe("the local preview sidecar boundary", () => {
       changed: [],
       unchanged: [],
       refused: ["src/pages/index.tsx"],
+      servedInstance: described.servedInstance,
     });
     expect(
       await (await fetch(new URL("src/pages/index.tsx", started.url))).text(),
@@ -196,6 +210,13 @@ describe("the local preview sidecar boundary", () => {
         expectedOrigin: url.origin,
       }),
     ).resolves.toBe(false);
+    await expect(
+      client.describeServing({
+        previewId: "preview-1",
+        previewHostname: "127.0.0.1",
+        expectedOrigin: url.origin,
+      }),
+    ).resolves.toEqual({ serving: false, servedInstance: null });
   }, 180_000);
 
   it("refuses a request that does not carry the token", async () => {

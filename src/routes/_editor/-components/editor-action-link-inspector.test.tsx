@@ -198,6 +198,7 @@ describe("Action Button link controls", () => {
 
     expect(onPropsChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ actionHref: "https://example.com/lookbook" }),
+      { inputFieldPath: "actionHref" },
     );
   });
 
@@ -239,6 +240,7 @@ describe("Action Button link controls", () => {
 
     expect(onPropsChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ actionTarget: "_blank" }),
+      { inputFieldPath: "actionTarget" },
     );
   });
 
@@ -476,7 +478,7 @@ describe("unified action fields", () => {
     expect(onPropsChange).toHaveBeenLastCalledWith({
       actionLabel: "Go",
       actionHref: "https://example.com",
-    });
+    }, { inputFieldPath: "actionHref" });
     expect(screen.queryByText("Tooltip")).toBeNull();
   });
 
@@ -533,7 +535,7 @@ describe("unified action fields", () => {
       actionLabel: "Explore",
       actionHref: "/obsolete",
       action: { href: "/about" },
-    });
+    }, { inputFieldPath: "actionLabel" });
     fireEvent.click(screen.getByText("External URL"));
     fireEvent.blur(
       screen.getByRole("textbox", { name: "Action link path or URL" }),
@@ -544,6 +546,7 @@ describe("unified action fields", () => {
         actionHref: "/obsolete",
         action: expect.objectContaining({ href: "https://example.com" }),
       }),
+      { inputFieldPath: "action" },
     );
   });
 });

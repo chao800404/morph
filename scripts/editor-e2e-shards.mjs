@@ -21,7 +21,6 @@ export const EDITOR_SHARDS = [
     "authored-content.spec.ts",
     "native-compat-published.spec.ts",
     "performance.spec.ts",
-    "preview-health.spec.ts",
     "publish.spec.ts",
     // Container transport only, so skipped on every CI shard; placed with
     // publish.spec.ts, the other container-only file.
@@ -45,9 +44,14 @@ export const EDITOR_SHARDS = [
     // Container transport only, like the publish files above: skipped on
     // every CI shard.
     "publish-layout-edit.spec.ts",
-    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which CI
-    // does not run: skipped on every CI shard, like the gated files above.
+    // Full Start preview only (MORPH_E2E_PREVIEW_RUNTIME=start), which the
+    // shards do not run: skipped on every shard, like the gated files above,
+    // and run by the full Start job instead (editor-e2e-start.mjs).
     "loader-data-binding.spec.ts",
+    // Unmeasured until the next rebalance; placed on the shard with the
+    // shortest run. Two tests on throwaway Themes, each waiting out one
+    // preview renewal (about 60 s). Local sidecar only.
+    "preview-inline-reload-defer.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
@@ -76,6 +80,8 @@ export const EDITOR_SHARDS = [
     // Unmeasured; two editor opens on a throwaway Theme. Its publish half
     // runs only with the container transport.
     "section-visibility-layout.spec.ts",
+    // Unmeasured until the next rebalance; two tests, three editor opens.
+    "object-position.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
@@ -99,6 +105,9 @@ export const EDITOR_SHARDS = [
     // Unmeasured until the next rebalance; placed on the shard with the
     // fewest files. Four tests on a throwaway Theme, about 4 minutes locally.
     "preview-error-recovery.spec.ts",
+    // Unmeasured until the next rebalance; placed with the files above. One
+    // test on a throwaway Theme, two editor opens. Local sidecar only.
+    "preview-instance-reattach.spec.ts",
   ],
 ];
 

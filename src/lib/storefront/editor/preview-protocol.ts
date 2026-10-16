@@ -409,7 +409,15 @@ export const PREVIEW_LOAD_MILESTONES = [
 export type PreviewLoadMilestone = (typeof PREVIEW_LOAD_MILESTONES)[number];
 
 export type PreviewToEditorMessage =
-  | { type: "morph:storefront-preview-ready" }
+  | {
+      type: "morph:storefront-preview-ready";
+      /**
+       * Which dev server instance served this page, as the page itself saw
+       * it (`previewServedInstanceFromEntries`). Absent where the transport
+       * names none.
+       */
+      servedInstance?: PreviewServedInstanceReport;
+    }
   | {
       /**
        * Why a preview page may never announce itself.
@@ -604,6 +612,127 @@ export type PreviewToEditorMessage =
       screenX: number;
       screenY: number;
     };
+
+/**
+ * The `Server-Timing` metric a local preview server names itself in, on every
+ * response it gives (document, modules, the HMR relay). Read by the page
+ * through the Performance API, where a response's own headers are not
+ * otherwise visible to script.
+ */
+export const PREVIEW_SERVED_INSTANCE_TIMING = "morph-instance";
+
+/**
+ * One dev server instance of a preview: the transport's session (one per
+ * process that runs previews) and the start within it. `serial` orders
+ * instances of one preview inside one session and means nothing across
+ * sessions.
+ */
+export type PreviewServedInstance = Readonly<{
+  session: string;
+  serial: number;
+}>;
+
+/**
+ * What a page can say about the instance that served it.
+ *
+ * `known` — every response that reached a server named the same instance.
+ * `mixed` — two instances served parts of it: a restart landed mid-load.
+ * `missing` — a server named itself on some responses and not on another.
+ */
+export type PreviewServedInstanceReport =
+  | Readonly<{ kind: "known"; instance: PreviewServedInstance }>
+  | Readonly<{ kind: "mixed" }>
+  | Readonly<{ kind: "missing" }>;
+
+const SERVED_INSTANCE_SESSION = /^[A-Za-z0-9-]{8,64}$/;
+
+export function formatPreviewServedInstance(
+  instance: PreviewServedInstance,
+): string {
+  return `${instance.session}.${instance.serial}`;
+}
+
+/** An instance from its header text, or from its JSON form; null if neither. */
+export function parsePreviewServedInstance(
+  value: unknown,
+): PreviewServedInstance | null {
+  let session: unknown;
+  let serial: unknown;
+  if (typeof value === "string") {
+    const dot = value.lastIndexOf(".");
+    if (dot <= 0) return null;
+    session = value.slice(0, dot);
+    serial = Number(value.slice(dot + 1));
+  } else if (isRecord(value)) {
+    session = value.session;
+    serial = value.serial;
+  } else {
+    return null;
+  }
+  if (typeof session !== "string" || !SERVED_INSTANCE_SESSION.test(session)) {
+    return null;
+  }
+  if (
+    typeof serial !== "number" ||
+    !Number.isSafeInteger(serial) ||
+    serial < 1
+  ) {
+    return null;
+  }
+  return { session, serial };
+}
+
+function parsePreviewServedInstanceReport(
+  value: unknown,
+): PreviewServedInstanceReport | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "mixed" || value.kind === "missing") {
+    return { kind: value.kind };
+  }
+  if (value.kind !== "known") return null;
+  const instance = parsePreviewServedInstance(value.instance);
+  return instance ? { kind: "known", instance } : null;
+}
+
+/** One response as the page's Performance API recorded it. */
+export type PreviewServedTiming = Readonly<{
+  kind: "navigation" | "script" | "other";
+  sameOrigin: boolean;
+  transferSize: number;
+  /** The `morph-instance` description, or null where the response had none. */
+  instance: string | null;
+}>;
+
+/**
+ * Which instance served the page, from its own responses.
+ *
+ * Only responses that reached a server count: a response read from the
+ * browser cache (`transferSize` 0) carries the headers of whichever server
+ * first sent it — Vite's dependency chunks are immutable and cached for a
+ * year — so it says nothing about the server answering now. A revalidated
+ * response is the current server's answer and counts. Null when no response
+ * named an instance at all: a transport that names none.
+ */
+export function previewServedInstanceFromEntries(
+  entries: readonly PreviewServedTiming[],
+): PreviewServedInstanceReport | null {
+  const answered = entries.filter(
+    (entry) =>
+      entry.sameOrigin &&
+      entry.transferSize > 0 &&
+      (entry.kind === "navigation" || entry.kind === "script"),
+  );
+  if (!answered.some((entry) => entry.instance !== null)) return null;
+  const named = answered.map((entry) =>
+    entry.instance === null ? null : parsePreviewServedInstance(entry.instance),
+  );
+  if (named.some((instance) => instance === null)) return { kind: "missing" };
+  const distinct = new Set(
+    named.map((instance) => formatPreviewServedInstance(instance!)),
+  );
+  if (distinct.size > 1) return { kind: "mixed" };
+  return { kind: "known", instance: named[0]! };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1175,7 +1304,12 @@ export function parsePreviewToEditorMessage(
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
-    case "morph:storefront-preview-ready":
+    case "morph:storefront-preview-ready": {
+      const report = parsePreviewServedInstanceReport(value.servedInstance);
+      return report
+        ? { type: value.type, servedInstance: report }
+        : { type: value.type };
+    }
     case "morph:storefront-preview-reset-canvas":
       return { type: value.type };
     case "morph:storefront-preview-pong":

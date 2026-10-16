@@ -95,6 +95,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       return {
         page,
         value,
+        writes,
         resentByCheck: afterCheck - afterLanded,
         checkAnswer,
         finish: async () => {
@@ -138,21 +139,42 @@ test.describe("unsaved work when the signed-in account changes", () => {
     }
   }
 
-  /** Edits the hero again, expects the conflict, and loads the latest. */
-  async function nextEditThroughConflict(page: Page, next: string) {
+  /**
+   * Edits the hero again after the check read the document back, and expects
+   * exactly that edit to be sent and saved: it was typed on the document the
+   * check read, which already holds the other tab's change.
+   */
+  async function nextEditSavedOnReadBack(
+    page: Page,
+    writes: { sent: number },
+    next: string,
+  ) {
+    const before = writes.sent;
     const field = await heroContentField(page, 0);
-    const refused = nextContentWrite(page);
+    const answer = nextContentWrite(page);
     await field.fill(next);
     await field.press("Tab");
-    expect(await refused, "the next edit, sent").toBe("conflict");
+    expect(await answer, "the next edit, sent").toBe("saved");
     await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
       "aria-label",
-      "Out of date",
+      /^(Unpublished|Published)$/,
       { timeout: 30_000 },
     );
-    // Refused, and kept: the newest edit is still here.
-    await expect(await heroContentField(page, 0)).toHaveValue(next);
-    await loadLatestKeepMine(page);
+    await page.waitForTimeout(2_000);
+    // That edit alone: the write the check confirmed is not sent again.
+    expect(writes.sent - before, "writes for the next edit").toBe(1);
+  }
+
+  /** What the server holds in one of a section's fields, read from a new tab. */
+  async function storedField(browser: Browser, section: string, index: number) {
+    const check = await sharedEditor(browser);
+    try {
+      return await (
+        await sectionContentField(check.page, section, index)
+      ).inputValue();
+    } finally {
+      await check.context.close();
+    }
   }
 
   /** Presses Load latest, keep mine, and waits for the rebased write to land. */
@@ -167,18 +189,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
     );
   }
 
-  /** Edits the hero again; resolves a conflict if there is one. */
-  async function nextEditThroughConflictOrSave(page: Page, next: string) {
-    const field = await heroContentField(page, 0);
-    const answer = nextContentWrite(page);
-    await field.fill(next);
-    await field.press("Tab");
-    const first = await answer;
-    expect(first, "the next edit, sent").not.toBe("failed");
-    if (first === "conflict") await loadLatestKeepMine(page);
-  }
-
-  test("after a landed write is confirmed, the next edit meets the conflict and keeps both writers' changes", async ({
+  test("after a landed write is confirmed, the next edit is saved on the document the check read and keeps both writers' changes", async ({
     browser,
   }) => {
     test.setTimeout(420_000);
@@ -190,37 +201,80 @@ test.describe("unsaved work when the signed-in account changes", () => {
     try {
       // Confirmed by the check: nothing sent again.
       expect(run.resentByCheck).toBe(0);
-      // This tab never took the document's generation from the check, and
-      // the other tab moved it again: the next edit is refused, kept, and
-      // rebased on a press.
-      await nextEditThroughConflict(run.page, run.value("next"));
+      // The check read the document, the other tab's change included, and
+      // this tab composes on what it read: the next edit, typed after that,
+      // is saved as it is, with nothing of the other tab's written over.
+      await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
       await run.finish();
     } finally {
       await run.cleanup();
     }
   });
 
-  test("a landed write that another writer changed around cannot be confirmed: sent once, refused, rebased without overwriting", async ({
+  test("a landed write is confirmed when another writer changed another field of its section", async ({
     browser,
   }) => {
     test.setTimeout(420_000);
     // The other tab writes another field of the same section. A content
-    // write carries the section's whole props, so the server no longer holds
-    // every value this tab sent and the check cannot say it landed.
+    // write carries only the fields typed into, so the server still holds
+    // every value this tab sent and the check can say it landed.
     const run = await landedThenAnotherWriter(browser, {
       section: "hero",
       index: 1,
     });
     try {
-      // Sent once more, under the generation this tab holds: refused.
-      expect(run.resentByCheck).toBe(1);
-      expect(run.checkAnswer).toBe("conflict");
+      // Confirmed by the check: nothing sent again.
+      expect(run.resentByCheck).toBe(0);
+      // The next edit is composed on the document the check read, so it is
+      // saved and carries the other tab's field as that tab wrote it. Both
+      // writers' changes are what the server holds.
+      await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
+      await run.finish();
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  test("a landed write that another writer overwrote cannot be confirmed: refused before it is sent, kept, written only on the author's choice", async ({
+    browser,
+  }) => {
+    test.setTimeout(420_000);
+    // The other tab writes the very field this tab's unanswered write wrote,
+    // so the server no longer holds the value this tab sent and the check
+    // cannot say it landed.
+    const run = await landedThenAnotherWriter(browser, {
+      section: "hero",
+      index: 0,
+    });
+    try {
+      // The input was made on a copy older than the other tab's change, so
+      // it is refused before it is sent, not resent for the server to refuse.
+      expect(run.resentByCheck).toBe(0);
+      expect(run.checkAnswer).toBe("none");
       await expect(
         run.page.locator("[data-editor-save-status]"),
       ).toHaveAttribute("aria-label", "Out of date", { timeout: 30_000 });
+      // Refused, and kept: the author's edit is still here.
+      await expect(await heroContentField(run.page, 0)).toHaveValue(
+        run.value("landed"),
+      );
+      // Nothing was written over the other tab's value, and nothing goes out
+      // while the author has not chosen.
+      expect(await storedField(browser, "hero", 0)).toBe(run.value("theirs"));
+      const waiting = run.writes.sent;
+      await run.page.waitForTimeout(3_000);
+      expect(run.writes.sent, "writes before the author chooses").toBe(waiting);
+
+      // Keeping mine on the same field replaces the other tab's value: the
+      // author chose it on the conflict, nothing did it silently. One write.
       await loadLatestKeepMine(run.page);
-      await nextEditThroughConflictOrSave(run.page, run.value("next"));
-      await run.finish();
+      await run.page.waitForTimeout(2_000);
+      expect(run.writes.sent - waiting, "writes for keep mine").toBe(1);
+      expect(await storedField(browser, "hero", 0)).toBe(run.value("landed"));
+
+      // The edit after that is composed on its own saved document: saved.
+      await nextEditSavedOnReadBack(run.page, run.writes, run.value("next"));
+      expect(await storedField(browser, "hero", 0)).toBe(run.value("next"));
     } finally {
       await run.cleanup();
     }
