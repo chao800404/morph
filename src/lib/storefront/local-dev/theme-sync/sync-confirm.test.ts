@@ -11,6 +11,7 @@ const summary = (remote: number, local = 0): CyclePlanSummary => ({
   binarySkipped: [],
   localSkipped: [],
   massDeletion: `This would delete ${remote} files from the workspace.`,
+  ignoreRulesFrom: "file",
 });
 
 describe("what morph-sync may approve without asking", () => {
@@ -31,6 +32,14 @@ describe("what morph-sync may approve without asking", () => {
     const policy = createConfirmPolicy({ yes: true, allowMassDelete: false, interactive: false });
     expect(policy.decide("startup")).toBe("yes");
     expect(policy.decide("mass-deletion")).toBe("no");
+  });
+
+  it("lets --yes approve a restore, and asks or refuses like startup otherwise", () => {
+    expect(createConfirmPolicy({ yes: true, allowMassDelete: false, interactive: false }).decide("restore")).toBe("yes");
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: false, interactive: true }).decide("restore")).toBe("ask");
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: false, interactive: false }).decide("restore")).toBe("no");
+    // --allow-mass-delete is not a yes to anything else.
+    expect(createConfirmPolicy({ yes: false, allowMassDelete: true, interactive: false }).decide("restore")).toBe("no");
   });
 
   it("refuses what it cannot ask about", () => {

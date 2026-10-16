@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -347,6 +347,93 @@ test("a local folder and the Theme's Code workspace stay in step both ways", asy
   } finally {
     await cli?.stop();
     await removeThemeFiles(page, scope, [probe]);
+    await rm(home, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("restore brings local files back from Morph without relinking", async ({ page }) => {
+  test.setTimeout(300_000);
+  const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+  const marker = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const folder = `src/restore-probe-${marker}/`;
+  // More than the mass-deletion threshold (20), so emptying the folder stops sync.
+  const probes = Array.from({ length: 25 }, (_, index) => `${folder}r${String(index).padStart(2, "0")}.ts`);
+  const original = (path: string) => `export const r = "${path}";\n`;
+  const home = await mkdtemp(join(tmpdir(), "morph-sync-home-"));
+  const dir = await mkdtemp(join(tmpdir(), "morph-sync-dir-"));
+  let cli: Cli | null = null;
+  const exited = (running: Cli) =>
+    new Promise<number>((resolve) =>
+      running.child.exitCode !== null
+        ? resolve(running.child.exitCode)
+        : running.child.once("exit", (code) => resolve(code ?? -1)),
+    );
+  const versions = async () =>
+    Promise.all(probes.map(async (path) => (await morphFile(page, scope, path))?.version ?? null));
+
+  try {
+    const { token, origin } = await issueTokenFromEditor(page);
+    expect(
+      await writeThemeFiles(page, scope, probes.map((path) => ({ path, content: original(path) }))),
+    ).toMatchObject({ success: true });
+    const linked = await runCli(["link", "--dir", dir, "--origin", origin], cliEnv(home, token));
+    expect(linked.code).toBe(0);
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => readLocal(dir, probes[24]!), { timeout: 60_000 }).not.toBeNull();
+    await cli.stop();
+    cli = null;
+    const stored = await versions();
+    expect(stored.every((version) => version !== null)).toBe(true);
+
+    // Deleted by mistake: restore writes it back from Morph, without a relink.
+    await rm(join(dir, probes[0]!));
+    const restoredOne = await runCli(["restore", probes[0]!, "--dir", dir, "--yes"], cliEnv(home));
+    expect(restoredOne.code).toBe(0);
+    expect(await readLocal(dir, probes[0]!)).toBe(original(probes[0]!));
+
+    // Broken by mistake: Morph's text comes back, the broken copy is kept in the trash.
+    await writeLocal(dir, probes[1]!, "broken by mistake\n");
+    const restoredBroken = await runCli(["restore", probes[1]!, "--dir", dir, "--yes"], cliEnv(home));
+    expect(restoredBroken.code).toBe(0);
+    expect(await readLocal(dir, probes[1]!)).toBe(original(probes[1]!));
+    const stamps = await readdir(join(dir, ".morph", "trash"));
+    const kept = await Promise.all(
+      stamps.map((stamp) => readLocal(dir, `.morph/trash/${stamp}/${probes[1]}`)),
+    );
+    expect(kept).toContain("broken by mistake\n");
+
+    // The next sync sees both sides in step: nothing goes up, nothing is deleted.
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => cli!.output(), { timeout: 30_000 }).toContain("Syncing");
+    await page.waitForTimeout(6_000);
+    await cli.stop();
+    cli = null;
+    expect(await versions()).toEqual(stored);
+    expect(await morphPaths(page, scope, folder)).toHaveLength(25);
+
+    // The folder emptied: sync stops on the mass deletion and holds it.
+    for (const path of probes) await rm(join(dir, path));
+    cli = startCli(dir, cliEnv(home));
+    expect(await exited(cli)).toBe(1);
+    cli = null;
+    expect(await holdsDeletion(dir)).toBe(true);
+    expect(await morphPaths(page, scope, folder)).toHaveLength(25);
+
+    // restore --all brings every file back; the next sync has nothing to
+    // delete, and the hold clears through the existing rule.
+    const restoredAll = await runCli(["restore", "--all", "--dir", dir, "--yes"], cliEnv(home));
+    expect(restoredAll.code).toBe(0);
+    for (const path of probes) expect(await readLocal(dir, path)).toBe(original(path));
+    cli = startCli(dir, cliEnv(home));
+    await expect.poll(() => holdsDeletion(dir), { timeout: 30_000 }).toBe(false);
+    await cli.stop();
+    cli = null;
+    expect(await morphPaths(page, scope, folder)).toHaveLength(25);
+    expect(await versions()).toEqual(stored);
+  } finally {
+    await cli?.stop();
+    await removeThemeFiles(page, scope, probes);
     await rm(home, { recursive: true, force: true });
     await rm(dir, { recursive: true, force: true });
   }

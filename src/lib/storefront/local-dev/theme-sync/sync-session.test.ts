@@ -624,9 +624,10 @@ describe(".morphignore paths in a folder on disk", () => {
     // The base entries are dropped, not kept for later.
     expect(Object.keys(session.state.files).filter((path) => path.startsWith("notes/"))).toEqual([]);
 
-    // Synced again, each side's copy is new to the other: copied, not deleted.
-    await rm(join(root, ".morphignore"));
-    workspace.editInMorph(".morphignore", null);
+    // Synced again (an empty file clears the rules; a missing one would keep
+    // the last sync's), each side's copy is new to the other: copied, not
+    // deleted.
+    await put(".morphignore", "");
     const resumed = await session.runCycle();
     expect(resumed.summary).toMatchObject({ remoteDeletions: [], localDeletions: [] });
     expect(await onDisk("notes/plan.md")).toBe("plan");
@@ -651,11 +652,11 @@ describe(".morphignore paths in a folder on disk", () => {
     const ignored = await session.runCycle();
     expect(ignored.summary).toMatchObject({ uploads: [], downloads: [], conflicts: [] });
 
-    await rm(join(root, ".morphignore"));
-    workspace.editInMorph(".morphignore", null);
+    // Cleared by an empty file, which goes up like any edit.
+    await put(".morphignore", "");
     const resumed = await session.runCycle();
     expect(resumed.summary).toMatchObject({
-      uploads: [],
+      uploads: [".morphignore"],
       downloads: [],
       remoteDeletions: [],
       localDeletions: [],
@@ -780,6 +781,113 @@ describe(".morphignore paths in a folder on disk", () => {
       expect(asked).toEqual(["startup", "startup"]);
       expect(next.status).toBe("applied");
       expect(await onDisk("a.tsx")).toBe("a2");
+    });
+  });
+
+  describe("when .morphignore goes missing", () => {
+    /** Synced once with `notes/` ignored and a private note on each side. */
+    async function syncedWithNotesIgnored(rules = "notes/\n") {
+      const workspace = createFakeWorkspace({ "a.tsx": "a", "notes/plan.md": "from Morph" });
+      await put(".morphignore", rules);
+      await put("notes/mine.md", "private");
+      const session = open(workspace);
+      await session.runCycle();
+      expect(session.state.ignoreHistory).toEqual({ text: rules });
+      return { workspace, session };
+    }
+
+    async function expectNotesKeptApart(
+      workspace: ReturnType<typeof createFakeWorkspace>,
+      summary: CyclePlanSummary,
+    ) {
+      expect(summary.ignoreRulesFrom).toBe("last-sync");
+      expect(summary.uploads).not.toContain("notes/mine.md");
+      expect(summary.downloads).not.toContain("notes/plan.md");
+      expect(workspace.files.has("notes/mine.md")).toBe(false);
+      expect(await onDisk("notes/plan.md")).toBeNull();
+    }
+
+    it("keeps the last sync's rules, and does not record them again", async () => {
+      const { workspace, session } = await syncedWithNotesIgnored();
+      await rm(join(root, ".morphignore"));
+      const result = await session.runCycle();
+      await expectNotesKeptApart(workspace, result.summary);
+      expect(session.state.ignoreHistory).toEqual({ text: "notes/\n" });
+    });
+
+    it("keeps them across a restart", async () => {
+      const { workspace, session } = await syncedWithNotesIgnored();
+      await rm(join(root, ".morphignore"));
+      const restarted = open(workspace, undefined, structuredClone(session.state));
+      await expectNotesKeptApart(workspace, (await restarted.runCycle()).summary);
+    });
+
+    it("clears them only with an empty file", async () => {
+      const { session } = await syncedWithNotesIgnored();
+      await put(".morphignore", "");
+      const result = await session.runCycle();
+      expect(result.summary.ignoreRulesFrom).toBe("file");
+      expect(result.summary.uploads).toContain("notes/mine.md");
+      expect(result.summary.downloads).toContain("notes/plan.md");
+      expect(session.state.ignoreHistory).toEqual({ text: "" });
+    });
+
+    it("records rules only from a cycle that went through, with no save of its own", async () => {
+      const { workspace, session } = await syncedWithNotesIgnored();
+      await put(".morphignore", "notes/\ndrafts/\n");
+      workspace.editInMorph("a.tsx", "a2");
+      // A second run that is not allowed to apply, as `status` is.
+      const saves: SyncState[] = [];
+      const declining = createSyncSession({
+        client: createHarnessClient(workspace),
+        folder: createLocalSyncFolder(root),
+        state: structuredClone(session.state),
+        saveState: async (state) => {
+          saves.push(structuredClone(state));
+        },
+        confirm: async () => false,
+      });
+      expect((await declining.runCycle()).status).toBe("declined");
+      expect(saves).toEqual([]);
+      expect(declining.state.ignoreHistory).toEqual({ text: "notes/\n" });
+    });
+
+    it("plans again when the rules move between the last sync and the file, though the text is the same", async () => {
+      // The rules leave themselves out, so only where they came from changes.
+      const rules = ".morphignore\nnotes/\n";
+      const { workspace, session } = await syncedWithNotesIgnored(rules);
+      await rm(join(root, ".morphignore"));
+      workspace.editInMorph("a.tsx", "a2");
+      let restored = false;
+      const restarted = open(
+        workspace,
+        async () => {
+          if (!restored) {
+            restored = true;
+            await put(".morphignore", rules);
+          }
+          return true;
+        },
+        structuredClone(session.state),
+      );
+      const first = await restarted.runCycle();
+      expect(first.status).toBe("retry");
+      expect(first.summary.ignoreRulesFrom).toBe("last-sync");
+      expect(await onDisk("a.tsx")).toBe("a");
+
+      const second = await restarted.runCycle();
+      expect(second.status).toBe("applied");
+      expect(second.summary.ignoreRulesFrom).toBe("file");
+      expect(await onDisk("a.tsx")).toBe("a2");
+    });
+
+    it("has nothing to fall back to in older state, which keeps no record (not covered)", async () => {
+      const { workspace, session } = await syncedWithNotesIgnored();
+      delete session.state.ignoreHistory;
+      await rm(join(root, ".morphignore"));
+      const result = await session.runCycle();
+      expect(result.summary.ignoreRulesFrom).toBe("none");
+      expect(workspace.files.get("notes/mine.md")?.content).toBe("private");
     });
   });
 

@@ -115,6 +115,71 @@ export function acceptOwnSnapshot(
   };
 }
 
+/**
+ * The snapshot after one of this session's own writes was answered.
+ *
+ * With a copy held, `acceptOwnSnapshot` decides alone. With none — the write
+ * that created a route's document, or one sent before any read of it arrived
+ * — the document the server returned is the document at that generation,
+ * and is taken the way a read is (`acceptReadSnapshot`): as nobody's own
+ * range, so nothing typed on an earlier copy is composed on it.
+ */
+export function acceptAnsweredWrite(
+  current: ContentSnapshot | undefined,
+  ack: Readonly<{
+    sentAt: number;
+    draftGeneration: unknown;
+    sections: readonly SnapshotSection[] | undefined;
+  }>,
+): ContentSnapshot | undefined {
+  if (current) return acceptOwnSnapshot(current, ack);
+  if (!ack.sections) return undefined;
+  return acceptReadSnapshot(
+    undefined,
+    { draftGeneration: ack.draftGeneration, sections: ack.sections },
+    new Map(),
+  );
+}
+
+/**
+ * Which copy of one document is the newer one this editor has accepted: its
+ * snapshot, or the editor context's copy.
+ *
+ * A write's answer reaches the snapshot before its pending input is dropped,
+ * while the editor context catches up only on the next render. The snapshot
+ * is read only when its draft generation is strictly higher than the
+ * context's, or when the context holds no valid generation for the document
+ * (one this session's write created). On a tie the context's copy is read:
+ * one generation is one stored document, so the two can only differ when
+ * the context is the later arrival. Only the document `templateId` names is
+ * read from either side: another document's snapshot or generation never
+ * stands in for it.
+ */
+export function newestAcceptedCopy(
+  args: Readonly<{
+    templateId: string;
+    snapshots: ReadonlyMap<string, ContentSnapshot>;
+    contextTemplates: ReadonlyArray<
+      Readonly<{ id: string; draftGeneration?: unknown }>
+    >;
+  }>,
+):
+  | Readonly<{ from: "snapshot"; snapshot: ContentSnapshot }>
+  | Readonly<{ from: "context" }> {
+  const snapshot = args.snapshots.get(args.templateId);
+  if (!snapshot) return { from: "context" };
+  const contextGeneration = args.contextTemplates.find(
+    (template) => template.id === args.templateId,
+  )?.draftGeneration;
+  if (
+    validGeneration(contextGeneration) &&
+    contextGeneration >= snapshot.draftGeneration
+  ) {
+    return { from: "context" };
+  }
+  return { from: "snapshot", snapshot };
+}
+
 /** Whether an input made on the copy at `basis` may be composed on `snapshot`. */
 export function basisWithinOwnRange(
   snapshot: ContentSnapshot,
