@@ -11,13 +11,20 @@
  * `main` only requires `Architecture guards`, deliberately — a thirty-minute
  * Playwright job should not decide whether a rule holds. But "may merge" and
  * "should merge" are different questions, so this waits for every check and
- * refuses if any of them failed. `MORPH_SHIP_REQUIRED_ONLY=1` merges as soon as
+ * refuses if any of them failed, or if a check ci-required-checks.mjs expects
+ * never reported. `MORPH_SHIP_REQUIRED_ONLY=1` merges as soon as
  * the required ones pass, for when the rest are known-irrelevant. A check counts
  * as passed only if it says so; every other conclusion, including a cancellation,
  * means it did not.
  */
 import { spawnSync } from "node:child_process";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
+import {
+  CHECK_DEPENDENCIES,
+  EXPECTED_CI_CHECKS,
+  REQUIRED_CHECK,
+  STRICT_SUCCESS_CHECKS,
+} from "./ci-required-checks.mjs";
 
 const log = (message) => console.log(`[ship] ${message}`);
 
@@ -85,68 +92,105 @@ export function latestChecks(checks) {
  * that should not merge. Anything GitHub adds later is refused rather than
  * silently accepted.
  */
-export function decide(checks, requiredOnly) {
+export function decide(checks, requiredOnly, expected = EXPECTED_CI_CHECKS) {
   const settled = checks.filter((check) => check.status === "COMPLETED");
   const unhappy = settled.filter((check) => !passed(check));
   const pending = checks.filter((check) => check.status !== "COMPLETED");
   const required = checks.filter((check) => check.name === REQUIRED_CHECK);
+  const present = (name) => checks.some((check) => check.name === name);
+  const green = (name) =>
+    checks.some(
+      (check) =>
+        check.name === name &&
+        check.status === "COMPLETED" &&
+        check.conclusion === "SUCCESS",
+    );
 
-  // Dependent jobs may not appear in the rollup until their dependencies finish.
-  // A green partial rollup is not proof that sharded acceptance has completed.
-  // The count comes from the shard plan; check-e2e-shards keeps the workflow's
-  // job names in step with it. A shard named for another count is refused.
+  // A shard named for another count than the plan is refused, whatever it
+  // reported: a workflow left at the old count would otherwise look complete.
+  // check-e2e-shards keeps the workflow's job names in step with the plan.
   const shardName = /^Editor E2E shard \d+\/(\d+)$/;
-  if (checks.some((check) => shardName.test(check.name))) {
-    for (const check of checks) {
-      const match = shardName.exec(check.name);
-      if (
-        match &&
-        Number(match[1]) !== EDITOR_SHARD_COUNT &&
-        !unhappy.includes(check)
-      )
-        unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
-    }
-    const names = [
-      ...Array.from(
-        { length: EDITOR_SHARD_COUNT },
-        (_, index) => `Editor E2E shard ${index + 1}/${EDITOR_SHARD_COUNT}`,
-      ),
-      "Editor end-to-end (local preview transport)",
-    ];
-    for (const name of names) {
-      const matching = checks.filter((check) => check.name === name);
-      if (matching.length === 0) {
-        pending.push({ name, status: "QUEUED", conclusion: null });
-      }
-      for (const check of matching) {
-        if (
-          check.status === "COMPLETED" &&
-          check.conclusion !== "SUCCESS" &&
-          !unhappy.includes(check)
-        ) {
-          unhappy.push(check);
-        }
-      }
-    }
-    if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
-    if (pending.length > 0) return { verdict: "wait", unhappy, pending };
+  const anyShard = checks.some((check) => shardName.test(check.name));
+  for (const check of checks) {
+    const match = shardName.exec(check.name);
+    if (
+      match &&
+      Number(match[1]) !== EDITOR_SHARD_COUNT &&
+      !unhappy.includes(check)
+    )
+      unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
+  }
+  // The shards and their acceptance job must report SUCCESS itself.
+  for (const check of settled)
+    if (
+      STRICT_SUCCESS_CHECKS.includes(check.name) &&
+      check.conclusion !== "SUCCESS" &&
+      !unhappy.includes(check)
+    )
+      unhappy.push(check);
+  if (unhappy.length > 0)
+    return { verdict: "refuse", unhappy, pending, missing: [] };
+
+  // Every expected check must be in the rollup, not just the ones that are.
+  // Dependent jobs may not appear until their dependencies finish, so a green
+  // partial rollup is not proof that CI has completed.
+  //
+  // MORPH_SHIP_REQUIRED_ONLY bypasses this expected set on purpose: it merges as
+  // soon as the required check passes, for when the rest are known-irrelevant.
+  // What it keeps from before: a failure anywhere still refuses (above), and
+  // once any shard has reported, it still waits for every shard and the
+  // acceptance job and for every pending check, as it did since #253.
+  const awaited = requiredOnly
+    ? anyShard
+      ? STRICT_SUCCESS_CHECKS
+      : []
+    : expected;
+  const missing = awaited.filter((name) => !present(name));
+  const queued = (name) => ({ name, status: "QUEUED", conclusion: null });
+
+  if (requiredOnly) {
+    const waiting = [...pending, ...missing.map(queued)];
+    const merge =
+      !(anyShard && waiting.length > 0) &&
+      required.length > 0 &&
+      required.every(passed);
+    return {
+      verdict: merge ? "merge" : "wait",
+      unhappy,
+      pending: waiting,
+      missing: [],
+    };
   }
 
-  if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
-  const merge = requiredOnly
-    ? required.length > 0 && required.every(passed)
-    : checks.length > 0 && pending.length === 0;
-  return { verdict: merge ? "merge" : "wait", unhappy, pending };
+  // Not created yet, rather than gone: everything it needs is present and green.
+  const notYetCreated = missing.filter((name) => {
+    const needs = CHECK_DEPENDENCIES[name] ?? [];
+    return needs.length > 0 && needs.every(green);
+  });
+  const waiting = [...pending, ...notYetCreated.map(queued)];
+
+  // Still running somewhere: a missing check may yet be created by it.
+  if (checks.length === 0 || waiting.length > 0)
+    return { verdict: "wait", unhappy, pending: waiting, missing };
+  // Everything present has finished and an expected check never arrived: it
+  // was renamed, removed or not created. Waiting would only end at the deadline.
+  if (missing.length > 0)
+    return {
+      verdict: "refuse",
+      reason: "EXPECTED_CHECK_MISSING",
+      unhappy,
+      pending,
+      missing,
+    };
+  return { verdict: "merge", unhappy, pending, missing };
 }
 
 /**
- * The one check `main` requires, spelled the way GitHub reports it.
- *
- * A third copy of this string — the others are `ci.yml`'s job name and the branch
- * protection rule — so renaming the job means renaming it in three places. See
- * the note above `name: Architecture guards` in `ci.yml`.
+ * The one check `main` requires, spelled the way GitHub reports it; defined in
+ * ci-required-checks.mjs with every other check ship expects. See the note
+ * above `name: Architecture guards` in `ci.yml` for the branch protection copy.
  */
-export const REQUIRED_CHECK = "Architecture guards";
+export { REQUIRED_CHECK };
 
 /**
  * Why this run may not proceed, or `null`.
@@ -169,6 +213,11 @@ export function preflight({ branch, ahead }) {
 /** Names what was not green, with the conclusion each reported. */
 export function describeUnhappy(unhappy) {
   return `CHECK_NOT_GREEN: ${unhappy.map((check) => `${check.name} (${check.conclusion})`).join(", ")}. Nothing merged. The branch and its pull request are still there.`;
+}
+
+/** Names the expected checks that never reported. */
+export function describeMissing(missing) {
+  return `EXPECTED_CHECK_MISSING: every reported check has finished, but ${missing.join(", ")} never reported (renamed, removed or not created; see scripts/ci-required-checks.mjs). Nothing merged. The branch and its pull request are still there.`;
 }
 
 async function ship() {
@@ -260,10 +309,14 @@ async function ship() {
     // not tell us it passed, and one of them is not hypothetical here — the e2e
     // job was cancelled by its own timeout once, which is exactly a run that
     // should not merge.
-    const { verdict, unhappy, pending } = decide(checks, requiredOnly);
+    const { verdict, unhappy, pending, missing } = decide(checks, requiredOnly);
 
     if (verdict === "refuse") {
-      throw new Error(describeUnhappy(unhappy));
+      throw new Error(
+        unhappy.length > 0
+          ? describeUnhappy(unhappy)
+          : describeMissing(missing),
+      );
     }
     if (verdict === "merge") break;
 

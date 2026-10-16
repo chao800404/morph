@@ -25,12 +25,14 @@ import { fileURLToPath } from "node:url";
 
 import {
   decide,
+  describeMissing,
   describeUnhappy,
   latestChecks,
   preflight,
   REQUIRED_CHECK,
 } from "./ship.mjs";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
+import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
 
 const guard = (conclusion, status = "COMPLETED") => ({
   name: "Architecture guards",
@@ -51,20 +53,150 @@ const shardChecks = (count = EDITOR_SHARD_COUNT) =>
     status: "COMPLETED",
     conclusion: "SUCCESS",
   }));
+const ACCEPTANCE = "Editor end-to-end (local preview transport)";
+const FULL_START = "Editor E2E full Start preview";
+const success = (name) => ({
+  name,
+  status: "COMPLETED",
+  conclusion: "SUCCESS",
+});
+// Every check a complete CI run reports, all green.
+const allGreen = () => EXPECTED_CI_CHECKS.map(success);
+// The non-E2E checks a run reports, green: guard, validate and full Start.
+const baseGreen = () => [
+  guard("SUCCESS"),
+  other("SUCCESS"),
+  success(FULL_START),
+];
+const without = (checks, name) => checks.filter((check) => check.name !== name);
+const replaced = (checks, name, patch) =>
+  checks.map((check) => (check.name === name ? { ...check, ...patch } : check));
+
+describe("the expected set of checks", () => {
+  it("lists every CI job, with one shard name per planned shard", () => {
+    assert.deepEqual(EXPECTED_CI_CHECKS, [
+      "Architecture guards",
+      "Typecheck, test, build",
+      FULL_START,
+      ...shardChecks().map((check) => check.name),
+      ACCEPTANCE,
+    ]);
+  });
+
+  it("merges when every expected check is present and green", () => {
+    assert.equal(verdict(allGreen()), "merge");
+  });
+
+  it("does not merge without Typecheck, test, build", () => {
+    const {
+      verdict: v,
+      reason,
+      missing,
+    } = decide(without(allGreen(), "Typecheck, test, build"), false);
+    assert.equal(v, "refuse");
+    assert.equal(reason, "EXPECTED_CHECK_MISSING");
+    assert.deepEqual(missing, ["Typecheck, test, build"]);
+  });
+
+  it("does not merge without the full Start job", () => {
+    const { verdict: v, missing } = decide(
+      without(allGreen(), FULL_START),
+      false,
+    );
+    assert.equal(v, "refuse");
+    assert.deepEqual(missing, [FULL_START]);
+  });
+
+  it("does not merge when no shard check was reported at all", () => {
+    const checks = [...baseGreen(), success(ACCEPTANCE)];
+    const { verdict: v, missing } = decide(checks, false);
+    assert.equal(v, "refuse");
+    assert.deepEqual(
+      missing,
+      shardChecks().map((check) => check.name),
+    );
+    // Without the acceptance job either: still not a merge.
+    assert.equal(verdict(baseGreen()), "refuse");
+  });
+
+  it("refuses a renamed job: the new name does not stand in for the old", () => {
+    const renamed = replaced(allGreen(), "Typecheck, test, build", {
+      name: "Typecheck and test",
+    });
+    const result = decide(renamed, false);
+    assert.equal(result.verdict, "refuse");
+    assert.equal(result.reason, "EXPECTED_CHECK_MISSING");
+    assert.deepEqual(result.missing, ["Typecheck, test, build"]);
+  });
+
+  it("refuses a rollup with the old three-shard names", () => {
+    const old = [...baseGreen(), ...shardChecks(3), success(ACCEPTANCE)];
+    const result = decide(old, false);
+    assert.equal(result.verdict, "refuse");
+    assert.deepEqual(
+      result.unhappy.map((check) => check.conclusion),
+      ["SHARD_COUNT_MISMATCH", "SHARD_COUNT_MISMATCH", "SHARD_COUNT_MISMATCH"],
+    );
+  });
+
+  it("waits while an expected check is still pending", () => {
+    for (const name of EXPECTED_CI_CHECKS)
+      assert.equal(
+        verdict(
+          replaced(allGreen(), name, {
+            status: "IN_PROGRESS",
+            conclusion: null,
+          }),
+        ),
+        "wait",
+        name,
+      );
+  });
+
+  it("waits for a missing check while another is still running", () => {
+    // The checks still running may be what creates it; refuse only once they end.
+    const checks = replaced(
+      without(allGreen(), FULL_START),
+      "Typecheck, test, build",
+      { status: "IN_PROGRESS", conclusion: null },
+    );
+    assert.equal(verdict(checks), "wait");
+  });
+
+  it("waits for the acceptance job between the last shard and its creation", () => {
+    // It `needs:` the matrix, so GitHub creates it only after every shard ended.
+    assert.equal(verdict(without(allGreen(), ACCEPTANCE)), "wait");
+    // A shard missing too: nothing will create it, so that is a refusal.
+    assert.equal(
+      verdict(
+        without(
+          without(allGreen(), ACCEPTANCE),
+          "Editor E2E shard 1/" + EDITOR_SHARD_COUNT,
+        ),
+      ),
+      "refuse",
+    );
+  });
+
+  it("says which expected check never reported", () => {
+    const message = describeMissing(["Typecheck, test, build"]);
+    assert.match(message, /^EXPECTED_CHECK_MISSING:/);
+    assert.match(message, /Typecheck, test, build/);
+    assert.match(message, /Nothing merged/);
+  });
+});
 
 describe("waiting for every check", () => {
   it("waits when a dependent acceptance job has not appeared yet", () => {
     const shards = shardChecks();
     for (const requiredOnly of [false, true]) {
-      assert.equal(
-        verdict([guard("SUCCESS"), ...shards], requiredOnly),
-        "wait",
-      );
-      assert.equal(
-        verdict([guard("SUCCESS"), shards[0]], requiredOnly),
-        "wait",
-      );
+      assert.equal(verdict([...baseGreen(), ...shards], requiredOnly), "wait");
     }
+    // Under MORPH_SHIP_REQUIRED_ONLY a reported shard still waits for the rest.
+    assert.equal(verdict([guard("SUCCESS"), shards[0]], true), "wait");
+    // Without it, the other shards' absence once all present checks ended is
+    // a refusal, not an endless wait.
+    assert.equal(verdict([...baseGreen(), shards[0]]), "refuse");
     for (const conclusion of ["SKIPPED", "NEUTRAL"]) {
       assert.equal(
         verdict([
@@ -91,10 +223,10 @@ describe("waiting for every check", () => {
       status: "IN_PROGRESS",
       conclusion: null,
     };
-    assert.equal(verdict([guard("SUCCESS"), ...shards, acceptance]), "wait");
+    assert.equal(verdict([...baseGreen(), ...shards, acceptance]), "wait");
     assert.equal(
       verdict([
-        guard("SUCCESS"),
+        ...baseGreen(),
         ...shards,
         { ...acceptance, status: "COMPLETED", conclusion: "SUCCESS" },
       ]),
@@ -102,7 +234,7 @@ describe("waiting for every check", () => {
     );
     assert.equal(
       verdict([
-        guard("SUCCESS"),
+        ...baseGreen(),
         ...shards,
         { ...acceptance, status: "COMPLETED", conclusion: "FAILURE" },
       ]),
@@ -126,13 +258,13 @@ describe("waiting for every check", () => {
       conclusion: "SUCCESS",
     };
     assert.equal(
-      verdict([guard("SUCCESS"), ...shardChecks(), acceptance]),
+      verdict([...baseGreen(), ...shardChecks(), acceptance]),
       "merge",
     );
     // A workflow left at another count would otherwise look complete.
     assert.equal(
       verdict([
-        guard("SUCCESS"),
+        ...baseGreen(),
         ...shardChecks(),
         ...shardChecks(EDITOR_SHARD_COUNT + 1),
         acceptance,
@@ -142,7 +274,9 @@ describe("waiting for every check", () => {
   });
 
   it("merges when they have all reported success", () => {
-    assert.equal(verdict([guard("SUCCESS"), other("SUCCESS")]), "merge");
+    assert.equal(verdict(allGreen()), "merge");
+    // Two green checks are not a complete run.
+    assert.equal(verdict([guard("SUCCESS"), other("SUCCESS")]), "refuse");
   });
 
   it("waits while one is still running", () => {
@@ -157,7 +291,27 @@ describe("waiting for every check", () => {
   });
 
   it("counts a skipped job as passed, because it reported", () => {
-    assert.equal(verdict([guard("SUCCESS"), other("SKIPPED")]), "merge");
+    // Unchanged by the expected set: only the shards and their acceptance job
+    // must say SUCCESS itself (see the dependent acceptance test above).
+    assert.equal(
+      verdict(
+        replaced(allGreen(), "Typecheck, test, build", {
+          conclusion: "SKIPPED",
+        }),
+      ),
+      "merge",
+    );
+    assert.equal(
+      verdict([
+        ...allGreen(),
+        {
+          name: "Some optional job",
+          status: "COMPLETED",
+          conclusion: "SKIPPED",
+        },
+      ]),
+      "merge",
+    );
   });
 });
 
@@ -212,6 +366,31 @@ describe("MORPH_SHIP_REQUIRED_ONLY", () => {
 
   it("still refuses a failure elsewhere", () => {
     assert.equal(verdict([guard("SUCCESS"), other("FAILURE")], true), "refuse");
+  });
+
+  // The expected set is bypassed on purpose: the flag exists for when the rest
+  // are known-irrelevant. What it keeps is listed beside decide() in ship.mjs.
+  it("bypasses the expected set: missing checks neither wait nor refuse", () => {
+    assert.equal(verdict([guard("SUCCESS")], true), "merge");
+    assert.equal(verdict(without(allGreen(), FULL_START), true), "merge");
+    const result = decide([guard("SUCCESS"), other("SUCCESS")], true);
+    assert.equal(result.verdict, "merge");
+    assert.deepEqual(result.missing, []);
+  });
+
+  it("still refuses old three-shard names", () => {
+    assert.equal(
+      verdict([guard("SUCCESS"), ...shardChecks(3)], true),
+      "refuse",
+    );
+  });
+
+  it("still waits for every shard and the acceptance job once a shard reported", () => {
+    assert.equal(verdict([guard("SUCCESS"), ...shardChecks()], true), "wait");
+    assert.equal(
+      verdict([guard("SUCCESS"), ...shardChecks(), success(ACCEPTANCE)], true),
+      "merge",
+    );
   });
 });
 
@@ -317,6 +496,7 @@ describe("a commit with more than one workflow run", () => {
   const run = (id, acceptanceCheck) => [
     inRun(id, guard("SUCCESS")),
     inRun(id, other("SUCCESS")),
+    inRun(id, success(FULL_START)),
     ...shardChecks().map((check) => inRun(id, check)),
     inRun(id, acceptanceCheck),
   ];

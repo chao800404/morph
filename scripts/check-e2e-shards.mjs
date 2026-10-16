@@ -10,6 +10,12 @@ import {
   latestShardReportFiles,
 } from "./editor-e2e-shards.mjs";
 import { DURATIONS_FILE, budgetWarnings } from "./rebalance-e2e-shards.mjs";
+import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
+import {
+  jobBlock,
+  withoutComments,
+  workflowCheckNames,
+} from "./ci-workflow.mjs";
 
 const WORKFLOW_FILE = fileURLToPath(
   new URL("../.github/workflows/ci.yml", import.meta.url),
@@ -72,13 +78,31 @@ export function verifyPlanShape(shards = EDITOR_SHARDS) {
  * one pull request; a partial change fails here instead of losing a shard.
  * A spelling left at another count anywhere in the workflow fails too, so an
  * old job or step kept next to the new one cannot pass.
+ *
+ * Each spelling is read from the job it belongs to (the shard job
+ * `editor-e2e-local-preview`, the acceptance job `editor-e2e-acceptance`), with
+ * comment lines dropped: matched against the whole file, a matrix, name, flag
+ * or artifact in some other job satisfied the rule. The stale-count scan and
+ * the stray-artifact scan stay whole-file, since a leftover anywhere is wrong.
  */
 export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
-  const matrices = [...workflow.matchAll(/^\s+shard:\s*\[([^\]]*)\]/gm)];
+  const shardJob = withoutComments(
+    jobBlock(workflow, "editor-e2e-local-preview"),
+  );
+  const acceptanceJob = withoutComments(
+    jobBlock(workflow, "editor-e2e-acceptance"),
+  );
+  const matrixPattern = /^\s+shard:\s*\[([^\]]*)\]/gm;
+  assert.equal(
+    [...workflow.matchAll(matrixPattern)].length,
+    1,
+    "The workflow must declare exactly one editor E2E shard matrix",
+  );
+  const matrices = [...shardJob.matchAll(matrixPattern)];
   assert.equal(
     matrices.length,
     1,
-    "The workflow must declare exactly one editor E2E shard matrix",
+    "The editor E2E shard matrix must be declared in the editor-e2e-local-preview job",
   );
   assert.deepEqual(
     matrices[0][1].split(",").map((value) => Number(value.trim())),
@@ -86,11 +110,13 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     `The shard matrix must list 1..${count} once each, as EDITOR_SHARDS has ${count} shards`,
   );
   assert.ok(
-    workflow.includes(`name: Editor E2E shard \${{ matrix.shard }}/${count}\n`),
+    shardJob.includes(
+      `\n    name: Editor E2E shard \${{ matrix.shard }}/${count}\n`,
+    ),
     `The shard job name must end in /${count}; pnpm ship waits for these names`,
   );
   assert.ok(
-    workflow.includes(`--shard=\${{ matrix.shard }}/${count}\n`),
+    shardJob.includes(`--shard=\${{ matrix.shard }}/${count}\n`),
     `The shard job must pass --shard=N/${count} to the runner`,
   );
   const stale = [
@@ -105,7 +131,7 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     `Shard names or flags for another count remain in the workflow: ${stale.join(", ")}`,
   );
   assert.ok(
-    workflow.includes(
+    shardJob.includes(
       "name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}\n",
     ),
     "Shard artifacts must be named per run attempt, or a re-run's report is read from the failed attempt",
@@ -147,9 +173,37 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     ],
   ])
     assert.ok(
-      workflow.includes(wiring),
+      acceptanceJob.includes(wiring),
       `The acceptance job must ${reason} (${wiring.trim()})`,
     );
+}
+
+/**
+ * ci.yml's jobs report exactly the checks `pnpm ship` waits for
+ * (EXPECTED_CI_CHECKS). A job renamed or removed would otherwise leave ship
+ * waiting for, or refusing on, a name that never arrives; a job added without
+ * the list would never be waited for.
+ */
+export function verifyCheckNameContract(
+  workflow,
+  expected = EXPECTED_CI_CHECKS,
+) {
+  const reported = workflowCheckNames(workflow);
+  const duplicates = reported.filter(
+    (name, index) => reported.indexOf(name) !== index,
+  );
+  assert.deepEqual(
+    duplicates,
+    [],
+    `Two ci.yml jobs report the same check name: ${duplicates.join(", ")}`,
+  );
+  const missing = expected.filter((name) => !reported.includes(name));
+  const unlisted = reported.filter((name) => !expected.includes(name));
+  assert.deepEqual(
+    { missing, unlisted },
+    { missing: [], unlisted: [] },
+    `CHECK_NAME_CONTRACT: ci.yml's job names and EXPECTED_CI_CHECKS (scripts/ci-required-checks.mjs) differ; missing from ci.yml: ${missing.join(", ") || "none"}; not in the list: ${unlisted.join(", ") || "none"}`,
+  );
 }
 
 /**
@@ -294,7 +348,9 @@ if (
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   verifyPlanShape();
-  verifyWorkflowWiring(readFileSync(WORKFLOW_FILE, "utf8"));
+  const workflow = readFileSync(WORKFLOW_FILE, "utf8");
+  verifyWorkflowWiring(workflow);
+  verifyCheckNameContract(workflow);
   verifyPlannedFilesExist();
   const indexes = Array.from(
     { length: EDITOR_SHARD_COUNT },

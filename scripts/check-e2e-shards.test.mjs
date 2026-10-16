@@ -6,9 +6,12 @@ import {
   latestShardReports,
   verifyCoverage,
   verifyPlanShape,
+  verifyCheckNameContract,
   verifyPlannedFilesExist,
   verifyWorkflowWiring,
 } from "./check-e2e-shards.mjs";
+import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
+import { workflowCheckNames } from "./ci-workflow.mjs";
 import {
   EDITOR_SHARDS,
   EDITOR_SHARD_COUNT,
@@ -298,6 +301,129 @@ test("shard artifacts left with one name per shard fail", () => {
   );
 });
 
+// Each wiring rule reads its own job's block. Every case moves the spelling
+// out of that job into another one, where a whole-file match still found it.
+const MATRIX = `        shard: [${Array.from({ length: N }, (_, i) => i + 1).join(", ")}]\n`;
+const VALIDATE_HEAD = "  validate:\n    name: Typecheck, test, build\n";
+const SHARD_NAME = `    name: Editor E2E shard \${{ matrix.shard }}/${N}\n`;
+const SHARD_FLAG = `--shard=\${{ matrix.shard }}/${N}`;
+const UPLOAD_NAME =
+  "name: editor-e2e-results-${{ matrix.shard }}-attempt-${{ github.run_attempt }}\n";
+const once = (text, from, to) => {
+  assert.equal(text.split(from).length, 2, `expected exactly one: ${from}`);
+  return text.replace(from, to);
+};
+test("a shard matrix placed in another job fails", () => {
+  const moved = once(
+    once(workflow, MATRIX, ""),
+    VALIDATE_HEAD,
+    `${VALIDATE_HEAD}    strategy:\n      matrix:\n${MATRIX}`,
+  );
+  assert.throws(
+    () => verifyWorkflowWiring(moved),
+    /declared in the editor-e2e-local-preview job/,
+  );
+});
+test("a second shard matrix in another job fails", () => {
+  const second = once(
+    workflow,
+    VALIDATE_HEAD,
+    `${VALIDATE_HEAD}    strategy:\n      matrix:\n${MATRIX}`,
+  );
+  assert.throws(
+    () => verifyWorkflowWiring(second),
+    /exactly one editor E2E shard matrix/,
+  );
+});
+test("the shard job name only in another job fails", () => {
+  const renamed = once(workflow, SHARD_NAME, "    name: Editor E2E shards\n");
+  const moved = once(renamed, "    name: Typecheck, test, build\n", SHARD_NAME);
+  assert.throws(() => verifyWorkflowWiring(moved), /job name/);
+});
+test("the --shard flag only in another job, or only in a comment, fails", () => {
+  const dropped = once(workflow, ` -- ${SHARD_FLAG}\n`, "\n");
+  const moved = `${dropped}        run: pnpm test:e2e:local-preview -- ${SHARD_FLAG}\n`;
+  assert.throws(() => verifyWorkflowWiring(moved), /--shard=N/);
+  // Still inside the shard job, but only as a comment.
+  const commented = once(
+    dropped,
+    "      - name: Upload shard results and failure traces\n",
+    `      # was: pnpm test:e2e:local-preview -- ${SHARD_FLAG}\n      - name: Upload shard results and failure traces\n`,
+  );
+  assert.throws(() => verifyWorkflowWiring(commented), /--shard=N/);
+});
+test("artifact names only in another job fail", () => {
+  // The upload name, moved out of the shard job (into full Start, the last job).
+  const upload = `${once(workflow, UPLOAD_NAME, "name: editor-e2e-shard-output\n")}          ${UPLOAD_NAME}`;
+  assert.throws(() => verifyWorkflowWiring(upload), /per run attempt/);
+  // The download pattern, moved out of the acceptance job.
+  const download = `${once(workflow, "pattern: editor-e2e-results-*\n", "pattern: editor-e2e-shard-output\n")}          pattern: editor-e2e-results-*\n`;
+  assert.throws(() => verifyWorkflowWiring(download), /acceptance job must/);
+});
+
+// ci.yml's job names against the list `pnpm ship` waits for.
+test("ci.yml's job names are exactly the checks pnpm ship expects", () => {
+  verifyCheckNameContract(workflow);
+  assert.deepEqual(
+    workflowCheckNames(workflow).sort(),
+    [...EXPECTED_CI_CHECKS].sort(),
+  );
+});
+test("a renamed, removed or unlisted job, or a name with no job, fails the contract", () => {
+  const fullStart = workflow.indexOf("\n  editor-e2e-full-start:\n");
+  assert.ok(fullStart > 0);
+  for (const [label, changed, expected] of [
+    [
+      "renamed",
+      once(
+        workflow,
+        "    name: Typecheck, test, build\n",
+        "    name: Typecheck and test\n",
+      ),
+      EXPECTED_CI_CHECKS,
+    ],
+    ["removed", workflow.slice(0, fullStart + 1), EXPECTED_CI_CHECKS],
+    [
+      "unlisted",
+      `${workflow}  extra-job:\n    name: Extra job\n    runs-on: ubuntu-latest\n`,
+      EXPECTED_CI_CHECKS,
+    ],
+    [
+      "no job for a listed name",
+      workflow,
+      [...EXPECTED_CI_CHECKS, "New check"],
+    ],
+    [
+      "one shard more than the list",
+      once(
+        workflow,
+        MATRIX,
+        `        shard: [${Array.from({ length: N + 1 }, (_, i) => i + 1).join(", ")}]\n`,
+      ),
+      EXPECTED_CI_CHECKS,
+    ],
+    [
+      "listed name dropped",
+      workflow,
+      EXPECTED_CI_CHECKS.filter(
+        (name) => name !== "Editor E2E full Start preview",
+      ),
+    ],
+  ])
+    assert.throws(
+      () => verifyCheckNameContract(changed, expected),
+      /CHECK_NAME_CONTRACT/,
+      label,
+    );
+  assert.throws(
+    () =>
+      verifyCheckNameContract(
+        `${workflow}  extra-job:\n    name: Architecture guards\n`,
+      ),
+    /same check name/,
+  );
+});
+
 // What download-artifact lays out for a run whose shard 1 failed and was
 // re-run: shards 2 and 3 only have their first attempt.
 const downloaded = (...dirs) =>
@@ -310,10 +436,11 @@ const downloaded = (...dirs) =>
   );
 test("a re-run shard's latest attempt is the one read", () => {
   const files = downloaded([1, 1], [1, 2], [2, 1], [3, 1]);
-  assert.deepEqual(
-    latestShardReports(files, 3),
-    [files[1], files[2], files[3]],
-  );
+  assert.deepEqual(latestShardReports(files, 3), [
+    files[1],
+    files[2],
+    files[3],
+  ]);
 });
 test("the order artifacts arrive in does not change which attempt is read", () => {
   const files = downloaded([1, 2], [1, 1], [2, 1], [3, 1]);
