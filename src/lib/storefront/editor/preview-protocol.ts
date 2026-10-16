@@ -279,6 +279,12 @@ export type EditorToPreviewMessage =
       templateId: string;
       /** null keeps the template renderer active when no source route is selected. */
       routePath: string | null;
+      /**
+       * Echoed by the page's `morph:storefront-preview-route-applied` once it
+       * is on the route, so the editor can tell the answer to its latest
+       * request from an older one. Absent from an editor that asks for none.
+       */
+      routeRequestId?: number;
     }
   | {
       type: "morph:storefront-preview-set-section";
@@ -490,6 +496,21 @@ export type PreviewToEditorMessage =
        * with no router to ask, which is then taken at its word as before.
        */
       routePath?: string;
+    }
+  | {
+      /**
+       * The page's answer to the set-route that carried `routeRequestId`,
+       * sent once it is there.
+       *
+       * `routePath` is the route pattern its router matched after navigating.
+       * null says one thing only: this page has no router, so it stays on the
+       * one page it shows, whose content is kept by its own address. A page
+       * with a router never answers null; one whose router matched nothing
+       * does not answer at all.
+       */
+      type: "morph:storefront-preview-route-applied";
+      routeRequestId: number;
+      routePath: string | null;
     }
   | {
       type: "morph:storefront-preview-theme-files-applied";
@@ -1071,11 +1092,16 @@ export function parseEditorToPreviewMessage(
         : null;
     case "morph:storefront-preview-set-route":
       return isBoundedString(value.templateId, 100) &&
-        (value.routePath === null || isBoundedString(value.routePath, 500))
+        (value.routePath === null || isBoundedString(value.routePath, 500)) &&
+        (value.routeRequestId === undefined ||
+          isSafeRevision(value.routeRequestId))
         ? {
             type: value.type,
             templateId: value.templateId,
             routePath: value.routePath,
+            ...(value.routeRequestId === undefined
+              ? {}
+              : { routeRequestId: value.routeRequestId }),
           }
         : null;
     case "morph:storefront-preview-set-section":
@@ -1342,6 +1368,18 @@ export function parsePreviewToEditorMessage(
         ? { type: value.type, nodes, routePath: value.routePath }
         : null;
     }
+    case "morph:storefront-preview-route-applied":
+      return isSafeRevision(value.routeRequestId) &&
+        (value.routePath === null ||
+          (typeof value.routePath === "string" &&
+            value.routePath.startsWith("/") &&
+            value.routePath.length <= 512))
+        ? {
+            type: value.type,
+            routeRequestId: value.routeRequestId,
+            routePath: value.routePath,
+          }
+        : null;
     case "morph:storefront-preview-theme-files-applied":
     case "morph:storefront-preview-theme-files-failed":
       return isSafeRevision(value.styleRevision)

@@ -221,6 +221,71 @@ function reportStructure() {
   );
 }
 
+/**
+ * Answers the editor's set-route once this page is where it was sent.
+ *
+ * The editor holds content addressed to the route until this answer: posted
+ * while the page is still on the one it booted on, it would be applied to
+ * that page's content instead. A request without an id asks for no answer.
+ */
+function answerRouteRequest(routeRequestId, routePath) {
+  if (!channel || typeof routeRequestId !== "number") return;
+  postPreviewToEditorMessage(
+    {
+      type: "morph:storefront-preview-route-applied",
+      routeRequestId,
+      routePath,
+    },
+    channel,
+  );
+}
+
+function applyEditorRoute(message) {
+  // A real Theme owns its router, so the entry Morph generates hands it
+  // over. Without one there is nothing to navigate and the page simply
+  // stays where it is, which is better than reloading it out from under
+  // an edit in progress.
+  const previewRoot = document.getElementById("root");
+  previewRoot?.setAttribute(
+    "data-morph-route-path",
+    message.routePath ?? "/",
+  );
+  const router = window.__morphPreviewRouter;
+  if (router) {
+    inlineEditor.finish(true);
+    selectedItem = null;
+    hoveredItem = null;
+    syncDragHandle();
+    drawOverlays();
+    // Reported again once the router has arrived: a report sent before
+    // then names the route it left, which the editor now sets aside, and
+    // a destination whose DOM happens to match the old one would give the
+    // observer no mutation to report on.
+    void Promise.resolve(router.navigate({ to: message.routePath ?? "/" }))
+      .catch(() => {})
+      .then(() => reportStructure())
+      .then(() => {
+        // Only a route the router matched is an answer; a page with a
+        // router never says null, which means it has none.
+        const routePath = currentRoutePattern();
+        if (routePath) answerRouteRequest(message.routeRequestId, routePath);
+      });
+    // The page it lands on is a different set of elements entirely.
+    window.setTimeout(() => {
+      // The section command can arrive before this route commit when the iframe
+      // is first loaded or rebuilt. Re-run the existing selection restore
+      // after navigation so a page-root target is not lost just because
+      // the root marker did not exist in the previous route.
+      restoreSelectedSection();
+      reportStructure();
+    }, 0);
+  } else {
+    // No router: this is the one page it shows, and its content is kept by
+    // its own address, so it is already where any route puts it.
+    answerRouteRequest(message.routeRequestId, null);
+  }
+}
+
 function clearSelectionAttributes() {
   if (selectedItem?.element) {
     selectedItem.element.removeAttribute("data-storefront-editor-selected");
@@ -1071,39 +1136,7 @@ if (channel) {
       applyWrittenThemeRevision(message.styleRevision);
     }
     if (message?.type === "morph:storefront-preview-set-route") {
-      // A real Theme owns its router, so the entry Morph generates hands it
-      // over. Without one there is nothing to navigate and the page simply
-      // stays where it is, which is better than reloading it out from under
-      // an edit in progress.
-      const previewRoot = document.getElementById("root");
-      previewRoot?.setAttribute(
-        "data-morph-route-path",
-        message.routePath ?? "/",
-      );
-      const router = window.__morphPreviewRouter;
-      if (router) {
-        inlineEditor.finish(true);
-        selectedItem = null;
-        hoveredItem = null;
-        syncDragHandle();
-        drawOverlays();
-        // Reported again once the router has arrived: a report sent before
-        // then names the route it left, which the editor now sets aside, and
-        // a destination whose DOM happens to match the old one would give the
-        // observer no mutation to report on.
-        void Promise.resolve(router.navigate({ to: message.routePath ?? "/" }))
-          .catch(() => {})
-          .then(() => reportStructure());
-        // The page it lands on is a different set of elements entirely.
-        window.setTimeout(() => {
-          // The section command can arrive before this route commit when the iframe
-          // is first loaded or rebuilt. Re-run the existing selection restore
-          // after navigation so a page-root target is not lost just because
-          // the root marker did not exist in the previous route.
-          restoreSelectedSection();
-          reportStructure();
-        }, 0);
-      }
+      applyEditorRoute(message);
     }
     if (message?.type === "morph:storefront-preview-refresh-content") {
       // The preview's server confirmed it now reads the author's saved
