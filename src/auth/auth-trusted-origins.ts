@@ -13,6 +13,18 @@ function isLoopbackOrigin(origin: string): boolean {
 }
 
 /**
+ * The origin of a URL in its canonical form (lower-case scheme and host, no
+ * path or trailing slash), or `null` if it does not parse — which fails closed.
+ */
+function normalizedOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The `trustedOrigins` list Better Auth checks requests against.
  *
  * Production trusts only what it is configured with: `baseURL`, the validated
@@ -26,8 +38,9 @@ function isLoopbackOrigin(origin: string): boolean {
  * through `CF_PAGES`, `ENVIRONMENT`, or the build-time `NODE_ENV` replacement —
  * never through `PUBLIC_URL`. As an extra, fail-closed condition the resolved
  * `baseURL` must also be loopback or exactly one of the dev-only origins (an
- * exact match, not an address range): if the `NODE_ENV` replacement ever broke,
- * a deployment reached on any other origin still does not trust them.
+ * exact match on the canonical `new URL(baseURL).origin`, not an address
+ * range): if the `NODE_ENV` replacement ever broke, a deployment reached on
+ * any other origin still does not trust them.
  *
  * Not closed here: a production `baseURL` with neither `PUBLIC_URL` nor
  * `BETTER_AUTH_URL` set is itself `http://localhost:3000` (see `createAuth`)
@@ -42,9 +55,11 @@ export function buildAuthTrustedOrigins(input: {
   additionalTrustedOrigins: readonly string[];
 }): string[] {
   const devOrigins = [DEFAULT_DEV_ORIGIN, ...input.cmsDevTrustedOrigins];
+  const baseOrigin = normalizedOrigin(input.baseURL);
   const devOnly =
     !input.isProduction &&
-    (isLoopbackOrigin(input.baseURL) || devOrigins.includes(input.baseURL))
+    (isLoopbackOrigin(input.baseURL) ||
+      (baseOrigin !== null && devOrigins.includes(baseOrigin)))
       ? devOrigins
       : [];
   return Array.from(

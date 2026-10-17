@@ -61,6 +61,17 @@ describe("buildAuthTrustedOrigins", () => {
     }
   });
 
+  it("matches a listed dev origin by its canonical origin, not the raw string", () => {
+    for (const baseURL of [
+      "http://192.168.31.105:3000/",
+      "HTTP://192.168.31.105:3000",
+      "HTTPS://192.168.31.105:3000/",
+    ]) {
+      const list = build({ baseURL });
+      for (const origin of DEV_ORIGINS) expect(list).toContain(origin);
+    }
+  });
+
   it("adds no dev origin in production, even when baseURL is loopback or the LAN machine", () => {
     for (const baseURL of ["http://localhost:3001", LAN_HTTP]) {
       expect(build({ baseURL, isProduction: true })).toEqual([...CMS, baseURL]);
@@ -122,14 +133,16 @@ describe("createAuth trustedOrigins", () => {
   });
 
   it("adds no dev origin when only NODE_ENV says production", () => {
+    // No CF_PAGES or ENVIRONMENT: NODE_ENV is the only production signal, and
+    // the loopback PUBLIC_URL would pass the fail-closed baseURL check, so only
+    // the NODE_ENV signal keeps the dev list out.
     vi.stubEnv("NODE_ENV", "production");
     const auth = createAuth(
-      bindings({ PUBLIC_URL: "https://shop.example" }),
-      "http://localhost:3000/api/auth/get-session",
+      bindings({ PUBLIC_URL: "http://localhost:4000" }),
+      "http://localhost:4000/api/auth/get-session",
     );
-    // In production the request is ignored and PUBLIC_URL is the baseURL.
-    expect(auth.options.baseURL).toBe("https://shop.example");
-    expect(auth.options.trustedOrigins).toEqual(["https://shop.example"]);
+    expect(auth.options.baseURL).toBe("http://localhost:4000");
+    expect(auth.options.trustedOrigins).toEqual(["http://localhost:4000"]);
   });
 
   it("adds no dev origin in production even when PUBLIC_URL is the LAN machine", () => {
@@ -229,6 +242,20 @@ describe("createAuth trustedOrigins", () => {
     expect(auth.options.trustedOrigins).toEqual([
       "https://shop.example",
       "https://store.example",
+    ]);
+  });
+
+  it("gives a loopback storefront host the dev list outside production", () => {
+    // Consistent with the design: outside production baseURL follows the
+    // request, and a loopback baseURL admits the dev list.
+    const auth = createStorefrontAuth(
+      bindings({ PUBLIC_URL: "https://shop.example" }),
+      "http://store.localhost:3000/api/auth/get-session",
+      "store.localhost",
+    );
+    expect(auth.options.trustedOrigins).toEqual([
+      "http://store.localhost:3000",
+      ...DEV_ORIGINS,
     ]);
   });
 });
