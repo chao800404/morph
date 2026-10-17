@@ -1,5 +1,9 @@
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import {
+  themeMorphSdkAliases,
+  themeMorphSdkFiles,
+  withThemeMorphSdkIdentity,
+} from "./theme-morph-sdk";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -412,6 +416,21 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
       });
       routeRegistry = bootstrap.routeRegistry;
 
+      // The Morph SDK and its Start thin entry, as the platform workspace plan
+      // writes them (theme-sandbox-workspace.ts): Start Themes only, after the
+      // Theme's files so a Theme file at the same path is replaced, never used.
+      // The configs below alias `@morph/sdk` and `@morph/sdk/start` to it.
+      if (routeRegistry) {
+        for (const module of themeMorphSdkFiles()) {
+          const fullPath = path.join(tempDir, module.path);
+          await fs.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.writeFile(fullPath, module.content, "utf8");
+        }
+      }
+      const morphSdkAliases = routeRegistry
+        ? themeMorphSdkAliases((file) => path.join(tempDir, file))
+        : [];
+
       const pathAliasConfig = readThemePathAliases(
         input.files.map((file) => ({
           path: file.path,
@@ -803,7 +822,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
               securityPlugin,
             ],
             resolve: {
-              alias: themeAliases,
+              alias: [...morphSdkAliases, ...themeAliases],
             },
             build: {
               outDir: startOutDir,
@@ -860,7 +879,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             : []),
         ],
         resolve: {
-          alias: themeAliases,
+          alias: [...morphSdkAliases, ...themeAliases],
         },
         build: {
           outDir: previewOutDir,
@@ -1126,7 +1145,9 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
             prerenderContent,
           );
         } finally {
-          await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+          await fs
+            .rm(workDir, { recursive: true, force: true })
+            .catch(() => {});
         }
       },
     });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Copies the Morph SDK and its Start thin entry into the source set a Theme
- * build workspace is laid out from (SPIKE, M1b/M1c).
+ * build workspace is laid out from.
  *
  * A Theme's build runs where no Morph code is installed: the container holds
  * the pinned toolchain only. So the SDK travels with the workspace, as the

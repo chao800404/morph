@@ -4,8 +4,7 @@ import {
 } from "./morph-sdk-sources.generated";
 
 /**
- * How a TanStack Start Theme reads Morph content through the SDK (SPIKE,
- * M1b/M1c).
+ * How a TanStack Start Theme reads Morph content through the SDK.
  *
  * Theme code imports two bare names:
  *
@@ -90,8 +89,27 @@ export function themeMorphSdkAliasesSource(rootExpression: string): string {
   const entries = Object.entries(THEME_MORPH_SDK_MODULES).map(
     ([name, file]) =>
       `{ find: new RegExp(${JSON.stringify(
-        `^${name.replace(/[/]/g, "\\/")}$`,
+        exactNamePattern(name),
       )}), replacement: path.join(${rootExpression}, ${JSON.stringify(file)}) }`,
   );
   return `[\n  ${entries.join(",\n  ")},\n]`;
+}
+
+/**
+ * The same aliases as values, for a Vite config built in process (the local
+ * build runner). `resolve` maps a workspace-relative file to its path on the
+ * filesystem the build runs on.
+ */
+export function themeMorphSdkAliases(
+  resolve: (workspaceFile: string) => string,
+): Array<{ find: RegExp; replacement: string }> {
+  return Object.entries(THEME_MORPH_SDK_MODULES).map(([name, file]) => ({
+    find: new RegExp(exactNamePattern(name)),
+    replacement: resolve(file),
+  }));
+}
+
+/** `^@morph\/sdk$`: the name itself, never a longer one under it. */
+function exactNamePattern(name: string): string {
+  return `^${name.replace(/[/]/g, "\\/")}$`;
 }

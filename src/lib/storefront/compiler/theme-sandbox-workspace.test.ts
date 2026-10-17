@@ -745,7 +745,7 @@ describe("runWithConcurrency", () => {
   });
 });
 
-describe("the Morph SDK in a Theme workspace (spike M1b/M1c)", () => {
+describe("the Morph SDK in a Theme workspace", () => {
   const SDK_ROUTE = {
     path: "src/routes/sdk.tsx",
     content: `import { createFileRoute } from "@tanstack/react-router";
