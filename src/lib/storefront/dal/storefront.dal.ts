@@ -37,7 +37,7 @@ type StorefrontDb = Awaited<ReturnType<typeof getDb>>;
 async function ensureStarterHomeDocument(
   db: StorefrontDb,
   themeId: string,
-  options: { filesSaved: boolean },
+  options: { filesSaved: boolean; storefrontId: string },
 ): Promise<StarterUpgradeRecordOutcome> {
   const [theme] = await db
     .select({ metadata: storefrontThemes.metadata })
@@ -154,15 +154,16 @@ async function ensureStarterHomeDocument(
   const readRevision = readStarterUpgradeRecordRevision(
     metadata.starterUpgradeRecordRevision,
   );
+  const ids = { storefrontId: options.storefrontId, themeId };
   if (readRevision === null) {
-    return reportIncompleteStarterUpgrade(themeId, {
+    return reportIncompleteStarterUpgrade(ids, {
       status: "partial",
       reason: "unreadable-record-revision",
       filesSaved: options.filesSaved,
       attempts: 0,
     });
   }
-  return writeStarterUpgradeRecord(themeId, {
+  return writeStarterUpgradeRecord(ids, {
     readRevision,
     targetVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
     filesSaved: options.filesSaved,
@@ -178,6 +179,14 @@ async function ensureStarterHomeDocument(
  * true the workspace files were already upgraded. Nothing re-writes a record
  * that was not persisted: if another writer advances the version before the
  * next load, this run's outcome is never written.
+ *
+ * `already-current` also drops this run's record: the version was written by
+ * someone else, possibly a different code version (older or newer than this
+ * one), and this run writes nothing of its own on top of it.
+ *
+ * Non-object metadata (`null`, an array, a string, a number) and malformed
+ * JSON text are never written over: `json_set` cannot store a key in them, so
+ * the write is refused and the outcome is `partial`.
  */
 export type StarterUpgradeRecordOutcome =
   | { status: "recorded"; version: number; revision: number; attempts: number }
@@ -190,7 +199,9 @@ export type StarterUpgradePartialOutcome = {
   reason:
     | "record-revision-conflict"
     | "theme-missing"
-    | "unreadable-record-revision";
+    | "unreadable-record-revision"
+    | "non-object-metadata"
+    | "malformed-metadata";
   filesSaved: boolean;
   attempts: number;
 };
@@ -227,13 +238,19 @@ function readStarterUpgradeRecordRevision(value: unknown): number | null {
     : null;
 }
 
+type StarterUpgradeRecordTarget = { storefrontId: string; themeId: string };
+
 function reportIncompleteStarterUpgrade(
-  themeId: string,
+  target: StarterUpgradeRecordTarget,
   outcome: StarterUpgradePartialOutcome,
 ): StarterUpgradePartialOutcome {
   console.error(
     "Starter upgrade record not saved:",
-    JSON.stringify({ themeId, ...outcome }),
+    JSON.stringify({
+      storefrontId: target.storefrontId,
+      themeId: target.themeId,
+      ...outcome,
+    }),
   );
   return outcome;
 }
@@ -247,9 +264,15 @@ function reportIncompleteStarterUpgrade(
  * target is left as it is (never lowered); otherwise the write is retried on
  * the fresh revision. After the last attempt nothing is written and the
  * outcome is `partial`.
+ *
+ * The condition also requires the stored metadata to be a JSON object.
+ * `json_set` on `null`, an array or a scalar stores nothing yet still counts
+ * as a changed row, which would read as recorded. Malformed JSON text would
+ * make `json_extract` throw; the nested CASE keeps both out of the write and
+ * the re-read names them instead.
  */
 async function writeStarterUpgradeRecord(
-  themeId: string,
+  target: StarterUpgradeRecordTarget,
   args: {
     readRevision: number;
     targetVersion: number;
@@ -257,6 +280,7 @@ async function writeStarterUpgradeRecord(
     now: string;
   },
 ): Promise<StarterUpgradeRecordOutcome> {
+  const { themeId } = target;
   let readRevision = args.readRevision;
   for (
     let attempt = 1;
@@ -272,7 +296,15 @@ async function writeStarterUpgradeRecord(
            ),
            updated_at = ?3
        WHERE id = ?4
-         AND COALESCE(json_extract(metadata, '$.starterUpgradeRecordRevision'), 0) = ?5`,
+         AND CASE
+               WHEN json_valid(COALESCE(metadata, '{}')) THEN
+                 CASE
+                   WHEN json_type(COALESCE(metadata, '{}')) = 'object' THEN
+                     COALESCE(json_extract(metadata, '$.starterUpgradeRecordRevision'), 0) = ?5
+                   ELSE 0
+                 END
+               ELSE 0
+             END`,
     )
       .bind(
         args.targetVersion,
@@ -292,17 +324,37 @@ async function writeStarterUpgradeRecord(
     }
 
     const stored = await env.DATABASE.prepare(
-      `SELECT json_extract(metadata, '$.starterTemplateVersion') AS version,
-              json_extract(metadata, '$.starterUpgradeRecordRevision') AS revision
-       FROM storefront_themes
-       WHERE id = ?1`,
+      `SELECT shape,
+              CASE WHEN shape = 'object'
+                THEN json_extract(doc, '$.starterTemplateVersion') END AS version,
+              CASE WHEN shape = 'object'
+                THEN json_extract(doc, '$.starterUpgradeRecordRevision') END AS revision
+       FROM (
+         SELECT COALESCE(metadata, '{}') AS doc,
+                CASE WHEN json_valid(COALESCE(metadata, '{}'))
+                  THEN json_type(COALESCE(metadata, '{}'))
+                  ELSE 'malformed' END AS shape
+         FROM storefront_themes
+         WHERE id = ?1
+       )`,
     )
       .bind(themeId)
-      .first<{ version: unknown; revision: unknown }>();
+      .first<{ shape: string; version: unknown; revision: unknown }>();
     if (!stored) {
-      return reportIncompleteStarterUpgrade(themeId, {
+      return reportIncompleteStarterUpgrade(target, {
         status: "partial",
         reason: "theme-missing",
+        filesSaved: args.filesSaved,
+        attempts: attempt,
+      });
+    }
+    if (stored.shape !== "object") {
+      return reportIncompleteStarterUpgrade(target, {
+        status: "partial",
+        reason:
+          stored.shape === "malformed"
+            ? "malformed-metadata"
+            : "non-object-metadata",
         filesSaved: args.filesSaved,
         attempts: attempt,
       });
@@ -315,7 +367,7 @@ async function writeStarterUpgradeRecord(
     }
     const freshRevision = readStarterUpgradeRecordRevision(stored.revision);
     if (freshRevision === null) {
-      return reportIncompleteStarterUpgrade(themeId, {
+      return reportIncompleteStarterUpgrade(target, {
         status: "partial",
         reason: "unreadable-record-revision",
         filesSaved: args.filesSaved,
@@ -324,7 +376,7 @@ async function writeStarterUpgradeRecord(
     }
     readRevision = freshRevision;
   }
-  return reportIncompleteStarterUpgrade(themeId, {
+  return reportIncompleteStarterUpgrade(target, {
     status: "partial",
     reason: "record-revision-conflict",
     filesSaved: args.filesSaved,
@@ -449,7 +501,10 @@ export const storefrontDal = {
       data.createdBy,
     );
     assertStarterUpgradeRecorded(
-      await ensureStarterHomeDocument(db, data.themeId, workspace),
+      await ensureStarterHomeDocument(db, data.themeId, {
+        ...workspace,
+        storefrontId: data.storefrontId,
+      }),
     );
     return true;
   },
@@ -535,7 +590,10 @@ export const storefrontDal = {
         upgradeExistingStarter,
       );
       assertStarterUpgradeRecorded(
-        await ensureStarterHomeDocument(db, existing.activeThemeId, workspace),
+        await ensureStarterHomeDocument(db, existing.activeThemeId, {
+          ...workspace,
+          storefrontId: existing.id,
+        }),
       );
       return;
     }
@@ -627,7 +685,10 @@ export const storefrontDal = {
       false,
     );
     assertStarterUpgradeRecorded(
-      await ensureStarterHomeDocument(db, themeId, workspace),
+      await ensureStarterHomeDocument(db, themeId, {
+        ...workspace,
+        storefrontId,
+      }),
     );
   },
 };

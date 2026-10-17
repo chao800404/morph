@@ -179,6 +179,26 @@ function seedTheme(metadata: Record<string, unknown> | null) {
   );
 }
 
+/** Replaces the seeded Theme's metadata column with raw text. */
+function setRawMetadata(text: string) {
+  sqlite
+    .prepare("UPDATE storefront_themes SET metadata = ? WHERE id = ?")
+    .run(text, THEME_ID);
+}
+
+function storedRawRow() {
+  return sqlite
+    .prepare("SELECT metadata, updated_at FROM storefront_themes WHERE id = ?")
+    .get(THEME_ID) as { metadata: string | null; updated_at: string };
+}
+
+async function rejection(promise: Promise<unknown>) {
+  return promise.then(
+    () => null,
+    (reason: unknown) => reason,
+  );
+}
+
 function storedRow(themeId = THEME_ID) {
   const row = sqlite
     .prepare(
@@ -634,9 +654,186 @@ describe("a restart between the file save and the record write", () => {
     // upgrade, so the stopped run's own record is never written by anything.
     // There is no recovery mechanism for it. Today the record holds only the
     // version, which the other writer set; anything the record later carries
-    // per run would be lost here.
+    // per run would be lost here. The same holds whenever a run ends in
+    // `already-current` because someone else wrote the version, including a
+    // different code version (older or newer than this one): this run's own
+    // record is dropped, not merged.
     expect(storedRow()).toEqual(afterOtherWriter);
     expect(hooks.recordWriteAttempts).toBe(1);
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("metadata the record cannot be written into", () => {
+  // `json_set` on non-object JSON stores nothing but still reports a changed
+  // row, which used to read as `recorded`.
+  it.each([
+    ["JSON null", "null"],
+    ["an array", "[]"],
+    ["a string", '"starter"'],
+    ["a number", "5"],
+  ])(
+    "ends in partial, never recorded, when the column holds %s",
+    async (_label, raw) => {
+      seedTheme({});
+      setRawMetadata(raw);
+      workspace.files.set(THEME_ID, upgradedWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+      const before = storedRawRow();
+
+      const error = await rejection(storefrontDal.ensureDefault("channel-a"));
+
+      expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+      expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+        status: "partial",
+        reason: "non-object-metadata",
+        filesSaved: false,
+        attempts: 1,
+      });
+      expect(storedRawRow()).toEqual(before);
+      expect(hooks.recordWriteAttempts).toBe(1);
+    },
+  );
+
+  it("ends in partial when the metadata stops being an object between the read and the write", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    hooks.beforeRecordWrite = () => {
+      hooks.beforeRecordWrite = null;
+      setRawMetadata("[]");
+    };
+
+    const error = await rejection(openEditor());
+
+    expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+      status: "partial",
+      reason: "non-object-metadata",
+      filesSaved: true,
+      attempts: 1,
+    });
+    expect(storedRawRow().metadata).toBe("[]");
+  });
+
+  it("refuses malformed JSON text at the first read, before any file or metadata write", async () => {
+    // Explicit, not partial: the Drizzle read of the JSON column throws before
+    // the upgrade decides anything, so nothing was saved.
+    seedTheme({});
+    setRawMetadata("{not json");
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(openEditor()).rejects.toThrow(SyntaxError);
+    await expect(storefrontDal.ensureDefault("channel-a")).rejects.toThrow(
+      SyntaxError,
+    );
+
+    expect(storedRawRow().metadata).toBe("{not json");
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(hooks.recordWriteAttempts).toBe(0);
+  });
+
+  it("ends in partial when the metadata turns into malformed JSON between the read and the write", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    hooks.beforeRecordWrite = () => {
+      hooks.beforeRecordWrite = null;
+      setRawMetadata("{not json");
+    };
+
+    const error = await rejection(openEditor());
+
+    expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+    expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+      status: "partial",
+      reason: "malformed-metadata",
+      filesSaved: true,
+      attempts: 1,
+    });
+    expect(storedRawRow().metadata).toBe("{not json");
+  });
+});
+
+describe("a record revision the upgrade cannot read", () => {
+  // The lockout itself is deliberate and unchanged: until the stored value is
+  // corrected in the database, every load ends in partial.
+  it.each([
+    ["a string", "1"],
+    ["a fraction", 1.5],
+    ["a negative number", -1],
+  ])(
+    "ends in partial before any record write when the stored revision is %s",
+    async (_label, revision) => {
+      seedTheme({
+        starterTemplateVersion: LEGACY_VERSION,
+        starterUpgradeRecordRevision: revision,
+      });
+      workspace.files.set(THEME_ID, legacyWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+      const before = storedRawRow();
+
+      const error = await rejection(openEditor());
+
+      expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+      expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+        status: "partial",
+        reason: "unreadable-record-revision",
+        filesSaved: true,
+        attempts: 0,
+      });
+      expect(hooks.recordWriteAttempts).toBe(0);
+      expect(storedRawRow()).toEqual(before);
+      expect(console.error).toHaveBeenCalledWith(
+        "Starter upgrade record not saved:",
+        expect.stringContaining('"storefrontId":"storefront-a"'),
+      );
+    },
+  );
+
+  it("ends in partial when a revision miss re-reads one it cannot use", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    hooks.beforeRecordWrite = () => {
+      hooks.beforeRecordWrite = null;
+      singleKeyWriter("starterUpgradeRecordRevision", 1.5);
+    };
+
+    const error = await rejection(openEditor());
+
+    expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+      status: "partial",
+      reason: "unreadable-record-revision",
+      filesSaved: true,
+      attempts: 1,
+    });
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: LEGACY_VERSION,
+      starterUpgradeRecordRevision: 1.5,
+    });
+    expect(hooks.recordWriteAttempts).toBe(1);
+  });
+});
+
+describe("a Theme row that disappears before the record write", () => {
+  it("ends in partial when the re-read after a miss finds no row", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    hooks.beforeRecordWrite = () => {
+      hooks.beforeRecordWrite = null;
+      sqlite.prepare("DELETE FROM storefront_themes WHERE id = ?").run(THEME_ID);
+    };
+
+    const error = await rejection(openEditor());
+
+    expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+    expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+      status: "partial",
+      reason: "theme-missing",
+      filesSaved: true,
+      attempts: 1,
+    });
   });
 });
