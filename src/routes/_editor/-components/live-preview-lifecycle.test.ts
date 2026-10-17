@@ -5,6 +5,7 @@ import {
   livePreviewLifecycleLabel,
   reduceLivePreviewLifecycle,
   type LivePreviewLifecycleEvent,
+  type LivePreviewLifecycleState,
 } from "./live-preview-lifecycle";
 
 /** A preview that has spent its one automatic recovery and given up. */
@@ -303,6 +304,368 @@ describe("Live Preview lifecycle", () => {
     expect(livePreviewLifecycleLabel("ready")).toBeNull();
     // Not a wait: the alert says why, and a spinner would say it is coming.
     expect(livePreviewLifecycleLabel("theme-error")).toBeNull();
+  });
+});
+
+function run(
+  events: readonly LivePreviewLifecycleEvent[],
+  from: LivePreviewLifecycleState = initialLivePreviewLifecycleState,
+) {
+  return events.reduce(reduceLivePreviewLifecycle, from);
+}
+
+/** One preview in each phase a reconnect can be started from. */
+function previewsInEveryPhase(): Record<string, LivePreviewLifecycleState> {
+  const loading = run([{ type: "server-ready", key: "preview-1" }]);
+  const syncing = run([{ type: "frame-ready", key: "preview-1" }], loading);
+  const ready = run(
+    [{ type: "source-confirmed", key: "preview-1", at: 0 }],
+    syncing,
+  );
+  const themeError = run(
+    [
+      {
+        type: "frame-compile-failed",
+        key: "preview-1",
+        failure: {
+          files: ["src/routes/index.tsx"],
+          source: { "src/routes/index.tsx": "broken" },
+          paths: ["src/routes/index.tsx"],
+        },
+      },
+    ],
+    loading,
+  );
+  return {
+    "starting-server": initialLivePreviewLifecycleState,
+    "loading-frame": loading,
+    "syncing-source": syncing,
+    ready,
+    failed: failedAfterOneRecovery(),
+    "theme-error": themeError,
+  };
+}
+
+/**
+ * What the shell's server-state effect can still dispatch after a reconnect
+ * was started but before React committed it: the answer it computed from the
+ * phase it last rendered, for the frame the reconnect replaces.
+ */
+const STALE_SERVER_READY = { type: "server-ready", key: "preview-1" } as const;
+const STALE_SERVER_FAILED = {
+  type: "server-failed",
+  message: "Live Preview server could not be started. Retry Preview.",
+} as const;
+
+describe("a reconnect in progress", () => {
+  it("is not ended by a stale server-ready after a manual restart", () => {
+    // retryLivePreview dispatches manual-recovery; the server-state effect,
+    // still holding the phase it last rendered, dispatches server-ready for
+    // the old frame in the same batch. Taking it would leave reconnecting
+    // before any render committed it, so the restart request is never sent.
+    for (const [phase, before] of Object.entries(previewsInEveryPhase())) {
+      const reconnecting = run([{ type: "manual-recovery" }], before);
+      expect(reconnecting.phase, phase).toBe("reconnecting");
+      expect(
+        reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_READY),
+        phase,
+      ).toBe(reconnecting);
+      // Nor by an answer under any other address: the reconnect's own request
+      // has not finished, so no answer the shell holds is about the new frame.
+      expect(
+        reduceLivePreviewLifecycle(reconnecting, {
+          type: "server-ready",
+          key: "preview-9",
+        }),
+        phase,
+      ).toBe(reconnecting);
+    }
+  });
+
+  it("is not ended by a stale server-failed after a manual restart", () => {
+    for (const [phase, before] of Object.entries(previewsInEveryPhase())) {
+      const reconnecting = run([{ type: "manual-recovery" }], before);
+      expect(
+        reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_FAILED),
+        phase,
+      ).toBe(reconnecting);
+    }
+  });
+
+  const automaticallyReconnecting = () => {
+    const reconnecting = run(
+      [
+        {
+          type: "automatic-recovery",
+          key: "preview-1",
+          message: "Port expired",
+          at: 0,
+        },
+      ],
+      previewsInEveryPhase()["loading-frame"],
+    );
+    expect(reconnecting).toMatchObject({ phase: "reconnecting", recoveryId: 1 });
+    return reconnecting;
+  };
+
+  it("is not ended by a stale server-ready after an automatic recovery", () => {
+    const reconnecting = automaticallyReconnecting();
+    expect(reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_READY)).toBe(
+      reconnecting,
+    );
+  });
+
+  it("is not ended by a stale server-failed after an automatic recovery", () => {
+    const reconnecting = automaticallyReconnecting();
+    expect(reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_FAILED)).toBe(
+      reconnecting,
+    );
+  });
+
+  const interruptedFrames = () =>
+    (["loading-frame", "syncing-source", "ready", "theme-error"] as const).map(
+      (phase) => {
+        const reconnecting = run(
+          [
+            {
+              type: "frame-interrupted",
+              key: "preview-1",
+              message: "Interrupted",
+              at: 0,
+            },
+          ],
+          previewsInEveryPhase()[phase],
+        );
+        expect(reconnecting.phase, phase).toBe("reconnecting");
+        return [phase, reconnecting] as const;
+      },
+    );
+
+  it("is not ended by a stale server-ready after an interrupted frame", () => {
+    for (const [phase, reconnecting] of interruptedFrames()) {
+      expect(
+        reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_READY),
+        phase,
+      ).toBe(reconnecting);
+    }
+  });
+
+  it("is not ended by a stale server-failed after an interrupted frame", () => {
+    for (const [phase, reconnecting] of interruptedFrames()) {
+      expect(
+        reduceLivePreviewLifecycle(reconnecting, STALE_SERVER_FAILED),
+        phase,
+      ).toBe(reconnecting);
+    }
+  });
+});
+
+/**
+ * Counterexamples: what a reconnect must still do. None of these depends on
+ * a reconnect ignoring stale answers, so they hold with or without that rule.
+ */
+describe("a reconnect still ends the way it should", () => {
+  it("completes a restart once its own request has finished", () => {
+    const ready = previewsInEveryPhase().ready;
+    const reconnecting = run([{ type: "manual-recovery" }], ready);
+    const restarted = run(
+      [{ type: "recovery-request-finished", recoveryId: reconnecting.recoveryId }],
+      reconnecting,
+    );
+    expect(restarted).toMatchObject({
+      phase: "starting-server",
+      key: null,
+      message: null,
+    });
+
+    // The server's answer after the request is the real one, and is taken.
+    const loading = run([{ type: "server-ready", key: "preview-2" }], restarted);
+    expect(loading).toMatchObject({
+      phase: "loading-frame",
+      key: "preview-2",
+      readySequence: 0,
+    });
+    const healthy = run(
+      [
+        { type: "frame-ready", key: "preview-2" },
+        { type: "source-confirmed", key: "preview-2", at: 5 },
+      ],
+      loading,
+    );
+    expect(healthy).toMatchObject({
+      phase: "ready",
+      key: "preview-2",
+      readySince: 5,
+    });
+  });
+
+  it("lands in failed when the restart request did not bring a server up", () => {
+    for (const reason of [
+      // startThemePreviewServer threw: the query is in error.
+      "Live Preview server could not be started. Retry Preview.",
+      // startThemePreviewServer answered success: false.
+      "Container did not start",
+      // Nothing answered before the starting-server timer.
+      "Live Preview server did not start in time. Retry Preview.",
+    ]) {
+      const reconnecting = run(
+        [{ type: "manual-recovery" }],
+        previewsInEveryPhase().ready,
+      );
+      const failed = run(
+        [
+          { type: "recovery-request-finished", recoveryId: reconnecting.recoveryId },
+          { type: "server-failed", message: reason },
+        ],
+        reconnecting,
+      );
+      expect(failed, reason).toMatchObject({
+        phase: "failed",
+        key: null,
+        message: reason,
+      });
+      // And the author can retry from there.
+      expect(run([{ type: "manual-recovery" }], failed)).toMatchObject({
+        phase: "reconnecting",
+        recoveryId: reconnecting.recoveryId + 1,
+      });
+    }
+  });
+
+  it("lands in failed when an automatic recovery's request brought no server", () => {
+    const reconnecting = run(
+      [
+        {
+          type: "automatic-recovery",
+          key: "preview-1",
+          message: "Port expired",
+          at: 0,
+        },
+      ],
+      previewsInEveryPhase()["loading-frame"],
+    );
+    expect(
+      run(
+        [
+          { type: "recovery-request-finished", recoveryId: reconnecting.recoveryId },
+          { type: "server-failed", message: "Container did not start" },
+        ],
+        reconnecting,
+      ),
+    ).toMatchObject({ phase: "failed", message: "Container did not start" });
+  });
+
+  it("can be reset while it reconnects", () => {
+    const reconnecting = run(
+      [{ type: "manual-recovery" }],
+      previewsInEveryPhase().ready,
+    );
+    const reset = run([{ type: "reset" }], reconnecting);
+    expect(reset).toEqual({
+      ...initialLivePreviewLifecycleState,
+      recoveryId: reconnecting.recoveryId,
+    });
+    // The interrupted reconnect's request finishing later changes nothing.
+    expect(
+      run(
+        [{ type: "recovery-request-finished", recoveryId: reconnecting.recoveryId }],
+        reset,
+      ),
+    ).toBe(reset);
+    // And the next server answer is taken as usual.
+    expect(
+      run([{ type: "server-ready", key: "preview-2" }], reset),
+    ).toMatchObject({ phase: "loading-frame", key: "preview-2" });
+  });
+
+  it("is not ended by an older reconnect's request finishing", () => {
+    const first = run([{ type: "manual-recovery" }], previewsInEveryPhase().ready);
+    const second = run([{ type: "manual-recovery" }], first);
+    expect(second.recoveryId).toBe(first.recoveryId + 1);
+    expect(
+      run(
+        [{ type: "recovery-request-finished", recoveryId: first.recoveryId }],
+        second,
+      ),
+    ).toBe(second);
+    expect(
+      run(
+        [{ type: "recovery-request-finished", recoveryId: second.recoveryId }],
+        second,
+      ).phase,
+    ).toBe("starting-server");
+  });
+});
+
+describe("server answers outside a reconnect", () => {
+  // The same table as before reconnects ignored stale answers.
+  const holdsTheSameFrame = new Set([
+    "loading-frame",
+    "syncing-source",
+    "ready",
+    "failed",
+    "theme-error",
+  ]);
+
+  it("server-ready: repeats for the frame shown are ignored, anything else loads it", () => {
+    for (const [phase, state] of Object.entries(previewsInEveryPhase())) {
+      const sameKey = { type: "server-ready", key: state.key ?? "preview-1" } as const;
+      if (state.key !== null && holdsTheSameFrame.has(phase)) {
+        expect(reduceLivePreviewLifecycle(state, sameKey), phase).toBe(state);
+      } else {
+        expect(reduceLivePreviewLifecycle(state, sameKey), phase).toEqual({
+          ...state,
+          phase: "loading-frame",
+          key: sameKey.key,
+          readySequence: 0,
+          message: null,
+          compileFailure: null,
+        });
+      }
+      expect(
+        reduceLivePreviewLifecycle(state, { type: "server-ready", key: "preview-7" }),
+        phase,
+      ).toEqual({
+        ...state,
+        phase: "loading-frame",
+        key: "preview-7",
+        readySequence: 0,
+        message: null,
+        compileFailure: null,
+      });
+    }
+  });
+
+  it("server-failed: fails the preview, unless it already failed for that reason", () => {
+    for (const [phase, state] of Object.entries(previewsInEveryPhase())) {
+      expect(
+        reduceLivePreviewLifecycle(state, {
+          type: "server-failed",
+          message: "Down",
+        }),
+        phase,
+      ).toEqual({
+        ...state,
+        phase: "failed",
+        key: null,
+        message: "Down",
+        readySince: null,
+        compileFailure: null,
+      });
+    }
+    const failed = reduceLivePreviewLifecycle(initialLivePreviewLifecycleState, {
+      type: "server-failed",
+      message: "Down",
+    });
+    expect(
+      reduceLivePreviewLifecycle(failed, { type: "server-failed", message: "Down" }),
+    ).toBe(failed);
+    expect(
+      reduceLivePreviewLifecycle(failed, {
+        type: "server-failed",
+        message: "Down again",
+      }),
+    ).toMatchObject({ phase: "failed", message: "Down again" });
   });
 });
 
