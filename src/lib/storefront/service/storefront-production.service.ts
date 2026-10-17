@@ -19,7 +19,11 @@ import {
   resolveStorefrontContent,
   type ContentRuntimePorts,
 } from "./storefront-content-runtime";
-import type { ThemeRuntime } from "./theme-runtime.types";
+import type {
+  ThemeRuntime,
+  ThemeRuntimeFailure,
+  ThemeRuntimeNotConfigured,
+} from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
@@ -69,6 +73,64 @@ function errorResponse(status: number, message: string): Response {
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+/**
+ * What a shopper sees when the Theme runtime cannot serve the request.
+ *
+ * Fixed copy: it names no variable, binding, origin or reason. What an
+ * operator needs goes to the server log as a fixed code instead.
+ */
+export const THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE =
+  "This store is temporarily unavailable. Please try again later.";
+
+/** Fixed operator hint per not-configured code. Never built from env values. */
+const THEME_RUNTIME_NOT_CONFIGURED_HINTS: Record<
+  ThemeRuntimeNotConfigured["code"],
+  string
+> = {
+  NO_TRANSPORT:
+    "Set THEME_WORKER, or MORPH_LOCAL_THEME_ORIGIN for local development.",
+  BINDING_UNMAPPED:
+    "Map this storefront in MORPH_THEME_SERVICE_BINDINGS to a declared service binding.",
+  DISPATCH_UNBOUND: "Bind THEME_DISPATCHER to the dispatch namespace.",
+};
+
+export const THEME_RUNTIME_FAILURE_LOG_LABEL =
+  "[storefront] Theme runtime failure";
+
+/**
+ * The one place a failed Theme runtime result becomes a public response.
+ *
+ * A not-configured failure keeps the runtime's status and the standard error
+ * headers, sends fixed public copy, and logs one line of fixed fields: a code,
+ * the runtime kind, the status, the storefront id, and allow-listed fields
+ * (sub-code, operator hint). The runtime's free-text message is never logged
+ * or sent for this class.
+ *
+ * Other reasons still pass their message through unchanged; moving them onto
+ * the same fixed-code path is a separate follow-up.
+ */
+function themeRuntimeFailureResponse(
+  failure: ThemeRuntimeFailure,
+  runtimeKind: ThemeRuntime["kind"],
+  resolved: ResolvedStorefrontHost,
+): Response {
+  if (failure.reason !== "RUNTIME_NOT_CONFIGURED") {
+    return errorResponse(failure.status, failure.message);
+  }
+  const { notConfigured } = failure;
+  console.error(THEME_RUNTIME_FAILURE_LOG_LABEL, {
+    code: notConfigured.code,
+    ...(notConfigured.code === "BINDING_UNMAPPED"
+      ? { subcode: notConfigured.subcode }
+      : {}),
+    runtime: runtimeKind,
+    status: failure.status,
+    storefrontId: resolved.storefrontId,
+    hint: THEME_RUNTIME_NOT_CONFIGURED_HINTS[notConfigured.code],
+  });
+  return errorResponse(failure.status, THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
 }
 
 function privateSameOriginResponse(response: Response): Response {
@@ -269,7 +331,11 @@ export class StorefrontProductionService {
       resolved,
     });
     if (!runtimeResult.success) {
-      return errorResponse(runtimeResult.status, runtimeResult.message);
+      return themeRuntimeFailureResponse(
+        runtimeResult,
+        this.options.runtime.kind,
+        resolved,
+      );
     }
     // A Theme route may answer with an SVG of its own; it is isolated like
     // any other the storefront sends.

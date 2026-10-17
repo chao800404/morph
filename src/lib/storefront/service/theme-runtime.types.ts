@@ -37,14 +37,45 @@ export type ThemeRuntimeFailureReason =
   | "SCRIPT_NOT_DEPLOYED"
   | "RUNTIME_ERROR";
 
-export type ThemeRuntimeResult =
-  | { success: true; response: Response }
+/**
+ * Why a service binding could not be resolved for a storefront. A fixed code,
+ * never the configured value, so it can be logged as-is.
+ */
+export type ThemeServiceBindingUnmappedSubcode =
+  | "MAP_MALFORMED"
+  | "ENTRY_MISSING"
+  | "BINDING_ABSENT";
+
+/**
+ * Which part of the runtime configuration is missing, as a fixed code the
+ * caller can log without carrying any configured value or free text.
+ */
+export type ThemeRuntimeNotConfigured =
+  | Readonly<{ code: "NO_TRANSPORT" }>
+  | Readonly<{ code: "DISPATCH_UNBOUND" }>
+  | Readonly<{
+      code: "BINDING_UNMAPPED";
+      subcode: ThemeServiceBindingUnmappedSubcode;
+    }>;
+
+export type ThemeRuntimeFailure =
   | {
       success: false;
-      reason: ThemeRuntimeFailureReason;
+      reason: "RUNTIME_NOT_CONFIGURED";
+      status: number;
+      message: string;
+      notConfigured: ThemeRuntimeNotConfigured;
+    }
+  | {
+      success: false;
+      reason: Exclude<ThemeRuntimeFailureReason, "RUNTIME_NOT_CONFIGURED">;
       status: number;
       message: string;
     };
+
+export type ThemeRuntimeResult =
+  | { success: true; response: Response }
+  | ThemeRuntimeFailure;
 
 export type ThemeRuntimeInvocation = Readonly<{
   request: Request;
