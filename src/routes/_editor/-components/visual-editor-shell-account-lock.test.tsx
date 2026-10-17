@@ -1,3 +1,5 @@
+import { noRouterThemeTree } from "@/lib/test-utils/no-router-theme-tree";
+import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { toast } from "sonner";
@@ -126,6 +128,11 @@ function renderShell() {
       message: "Live Preview server ready",
       data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
     } as never,
+  );
+  // Read, and with no router: the frame shows the one document sent to it.
+  client.setQueryData(
+    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+    noRouterThemeTree() as never,
   );
   const retryRead = vi.fn();
   const shellWith = (

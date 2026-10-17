@@ -399,6 +399,7 @@ import {
   previewFrameNavigationRoute,
   previewStructureMatchesRoute,
 } from "@/lib/storefront/editor/preview-structure-route";
+import { readRouterFramework } from "@/lib/storefront/compiler/theme-router-build-bootstrap";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -2532,15 +2533,16 @@ export function VisualEditorShell({
   const previewReadyRoundRef = useRef(0);
   /**
    * The page the frame last named, in a structure report or a route answer,
-   * and the frame and ready round that named it. While it is not the page
-   * the editor shows, what the frame reports the author doing there is about
-   * another page: a selection or an edit names a slot id, which the editor's
-   * page may have too, and would be taken as that page's.
+   * and the frame and ready round that named it; null for a frame that
+   * answered that it has no router. A selection or an edit from the frame
+   * names a slot id, not a page, so it is taken only while this says the
+   * frame shows the editor's page (`frameShowsEditorPage`). Unknown — no
+   * record for this frame in this round — is not that.
    */
   const frameRouteRef = useRef<{
     key: string;
     round: number;
-    routePath: string;
+    routePath: string | null;
   } | null>(null);
   /** The route on screen, for that replay's binding. */
   const replayRoutePathRef = useRef(search.routePath ?? "/");
@@ -3120,6 +3122,20 @@ export function VisualEditorShell({
   /** For the preview message handler, which is not rebuilt for it. */
   const themeRouteRegistryRef = useRef(themeRouteRegistry);
   themeRouteRegistryRef.current = themeRouteRegistry;
+  /**
+   * Whether the Theme's source, once read, mounts its preview with no router,
+   * as the generated entry does for any framework but TanStack Start; null
+   * until the files are read. Such a frame never names a page.
+   */
+  const previewHasNoRouter = useMemo(
+    () =>
+      themeFilesQuery.data
+        ? readRouterFramework(effectiveThemeFiles) !== "tanstack-start"
+        : null,
+    [effectiveThemeFiles, themeFilesQuery.data],
+  );
+  const previewHasNoRouterRef = useRef(previewHasNoRouter);
+  previewHasNoRouterRef.current = previewHasNoRouter;
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -7472,22 +7488,50 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
-    /** Whether this frame, in this round, last named another page. */
-    const frameShowsAnotherPage = () => {
+    /**
+     * Whether what this frame sends is about the editor's page.
+     *
+     * A Theme with a router names its page in every structure report and
+     * route answer, its boot report included: its frame shows the editor's
+     * page while the page it last named, in this ready round, is that page.
+     * Before it has named one in this round — a frame just reloaded, one
+     * that never answers — its page is unknown, and unknown is not the
+     * editor's page.
+     *
+     * A Theme whose source has no router (read from its files, as the
+     * generated entry is built) is mounted as one document, the one the
+     * editor sends it: its frame shows the editor's page, except while it
+     * is known to be behind — it answered a route request with no route, and
+     * the editor has sent a newer one it has not answered yet. Before the
+     * files are read, nothing is known.
+     */
+    const frameShowsEditorPage = () => {
       const frame = frameRouteRef.current;
-      return (
-        frame !== null &&
-        frame.key === previewKey &&
-        frame.round === previewReadyRoundRef.current &&
-        !previewStructureMatchesRoute(
-          frame.routePath,
-          currentSearchRoutePathRef.current,
-        )
+      const round = previewReadyRoundRef.current;
+      if (frame === null || frame.key !== previewKey || frame.round !== round) {
+        return previewHasNoRouterRef.current === true;
+      }
+      if (frame.routePath === null) {
+        // Only for a Theme the editor itself knows has no router: from one
+        // that has, an answer of no router confirms nothing.
+        if (previewHasNoRouterRef.current !== true) return false;
+        const routeRequest = lastRouteRequestRef.current;
+        return (
+          routeRequest !== null &&
+          routeRequest.key === previewKey &&
+          routeRequest.round === round &&
+          routeRequest.id === routeRequestIdRef.current &&
+          routeRequest.answered
+        );
+      }
+      return previewStructureMatchesRoute(
+        frame.routePath,
+        currentSearchRoutePathRef.current,
       );
     };
-    /** Refuses an edit from a frame on another page, and says so. */
+    /** Refuses an edit from a frame not on the editor's page, and says so. */
     const refuseOtherPageEdit = () => {
-      if (!frameShowsAnotherPage()) return false;
+      if (frameShowsEditorPage()) return false;
       toast.info(PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE, {
         id: "preview-other-page-not-saved",
       });
@@ -7752,13 +7796,11 @@ export function VisualEditorShell({
           message.routeRequestId,
           message.routePath,
         );
-        if (message.routePath !== null) {
-          frameRouteRef.current = {
-            key: previewKey,
-            round: previewReadyRoundRef.current,
-            routePath: message.routePath,
-          };
-        }
+        frameRouteRef.current = {
+          key: previewKey,
+          round: previewReadyRoundRef.current,
+          routePath: message.routePath,
+        };
         // Answered only by this frame, in this ready round, for the latest
         // request: an id alone carries over from the frame before.
         const routeRequest = lastRouteRequestRef.current;
@@ -7803,9 +7845,10 @@ export function VisualEditorShell({
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
-      // An element of another page: its slot id may be one this page has
-      // too, and the Inspector would then edit this page's copy of it.
-      if (frameShowsAnotherPage()) return;
+      // An element of another page, or of a page not known yet: its slot id
+      // may be one this page has too, and the Inspector would then edit this
+      // page's copy of it.
+      if (!frameShowsEditorPage()) return;
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;

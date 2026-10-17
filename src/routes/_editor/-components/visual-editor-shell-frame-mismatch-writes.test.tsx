@@ -225,6 +225,22 @@ const file = (path: string, content: string) => ({
   updatedAt: "2026-10-17T00:00:00.000Z",
 });
 const FILES = [
+  // The source of a TanStack Start Theme: its preview is mounted with a
+  // router, so its frame names the page it shows.
+  file(
+    "package.json",
+    JSON.stringify({
+      dependencies: {
+        "@tanstack/react-router": "1.0.0",
+        "@tanstack/react-start": "1.0.0",
+      },
+    }),
+  ),
+  file("src/router.tsx", "export const getRouter = () => null;\n"),
+  file(
+    "src/routes/__root.tsx",
+    'import { createRootRoute } from "@tanstack/react-router";\nexport const Route = createRootRoute({});\n',
+  ),
   file(
     "src/routes/index.tsx",
     'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/")({ component: () => <main /> });\n',
@@ -402,7 +418,10 @@ const report = (routePath: string | undefined, nodes: unknown[] = []) =>
     nodes,
     ...(routePath === undefined ? {} : { routePath }),
   });
-const applied = (routeRequestId: number | undefined, routePath: string) =>
+const applied = (
+  routeRequestId: number | undefined,
+  routePath: string | null,
+) =>
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId,
@@ -653,6 +672,93 @@ async function editorAheadOfFrame() {
   return harness;
 }
 
+/**
+ * The editor shows /b; the frame has just reloaded itself (a new ready round)
+ * and has not named its page yet in this round.
+ */
+async function frameReloadedUnnamed() {
+  const harness = await settled(pageSearch("/b"));
+  enableSelection();
+  fromPreview({
+    type: "morph:storefront-preview-ready",
+    servedInstance: {
+      kind: "known",
+      instance: { session: SESSION, serial: 1 },
+    },
+  });
+  await tick(0);
+  // Precondition: the new round's request went out, unanswered, unreported.
+  expect(latestRequest()?.routePath).toBe("/b");
+  expect(shownRoute(harness)).toBe("/b");
+  return harness;
+}
+
+type Entry = {
+  /** What the frame sends. */
+  send: () => void;
+  /** It wrote, or moved the Inspector: what it does when it is taken. */
+  wrote: () => boolean;
+  /** Commits say why they were not saved; a selection is dropped quietly. */
+  notice: boolean;
+};
+/** Every frame message that writes or moves the Inspector's target. */
+const ENTRIES: Record<string, Entry> = {
+  "select-section": {
+    send: () => frameSelects("hero"),
+    wrote: () => selectedInInspector() !== null,
+    notice: false,
+  },
+  "commit-inline-text": {
+    send: () => frameCommitsText("hero", "Typed on the frame's page"),
+    wrote: () => writtenTemplates().length > 0,
+    notice: true,
+  },
+  "commit-section-reorder": {
+    send: () =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-section-reorder",
+        draggedSectionId: "promo",
+        targetSectionId: "hero",
+      }),
+    wrote: () => saveThemeFile.mock.calls.length > 0,
+    notice: true,
+  },
+  "commit-sibling-reorder": {
+    send: () =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-sibling-reorder",
+        sectionId: "hero",
+        sourceFilePath: "src/hero/Hero.tsx",
+        draggedNodeId: "hero:node:heading",
+        targetNodeId: "hero:node:section",
+      }),
+    wrote: () => saveThemeFile.mock.calls.length > 0,
+    notice: true,
+  },
+  "commit-array-item-reorder": {
+    send: () =>
+      fromPreview({
+        type: "morph:storefront-preview-commit-array-item-reorder",
+        sectionId: "hero",
+        draggedFieldPath: "items.0",
+        targetFieldPath: "items.1",
+      }),
+    wrote: () => writtenTemplates().length > 0,
+    notice: true,
+  },
+};
+const noticed = () =>
+  vi
+    .mocked(toast.info)
+    .mock.calls.some(
+      (call) => call[0] === PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+    );
+const WINDOWS: Record<string, () => Promise<unknown>> = {
+  "frame ahead (frame on /c, editor on /b)": frameAheadOfEditor,
+  "editor ahead (editor on /c, frame on /b)": editorAheadOfFrame,
+  "unknown page (frame reloaded, no page named yet)": frameReloadedUnnamed,
+};
+
 beforeEach(() => {
   selectionRevision = 10_000;
   panelSelections.length = 0;
@@ -801,5 +907,96 @@ describe("a write while the editor and the frame show different pages", () => {
       await tick(0);
       expect(selectedInInspector()).toBeNull();
     });
+  });
+});
+
+describe("every frame message that writes or moves the Inspector", () => {
+  describe.each(Object.entries(WINDOWS))(
+    "in the window: %s",
+    (_window, open) => {
+      it.each(Object.keys(ENTRIES))("%s is not taken", async (name) => {
+        await open();
+        const entry = ENTRIES[name]!;
+        entry.send();
+        await tick(400);
+        expect(entry.wrote()).toBe(false);
+        expect(writtenTemplates()).toEqual([]);
+        expect(saveThemeFile).not.toHaveBeenCalled();
+        expect(selectedInInspector()).toBeNull();
+        expect(noticed()).toBe(entry.notice);
+      });
+    },
+  );
+
+  // Each guarded entry is reached when the frame shows the editor's page:
+  // the refusals above are the guard's, not an entry that does nothing.
+  it.each(Object.keys(ENTRIES))(
+    "control: %s is taken while both show /b",
+    async (name) => {
+      await settled(pageSearch("/b"));
+      enableSelection();
+      // The inline commit needs the selection of the field it edits.
+      if (name === "commit-inline-text") {
+        frameSelects("hero");
+        await tick(0);
+      }
+      const entry = ENTRIES[name]!;
+      entry.send();
+      await tick(400);
+      expect(noticed()).toBe(false);
+      if (
+        name !== "commit-sibling-reorder" &&
+        name !== "commit-array-item-reorder"
+      ) {
+        expect(entry.wrote()).toBe(true);
+      }
+    },
+  );
+
+  it("takes them again once the reloaded frame names the editor's page", async () => {
+    await frameReloadedUnnamed();
+    frameSelects("hero");
+    await tick(0);
+    expect(selectedInInspector()).toBeNull();
+    report("/b");
+    await tick(0);
+    frameSelects("hero");
+    await tick(0);
+    expect(selectedInInspector()).toBe("hero");
+  });
+
+  it("does not take them from a reloaded frame whose boot report names another page", async () => {
+    await frameReloadedUnnamed();
+    report("/");
+    await tick(0);
+    frameSelects("hero");
+    await tick(0);
+    expect(selectedInInspector()).toBeNull();
+    frameCommitsText("hero", "Typed on Home");
+    await tick(400);
+    expect(writtenTemplates()).toEqual([]);
+  });
+
+  it("does not take an answer of no router from a Theme whose source has one", async () => {
+    renderRouted(pageSearch("/b"));
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    enableSelection();
+    fromPreview({
+      type: "morph:storefront-preview-ready",
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
+    });
+    await tick(0);
+    applied(latestRequest()?.routeRequestId, null);
+    await tick(0);
+    frameSelects("hero");
+    await tick(0);
+    expect(selectedInInspector()).toBeNull();
+    frameCommitsText("hero", "Typed");
+    await tick(400);
+    expect(writtenTemplates()).toEqual([]);
+    expect(noticed()).toBe(true);
   });
 });
