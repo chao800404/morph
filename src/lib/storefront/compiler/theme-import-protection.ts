@@ -132,6 +132,23 @@ function resolveRelativeFile(
   return candidates.find((path) => files.has(path)) ?? null;
 }
 
+/**
+ * Parses one Theme source module the way every check in this module reads
+ * it. Throws on a syntax error; callers decide what an unparsable file means.
+ */
+export function parseThemeSourceModule(content: string): any {
+  return parse(content, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
+    errorRecovery: false,
+  });
+}
+
+/** Whether a path is a module source file these checks read. */
+export function isThemeSourceModulePath(path: string): boolean {
+  return isSourceFile(normalizePath(path));
+}
+
 function collectImportEdges(content: string): {
   edges: ThemeImportEdge[];
   markerBoundaries: Array<{
@@ -146,11 +163,7 @@ function collectImportEdges(content: string): {
   }> = [];
   let ast: any;
   try {
-    ast = parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
-      errorRecovery: false,
-    });
+    ast = parseThemeSourceModule(content);
   } catch {
     // The syntax scanner reports parse errors separately. Do not manufacture
     // import-boundary errors from a partially parsed file.
@@ -333,15 +346,29 @@ function packageImportUsesOnlySafeBoundary(
 ): boolean {
   let ast: any;
   try {
-    ast = parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript", "importAttributes", "topLevelAwait"],
-      errorRecovery: false,
-    });
+    ast = parseThemeSourceModule(content);
   } catch {
     return false;
   }
+  return moduleImportUsesOnlySafeBoundary(
+    ast,
+    source,
+    target,
+    requireStaticImport,
+  );
+}
 
+/**
+ * `packageImportUsesOnlySafeBoundary` on a module already parsed with
+ * `parseThemeSourceModule`, for a caller that has the AST and should not
+ * parse the file again.
+ */
+export function moduleImportUsesOnlySafeBoundary(
+  ast: any,
+  source: string,
+  target: ThemeImportProtectionTarget,
+  requireStaticImport = false,
+): boolean {
   const importedNames = new Set<string>();
   let hasSideEffectImport = false;
   let hasRuntimeImport = false;
