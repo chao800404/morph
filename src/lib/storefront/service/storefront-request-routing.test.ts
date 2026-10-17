@@ -166,14 +166,23 @@ describe("createThemeRuntime", () => {
       ).toBe("unavailable");
     });
 
-    it("treats a blank origin as not configured, not as refused", async () => {
-      process.env.NODE_ENV = "development";
-      const env = { MORPH_LOCAL_THEME_ORIGIN: "   " };
-      expect(createThemeRuntime(env).kind).toBe("unavailable");
-      const message = await messageOf(env);
-      expect(message).toBe(await messageOf({}));
-      expect(message).not.toContain("only used for local development");
-    });
+    it.each([
+      ["a space", " "],
+      ["a tab", "\t"],
+      ["a newline", "\n"],
+      ["CRLF", "\r\n"],
+      ["a non-breaking space", "\u00a0"],
+    ])(
+      "treats a blank origin (%s) as not configured, not as refused",
+      async (_label, origin) => {
+        process.env.NODE_ENV = "development";
+        const env = { MORPH_LOCAL_THEME_ORIGIN: origin };
+        expect(createThemeRuntime(env).kind).toBe("unavailable");
+        const message = await messageOf(env);
+        expect(message).toBe(await messageOf({}));
+        expect(message).not.toContain("only used for local development");
+      },
+    );
 
     it("uses the local origin in development without credentials", () => {
       process.env.NODE_ENV = "development";
