@@ -1179,3 +1179,189 @@ describe("published content endpoint", () => {
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });
+
+describe("Theme Worker responses on the public storefront", () => {
+  function serviceAnswering(answer: (request: Request) => Response) {
+    const seen: Request[] = [];
+    const handle = vi.fn(async ({ request }: { request: Request }) => {
+      seen.push(request);
+      return { success: true as const, response: answer(request) };
+    });
+    const service = new StorefrontProductionService({
+      runtime: { kind: "local-direct", handle } as any,
+      r2Bucket: r2(),
+      resolverDeps: resolverDeps(),
+    });
+    return { service, handle, seen };
+  }
+
+  it("drops every Set-Cookie under a platform credential's name", async () => {
+    const platform = [
+      "better-auth.session_token=planted; Path=/; HttpOnly",
+      "__Secure-better-auth.session_token=planted; Path=/; Secure",
+      "__Host-better-auth.session_data=planted; Path=/; Secure",
+      "better-auth-dont_remember=planted; Path=/",
+      "verify_access=planted; Path=/",
+    ];
+    const { service } = serviceAnswering(() => {
+      const headers = new Headers({ "content-type": "text/html" });
+      for (const value of platform) headers.append("set-cookie", value);
+      return new Response("<p>", { headers });
+    });
+
+    const res = await service.handleRequest(req("/about"));
+
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("drops a nameless Set-Cookie whose value would come back under a platform name", async () => {
+    const { service } = serviceAnswering(() => {
+      const headers = new Headers({ "content-type": "text/html" });
+      headers.append("set-cookie", "=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", " =better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "==better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "= =better-auth.session_token=planted; Path=/");
+      // Whitespace is stripped as `\s`, not only SP and HTAB as browsers trim:
+      // better-call trims names with String.prototype.trim, NBSP included.
+      headers.append("set-cookie", "\u00a0=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "=\u00a0=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "=\t=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "better-auth.session_token; Path=/");
+      headers.append("set-cookie", "=theme_pref=1; Path=/");
+      headers.append("set-cookie", "==theme_pref=1; Path=/");
+      headers.append("set-cookie", "= =theme_pref=1; Path=/");
+      return new Response("<p>", { headers });
+    });
+
+    const res = await service.handleRequest(req("/about"));
+
+    expect(res.headers.getSetCookie()).toEqual([
+      "=theme_pref=1; Path=/",
+      "==theme_pref=1; Path=/",
+      "= =theme_pref=1; Path=/",
+    ]);
+  });
+
+  it("keeps a Theme's own cookie", async () => {
+    const { service } = serviceAnswering(
+      () =>
+        new Response("<p>", {
+          headers: { "set-cookie": "cart=abc; Path=/; HttpOnly" },
+        }),
+    );
+
+    const res = await service.handleRequest(req("/about"));
+
+    expect(res.headers.getSetCookie()).toEqual(["cart=abc; Path=/; HttpOnly"]);
+  });
+
+  it("removes only the platform cookies from several, keeping the rest apart and in order", async () => {
+    const { service } = serviceAnswering(() => {
+      const headers = new Headers();
+      headers.append("set-cookie", "cart=abc; Path=/");
+      headers.append("set-cookie", "better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "theme_pref=dark; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT");
+      headers.append("set-cookie", "__Secure-better-auth.session_token=planted; Secure");
+      headers.append("set-cookie", "locale=en; Path=/");
+      return new Response("<p>", { headers });
+    });
+
+    const res = await service.handleRequest(req("/about"));
+
+    expect(res.headers.getSetCookie()).toEqual([
+      "cart=abc; Path=/",
+      "theme_pref=dark; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+      "locale=en; Path=/",
+    ]);
+  });
+
+  it("leaves status, body and every other header as the Theme sent them", async () => {
+    const { service } = serviceAnswering(
+      () =>
+        new Response("not here", {
+          status: 404,
+          statusText: "Not Found",
+          headers: [
+            ["content-type", "text/html; charset=utf-8"],
+            ["cache-control", "public, max-age=30"],
+            ["x-theme-trace", "t-1"],
+            ["vary", "accept-language"],
+            ["set-cookie", "better-auth.session_token=planted; Path=/"],
+            ["set-cookie", "cart=abc; Path=/"],
+          ],
+        }),
+    );
+
+    const res = await service.handleRequest(req("/missing"));
+
+    expect(res.status).toBe(404);
+    expect(res.statusText).toBe("Not Found");
+    expect(await res.text()).toBe("not here");
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=30");
+    expect(res.headers.get("x-theme-trace")).toBe("t-1");
+    expect(res.headers.get("vary")).toBe("accept-language");
+    expect(res.headers.getSetCookie()).toEqual(["cart=abc; Path=/"]);
+  });
+
+  it("streams the body through without buffering it", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+    });
+    const { service } = serviceAnswering(
+      () =>
+        new Response(body, {
+          headers: { "set-cookie": "better-auth.session_token=planted" },
+        }),
+    );
+
+    // Resolves while the Theme's stream is still open: nothing waited for it.
+    const res = await service.handleRequest(req("/stream"));
+    expect(res.bodyUsed).toBe(false);
+    expect(res.headers.getSetCookie()).toEqual([]);
+
+    controller.enqueue(new TextEncoder().encode("first "));
+    controller.enqueue(new TextEncoder().encode("second"));
+    controller.close();
+    expect(await res.text()).toBe("first second");
+  });
+
+  it("still isolates an SVG, and drops a platform cookie set with it", async () => {
+    const { service } = serviceAnswering(
+      () =>
+        new Response("<svg/>", {
+          headers: [
+            ["content-type", "image/svg+xml"],
+            ["set-cookie", "better-auth.session_token=planted"],
+            ["set-cookie", "cart=abc"],
+          ],
+        }),
+    );
+
+    const res = await service.handleRequest(req("/icon"));
+
+    expect(res.headers.get("Content-Security-Policy")).toContain("sandbox");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.getSetCookie()).toEqual(["cart=abc"]);
+    expect(await res.text()).toBe("<svg/>");
+  });
+
+  it("forwards the shopper's cookies to the Theme Worker unchanged", async () => {
+    // Only the response direction is filtered; what the shopper sends, the
+    // platform session included, reaches the runtime exactly as it arrived.
+    const cookie =
+      "better-auth.session_token=shopper; cart=abc; __Secure-better-auth.session_data=x";
+    const { service, handle, seen } = serviceAnswering(
+      () => new Response("<p>"),
+    );
+
+    await service.handleRequest(req("/account", { headers: { cookie } }));
+
+    expect(handle).toHaveBeenCalledOnce();
+    expect(seen[0]!.headers.get("cookie")).toBe(cookie);
+  });
+});

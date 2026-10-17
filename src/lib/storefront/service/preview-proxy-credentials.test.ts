@@ -112,6 +112,39 @@ describe("what of a response reaches the browser", () => {
     expect(result.headers.getSetCookie()).toEqual(theme);
   });
 
+  it("removes a nameless Set-Cookie whose value would come back under a platform name", () => {
+    // A cookie with no name is sent back as its bare value, which a server
+    // reads as the name-value pair it spells out.
+    for (const value of [
+      "=better-auth.session_token=planted; Path=/",
+      " =better-auth.session_token=planted; Path=/",
+      "=__Secure-better-auth.session_token=planted; Secure",
+      "=verify_access=planted",
+      "==better-auth.session_token=planted",
+      "= =better-auth.session_token=planted; Path=/",
+      // Whitespace is stripped as `\s`, not only SP and HTAB as browsers trim:
+      // better-call trims names with String.prototype.trim, NBSP included.
+      "\u00a0=better-auth.session_token=planted; Path=/",
+      "=\u00a0=better-auth.session_token=planted; Path=/",
+      "=\t=better-auth.session_token=planted; Path=/",
+      "better-auth.session_token",
+      "better-auth.session_token; Path=/",
+    ]) {
+      const result = withoutPlatformCookies(response([value, "a=1"]));
+      expect(result.headers.getSetCookie(), value).toEqual(["a=1"]);
+    }
+  });
+
+  it("keeps a nameless Set-Cookie of the Theme's own", () => {
+    const original = response([
+      "=theme_pref=1; Path=/",
+      "==theme_pref=1",
+      "= =theme_pref=1",
+      "theme_flag",
+    ]);
+    expect(withoutPlatformCookies(original)).toBe(original);
+  });
+
   it("returns a response with nothing to remove as it is", () => {
     const original = response(["a=1", "b=2"]);
     expect(withoutPlatformCookies(original)).toBe(original);
