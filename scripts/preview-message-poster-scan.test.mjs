@@ -122,6 +122,55 @@ function elsewhere() { post({ type: SECTION_PROPS, sectionId: "a" }); }`,
     );
     assert.equal(findings.length, 1);
   });
+
+  it("in a template literal with a substitution fails, as every type it could spell", () => {
+    const prefix = SECTION.slice(0, SECTION.lastIndexOf("update-") + "update-".length);
+    const findings = scanSource(
+      `${OWNERS}
+function elsewhere(kind) { post({ type: \`${prefix}\${kind}\`, sectionId: "a" }); }`,
+      SHELL,
+    );
+    assert.deepEqual(
+      findings
+        .map(({ message, kind, owner }) => ({ message, kind, owner }))
+        .sort((a, b) => a.message.localeCompare(b.message)),
+      [
+        { message: SECTION, kind: "built", owner: "elsewhere" },
+        { message: FIELD, kind: "built", owner: "elsewhere" },
+      ].sort((a, b) => a.message.localeCompare(b.message)),
+    );
+  });
+
+  it("in a template literal whose substitution is the prefix fails", () => {
+    const suffix = SECTION.slice(SECTION.lastIndexOf("update-"));
+    const findings = scanSource(
+      `function elsewhere(prefix) { post({ type: \`\${prefix}${suffix}\`, sectionId: "a" }); }`,
+      "src/elsewhere.ts",
+    );
+    assert.deepEqual(
+      findings.map(({ message, kind }) => ({ message, kind })),
+      [{ message: SECTION, kind: "built" }],
+    );
+  });
+
+  it("from a second function carrying the owner's name fails", () => {
+    const findings = scanSource(
+      `${OWNERS}
+function replay(sectionId) {
+  const postPreviewSectionProps = () =>
+    post({ type: "${SECTION}", sectionId, props: stored(sectionId) });
+  postPreviewSectionProps();
+}`,
+      SHELL,
+    );
+    assert.deepEqual(
+      findings.map(({ message, kind, owner }) => ({ message, kind, owner })),
+      [
+        { message: SECTION, kind: "shadowed", owner: "postPreviewSectionProps" },
+        { message: SECTION, kind: "shadowed", owner: "postPreviewSectionProps" },
+      ],
+    );
+  });
 });
 
 describe("what is not a poster", () => {
@@ -149,6 +198,18 @@ function receive(message) {
       scanSource(
         `const bridge = \`if (message?.type === "${SECTION}") update();\`;`,
         "src/lib/storefront/compiler/bridge.ts",
+      ),
+      [],
+    );
+  });
+
+  it("a template with substitutions whose fixed text cannot spell a guarded type", () => {
+    assert.deepEqual(
+      scanSource(
+        "const key = `${templateId}:${sectionId}`;\n" +
+          "const other = `morph:storefront-preview-set-${kind}`;\n" +
+          "const any = `${a}${b}`;",
+        SHELL,
       ),
       [],
     );

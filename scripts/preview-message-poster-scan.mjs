@@ -21,6 +21,12 @@
  * the rule cannot classify is reported too, rather than passed: a constant
  * holding the type and spread into a message later is exactly the kind of
  * second poster this exists to find.
+ *
+ * A template with substitutions is read too: one whose fixed text could
+ * spell a guarded type (`morph:storefront-preview-update-${kind}`) is checked
+ * as that type. And since the owner is known by name, its file may declare a
+ * function of that name only once: a shadowing local or a redeclaration is
+ * reported (`shadowed`) rather than trusted as the owner.
  */
 
 import ts from "typescript";
@@ -55,29 +61,57 @@ function holdsFunction(node) {
   return false;
 }
 
+/** The name `node` gives a function it declares, or null. */
+function declaredFunctionName(node) {
+  if (ts.isFunctionDeclaration(node) && node.name) {
+    return node.name.text;
+  }
+  if (
+    ts.isVariableDeclaration(node) &&
+    ts.isIdentifier(node.name) &&
+    holdsFunction(node.initializer)
+  ) {
+    return node.name.text;
+  }
+  if (
+    (ts.isMethodDeclaration(node) || ts.isPropertyAssignment(node)) &&
+    node.name &&
+    ts.isIdentifier(node.name) &&
+    (ts.isMethodDeclaration(node) || holdsFunction(node.initializer))
+  ) {
+    return node.name.text;
+  }
+  return null;
+}
+
 /** The name of the nearest named function around `node`, or null. */
 export function owningFunction(node) {
   for (let current = node.parent; current; current = current.parent) {
-    if (ts.isFunctionDeclaration(current) && current.name) {
-      return current.name.text;
-    }
-    if (
-      ts.isVariableDeclaration(current) &&
-      ts.isIdentifier(current.name) &&
-      holdsFunction(current.initializer)
-    ) {
-      return current.name.text;
-    }
-    if (
-      (ts.isMethodDeclaration(current) || ts.isPropertyAssignment(current)) &&
-      current.name &&
-      ts.isIdentifier(current.name) &&
-      (ts.isMethodDeclaration(current) || holdsFunction(current.initializer))
-    ) {
-      return current.name.text;
-    }
+    const name = declaredFunctionName(current);
+    if (name) return name;
   }
   return null;
+}
+
+/**
+ * The shortest fixed run of text a template with substitutions must hold
+ * before it is read as possibly spelling a guarded type. Shorter runs are
+ * key separators (`${templateId}:${sectionId}`), which could spell anything
+ * and name nothing; a run this long names part of the message.
+ */
+const MIN_TEMPLATE_RUN = 8;
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The guarded types a template with substitutions could evaluate to: those
+ * its fixed runs, in order, can be read out of with anything in between.
+ */
+function templateCouldSpell(node) {
+  const runs = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)];
+  if (Math.max(...runs.map((run) => run.length)) < MIN_TEMPLATE_RUN) return [];
+  const pattern = new RegExp(`^${runs.map(escapeRegExp).join("[\\s\\S]*")}$`);
+  return Object.keys(GUARDED_MESSAGES).filter((message) => pattern.test(message));
 }
 
 /**
@@ -132,31 +166,54 @@ export function scanSource(source, fileName) {
     fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const findings = [];
+  const lineOf = (node) =>
+    parsed.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+  const check = (node, message) => {
+    const rule = GUARDED_MESSAGES[message];
+    const kind = classify(node);
+    const owner = kind === "built" ? owningFunction(node) : null;
+    const allowed =
+      kind === "declared" ||
+      kind === "parsed" ||
+      kind === "compared" ||
+      (kind === "built" && fileName === rule.file && owner === rule.owner);
+    if (!allowed) findings.push({ message, kind, owner, line: lineOf(node) });
+  };
+  // Every function in an owner's file carrying an owner's name. The owner is
+  // known by name, so a second one — a shadowing local, a later redeclaration
+  // — would be allowed to build the message past the real owner's check.
+  const ownerDeclarations = new Map();
   const visit = (node) => {
     if (
       (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
       Object.hasOwn(GUARDED_MESSAGES, node.text)
     ) {
-      const rule = GUARDED_MESSAGES[node.text];
-      const kind = classify(node);
-      const owner = kind === "built" ? owningFunction(node) : null;
-      const allowed =
-        kind === "declared" ||
-        kind === "parsed" ||
-        kind === "compared" ||
-        (kind === "built" && fileName === rule.file && owner === rule.owner);
-      if (!allowed) {
-        const { line } = parsed.getLineAndCharacterOfPosition(node.getStart());
-        findings.push({
-          message: node.text,
-          kind,
-          owner,
-          line: line + 1,
-        });
+      check(node, node.text);
+    } else if (ts.isTemplateExpression(node)) {
+      for (const message of templateCouldSpell(node)) check(node, message);
+    }
+    const declared = declaredFunctionName(node);
+    if (declared) {
+      for (const [message, rule] of Object.entries(GUARDED_MESSAGES)) {
+        if (rule.file !== fileName || rule.owner !== declared) continue;
+        const seen = ownerDeclarations.get(message) ?? [];
+        seen.push(node);
+        ownerDeclarations.set(message, seen);
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(parsed);
+  for (const [message, declarations] of ownerDeclarations) {
+    if (declarations.length < 2) continue;
+    for (const node of declarations) {
+      findings.push({
+        message,
+        kind: "shadowed",
+        owner: GUARDED_MESSAGES[message].owner,
+        line: lineOf(node),
+      });
+    }
+  }
   return findings;
 }
