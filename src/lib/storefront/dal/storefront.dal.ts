@@ -270,6 +270,17 @@ function reportIncompleteStarterUpgrade(
  * as a changed row, which would read as recorded. Malformed JSON text would
  * make `json_extract` throw; the nested CASE keeps both out of the write and
  * the re-read names them instead.
+ *
+ * The revision is matched by its JSON type, not only its value:
+ * `json_extract` returns JSON `true`/`false` as 1/0, so a boolean written
+ * between the read and the write would otherwise match. Accepted are a
+ * missing or `null` revision (read as 0), an `integer`, or a `real` holding a
+ * whole number (a bound JS number can be stored as 2.0).
+ *
+ * The nesting is deliberate. SQLite documents that CASE evaluates its
+ * branches only as needed; it does not document the evaluation order or
+ * short-circuiting of AND. Written as an AND chain, `json_type` or
+ * `json_extract` could be evaluated on malformed text and raise.
  */
 async function writeStarterUpgradeRecord(
   target: StarterUpgradeRecordTarget,
@@ -300,7 +311,19 @@ async function writeStarterUpgradeRecord(
                WHEN json_valid(COALESCE(metadata, '{}')) THEN
                  CASE
                    WHEN json_type(COALESCE(metadata, '{}')) = 'object' THEN
-                     COALESCE(json_extract(metadata, '$.starterUpgradeRecordRevision'), 0) = ?5
+                     CASE COALESCE(json_type(metadata, '$.starterUpgradeRecordRevision'), 'null')
+                       WHEN 'null' THEN 0 = ?5
+                       WHEN 'integer' THEN
+                         json_extract(metadata, '$.starterUpgradeRecordRevision') = ?5
+                       WHEN 'real' THEN
+                         CASE
+                           WHEN json_extract(metadata, '$.starterUpgradeRecordRevision')
+                              = CAST(json_extract(metadata, '$.starterUpgradeRecordRevision') AS INTEGER)
+                           THEN json_extract(metadata, '$.starterUpgradeRecordRevision') = ?5
+                           ELSE 0
+                         END
+                       ELSE 0
+                     END
                    ELSE 0
                  END
                ELSE 0
@@ -328,7 +351,9 @@ async function writeStarterUpgradeRecord(
               CASE WHEN shape = 'object'
                 THEN json_extract(doc, '$.starterTemplateVersion') END AS version,
               CASE WHEN shape = 'object'
-                THEN json_extract(doc, '$.starterUpgradeRecordRevision') END AS revision
+                THEN json_extract(doc, '$.starterUpgradeRecordRevision') END AS revision,
+              CASE WHEN shape = 'object'
+                THEN json_type(doc, '$.starterUpgradeRecordRevision') END AS revisionType
        FROM (
          SELECT COALESCE(metadata, '{}') AS doc,
                 CASE WHEN json_valid(COALESCE(metadata, '{}'))
@@ -339,7 +364,12 @@ async function writeStarterUpgradeRecord(
        )`,
     )
       .bind(themeId)
-      .first<{ shape: string; version: unknown; revision: unknown }>();
+      .first<{
+        shape: string;
+        version: unknown;
+        revision: unknown;
+        revisionType: string | null;
+      }>();
     if (!stored) {
       return reportIncompleteStarterUpgrade(target, {
         status: "partial",
@@ -365,7 +395,16 @@ async function writeStarterUpgradeRecord(
         storedVersion: stored.version as number,
       };
     }
-    const freshRevision = readStarterUpgradeRecordRevision(stored.revision);
+    // json_extract reports a JSON boolean as 1/0; only a number (or no value)
+    // is a revision.
+    const revisionIsNumber =
+      stored.revisionType === null ||
+      stored.revisionType === "null" ||
+      stored.revisionType === "integer" ||
+      stored.revisionType === "real";
+    const freshRevision = revisionIsNumber
+      ? readStarterUpgradeRecordRevision(stored.revision)
+      : null;
     if (freshRevision === null) {
       return reportIncompleteStarterUpgrade(target, {
         status: "partial",

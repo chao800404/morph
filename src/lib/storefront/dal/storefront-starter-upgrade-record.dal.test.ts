@@ -733,6 +733,30 @@ describe("metadata the record cannot be written into", () => {
     expect(hooks.recordWriteAttempts).toBe(0);
   });
 
+  it("throws after the file save when the metadata turns malformed before the upgrade's metadata read", async () => {
+    // Fails closed: the files are saved, no metadata is written, and the
+    // error reaches the caller. It is not a partial outcome.
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const save = workspace.saveFilesBatch.getMockImplementation()!;
+    workspace.saveFilesBatch.mockImplementationOnce(async (...args) => {
+      const result = await save(...args);
+      setRawMetadata("{not json");
+      return result;
+    });
+
+    await expect(openEditor()).rejects.toThrow(SyntaxError);
+
+    expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+    expect(storedRawRow().metadata).toBe("{not json");
+    expect(hooks.recordWriteAttempts).toBe(0);
+  });
+
+  // This test pins that the record write does not raise on malformed text. It
+  // cannot pin the CASE nesting over an AND chain: the SQLite build used here
+  // happens to short-circuit AND too, so both pass. The nesting stays because
+  // only CASE's lazy evaluation is documented.
   it("ends in partial when the metadata turns into malformed JSON between the read and the write", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
@@ -762,6 +786,8 @@ describe("a record revision the upgrade cannot read", () => {
     ["a string", "1"],
     ["a fraction", 1.5],
     ["a negative number", -1],
+    ["JSON true", true],
+    ["JSON false", false],
   ])(
     "ends in partial before any record write when the stored revision is %s",
     async (_label, revision) => {
@@ -792,6 +818,58 @@ describe("a record revision the upgrade cannot read", () => {
       );
     },
   );
+
+  it.each([
+    // json_extract reports these as 1 and 0, the revisions the upgrade read.
+    ["JSON true", 1, true],
+    ["JSON false", 0, false],
+  ])(
+    "does not overwrite a revision another writer set to %s between the read and the write",
+    async (_label, readRevision, written) => {
+      seedTheme({
+        starterTemplateVersion: LEGACY_VERSION,
+        ...(readRevision === 0 ? {} : { starterUpgradeRecordRevision: readRevision }),
+      });
+      workspace.files.set(THEME_ID, legacyWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+      let afterOtherWriter: ReturnType<typeof storedRawRow> | undefined;
+      hooks.beforeRecordWrite = () => {
+        hooks.beforeRecordWrite = null;
+        singleKeyWriter("starterUpgradeRecordRevision", written);
+        afterOtherWriter = storedRawRow();
+      };
+
+      const error = await rejection(openEditor());
+
+      expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
+      expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
+        status: "partial",
+        reason: "unreadable-record-revision",
+        filesSaved: true,
+        attempts: 1,
+      });
+      // Byte-identical: neither recorded over the boolean nor rewritten.
+      expect(storedRawRow()).toEqual(afterOtherWriter);
+      expect(hooks.recordWriteAttempts).toBe(1);
+    },
+  );
+
+  it("accepts a whole-number revision stored as a JSON real", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    setRawMetadata(
+      `{"starterTemplateVersion":${LEGACY_VERSION},"starterUpgradeRecordRevision":2.0}`,
+    );
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(openEditor()).resolves.toBe(true);
+
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 3,
+    });
+    expect(hooks.recordWriteAttempts).toBe(1);
+  });
 
   it("ends in partial when a revision miss re-reads one it cannot use", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
