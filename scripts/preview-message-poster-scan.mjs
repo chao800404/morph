@@ -27,6 +27,12 @@
  * as that type. And since the owner is known by name, its file may declare a
  * function of that name only once: a shadowing local or a redeclaration is
  * reported (`shadowed`) rather than trusted as the owner.
+ *
+ * Outside the owners, two more shapes are reported: a fixed run of text (a
+ * string, or a template's run) of 8 or more characters that is a piece of a
+ * guarded type crossing one of its separators (`fragment`: `P +
+ * "update-section-props"`), and an object posted through a `post…Message`
+ * call whose `type:` is not a literal (`unliteral-type`: `${NS}-${k}`).
  */
 
 import ts from "typescript";
@@ -101,7 +107,10 @@ export function owningFunction(node) {
  */
 const MIN_TEMPLATE_RUN = 8;
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Calls that post a message: `postMessage`, `postEditorToPreviewMessage`, … */
+const POST_MESSAGE = /^post\w*Message$/i;
+
+const escapeRegExp =(text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The guarded types a template with substitutions could evaluate to: those
@@ -179,6 +188,87 @@ export function scanSource(source, fileName) {
       (kind === "built" && fileName === rule.file && owner === rule.owner);
     if (!allowed) findings.push({ message, kind, owner, line: lineOf(node) });
   };
+  // Inside one of the owners, in the owners' file: the only place a guarded
+  // type may be assembled from pieces.
+  const insideOwner = (node) => {
+    const owner = owningFunction(node);
+    return Object.values(GUARDED_MESSAGES).some(
+      (rule) => rule.file === fileName && rule.owner === owner,
+    );
+  };
+  // A run of fixed text long enough to name part of a guarded type
+  // (`"update-section-props"`, the head of a template): a piece that
+  // something else could join into the whole type.
+  //
+  // Only a run that crosses one of the type's separators (`:` or `-`) is a
+  // piece of it. A single word it happens to contain — "storefront", the
+  // sales-channel kind used throughout src/ — names no message: whatever
+  // joins it into the type has to supply the separators, so it is that
+  // other piece, not the word, that the rule has to see.
+  const fragment = (node, text) => {
+    if (text.length < MIN_TEMPLATE_RUN || !/[-:]/.test(text)) return;
+    if (insideOwner(node)) return;
+    for (const message of Object.keys(GUARDED_MESSAGES)) {
+      if (message !== text && message.includes(text)) {
+        findings.push({
+          message,
+          kind: "fragment",
+          owner: owningFunction(node),
+          line: lineOf(node),
+          text,
+        });
+      }
+    }
+  };
+  // A value whose every outcome is a literal (`a ? "x" : "y"`). Its strings
+  // are visited on their own, so a guarded one is still reported.
+  const literalValue = (value) => {
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
+      return true;
+    }
+    return (
+      ts.isConditionalExpression(value) &&
+      literalValue(value.whenTrue) &&
+      literalValue(value.whenFalse)
+    );
+  };
+  // A message posted with a `type:` the parser cannot read: whatever it
+  // holds at run time, nothing here can say it is not a guarded type.
+  const postedTypes = (node) => {
+    const callee = ts.isPropertyAccessExpression(node.expression)
+      ? node.expression.name
+      : node.expression;
+    if (!ts.isIdentifier(callee) || !POST_MESSAGE.test(callee.text)) return;
+    for (let argument of node.arguments) {
+      while (
+        ts.isParenthesizedExpression(argument) ||
+        ts.isAsExpression(argument) ||
+        ts.isSatisfiesExpression(argument)
+      ) {
+        argument = argument.expression;
+      }
+      if (!ts.isObjectLiteralExpression(argument)) continue;
+      for (const property of argument.properties) {
+        const named =
+          (ts.isPropertyAssignment(property) ||
+            ts.isShorthandPropertyAssignment(property)) &&
+          (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+          property.name.text === "type";
+        if (!named) continue;
+        const value = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : property.name;
+        if (literalValue(value) || insideOwner(value)) continue;
+        findings.push({
+          message: "(not a literal)",
+          kind: "unliteral-type",
+          owner: owningFunction(value),
+          line: lineOf(value),
+        });
+      }
+    }
+  };
   // Every function in an owner's file carrying an owner's name. The owner is
   // known by name, so a second one — a shadowing local, a later redeclaration
   // — would be allowed to build the message past the real owner's check.
@@ -189,8 +279,20 @@ export function scanSource(source, fileName) {
       Object.hasOwn(GUARDED_MESSAGES, node.text)
     ) {
       check(node, node.text);
+    } else if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      fragment(node, node.text);
     } else if (ts.isTemplateExpression(node)) {
-      for (const message of templateCouldSpell(node)) check(node, message);
+      const spelled = templateCouldSpell(node);
+      for (const message of spelled) check(node, message);
+      // Already checked as the whole type it could spell; its runs are not
+      // reported a second time as pieces of it.
+      if (spelled.length === 0) {
+        for (const run of [node.head, ...node.templateSpans.map((span) => span.literal)]) {
+          fragment(node, run.text);
+        }
+      }
+    } else if (ts.isCallExpression(node)) {
+      postedTypes(node);
     }
     const declared = declaredFunctionName(node);
     if (declared) {

@@ -153,6 +153,56 @@ function elsewhere(kind) { post({ type: \`${prefix}\${kind}\`, sectionId: "a" })
     );
   });
 
+  it("with a type no literal spells, posted, fails", () => {
+    const findings = scanSource(
+      "function elsewhere(NS, k) { postEditorToPreviewMessage(frame(), { type: `${NS}-${k}`, sectionId: 'a' }); }\n" +
+        "function again(type) { window.postMessage({ type, sectionId: 'a' } as never, '*'); }",
+      "src/elsewhere.ts",
+    );
+    assert.deepEqual(
+      findings.map(({ kind, owner }) => ({ kind, owner })),
+      [
+        { kind: "unliteral-type", owner: "elsewhere" },
+        { kind: "unliteral-type", owner: "again" },
+      ],
+    );
+  });
+
+  it("joined from a fragment in a template fails", () => {
+    const suffix = SECTION.slice(SECTION.lastIndexOf("update-"));
+    const findings = scanSource(
+      `function elsewhere(P) { post({ type: \`\${P}\${"${suffix}"}\`, sectionId: "a" }); }`,
+      "src/elsewhere.ts",
+    );
+    assert.deepEqual(
+      findings.map(({ message, kind }) => ({ message, kind })),
+      [{ message: SECTION, kind: "fragment" }],
+    );
+  });
+
+  it("a template run that is a fragment fails, though the template cannot spell the type", () => {
+    const findings = scanSource(
+      "function elsewhere(q) { return P + `update-section-${q}!`.slice(0, -1); }",
+      "src/elsewhere.ts",
+    );
+    assert.deepEqual(
+      findings.map(({ message, kind, text }) => ({ message, kind, text })),
+      [{ message: SECTION, kind: "fragment", text: "update-section-" }],
+    );
+  });
+
+  it("joined from a fragment with + fails", () => {
+    const suffix = SECTION.slice(SECTION.lastIndexOf("update-"));
+    const findings = scanSource(
+      `function elsewhere(P) { post({ type: P + "${suffix}", sectionId: "a" }); }`,
+      "src/elsewhere.ts",
+    );
+    assert.deepEqual(
+      findings.map(({ message, kind, owner }) => ({ message, kind, owner })),
+      [{ message: SECTION, kind: "fragment", owner: "elsewhere" }],
+    );
+  });
+
   it("from a second function carrying the owner's name fails", () => {
     const findings = scanSource(
       `${OWNERS}
@@ -210,6 +260,32 @@ function receive(message) {
           "const other = `morph:storefront-preview-set-${kind}`;\n" +
           "const any = `${a}${b}`;",
         SHELL,
+      ),
+      [],
+    );
+  });
+
+  it("a posted message whose type is a literal, and pieces inside an owner", () => {
+    assert.deepEqual(
+      scanSource(
+        `function elsewhere() { postEditorToPreviewMessage(frame(), { type: "morph:storefront-preview-set-section-order" }); }
+const postPreviewSectionProps = useCallback((kind) => {
+  postEditorToPreviewMessage(frame(), { type: kind, note: "${SECTION.slice(-13)}" });
+}, []);`,
+        SHELL,
+      ),
+      [],
+    );
+  });
+
+  it("a word the type contains, and a posted type chosen between literals", () => {
+    assert.deepEqual(
+      scanSource(
+        `const kind = "storefront";
+function ack(ok) {
+  postPreviewToEditorMessage({ type: ok ? "morph:storefront-preview-theme-files-applied" : "morph:storefront-preview-theme-files-failed" });
+}`,
+        "src/elsewhere.ts",
       ),
       [],
     );

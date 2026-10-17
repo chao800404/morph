@@ -31,6 +31,20 @@ const UNCLASSIFIED_ALLOWED = [
     // again. It receives them; it posts none.
     reason: "receive-side set of messages that change the page's geometry",
   },
+  // A fragment entry names its exact text too, so it excuses that one piece
+  // and not any other piece of a guarded type in the same file.
+  ...[
+    "morph:storefront-preview-update-section-props",
+    "morph:storefront-preview-update-selection-field",
+  ].map((message) => ({
+    file: "src/routes/_editor/-components/visual-editor-shell.tsx",
+    message,
+    kind: "fragment",
+    text: "morph:storefront-preview-",
+    // The development warning for a message the parser rejected checks the
+    // received type's namespace. It reads a message; it builds none.
+    reason: "receive-side namespace test on a rejected preview message",
+  })),
 ];
 
 function collectSources(dir) {
@@ -54,7 +68,8 @@ for (const file of collectSources(join(projectRoot, "src"))) {
       (entry) =>
         entry.file === relativePath &&
         entry.message === finding.message &&
-        entry.kind === finding.kind,
+        entry.kind === finding.kind &&
+        (entry.text === undefined || entry.text === finding.text),
     );
     if (!allowed) findings.push({ file: relativePath, ...finding });
   }
