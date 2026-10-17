@@ -710,18 +710,57 @@ describe("following the author's navigation inside the preview frame", () => {
     });
     await tick(0);
     expect(shownRoute(harness)).toBe("/");
-    expect(routeRequests().length).toBe(requestsBefore);
     expect(screen.queryByRole("alertdialog")).toBeNull();
+    // The frame is sent back to the page the author stayed on.
+    expect(routeRequests().length).toBe(requestsBefore + 1);
+    expect(latestRequest()?.routePath ?? "/").toBe("/");
 
-    // Recorded, not decided: the frame is still on /b and nothing sends it
-    // back, so its next report asks for the switch again, and the leave
-    // dialog opens again. Nothing is sent again meanwhile.
+    // A report from /b still on its way is not asked about again, and
+    // neither is the frame's answer from Home and what follows it.
     report("/b");
     await tick(0);
-    expect(routesAsked(harness)).toEqual(["/b", "/b"]);
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    await frameAnswers("/");
+    report("/");
+    await tick(0);
+    expect(routesAsked(harness)).toEqual(["/b"]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(shownRoute(harness)).toBe("/");
+  });
+
+  it("does not send the frame anywhere when the leave guard keeps the author from a page-list switch", async () => {
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "The heading is too long.",
+    });
+    const harness = await settled();
+    report("/", [heroNode]);
+    const heading = await screen.findByText("h1");
+    act(() => {
+      heading.closest("button")?.click();
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Hello",
+      originalValue: "Welcome",
+    });
+    await tick(0);
+    const requestsBefore = routeRequests().length;
+    // The editor's own switch: the frame never left Home.
+    act(() => {
+      screen.getByTitle("Preview /c").click();
+    });
+    await tick(0);
+    act(() => {
+      screen.getByRole("button", { name: "Stay here" }).click();
+    });
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/");
+    expect(routeRequests().length).toBe(requestsBefore);
   });
 
   describe("in Code Mode", () => {
@@ -775,13 +814,17 @@ describe("following the author's navigation inside the preview frame", () => {
 });
 
 /**
- * Recorded, not decided: the author moves on twice inside the frame faster
- * than the editor's switch for the first move is answered. What the editor
- * does with the second report is pinned here as it is; whether to keep it is
- * the user's decision.
+ * The author moves on twice inside the frame faster than the editor's switch
+ * for the first move lands.
+ *
+ * While the router is still loading the first page, the switch goes where
+ * the frame is now: nothing has been sent to the frame yet, and nothing
+ * pulls it back. Once the first page is on screen, its set-route is out; the
+ * frame is sent back to it, and while it is on its way nothing it reports is
+ * taken as this page's (`visual-editor-shell-frame-mismatch-writes.test.tsx`).
  */
-describe("a fast /b then /c inside the frame (behaviour recorded)", () => {
-  it("while the router is still loading /b: ends on /b and sends the frame back to /b", async () => {
+describe("a fast /b then /c inside the frame", () => {
+  it("while the router is still loading /b: ends on /c, and the frame is not sent back", async () => {
     const harness = await settled();
     harness.holdLoads();
     report("/b");
@@ -790,19 +833,25 @@ describe("a fast /b then /c inside the frame (behaviour recorded)", () => {
     // The frame is on /c before the router has loaded /b.
     report("/c");
     await tick(0);
-    expect(routesAsked(harness)).toEqual(["/b"]);
+    expect(routesAsked(harness)).toEqual(["/b", "/c"]);
+    // A report repeated meanwhile asks for nothing more.
+    report("/c");
+    await tick(0);
+    expect(routesAsked(harness)).toEqual(["/b", "/c"]);
     harness.finishLoad();
     await tick(0);
-    expect(shownRoute(harness)).toBe("/b");
-    // The set-route that follows the switch names /b, sent to a frame on /c.
-    expect(latestRequest()?.routePath).toBe("/b");
-    // The frame, sent to /b, answers from there; the editor stays on /b.
-    await frameAnswers("/b");
-    expect(routesAsked(harness)).toEqual(["/b"]);
-    expect(shownRoute(harness)).toBe("/b");
+    expect(shownRoute(harness)).toBe("/c");
+    // No set-route ever named /b.
+    expect(
+      routeRequests().map((request) => request.routePath ?? "/"),
+    ).not.toContain("/b");
+    expect(latestRequest()?.routePath).toBe("/c");
+    await frameAnswers("/c");
+    expect(routesAsked(harness)).toEqual(["/b", "/c"]);
+    expect(shownRoute(harness)).toBe("/c");
   });
 
-  it("after /b is loaded, before the frame answers it: ends on /b and sends the frame back to /b", async () => {
+  it("after /b is on screen, before the frame answers it: ends on /b and sends the frame back to /b", async () => {
     const harness = await settled();
     report("/b");
     await tick(0);
@@ -815,17 +864,35 @@ describe("a fast /b then /c inside the frame (behaviour recorded)", () => {
     expect(routesAsked(harness)).toEqual(["/b"]);
     expect(shownRoute(harness)).toBe("/b");
     expect(latestRequest()).toBe(pullBack);
+    // The frame, sent to /b, answers from there.
+    await frameAnswers("/b");
+    expect(routesAsked(harness)).toEqual(["/b"]);
   });
 
-  it("a canvas selection the frame reports from /c meanwhile is taken as a selection on /b", async () => {
+  it("back to Home while the router is still loading /b: ends on /b and sends the frame to /b", async () => {
     const harness = await settled();
     harness.holdLoads();
     report("/b");
     await tick(0);
-    report("/c");
+    // The frame is back on the page the editor still shows: that report is
+    // this page's, and the switch under way is not undone.
+    report("/");
+    await tick(0);
+    expect(routesAsked(harness)).toEqual(["/b"]);
     harness.finishLoad();
     await tick(0);
     expect(shownRoute(harness)).toBe("/b");
+    expect(latestRequest()?.routePath).toBe("/b");
+  });
+
+  it("a canvas selection the frame reports from /c on its way back is not taken", async () => {
+    const harness = await settled();
+    report("/b");
+    await tick(0);
+    report("/c");
+    await tick(0);
+    expect(shownRoute(harness)).toBe("/b");
+    const asked = harness.asked.length;
     // Before the frame is back on /b, the author clicks an element of /c.
     fromPreview({
       type: "morph:storefront-preview-select-section",
@@ -853,22 +920,7 @@ describe("a fast /b then /c inside the frame (behaviour recorded)", () => {
       selectionRevision: 10_000,
     });
     await tick(0);
-    // Pinned as observed: see the PR body.
-    expect(harness.asked.at(-1)).toEqual({ section: "c-only-section" });
-    expect(harness.search().section).toBe("c-only-section");
-    expect(shownRoute(harness)).toBe("/b");
-
-    // An inline edit of that element, a section /b does not have, sends
-    // no write. (A section id /b and /c share is not covered here.)
-    fromPreview({
-      type: "morph:storefront-preview-commit-inline-text",
-      sectionId: "c-only-section",
-      fieldKey: "title",
-      fieldPath: "title",
-      value: "Typed on /c",
-      originalValue: "C title",
-    });
-    await tick(400);
-    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(harness.asked.slice(asked)).toEqual([]);
+    expect(harness.search().section).toBeUndefined();
   });
 });
