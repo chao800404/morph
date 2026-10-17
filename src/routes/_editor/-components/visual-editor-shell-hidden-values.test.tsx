@@ -888,6 +888,132 @@ describe("a refused hide the author discards", () => {
       ),
     ).toEqual(["C", "A", "B"]);
   });
+
+  it("T6b: Discard mine after another tab hid the section posts it hidden, with no values", async () => {
+    const rows = (...titles: string[]) =>
+      titles.map((title) => ({ id: title.toLowerCase(), title }));
+    const listContext = (
+      items: ReturnType<typeof rows>,
+      draftGeneration: number,
+      enabled = true,
+    ) =>
+      contextOf(
+        {
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              enabled,
+              props: { heading: "Welcome", items },
+            },
+          ],
+        },
+        draftGeneration,
+      );
+    updateSectionProps.mockReset();
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      message: "Template draft was modified concurrently.",
+      error: "TEMPLATE_DRAFT_CONFLICT",
+    } as never);
+    // The document as the other writer left it at the conflict.
+    const remote = {
+      success: true,
+      message: "ok",
+      data: listContext(rows("C", "A", "B"), 7),
+    };
+    getThemeEditor.mockReset();
+    getThemeEditor.mockResolvedValue(remote);
+    const client = readyClient();
+    client.setQueryData(
+      storefrontThemeQueries.detail("storefront-1", "theme-1").queryKey,
+      remote as never,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <VisualEditorShell
+          context={listContext(rows("A", "B"), 1)}
+          search={{
+            template: "index",
+            templateId: "template-1",
+            viewport: "desktop",
+          } as StorefrontThemeEditorSearch}
+          onSearchChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // The author edits B's title on the canvas, then hides the section.
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [
+        {
+          id: "hero:node:row-title",
+          parentId: null,
+          sectionId: "hero",
+          label: "Title",
+          kind: "heading",
+          tagName: "h1",
+          target: {
+            sectionId: "hero",
+            nodeId: "hero:node:row-title",
+            fieldKey: "title",
+            fieldPath: "items.1.title",
+            itemId: "b",
+            isSection: false,
+          },
+        },
+      ],
+    });
+    const row = await screen.findByText("h1");
+    act(() => {
+      row.closest("button")?.click();
+    });
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "title",
+      fieldPath: "items.1.title",
+      value: "B edited",
+      originalValue: "B",
+    });
+    fireEvent.click(hideButton());
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    act(() => {
+      screen.getByRole("button", { name: "Load latest, keep mine" }).click();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Discard mine…" })).toBeTruthy(),
+    );
+
+    // Between the conflict and the discard, another tab hides the section:
+    // the read the discard makes is the first to bring that version.
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: listContext(rows("C", "A", "B"), 8, false),
+    });
+
+    const beforeDiscard = posted.length;
+    act(() => {
+      screen.getByRole("button", { name: "Discard mine…" }).click();
+    });
+    act(() => {
+      screen.getByRole("button", { name: "Discard and load latest" }).click();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Discard mine…" })).toBeNull(),
+    );
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    // The preview is told the version the discard leaves: hidden, and none
+    // of the older copy's values on the way.
+    const afterDiscard = heroPosts(beforeDiscard);
+    expect(afterDiscard.filter((message) => message.enabled === true)).toEqual([]);
+    expect(valuePosts(beforeDiscard)).toEqual([]);
+    expect(afterDiscard.at(-1)).toMatchObject({ enabled: false });
+    expect(frameAfter(heroPosts()).slots).not.toHaveProperty("hero");
+  });
 });
 
 /**

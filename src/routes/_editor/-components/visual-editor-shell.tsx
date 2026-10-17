@@ -9885,6 +9885,12 @@ export function VisualEditorShell({
         previewSectionIsHidden(entry.sectionId),
       ]),
     );
+    // The version just read is the one the discard leaves, so it becomes the
+    // accepted copy before the preview is told about it — as every other
+    // read does. Without it a write from elsewhere that landed after the
+    // conflict (another tab hiding the section) was missed, and the preview
+    // was posted the older copy shown.
+    acceptReadTemplates(fresh.data.templates);
     for (const key of keys) {
       pendingPropsMapRef.current.delete(key);
       pendingPropsBaselineRef.current.delete(key);
@@ -9924,6 +9930,7 @@ export function VisualEditorShell({
     }
     setContentResetEpoch((epoch) => epoch + 1);
   }, [
+    acceptReadTemplates,
     context.storefront.id,
     context.theme.id,
     listConflicts,
