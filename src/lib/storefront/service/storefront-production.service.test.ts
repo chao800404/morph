@@ -13,9 +13,11 @@ import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
 import {
   StorefrontProductionService,
+  THEME_RUNTIME_FAILURE_LOG_LABEL,
   THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE,
 } from "./storefront-production.service";
 import { createThemeRuntime } from "./storefront-request-routing";
+import type { ThemeRuntime } from "./theme-runtime.types";
 import {
   DispatchNamespaceThemeRuntime,
   LocalDirectThemeRuntime,
@@ -463,105 +465,178 @@ describe("StorefrontProductionService", () => {
     expect(res.headers.get("Content-Type")).toContain("text/plain");
   });
 
-  it("keeps runtime configuration out of the public body and logs it for operators", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      // The runtime the real environment selects when nothing is configured.
-      const runtime = createThemeRuntime({});
-      expect(runtime.kind).toBe("unavailable");
-      const service = new StorefrontProductionService({
-        runtime,
-        r2Bucket: r2(),
-        resolverDeps: resolverDeps(),
+  describe("a not-configured Theme runtime", () => {
+    // Values a misconfigured environment might hold. None of them may reach
+    // the public body or the log line, whichever runtime reports the failure.
+    const FAKE_ORIGIN = "http://10.1.2.3:8799/internal?key=abc";
+    const FAKE_TOKEN = "tok_9f8e7d6c5b4a39281706f5e4d3c2b1a0";
+    const FAKE_BINDING = "THEME_WORKER_PRIVATE_A";
+    const FORBIDDEN = [
+      "http://",
+      "https://",
+      "10.1.2.3",
+      "8799",
+      "key=abc",
+      "localhost",
+      FAKE_TOKEN,
+      FAKE_BINDING,
+      "sf_other",
+      "{oops",
+      // The runtimes' own free-text messages.
+      "not configured",
+      "is configured",
+      "Storefront runtime",
+    ];
+
+    const variants: ReadonlyArray<{
+      name: string;
+      runtime: () => ThemeRuntime;
+      kind: ThemeRuntime["kind"];
+      code: string;
+      subcode?: string;
+    }> = [
+      {
+        name: "nothing configured (the runtime the real environment selects)",
+        runtime: () => createThemeRuntime({}),
+        kind: "unavailable",
+        code: "NO_TRANSPORT",
+      },
+      {
+        name: "an unavailable runtime whose detail carries an origin and a token",
+        runtime: () =>
+          new UnavailableThemeRuntime(
+            `MORPH_LOCAL_THEME_ORIGIN=${FAKE_ORIGIN} refused; also localhost:8799; token ${FAKE_TOKEN}`,
+          ),
+        kind: "unavailable",
+        code: "NO_TRANSPORT",
+      },
+      {
+        name: "a malformed service binding map",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: `{oops ${FAKE_ORIGIN} ${FAKE_TOKEN}`,
+            MORPH_LOCAL_THEME_ORIGIN: FAKE_ORIGIN,
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "MAP_MALFORMED",
+      },
+      {
+        name: "a service binding map with no entry for the storefront",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({
+              sf_other: FAKE_BINDING,
+            }),
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "ENTRY_MISSING",
+      },
+      {
+        name: "a mapped service binding that is not bound",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: FAKE_BINDING }),
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "BINDING_ABSENT",
+      },
+      {
+        name: "a service binding resolver that returns nothing",
+        runtime: () => new ServiceBindingThemeRuntime(() => null),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "BINDING_ABSENT",
+      },
+      {
+        name: "a dispatch runtime with no namespace bound",
+        runtime: () => new DispatchNamespaceThemeRuntime(),
+        kind: "dispatch-namespace",
+        code: "DISPATCH_UNBOUND",
+      },
+    ];
+
+    for (const variant of variants) {
+      it(`sends generic copy and logs a fixed code for ${variant.name}`, async () => {
+        const errorSpy = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+        try {
+          const runtime = variant.runtime();
+          expect(runtime.kind).toBe(variant.kind);
+          const service = new StorefrontProductionService({
+            runtime,
+            r2Bucket: r2(),
+            resolverDeps: resolverDeps(),
+          });
+
+          const res = await service.handleRequest(req("/"));
+          const body = await res.text();
+
+          expect(res.status).toBe(503);
+          expect(Object.fromEntries(res.headers)).toEqual({
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          });
+          expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
+          for (const name of [
+            ...FORBIDDEN,
+            "THEME_WORKER",
+            "MORPH_LOCAL_THEME_ORIGIN",
+            "MORPH_THEME_SERVICE_BINDINGS",
+            "THEME_DISPATCHER",
+            "bind",
+          ]) {
+            expect(body).not.toContain(name);
+          }
+
+          expect(errorSpy).toHaveBeenCalledTimes(1);
+          const [label, entry] = errorSpy.mock.calls[0]!;
+          expect(label).toBe(THEME_RUNTIME_FAILURE_LOG_LABEL);
+          // Exactly the allow-listed fields: anything else is a regression.
+          expect(entry).toEqual({
+            code: variant.code,
+            ...(variant.subcode ? { subcode: variant.subcode } : {}),
+            runtime: variant.kind,
+            status: 503,
+            storefrontId: "sf_1",
+            hint: expect.any(String),
+          });
+          const logged = JSON.stringify(errorSpy.mock.calls);
+          for (const value of FORBIDDEN) {
+            expect(logged).not.toContain(value);
+          }
+        } finally {
+          errorSpy.mockRestore();
+        }
       });
-
-      const res = await service.handleRequest(req("/"));
-      const body = await res.text();
-
-      expect(res.status).toBe(503);
-      expect(Object.fromEntries(res.headers)).toEqual({
-        "cache-control": "no-store",
-        "content-type": "text/plain; charset=utf-8",
-        "x-content-type-options": "nosniff",
-      });
-      expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
-      for (const leaked of [
-        "THEME_WORKER",
-        "MORPH_LOCAL_THEME_ORIGIN",
-        "not configured",
-        "bind",
-        "Theme Worker",
-      ]) {
-        expect(body).not.toContain(leaked);
-      }
-
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const [label, entry] = errorSpy.mock.calls[0]!;
-      expect(label).toBe("[storefront] Theme runtime unavailable");
-      expect(entry).toMatchObject({
-        reason: "RUNTIME_NOT_CONFIGURED",
-        runtime: "unavailable",
-        status: 503,
-        storefrontId: "sf_1",
-      });
-      expect((entry as { detail: string }).detail).toContain("THEME_WORKER");
-      expect((entry as { detail: string }).detail).toContain(
-        "MORPH_LOCAL_THEME_ORIGIN",
-      );
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  it("redacts origins and opaque values from the logged runtime detail", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const secretToken = "tok_9f8e7d6c5b4a39281706f5e4d3c2b1a0";
-      const service = new StorefrontProductionService({
-        runtime: new UnavailableThemeRuntime(
-          `MORPH_LOCAL_THEME_ORIGIN=http://10.1.2.3:8799/internal?key=abc refused; also localhost:8799 and https://theme.internal.example/x; token ${secretToken}`,
-        ),
-        r2Bucket: r2(),
-        resolverDeps: resolverDeps(),
-      });
-
-      const res = await service.handleRequest(req("/"));
-      const body = await res.text();
-      expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
-
-      const logged = JSON.stringify(errorSpy.mock.calls);
-      expect(logged).toContain("MORPH_LOCAL_THEME_ORIGIN");
-      expect(logged).toContain("RUNTIME_NOT_CONFIGURED");
-      for (const value of [
-        "http://",
-        "https://",
-        "10.1.2.3",
-        "8799",
-        "key=abc",
-        "theme.internal.example",
-        "localhost",
-        secretToken,
-      ]) {
-        expect(logged).not.toContain(value);
-        expect(body).not.toContain(value);
-      }
-    } finally {
-      errorSpy.mockRestore();
     }
   });
 
   it("leaves other runtime failures unchanged", async () => {
+    // Temporary: pins today's pass-through body for a failure outside the
+    // not-configured class. The approved follow-up moves these reasons onto
+    // the fixed-code path too, and this assertion changes with it.
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const service = new StorefrontProductionService({
-        runtime: new DispatchNamespaceThemeRuntime(),
+        runtime: new DispatchNamespaceThemeRuntime({
+          get: () => ({
+            fetch: async () => {
+              throw new Error("Worker not found");
+            },
+          }),
+        }),
         r2Bucket: r2(),
         resolverDeps: resolverDeps(),
       });
       const res = await service.handleRequest(req("/"));
       expect(res.status).toBe(503);
       expect(await res.text()).toBe(
-        "Theme dispatch namespace binding is not configured.",
+        'Released Theme Worker "morph-theme-bld-1" is not deployed.',
       );
       expect(errorSpy).not.toHaveBeenCalled();
     } finally {
