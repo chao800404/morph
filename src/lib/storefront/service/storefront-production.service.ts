@@ -21,6 +21,7 @@ import {
 } from "./storefront-content-runtime";
 import type { ThemeRuntime } from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
+import { withoutPlatformCookies } from "./preview-proxy-credentials";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
 const STOREFRONT_AUTH_POST_PATHS = new Set([
@@ -272,8 +273,10 @@ export class StorefrontProductionService {
       return errorResponse(runtimeResult.status, runtimeResult.message);
     }
     // A Theme route may answer with an SVG of its own; it is isolated like
-    // any other the storefront sends.
-    return isolateSvgResponse(runtimeResult.response);
+    // any other the storefront sends. A Theme may not set a cookie under a
+    // platform credential's name either, as in Live and Build Preview: the
+    // shopper's own session is Morph's to issue, never the Theme's.
+    return withoutPlatformCookies(isolateSvgResponse(runtimeResult.response));
   }
 
   /**

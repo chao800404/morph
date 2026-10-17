@@ -88,6 +88,9 @@ export function previewRequestHeaders(headers: Headers): Headers {
  * Every other `Set-Cookie` is kept, each as its own header, in order: they
  * are never joined, since a joined `Set-Cookie` is not one a browser can read
  * back apart. A response with nothing to remove is returned as it is.
+ *
+ * Applied wherever a Theme's response reaches a browser: Live Preview, Build
+ * Preview and the public storefront.
  */
 export function withoutPlatformCookies(response: Response): Response {
   const setCookies = response.headers.getSetCookie();
