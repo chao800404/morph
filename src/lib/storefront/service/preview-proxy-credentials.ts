@@ -131,16 +131,17 @@ function cookieName(pair: string): string {
  *
  * Usually its own name. A nameless one (`=a=b`, or `a` with no `=` at all) is
  * sent back as its bare value, which a server then reads as `a=b` or `a`; so
- * for those the value's own leading name is what is checked. Without this,
- * `=better-auth.session_token=<t>` would pass as a cookie with no name and
- * could come back as the platform's session.
+ * for those the value's own leading name is what is checked, after every
+ * leading `=` and space is stripped (so `==a=b` and `= =a=b` read as `a`).
+ * Without this, `=better-auth.session_token=<t>` would pass as a cookie with
+ * no name and could come back as the platform's session.
  */
 function setCookieSentName(setCookie: string): string {
   const semicolon = setCookie.indexOf(";");
   const pair = semicolon === -1 ? setCookie : setCookie.slice(0, semicolon);
   const name = cookieName(pair);
   if (name !== "") return name;
-  const value = pair.slice(pair.indexOf("=") + 1).trim();
+  const value = pair.replace(/^[\s=]+/, "");
   const equals = value.indexOf("=");
   return (equals === -1 ? value : value.slice(0, equals)).trim();
 }

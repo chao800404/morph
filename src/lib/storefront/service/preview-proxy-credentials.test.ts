@@ -120,6 +120,8 @@ describe("what of a response reaches the browser", () => {
       " =better-auth.session_token=planted; Path=/",
       "=__Secure-better-auth.session_token=planted; Secure",
       "=verify_access=planted",
+      "==better-auth.session_token=planted",
+      "= =better-auth.session_token=planted; Path=/",
       "better-auth.session_token",
       "better-auth.session_token; Path=/",
     ]) {
@@ -129,7 +131,12 @@ describe("what of a response reaches the browser", () => {
   });
 
   it("keeps a nameless Set-Cookie of the Theme's own", () => {
-    const original = response(["=theme_pref=1; Path=/", "theme_flag"]);
+    const original = response([
+      "=theme_pref=1; Path=/",
+      "==theme_pref=1",
+      "= =theme_pref=1",
+      "theme_flag",
+    ]);
     expect(withoutPlatformCookies(original)).toBe(original);
   });
 

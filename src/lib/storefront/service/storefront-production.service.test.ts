@@ -1030,14 +1030,22 @@ describe("Theme Worker responses on the public storefront", () => {
       const headers = new Headers({ "content-type": "text/html" });
       headers.append("set-cookie", "=better-auth.session_token=planted; Path=/");
       headers.append("set-cookie", " =better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "==better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "= =better-auth.session_token=planted; Path=/");
       headers.append("set-cookie", "better-auth.session_token; Path=/");
       headers.append("set-cookie", "=theme_pref=1; Path=/");
+      headers.append("set-cookie", "==theme_pref=1; Path=/");
+      headers.append("set-cookie", "= =theme_pref=1; Path=/");
       return new Response("<p>", { headers });
     });
 
     const res = await service.handleRequest(req("/about"));
 
-    expect(res.headers.getSetCookie()).toEqual(["=theme_pref=1; Path=/"]);
+    expect(res.headers.getSetCookie()).toEqual([
+      "=theme_pref=1; Path=/",
+      "==theme_pref=1; Path=/",
+      "= =theme_pref=1; Path=/",
+    ]);
   });
 
   it("keeps a Theme's own cookie", async () => {
