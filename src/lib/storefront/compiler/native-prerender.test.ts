@@ -1,6 +1,8 @@
 // @vitest-environment node
 import fs from "node:fs/promises";
 import { expect, it, vi } from "vitest";
+import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
+import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
 import type { ThemeBuildRunnerInput } from "./theme-build-runner.types";
@@ -16,7 +18,7 @@ function nativeInput(): ThemeBuildRunnerInput {
     entry: "src/routes/index.tsx",
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
-    compilerVersion: "4.1.17",
+    compilerVersion: withThemeMorphSdkIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
     files: [
       ...STARTER_THEME_FILES,

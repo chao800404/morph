@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { NATIVE_START_COMPILER_ID } from "./theme-build-materializer";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
@@ -80,7 +81,7 @@ function nativeInput(
     entry: "src/routes/index.tsx",
     inputHash: "b".repeat(64),
     compilerId: NATIVE_START_COMPILER_ID,
-    compilerVersion: THEME_START_TOOLCHAIN.reactStart,
+    compilerVersion: withThemeMorphSdkIdentity(THEME_START_TOOLCHAIN.reactStart),
     toolchainId: START_TOOLCHAIN.id,
     buildMode: "native",
     files: [
