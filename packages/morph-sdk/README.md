@@ -199,3 +199,17 @@ Because every next build picks up the current SDK, a change here reaches every h
   - draft reads (#214);
   - the platform's publishable-key path;
   - GraphQL.
+
+## As its own package
+
+- **A workspace member.** It is listed in `pnpm-workspace.yaml` and stays `private`. The app does not depend on it or import it; that is stage 2 (#245 §7).
+- **`pnpm check:sdk-package`** (CI: "Architecture guards") fails unless all of these hold:
+  - it compiles from `tsconfig.json` in this folder alone: no app `paths`, no `baseUrl`, no `extends`, no ambient types;
+  - every module a shipped file names is in this folder, or a dependency `package.json` declares;
+  - Vite bundles the entry for a browser, a worker and Node with nothing loaded from outside this folder, and the Node bundle imports.
+
+  This proves the package is self-contained and bundles for those targets. It does not prove that a Start or Astro app builds with it, or that it runs in a browser or a Worker.
+- **Two entries.** `.` (the core) and `./start` (the hosted thin entry). `./start` imports `@tanstack/react-start` and `@tanstack/react-start/server`. That is declared as an optional peer dependency, pinned to the Start toolchain's version. The core needs it not at all.
+  - The import scan above covers both entries.
+  - The package's own `tsconfig.json` and the bundles cover only `.`.
+  - `./start` is type-checked by the app's `pnpm typecheck` and tested in `pnpm test`, including real preview and Start builds (see "Media URL mode").
