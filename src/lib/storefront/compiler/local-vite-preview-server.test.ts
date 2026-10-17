@@ -252,6 +252,35 @@ describe("the local Live Preview transport", () => {
     expect(source).toContain("Goodbye from the local preview");
   }, 180_000);
 
+  it("does not reuse a server started for another runtime, though the files match", async () => {
+    // A Theme without Start routes plans the same files for either runtime,
+    // so the fingerprint matches; a Theme can now record its runtime, and
+    // change it, so the server must be the one for the runtime asked for.
+    const server = newServer({ workspacesRoot });
+    const client = await start(server);
+    expectStarted(client);
+
+    // Unset and `client` are one runtime.
+    const unchanged = await start(server, { previewRuntime: "client" });
+    expectStarted(unchanged);
+    expect(unchanged.timings.reusedProcess).toBe(true);
+
+    const asStart = await start(server, { previewRuntime: "start" });
+    expectStarted(asStart);
+    expect(asStart.timings.reusedProcess).toBe(false);
+    expect(asStart.url).not.toBe(client.url);
+
+    const startAgain = await start(server, { previewRuntime: "start" });
+    expectStarted(startAgain);
+    expect(startAgain.timings.reusedProcess).toBe(true);
+    expect(startAgain.url).toBe(asStart.url);
+
+    const back = await start(server);
+    expectStarted(back);
+    expect(back.timings.reusedProcess).toBe(false);
+    expect(new URL(back.url).pathname).toBe(new URL(client.url).pathname);
+  }, 240_000);
+
   it("applies an edit to the files a running server is watching", async () => {
     const server = newServer({ workspacesRoot });
     const started = await start(server);

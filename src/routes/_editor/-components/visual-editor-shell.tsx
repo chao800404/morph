@@ -288,6 +288,7 @@ import {
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
+import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
 import {
   startPreviewStaleProbe,
   type PreviewStaleProbe,
@@ -12124,6 +12125,7 @@ export function VisualEditorShell({
             }}
             spacingOverlayMode={spacingOverlayMode}
             onSpacingOverlayModeChange={setSpacingOverlayMode}
+            onPreviewRuntimeChanged={retryLivePreview}
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -12328,6 +12330,7 @@ function EditorControls({
   onSelectionModeChange,
   spacingOverlayMode,
   onSpacingOverlayModeChange,
+  onPreviewRuntimeChanged,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -12342,6 +12345,8 @@ function EditorControls({
   onSelectionModeChange: (enabled: boolean) => void;
   spacingOverlayMode: PreviewSpacingOverlayMode;
   onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
+  /** Restarts the Live Preview once the Theme records another runtime. */
+  onPreviewRuntimeChanged: () => void;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -12444,6 +12449,10 @@ function EditorControls({
         >
           <MessageCircle />
         </Button>
+        <EditorPreviewRuntimeMenu
+          context={context}
+          onRuntimeChanged={onPreviewRuntimeChanged}
+        />
         <Button
           variant="ghost"
           size="icon"
