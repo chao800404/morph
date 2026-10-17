@@ -395,7 +395,11 @@ import {
   toEditorRouteSearch,
 } from "./editor-template";
 import { contentTargetForRoutePath } from "@/lib/storefront/theme-template-routes";
-import { previewStructureMatchesRoute } from "@/lib/storefront/editor/preview-structure-route";
+import {
+  previewFrameNavigationRoute,
+  previewStructureMatchesRoute,
+} from "@/lib/storefront/editor/preview-structure-route";
+import { readRouterFramework } from "@/lib/storefront/compiler/theme-router-build-bootstrap";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -484,6 +488,12 @@ export const INLINE_TEXT_REFUSED_MESSAGE =
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
+/**
+ * Said when the canvas sends an edit while it shows another page than the
+ * editor: the edit names a slot, not a page, and would be saved to this one.
+ */
+export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
+  "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
 /**
  * Said, without interrupting, when the preview's dev server was replaced
  * while text is being typed on the canvas: the canvas is kept until the text
@@ -1060,6 +1070,18 @@ export function VisualEditorShell({
   } | null>(null);
   const currentSearchRoutePathRef = useRef(search.routePath);
   currentSearchRoutePathRef.current = search.routePath;
+  // Read by the preview message handler, which is not rebuilt for either.
+  const pendingRoutePathRef = useRef(pendingRoutePath);
+  pendingRoutePathRef.current = pendingRoutePath;
+  const navigatingRoutePathRef = useRef(navigatingRoutePath);
+  navigatingRoutePathRef.current = navigatingRoutePath;
+  /**
+   * The page the editor is switching to because the frame went there by
+   * itself, while that switch is the one under way; null otherwise.
+   */
+  const frameFollowRef = useRef<string | null>(null);
+  /** Sends the frame back to the page on screen; set beside the route sync. */
+  const returnFrameToPageRef = useRef<() => void>(() => {});
   const handleRouteIntent = useCallback((routePath?: string) => {
     setPendingRoutePath(routePath ?? null);
   }, []);
@@ -1081,6 +1103,16 @@ export function VisualEditorShell({
       editorRoutePathsMatch(pendingRoutePath, search.routePath)
     ) {
       setPendingRoutePath(null);
+    }
+  }, [pendingRoutePath, search.routePath]);
+  useEffect(() => {
+    const follow = frameFollowRef.current;
+    if (
+      follow !== null &&
+      (pendingRoutePath !== follow ||
+        editorRoutePathsMatch(follow, search.routePath))
+    ) {
+      frameFollowRef.current = null;
     }
   }, [pendingRoutePath, search.routePath]);
 
@@ -2499,6 +2531,19 @@ export function VisualEditorShell({
   const instanceContentReplayRef = useRef<InstanceContentReplay | null>(null);
   /** Counts every ready message, of any frame: a frame's ready round. */
   const previewReadyRoundRef = useRef(0);
+  /**
+   * The page the frame last named, in a structure report or a route answer,
+   * and the frame and ready round that named it; null for a frame that
+   * answered that it has no router. A selection or an edit from the frame
+   * names a slot id, not a page, so it is taken only while this says the
+   * frame shows the editor's page (`frameShowsEditorPage`). Unknown — no
+   * record for this frame in this round — is not that.
+   */
+  const frameRouteRef = useRef<{
+    key: string;
+    round: number;
+    routePath: string | null;
+  } | null>(null);
   /** The route on screen, for that replay's binding. */
   const replayRoutePathRef = useRef(search.routePath ?? "/");
   replayRoutePathRef.current = search.routePath ?? "/";
@@ -3074,6 +3119,23 @@ export function VisualEditorShell({
     () => buildThemeRouteRegistry(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  /** For the preview message handler, which is not rebuilt for it. */
+  const themeRouteRegistryRef = useRef(themeRouteRegistry);
+  themeRouteRegistryRef.current = themeRouteRegistry;
+  /**
+   * Whether the Theme's source, once read, mounts its preview with no router,
+   * as the generated entry does for any framework but TanStack Start; null
+   * until the files are read. Such a frame never names a page.
+   */
+  const previewHasNoRouter = useMemo(
+    () =>
+      themeFilesQuery.data
+        ? readRouterFramework(effectiveThemeFiles) !== "tanstack-start"
+        : null,
+    [effectiveThemeFiles, themeFilesQuery.data],
+  );
+  const previewHasNoRouterRef = useRef(previewHasNoRouter);
+  previewHasNoRouterRef.current = previewHasNoRouter;
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -6206,6 +6268,13 @@ export function VisualEditorShell({
       // taken there after all.
       setPendingRoutePath(null);
       setPendingRouteSelection(null);
+      // The frame went to that page by itself and is still there. Asked
+      // nothing, it would report that page again, and the switch would be
+      // asked for, and the author asked, again.
+      if (frameFollowRef.current !== null) {
+        frameFollowRef.current = null;
+        returnFrameToPageRef.current();
+      }
       if (why === "kept-editing") {
         toast.info("Stayed on this page because you kept editing.", {
           id: "editor-leave-kept-editing",
@@ -7453,6 +7522,55 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
+    /**
+     * Whether what this frame sends is about the editor's page.
+     *
+     * A Theme with a router names its page in every structure report and
+     * route answer, its boot report included: its frame shows the editor's
+     * page while the page it last named, in this ready round, is that page.
+     * Before it has named one in this round — a frame just reloaded, one
+     * that never answers — its page is unknown, and unknown is not the
+     * editor's page.
+     *
+     * A Theme whose source has no router (read from its files, as the
+     * generated entry is built) is mounted as one document, the one the
+     * editor sends it: its frame shows the editor's page, except while it
+     * is known to be behind — it answered a route request with no route, and
+     * the editor has sent a newer one it has not answered yet. Before the
+     * files are read, nothing is known.
+     */
+    const frameShowsEditorPage = () => {
+      const frame = frameRouteRef.current;
+      const round = previewReadyRoundRef.current;
+      if (frame === null || frame.key !== previewKey || frame.round !== round) {
+        return previewHasNoRouterRef.current === true;
+      }
+      if (frame.routePath === null) {
+        // Only for a Theme the editor itself knows has no router: from one
+        // that has, an answer of no router confirms nothing.
+        if (previewHasNoRouterRef.current !== true) return false;
+        const routeRequest = lastRouteRequestRef.current;
+        return (
+          routeRequest !== null &&
+          routeRequest.key === previewKey &&
+          routeRequest.round === round &&
+          routeRequest.id === routeRequestIdRef.current &&
+          routeRequest.answered
+        );
+      }
+      return previewStructureMatchesRoute(
+        frame.routePath,
+        currentSearchRoutePathRef.current,
+      );
+    };
+    /** Refuses an edit from a frame not on the editor's page, and says so. */
+    const refuseOtherPageEdit = () => {
+      if (frameShowsEditorPage()) return false;
+      toast.info(PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE, {
+        id: "preview-other-page-not-saved",
+      });
+      return true;
+    };
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
@@ -7542,6 +7660,7 @@ export function VisualEditorShell({
         message.type === "morph:storefront-preview-commit-array-item-reorder"
       ) {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         arrayItemReorderHandlerRef.current(
           message.sectionId,
           message.draggedFieldPath,
@@ -7562,6 +7681,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-inline-text") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         inlineTextCommitHandlerRef.current(message);
         return;
       }
@@ -7580,6 +7700,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-section-reorder") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         void sectionSwapHandlerRef.current(
           message.draggedSectionId,
           message.targetSectionId,
@@ -7589,6 +7710,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-sibling-reorder") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         void handleSwapThemeFileSiblings(
           message.sourceFilePath,
           message.draggedNodeId,
@@ -7621,11 +7743,75 @@ export function VisualEditorShell({
           previewReadyRoundRef.current,
           message.routePath,
         );
+        if (message.routePath !== undefined) {
+          frameRouteRef.current = {
+            key: previewKey,
+            round: previewReadyRoundRef.current,
+            routePath: message.routePath,
+          };
+        }
         // A report sent while the preview was still on another route — it
         // boots on `/` — describes that route, not the selected one.
         if (
           !previewStructureMatchesRoute(message.routePath, search.routePath)
         ) {
+          // Still set aside. But a report that names another page while
+          // the editor is asking the frame for nothing is the author moving
+          // inside the frame, by a link or back and forward: the editor
+          // follows, through the same switch a page row asks for (the leave
+          // guard, a borrowed template, the set-route that answers it). The
+          // report the frame sends once that request is answered is the one
+          // taken.
+          const reportedRoutePath = message.routePath;
+          const routeRequest = lastRouteRequestRef.current;
+          const searchRoutePath = currentSearchRoutePathRef.current;
+          if (
+            reportedRoutePath !== undefined &&
+            // Code Mode never follows; returning to Design asks again.
+            editorModeRef.current !== "code" &&
+            !previewStructureMatchesRoute(reportedRoutePath, searchRoutePath) &&
+            // The latest request, sent to this frame in this ready round,
+            // answered. The boot report a frame sends with its ready comes
+            // before this round's request; a report from the old page comes
+            // before the answer to a switch the editor asked for.
+            routeRequest !== null &&
+            routeRequest.key === previewKey &&
+            routeRequest.round === previewReadyRoundRef.current &&
+            routeRequest.id === routeRequestIdRef.current &&
+            routeRequest.answered
+          ) {
+            const follow = frameFollowRef.current;
+            // No switch of the editor's own waiting or under way.
+            const editorSettled =
+              pendingRoutePathRef.current === null &&
+              editorRoutePathsMatch(
+                navigatingRoutePathRef.current ?? searchRoutePath,
+                searchRoutePath,
+              );
+            // Or the switch under way is one the frame started, and the
+            // router has not landed it: the frame has moved on again, and
+            // the switch goes where the frame is now. Once the route is on
+            // screen its set-route is out, and the frame's word waits for
+            // that answer like any other.
+            const followUnderWay =
+              follow !== null &&
+              pendingRoutePathRef.current === follow &&
+              !editorRoutePathsMatch(searchRoutePath, follow);
+            const route =
+              editorSettled || followUnderWay
+                ? previewFrameNavigationRoute(
+                    reportedRoutePath,
+                    themeRouteRegistryRef.current.routes,
+                  )
+                : null;
+            if (
+              route &&
+              !(followUnderWay && editorRoutePathsMatch(route.path, follow))
+            ) {
+              frameFollowRef.current = route.path;
+              setPendingRoutePath(route.path);
+            }
+          }
           return;
         }
         setPreviewStructure({
@@ -7644,6 +7830,22 @@ export function VisualEditorShell({
           message.routeRequestId,
           message.routePath,
         );
+        frameRouteRef.current = {
+          key: previewKey,
+          round: previewReadyRoundRef.current,
+          routePath: message.routePath,
+        };
+        // Answered only by this frame, in this ready round, for the latest
+        // request: an id alone carries over from the frame before.
+        const routeRequest = lastRouteRequestRef.current;
+        if (
+          routeRequest !== null &&
+          routeRequest.key === previewKey &&
+          routeRequest.round === previewReadyRoundRef.current &&
+          routeRequest.id === message.routeRequestId
+        ) {
+          routeRequest.answered = true;
+        }
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-applied") {
@@ -7677,6 +7879,10 @@ export function VisualEditorShell({
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
+      // An element of another page, or of a page not known yet: its slot id
+      // may be one this page has too, and the Inspector would then edit this
+      // page's copy of it.
+      if (!frameShowsEditorPage()) return;
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
@@ -7803,6 +8009,18 @@ export function VisualEditorShell({
   const activeTemplateId = activeTemplate?.id;
   /** Counts route requests, of any frame; the page echoes the one it answers. */
   const routeRequestIdRef = useRef(0);
+  /**
+   * The latest route request: the frame and ready round it was sent to, and
+   * whether that frame has answered it in that round. Until it has, a report
+   * naming another page is the editor's own switch on its way, or the page
+   * the frame booted on, and is never followed.
+   */
+  const lastRouteRequestRef = useRef<{
+    key: string;
+    round: number;
+    id: number;
+    answered: boolean;
+  } | null>(null);
   /** Sends the route on screen; the request's id, or null when none was sent. */
   const syncPreviewRoute = useCallback((): number | null => {
     if (!activeTemplateId) return null;
@@ -7823,6 +8041,12 @@ export function VisualEditorShell({
     const measurementRevision = beginPreviewSizeMeasurement();
     const routeRequestId = syncPreviewRoute();
     if (routeRequestId !== null) {
+      lastRouteRequestRef.current = {
+        key: previewKey,
+        round: previewReadyRoundRef.current,
+        id: routeRequestId,
+        answered: false,
+      };
       // A reloaded frame's content waits for the answer to this request
       // (`createInstanceContentReplay`); sending it is not the answer.
       instanceContentReplayRef.current?.routeSent(
@@ -7850,6 +8074,25 @@ export function VisualEditorShell({
     requestPreviewSize,
     syncPreviewRoute,
   ]);
+  // The route on screen sent again, as above, to a frame that moved away by
+  // itself; its answer and its report then come from this page.
+  returnFrameToPageRef.current = () => {
+    if (!previewKey || previewFrameReady?.key !== previewKey) return;
+    const routeRequestId = syncPreviewRoute();
+    if (routeRequestId === null) return;
+    lastRouteRequestRef.current = {
+      key: previewKey,
+      round: previewReadyRoundRef.current,
+      id: routeRequestId,
+      answered: false,
+    };
+    instanceContentReplayRef.current?.routeSent(
+      previewKey,
+      previewReadyRoundRef.current,
+      replayRoutePathRef.current,
+      routeRequestId,
+    );
+  };
 
   const syncPreviewSection = useCallback(() => {
     const currentSectionId = search.section ?? null;
@@ -10179,12 +10422,22 @@ export function VisualEditorShell({
   const switchToDesign = useCallback(() => {
     setEditorMode("design");
     syncPreviewSpacingOverlay();
+    // Code Mode does not follow the frame's own navigation. Asked where the
+    // frame is now, its answer is followed, or set aside, as any report is.
+    if (previewKey && previewFrameReady?.key === previewKey) {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-structure",
+      });
+    }
     if (isCommentMode) return;
 
     previewSelection.askForCurrent({ enabled: isSelectionMode });
   }, [
     isCommentMode,
     isSelectionMode,
+    postEditorToPreviewMessage,
+    previewFrameReady?.key,
+    previewKey,
     previewSelection,
     syncPreviewSpacingOverlay,
   ]);
