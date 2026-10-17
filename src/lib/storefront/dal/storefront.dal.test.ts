@@ -114,6 +114,146 @@ function createLegacyStarterDb(starterTemplateVersion = 2) {
   return db;
 }
 
+/** A sales channel with no storefront yet: `ensureDefault` creates one. */
+function createNewStorefrontDb() {
+  const results = [
+    // No storefront for the channel.
+    [],
+    // ensureStarterHomeDocument: the theme just created, then its templates.
+    [{ metadata: {} }],
+    [{ id: "home-template", document: createDefaultStorefrontHomeDocument() }],
+    [{ id: "product-template" }],
+    [{ id: "layout-template" }],
+  ];
+  const db = {
+    select: vi.fn(() => {
+      const chain = {
+        from: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        limit: vi.fn(async () => results.shift() ?? []),
+      };
+      return chain;
+    }),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(async () => ({ meta: { changes: 1 } })),
+      })),
+    })),
+    update: vi.fn(() => {
+      const chain = {
+        set: vi.fn(() => chain),
+        where: vi.fn(async () => ({ meta: { changes: 1 } })),
+      };
+      return chain;
+    }),
+  };
+  return db;
+}
+
+/** Every value any `db.update(...).set(...)` in one test was given. */
+function updateSets(db: { update: unknown }): Record<string, unknown>[] {
+  return (db.update as ReturnType<typeof vi.fn>).mock.results.flatMap(
+    (result) =>
+      (result.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map(
+        (call) => call[0] as Record<string, unknown>,
+      ),
+  );
+}
+
+/** The storefront_themes rows an `ensureDefault` inserted. */
+function insertedThemeRows(db: { insert: unknown }) {
+  return insertedRows(db).filter(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      "storefrontId" in row &&
+      "status" in row &&
+      !("type" in row),
+  );
+}
+
+describe("the Live Preview runtime a Starter Theme records", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.initStarterTheme.mockResolvedValue([]);
+    mocks.getSourceGeneration.mockResolvedValue(4);
+    mocks.saveFilesBatch.mockResolvedValue([]);
+  });
+
+  it(`records none for a Theme created from Starter ${STOREFRONT_STARTER_TEMPLATE_VERSION}`, async () => {
+    // 29 today; the first Starter that records `start` is 30
+    // (storefront.dal.v30-preview-runtime.test.ts).
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(29);
+    const db = createNewStorefrontDb();
+    mocks.getDb.mockResolvedValue(db);
+    mocks.listFiles.mockResolvedValue([]);
+
+    await storefrontDal.ensureDefault("sales-channel-new");
+
+    expect(insertedThemeRows(db)).toEqual([
+      expect.objectContaining({ name: "Default", previewRuntime: null }),
+    ]);
+  });
+
+  it("never records one while upgrading an existing Theme's Starter", async () => {
+    const db = createLegacyStarterDb(27);
+    mocks.getDb.mockResolvedValue(db);
+    mocks.listFiles.mockResolvedValue(
+      starterThemeWorkspaceFiles().map((file, index) => ({
+        id: `file-${index}`,
+        path: file.path,
+        content:
+          file.path === "src/morph/content.ts"
+            ? LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE
+            : file.content,
+        version: 3,
+      })),
+    );
+
+    await expect(
+      storefrontDal.ensureStoredStarterPreview({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        createdBy: "user-a",
+      }),
+    ).resolves.toBe(true);
+
+    // The upgrade did write: the files, then the Theme's Starter version.
+    expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
+    const sets = updateSets(db);
+    expect(sets).toContainEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          starterTemplateVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+        }),
+      }),
+    );
+    for (const set of sets) expect(set).not.toHaveProperty("previewRuntime");
+    expect(insertedRows(db)).toEqual([]);
+  });
+
+  it("never records one on the existing storefront's path either", async () => {
+    // ensureDefault for a channel that already has its Theme: the upgrade
+    // runs there too, and creates nothing.
+    const db = createExistingStorefrontDb();
+    (db as { update?: unknown }).update = vi.fn(() => {
+      const chain = {
+        set: vi.fn(() => chain),
+        where: vi.fn(async () => ({ meta: { changes: 1 } })),
+      };
+      return chain;
+    });
+    mocks.getDb.mockResolvedValue(db);
+    mocks.listFiles.mockResolvedValue([{ path: "src/routes/index.tsx" }]);
+
+    await storefrontDal.ensureDefault("sales-channel-a");
+
+    expect(insertedThemeRows(db)).toEqual([]);
+    for (const set of updateSets(db as never))
+      expect(set).not.toHaveProperty("previewRuntime");
+  });
+});
+
 describe("storefrontDal starter workspace provisioning", () => {
   beforeEach(() => {
     vi.clearAllMocks();

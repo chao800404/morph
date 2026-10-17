@@ -58,6 +58,11 @@ import {
   verifyMediaReferences,
 } from "@/lib/storefront/theme-media-verification";
 import { and, asc, eq, isNull, max } from "drizzle-orm";
+import {
+  recordedThemePreviewRuntime,
+  themeFrameworkAllowsPreviewRuntime,
+  type ThemePreviewRuntime,
+} from "@/lib/storefront/theme-preview-runtime";
 
 const revisionIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -647,6 +652,55 @@ export const storefrontThemeDal = {
     });
   },
 
+  /**
+   * Records the Live Preview runtime a Theme of this storefront is previewed
+   * with (R-0, R1). Null when the storefront has no such Theme; refused, and
+   * nothing written, for `start` on a Theme of another framework.
+   *
+   * One column, set to the value asked for: the same request twice records
+   * the same thing, and two editors asking for different ones end with the
+   * later one, which each reads back here. It is not Theme source, so it
+   * neither takes nor moves `sourceGeneration`.
+   */
+  async setPreviewRuntime(input: {
+    storefrontId: string;
+    themeId: string;
+    previewRuntime: ThemePreviewRuntime;
+  }): Promise<
+    | Readonly<{ ok: true; previewRuntime: ThemePreviewRuntime }>
+    | Readonly<{ ok: false; error: "PREVIEW_RUNTIME_UNSUPPORTED" }>
+    | null
+  > {
+    const db = await getDb();
+    const owned = and(
+      eq(storefrontThemes.id, input.themeId),
+      eq(storefrontThemes.storefrontId, input.storefrontId),
+      isNull(storefrontThemes.deletedAt),
+    );
+    const [theme] = await db
+      .select({ framework: storefrontThemes.framework })
+      .from(storefrontThemes)
+      .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
+      .where(and(owned, isNull(storefronts.deletedAt)))
+      .limit(1);
+    if (!theme) return null;
+    if (
+      !themeFrameworkAllowsPreviewRuntime(theme.framework, input.previewRuntime)
+    ) {
+      return { ok: false, error: "PREVIEW_RUNTIME_UNSUPPORTED" };
+    }
+    const [written] = await db
+      .update(storefrontThemes)
+      .set({
+        previewRuntime: input.previewRuntime,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(owned)
+      .returning({ previewRuntime: storefrontThemes.previewRuntime });
+    const recorded = recordedThemePreviewRuntime(written?.previewRuntime);
+    return recorded ? { ok: true, previewRuntime: recorded } : null;
+  },
+
   async findEditorContext(
     storefrontId: string,
     themeId: string,
@@ -664,6 +718,7 @@ export const storefrontThemeDal = {
         themeStatus: storefrontThemes.status,
         themeReleaseGeneration: storefrontThemes.releaseGeneration,
         themeFramework: storefrontThemes.framework,
+        themePreviewRuntime: storefrontThemes.previewRuntime,
       })
       .from(storefrontThemes)
       .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
@@ -821,6 +876,9 @@ export const storefrontThemeDal = {
         status: context.themeStatus,
         releaseGeneration: context.themeReleaseGeneration ?? 1,
         framework: context.themeFramework ?? null,
+        previewRuntime: recordedThemePreviewRuntime(
+          context.themePreviewRuntime,
+        ),
         // A release whose revision carries no generation cannot be shown to
         // still match the current source, so it is reported as absent rather
         // than as a reusable artifact. Publishing then builds, which is the

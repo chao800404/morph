@@ -87,6 +87,7 @@ beforeEach(() => {
       source_generation integer DEFAULT 1 NOT NULL,
       release_generation integer DEFAULT 1 NOT NULL,
       framework text,
+      preview_runtime text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -1335,6 +1336,142 @@ describe("storefront theme DAL", () => {
     await expect(
       storefrontThemeDal.findEditorContext("storefront-a", "theme-b"),
     ).resolves.toBeNull();
+  });
+
+  describe("the Live Preview runtime a Theme records", () => {
+    const recorded = () =>
+      sqlite
+        .prepare("SELECT id, preview_runtime FROM storefront_themes ORDER BY id")
+        .all();
+    const addOtherStorefront = () =>
+      sqlite.exec(`
+        INSERT INTO storefronts (id, sales_channel_id, name, status, created_at, updated_at)
+        VALUES ('storefront-b', 'channel-b', 'Store B', 'active', 'now', 'now');
+        INSERT INTO storefront_themes (id, storefront_id, name, status, source_generation, release_generation, created_at, updated_at)
+        VALUES ('theme-b', 'storefront-b', 'Other Theme', 'draft', 1, 1, 'now', 'now');
+      `);
+
+    it("reads none recorded as null, and a stored one as stored", async () => {
+      expect(
+        (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+          ?.theme.previewRuntime,
+      ).toBeNull();
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET preview_runtime = 'start' WHERE id = 'theme-a'",
+        )
+        .run();
+      expect(
+        (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+          ?.theme.previewRuntime,
+      ).toBe("start");
+      // Only by hand; read as none, never as a guess.
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET preview_runtime = 'server' WHERE id = 'theme-a'",
+        )
+        .run();
+      expect(
+        (await storefrontThemeDal.findEditorContext("storefront-a", "theme-a"))
+          ?.theme.previewRuntime,
+      ).toBeNull();
+    });
+
+    it("records the runtime asked for, and nothing else", async () => {
+      const before = sqlite
+        .prepare("SELECT * FROM storefront_themes WHERE id = 'theme-a'")
+        .get() as Record<string, unknown>;
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime: "start",
+        }),
+      ).resolves.toEqual({ ok: true, previewRuntime: "start" });
+      const after = sqlite
+        .prepare("SELECT * FROM storefront_themes WHERE id = 'theme-a'")
+        .get() as Record<string, unknown>;
+      expect(after).toEqual({
+        ...before,
+        preview_runtime: "start",
+        updated_at: after.updated_at,
+      });
+      // Not Theme source: the generation does not move.
+      expect(after.source_generation).toBe(before.source_generation);
+
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime: "client",
+        }),
+      ).resolves.toEqual({ ok: true, previewRuntime: "client" });
+      expect(recorded()).toEqual([
+        { id: "theme-a", preview_runtime: "client" },
+      ]);
+    });
+
+    it("writes nothing for a Theme of another storefront", async () => {
+      addOtherStorefront();
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-b",
+          previewRuntime: "start",
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-b",
+          themeId: "theme-a",
+          previewRuntime: "start",
+        }),
+      ).resolves.toBeNull();
+      expect(recorded()).toEqual([
+        { id: "theme-a", preview_runtime: null },
+        { id: "theme-b", preview_runtime: null },
+      ]);
+    });
+
+    it("writes nothing for a deleted Theme", async () => {
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET deleted_at = 'now' WHERE id = 'theme-a'",
+        )
+        .run();
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime: "start",
+        }),
+      ).resolves.toBeNull();
+      expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: null }]);
+    });
+
+    it("refuses start for an Astro Theme and writes nothing; client is allowed", async () => {
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'",
+        )
+        .run();
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime: "start",
+        }),
+      ).resolves.toEqual({ ok: false, error: "PREVIEW_RUNTIME_UNSUPPORTED" });
+      expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: null }]);
+
+      await expect(
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime: "client",
+        }),
+      ).resolves.toEqual({ ok: true, previewRuntime: "client" });
+    });
   });
 
   it("rejects an invalid persisted template document", async () => {
