@@ -27,8 +27,10 @@ export type ThemeServiceBindingResolver = (
  * rule Live Preview applies: platform credential cookies are removed from
  * `cookie` (the Theme's own cookies pass, in order) and every inbound
  * `x-morph-*` header is dropped, so no name Core may later give meaning to
- * can arrive from a browser. Filtering comes first so it can never remove a
- * header Core sets below.
+ * can arrive from a browser. `Authorization` is forwarded on purpose here, as
+ * it is to a preview; removing Morph's own secret API key credentials from it
+ * is a separate change. Filtering comes first so it can never remove a header
+ * Core sets below.
  */
 function applyStorefrontContext(
   request: Request,

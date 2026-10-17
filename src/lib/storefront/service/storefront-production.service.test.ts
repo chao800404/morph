@@ -981,6 +981,52 @@ describe("what of a shopper's request reaches the Theme Worker", () => {
       expect(seen.headers.has("cookie")).toBe(false);
     });
 
+    it.each<readonly [string, HeadersInit, string]>([
+      [
+        "whitespace around pairs and the `=`",
+        { cookie: " better-auth.session_token =x ;theme=1" },
+        "theme=1",
+      ],
+      // A pair with no name is never a platform cookie; it passes untouched.
+      ["a nameless pair", { cookie: "=value; theme=1" }, "=value; theme=1"],
+      [
+        "a __Host- platform name",
+        { cookie: "__Host-better-auth.session_token=s; theme=1" },
+        "theme=1",
+      ],
+      [
+        "a lowercase __secure- prefix",
+        { cookie: "__secure-better-auth.x=y; theme=1" },
+        "theme=1",
+      ],
+      [
+        "a mixed-case __HoSt- prefix",
+        { cookie: "__HoSt-better-auth.x=y; theme=1" },
+        "theme=1",
+      ],
+      [
+        "the password-reset grant",
+        { cookie: "verify_access=t; theme=1" },
+        "theme=1",
+      ],
+      // Assumption, not verified: workerd joins repeated `cookie` headers
+      // into one value with "; ", as Node's (undici's) `Headers` does here.
+      // If it joined them otherwise, this case would not describe production.
+      [
+        "two cookie headers on one request",
+        [
+          ["cookie", "better-auth.session_token=s; theme=1"],
+          ["cookie", "cart=fixture"],
+        ],
+        "theme=1; cart=fixture",
+      ],
+    ])("filters cookies given %s", async (_case, headers, expected) => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, { headers }),
+      );
+      expect(seen.headers.get("cookie")).toBe(expected);
+    });
+
     it("leaves headers outside x-morph-* and cookie as they were", async () => {
       const seen = await forward(
         new Request(`https://${HOST}/about`, {
