@@ -20,9 +20,10 @@ import { normalizeStorefrontHostname } from "./storefront-host-resolver";
  * `Authorization` passes: Morph never places one on a browser, so what reaches
  * a preview host is what the Theme's own code sent.
  *
- * In the other direction a container may not set a cookie under a platform
- * credential's name, so that nothing a Theme does in its preview can plant one
- * that platform code would later read as its own.
+ * In the other direction a container's `Set-Cookie` may not carry a platform
+ * credential's name, nor a nameless value that would come back under one. This
+ * is defence in depth for server-set cookies only: Theme code in the browser
+ * can still write `document.cookie` or send `Clear-Site-Data`.
  *
  * Not covered, and not coverable here: Theme code in the browser can write
  * `document.cookie` with a `Domain` of the preview host's parent, which then
@@ -83,19 +84,21 @@ export function previewRequestHeaders(headers: Headers): Headers {
 }
 
 /**
- * The response without any `Set-Cookie` under a platform credential's name.
+ * The response without any `Set-Cookie` under a platform credential's name,
+ * including a nameless one whose value would come back under such a name.
  *
  * Every other `Set-Cookie` is kept, each as its own header, in order: they
  * are never joined, since a joined `Set-Cookie` is not one a browser can read
  * back apart. A response with nothing to remove is returned as it is.
  *
- * Applied wherever a Theme's response reaches a browser: Live Preview, Build
- * Preview and the public storefront.
+ * Applied where a Theme's server response reaches a browser: Live Preview,
+ * Build Preview and the public storefront. Defence in depth for server-set
+ * cookies; it does not stop Theme code in the browser.
  */
 export function withoutPlatformCookies(response: Response): Response {
   const setCookies = response.headers.getSetCookie();
   const kept = setCookies.filter(
-    (value) => !isPlatformCredentialCookieName(cookieName(value)),
+    (value) => !isPlatformCredentialCookieName(setCookieSentName(value)),
   );
   if (kept.length === setCookies.length) return response;
 
@@ -115,9 +118,29 @@ export function withoutPlatformCookies(response: Response): Response {
 
 /**
  * A cookie's name: what precedes the first `=`. A pair without one has an
- * empty name, as browsers read it, and so is never a platform cookie.
+ * empty name, as browsers read it. In a `Cookie` header that makes it no
+ * platform cookie; a `Set-Cookie` goes through `setCookieSentName` instead.
  */
 function cookieName(pair: string): string {
   const equals = pair.indexOf("=");
   return equals === -1 ? "" : pair.slice(0, equals).trim();
+}
+
+/**
+ * The name a `Set-Cookie` would come back under in a later `Cookie` header.
+ *
+ * Usually its own name. A nameless one (`=a=b`, or `a` with no `=` at all) is
+ * sent back as its bare value, which a server then reads as `a=b` or `a`; so
+ * for those the value's own leading name is what is checked. Without this,
+ * `=better-auth.session_token=<t>` would pass as a cookie with no name and
+ * could come back as the platform's session.
+ */
+function setCookieSentName(setCookie: string): string {
+  const semicolon = setCookie.indexOf(";");
+  const pair = semicolon === -1 ? setCookie : setCookie.slice(0, semicolon);
+  const name = cookieName(pair);
+  if (name !== "") return name;
+  const value = pair.slice(pair.indexOf("=") + 1).trim();
+  const equals = value.indexOf("=");
+  return (equals === -1 ? value : value.slice(0, equals)).trim();
 }
