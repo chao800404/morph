@@ -614,6 +614,61 @@ describe("StorefrontProductionService", () => {
         }
       });
     }
+
+    it("never puts a token or URL from a detail or the env into any log argument", async () => {
+      const token = "sk_live_FAKE_7f3a9c2e1b4d6f8a0c2e4a6b8d0f2a4c";
+      const url = "https://user:pass@origin.private.example:8443/secret?t=1";
+      const runtimes: ThemeRuntime[] = [
+        new UnavailableThemeRuntime(`refused ${url} with ${token}`),
+        createThemeRuntime({
+          MORPH_THEME_SERVICE_BINDINGS: `not json ${url} ${token}`,
+        }),
+        createThemeRuntime({
+          MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: token }),
+          MORPH_LOCAL_THEME_ORIGIN: url,
+        }),
+      ];
+      const allowedKeys = [
+        "code",
+        "hint",
+        "runtime",
+        "status",
+        "storefrontId",
+        "subcode",
+      ];
+      for (const runtime of runtimes) {
+        const errorSpy = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+        try {
+          const service = new StorefrontProductionService({
+            runtime,
+            r2Bucket: r2(),
+            resolverDeps: resolverDeps(),
+          });
+          const res = await service.handleRequest(req("/"));
+          const body = await res.text();
+          expect(errorSpy).toHaveBeenCalledTimes(1);
+          for (const arg of errorSpy.mock.calls[0]!) {
+            const text =
+              typeof arg === "string" ? arg : JSON.stringify(arg) ?? String(arg);
+            for (const value of [token, url, "origin.private.example", "sk_live"]) {
+              expect(text).not.toContain(value);
+            }
+            if (typeof arg === "object" && arg !== null) {
+              for (const key of Object.keys(arg)) {
+                expect(allowedKeys).toContain(key);
+              }
+            }
+          }
+          for (const value of [token, url, "origin.private.example"]) {
+            expect(body).not.toContain(value);
+          }
+        } finally {
+          errorSpy.mockRestore();
+        }
+      }
+    });
   });
 
   it("leaves other runtime failures unchanged", async () => {
