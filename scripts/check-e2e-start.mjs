@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { jobBlock } from "./ci-workflow.mjs";
 import {
   START_PREVIEW_EXCLUDED,
   START_PREVIEW_EXPECTED_SKIPS,
@@ -72,18 +73,6 @@ export function verifyStartPlan(
     [],
     `Spec(s) reading ${GATE} are neither run by "${START_PREVIEW_JOB_NAME}" nor excluded with a reason (scripts/editor-e2e-start.mjs): ${unclassified.join(", ")}`,
   );
-}
-
-/**
- * The job's block of ci.yml: from its key to the next top-level job.
- * @param {string} workflow
- */
-function jobBlock(workflow, key) {
-  const start = workflow.indexOf(`\n  ${key}:\n`);
-  assert.ok(start >= 0, `ci.yml must define the ${key} job`);
-  const rest = workflow.slice(start + 1);
-  const next = /\n {2}[A-Za-z0-9_-]+:\n/.exec(rest.slice(1));
-  return next ? rest.slice(0, next.index + 1) : rest;
 }
 
 /**
