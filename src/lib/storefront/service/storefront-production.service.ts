@@ -71,6 +71,29 @@ function errorResponse(status: number, message: string): Response {
   });
 }
 
+/**
+ * What a shopper sees when no Theme Worker transport is configured.
+ *
+ * The runtime's own detail explains which binding or variable is missing; that
+ * is for operators and goes to the server log, never into a public body.
+ */
+export const THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE =
+  "This store is temporarily unavailable. Please try again later.";
+
+/**
+ * Removes values from a runtime detail before it is logged: URLs, IP or
+ * localhost host:port pairs, and long opaque token-like strings. Variable and
+ * binding names are kept, since they are what an operator needs to fix it.
+ */
+export function redactThemeRuntimeDetail(detail: string): string {
+  return detail
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, "[redacted-url]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, "[redacted-host]")
+    .replace(/\blocalhost(?::\d+)?\b/gi, "[redacted-host]")
+    .replace(/\b(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]{32,}\b/g, "[redacted-value]")
+    .slice(0, 500);
+}
+
 function privateSameOriginResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const name of Array.from(headers.keys())) {
@@ -269,6 +292,19 @@ export class StorefrontProductionService {
       resolved,
     });
     if (!runtimeResult.success) {
+      if (this.options.runtime.kind === "unavailable") {
+        console.error("[storefront] Theme runtime unavailable", {
+          reason: runtimeResult.reason,
+          runtime: this.options.runtime.kind,
+          status: runtimeResult.status,
+          storefrontId: resolved.storefrontId,
+          detail: redactThemeRuntimeDetail(runtimeResult.message),
+        });
+        return errorResponse(
+          runtimeResult.status,
+          THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE,
+        );
+      }
       return errorResponse(runtimeResult.status, runtimeResult.message);
     }
     // A Theme route may answer with an SVG of its own; it is isolated like

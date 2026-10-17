@@ -11,7 +11,11 @@
  */
 import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
-import { StorefrontProductionService } from "./storefront-production.service";
+import {
+  StorefrontProductionService,
+  THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE,
+} from "./storefront-production.service";
+import { createThemeRuntime } from "./storefront-request-routing";
 import {
   DispatchNamespaceThemeRuntime,
   LocalDirectThemeRuntime,
@@ -457,6 +461,112 @@ describe("StorefrontProductionService", () => {
     const res = await service.handleRequest(req("/"));
     expect(res.status).toBe(503);
     expect(res.headers.get("Content-Type")).toContain("text/plain");
+  });
+
+  it("keeps runtime configuration out of the public body and logs it for operators", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // The runtime the real environment selects when nothing is configured.
+      const runtime = createThemeRuntime({});
+      expect(runtime.kind).toBe("unavailable");
+      const service = new StorefrontProductionService({
+        runtime,
+        r2Bucket: r2(),
+        resolverDeps: resolverDeps(),
+      });
+
+      const res = await service.handleRequest(req("/"));
+      const body = await res.text();
+
+      expect(res.status).toBe(503);
+      expect(Object.fromEntries(res.headers)).toEqual({
+        "cache-control": "no-store",
+        "content-type": "text/plain; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      });
+      expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
+      for (const leaked of [
+        "THEME_WORKER",
+        "MORPH_LOCAL_THEME_ORIGIN",
+        "not configured",
+        "bind",
+        "Theme Worker",
+      ]) {
+        expect(body).not.toContain(leaked);
+      }
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const [label, entry] = errorSpy.mock.calls[0]!;
+      expect(label).toBe("[storefront] Theme runtime unavailable");
+      expect(entry).toMatchObject({
+        reason: "RUNTIME_NOT_CONFIGURED",
+        runtime: "unavailable",
+        status: 503,
+        storefrontId: "sf_1",
+      });
+      expect((entry as { detail: string }).detail).toContain("THEME_WORKER");
+      expect((entry as { detail: string }).detail).toContain(
+        "MORPH_LOCAL_THEME_ORIGIN",
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("redacts origins and opaque values from the logged runtime detail", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const secretToken = "tok_9f8e7d6c5b4a39281706f5e4d3c2b1a0";
+      const service = new StorefrontProductionService({
+        runtime: new UnavailableThemeRuntime(
+          `MORPH_LOCAL_THEME_ORIGIN=http://10.1.2.3:8799/internal?key=abc refused; also localhost:8799 and https://theme.internal.example/x; token ${secretToken}`,
+        ),
+        r2Bucket: r2(),
+        resolverDeps: resolverDeps(),
+      });
+
+      const res = await service.handleRequest(req("/"));
+      const body = await res.text();
+      expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
+
+      const logged = JSON.stringify(errorSpy.mock.calls);
+      expect(logged).toContain("MORPH_LOCAL_THEME_ORIGIN");
+      expect(logged).toContain("RUNTIME_NOT_CONFIGURED");
+      for (const value of [
+        "http://",
+        "https://",
+        "10.1.2.3",
+        "8799",
+        "key=abc",
+        "theme.internal.example",
+        "localhost",
+        secretToken,
+      ]) {
+        expect(logged).not.toContain(value);
+        expect(body).not.toContain(value);
+      }
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("leaves other runtime failures unchanged", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const service = new StorefrontProductionService({
+        runtime: new DispatchNamespaceThemeRuntime(),
+        r2Bucket: r2(),
+        resolverDeps: resolverDeps(),
+      });
+      const res = await service.handleRequest(req("/"));
+      expect(res.status).toBe(503);
+      expect(await res.text()).toBe(
+        "Theme dispatch namespace binding is not configured.",
+      );
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
