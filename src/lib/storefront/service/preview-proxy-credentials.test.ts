@@ -67,6 +67,64 @@ describe("what of a request reaches Theme code", () => {
     expect(headers.has("x-morph-release-id")).toBe(false);
   });
 
+  describe("Authorization", () => {
+    const morphKey = `sk_123e4567-e89b-12d3-a456-426614174000_${"a".repeat(48)}`;
+    const forwardedAuthorization = (value: string | null) =>
+      previewRequestHeaders(
+        new Headers(value === null ? {} : { authorization: value }),
+      ).get("authorization");
+
+    it("removes a Morph secret API key in each form the Admin API reads", () => {
+      expect(forwardedAuthorization(`Basic ${morphKey}`)).toBeNull();
+      expect(forwardedAuthorization(`Basic ${btoa(morphKey)}`)).toBeNull();
+      expect(forwardedAuthorization(`Basic ${btoa(`${morphKey}:`)}`)).toBeNull();
+    });
+
+    it("matches the scheme case-insensitively, as the Admin API does", () => {
+      expect(forwardedAuthorization(`basic ${morphKey}`)).toBeNull();
+      expect(forwardedAuthorization(`BASIC ${morphKey}`)).toBeNull();
+    });
+
+    it("keeps a Theme's Bearer, even one carrying a Morph-shaped key", () => {
+      expect(forwardedAuthorization("Bearer theme-token")).toBe(
+        "Bearer theme-token",
+      );
+      expect(forwardedAuthorization(`Bearer ${morphKey}`)).toBe(
+        `Bearer ${morphKey}`,
+      );
+    });
+
+    it("keeps any other Basic credential", () => {
+      const themeBasic = `Basic ${btoa("shopper:hunter2")}`;
+      expect(forwardedAuthorization(themeBasic)).toBe(themeBasic);
+    });
+
+    it("keeps a malformed Basic value", () => {
+      for (const value of [
+        "Basic",
+        "Basic not-a-key",
+        `Basic ${morphKey}x`,
+        "Basic %%%",
+      ]) {
+        expect(forwardedAuthorization(value)).toBe(value);
+      }
+    });
+
+    it("adds none when the request had none", () => {
+      expect(forwardedAuthorization(null)).toBeNull();
+    });
+
+    it("removes it from a whole forwarded request too", () => {
+      const forwarded = previewRequestFor(
+        new Request(PREVIEW_URL, {
+          headers: { authorization: `Basic ${morphKey}`, accept: "text/html" },
+        }),
+      );
+      expect(forwarded.headers.has("authorization")).toBe(false);
+      expect(forwarded.headers.get("accept")).toBe("text/html");
+    });
+  });
+
   it("carries the method and body of a Theme request", async () => {
     const forwarded = previewRequestFor(
       new Request(PREVIEW_URL, {
