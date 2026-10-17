@@ -150,6 +150,14 @@ jobs:
       - name: Check the e2e runner keeps reading the dev server
         run: pnpm check:e2e-runner
 
+      # The SDK (`packages/morph-sdk`) builds from its own config, imports
+      # nothing outside itself but declared dependencies, and bundles for a
+      # browser, a worker and Node. The checker's own tests run first. A step
+      # here rather than a job of its own: job names are a required-checks
+      # contract.
+      - name: Check the SDK ships as its own package
+        run: pnpm check:sdk-package
+
       - name: Check balanced shards cover the complete collected suite
         run: |
           node --test scripts/check-e2e-shards.test.mjs
