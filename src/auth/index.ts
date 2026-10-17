@@ -5,10 +5,14 @@ import {
   resolvePublicOrigin,
   type PublicOriginEnv,
 } from "@/server/public-origin";
+import { buildAuthTrustedOrigins } from "./auth-trusted-origins";
 import { resolveStorefrontTrustedOrigin } from "./storefront-origin";
 import { AUTH_COOKIE_PREFIX } from "@/lib/auth/platform-cookies";
 import { localization } from "@/lib/config/localization";
-import { cmsTrustedOrigins } from "@/lib/config/trusted-origins";
+import {
+  cmsDevTrustedOrigins,
+  cmsTrustedOrigins,
+} from "@/lib/config/trusted-origins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import type { D1Database } from "@cloudflare/workers-types";
 import { betterAuth } from "better-auth/minimal";
@@ -68,14 +72,13 @@ function createAuth(
     }),
     secret: env?.BETTER_AUTH_SECRET || process.env.BETTER_AUTH_SECRET,
     baseURL,
-    trustedOrigins: Array.from(
-      new Set([
-        ...cmsTrustedOrigins,
-        baseURL,
-        "http://localhost:3000",
-        ...additionalTrustedOrigins,
-      ]),
-    ),
+    trustedOrigins: buildAuthTrustedOrigins({
+      baseURL,
+      isProduction: isProductionRuntime((env ?? {}) as PublicOriginEnv),
+      cmsTrustedOrigins,
+      cmsDevTrustedOrigins,
+      additionalTrustedOrigins,
+    }),
     emailAndPassword: {
       enabled: true,
     },
