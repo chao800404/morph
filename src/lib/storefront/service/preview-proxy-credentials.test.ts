@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { parseSecretApiKeyAuthorization } from "@/server/admin-api/secret-api-key-auth";
 import {
   isSandboxPreviewRequest,
   previewRequestFor,
@@ -123,6 +124,81 @@ describe("what of a request reaches Theme code", () => {
       expect(forwarded.headers.has("authorization")).toBe(false);
       expect(forwarded.headers.get("accept")).toBe("text/html");
     });
+
+    // The filter removes exactly what the Admin API would authenticate, no
+    // more and no less. `admitted` pins which forms the parser accepts today;
+    // the forms it rejects reach Theme code with the key intact, by decision.
+    const unpadded = (value: string) => btoa(value).replace(/=+$/, "");
+    it.each<readonly [string, HeadersInit, boolean]>([
+      ["a raw Basic key", { authorization: `Basic ${morphKey}` }, true],
+      ["a base64 key", { authorization: `Basic ${btoa(morphKey)}` }, true],
+      ["a base64 `key:`", { authorization: `Basic ${btoa(`${morphKey}:`)}` }, true],
+      ["a lowercase scheme", { authorization: `basic ${morphKey}` }, true],
+      ["an uppercase scheme", { authorization: `BASIC ${morphKey}` }, true],
+      ["a mixed-case scheme", { authorization: `bAsIc ${morphKey}` }, true],
+      ["two spaces after the scheme", { authorization: `Basic  ${morphKey}` }, true],
+      ["a tab after the scheme", { authorization: `Basic\t${morphKey}` }, true],
+      ["whitespace around the value", { authorization: `  Basic ${morphKey} \t` }, true],
+      ["an unpadded base64 key", { authorization: `Basic ${unpadded(morphKey)}` }, true],
+      [
+        "an unpadded base64 `key:`",
+        { authorization: `Basic ${unpadded(`${morphKey}:`)}` },
+        true,
+      ],
+      ["over-padded base64", { authorization: `Basic ${btoa(morphKey)}=` }, false],
+      [
+        "the key as a Basic password",
+        { authorization: `Basic ${btoa(`user:${morphKey}`)}` },
+        false,
+      ],
+      [
+        "the key as a password with no user",
+        { authorization: `Basic ${btoa(`:${morphKey}`)}` },
+        false,
+      ],
+      ["a Bearer key", { authorization: `Bearer ${morphKey}` }, false],
+      ["a raw key with a trailing `:`", { authorization: `Basic ${morphKey}:` }, false],
+      [
+        "comma-joined, the key first",
+        { authorization: `Basic ${morphKey}, Bearer x` },
+        false,
+      ],
+      [
+        "comma-joined, the key second",
+        { authorization: `Bearer x, Basic ${morphKey}` },
+        false,
+      ],
+      [
+        "two Authorization headers",
+        [
+          ["authorization", `Basic ${morphKey}`],
+          ["authorization", "Bearer x"],
+        ],
+        false,
+      ],
+      ["an empty value", { authorization: "" }, false],
+      ["the scheme alone", { authorization: "Basic" }, false],
+      ["a non-key credential", { authorization: "Basic not-a-key" }, false],
+      ["a key with a trailing character", { authorization: `Basic ${morphKey}x` }, false],
+      ["invalid base64", { authorization: "Basic %%%" }, false],
+      ["an uppercased key", { authorization: `Basic ${morphKey.toUpperCase()}` }, false],
+    ])(
+      "drops exactly when the Admin API would accept it, given %s",
+      (_case, init, admitted) => {
+        const value = new Headers(init).get("authorization");
+        const accepted = parseSecretApiKeyAuthorization(value) !== null;
+        const dropped = !previewRequestHeaders(new Headers(init)).has(
+          "authorization",
+        );
+        expect(dropped).toBe(accepted);
+        expect(accepted).toBe(admitted);
+        if (!dropped) {
+          expect(previewRequestHeaders(new Headers(init)).get("authorization")).toBe(
+            value,
+          );
+        }
+      },
+    );
   });
 
   it("carries the method and body of a Theme request", async () => {
