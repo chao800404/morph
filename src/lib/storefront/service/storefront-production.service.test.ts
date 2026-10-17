@@ -921,6 +921,196 @@ describe("LocalDirectThemeRuntime global binding", () => {
   });
 });
 
+describe("what of a shopper's request reaches the Theme Worker", () => {
+  const resolved = {
+    hostname: HOST,
+    storefrontId: "sf_1",
+    releaseId: "rel_1",
+    themeBuildId: "bld_1",
+    contentPublicationId: "pub_1",
+  } as any;
+
+  /** Each transport, run once, returning the request the Theme received. */
+  const transports: ReadonlyArray<
+    readonly [string, (request: Request) => Promise<Request>]
+  > = [
+    [
+      "service binding",
+      async (request) => {
+        const fetch = vi.fn(async (_r: Request) => new Response("ok"));
+        const result = await new ServiceBindingThemeRuntime(() => ({
+          fetch,
+        })).handle({ request, resolved });
+        expect(result.success).toBe(true);
+        expect(fetch).toHaveBeenCalledOnce();
+        return fetch.mock.calls[0]![0];
+      },
+    ],
+    [
+      "dispatch namespace",
+      async (request) => {
+        const fetch = vi.fn(async (_r: Request) => new Response("ok"));
+        const result = await new DispatchNamespaceThemeRuntime({
+          get: () => ({ fetch }),
+        }).handle({ request, resolved });
+        expect(result.success).toBe(true);
+        expect(fetch).toHaveBeenCalledOnce();
+        return fetch.mock.calls[0]![0];
+      },
+    ],
+    [
+      "local direct",
+      async (request) => {
+        const fetchImpl = vi.fn(
+          async (_input: RequestInfo | URL) => new Response("ok"),
+        );
+        const result = await new LocalDirectThemeRuntime(
+          "http://127.0.0.1:8788",
+          fetchImpl,
+        ).handle({ request, resolved });
+        expect(result.success).toBe(true);
+        expect(fetchImpl).toHaveBeenCalledOnce();
+        return fetchImpl.mock.calls[0]![0] as Request;
+      },
+    ],
+  ];
+
+  describe.each(transports)("over the %s transport", (_name, forward) => {
+    it("keeps Core's storefront context over forged values", async () => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, {
+          headers: {
+            "x-morph-storefront-host": "attacker.example",
+            "x-morph-content-origin": "https://attacker.example",
+            "x-morph-storefront-id": "sf_ATTACKER",
+            "x-morph-release-id": "rel_ATTACKER",
+            "x-morph-theme-build-id": "bld_ATTACKER",
+            "x-morph-content-publication-id": "pub_ATTACKER",
+          },
+        }),
+      );
+      expect(seen.headers.get("x-morph-storefront-host")).toBe(HOST);
+      expect(seen.headers.get("x-morph-content-origin")).toBe(
+        `https://${HOST}`,
+      );
+      expect(seen.headers.get("x-morph-storefront-id")).toBe("sf_1");
+      expect(seen.headers.get("x-morph-release-id")).toBe("rel_1");
+      expect(seen.headers.get("x-morph-theme-build-id")).toBe("bld_1");
+      expect(seen.headers.get("x-morph-content-publication-id")).toBe("pub_1");
+    });
+
+    it("drops every other inbound x-morph-* header", async () => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, {
+          headers: {
+            "x-morph-preview-id": "prv_ATTACKER",
+            "x-morph-draft": "1",
+          },
+        }),
+      );
+      expect(seen.headers.get("x-morph-preview-id")).toBeNull();
+      expect(seen.headers.get("x-morph-draft")).toBeNull();
+      const morphHeaders = [...seen.headers.keys()]
+        .filter((name) => name.startsWith("x-morph-"))
+        .sort();
+      expect(morphHeaders).toEqual(
+        [
+          "x-morph-content-origin",
+          "x-morph-content-publication-id",
+          "x-morph-release-id",
+          "x-morph-storefront-host",
+          "x-morph-storefront-id",
+          "x-morph-theme-build-id",
+        ].sort(),
+      );
+    });
+
+    it("removes platform credential cookies and keeps the Theme's, in order", async () => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, {
+          headers: {
+            cookie:
+              "better-auth.session_token=secret; theme_pref=1; __Secure-better-auth.x=y; cart=fixture",
+          },
+        }),
+      );
+      expect(seen.headers.get("cookie")).toBe("theme_pref=1; cart=fixture");
+    });
+
+    it("sends no cookie header when every cookie is a platform credential", async () => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, {
+          headers: {
+            cookie: "better-auth.session_token=secret; __Host-verify_access=z",
+          },
+        }),
+      );
+      expect(seen.headers.has("cookie")).toBe(false);
+    });
+
+    it.each<readonly [string, HeadersInit, string]>([
+      [
+        "whitespace around pairs and the `=`",
+        { cookie: " better-auth.session_token =x ;theme=1" },
+        "theme=1",
+      ],
+      // A pair with no name is never a platform cookie; it passes untouched.
+      ["a nameless pair", { cookie: "=value; theme=1" }, "=value; theme=1"],
+      [
+        "a __Host- platform name",
+        { cookie: "__Host-better-auth.session_token=s; theme=1" },
+        "theme=1",
+      ],
+      [
+        "a lowercase __secure- prefix",
+        { cookie: "__secure-better-auth.x=y; theme=1" },
+        "theme=1",
+      ],
+      [
+        "a mixed-case __HoSt- prefix",
+        { cookie: "__HoSt-better-auth.x=y; theme=1" },
+        "theme=1",
+      ],
+      [
+        "the password-reset grant",
+        { cookie: "verify_access=t; theme=1" },
+        "theme=1",
+      ],
+      // Assumption, not verified: workerd joins repeated `cookie` headers
+      // into one value with "; ", as Node's (undici's) `Headers` does here.
+      // If it joined them otherwise, this case would not describe production.
+      [
+        "two cookie headers on one request",
+        [
+          ["cookie", "better-auth.session_token=s; theme=1"],
+          ["cookie", "cart=fixture"],
+        ],
+        "theme=1; cart=fixture",
+      ],
+    ])("filters cookies given %s", async (_case, headers, expected) => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, { headers }),
+      );
+      expect(seen.headers.get("cookie")).toBe(expected);
+    });
+
+    it("leaves headers outside x-morph-* and cookie as they were", async () => {
+      const seen = await forward(
+        new Request(`https://${HOST}/about`, {
+          headers: {
+            "accept-language": "zh-TW,en;q=0.8",
+            "user-agent": "Shopper/1.0",
+            authorization: "Bearer theme-own",
+          },
+        }),
+      );
+      expect(seen.headers.get("accept-language")).toBe("zh-TW,en;q=0.8");
+      expect(seen.headers.get("user-agent")).toBe("Shopper/1.0");
+      expect(seen.headers.get("authorization")).toBe("Bearer theme-own");
+    });
+  });
+});
+
 describe("published content endpoint", () => {
   const contentPorts = {
     getPublishedDocument: vi.fn(async () => ({
