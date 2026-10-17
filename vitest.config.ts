@@ -113,10 +113,7 @@ const SHARED_TEST_OPTIONS = {
  * them in makes the run slow and fragile.
  */
 export default defineConfig({
-  plugins: [
-    viteTsConfigPaths({ projects: ["./tsconfig.json"] }),
-    viteReact(),
-  ],
+  plugins: [viteTsConfigPaths({ projects: ["./tsconfig.json"] }), viteReact()],
   resolve: {
     alias: {
       "cloudflare:workers": new URL(
@@ -151,7 +148,12 @@ export default defineConfig({
           environment: "jsdom",
           // `packages/` holds code that ships apart from the app (the SDK) and
           // is tested with it.
-          include: ["src/**/*.test.{ts,tsx}", "packages/*/src/**/*.test.ts"],
+          include: [
+            "src/**/*.test.{ts,tsx}",
+            "packages/*/src/**/*.test.ts",
+            // The SDK's framework entries, e.g. the Start thin entry.
+            "packages/*/start/**/*.test.ts",
+          ],
           // Vitest's own defaults are spread back in: setting `exclude`
           // replaces them, and dropping `node_modules` would collect the
           // world.

@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   mkdirSync,
   mkdtempSync,
@@ -50,6 +52,68 @@ const WRANGLER = `{
 `;
 const BUILD_BUDGET_MS = 180_000;
 
+/**
+ * A route reading content through the SDK's Start thin entry: loader ->
+ * createServerFn -> `morph.pages.get("/")`, from whichever origin the request
+ * names in x-morph-content-origin, as Core names it on the public site. Not
+ * prerendered: it is read per request. A media field is rendered as an
+ * image, so the page shows which URL the thin entry handed back.
+ */
+const SDK_ROUTE = {
+  path: "src/routes/sdk-thin-entry.tsx",
+  content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "@morph/sdk/start";
+
+const readHome = createServerFn().handler(async () => {
+  const home = await morph.pages.get("/");
+  return {
+    title: String(home["sdk-probe"]?.title ?? ""),
+    image: String(home["sdk-probe"]?.image ?? ""),
+  };
+});
+
+export const Route = createFileRoute("/sdk-thin-entry")({
+  loader: () => readHome(),
+  component: function SdkThinEntry() {
+    const data = Route.useLoaderData();
+    return (
+      <>
+        <p data-sdk="home">{data.title}</p>
+        <img data-sdk="image" src={data.image} alt="" />
+      </>
+    );
+  },
+});
+`,
+};
+/** Page media as Core sends it: a path on the public site's own origin. */
+const SDK_IMAGE = "/_storefront-media/sdk-probe?version=assets%2Fhero.png";
+
+/** A content service on loopback answering every page with its own name. */
+async function contentStore(name: string, delayMs: number) {
+  const server: Server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://store.invalid");
+    if (url.pathname !== "/_morph/content") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    setTimeout(() => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          slots: { "sdk-probe": { title: name, image: SDK_IMAGE } },
+          hiddenSlots: [],
+        }),
+      );
+    }, delayMs);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return { origin: "http://127.0.0.1:" + port, close: () => server.close() };
+}
+
 function walk(root: string, dir = root): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = join(dir, entry.name);
@@ -68,6 +132,7 @@ describe("a TanStack Start project built with its own configuration", () => {
   beforeAll(async () => {
     const plan = themeFramework().build.native.plan([
       ...STARTER_THEME_FILES,
+      SDK_ROUTE,
       { path: "vite.config.ts", content: VITE_CONFIG },
       { path: "wrangler.jsonc", content: WRANGLER },
     ]);
@@ -172,6 +237,62 @@ describe("a TanStack Start project built with its own configuration", () => {
 
   it("answers an unknown page with 404", async () => {
     expect((await request("/no-such-page")).status).toBe(404);
+  });
+
+  it("reads each request's own content origin through the SDK's Start thin entry", async () => {
+    // The slow store answers after the fast one: the first request is still
+    // waiting on its read while the second is served completely.
+    const slow = await contentStore("from-slow-store", 300);
+    const fast = await contentStore("from-fast-store", 0);
+    try {
+      const read = async (headers: Record<string, string>) => {
+        const response = await worker!.fetch(
+          "http://localhost/sdk-thin-entry",
+          {
+            redirect: "manual",
+            headers,
+          },
+        );
+        return { status: response.status, html: await response.text() };
+      };
+      const [a, b] = await Promise.all([
+        read({ "x-morph-content-origin": slow.origin }),
+        read({ "x-morph-content-origin": fast.origin }),
+      ]);
+      expect(a.status, a.html.slice(0, 1000)).toBe(200);
+      expect(b.status, b.html.slice(0, 1000)).toBe(200);
+      expect(a.html).toContain('data-sdk="home">from-slow-store<');
+      expect(a.html).not.toContain("from-fast-store");
+      expect(b.html).toContain('data-sdk="home">from-fast-store<');
+      expect(b.html).not.toContain("from-slow-store");
+      // Media stay the relative path Core sent: the content origin is a
+      // loopback address here and must not be written into the page.
+      for (const { html } of [a, b]) {
+        expect(html).toContain(`data-sdk="image" src="${SDK_IMAGE}"`);
+        expect(html).not.toContain("127.0.0.1");
+        expect(html).not.toContain(".invalid");
+      }
+
+      // No source named: the read fails rather than rendering defaults.
+      const missing = await read({});
+      expect(missing.status).toBeGreaterThanOrEqual(500);
+      expect(missing.html).not.toContain('data-sdk="home">');
+    } finally {
+      slow.close();
+      fast.close();
+    }
+  });
+
+  it("keeps the thin entry's request access out of the browser bundle", () => {
+    const client = walk(join(artifactDir, "runtime/client"))
+      .filter((path) => path.endsWith(".js"))
+      .map((path) =>
+        readFileSync(join(artifactDir, "runtime/client", path), "utf8"),
+      )
+      .join("\n");
+    expect(client.length).toBeGreaterThan(0);
+    expect(client).not.toContain("x-morph-content-origin");
+    expect(workerSource).toContain("x-morph-content-origin");
   });
 
   it("serves the static assets beside the Worker", async () => {

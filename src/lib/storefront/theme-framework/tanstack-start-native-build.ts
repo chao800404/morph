@@ -6,6 +6,7 @@ import {
 } from "../compiler/theme-prerender-content";
 import { GENERATED_SANDBOX_DEPENDENCY_VERSIONS } from "../compiler/theme-sandbox-dependencies.generated";
 import { prepareSourcesForBuild } from "../source-language/tsx-source-language";
+import { themeMorphSdkFiles } from "../compiler/theme-morph-sdk";
 import {
   NATIVE_WRANGLER_CONFIG_PATH,
   collectNativeCloudflareArtifact,
@@ -149,6 +150,9 @@ export function planNativeStartBuild(
     path: NATIVE_BUILD_LOADER_PATH,
     content: nativeBuildLoaderSource(),
   });
+  // The Morph SDK the wrapper resolves `@morph/sdk` and `@morph/sdk/start` to.
+  // Under .morph/, which a project cannot carry (refuseNativeReservedPaths).
+  workspaceFiles.push(...themeMorphSdkFiles());
   workspaceFiles.push({
     path: THEME_PRERENDER_CONTENT_FILE,
     content: JSON.stringify(
