@@ -11,7 +11,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { GUARDED_MESSAGES, scanSource } from "./preview-message-poster-scan.mjs";
+import {
+  applyAllowList,
+  GUARDED_MESSAGES,
+  scanSource,
+} from "./preview-message-poster-scan.mjs";
 
 const SHELL = "src/routes/_editor/-components/visual-editor-shell.tsx";
 const SECTION = "morph:storefront-preview-update-section-props";
@@ -298,6 +302,106 @@ function ack(ok) {
         "src/elsewhere.ts",
       ),
       [],
+    );
+  });
+});
+
+describe("what is posted as a literal however it is wrapped", () => {
+  it("as const, satisfies and ! around a literal or a choice between literals", () => {
+    assert.deepEqual(
+      scanSource(
+        `function ack(ok) {
+  postPreviewToEditorMessage({ type: (ok ? "morph:storefront-preview-theme-files-applied" : "morph:storefront-preview-theme-files-failed") as const });
+  postPreviewToEditorMessage({ type: "morph:storefront-preview-pong" satisfies string });
+  postPreviewToEditorMessage({ type: ("morph:storefront-preview-ping" as const)! });
+}`,
+        "src/elsewhere.ts",
+      ),
+      [],
+    );
+  });
+});
+
+describe("a template the scan cannot afford to backtrack on", () => {
+  it("many empty runs before one that does not match finish at once", () => {
+    const source =
+      "const t = `" + "${a}".repeat(40) + SECTION + "X`;";
+    const started = performance.now();
+    const findings = scanSource(source, "src/elsewhere.ts");
+    const elapsed = performance.now() - started;
+    assert.deepEqual(findings, []);
+    assert.ok(elapsed < 1000, `took ${elapsed.toFixed(0)} ms`);
+  });
+});
+
+/**
+ * The allow-list the command applies, run on fixtures: an entry excuses only
+ * its own text in its own function, and only as many times as it expects.
+ */
+describe("the allow-list", () => {
+  const PREVIEW = "src/routes/_editor/store/$storefrontId/themes/$themeId/preview.tsx";
+  const RECEIVER = `
+const handlePreviewSelection = (event) => {
+  if (event.data.type.startsWith("morph:storefront-preview-")) warn(event.data.type);
+};`;
+  const scanned = (shell) => [
+    ...scanSource(`const REMEASURE = new Set(["${SECTION}"]);`, PREVIEW).map(
+      (finding) => ({ file: PREVIEW, ...finding }),
+    ),
+    ...scanSource(shell, SHELL).map((finding) => ({ file: SHELL, ...finding })),
+  ];
+
+  it("excuses the receiver's namespace test and the preview route's set, once each", () => {
+    assert.deepEqual(applyAllowList(scanned(`${OWNERS}${RECEIVER}`)), {
+      unexcused: [],
+      miscounted: [],
+    });
+  });
+
+  it("does not excuse the same text in a new poster in the shell (C25)", () => {
+    const { unexcused } = applyAllowList(
+      scanned(`${OWNERS}${RECEIVER}
+const PREVIEW_NS = "morph:storefront-preview-";
+const replayAll = useCallback((kind) => {
+  const message = { type: PREVIEW_NS + kind, sectionId: "a" };
+  postEditorToPreviewMessage(frame(), message);
+}, []);`),
+    );
+    assert.deepEqual(
+      unexcused.map(({ message, kind, owner, text }) => ({ message, kind, owner, text })),
+      [
+        { message: SECTION, kind: "fragment", owner: null, text: "morph:storefront-preview-" },
+        { message: FIELD, kind: "fragment", owner: null, text: "morph:storefront-preview-" },
+      ],
+    );
+  });
+
+  it("fails an entry matched more often than it expects, even in its own function", () => {
+    const { unexcused, miscounted } = applyAllowList(
+      scanned(`${OWNERS}
+const handlePreviewSelection = (event) => {
+  if (event.data.type.startsWith("morph:storefront-preview-")) warn(event.data.type);
+  const forged = "morph:storefront-preview-";
+};`),
+    );
+    assert.deepEqual(unexcused, []);
+    assert.deepEqual(
+      miscounted.map(({ message, owner, count, found }) => ({ message, owner, count, found })),
+      [
+        { message: SECTION, owner: "handlePreviewSelection", count: 1, found: 2 },
+        { message: FIELD, owner: "handlePreviewSelection", count: 1, found: 2 },
+      ],
+    );
+  });
+
+  it("fails an entry that matches nothing", () => {
+    const { miscounted } = applyAllowList(scanned(OWNERS));
+    assert.deepEqual(
+      miscounted.map(({ kind, found }) => ({ kind, found })),
+      [
+        { kind: "fragment", found: 0 },
+        { kind: "fragment", found: 0 },
+      ],
     );
   });
 });

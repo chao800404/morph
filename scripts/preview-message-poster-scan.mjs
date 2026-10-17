@@ -17,10 +17,10 @@
  *
  * Parsed, not matched: a string the parser sees is classified by where it
  * stands, so the protocol's type declaration, its parser's `case`, and a
- * receiver's comparison are told apart from a message being built. Anything
- * the rule cannot classify is reported too, rather than passed: a constant
- * holding the type and spread into a message later is exactly the kind of
- * second poster this exists to find.
+ * receiver's comparison are told apart from a message being built. A guarded
+ * type spelled whole somewhere the rule does not classify is reported
+ * (`other`) rather than passed — a constant holding the type, say — and so
+ * are the shapes listed below; anything else the scan does not see.
  *
  * A template with substitutions is read too: one whose fixed text could
  * spell a guarded type (`morph:storefront-preview-update-${kind}`) is checked
@@ -33,6 +33,23 @@
  * guarded type crossing one of its separators (`fragment`: `P +
  * "update-section-props"`), and an object posted through a `post…Message`
  * call whose `type:` is not a literal (`unliteral-type`: `${NS}-${k}`).
+ *
+ * Known limits. This is a bounded architecture check that keeps the editor's
+ * ordinary code on the one poster per message. It is not a security
+ * boundary and does not claim it cannot be bypassed. It does not catch:
+ *
+ * - a type carried in by spread (`{ ...base }`);
+ * - a message object built first and passed by variable
+ *   (`const m = { type: t }; postMessage(m)`);
+ * - a call through an alias, `bind`, bracket access (`w["postMessage"]`), or
+ *   a wrapper not named `post…Message`;
+ * - arguments serialised or cloned on the way (`JSON.parse(JSON.stringify(m))`,
+ *   `structuredClone(m)`);
+ * - computed keys (`{ [k]: t }`);
+ * - a type joined only from bare words with no separator in any of them
+ *   (`"storefront"`, `"preview"`, …);
+ * - a superset string: a literal holding the whole type inside longer text
+ *   (`"[morph:…-update-section-props]"`), later cut down to it.
  */
 
 import ts from "typescript";
@@ -110,7 +127,37 @@ const MIN_TEMPLATE_RUN = 8;
 /** Calls that post a message: `postMessage`, `postEditorToPreviewMessage`, … */
 const POST_MESSAGE = /^post\w*Message$/i;
 
-const escapeRegExp =(text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** `x as T`, `x as const`, `x satisfies T`, `x!` and `(x)`, as `x`. */
+function unwrapped(node) {
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
+    node = node.expression;
+  }
+  return node;
+}
+
+/**
+ * Whether `message` reads as `runs` in order with anything between them: the
+ * first run at its start, the last at its end. Walked with `indexOf`, not a
+ * regular expression: a pattern of `[\s\S]*` per substitution backtracks
+ * exponentially on a template of many empty runs that does not match.
+ */
+function spellsInOrder(message, runs) {
+  const first = runs[0];
+  const last = runs[runs.length - 1];
+  if (!message.startsWith(first)) return false;
+  let at = first.length;
+  for (const run of runs.slice(1, -1)) {
+    const found = message.indexOf(run, at);
+    if (found < 0) return false;
+    at = found + run.length;
+  }
+  return message.length - last.length >= at && message.endsWith(last);
+}
 
 /**
  * The guarded types a template with substitutions could evaluate to: those
@@ -119,8 +166,7 @@ const escapeRegExp =(text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function templateCouldSpell(node) {
   const runs = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)];
   if (Math.max(...runs.map((run) => run.length)) < MIN_TEMPLATE_RUN) return [];
-  const pattern = new RegExp(`^${runs.map(escapeRegExp).join("[\\s\\S]*")}$`);
-  return Object.keys(GUARDED_MESSAGES).filter((message) => pattern.test(message));
+  return Object.keys(GUARDED_MESSAGES).filter((message) => spellsInOrder(message, runs));
 }
 
 /**
@@ -223,7 +269,7 @@ export function scanSource(source, fileName) {
   // A value whose every outcome is a literal (`a ? "x" : "y"`). Its strings
   // are visited on their own, so a guarded one is still reported.
   const literalValue = (value) => {
-    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    value = unwrapped(value);
     if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
       return true;
     }
@@ -240,14 +286,8 @@ export function scanSource(source, fileName) {
       ? node.expression.name
       : node.expression;
     if (!ts.isIdentifier(callee) || !POST_MESSAGE.test(callee.text)) return;
-    for (let argument of node.arguments) {
-      while (
-        ts.isParenthesizedExpression(argument) ||
-        ts.isAsExpression(argument) ||
-        ts.isSatisfiesExpression(argument)
-      ) {
-        argument = argument.expression;
-      }
+    for (const passed of node.arguments) {
+      const argument = unwrapped(passed);
       if (!ts.isObjectLiteralExpression(argument)) continue;
       for (const property of argument.properties) {
         const named =
@@ -318,4 +358,64 @@ export function scanSource(source, fileName) {
     }
   }
   return findings;
+}
+
+const SHELL_FILE = "src/routes/_editor/-components/visual-editor-shell.tsx";
+
+/**
+ * Findings in src/ that are not posters, each with its reason.
+ *
+ * An entry is keyed by file, message, kind and owning function (`null`
+ * outside any named function), and a fragment entry by its exact text too.
+ * It carries the number of findings it expects. Fewer or more is a failure,
+ * and so is an entry that matches nothing, so an entry cannot quietly excuse
+ * a second use of the same text, in the same file or the same function.
+ */
+export const UNCLASSIFIED_ALLOWED = Object.freeze([
+  {
+    file: "src/routes/_editor/store/$storefrontId/themes/$themeId/preview.tsx",
+    message: "morph:storefront-preview-update-section-props",
+    kind: "other",
+    owner: null,
+    count: 1,
+    // Morph's own preview route lists the messages after which it measures
+    // again. It receives them; it posts none.
+    reason: "receive-side set of messages that change the page's geometry",
+  },
+  ...Object.keys(GUARDED_MESSAGES).map((message) => ({
+    file: SHELL_FILE,
+    message,
+    kind: "fragment",
+    text: "morph:storefront-preview-",
+    owner: "handlePreviewSelection",
+    count: 1,
+    // The development warning for a message the parser rejected checks the
+    // received type's namespace. It reads a message; it builds none.
+    reason: "receive-side namespace test on a rejected preview message",
+  })),
+]);
+
+/**
+ * Findings (each with its `file`) split into those no entry excuses, and the
+ * entries whose number of matches is not the `count` they expect.
+ */
+export function applyAllowList(findings, allowList = UNCLASSIFIED_ALLOWED) {
+  const matched = allowList.map(() => 0);
+  const unexcused = [];
+  for (const finding of findings) {
+    const index = allowList.findIndex(
+      (entry) =>
+        entry.file === finding.file &&
+        entry.message === finding.message &&
+        entry.kind === finding.kind &&
+        entry.owner === (finding.owner ?? null) &&
+        (entry.kind !== "fragment" || entry.text === finding.text),
+    );
+    if (index < 0) unexcused.push(finding);
+    else matched[index] += 1;
+  }
+  const miscounted = allowList.flatMap((entry, index) =>
+    matched[index] === entry.count ? [] : [{ ...entry, found: matched[index] }],
+  );
+  return { unexcused, miscounted };
 }

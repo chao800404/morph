@@ -3,6 +3,8 @@
  *
  * The rule lives in `preview-message-poster-scan.mjs` and is tested by
  * `preview-message-poster-scan.test.mjs`; this walks `src/` and reports.
+ * The findings that are not posters, and how many of each, are listed there
+ * too (`UNCLASSIFIED_ALLOWED`), so the fixtures exercise the same list.
  *
  * `src/` only: it is the editor, and the only code that posts to a preview
  * frame. Test files are left out — they play the preview, and a test posting a
@@ -13,39 +15,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { scanSource } from "./preview-message-poster-scan.mjs";
+import { applyAllowList, scanSource } from "./preview-message-poster-scan.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/**
- * Uses of a guarded type the scanner cannot classify, each with its reason.
- * Keyed by file, message and kind, so an entry cannot excuse a message built
- * in the same file.
- */
-const UNCLASSIFIED_ALLOWED = [
-  {
-    file: "src/routes/_editor/store/$storefrontId/themes/$themeId/preview.tsx",
-    message: "morph:storefront-preview-update-section-props",
-    kind: "other",
-    // Morph's own preview route lists the messages after which it measures
-    // again. It receives them; it posts none.
-    reason: "receive-side set of messages that change the page's geometry",
-  },
-  // A fragment entry names its exact text too, so it excuses that one piece
-  // and not any other piece of a guarded type in the same file.
-  ...[
-    "morph:storefront-preview-update-section-props",
-    "morph:storefront-preview-update-selection-field",
-  ].map((message) => ({
-    file: "src/routes/_editor/-components/visual-editor-shell.tsx",
-    message,
-    kind: "fragment",
-    text: "morph:storefront-preview-",
-    // The development warning for a message the parser rejected checks the
-    // received type's namespace. It reads a message; it builds none.
-    reason: "receive-side namespace test on a rejected preview message",
-  })),
-];
 
 function collectSources(dir) {
   const found = [];
@@ -60,26 +32,20 @@ function collectSources(dir) {
   return found;
 }
 
-const findings = [];
+const all = [];
 for (const file of collectSources(join(projectRoot, "src"))) {
   const relativePath = relative(projectRoot, file).split(sep).join("/");
   for (const finding of scanSource(readFileSync(file, "utf8"), relativePath)) {
-    const allowed = UNCLASSIFIED_ALLOWED.some(
-      (entry) =>
-        entry.file === relativePath &&
-        entry.message === finding.message &&
-        entry.kind === finding.kind &&
-        (entry.text === undefined || entry.text === finding.text),
-    );
-    if (!allowed) findings.push({ file: relativePath, ...finding });
+    all.push({ file: relativePath, ...finding });
   }
 }
+const { unexcused, miscounted } = applyAllowList(all);
 
-if (findings.length > 0) {
+if (unexcused.length > 0) {
   console.error(
-    `\n[check-preview-message-posters] ${findings.length} place(s) build a preview content message outside its one poster:\n`,
+    `\n[check-preview-message-posters] ${unexcused.length} place(s) build a preview content message outside its one poster:\n`,
   );
-  for (const { file, line, message, kind, owner } of findings) {
+  for (const { file, line, message, kind, owner } of unexcused) {
     console.error(
       `  ${file}:${line}\n    → ${message} (${kind}${owner ? ` in ${owner}` : ""})`,
     );
@@ -90,8 +56,23 @@ if (findings.length > 0) {
       " there whether the section is hidden, and a hidden section's values must" +
       " not reach the preview page.\n",
   );
-  process.exit(1);
 }
+if (miscounted.length > 0) {
+  console.error(
+    `\n[check-preview-message-posters] ${miscounted.length} allow-list entr(ies) do not match what they expect:\n`,
+  );
+  for (const { file, message, kind, owner, text, count, found } of miscounted) {
+    console.error(
+      `  ${file} — ${message} (${kind}${owner ? ` in ${owner}` : ""}${text ? `, "${text}"` : ""}): expected ${count}, found ${found}`,
+    );
+  }
+  console.error(
+    "\nAn entry that matches nothing is stale and is removed; one that matches" +
+      " more than it expects is excusing a new use, which is reviewed rather than" +
+      " counted in.\n",
+  );
+}
+if (unexcused.length > 0 || miscounted.length > 0) process.exit(1);
 
 console.log(
   "[check-preview-message-posters] OK — each preview content message is built in its one poster.",
