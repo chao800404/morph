@@ -1386,6 +1386,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-a",
           previewRuntime: "start",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toEqual({ ok: true, previewRuntime: "start" });
       const after = sqlite
@@ -1404,6 +1405,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-a",
           previewRuntime: "client",
+          expectedPreviewRuntime: "start",
         }),
       ).resolves.toEqual({ ok: true, previewRuntime: "client" });
       expect(recorded()).toEqual([
@@ -1418,6 +1420,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-b",
           previewRuntime: "start",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toBeNull();
       await expect(
@@ -1425,6 +1428,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-b",
           themeId: "theme-a",
           previewRuntime: "start",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toBeNull();
       expect(recorded()).toEqual([
@@ -1444,6 +1448,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-a",
           previewRuntime: "start",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toBeNull();
       expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: null }]);
@@ -1460,6 +1465,7 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-a",
           previewRuntime: "start",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toEqual({ ok: false, error: "PREVIEW_RUNTIME_UNSUPPORTED" });
       expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: null }]);
@@ -1469,8 +1475,103 @@ describe("storefront theme DAL", () => {
           storefrontId: "storefront-a",
           themeId: "theme-a",
           previewRuntime: "client",
+          expectedPreviewRuntime: null,
         }),
       ).resolves.toEqual({ ok: true, previewRuntime: "client" });
+    });
+
+    describe("compare-and-set on what the author saw", () => {
+      const set = (
+        previewRuntime: "client" | "start" | null,
+        expectedPreviewRuntime: "client" | "start" | null,
+      ) =>
+        storefrontThemeDal.setPreviewRuntime({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          previewRuntime,
+          expectedPreviewRuntime,
+        });
+      const store = (value: string | null) =>
+        sqlite
+          .prepare(
+            "UPDATE storefront_themes SET preview_runtime = ? WHERE id = 'theme-a'",
+          )
+          .run(value);
+      const row = () =>
+        sqlite
+          .prepare("SELECT * FROM storefront_themes WHERE id = 'theme-a'")
+          .get();
+
+      it("refuses a stale recorded value, writes nothing, and returns the current one", async () => {
+        store("client");
+        const before = row();
+        await expect(set("start", "start")).resolves.toEqual({
+          ok: false,
+          error: "PREVIEW_RUNTIME_CONFLICT",
+          previewRuntime: "client",
+        });
+        expect(row()).toEqual(before);
+      });
+
+      it("refuses expecting none while the Theme records one", async () => {
+        store("start");
+        const before = row();
+        await expect(set("client", null)).resolves.toEqual({
+          ok: false,
+          error: "PREVIEW_RUNTIME_CONFLICT",
+          previewRuntime: "start",
+        });
+        expect(row()).toEqual(before);
+      });
+
+      it("refuses expecting one while the Theme records none", async () => {
+        const before = row();
+        await expect(set(null, "start")).resolves.toEqual({
+          ok: false,
+          error: "PREVIEW_RUNTIME_CONFLICT",
+          previewRuntime: null,
+        });
+        expect(row()).toEqual(before);
+      });
+
+      it("clears a record back to inherited, matching it exactly", async () => {
+        store("start");
+        await expect(set(null, "start")).resolves.toEqual({
+          ok: true,
+          previewRuntime: null,
+        });
+        expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: null }]);
+        // Clearing is never refused for the framework: Astro may inherit.
+        sqlite
+          .prepare(
+            "UPDATE storefront_themes SET framework = 'astro', preview_runtime = 'client' WHERE id = 'theme-a'",
+          )
+          .run();
+        await expect(set(null, "client")).resolves.toEqual({
+          ok: true,
+          previewRuntime: null,
+        });
+      });
+
+      it("takes none as matching a stored value that names no runtime, as reads do", async () => {
+        store("server");
+        await expect(set("start", null)).resolves.toEqual({
+          ok: true,
+          previewRuntime: "start",
+        });
+      });
+
+      it("lets exactly one of two writers that saw the same value through", async () => {
+        const first = await set("start", null);
+        const second = await set("client", null);
+        expect(first).toEqual({ ok: true, previewRuntime: "start" });
+        expect(second).toEqual({
+          ok: false,
+          error: "PREVIEW_RUNTIME_CONFLICT",
+          previewRuntime: "start",
+        });
+        expect(recorded()).toEqual([{ id: "theme-a", preview_runtime: "start" }]);
+      });
     });
   });
 

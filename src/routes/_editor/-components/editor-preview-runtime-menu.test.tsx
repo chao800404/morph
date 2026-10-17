@@ -13,6 +13,7 @@ import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gat
 const setThemePreviewRuntime = vi.fn();
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
+const toastInfo = vi.fn();
 
 vi.mock("@/server/storefront/storefront-theme-preview-server.serverFn", () => ({
   setThemePreviewRuntime: (args: unknown) => setThemePreviewRuntime(args),
@@ -21,6 +22,7 @@ vi.mock("sonner", () => ({
   toast: {
     success: (message: string) => toastSuccess(message),
     error: (message: string) => toastError(message),
+    info: (message: string) => toastInfo(message),
   },
 }));
 
@@ -76,7 +78,13 @@ function renderMenu(context: StorefrontThemeEditorDTO) {
       />
     </QueryClientProvider>,
   );
-  return { queryClient, detailKey, onRuntimeChanged };
+  const cachedRecord = () =>
+    (
+      queryClient.getQueryData(detailKey) as {
+        data: StorefrontThemeEditorDTO;
+      }
+    ).data.theme.previewRuntime;
+  return { cachedRecord, onRuntimeChanged };
 }
 
 function openMenu() {
@@ -85,6 +93,18 @@ function openMenu() {
     { button: 0, ctrlKey: false },
   );
 }
+
+const choose = (name: string | RegExp) =>
+  fireEvent.click(screen.getByRole("menuitemradio", { name }));
+
+const checked = (name: string | RegExp) =>
+  screen.getByRole("menuitemradio", { name }).getAttribute("aria-checked");
+
+const saved = (previewRuntime: "client" | "start" | null) => ({
+  success: true,
+  message: "Live Preview runtime saved",
+  data: { previewRuntime },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -102,11 +122,8 @@ describe("EditorPreviewRuntimeMenu", () => {
     expect(screen.getByTestId("preview-runtime-source").textContent).toBe(
       "Full Start, the deployment default. Not recorded for this Theme.",
     );
-    expect(
-      screen
-        .getByRole("menuitemradio", { name: "Full Start" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(checked("Deployment default (Full Start)")).toBe("true");
+    expect(checked("Full Start")).toBe("false");
   });
 
   it("shows the client-only default when the deployment says nothing", () => {
@@ -115,6 +132,7 @@ describe("EditorPreviewRuntimeMenu", () => {
     expect(screen.getByTestId("preview-runtime-source").textContent).toBe(
       "Client-only, the deployment default. Not recorded for this Theme.",
     );
+    expect(checked("Deployment default (Client-only)")).toBe("true");
   });
 
   it("shows a runtime the Theme records as recorded, over the deployment's", () => {
@@ -123,24 +141,20 @@ describe("EditorPreviewRuntimeMenu", () => {
     expect(screen.getByTestId("preview-runtime-source").textContent).toBe(
       "Client-only, recorded for this Theme.",
     );
+    expect(checked("Client-only")).toBe("true");
+    // What clearing the record would fall back to.
     expect(
-      screen
-        .getByRole("menuitemradio", { name: "Client-only" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+      screen.getByRole("menuitemradio", {
+        name: "Deployment default (Full Start)",
+      }),
+    ).toBeTruthy();
   });
 
-  it("records the choice, updates the editor context, then restarts the preview", async () => {
-    setThemePreviewRuntime.mockResolvedValue({
-      success: true,
-      message: "ok",
-      data: { previewRuntime: "start" },
-    });
-    const { queryClient, detailKey, onRuntimeChanged } = renderMenu(
-      editorContext({}),
-    );
+  it("records the choice against what it saw, updates the context, then restarts the preview", async () => {
+    setThemePreviewRuntime.mockResolvedValue(saved("start"));
+    const { cachedRecord, onRuntimeChanged } = renderMenu(editorContext({}));
     openMenu();
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Full Start" }));
+    choose("Full Start");
 
     await waitFor(() => expect(onRuntimeChanged).toHaveBeenCalledTimes(1));
     expect(setThemePreviewRuntime).toHaveBeenCalledWith({
@@ -148,16 +162,63 @@ describe("EditorPreviewRuntimeMenu", () => {
         storefrontId: "storefront-1",
         themeId: "theme-1",
         previewRuntime: "start",
+        expectedPreviewRuntime: null,
       },
     });
-    expect(
-      (
-        queryClient.getQueryData(detailKey) as {
-          data: StorefrontThemeEditorDTO;
-        }
-      ).data.theme.previewRuntime,
-    ).toBe("start");
+    expect(cachedRecord()).toBe("start");
     expect(toastSuccess).toHaveBeenCalled();
+  });
+
+  it("clears the record back to the deployment default, and restarts when that changes the runtime", async () => {
+    setThemePreviewRuntime.mockResolvedValue(saved(null));
+    const { cachedRecord, onRuntimeChanged } = renderMenu(
+      editorContext({ previewRuntime: "client" }, "start"),
+    );
+    openMenu();
+    choose("Deployment default (Full Start)");
+
+    await waitFor(() => expect(onRuntimeChanged).toHaveBeenCalledTimes(1));
+    expect(setThemePreviewRuntime).toHaveBeenCalledWith({
+      data: {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+        previewRuntime: null,
+        expectedPreviewRuntime: "client",
+      },
+    });
+    expect(cachedRecord()).toBeNull();
+  });
+
+  it("does not restart a preview whose runtime the change leaves as it was", async () => {
+    // Inherited client, recorded client: the same runtime either way.
+    setThemePreviewRuntime.mockResolvedValue(saved("client"));
+    const { cachedRecord, onRuntimeChanged } = renderMenu(editorContext({}));
+    openMenu();
+    choose("Client-only");
+
+    await waitFor(() => expect(cachedRecord()).toBe("client"));
+    expect(toastSuccess).toHaveBeenCalledWith(
+      "Live Preview runtime saved. It still uses Client-only.",
+    );
+    expect(onRuntimeChanged).not.toHaveBeenCalled();
+  });
+
+  it("on a conflict shows what the Theme records now, restarts nothing and sends nothing again", async () => {
+    setThemePreviewRuntime.mockResolvedValue({
+      success: false,
+      message: "The Live Preview runtime was changed elsewhere.",
+      error: "PREVIEW_RUNTIME_CONFLICT",
+      previewRuntime: "client",
+    });
+    const { cachedRecord, onRuntimeChanged } = renderMenu(editorContext({}));
+    openMenu();
+    choose("Full Start");
+
+    await waitFor(() => expect(toastInfo).toHaveBeenCalledTimes(1));
+    expect(cachedRecord()).toBe("client");
+    expect(onRuntimeChanged).not.toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+    expect(setThemePreviewRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("does not restart the preview when the server refuses", async () => {
@@ -166,11 +227,9 @@ describe("EditorPreviewRuntimeMenu", () => {
       message: "Only a TanStack Start Theme can use the full Start preview.",
       error: "PREVIEW_RUNTIME_UNSUPPORTED",
     });
-    const { queryClient, detailKey, onRuntimeChanged } = renderMenu(
-      editorContext({}),
-    );
+    const { cachedRecord, onRuntimeChanged } = renderMenu(editorContext({}));
     openMenu();
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Full Start" }));
+    choose("Full Start");
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(
@@ -178,19 +237,15 @@ describe("EditorPreviewRuntimeMenu", () => {
       ),
     );
     expect(onRuntimeChanged).not.toHaveBeenCalled();
-    expect(
-      (
-        queryClient.getQueryData(detailKey) as {
-          data: StorefrontThemeEditorDTO;
-        }
-      ).data.theme.previewRuntime,
-    ).toBeNull();
+    expect(cachedRecord()).toBeNull();
   });
 
-  it("sends nothing for the runtime already in use", () => {
-    const { onRuntimeChanged } = renderMenu(editorContext({}));
+  it("sends nothing for what the Theme already records", () => {
+    const { onRuntimeChanged } = renderMenu(
+      editorContext({ previewRuntime: "start" }),
+    );
     openMenu();
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "Client-only" }));
+    choose("Full Start");
     expect(setThemePreviewRuntime).not.toHaveBeenCalled();
     expect(onRuntimeChanged).not.toHaveBeenCalled();
   });

@@ -613,14 +613,23 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
   });
 
 const setThemePreviewRuntimeInputSchema = themePreviewServerInputSchema.extend({
-  previewRuntime: z.enum(THEME_PREVIEW_RUNTIMES),
+  /** The runtime to record, or null to inherit the deployment's again. */
+  previewRuntime: z.enum(THEME_PREVIEW_RUNTIMES).nullable(),
+  /**
+   * What the author last saw the Theme record (null: none). Required: the
+   * write is a compare-and-set on it, never a blind overwrite.
+   */
+  expectedPreviewRuntime: z.enum(THEME_PREVIEW_RUNTIMES).nullable(),
 });
 
 /**
- * Records the Live Preview runtime a Theme is previewed with (R-0, R1; the
- * author's choice, D1 (b)). A Theme of another framework (Astro) is refused
- * `start`. Takes effect on the preview's next start, which the editor asks
- * for once this answers; nothing here touches a running preview.
+ * Records the Live Preview runtime a Theme is previewed with, or clears it
+ * back to the deployment's (R-0, R1; the author's choice, D1 (b)). A Theme
+ * of another framework (Astro) is refused `start`. Written only while the
+ * Theme still records what the author saw; otherwise refused as
+ * `PREVIEW_RUNTIME_CONFLICT` with what it does record. Takes effect on the
+ * preview's next start, which the editor asks for once this answers;
+ * nothing here touches a running preview.
  */
 export const setThemePreviewRuntime = createServerFn({ method: "POST" })
   .validator((data: unknown) =>
@@ -629,15 +638,28 @@ export const setThemePreviewRuntime = createServerFn({ method: "POST" })
   .middleware([commerceAdminMiddleware])
   .handler(async ({ data: input }) => {
     if (!input.success) return input;
-    const { storefrontId, themeId, previewRuntime } = input.data;
+    const { storefrontId, themeId, previewRuntime, expectedPreviewRuntime } =
+      input.data;
     try {
       const result = await storefrontThemeDal.setPreviewRuntime({
         storefrontId,
         themeId,
         previewRuntime,
+        expectedPreviewRuntime,
       });
       if (!result) {
         return fail("Storefront theme not found", { error: "NOT_FOUND" });
+      }
+      if (!result.ok && result.error === "PREVIEW_RUNTIME_CONFLICT") {
+        return {
+          ...fail(
+            "The Live Preview runtime was changed elsewhere. Showing the current one.",
+            { error: result.error },
+          ),
+          // What the Theme records now, so the editor shows it rather than
+          // sending its stale choice again.
+          previewRuntime: result.previewRuntime,
+        };
       }
       if (!result.ok) {
         return fail(
