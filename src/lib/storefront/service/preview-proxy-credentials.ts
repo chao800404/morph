@@ -131,10 +131,16 @@ function cookieName(pair: string): string {
  *
  * Usually its own name. A nameless one (`=a=b`, or `a` with no `=` at all) is
  * sent back as its bare value, which a server then reads as `a=b` or `a`; so
- * for those the value's own leading name is what is checked, after every
- * leading `=` and space is stripped (so `==a=b` and `= =a=b` read as `a`).
- * Without this, `=better-auth.session_token=<t>` would pass as a cookie with
- * no name and could come back as the platform's session.
+ * for those the value's own leading name is what is checked. Without this,
+ * `=better-auth.session_token=<t>` would pass as a cookie with no name and
+ * could come back as the platform's session.
+ *
+ * Every leading `=` and whitespace is stripped first, so `==a=b` and `= =a=b`
+ * are checked as `a` too. That is not a known server-side read (better-call
+ * does not read them as `a`); it is margin around a reserved namespace, and
+ * such forms are dropped to be safe. `\s` rather than SP and HTAB alone:
+ * browsers trim only those two, but better-call trims cookie names with
+ * `String.prototype.trim`, which also removes NBSP and other whitespace.
  */
 function setCookieSentName(setCookie: string): string {
   const semicolon = setCookie.indexOf(";");

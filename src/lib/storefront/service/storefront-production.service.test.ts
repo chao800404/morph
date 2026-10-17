@@ -1032,6 +1032,11 @@ describe("Theme Worker responses on the public storefront", () => {
       headers.append("set-cookie", " =better-auth.session_token=planted; Path=/");
       headers.append("set-cookie", "==better-auth.session_token=planted; Path=/");
       headers.append("set-cookie", "= =better-auth.session_token=planted; Path=/");
+      // Whitespace is stripped as `\s`, not only SP and HTAB as browsers trim:
+      // better-call trims names with String.prototype.trim, NBSP included.
+      headers.append("set-cookie", "\u00a0=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "=\u00a0=better-auth.session_token=planted; Path=/");
+      headers.append("set-cookie", "=\t=better-auth.session_token=planted; Path=/");
       headers.append("set-cookie", "better-auth.session_token; Path=/");
       headers.append("set-cookie", "=theme_pref=1; Path=/");
       headers.append("set-cookie", "==theme_pref=1; Path=/");

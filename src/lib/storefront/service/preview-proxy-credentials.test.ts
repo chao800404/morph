@@ -122,6 +122,11 @@ describe("what of a response reaches the browser", () => {
       "=verify_access=planted",
       "==better-auth.session_token=planted",
       "= =better-auth.session_token=planted; Path=/",
+      // Whitespace is stripped as `\s`, not only SP and HTAB as browsers trim:
+      // better-call trims names with String.prototype.trim, NBSP included.
+      "\u00a0=better-auth.session_token=planted; Path=/",
+      "=\u00a0=better-auth.session_token=planted; Path=/",
+      "=\t=better-auth.session_token=planted; Path=/",
       "better-auth.session_token",
       "better-auth.session_token; Path=/",
     ]) {
