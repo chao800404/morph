@@ -286,8 +286,10 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       // Which runtime served this start, and — for the client-only one —
       // where the Theme uses server functions or server APIs it cannot run,
       // read from the files this start previews (a static reading: it can
-      // over- and under-report). TanStack Start Themes only: an Astro start,
-      // or one whose framework did not resolve, gets neither field. The
+      // over- and under-report, is byte-bounded, and says when it could not
+      // read everything). It never throws, so it cannot fail a start that has
+      // already succeeded. TanStack Start Themes only: an Astro start, or one
+      // whose framework did not resolve, gets none of these fields. The
       // editor shows it as a notice; nothing here changes how the preview runs.
       ...themePreviewRuntimeReport({
         previewRuntime,

@@ -338,7 +338,7 @@ function isIdentifierBinding(node: any, parent: any): boolean {
   return false;
 }
 
-export function packageImportUsesOnlySafeBoundary(
+function packageImportUsesOnlySafeBoundary(
   content: string,
   source: string,
   target: ThemeImportProtectionTarget,
@@ -350,7 +350,25 @@ export function packageImportUsesOnlySafeBoundary(
   } catch {
     return false;
   }
+  return moduleImportUsesOnlySafeBoundary(
+    ast,
+    source,
+    target,
+    requireStaticImport,
+  );
+}
 
+/**
+ * `packageImportUsesOnlySafeBoundary` on a module already parsed with
+ * `parseThemeSourceModule`, for a caller that has the AST and should not
+ * parse the file again.
+ */
+export function moduleImportUsesOnlySafeBoundary(
+  ast: any,
+  source: string,
+  target: ThemeImportProtectionTarget,
+  requireStaticImport = false,
+): boolean {
   const importedNames = new Set<string>();
   let hasSideEffectImport = false;
   let hasRuntimeImport = false;

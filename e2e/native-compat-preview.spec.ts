@@ -124,7 +124,10 @@ async function expectClientOnlyNoticeNames(page: Page, file: string) {
   const notice = page.locator('[data-slot="preview-client-only-notice"]');
   await expect(notice).toBeVisible({ timeout: 90_000 });
   await expect(notice).toContainText(
-    "uses server functions or server APIs that this preview does not run",
+    "This preview runs in client-only mode, so the server functions and server APIs below do not run here",
+  );
+  await expect(notice).toContainText(
+    "A full Start preview is a deployment-level setting that is not enabled for this preview.",
   );
   await expect(
     notice.getByRole("button", { name: file, exact: true }),

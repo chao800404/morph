@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES,
   MAX_CLIENT_ONLY_PREVIEW_LIMITS,
+  MAX_CLIENT_ONLY_PREVIEW_TOTAL_BYTES,
   collectThemeClientOnlyPreviewLimits,
   themePreviewRuntimeReport,
 } from "./theme-client-only-preview-limits";
@@ -9,7 +11,8 @@ import { STARTER_THEME_FILES } from "../starter-theme-files";
 
 const file = (path: string, content: string) => ({ path, content });
 const collect = (path: string, content: string) =>
-  collectThemeClientOnlyPreviewLimits([file(path, content)]);
+  collectThemeClientOnlyPreviewLimits([file(path, content)]).limits;
+const NOTHING = { limits: [], omitted: 0, incomplete: false };
 
 describe("client-only preview limits", () => {
   it("reports a createServerFn call at its line", () => {
@@ -126,9 +129,10 @@ describe("client-only preview limits", () => {
         "a file route without a server option",
         'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/")({ component: () => null });',
       ],
-      ["a syntax error", 'import { createServerFn } from "@tanstack/react-start";\nconst = ;'],
     ])("%s", (_name, source) => {
-      expect(collect("src/routes/index.tsx", source)).toEqual([]);
+      expect(
+        collectThemeClientOnlyPreviewLimits([file("src/routes/index.tsx", source)]),
+      ).toEqual(NOTHING);
     });
 
     it("binary and non-module files", () => {
@@ -141,7 +145,7 @@ describe("client-only preview limits", () => {
             'import { createServerFn } from "@tanstack/react-start"; createServerFn();',
           ),
         ]),
-      ).toEqual([]);
+      ).toEqual(NOTHING);
     });
 
     it("the starter Theme and its catalog module", () => {
@@ -150,7 +154,160 @@ describe("client-only preview limits", () => {
           ...STARTER_THEME_FILES,
           ...STARTER_THEME_CATALOG_FILES,
         ]),
+      ).toEqual(NOTHING);
+    });
+  });
+
+  // Review C15 probes: a nested declaration shadows the import only inside
+  // its own scope, so it must not hide the file's other uses.
+  describe("a nested declaration does not hide the file's uses", () => {
+    it("a nested `const start` beside a namespace import", () => {
+      expect(
+        collect(
+          "src/lib/data.ts",
+          [
+            'import * as start from "@tanstack/react-start";',
+            "export const a = start.createServerFn().handler(() => 1);",
+            "export function f() { const start = 1; return start; }",
+          ].join("\n"),
+        ),
+      ).toEqual([{ file: "src/lib/data.ts", line: 2, kind: "createServerFn" }]);
+    });
+
+    it("a nested `const createServerFn`", () => {
+      expect(
+        collect(
+          "src/lib/data.ts",
+          [
+            'import { createServerFn } from "@tanstack/react-start";',
+            "export const a = createServerFn().handler(() => 1);",
+            "export function f() { const createServerFn = () => 2; return createServerFn; }",
+          ].join("\n"),
+        ),
+      ).toEqual([{ file: "src/lib/data.ts", line: 2, kind: "createServerFn" }]);
+    });
+
+  });
+
+  describe("dynamic imports of the server module", () => {
+    it("reports a string or substitution-free template specifier", () => {
+      expect(
+        collect(
+          "src/lib/lazy.ts",
+          [
+            'export const a = () => import("@tanstack/react-start/server");',
+            "export const b = () => import(`@tanstack/react-start/server`);",
+          ].join("\n"),
+        ),
+      ).toEqual([
+        { file: "src/lib/lazy.ts", line: 1, kind: "server-api", names: [] },
+        { file: "src/lib/lazy.ts", line: 2, kind: "server-api", names: [] },
+      ]);
+    });
+
+    it("does not resolve a template with a substitution (stated limit)", () => {
+      expect(
+        collect(
+          "src/lib/lazy.ts",
+          'const name = "server";\nexport const a = () => import(`@tanstack/react-start/${name}`);',
+        ),
       ).toEqual([]);
+    });
+  });
+
+  describe("fails safe: an unread file makes the result incomplete, never empty-and-complete", () => {
+    const serverFn =
+      'import { createServerFn } from "@tanstack/react-start";\nexport const a = createServerFn().handler(() => 1);\n';
+
+    it("a syntax error", () => {
+      expect(
+        collectThemeClientOnlyPreviewLimits([
+          file("src/routes/index.tsx", 'import { createServerFn } from "@tanstack/react-start";\nconst = ;'),
+        ]),
+      ).toEqual({ limits: [], omitted: 0, incomplete: true });
+    });
+
+    it("a very deep member chain does not throw", () => {
+      const source = `${serverFn}export const deep = a${".b".repeat(50_000)};\n`;
+      const result = collectThemeClientOnlyPreviewLimits([file("src/lib/deep.ts", source)]);
+      // The walk is iterative, so the use is still found.
+      expect(result.limits).toEqual([{ file: "src/lib/deep.ts", line: 2, kind: "createServerFn" }]);
+      expect(result.incomplete).toBe(false);
+    });
+
+    it("4000 nested divs do not throw", () => {
+      const source = `${serverFn}export const C = () => (${"<div>".repeat(4000)}x${"</div>".repeat(4000)});\n`;
+      const result = collectThemeClientOnlyPreviewLimits([file("src/routes/deep.tsx", source)]);
+      expect(
+        result.limits.length > 0 || result.incomplete,
+        JSON.stringify(result),
+      ).toBe(true);
+    });
+
+    it("an analysis that throws is reported as incomplete by the start", () => {
+      const exploding = {
+        path: "src/routes/index.tsx",
+        get content(): string {
+          throw new RangeError("Maximum call stack size exceeded");
+        },
+      };
+      expect(
+        themePreviewRuntimeReport({
+          previewRuntime: undefined,
+          frameworkId: "tanstack-start",
+          files: [exploding],
+        }),
+      ).toEqual({
+        previewRuntime: "client",
+        clientOnlyLimits: [],
+        clientOnlyLimitsOmitted: 0,
+        clientOnlyLimitsIncomplete: true,
+      });
+    });
+  });
+
+  describe("byte limits", () => {
+    const serverFn = (path: string) =>
+      file(
+        path,
+        'import { createServerFn } from "@tanstack/react-start";\nexport const a = createServerFn().handler(() => 1);\n',
+      );
+    const padded = (path: string, bytes: number) => {
+      const base = serverFn(path).content;
+      return file(path, `${base}//${"x".repeat(bytes - base.length - 3)}\n`);
+    };
+
+    it("reads a file at the per-file limit", () => {
+      const result = collectThemeClientOnlyPreviewLimits([
+        padded("src/a.ts", MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES),
+      ]);
+      expect(result.limits).toHaveLength(1);
+      expect(result.incomplete).toBe(false);
+    });
+
+    it("skips a file over the per-file limit, counting UTF-8 bytes, and says so", () => {
+      // 1 byte over in UTF-8, though not in UTF-16 units: "é" is 2 bytes.
+      const base = padded("src/a.ts", MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES);
+      const result = collectThemeClientOnlyPreviewLimits([
+        file("src/a.ts", `${base.content.slice(0, -2)}é\n`),
+        serverFn("src/b.ts"),
+      ]);
+      expect(result.limits).toEqual([{ file: "src/b.ts", line: 2, kind: "createServerFn" }]);
+      expect(result.incomplete).toBe(true);
+    });
+
+    it("stops reading at the total budget, in path order, and says so", () => {
+      const perFile = MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES;
+      const fit = MAX_CLIENT_ONLY_PREVIEW_TOTAL_BYTES / perFile;
+      const files = Array.from({ length: fit + 1 }, (_, index) =>
+        padded(`src/f${String(index).padStart(3, "0")}.ts`, perFile),
+      );
+      const result = collectThemeClientOnlyPreviewLimits(files.reverse());
+      expect(result.limits).toHaveLength(fit);
+      expect(result.limits.map((limit) => limit.file)).not.toContain(
+        `src/f${String(fit).padStart(3, "0")}.ts`,
+      );
+      expect(result.incomplete).toBe(true);
     });
   });
 
@@ -161,9 +318,12 @@ describe("client-only preview limits", () => {
         'import { createServerFn } from "@tanstack/react-start";\nexport const a = createServerFn().handler(() => 1);',
       ),
     ).reverse();
-    const limits = collectThemeClientOnlyPreviewLimits(many);
-    expect(limits).toHaveLength(MAX_CLIENT_ONLY_PREVIEW_LIMITS);
-    expect(limits[0]?.file).toBe("src/fns/f000.ts");
+    const result = collectThemeClientOnlyPreviewLimits(many);
+    expect(result.limits).toHaveLength(MAX_CLIENT_ONLY_PREVIEW_LIMITS);
+    expect(result.limits[0]?.file).toBe("src/fns/f000.ts");
+    // The rest are counted, so the notice can say "and 5 more".
+    expect(result.omitted).toBe(5);
+    expect(result.incomplete).toBe(false);
   });
 });
 
@@ -187,6 +347,8 @@ describe("the runtime a preview start reports", () => {
       clientOnlyLimits: [
         { file: "src/routes/index.tsx", line: 2, kind: "createServerFn" },
       ],
+      clientOnlyLimitsOmitted: 0,
+      clientOnlyLimitsIncomplete: false,
     });
   });
 

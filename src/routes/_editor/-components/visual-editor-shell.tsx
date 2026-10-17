@@ -271,7 +271,7 @@ import {
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
   PreviewClientOnlyNotice,
-  previewClientOnlyNoticeLimits,
+  previewClientOnlyNoticeContent,
 } from "./preview-client-only-notice";
 import {
   describeThemeSourceChanges,
@@ -2382,8 +2382,9 @@ export function VisualEditorShell({
   );
   const refetchPreviewServer = previewServer.refetch;
   // What the client-only preview cannot run in this Theme, as the start that
-  // is serving it reported; empty for the full Start preview.
-  const previewClientOnlyLimits = previewClientOnlyNoticeLimits(
+  // is serving it reported when it started; null for the full Start preview.
+  // Not recomputed on file apply: the notice says it reflects that start.
+  const previewClientOnlyNotice = previewClientOnlyNoticeContent(
     previewServer.data,
   );
   const previewServerUrl =
@@ -12049,15 +12050,15 @@ export function VisualEditorShell({
               </>
             )}
 
-            {previewClientOnlyLimits.length > 0 ? (
-              <PreviewClientOnlyNotice
-                // One notice per start: a new start's answer replaces it,
-                // and brings it back if the author dismissed the last one.
-                key={previewServer.dataUpdatedAt}
-                limits={previewClientOnlyLimits}
-                onOpenFile={handleJumpToCode}
-              />
-            ) : null}
+            {/* Always mounted: its live region must exist before the notice
+                appears in it, or screen readers may not announce it. */}
+            <PreviewClientOnlyNotice
+              content={previewClientOnlyNotice}
+              // One notice per start: a new start's answer replaces it, and
+              // brings it back if the author dismissed the last one.
+              startKey={previewServer.dataUpdatedAt}
+              onOpenFile={handleJumpToCode}
+            />
 
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (

@@ -209,7 +209,22 @@ describe("the client-only preview notice in the editor", () => {
     await shellUp();
     await waitFor(() => expect(notice()).not.toBeNull());
     expect(notice()?.textContent).toContain("src/routes/index.tsx");
-    expect(notice()?.getAttribute("role")).toBe("status");
+    // Inside the always-mounted live region, so it is announced.
+    expect(notice()?.closest('[role="status"]')?.getAttribute("data-slot")).toBe(
+      "preview-client-only-notice-region",
+    );
+  });
+
+  it("is shown when the check could not finish, even with no uses found", async () => {
+    renderShell({
+      previewRuntime: "client",
+      clientOnlyLimits: [],
+      clientOnlyLimitsOmitted: 0,
+      clientOnlyLimitsIncomplete: true,
+    });
+    await shellUp();
+    await waitFor(() => expect(notice()).not.toBeNull());
+    expect(notice()?.textContent).toContain("Some Theme files could not be checked");
   });
 
   it("is not shown for the full Start preview", async () => {

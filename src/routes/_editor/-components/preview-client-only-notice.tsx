@@ -10,7 +10,7 @@ import type {
 /**
  * The start response fields this notice reads, as the preview server query
  * holds them. Loose on purpose: a start for a Theme that is not TanStack
- * Start (Astro), or whose framework did not resolve, carries neither field,
+ * Start (Astro), or whose framework did not resolve, carries none of them,
  * and neither do older responses; all of them mean "nothing to say".
  */
 type PreviewStartResult =
@@ -19,30 +19,50 @@ type PreviewStartResult =
       data: Readonly<{
         previewRuntime?: "client" | "start";
         clientOnlyLimits?: readonly ThemeClientOnlyPreviewLimit[];
+        clientOnlyLimitsOmitted?: number;
+        clientOnlyLimitsIncomplete?: boolean;
       }>;
     }>
   | Readonly<{ success: false }>
   | null
   | undefined;
 
+/** What the client-only notice says for one start. */
+export type PreviewClientOnlyNoticeContent = Readonly<{
+  limits: readonly ThemeClientOnlyPreviewLimit[];
+  /** Found but not listed (the start lists at most 100). */
+  omitted: number;
+  /** Some source could not be checked, so the list may be partial. */
+  incomplete: boolean;
+}>;
+
 /**
- * What the client-only notice lists for this start, or nothing.
+ * What the client-only notice says for this start, or `null` for nothing.
  *
- * Only a successful start that says it served the client-only preview and
- * found uses counts. A full Start preview runs server functions, so it says
- * nothing; a start that does not name its runtime is not guessed at.
+ * Only a successful start that says it served the client-only preview
+ * counts, and only when it found uses or could not check everything. A full
+ * Start preview runs server functions, so it says nothing; a start that does
+ * not name its runtime is not guessed at.
  *
- * The list comes from a static reading of the Theme source
- * (theme-client-only-preview-limits.ts). It over-approximates and can miss
- * dynamic forms, so an empty list does not mean the Theme uses no server
- * code; the notice only ever names what was found.
+ * The list comes from a static reading of the Theme source when the preview
+ * started (theme-client-only-preview-limits.ts). It over-approximates and
+ * can miss dynamic forms, so an empty list does not mean the Theme uses no
+ * server code; the notice only ever names what was found. It is not
+ * recomputed as files are edited: the notice says so.
  */
-export function previewClientOnlyNoticeLimits(
+export function previewClientOnlyNoticeContent(
   result: PreviewStartResult,
-): readonly ThemeClientOnlyPreviewLimit[] {
-  if (!result || result.success !== true) return [];
-  if (result.data.previewRuntime !== "client") return [];
-  return result.data.clientOnlyLimits ?? [];
+): PreviewClientOnlyNoticeContent | null {
+  if (!result || result.success !== true) return null;
+  if (result.data.previewRuntime !== "client") return null;
+  const limits = result.data.clientOnlyLimits ?? [];
+  const incomplete = result.data.clientOnlyLimitsIncomplete === true;
+  if (limits.length === 0 && !incomplete) return null;
+  return {
+    limits,
+    omitted: Math.max(0, result.data.clientOnlyLimitsOmitted ?? 0),
+    incomplete,
+  };
 }
 
 const KIND_LABEL: Record<ThemeClientOnlyPreviewLimitKind, string> = {
@@ -53,22 +73,55 @@ const KIND_LABEL: Record<ThemeClientOnlyPreviewLimitKind, string> = {
 };
 
 /**
- * Says that this Live Preview is client-only and which Theme files use what
- * it cannot run, so missing content reads as the preview's limit and not as
- * a Theme bug.
+ * Says that this Live Preview runs client-only and which Theme files use
+ * what it cannot run, so missing content reads as the preview's limit and
+ * not as a Theme bug.
  *
- * Non-blocking: the canvas stays usable, and the author can dismiss it. It is
- * keyed by the shell to the start it describes, so a new start brings it back
- * with that start's files. It never switches the preview for the author.
+ * The `role="status"` region is always mounted and the notice is rendered
+ * into it, so a screen reader announces the notice when it appears (a live
+ * region that arrives together with its content is often not announced).
+ *
+ * Non-blocking: the canvas stays usable, and the author can dismiss it. The
+ * notice is keyed to the start it describes (`startKey`), so a new start
+ * brings it back with that start's files. It never switches the preview for
+ * the author.
  */
 export function PreviewClientOnlyNotice({
-  limits,
+  content,
+  startKey,
   onOpenFile,
 }: {
-  limits: readonly ThemeClientOnlyPreviewLimit[];
+  content: PreviewClientOnlyNoticeContent | null;
+  startKey: string | number;
+  onOpenFile: (path: string, line?: number) => void;
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-slot="preview-client-only-notice-region"
+      className="pointer-events-none absolute bottom-4 left-4 z-40 w-[min(26rem,calc(100%-2rem))]"
+    >
+      {content ? (
+        <PreviewClientOnlyNoticeCard
+          key={startKey}
+          content={content}
+          onOpenFile={onOpenFile}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function PreviewClientOnlyNoticeCard({
+  content,
+  onOpenFile,
+}: {
+  content: PreviewClientOnlyNoticeContent;
   onOpenFile: (path: string, line?: number) => void;
 }) {
   const [dismissed, setDismissed] = useState(false);
+  const { limits, omitted, incomplete } = content;
   const files = useMemo(() => {
     const byFile = new Map<
       string,
@@ -90,43 +143,64 @@ export function PreviewClientOnlyNotice({
     }));
   }, [limits]);
 
-  if (dismissed || files.length === 0) return null;
+  if (dismissed) return null;
 
   return (
     <Alert
-      role="status"
+      // The region around it is the live region; the card is not a second one.
+      role="group"
+      aria-label="Client-only preview notice"
       data-slot="preview-client-only-notice"
-      className="absolute bottom-4 left-4 z-40 w-[min(26rem,calc(100%-2rem))] bg-background/95 shadow-lg backdrop-blur-sm"
+      className="pointer-events-auto bg-background/95 shadow-lg backdrop-blur-sm"
     >
       <Info />
-      <AlertTitle className="pr-6">
-        This Live Preview runs in the browser only
-      </AlertTitle>
+      <AlertTitle className="pr-6">Client-only preview</AlertTitle>
       <AlertDescription className="text-xs">
+        {files.length > 0 ? (
+          <>
+            <p>
+              This preview runs in client-only mode, so the server functions
+              and server APIs below do not run here, and content they load may
+              be missing. The published Theme runs them.
+            </p>
+            <ul className="w-full space-y-0.5">
+              {files.map((file) => (
+                <li
+                  key={file.path}
+                  className="flex min-w-0 items-baseline gap-1.5"
+                >
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto min-w-0 justify-start truncate p-0 font-mono text-xs text-foreground"
+                    title={file.path}
+                    onClick={() => onOpenFile(file.path, file.line)}
+                  >
+                    {file.path}
+                  </Button>
+                  <span className="shrink-0">({file.kinds.join(", ")})</span>
+                </li>
+              ))}
+            </ul>
+            {omitted > 0 ? <p>and {omitted} more not listed.</p> : null}
+            {incomplete ? (
+              <p>Some files could not be checked, so this list may be incomplete.</p>
+            ) : null}
+          </>
+        ) : (
+          <p>
+            This preview runs in client-only mode, so server functions and
+            server APIs do not run here. Some Theme files could not be checked
+            for them, so ones that do not run here may not be listed.
+          </p>
+        )}
         <p>
-          This Theme uses server functions or server APIs that this preview
-          does not run, so content they load may be missing here. The
-          published Theme runs them. Found in:
+          A full Start preview is a deployment-level setting that is not
+          enabled for this preview.
         </p>
-        <ul className="w-full space-y-0.5">
-          {files.map((file) => (
-            <li key={file.path} className="flex min-w-0 items-baseline gap-1.5">
-              <button
-                type="button"
-                className="min-w-0 truncate font-mono text-foreground underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
-                title={file.path}
-                onClick={() => onOpenFile(file.path, file.line)}
-              >
-                {file.path}
-              </button>
-              <span className="shrink-0">({file.kinds.join(", ")})</span>
-            </li>
-          ))}
-        </ul>
         <p>
-          The full Start preview runs them. It is currently a deployment
-          setting:{" "}
-          <span className="font-mono">MORPH_THEME_PREVIEW_RUNTIME=start</span>.
+          {files.length > 0 ? "The list" : "This check"} reflects the Theme as
+          of when this preview started.
         </p>
       </AlertDescription>
       <Button

@@ -1,6 +1,6 @@
 import {
   isThemeSourceModulePath,
-  packageImportUsesOnlySafeBoundary,
+  moduleImportUsesOnlySafeBoundary,
   parseThemeSourceModule,
 } from "./theme-import-protection";
 import type { ThemeFrameworkId } from "../theme-framework/theme-framework.types";
@@ -21,16 +21,26 @@ import type { ThemeFrameworkId } from "../theme-framework/theme-framework.types"
  * nor complete:
  *
  * - It over-approximates. A definition counts even if nothing calls it, and
- *   a use that the page never reaches is still reported. That is the
- *   intended side to err on: the notice says the Theme uses them, never that
- *   they failed.
+ *   a use that the page never reaches is still reported. Only top-level
+ *   declarations count as shadowing an imported Start name: a nested
+ *   declaration of the same name is not modelled, so a call to it inside
+ *   that scope is still reported. That is the intended side to err on: the
+ *   notice says the Theme uses them, never that they failed.
  * - It can miss uses. It follows only static imports of the Start modules
  *   into the module that calls them (aliased or namespaced imports
  *   included). It does not follow a re-export through another Theme module,
  *   a Start function stored in a variable or passed around, a computed
- *   member (`start["createServerFn"]`), or a dynamic `import()` whose
- *   specifier is not a string literal. A Theme can therefore use server code
- *   this does not report; an empty result is not proof that it uses none.
+ *   member (`start["createServerFn"]`), a dynamic `import()` whose specifier
+ *   is not a string literal or a template literal without substitutions,
+ *   `createMiddleware().server(…)` (server middleware), or route options
+ *   that are spread into `createFileRoute(path)({ ...options })`. A Theme
+ *   can therefore use server code this does not report; an empty result is
+ *   not proof that it uses none.
+ * - It is bounded. A file over `MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES`, the
+ *   files past `MAX_CLIENT_ONLY_PREVIEW_TOTAL_BYTES`, and a file it cannot
+ *   parse or finish reading (a syntax error, or input deep enough to exhaust
+ *   the parser) are skipped, and the result says it is incomplete instead
+ *   of reading as "nothing found". It never throws.
  *
  * Not reported, by design:
  * - server APIs used only inside a boundary Start strips from the browser
@@ -59,6 +69,33 @@ export type ThemeClientOnlyPreviewLimit = Readonly<{
 
 /** Enough to name every file in a notice without sending a whole Theme back. */
 export const MAX_CLIENT_ONLY_PREVIEW_LIMITS = 100;
+
+/**
+ * The largest source file read, in UTF-8 bytes (256 KiB). Hand-written Theme
+ * modules are far smaller; a file this large is generated or vendored, and
+ * reading it would cost the preview start more than the notice is worth.
+ */
+export const MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES = 256 * 1024;
+
+/**
+ * The most source read for one start, in UTF-8 bytes (4 MiB), files taken in
+ * path order. Bounds the start's cost on a very large Theme.
+ */
+export const MAX_CLIENT_ONLY_PREVIEW_TOTAL_BYTES = 4 * 1024 * 1024;
+
+/** What the analysis found, and whether it could read everything it meant to. */
+export type ThemeClientOnlyPreviewLimitsResult = Readonly<{
+  /** Ordered by file and line, at most `MAX_CLIENT_ONLY_PREVIEW_LIMITS`. */
+  limits: readonly ThemeClientOnlyPreviewLimit[];
+  /** How many more were found than `limits` lists. */
+  omitted: number;
+  /**
+   * Some source file was not read, or not read to the end: over a byte
+   * limit, unparsable, or the analysis failed on it. `limits` is then only
+   * what the rest showed.
+   */
+  incomplete: boolean;
+}>;
 
 const START_MODULE = "@tanstack/react-start";
 const ROUTER_MODULE = "@tanstack/react-router";
@@ -89,47 +126,128 @@ function lineOf(node: any): number {
   return Number(node?.loc?.start?.line ?? 1);
 }
 
+/** A string literal, or a template literal without substitutions. */
+function staticSpecifier(node: any): string | undefined {
+  if (node?.type === "StringLiteral") return node.value;
+  if (
+    node?.type === "TemplateLiteral" &&
+    (node.expressions?.length ?? 0) === 0 &&
+    node.quasis?.length === 1
+  ) {
+    const cooked = node.quasis[0]?.value?.cooked;
+    return typeof cooked === "string" ? cooked : undefined;
+  }
+  return undefined;
+}
+
+/** UTF-8 length, without allocating; stops counting past `limit`. */
+function utf8ByteLength(text: string, limit: number): number {
+  // Every UTF-16 unit is at least one byte.
+  if (text.length > limit) return limit + 1;
+  let bytes = 0;
+  for (let index = 0; index < text.length && bytes <= limit; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/** Binding names a declaration pattern introduces (`const { a, b: [c] } = …`). */
+function patternNames(pattern: any, names: Set<string>): void {
+  const stack = [pattern];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    switch (node.type) {
+      case "Identifier":
+        names.add(node.name);
+        break;
+      case "ObjectPattern":
+        for (const property of node.properties ?? []) {
+          stack.push(property.type === "RestElement" ? property.argument : property.value);
+        }
+        break;
+      case "ArrayPattern":
+        stack.push(...(node.elements ?? []));
+        break;
+      case "AssignmentPattern":
+        stack.push(node.left);
+        break;
+      case "RestElement":
+        stack.push(node.argument);
+        break;
+    }
+  }
+}
+
 /**
- * Names declared in the module itself. A local `createServerFn` is the
- * author's own function, not Start's, the same rule the import protection
- * applies to its safe boundaries.
+ * Names the module declares at its top level. A top-level `createServerFn`
+ * is the author's own function, not Start's, the same rule the import
+ * protection applies to its safe boundaries.
+ *
+ * Only the top level: a nested `const start = …` or `const createServerFn =
+ * …` shadows the import only inside its own scope, so it must not hide the
+ * uses everywhere else in the file. Scopes are not modelled, so a call to
+ * such a nested binding inside its scope is still reported
+ * (over-approximation, stated in the module doc).
  */
-function declaredNames(ast: any): Set<string> {
+function topLevelDeclaredNames(ast: any): Set<string> {
   const names = new Set<string>();
-  const visit = (node: any): void => {
-    if (!node || typeof node !== "object") return;
-    if (
-      (node.type === "FunctionDeclaration" ||
-        node.type === "ClassDeclaration") &&
-      node.id?.name
-    ) {
-      names.add(node.id.name);
+  for (const statement of ast.program?.body ?? []) {
+    const declaration =
+      (statement.type === "ExportNamedDeclaration" ||
+        statement.type === "ExportDefaultDeclaration") &&
+      statement.declaration
+        ? statement.declaration
+        : statement;
+    switch (declaration?.type) {
+      case "FunctionDeclaration":
+      case "ClassDeclaration":
+      case "TSDeclareFunction":
+      case "TSEnumDeclaration":
+        if (declaration.id?.name) names.add(declaration.id.name);
+        break;
+      case "VariableDeclaration":
+        for (const declarator of declaration.declarations ?? []) {
+          patternNames(declarator.id, names);
+        }
+        break;
     }
-    if (node.type === "VariableDeclarator" && node.id?.type === "Identifier") {
-      names.add(node.id.name);
-    }
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "loc" || key === "start" || key === "end") continue;
-      if (Array.isArray(value)) value.forEach(visit);
-      else visit(value);
-    }
-  };
-  visit(ast.program);
+  }
   return names;
 }
 
-function collectFileLimits(
-  path: string,
-  content: string,
-): ThemeClientOnlyPreviewLimit[] {
-  let ast: any;
-  try {
-    ast = parseThemeSourceModule(content);
-  } catch {
-    // Syntax errors are the compiler's to report; nothing is guessed here.
-    return [];
+/** The children of an AST node, for an iterative walk. */
+function pushChildren(node: any, stack: any[]): void {
+  for (const key in node) {
+    if (key === "loc" || key === "start" || key === "end" || key === "extra") {
+      continue;
+    }
+    const value = node[key];
+    if (!value || typeof value !== "object") continue;
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        const child = value[index];
+        if (child && typeof child === "object") stack.push(child);
+      }
+    } else {
+      stack.push(value);
+    }
   }
+}
 
+/** Uses in one parsed module. Throws only if the analysis itself fails. */
+function collectModuleLimits(path: string, ast: any): ThemeClientOnlyPreviewLimit[] {
   const serverFunctionNames = new Map<
     string,
     "createServerFn" | "createServerOnlyFn"
@@ -183,8 +301,7 @@ function collectFileLimits(
     }
   }
 
-  const shadowed = declaredNames(ast);
-  for (const name of shadowed) {
+  for (const name of topLevelDeclaredNames(ast)) {
     serverFunctionNames.delete(name);
     startNamespaces.delete(name);
     fileRouteNames.delete(name);
@@ -223,9 +340,14 @@ function collectFileLimits(
     );
   };
 
+  // Iterative: a deep member chain or deeply nested JSX must not exhaust the
+  // call stack of the Worker answering the preview start.
+  const stack: any[] = [ast.program];
+  // Comments are shared between neighbouring nodes; read each node once.
   const seen = new Set<object>();
-  const visit = (node: any): void => {
-    if (!node || typeof node !== "object" || seen.has(node)) return;
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (seen.has(node)) continue;
     seen.add(node);
     if (node.type === "CallExpression") {
       const kind = serverFunctionKindOf(node.callee);
@@ -256,23 +378,21 @@ function collectFileLimits(
       // inside a stripped boundary.
       if (
         node.callee?.type === "Import" &&
-        isStartServerSource(node.arguments?.[0]?.value)
+        isStartServerSource(staticSpecifier(node.arguments?.[0]))
       ) {
         limits.push({ file: path, line: lineOf(node), kind: "server-api", names: [] });
       }
+    } else if (
+      node.type === "ImportExpression" &&
+      isStartServerSource(staticSpecifier(node.source))
+    ) {
+      limits.push({ file: path, line: lineOf(node), kind: "server-api", names: [] });
     }
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "loc" || key === "start" || key === "end") continue;
-      if (Array.isArray(value)) value.forEach(visit);
-      else visit(value);
-    }
-  };
-  visit(ast.program);
+    pushChildren(node, stack);
+  }
 
   for (const serverImport of serverApiImports) {
-    if (
-      packageImportUsesOnlySafeBoundary(content, serverImport.source, "client")
-    ) {
+    if (moduleImportUsesOnlySafeBoundary(ast, serverImport.source, "client")) {
       continue;
     }
     limits.push({
@@ -285,40 +405,70 @@ function collectFileLimits(
   return limits;
 }
 
+function eligibleSourcePath(path: string): boolean {
+  return (
+    isThemeSourceModulePath(path) &&
+    !path.endsWith(".d.ts") &&
+    !path.split("/").includes("node_modules")
+  );
+}
+
 /**
  * Every use in these Theme files of something the client-only Live Preview
- * cannot run, ordered by file and line, at most
- * `MAX_CLIENT_ONLY_PREVIEW_LIMITS`. Files without text content (binary
- * files) and non-module files are skipped.
+ * cannot run, within the byte limits. Files without text content (binary
+ * files) and non-module files are not source and are not counted as
+ * skipped. Each file is parsed once. Never throws: a file that cannot be
+ * read to the end marks the result incomplete.
  *
  * For TanStack Start Themes only; the caller decides that.
  */
 export function collectThemeClientOnlyPreviewLimits(
   files: ReadonlyArray<Readonly<{ path: string; content?: unknown }>>,
-): ThemeClientOnlyPreviewLimit[] {
-  const limits: ThemeClientOnlyPreviewLimit[] = [];
+): ThemeClientOnlyPreviewLimitsResult {
+  const sources: Array<{ path: string; content: string }> = [];
   for (const file of files) {
     if (typeof file.content !== "string") continue;
     const path = file.path.replace(/\\/g, "/").replace(/^\.\//, "");
-    if (
-      !isThemeSourceModulePath(path) ||
-      path.endsWith(".d.ts") ||
-      path.split("/").includes("node_modules")
-    ) {
+    if (eligibleSourcePath(path)) sources.push({ path, content: file.content });
+  }
+  sources.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  let incomplete = false;
+  let budget = MAX_CLIENT_ONLY_PREVIEW_TOTAL_BYTES;
+  const limits: ThemeClientOnlyPreviewLimit[] = [];
+  for (const source of sources) {
+    const bytes = utf8ByteLength(
+      source.content,
+      MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES,
+    );
+    if (bytes > MAX_CLIENT_ONLY_PREVIEW_FILE_BYTES || bytes > budget) {
+      incomplete = true;
       continue;
     }
-    limits.push(...collectFileLimits(path, file.content));
+    budget -= bytes;
+    try {
+      // A syntax error is the compiler's to report; here it only means the
+      // file was not read.
+      const ast = parseThemeSourceModule(source.content);
+      limits.push(...collectModuleLimits(source.path, ast));
+    } catch {
+      incomplete = true;
+    }
   }
+
   const unique = new Map<string, ThemeClientOnlyPreviewLimit>();
   for (const limit of limits) {
     const key = `${limit.file}:${limit.line}:${limit.kind}`;
     if (!unique.has(key)) unique.set(key, limit);
   }
-  return [...unique.values()]
-    .sort((a, b) =>
-      a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1,
-    )
-    .slice(0, MAX_CLIENT_ONLY_PREVIEW_LIMITS);
+  const ordered = [...unique.values()].sort((a, b) =>
+    a.file === b.file ? a.line - b.line : a.file < b.file ? -1 : 1,
+  );
+  return {
+    limits: ordered.slice(0, MAX_CLIENT_ONLY_PREVIEW_LIMITS),
+    omitted: Math.max(0, ordered.length - MAX_CLIENT_ONLY_PREVIEW_LIMITS),
+    incomplete,
+  };
 }
 
 /** The only framework whose preview has a client-only and a full Start mode. */
@@ -327,13 +477,15 @@ const TANSTACK_START_FRAMEWORK_ID: ThemeFrameworkId = "tanstack-start";
 /**
  * What a start response says about the Live Preview runtime that served it.
  *
- * Only a TanStack Start Theme gets the two fields: `previewRuntime` names the
- * full Start server (`MORPH_THEME_PREVIEW_RUNTIME=start`) or the default
- * client-only build, and `clientOnlyLimits` lists, for the client-only one,
- * where the Theme uses what that build cannot run (empty for `start`).
+ * Only a TanStack Start Theme gets these fields: `previewRuntime` names the
+ * full Start server or the default client-only build, and for the
+ * client-only one `clientOnlyLimits` lists where the Theme uses what that
+ * build cannot run (`clientOnlyLimitsOmitted` more were found than listed;
+ * `clientOnlyLimitsIncomplete` some source could not be read, so the list
+ * is partial). `start` lists none.
  *
  * Any other framework (Astro), and a framework that did not resolve, gets
- * neither field. "Client-only" and "full Start" are not modes those previews
+ * none of them. "Client-only" and "full Start" are not modes those previews
  * have, so the start says nothing rather than something that reads like one.
  * A reader treats a missing field as "nothing to say", never as a mode.
  */
@@ -341,17 +493,28 @@ export type ThemePreviewRuntimeReport =
   | Readonly<{
       previewRuntime: "client";
       clientOnlyLimits: readonly ThemeClientOnlyPreviewLimit[];
+      clientOnlyLimitsOmitted: number;
+      clientOnlyLimitsIncomplete: boolean;
     }>
   | Readonly<{
       previewRuntime: "start";
       clientOnlyLimits: readonly ThemeClientOnlyPreviewLimit[];
+      clientOnlyLimitsOmitted?: never;
+      clientOnlyLimitsIncomplete?: never;
     }>
-  | Readonly<{ previewRuntime?: never; clientOnlyLimits?: never }>;
+  | Readonly<{
+      previewRuntime?: never;
+      clientOnlyLimits?: never;
+      clientOnlyLimitsOmitted?: never;
+      clientOnlyLimitsIncomplete?: never;
+    }>;
 
 /**
  * What a Live Preview start tells the editor about the runtime it used, read
  * from the same files the start previews. Never changes how the preview
- * runs: the author is told, and nothing is switched for them.
+ * runs: the author is told, and nothing is switched for them. Never throws:
+ * the preview has already started when this runs, and a failed analysis is
+ * reported as incomplete, not as "nothing found".
  */
 export function themePreviewRuntimeReport(input: {
   previewRuntime: "start" | undefined;
@@ -363,8 +526,16 @@ export function themePreviewRuntimeReport(input: {
   if (input.previewRuntime === "start") {
     return { previewRuntime: "start", clientOnlyLimits: [] };
   }
+  let result: ThemeClientOnlyPreviewLimitsResult;
+  try {
+    result = collectThemeClientOnlyPreviewLimits(input.files);
+  } catch {
+    result = { limits: [], omitted: 0, incomplete: true };
+  }
   return {
     previewRuntime: "client",
-    clientOnlyLimits: collectThemeClientOnlyPreviewLimits(input.files),
+    clientOnlyLimits: result.limits,
+    clientOnlyLimitsOmitted: result.omitted,
+    clientOnlyLimitsIncomplete: result.incomplete,
   };
 }
