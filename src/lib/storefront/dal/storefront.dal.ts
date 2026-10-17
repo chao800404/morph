@@ -184,9 +184,15 @@ async function ensureStarterHomeDocument(
  * someone else, possibly a different code version (older or newer than this
  * one), and this run writes nothing of its own on top of it.
  *
- * Non-object metadata (`null`, an array, a string, a number) and malformed
- * JSON text are never written over: `json_set` cannot store a key in them, so
- * the write is refused and the outcome is `partial`.
+ * Stored metadata is classified case by case:
+ * - Legitimately unset: a SQL NULL column, `{}`, a missing
+ *   `starterTemplateVersion`, a missing or JSON-null revision. The existing
+ *   compatibility rules apply and the record is written.
+ * - Anomalous: JSON `null` text, an array, a string, a number, malformed JSON
+ *   text, or a revision that is a string, a fraction, negative or a boolean.
+ *   The data is kept, the record write is refused and the outcome is
+ *   `partial` with its own reason, so loading fails until the data is fixed
+ *   by hand. Nothing here clears or rewrites it.
  */
 export type StarterUpgradeRecordOutcome =
   | { status: "recorded"; version: number; revision: number; attempts: number }

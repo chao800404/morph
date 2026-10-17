@@ -664,6 +664,96 @@ describe("a restart between the file save and the record write", () => {
   });
 });
 
+// Classification of stored metadata, case by case.
+//
+// Legitimate (loading works, existing compatibility rules apply): SQL NULL,
+// `{}`, a missing `starterTemplateVersion`, a missing or JSON-null revision.
+// See "legitimately unset metadata" below.
+//
+// Anomalous (the data is kept, the record write is refused, the run reports
+// partial with its own reason, and loading fails until the data is fixed by
+// hand): JSON `null` text, an array, a string, a number, malformed JSON text,
+// and a revision that is a string, a fraction, negative or a boolean.
+describe("legitimately unset metadata", () => {
+  it("records the version for a SQL NULL column on store initialization", async () => {
+    seedTheme(null);
+    workspace.files.set(THEME_ID, upgradedWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+      undefined,
+    );
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+    });
+  });
+
+  it("records the version for `{}` on store initialization", async () => {
+    seedTheme({});
+    workspace.files.set(THEME_ID, upgradedWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+      undefined,
+    );
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+    });
+  });
+
+  it("records the version and keeps other keys when only the version key is missing", async () => {
+    seedTheme({ unrelated: "kept" });
+    workspace.files.set(THEME_ID, upgradedWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+      undefined,
+    );
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+      unrelated: "kept",
+    });
+  });
+
+  it.each([
+    ["SQL NULL", null],
+    ["{}", {}],
+    ["no version key", { unrelated: "kept" }],
+  ])(
+    "skips the editor-load upgrade, as before, for %s",
+    async (_label, metadata) => {
+      seedTheme(metadata);
+      workspace.files.set(THEME_ID, legacyWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+      const before = storedRawRow();
+
+      // No version to upgrade from: the editor load does not run the upgrade.
+      await expect(openEditor()).resolves.toBe(false);
+      expect(storedRawRow()).toEqual(before);
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+      expect(hooks.recordWriteAttempts).toBe(0);
+    },
+  );
+
+  it("reads a JSON-null revision as 0 and records", async () => {
+    seedTheme({
+      starterTemplateVersion: LEGACY_VERSION,
+      starterUpgradeRecordRevision: null,
+    });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await expect(openEditor()).resolves.toBe(true);
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+    });
+  });
+});
+
 describe("metadata the record cannot be written into", () => {
   // `json_set` on non-object JSON stores nothing but still reports a changed
   // row, which used to read as `recorded`.
@@ -692,6 +782,17 @@ describe("metadata the record cannot be written into", () => {
       });
       expect(storedRawRow()).toEqual(before);
       expect(hooks.recordWriteAttempts).toBe(1);
+
+      // Loading keeps failing, with the data untouched, until it is fixed by
+      // hand; nothing clears or rewrites it.
+      await expect(storefrontDal.ensureDefault("channel-a")).rejects.toThrow(
+        StarterUpgradeIncompleteError,
+      );
+      expect(storedRawRow()).toEqual(before);
+      setRawMetadata("{}");
+      await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+        undefined,
+      );
     },
   );
 
@@ -731,6 +832,10 @@ describe("metadata the record cannot be written into", () => {
     expect(storedRawRow().metadata).toBe("{not json");
     expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
     expect(hooks.recordWriteAttempts).toBe(0);
+
+    // And on the next load, until the text is fixed by hand.
+    await expect(openEditor()).rejects.toThrow(SyntaxError);
+    expect(storedRawRow().metadata).toBe("{not json");
   });
 
   it("throws after the file save when the metadata turns malformed before the upgrade's metadata read", async () => {
@@ -816,6 +921,10 @@ describe("a record revision the upgrade cannot read", () => {
         "Starter upgrade record not saved:",
         expect.stringContaining('"storefrontId":"storefront-a"'),
       );
+
+      // Loading keeps failing until the value is fixed by hand.
+      await expect(openEditor()).rejects.toThrow(StarterUpgradeIncompleteError);
+      expect(storedRawRow()).toEqual(before);
     },
   );
 
