@@ -6,6 +6,7 @@ import {
   THEME_PREVIEW_BRIDGE_PATH,
 } from "./theme-preview-bridge-entry";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
+import { themePreviewContentModuleSource } from "./theme-preview-content";
 
 const BRIDGE = themePreviewBridgeEntrySource();
 
@@ -294,6 +295,145 @@ describe("applying document changes to the real React preview", () => {
       "ordered.every((section) => section.parentElement === parent)",
     );
     expect(reorder).toContain("parent.appendChild(section)");
+  });
+});
+
+/**
+ * R4 for the attributes a selection-field post writes straight onto the page
+ * (image src / alt, link href). They never pass through the content object,
+ * so the bridge's own `update-selection-field` block is cut out and run here
+ * against stand-in elements, with the content module's real
+ * `previewSlotHidden` reading a stand-in content object.
+ */
+describe("a selection-field post for a hidden section", () => {
+  type Node = { type?: string; start?: number; end?: number } & Record<
+    string,
+    unknown
+  >;
+
+  function selectionFieldBlock(): string {
+    const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] });
+    let block: string | null = null;
+    const visit = (value: unknown) => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      const node = value as Node;
+      const test = node.test as Node | undefined;
+      if (
+        node.type === "IfStatement" &&
+        test &&
+        BRIDGE.slice(test.start, test.end).includes(
+          '"morph:storefront-preview-update-selection-field"',
+        )
+      ) {
+        const consequent = node.consequent as Node;
+        block = BRIDGE.slice(consequent.start, consequent.end);
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (key !== "loc" && key !== "extra") visit(child);
+      }
+    };
+    visit(ast.program);
+    expect(block, "the bridge's update-selection-field block").not.toBeNull();
+    return block!;
+  }
+
+  function contentHiddenCheck(): string {
+    const source = themePreviewContentModuleSource();
+    const start = source.indexOf("export function previewSlotHidden");
+    const end = source.indexOf("\n}\n", start);
+    expect(start, "the content module's previewSlotHidden").toBeGreaterThan(-1);
+    return source
+      .slice(start, end + 2)
+      .replace("export function previewSlotHidden", "function previewSlotHidden");
+  }
+
+  type FakeElement = {
+    attributes: Record<string, string>;
+    setAttribute: (name: string, value: string) => void;
+    matches: (selector: string) => boolean;
+    querySelector: (selector: string) => FakeElement | null;
+  };
+
+  function element(tag: string, attributes: Record<string, string>): FakeElement {
+    const self: FakeElement = {
+      attributes: { ...attributes },
+      setAttribute: (name, value) => {
+        self.attributes[name] = value;
+      },
+      matches: (selector) => selector.split(",").includes(tag),
+      querySelector: () => null,
+    };
+    return self;
+  }
+
+  function run(hiddenSlots: string[]) {
+    const image = element("img", { src: "/stored.jpg", alt: "Stored alt" });
+    const link = element("a", { href: "/stored" });
+    const byPath: Record<string, FakeElement> = { image, link };
+    const section = element("section", {});
+    section.querySelector = (selector) => {
+      const match = /data-storefront-field-path="([^"]+)"/.exec(selector);
+      return match ? (byPath[match[1]!] ?? null) : null;
+    };
+    const content = { slots: {}, hiddenSlots };
+    const drawOverlays = vi.fn();
+    const updatePreviewContent = vi.fn();
+    const handle = new Function(
+      "selectedItem",
+      "content",
+      "document",
+      "CSS",
+      "drawOverlays",
+      "updatePreviewContent",
+      "previewSlotContent",
+      "setFieldPathValue",
+      "refreshPreviewContent",
+      `${contentHiddenCheck()}
+      function currentPreviewContent() { return content; }
+      return (message) => ${selectionFieldBlock()};`,
+    )(
+      { sectionId: "hero", section, fieldKey: "image", element: image },
+      content,
+      section,
+      { escape: (value: string) => value },
+      drawOverlays,
+      updatePreviewContent,
+      () => ({}),
+      (slot: Record<string, unknown>) => slot,
+      vi.fn(),
+    ) as (message: Record<string, unknown>) => void;
+    const post = (fieldKey: string, fieldPath: string, value: string) =>
+      handle({
+        type: "morph:storefront-preview-update-selection-field",
+        fieldKey,
+        fieldPath,
+        value,
+      });
+    post("image", "image", "/posted.jpg");
+    post("image", "image.alt", "Posted grouped alt");
+    post("imageSrc", "image", "/posted-src.jpg");
+    post("imageAlt", "image", "Posted alt");
+    post("actionHref", "link", "/posted");
+    return { image, link, drawOverlays, updatePreviewContent };
+  }
+
+  it("leaves its image src / alt and link href as the page rendered them", () => {
+    const { image, link, drawOverlays, updatePreviewContent } = run(["hero"]);
+    expect(image.attributes).toEqual({ src: "/stored.jpg", alt: "Stored alt" });
+    expect(link.attributes).toEqual({ href: "/stored" });
+    expect(drawOverlays).not.toHaveBeenCalled();
+    expect(updatePreviewContent).not.toHaveBeenCalled();
+  });
+
+  it("still applies the same posts to a section the page shows", () => {
+    const { image, link, drawOverlays } = run([]);
+    expect(image.attributes).toEqual({ src: "/posted-src.jpg", alt: "Posted alt" });
+    expect(link.attributes).toEqual({ href: "/posted" });
+    expect(drawOverlays).toHaveBeenCalledTimes(5);
   });
 });
 

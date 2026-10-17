@@ -363,6 +363,15 @@ export function previewSlotContent(sectionId) {
   return currentPreviewContent().slots[sectionId];
 }
 
+/**
+ * Whether this page holds a slot hidden: the list \`updatePreviewContent\`
+ * refuses value writes for. Anything else that puts a value on the page asks
+ * the same list.
+ */
+export function previewSlotHidden(sectionId) {
+  return currentPreviewContent().hiddenSlots.includes(sectionId);
+}
+
 const nativeFetch = window.fetch.bind(window);
 window.addEventListener("message", (event) => {
   const message = parseEditorToPreviewWindowEvent(event);
