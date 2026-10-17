@@ -1,3 +1,4 @@
+import { previewRequestFor } from "./preview-proxy-credentials";
 import type { ResolvedStorefrontHost } from "./storefront-host-resolver";
 import {
   themeWorkerScriptName,
@@ -21,6 +22,15 @@ export type ThemeServiceBindingResolver = (
  * The Theme Worker is bound statically and cannot resolve releases itself, so
  * Morph Core states which storefront and release this request belongs to. These
  * headers are set (not merged) so a client cannot spoof them from the outside.
+ *
+ * Before that, the request is reduced to what Theme code may see, by the same
+ * rule Live Preview applies: platform credential cookies are removed from
+ * `cookie` (the Theme's own cookies pass, in order) and every inbound
+ * `x-morph-*` header is dropped, so no name Core may later give meaning to
+ * can arrive from a browser. `Authorization` is forwarded on purpose here, as
+ * it is to a preview; removing Morph's own secret API key credentials from it
+ * is a separate change. Filtering comes first so it can never remove a header
+ * Core sets below.
  */
 function applyStorefrontContext(
   request: Request,
@@ -33,7 +43,7 @@ function applyStorefrontContext(
    */
   contentOrigin: string,
 ): Request {
-  const forwarded = new Request(request);
+  const forwarded = previewRequestFor(request);
   forwarded.headers.set("x-morph-storefront-host", resolved.hostname);
   // Absolute origin the Theme calls back on for published content. Sent rather
   // than left to be rebuilt from the hostname: only Morph Core knows the scheme
