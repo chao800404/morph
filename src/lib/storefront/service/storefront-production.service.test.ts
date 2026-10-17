@@ -11,7 +11,13 @@
  */
 import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
-import { StorefrontProductionService } from "./storefront-production.service";
+import {
+  StorefrontProductionService,
+  THEME_RUNTIME_FAILURE_LOG_LABEL,
+  THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE,
+} from "./storefront-production.service";
+import { createThemeRuntime } from "./storefront-request-routing";
+import type { ThemeRuntime } from "./theme-runtime.types";
 import {
   DispatchNamespaceThemeRuntime,
   LocalDirectThemeRuntime,
@@ -457,6 +463,240 @@ describe("StorefrontProductionService", () => {
     const res = await service.handleRequest(req("/"));
     expect(res.status).toBe(503);
     expect(res.headers.get("Content-Type")).toContain("text/plain");
+  });
+
+  describe("a not-configured Theme runtime", () => {
+    // Values a misconfigured environment might hold. None of them may reach
+    // the public body or the log line, whichever runtime reports the failure.
+    const FAKE_ORIGIN = "http://10.1.2.3:8799/internal?key=abc";
+    const FAKE_TOKEN = "tok_9f8e7d6c5b4a39281706f5e4d3c2b1a0";
+    const FAKE_BINDING = "THEME_WORKER_PRIVATE_A";
+    const FORBIDDEN = [
+      "http://",
+      "https://",
+      "10.1.2.3",
+      "8799",
+      "key=abc",
+      "localhost",
+      FAKE_TOKEN,
+      FAKE_BINDING,
+      "sf_other",
+      "{oops",
+      // The runtimes' own free-text messages.
+      "not configured",
+      "is configured",
+      "Storefront runtime",
+    ];
+
+    const variants: ReadonlyArray<{
+      name: string;
+      runtime: () => ThemeRuntime;
+      kind: ThemeRuntime["kind"];
+      code: string;
+      subcode?: string;
+    }> = [
+      {
+        name: "nothing configured (the runtime the real environment selects)",
+        runtime: () => createThemeRuntime({}),
+        kind: "unavailable",
+        code: "NO_TRANSPORT",
+      },
+      {
+        name: "an unavailable runtime whose detail carries an origin and a token",
+        runtime: () =>
+          new UnavailableThemeRuntime(
+            `MORPH_LOCAL_THEME_ORIGIN=${FAKE_ORIGIN} refused; also localhost:8799; token ${FAKE_TOKEN}`,
+          ),
+        kind: "unavailable",
+        code: "NO_TRANSPORT",
+      },
+      {
+        name: "a malformed service binding map",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: `{oops ${FAKE_ORIGIN} ${FAKE_TOKEN}`,
+            MORPH_LOCAL_THEME_ORIGIN: FAKE_ORIGIN,
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "MAP_MALFORMED",
+      },
+      {
+        name: "a service binding map with no entry for the storefront",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({
+              sf_other: FAKE_BINDING,
+            }),
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "ENTRY_MISSING",
+      },
+      {
+        name: "a mapped service binding that is not bound",
+        runtime: () =>
+          createThemeRuntime({
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: FAKE_BINDING }),
+          }),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "BINDING_ABSENT",
+      },
+      {
+        name: "a service binding resolver that returns nothing",
+        runtime: () => new ServiceBindingThemeRuntime(() => null),
+        kind: "service-binding",
+        code: "BINDING_UNMAPPED",
+        subcode: "BINDING_ABSENT",
+      },
+      {
+        name: "a dispatch runtime with no namespace bound",
+        runtime: () => new DispatchNamespaceThemeRuntime(),
+        kind: "dispatch-namespace",
+        code: "DISPATCH_UNBOUND",
+      },
+    ];
+
+    for (const variant of variants) {
+      it(`sends generic copy and logs a fixed code for ${variant.name}`, async () => {
+        const errorSpy = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+        try {
+          const runtime = variant.runtime();
+          expect(runtime.kind).toBe(variant.kind);
+          const service = new StorefrontProductionService({
+            runtime,
+            r2Bucket: r2(),
+            resolverDeps: resolverDeps(),
+          });
+
+          const res = await service.handleRequest(req("/"));
+          const body = await res.text();
+
+          expect(res.status).toBe(503);
+          expect(Object.fromEntries(res.headers)).toEqual({
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          });
+          expect(body).toBe(THEME_RUNTIME_UNAVAILABLE_PUBLIC_MESSAGE);
+          for (const name of [
+            ...FORBIDDEN,
+            "THEME_WORKER",
+            "MORPH_LOCAL_THEME_ORIGIN",
+            "MORPH_THEME_SERVICE_BINDINGS",
+            "THEME_DISPATCHER",
+            "bind",
+          ]) {
+            expect(body).not.toContain(name);
+          }
+
+          expect(errorSpy).toHaveBeenCalledTimes(1);
+          const [label, entry] = errorSpy.mock.calls[0]!;
+          expect(label).toBe(THEME_RUNTIME_FAILURE_LOG_LABEL);
+          // Exactly the allow-listed fields: anything else is a regression.
+          expect(entry).toEqual({
+            code: variant.code,
+            ...(variant.subcode ? { subcode: variant.subcode } : {}),
+            runtime: variant.kind,
+            status: 503,
+            storefrontId: "sf_1",
+            hint: expect.any(String),
+          });
+          const logged = JSON.stringify(errorSpy.mock.calls);
+          for (const value of FORBIDDEN) {
+            expect(logged).not.toContain(value);
+          }
+        } finally {
+          errorSpy.mockRestore();
+        }
+      });
+    }
+
+    it("never puts a token or URL from a detail or the env into any log argument", async () => {
+      const token = "sk_live_FAKE_7f3a9c2e1b4d6f8a0c2e4a6b8d0f2a4c";
+      const url = "https://user:pass@origin.private.example:8443/secret?t=1";
+      const runtimes: ThemeRuntime[] = [
+        new UnavailableThemeRuntime(`refused ${url} with ${token}`),
+        createThemeRuntime({
+          MORPH_THEME_SERVICE_BINDINGS: `not json ${url} ${token}`,
+        }),
+        createThemeRuntime({
+          MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: token }),
+          MORPH_LOCAL_THEME_ORIGIN: url,
+        }),
+      ];
+      const allowedKeys = [
+        "code",
+        "hint",
+        "runtime",
+        "status",
+        "storefrontId",
+        "subcode",
+      ];
+      for (const runtime of runtimes) {
+        const errorSpy = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+        try {
+          const service = new StorefrontProductionService({
+            runtime,
+            r2Bucket: r2(),
+            resolverDeps: resolverDeps(),
+          });
+          const res = await service.handleRequest(req("/"));
+          const body = await res.text();
+          expect(errorSpy).toHaveBeenCalledTimes(1);
+          for (const arg of errorSpy.mock.calls[0]!) {
+            const text =
+              typeof arg === "string" ? arg : JSON.stringify(arg) ?? String(arg);
+            for (const value of [token, url, "origin.private.example", "sk_live"]) {
+              expect(text).not.toContain(value);
+            }
+            if (typeof arg === "object" && arg !== null) {
+              for (const key of Object.keys(arg)) {
+                expect(allowedKeys).toContain(key);
+              }
+            }
+          }
+          for (const value of [token, url, "origin.private.example"]) {
+            expect(body).not.toContain(value);
+          }
+        } finally {
+          errorSpy.mockRestore();
+        }
+      }
+    });
+  });
+
+  it("leaves other runtime failures unchanged", async () => {
+    // Temporary: pins today's pass-through body for a failure outside the
+    // not-configured class. The approved follow-up moves these reasons onto
+    // the fixed-code path too, and this assertion changes with it.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const service = new StorefrontProductionService({
+        runtime: new DispatchNamespaceThemeRuntime({
+          get: () => ({
+            fetch: async () => {
+              throw new Error("Worker not found");
+            },
+          }),
+        }),
+        r2Bucket: r2(),
+        resolverDeps: resolverDeps(),
+      });
+      const res = await service.handleRequest(req("/"));
+      expect(res.status).toBe(503);
+      expect(await res.text()).toBe(
+        'Released Theme Worker "morph-theme-bld-1" is not deployed.',
+      );
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 
