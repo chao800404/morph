@@ -297,8 +297,11 @@ export function createThemeRuntime(
     return new DispatchNamespaceThemeRuntime(dispatcher);
   }
 
+  // A blank origin is not configured, so it gets the "not configured" reason
+  // below rather than the production/credential refusal.
   const localOrigin =
-    typeof environment?.MORPH_LOCAL_THEME_ORIGIN === "string"
+    typeof environment?.MORPH_LOCAL_THEME_ORIGIN === "string" &&
+    environment.MORPH_LOCAL_THEME_ORIGIN.trim() !== ""
       ? environment.MORPH_LOCAL_THEME_ORIGIN
       : null;
   if (localOrigin) {

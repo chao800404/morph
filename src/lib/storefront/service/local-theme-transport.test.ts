@@ -61,6 +61,26 @@ const MATRIX: Case[] = [
     allowed: false,
   },
   {
+    name: "dev, origin + empty api token",
+    nodeEnv: "development",
+    env: { ...ORIGIN, CLOUDFLARE_API_TOKEN: "" },
+    allowed: true,
+  },
+  {
+    name: "dev, origin + empty account id",
+    nodeEnv: "development",
+    env: { ...ORIGIN, CLOUDFLARE_ACCOUNT_ID: "" },
+    allowed: true,
+  },
+  {
+    // A Secrets Store binding is an object; the deployer factory only reads
+    // string credentials, so it is absent for both.
+    name: "dev, origin + non-string credential bindings",
+    nodeEnv: "development",
+    env: { ...ORIGIN, CLOUDFLARE_API_TOKEN: {}, CLOUDFLARE_ACCOUNT_ID: {} },
+    allowed: true,
+  },
+  {
     name: "ENVIRONMENT=production",
     nodeEnv: "development",
     env: { ...ORIGIN, ENVIRONMENT: "production" },

@@ -23,7 +23,11 @@ export function localThemeTransportAllowed(
   return !isProductionEnvironment(bindings);
 }
 
-/** Same reading the deployer factory has always used: a non-empty string. */
+/**
+ * Same reading the deployer factory has always used: a non-empty string.
+ * A non-string binding (for example a Secrets Store object) counts as absent,
+ * because the factory only reads string credentials when it builds a deployer.
+ */
 function hasCredential(value: unknown): boolean {
   return typeof value === "string" && value !== "";
 }
