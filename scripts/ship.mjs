@@ -11,13 +11,18 @@
  * `main` only requires `Architecture guards`, deliberately — a thirty-minute
  * Playwright job should not decide whether a rule holds. But "may merge" and
  * "should merge" are different questions, so this waits for every check and
- * refuses if any of them failed. `MORPH_SHIP_REQUIRED_ONLY=1` merges as soon as
- * the required ones pass, for when the rest are known-irrelevant. A check counts
- * as passed only if it says so; every other conclusion, including a cancellation,
- * means it did not.
+ * refuses if any of them failed, or if a check ci-required-checks.mjs expects
+ * never reported. There is no shortcut: every expected check must be present
+ * and report SUCCESS, every time. A check counts as passed only if it says so;
+ * every other conclusion, including a cancellation, means it did not.
  */
 import { spawnSync } from "node:child_process";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
+import {
+  CHECK_DEPENDENCIES,
+  EXPECTED_CI_CHECKS,
+  REQUIRED_CHECK,
+} from "./ci-required-checks.mjs";
 
 const log = (message) => console.log(`[ship] ${message}`);
 
@@ -74,9 +79,9 @@ export function latestChecks(checks) {
  * Lifted out of the polling loop so it can be driven without opening a pull
  * request. The bug that put it here was invisible in the loop and obvious in a
  * table: `required.every(...)` is true for an empty list, and a rollup *is* empty
- * for the first seconds after a pull request opens, so `MORPH_SHIP_REQUIRED_ONLY=1`
- * said "merge" on the ordinary path. The other branch had guarded against exactly
- * that with `checks.length > 0`; the asymmetry between them was the tell.
+ * for the first seconds after a pull request opens, so a mode that waited for
+ * the required check alone (since removed) said "merge" on the ordinary path.
+ * An empty rollup still waits here.
  *
  * Refusal is a whitelist. `FAILURE` alone was too narrow: `CANCELLED`,
  * `TIMED_OUT`, `STARTUP_FAILURE` and `ACTION_REQUIRED` all mean a check did not
@@ -85,68 +90,79 @@ export function latestChecks(checks) {
  * that should not merge. Anything GitHub adds later is refused rather than
  * silently accepted.
  */
-export function decide(checks, requiredOnly) {
+export function decide(checks, expected = EXPECTED_CI_CHECKS) {
   const settled = checks.filter((check) => check.status === "COMPLETED");
   const unhappy = settled.filter((check) => !passed(check));
   const pending = checks.filter((check) => check.status !== "COMPLETED");
-  const required = checks.filter((check) => check.name === REQUIRED_CHECK);
+  const present = (name) => checks.some((check) => check.name === name);
+  const green = (name) =>
+    checks.some(
+      (check) =>
+        check.name === name &&
+        check.status === "COMPLETED" &&
+        check.conclusion === "SUCCESS",
+    );
 
-  // Dependent jobs may not appear in the rollup until their dependencies finish.
-  // A green partial rollup is not proof that sharded acceptance has completed.
-  // The count comes from the shard plan; check-e2e-shards keeps the workflow's
-  // job names in step with it. A shard named for another count is refused.
+  // A shard named for another count than the plan is refused, whatever it
+  // reported: a workflow left at the old count would otherwise look complete.
+  // check-e2e-shards keeps the workflow's job names in step with the plan.
   const shardName = /^Editor E2E shard \d+\/(\d+)$/;
-  if (checks.some((check) => shardName.test(check.name))) {
-    for (const check of checks) {
-      const match = shardName.exec(check.name);
-      if (
-        match &&
-        Number(match[1]) !== EDITOR_SHARD_COUNT &&
-        !unhappy.includes(check)
-      )
-        unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
-    }
-    const names = [
-      ...Array.from(
-        { length: EDITOR_SHARD_COUNT },
-        (_, index) => `Editor E2E shard ${index + 1}/${EDITOR_SHARD_COUNT}`,
-      ),
-      "Editor end-to-end (local preview transport)",
-    ];
-    for (const name of names) {
-      const matching = checks.filter((check) => check.name === name);
-      if (matching.length === 0) {
-        pending.push({ name, status: "QUEUED", conclusion: null });
-      }
-      for (const check of matching) {
-        if (
-          check.status === "COMPLETED" &&
-          check.conclusion !== "SUCCESS" &&
-          !unhappy.includes(check)
-        ) {
-          unhappy.push(check);
-        }
-      }
-    }
-    if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
-    if (pending.length > 0) return { verdict: "wait", unhappy, pending };
+  for (const check of checks) {
+    const match = shardName.exec(check.name);
+    if (
+      match &&
+      Number(match[1]) !== EDITOR_SHARD_COUNT &&
+      !unhappy.includes(check)
+    )
+      unhappy.push({ ...check, conclusion: "SHARD_COUNT_MISMATCH" });
   }
+  // Every expected check must report SUCCESS itself: SKIPPED or NEUTRAL means
+  // the job did not run its work. Checks outside the list keep `passed`.
+  for (const check of settled)
+    if (
+      expected.includes(check.name) &&
+      check.conclusion !== "SUCCESS" &&
+      !unhappy.includes(check)
+    )
+      unhappy.push(check);
+  if (unhappy.length > 0)
+    return { verdict: "refuse", unhappy, pending, missing: [] };
 
-  if (unhappy.length > 0) return { verdict: "refuse", unhappy, pending };
-  const merge = requiredOnly
-    ? required.length > 0 && required.every(passed)
-    : checks.length > 0 && pending.length === 0;
-  return { verdict: merge ? "merge" : "wait", unhappy, pending };
+  // Every expected check must be in the rollup, not just the ones that are.
+  // Dependent jobs may not appear until their dependencies finish, so a green
+  // partial rollup is not proof that CI has completed.
+  const missing = expected.filter((name) => !present(name));
+  const queued = (name) => ({ name, status: "QUEUED", conclusion: null });
+
+  // Not created yet, rather than gone: everything it needs is present and green.
+  const notYetCreated = missing.filter((name) => {
+    const needs = CHECK_DEPENDENCIES[name] ?? [];
+    return needs.length > 0 && needs.every(green);
+  });
+  const waiting = [...pending, ...notYetCreated.map(queued)];
+
+  // Still running somewhere: a missing check may yet be created by it.
+  if (checks.length === 0 || waiting.length > 0)
+    return { verdict: "wait", unhappy, pending: waiting, missing };
+  // Everything present has finished and an expected check never arrived: it
+  // was renamed, removed or not created. Waiting would only end at the deadline.
+  if (missing.length > 0)
+    return {
+      verdict: "refuse",
+      reason: "EXPECTED_CHECK_MISSING",
+      unhappy,
+      pending,
+      missing,
+    };
+  return { verdict: "merge", unhappy, pending, missing };
 }
 
 /**
- * The one check `main` requires, spelled the way GitHub reports it.
- *
- * A third copy of this string — the others are `ci.yml`'s job name and the branch
- * protection rule — so renaming the job means renaming it in three places. See
- * the note above `name: Architecture guards` in `ci.yml`.
+ * The one check `main` requires, spelled the way GitHub reports it; defined in
+ * ci-required-checks.mjs with every other check ship expects. See the note
+ * above `name: Architecture guards` in `ci.yml` for the branch protection copy.
  */
-export const REQUIRED_CHECK = "Architecture guards";
+export { REQUIRED_CHECK };
 
 /**
  * Why this run may not proceed, or `null`.
@@ -171,7 +187,66 @@ export function describeUnhappy(unhappy) {
   return `CHECK_NOT_GREEN: ${unhappy.map((check) => `${check.name} (${check.conclusion})`).join(", ")}. Nothing merged. The branch and its pull request are still there.`;
 }
 
+/** Names the expected checks that never reported. */
+export function describeMissing(missing) {
+  return `EXPECTED_CHECK_MISSING: every reported check has finished, but ${missing.join(", ")} never reported (renamed, removed or not created; see scripts/ci-required-checks.mjs). Nothing merged. The branch and its pull request are still there.`;
+}
+
+/**
+ * Why the deadline passed with nothing merged: the checks still running and
+ * the expected checks that never reported, each named.
+ */
+export function describeTimeout(pending, missing) {
+  const running = pending
+    .map((check) => check.name)
+    .filter((name) => !missing.includes(name));
+  return `CHECKS_TIMED_OUT: still waiting on ${running.join(", ") || "nothing reported as running"}; expected checks never reported: ${missing.join(", ") || "none"}. Nothing merged. The branch and its pull request are still there.`;
+}
+
+/**
+ * What the polling loop does with one decision, as a pure function of it and
+ * the clock, so the deadline path is driven without waiting or calling `gh`.
+ *
+ * `fail` is thrown by the loop, which exits non-zero with the message. A
+ * merge is only ever the decision's own `merge` with nothing missing: an
+ * expected check that never reported cannot become a merge here, and at the
+ * deadline it is named in the failure.
+ */
+export function nextStep(result, now, deadline) {
+  const { verdict, unhappy, pending, missing = [] } = result;
+  if (verdict === "refuse")
+    return {
+      action: "fail",
+      message:
+        unhappy.length > 0
+          ? describeUnhappy(unhappy)
+          : describeMissing(missing),
+    };
+  if (verdict === "merge" && missing.length === 0) return { action: "merge" };
+  if (now > deadline)
+    return { action: "fail", message: describeTimeout(pending, missing) };
+  return { action: "wait" };
+}
+
+/**
+ * Refuses environment switches that no longer exist, before anything runs.
+ *
+ * `MORPH_SHIP_REQUIRED_ONLY` merged once the required check passed, while
+ * the others could still be pending. It was removed; ship always waits for
+ * every expected check. Set to any value — "1", "0" or empty — it stops here
+ * rather than being silently ignored by someone who still relies on it.
+ */
+export function assertNoRemovedSwitches(env) {
+  if (Object.hasOwn(env, "MORPH_SHIP_REQUIRED_ONLY")) {
+    throw new Error(
+      "SWITCH_REMOVED: MORPH_SHIP_REQUIRED_ONLY was removed. Unset it (`unset MORPH_SHIP_REQUIRED_ONLY`) and run again; pnpm ship always waits for every expected check and requires SUCCESS from each. Nothing was pushed or merged.",
+    );
+  }
+}
+
 async function ship() {
+  // First, before any command runs: nothing is pushed, opened or merged.
+  assertNoRemovedSwitches(process.env);
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
     quiet: true,
   });
@@ -238,10 +313,7 @@ async function ship() {
     run("gh", ["pr", "create", "--base", "main", "--fill"]);
   }
 
-  const requiredOnly = process.env.MORPH_SHIP_REQUIRED_ONLY === "1";
-  log(
-    requiredOnly ? "waiting for the required check" : "waiting for every check",
-  );
+  log("waiting for every check");
 
   // The 30-minute matrix is followed by a 10-minute aggregate acceptance job.
   // Allow both phases rather than abandoning an otherwise valid running CI.
@@ -260,20 +332,14 @@ async function ship() {
     // not tell us it passed, and one of them is not hypothetical here — the e2e
     // job was cancelled by its own timeout once, which is exactly a run that
     // should not merge.
-    const { verdict, unhappy, pending } = decide(checks, requiredOnly);
+    const result = decide(checks);
+    const step = nextStep(result, Date.now(), deadline);
 
-    if (verdict === "refuse") {
-      throw new Error(describeUnhappy(unhappy));
-    }
-    if (verdict === "merge") break;
+    if (step.action === "fail") throw new Error(step.message);
+    if (step.action === "merge") break;
 
-    if (Date.now() > deadline) {
-      throw new Error(
-        `CHECKS_TIMED_OUT: still waiting on ${pending.map((check) => check.name).join(", ")}. Nothing merged.`,
-      );
-    }
     log(
-      `  still running: ${pending.map((check) => check.name).join(", ") || "(none reported yet)"}`,
+      `  still running: ${result.pending.map((check) => check.name).join(", ") || "(none reported yet)"}`,
     );
     await new Promise((resolve) => setTimeout(resolve, 20_000));
   }
