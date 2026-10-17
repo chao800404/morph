@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import {
   checkBuiltProduction,
   extractFunctionDefinitions,
+  nameOrRenamed,
 } from "./built-production-check.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,16 +28,27 @@ after(() => rmSync(scratchRoot, { recursive: true, force: true }));
 const UNREPLACED = 'process.env.NODE_ENV==="production"';
 
 /** `isProductionEnvironment`'s chunk as emitted today, last operand swappable. */
-const moduleChunk = (lastOperand, exportClause = "isProductionEnvironment as i") =>
-  `function isProductionEnvironment(env){const candidate=env;return candidate?.CF_PAGES==="1"||candidate?.ENVIRONMENT==="production"||${lastOperand}}class LocalStorefrontDomainProvider{kind="local";async attach(hostname){return\`local-dev:\${hostname}\`}}export{${exportClause},LocalStorefrontDomainProvider as L};\n`;
+const moduleChunk = (lastOperand, exportClause = "isProductionEnvironment as i", prelude = "") =>
+  `${prelude}function isProductionEnvironment(env){const candidate=env;return candidate?.CF_PAGES==="1"||candidate?.ENVIRONMENT==="production"||${lastOperand}}class LocalStorefrontDomainProvider{kind="local";async attach(hostname){return\`local-dev:\${hostname}\`}}export{${exportClause},LocalStorefrontDomainProvider as L};\n`;
+
+/** `isProductionRuntime` as emitted today, under `name`. */
+const runtimeFn = (lastOperand, name = "isProductionRuntime") =>
+  `function ${name}(env2){return env2.CF_PAGES==="1"||env2.ENVIRONMENT==="production"||${lastOperand}}`;
 
 /** The Worker entry, which Node cannot import, with `isProductionRuntime` inlined. */
-const workerEntry = (lastOperand) =>
-  `import "cloudflare:workers";const DEFAULT_DEV_ORIGIN="http://localhost:3000";function isProductionRuntime(env2){return env2.CF_PAGES==="1"||env2.ENVIRONMENT==="production"||${lastOperand}}function resolvePublicOrigin(options){if(isProductionRuntime(options.env))return options.configured}export{resolvePublicOrigin as r};\n`;
+const workerEntry = (lastOperand, { name = "isProductionRuntime", extra = "" } = {}) =>
+  `import "cloudflare:workers";const DEFAULT_DEV_ORIGIN="http://localhost:3000";${runtimeFn(lastOperand, name)}function resolvePublicOrigin(options){if(${name}(options.env))return options.configured}${extra}export{resolvePublicOrigin as r};\n`;
 
 const MODULE_FILE = "assets/storefront-domain-provider-LoHcRGpV.js";
 const ENTRY_FILE = "assets/worker-entry-Cgup1Ny3.js";
 const PASSING = { [MODULE_FILE]: moduleChunk("true"), [ENTRY_FILE]: workerEntry("true") };
+
+/**
+ * A copy of the exact name that answers `true`, where a decoy could hide.
+ * Single quotes keep the cut decoy compilable, so it really does pass.
+ */
+const DECOY_IN_STRING = `const embedded='${runtimeFn("true")}';`;
+const DECOY_IN_COMMENT = `/* ${runtimeFn("true")} */`;
 
 let cases = 0;
 /** A scratch server directory holding `files` (relative name -> contents). */
@@ -66,13 +78,15 @@ async function withNodeEnv(value, fn) {
 }
 
 describe("extractFunctionDefinitions", () => {
-  it("cuts out every copy, nested braces included", () => {
-    const source = 'x();function f(a){if(a){return{b:1}}return 2}y();function f(c){return 3}';
-    assert.deepEqual(extractFunctionDefinitions(source, "f"), [
-      "function f(a){if(a){return{b:1}}return 2}",
-      "function f(c){return 3}",
+  it("cuts out every copy, nested braces and $<n> renames included, and marks an unended cut", () => {
+    const source =
+      "x();function f(a){if(a){return{b:1}}return 2}y();function f$1(c){return 3}function fg(d){}function f(e){";
+    assert.deepEqual(extractFunctionDefinitions(source, nameOrRenamed("f")), [
+      { name: "f", text: "function f(a){if(a){return{b:1}}return 2}" },
+      { name: "f$1", text: "function f$1(c){return 3}" },
+      { name: "f", text: null },
     ]);
-    assert.deepEqual(extractFunctionDefinitions(source, "g"), []);
+    assert.deepEqual(extractFunctionDefinitions(source, nameOrRenamed("g")), []);
   });
 });
 
@@ -91,7 +105,7 @@ describe("checkBuiltProduction", () => {
     const { failures } = await checkBuiltProduction(
       server({ ...PASSING, [MODULE_FILE]: moduleChunk(UNREPLACED) }),
     );
-    assert.ok(failures.some((line) => line.includes("(copy): isProductionEnvironment({}) with NODE_ENV unset returned false")));
+    assert.ok(failures.some((line) => line.includes("(copy isProductionEnvironment): isProductionEnvironment({}) with NODE_ENV unset returned false")));
     assert.ok(failures.some((line) => line.includes("(module): isProductionEnvironment({}) with NODE_ENV unset returned false")));
     assert.ok(failures.some((line) => line.includes('NODE_ENV "development"')));
     assert.ok(failures.every((line) => !line.includes("isProductionRuntime")));
@@ -111,6 +125,90 @@ describe("checkBuiltProduction", () => {
     );
     assert.ok(failures.length > 0);
     assert.ok(failures.every((line) => line.startsWith(join("assets", "other-AbC123.js"))));
+  });
+
+  // Review C17 S1: copies renamed by Rollup, and decoys of the exact name.
+  it("refuses an extra $1 copy that returns false", async () => {
+    const { failures } = await checkBuiltProduction(
+      server({
+        ...PASSING,
+        [ENTRY_FILE]: workerEntry("true", { extra: runtimeFn("false", "isProductionRuntime$1") }),
+      }),
+    );
+    assert.ok(failures.length > 0);
+    assert.ok(failures.every((line) => line.includes("(copy isProductionRuntime$1)")));
+  });
+
+  for (const [label, decoy] of [
+    ["a string", DECOY_IN_STRING],
+    ["a comment", DECOY_IN_COMMENT],
+  ]) {
+    it(`refuses the real copy renamed to $1 beside a passing decoy in ${label}`, async () => {
+      const { failures } = await checkBuiltProduction(
+        server({
+          ...PASSING,
+          [ENTRY_FILE]: workerEntry("false", { name: "isProductionRuntime$1", extra: decoy }),
+        }),
+      );
+      assert.ok(failures.length > 0);
+      assert.ok(failures.every((line) => line.includes("isProductionRuntime$1")));
+    });
+
+    it(`refuses the real copy under an unrelated name beside a passing decoy in ${label}, through its call site`, async () => {
+      const { checked, failures } = await checkBuiltProduction(
+        server({
+          ...PASSING,
+          [ENTRY_FILE]: workerEntry("false", { name: "prodRt", extra: decoy }),
+        }),
+      );
+      assert.ok(checked.some((line) => line.startsWith("prodRt (called by resolvePublicOrigin)")));
+      assert.ok(failures.length > 0);
+      assert.ok(failures.every((line) => line.includes("(called by resolvePublicOrigin)")));
+    });
+  }
+
+  it("refuses a call site whose callee is not defined in its chunk", async () => {
+    const { failures } = await checkBuiltProduction(
+      server({
+        ...PASSING,
+        [ENTRY_FILE]: `${runtimeFn("true")}function resolvePublicOrigin(options){if(i3(options.env))return options.configured}`,
+      }),
+    );
+    assert.ok(failures.some((line) => line.includes("calls i3, which is not defined in the same chunk")));
+  });
+
+  // Review C17 N1.
+  it("refuses a cut that does not terminate", async () => {
+    const { failures } = await checkBuiltProduction(
+      server({ ...PASSING, [ENTRY_FILE]: `${workerEntry("true")}function isProductionRuntime(env2){return true` }),
+    );
+    assert.ok(failures.some((line) => line.includes("isProductionRuntime cut did not terminate")));
+  });
+
+  // Review C17 N2: a matching name inside embedded source text is not skipped.
+  it("fails closed on a matching name inside embedded TypeScript source", async () => {
+    const embedded = JSON.stringify(
+      'export function isProductionRuntime(env: PublicOriginEnv): boolean {\n  return env.CF_PAGES === "1" || process.env.NODE_ENV === "production";\n}',
+    );
+    const { failures } = await checkBuiltProduction(
+      server({ ...PASSING, [ENTRY_FILE]: `${workerEntry("true")}const source=${embedded};` }),
+    );
+    assert.ok(failures.length > 0);
+    assert.ok(failures.every((line) => line.includes("did not compile on its own")));
+  });
+
+  // Review C17 N3: the module import runs without the shell's NODE_ENV.
+  it("imports the module with NODE_ENV cleared, so module-level reads cannot see the shell's production", async () => {
+    await withNodeEnv("production", async () => {
+      const { failures } = await checkBuiltProduction(
+        server({
+          ...PASSING,
+          [MODULE_FILE]: moduleChunk("IS_PROD", "isProductionEnvironment as i", 'const IS_PROD=process.env.NODE_ENV==="production";'),
+        }),
+      );
+      assert.ok(failures.some((line) => line.includes("(module): isProductionEnvironment({}) with NODE_ENV unset returned false")));
+      assert.equal(process.env.NODE_ENV, "production");
+    });
   });
 
   it("is not rescued by NODE_ENV=production on the machine running it, and restores it", async () => {
@@ -142,6 +240,11 @@ describe("checkBuiltProduction", () => {
       "no isProductionRuntime anywhere",
       { [MODULE_FILE]: moduleChunk("true") },
       "BUILT_PRODUCTION_PREDICATE_NOT_FOUND",
+    ],
+    [
+      "no resolvePublicOrigin call site",
+      { [MODULE_FILE]: moduleChunk("true"), [ENTRY_FILE]: runtimeFn("true") },
+      "BUILT_PRODUCTION_CALL_SITE_NOT_FOUND",
     ],
     [
       "isProductionEnvironment mangled",
