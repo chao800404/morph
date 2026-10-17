@@ -224,6 +224,20 @@ describe("the client-only preview notice in the editor", () => {
     expect(notice()).toBeNull();
   });
 
+  // An Astro start (and one whose framework did not resolve) carries neither
+  // field; the shell must not read the missing runtime as client-only.
+  it("is not shown for a start that names no runtime, as an Astro start does", async () => {
+    renderShell({});
+    await shellUp();
+    expect(notice()).toBeNull();
+  });
+
+  it("is not shown when limits arrive without a runtime", async () => {
+    renderShell({ clientOnlyLimits: LIMITS });
+    await shellUp();
+    expect(notice()).toBeNull();
+  });
+
   it("is replaced by a new start's answer", async () => {
     const client = renderShell({
       previewRuntime: "client",

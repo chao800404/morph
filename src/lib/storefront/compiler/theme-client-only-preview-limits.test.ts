@@ -200,15 +200,22 @@ describe("the runtime a preview start reports", () => {
     ).toEqual({ previewRuntime: "start", clientOnlyLimits: [] });
   });
 
-  it("lists none for another framework, or one that did not resolve", () => {
-    for (const frameworkId of ["astro", null]) {
-      expect(
-        themePreviewRuntimeReport({
-          previewRuntime: undefined,
-          frameworkId,
-          files,
-        }).clientOnlyLimits,
-      ).toEqual([]);
-    }
+  // Research C4: "client-only" and "full Start" are not Astro preview modes,
+  // so an Astro start must not carry a field that reads like one, whatever
+  // the deployment's Start setting and even if its files import Start.
+  it.each([
+    ["an Astro Theme on the default preview", "astro", undefined],
+    ["an Astro Theme where the deployment runs the full Start preview", "astro", "start"],
+    ["a framework that did not resolve", null, undefined],
+    ["a framework that did not resolve, under the full Start preview", null, "start"],
+  ] as const)("reports no runtime fields for %s", (_name, frameworkId, previewRuntime) => {
+    const report = themePreviewRuntimeReport({
+      previewRuntime,
+      frameworkId,
+      files,
+    });
+    expect(report).toStrictEqual({});
+    expect("previewRuntime" in report).toBe(false);
+    expect("clientOnlyLimits" in report).toBe(false);
   });
 });

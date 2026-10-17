@@ -114,6 +114,23 @@ async function frameMarked(page: Page) {
     );
 }
 
+/**
+ * The editor's client-only preview notice names this Theme file. The notice
+ * comes from the start response (`previewRuntime: "client"` and its
+ * `clientOnlyLimits`), so seeing the file named proves the client-only
+ * runtime told the author about the gap the test below asserts.
+ */
+async function expectClientOnlyNoticeNames(page: Page, file: string) {
+  const notice = page.locator('[data-slot="preview-client-only-notice"]');
+  await expect(notice).toBeVisible({ timeout: 90_000 });
+  await expect(notice).toContainText(
+    "uses server functions or server APIs that this preview does not run",
+  );
+  await expect(
+    notice.getByRole("button", { name: file, exact: true }),
+  ).toBeVisible();
+}
+
 test.describe("TanStack Start in the Live Preview", () => {
   test.describe.configure({ mode: "serial" });
   test.setTimeout(4 * 60_000);
@@ -304,6 +321,8 @@ test.describe("TanStack Start in the Live Preview", () => {
         "Theme preview cannot call getRequest(): server APIs run only in the deployed Theme Worker.",
       ),
     ).toBeVisible({ timeout: 90_000 });
+    // And the editor said so: the loader's server functions live here.
+    await expectClientOnlyNoticeNames(page, "src/compat/fns.ts");
   });
 
   // Start's cookie helpers read the request, which a browser cannot supply. The
@@ -320,6 +339,8 @@ test.describe("TanStack Start in the Live Preview", () => {
         "Theme preview cannot call getCookie(): server APIs run only in the deployed Theme Worker.",
       ),
     ).toBeVisible({ timeout: 90_000 });
+    // And the editor said so: the cookie server functions live here.
+    await expectClientOnlyNoticeNames(page, "src/compat/cookies.ts");
   });
 
   // The published Worker answers these; see native-compat.test.ts.
@@ -342,6 +363,8 @@ test.describe("TanStack Start in the Live Preview", () => {
     // The dev server's HTML shell, not the route's JSON.
     expect(answer.status).toBe(200);
     expect(answer.type).toMatch(/^text\/html/);
+    // And the editor said so: the route with `server` handlers is named.
+    await expectClientOnlyNoticeNames(page, "src/routes/api/compat.ts");
   });
 
   // --- The same behaviours once the preview runs Start's server. ---

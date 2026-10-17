@@ -3,6 +3,7 @@ import {
   packageImportUsesOnlySafeBoundary,
   parseThemeSourceModule,
 } from "./theme-import-protection";
+import type { ThemeFrameworkId } from "../theme-framework/theme-framework.types";
 
 /**
  * What a TanStack Start Theme uses that the client-only Live Preview cannot
@@ -16,11 +17,22 @@ import {
  * data, which looks like a Theme bug rather than a preview limit.
  *
  * This reports where the Theme *uses* those, so the editor can say so. It is
- * a reading of the source, not of what ran: a use that the page never
- * reaches is still reported. That over-approximation is the intended side to
- * err on — the notice says the Theme uses them, never that they failed.
+ * a static reading of the source, not of what ran, and it is neither exact
+ * nor complete:
  *
- * Not reported:
+ * - It over-approximates. A definition counts even if nothing calls it, and
+ *   a use that the page never reaches is still reported. That is the
+ *   intended side to err on: the notice says the Theme uses them, never that
+ *   they failed.
+ * - It can miss uses. It follows only static imports of the Start modules
+ *   into the module that calls them (aliased or namespaced imports
+ *   included). It does not follow a re-export through another Theme module,
+ *   a Start function stored in a variable or passed around, a computed
+ *   member (`start["createServerFn"]`), or a dynamic `import()` whose
+ *   specifier is not a string literal. A Theme can therefore use server code
+ *   this does not report; an empty result is not proof that it uses none.
+ *
+ * Not reported, by design:
  * - server APIs used only inside a boundary Start strips from the browser
  *   (`createServerFn().handler`, `createIsomorphicFn().server`,
  *   `createServerOnlyFn`, a route's `server` option): the enclosing
@@ -309,15 +321,32 @@ export function collectThemeClientOnlyPreviewLimits(
     .slice(0, MAX_CLIENT_ONLY_PREVIEW_LIMITS);
 }
 
-export type ThemePreviewRuntimeReport = Readonly<{
-  /**
-   * Which Live Preview served this start: the full Start server
-   * (`MORPH_THEME_PREVIEW_RUNTIME=start`) or the default client-only build.
-   */
-  previewRuntime: "client" | "start";
-  /** Empty unless a client-only preview of a TanStack Start Theme. */
-  clientOnlyLimits: readonly ThemeClientOnlyPreviewLimit[];
-}>;
+/** The only framework whose preview has a client-only and a full Start mode. */
+const TANSTACK_START_FRAMEWORK_ID: ThemeFrameworkId = "tanstack-start";
+
+/**
+ * What a start response says about the Live Preview runtime that served it.
+ *
+ * Only a TanStack Start Theme gets the two fields: `previewRuntime` names the
+ * full Start server (`MORPH_THEME_PREVIEW_RUNTIME=start`) or the default
+ * client-only build, and `clientOnlyLimits` lists, for the client-only one,
+ * where the Theme uses what that build cannot run (empty for `start`).
+ *
+ * Any other framework (Astro), and a framework that did not resolve, gets
+ * neither field. "Client-only" and "full Start" are not modes those previews
+ * have, so the start says nothing rather than something that reads like one.
+ * A reader treats a missing field as "nothing to say", never as a mode.
+ */
+export type ThemePreviewRuntimeReport =
+  | Readonly<{
+      previewRuntime: "client";
+      clientOnlyLimits: readonly ThemeClientOnlyPreviewLimit[];
+    }>
+  | Readonly<{
+      previewRuntime: "start";
+      clientOnlyLimits: readonly ThemeClientOnlyPreviewLimit[];
+    }>
+  | Readonly<{ previewRuntime?: never; clientOnlyLimits?: never }>;
 
 /**
  * What a Live Preview start tells the editor about the runtime it used, read
@@ -330,14 +359,12 @@ export function themePreviewRuntimeReport(input: {
   frameworkId: string | null;
   files: ReadonlyArray<Readonly<{ path: string; content?: unknown }>>;
 }): ThemePreviewRuntimeReport {
+  if (input.frameworkId !== TANSTACK_START_FRAMEWORK_ID) return {};
   if (input.previewRuntime === "start") {
     return { previewRuntime: "start", clientOnlyLimits: [] };
   }
   return {
     previewRuntime: "client",
-    clientOnlyLimits:
-      input.frameworkId === "tanstack-start"
-        ? collectThemeClientOnlyPreviewLimits(input.files)
-        : [],
+    clientOnlyLimits: collectThemeClientOnlyPreviewLimits(input.files),
   };
 }

@@ -26,6 +26,7 @@ describe("which start answers get the client-only notice", () => {
     ["the full Start preview", { success: true as const, data: { previewRuntime: "start" as const, clientOnlyLimits: LIMITS } }],
     ["a client-only start with no uses", { success: true as const, data: { previewRuntime: "client" as const, clientOnlyLimits: [] } }],
     ["a start that does not name its runtime", { success: true as const, data: { clientOnlyLimits: LIMITS } }],
+    ["an Astro start, which carries neither field", { success: true as const, data: {} }],
     ["a failed start", { success: false as const }],
     ["no answer yet", undefined],
   ])("not %s", (_name, result) => {
@@ -42,6 +43,10 @@ describe("the client-only notice", () => {
     expect(notice.textContent).toContain(
       "This Live Preview runs in the browser only",
     );
+    expect(notice.textContent).toContain(
+      "uses server functions or server APIs that this preview does not run",
+    );
+    expect(notice.textContent).toContain("currently a deployment setting");
     expect(notice.textContent).toContain("MORPH_THEME_PREVIEW_RUNTIME=start");
     expect(notice.textContent).toContain("(server function, server route)");
     expect(notice.textContent).toContain("(server API)");

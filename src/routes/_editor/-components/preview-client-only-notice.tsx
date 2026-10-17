@@ -9,8 +9,9 @@ import type {
 
 /**
  * The start response fields this notice reads, as the preview server query
- * holds them. Loose on purpose: older responses and test fixtures carry
- * neither field, which means "nothing to say".
+ * holds them. Loose on purpose: a start for a Theme that is not TanStack
+ * Start (Astro), or whose framework did not resolve, carries neither field,
+ * and neither do older responses; all of them mean "nothing to say".
  */
 type PreviewStartResult =
   | Readonly<{
@@ -30,6 +31,11 @@ type PreviewStartResult =
  * Only a successful start that says it served the client-only preview and
  * found uses counts. A full Start preview runs server functions, so it says
  * nothing; a start that does not name its runtime is not guessed at.
+ *
+ * The list comes from a static reading of the Theme source
+ * (theme-client-only-preview-limits.ts). It over-approximates and can miss
+ * dynamic forms, so an empty list does not mean the Theme uses no server
+ * code; the notice only ever names what was found.
  */
 export function previewClientOnlyNoticeLimits(
   result: PreviewStartResult,
@@ -98,9 +104,9 @@ export function PreviewClientOnlyNotice({
       </AlertTitle>
       <AlertDescription className="text-xs">
         <p>
-          These files use server functions or server APIs, which do not run in
-          this preview, so content they load may be missing here. The
-          published Theme runs them.
+          This Theme uses server functions or server APIs that this preview
+          does not run, so content they load may be missing here. The
+          published Theme runs them. Found in:
         </p>
         <ul className="w-full space-y-0.5">
           {files.map((file) => (
@@ -118,7 +124,8 @@ export function PreviewClientOnlyNotice({
           ))}
         </ul>
         <p>
-          The full Start preview runs them. Today it is a deployment setting:{" "}
+          The full Start preview runs them. It is currently a deployment
+          setting:{" "}
           <span className="font-mono">MORPH_THEME_PREVIEW_RUNTIME=start</span>.
         </p>
       </AlertDescription>
