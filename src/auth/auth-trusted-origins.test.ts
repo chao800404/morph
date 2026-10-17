@@ -145,6 +145,18 @@ describe("createAuth trustedOrigins", () => {
     expect(auth.options.trustedOrigins).toEqual(["http://localhost:4000"]);
   });
 
+  it("adds no dev origin when only CF_PAGES says production", () => {
+    // No ENVIRONMENT, and NODE_ENV is the test runner's: CF_PAGES is the only
+    // production signal, and the loopback PUBLIC_URL would pass the fail-closed
+    // baseURL check.
+    const auth = createAuth(
+      bindings({ CF_PAGES: "1", PUBLIC_URL: "http://localhost:4000" }),
+      "http://localhost:4000/api/auth/get-session",
+    );
+    expect(auth.options.baseURL).toBe("http://localhost:4000");
+    expect(auth.options.trustedOrigins).toEqual(["http://localhost:4000"]);
+  });
+
   it("adds no dev origin in production even when PUBLIC_URL is the LAN machine", () => {
     const auth = createAuth(
       bindings({ ENVIRONMENT: "production", PUBLIC_URL: LAN_HTTP }),
@@ -243,6 +255,16 @@ describe("createAuth trustedOrigins", () => {
       "https://shop.example",
       "https://store.example",
     ]);
+  });
+
+  it("refuses a plain http storefront request in production", () => {
+    expect(() =>
+      createStorefrontAuth(
+        bindings({ ENVIRONMENT: "production", PUBLIC_URL: "https://shop.example" }),
+        "http://store.example/api/auth/get-session",
+        "store.example",
+      ),
+    ).toThrow("The request origin does not match the resolved storefront");
   });
 
   it("gives a loopback storefront host the dev list outside production", () => {

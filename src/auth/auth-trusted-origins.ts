@@ -42,6 +42,12 @@ function normalizedOrigin(url: string): string | null {
  * range): if the `NODE_ENV` replacement ever broke, a deployment reached on
  * any other origin still does not trust them.
  *
+ * Because the match is on the parsed origin, alternate spellings of the same
+ * three origins also match: userinfo (`http://u@192.168.31.105:3000`), a
+ * numeric IPv4 host (`http://3232243561:3000`), a trailing dot, full-width
+ * characters, and leading-zero ports (`:03000`). The list itself is fixed, so
+ * this never trusts an origin outside it.
+ *
  * Not closed here: a production `baseURL` with neither `PUBLIC_URL` nor
  * `BETTER_AUTH_URL` set is itself `http://localhost:3000` (see `createAuth`)
  * and is trusted as `baseURL`; and a broken `NODE_ENV` replacement lets the
