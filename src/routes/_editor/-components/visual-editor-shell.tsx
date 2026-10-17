@@ -4039,6 +4039,13 @@ export function VisualEditorShell({
   /** The latest sync this tab sent for each path, to tell a retry is moot. */
   const previewSyncSequenceRef = useRef(0);
   const lastPreviewSyncByPathRef = useRef(new Map<string, number>());
+  /**
+   * Paths whose latest write to the preview is not settled yet: sent and
+   * unanswered, or refused and waiting to be sent again once this tab's own
+   * save is back. The preview may yet end up holding that write's content,
+   * so `previewWrittenRef` does not say what it will show.
+   */
+  const previewSyncUnsettledRef = useRef(new Map<string, number>());
   const postPreviewThemeFilesRef = useRef<
     ((...args: Parameters<typeof postPreviewThemeFiles>) => number) | null
   >(null);
@@ -4106,13 +4113,22 @@ export function VisualEditorShell({
       // A fresh preview holds the saved files, not what this tab wrote into
       // the one before it.
       if (options?.initialSync) previewWrittenRef.current = new Map();
+      // A file matching what this tab last wrote and saved is skipped as
+      // already there — unless a write of it is still unsettled. Undoing B
+      // back to A while B's refused write waits for its retry, or while B's
+      // write is unanswered, matched both, so the undo sent nothing and the
+      // preview kept B. Sending it makes it the latest write of that file,
+      // which also stands down the waiting retry (`superseded` below).
       const planned = planPreviewSync(
         files,
         useThemeWorkspaceStore
           .getState()
           .getWorkspaceFiles(context.storefront.id, context.theme.id),
         previewWrittenRef.current,
-        new Set(options?.justSavedPaths),
+        new Set([
+          ...(options?.justSavedPaths ?? []),
+          ...previewSyncUnsettledRef.current.keys(),
+        ]),
       );
       // Every revision is told to the page, written or not. It is the
       // handshake the page stamps its selection reports with, and the editor
@@ -4157,7 +4173,18 @@ export function VisualEditorShell({
       const sequence = ++previewSyncSequenceRef.current;
       for (const file of planned) {
         lastPreviewSyncByPathRef.current.set(file.path, sequence);
+        previewSyncUnsettledRef.current.set(file.path, sequence);
       }
+      // This write's paths are settled once it is answered for good, unless
+      // a later write of the same path has taken them over.
+      const settle = () => {
+        for (const file of planned) {
+          if (previewSyncUnsettledRef.current.get(file.path) === sequence) {
+            previewSyncUnsettledRef.current.delete(file.path);
+          }
+        }
+      };
+      let awaitingRetry = false;
       // Only a write the server made is announced as written: that is what
       // makes the page pull the hot update and confirm the revision.
       const announceWritten = () => {
@@ -4237,6 +4264,7 @@ export function VisualEditorShell({
                 ),
               )
             ) {
+              awaitingRetry = true;
               void waitForOwnSaves(
                 () =>
                   useThemeWorkspaceStore
@@ -4244,6 +4272,9 @@ export function VisualEditorShell({
                     .getWorkspaceFiles(context.storefront.id, context.theme.id),
                 stalePaths,
               ).then(() => {
+                // Settled here, before deciding: either a later write owns
+                // these paths, or the retry below is that write.
+                settle();
                 const superseded = stalePaths.some(
                   (path) =>
                     lastPreviewSyncByPathRef.current.get(path) !== sequence,
@@ -4299,6 +4330,9 @@ export function VisualEditorShell({
               "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
             at: Date.now(),
           });
+        })
+        .finally(() => {
+          if (!awaitingRetry) settle();
         });
       schedulePreviewRemeasureRef.current();
       return styleRevision;
