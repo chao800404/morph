@@ -1,4 +1,5 @@
 import type { ComponentProps } from "react";
+import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -11,6 +12,7 @@ import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { themePreviewContentModuleSource } from "@/lib/storefront/compiler/theme-preview-content";
+import { createInlineTextEditor } from "@/lib/storefront/editor/inline-text-editor";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-media.serverFn";
@@ -885,5 +887,208 @@ describe("a refused hide the author discards", () => {
         (item) => item.title,
       ),
     ).toEqual(["C", "A", "B"]);
+  });
+});
+
+/**
+ * The canvas end of an inline edit, as the preview page runs it.
+ *
+ * The real inline editor (`createInlineTextEditor`, the one the bridge runs)
+ * on a heading React renders from the frame's content object, which is
+ * driven by the editor's real posts through the real `updatePreviewContent`
+ * (`frameAfter`). A hidden slot renders nothing, as the starter Theme's
+ * `isSectionHidden` does, and the heading falls back to the Hero's own
+ * default. The bridge's two hooks are kept as they are: the edit's messages
+ * go to the editor as the page sends them, and a render that took the edited
+ * element away ends the edit unsaved (`structureObserver`).
+ *
+ * The frame does not guard a slot being typed into: a section post merges
+ * into the slot and the page renders again. Typed text survives only because
+ * React leaves a text node alone when the value it renders is unchanged.
+ */
+function canvasPage() {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  let content = frameAfter([], { slots: {}, hiddenSlots: ["hero"] });
+  const Page = ({ slots, hiddenSlots }: typeof content) =>
+    hiddenSlots.includes("hero") ? null : (
+      <section data-storefront-section-id="hero">
+        <h1>
+          {((slots.hero as Record<string, unknown> | undefined)?.heading as
+            | string
+            | undefined) ?? "Welcome"}
+        </h1>
+      </section>
+    );
+  const editor = createInlineTextEditor({
+    onCommit: (commit) =>
+      fromPreview({ type: "morph:storefront-preview-commit-inline-text", ...commit }),
+    onEditingChange: (editing) =>
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing }),
+    onLayoutChanged: () => {},
+    storedValue: (target) =>
+      target.sectionId && target.fieldPath
+        ? (content.slots[target.sectionId] as Record<string, unknown> | undefined)?.[
+            target.fieldPath
+          ]
+        : undefined,
+  });
+  return {
+    editor,
+    heading: () => container.querySelector("h1"),
+    /** The page as the editor's posts so far leave it. */
+    render() {
+      content = frameAfter(heroPosts(), { slots: {}, hiddenSlots: ["hero"] });
+      act(() => root.render(<Page {...content} />));
+      if (editor.editingElement()?.isConnected === false) editor.finish(false);
+      return content;
+    },
+    unmount() {
+      act(() => root.unmount());
+      container.remove();
+    },
+  };
+}
+
+/** Selects the heading from the structure panel, as T6 selects its row. */
+async function selectHeadingRow() {
+  fromPreview({
+    type: "morph:storefront-preview-structure",
+    nodes: [
+      {
+        id: "hero:node:heading",
+        parentId: null,
+        sectionId: "hero",
+        label: "Heading",
+        kind: "heading",
+        tagName: "h1",
+        target: {
+          sectionId: "hero",
+          nodeId: "hero:node:heading",
+          elementKey: "heading",
+          fieldKey: "heading",
+          fieldPath: "heading",
+          isSection: false,
+        },
+      },
+    ],
+  });
+  const row = await screen.findByText("h1");
+  act(() => {
+    row.closest("button")?.click();
+  });
+  await flushFrames();
+}
+
+describe("text typed on the canvas while a show is answered", () => {
+  it("keeps the un-blurred text through the show's acknowledgement, stores it on blur, and the editor and frame agree", async () => {
+    const STORED = "Stored heading";
+    const TYPED = "Typed on the canvas";
+    serverHolding(false);
+    // Stored differs from the Hero's default, so a post that took the stored
+    // value away would show on the canvas too.
+    server.sections[0]!.props.heading = STORED;
+    holdWrites = true;
+    const shell = renderShell();
+    await flushFrames();
+    const page = canvasPage();
+    try {
+      // The show: posted at once with the composed props, its write held.
+      fireEvent.click(showButton());
+      await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+      expect(writes()[0]).toEqual({ enabled: true });
+      page.render();
+      expect(page.heading()?.textContent).toBe(STORED);
+
+      // Before the show is answered, the author double-clicks the heading
+      // and types; nothing is blurred, committed or pending.
+      await selectHeadingRow();
+      const heading = page.heading()!;
+      const section = heading.closest("section") as HTMLElement;
+      expect(
+        page.editor.begin(
+          {
+            element: heading,
+            kind: "heading",
+            section,
+            sectionId: "hero",
+            fieldKey: "heading",
+            fieldPath: "heading",
+            descendantFields: [],
+          },
+          { selectionEnabled: true },
+        ),
+      ).toBe(true);
+      (heading.firstChild as Text).data = TYPED;
+      heading.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(heading.textContent).toBe(TYPED);
+
+      // The acknowledgement: the reconcile posts the section's truth.
+      const beforeAck = posted.length;
+      await releaseWrites();
+      // Precondition: the reconcile posted. It always names `enabled`; the
+      // show's signed second post does not.
+      const reconcileAt = () =>
+        heroPosts(beforeAck).findIndex((m) => typeof m.enabled === "boolean");
+      await waitFor(() => expect(reconcileAt()).toBeGreaterThanOrEqual(0));
+      await flushFrames();
+
+      // Not lost: the frame took the post, the edit is still open on the
+      // same element, and the typed text is still there.
+      const during = page.render();
+      expect(during.hiddenSlots).toEqual([]);
+      expect(page.heading()).toBe(heading);
+      expect(page.editor.editingElement()).toBe(heading);
+      expect(heading.textContent).toBe(TYPED);
+      // Why: it re-posts what the show posted, the section shown with the
+      // stored value the edit began from, which React leaves alone.
+      expect(heroPosts(beforeAck)[reconcileAt()]).toMatchObject({
+        enabled: true,
+        props: { heading: STORED },
+      });
+      expect(heroPosts(beforeAck)[reconcileAt()]?.resetKeys).toBeUndefined();
+      // The editor did not end the edit or leave select mode either.
+      expect(
+        posted
+          .slice(beforeAck)
+          .filter(
+            (m) =>
+              m.type === "morph:storefront-preview-finish-inline-text" ||
+              (m.type === "morph:storefront-preview-set-selection-mode" &&
+                m.enabled === false),
+          ),
+      ).toEqual([]);
+
+      // Blur: the page commits the typed text and closes the edit.
+      const info = vi.spyOn(toast, "info").mockImplementation(() => "");
+      heading.dispatchEvent(new FocusEvent("blur"));
+      expect(page.editor.editingElement()).toBeNull();
+      await waitFor(
+        () => expect(updateSectionProps).toHaveBeenCalledTimes(2),
+        { timeout: 3_000 },
+      );
+      expect(writes()[1]).toEqual({ heading: TYPED });
+      expect(
+        info.mock.calls.filter(
+          (call) => (call[1] as { id?: string } | undefined)?.id === "inline-text-refused",
+        ),
+      ).toEqual([]);
+      await flushFrames();
+
+      // Stored, and the editor, the frame and the canvas agree on it.
+      expect(server.sections[0]).toMatchObject({
+        enabled: true,
+        props: { ...STORED_PROPS, heading: TYPED },
+      });
+      const after = page.render();
+      expect(after.hiddenSlots).toEqual([]);
+      expect((after.slots.hero as Record<string, unknown>).heading).toBe(TYPED);
+      expect(page.heading()?.textContent).toBe(TYPED);
+      shell.reread();
+      expect(await openHeadingField(TYPED)).toBeTruthy();
+    } finally {
+      page.unmount();
+    }
   });
 });
