@@ -783,6 +783,8 @@ describe("a record revision the upgrade cannot read", () => {
         attempts: 0,
       });
       expect(hooks.recordWriteAttempts).toBe(0);
+      // The stored value is never overwritten: raw metadata text and
+      // updated_at are byte-identical.
       expect(storedRawRow()).toEqual(before);
       expect(console.error).toHaveBeenCalledWith(
         "Starter upgrade record not saved:",
@@ -795,9 +797,11 @@ describe("a record revision the upgrade cannot read", () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
+    let afterOtherWriter: ReturnType<typeof storedRawRow> | undefined;
     hooks.beforeRecordWrite = () => {
       hooks.beforeRecordWrite = null;
       singleKeyWriter("starterUpgradeRecordRevision", 1.5);
+      afterOtherWriter = storedRawRow();
     };
 
     const error = await rejection(openEditor());
@@ -808,6 +812,9 @@ describe("a record revision the upgrade cannot read", () => {
       filesSaved: true,
       attempts: 1,
     });
+    // The stored value is never overwritten: the row is byte-identical to
+    // what the other writer left.
+    expect(storedRawRow()).toEqual(afterOtherWriter);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: LEGACY_VERSION,
       starterUpgradeRecordRevision: 1.5,
