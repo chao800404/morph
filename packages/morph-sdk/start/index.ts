@@ -1,6 +1,6 @@
 /**
  * `@morph/sdk/start`: the platform's thin entry for a TanStack Start Theme
- * that Morph hosts (SPIKE, M1b/M1c).
+ * that Morph hosts.
  *
  * The core (`../src`) knows nothing about frameworks or requests. This entry
  * is the one place a hosted Start Theme learns which content source the
@@ -21,6 +21,14 @@
  *   `no_content_source`; it never falls back to default content. A header
  *   that is present but unusable fails too, rather than falling through to
  *   the local address.
+ * - Morph's media paths (`/_storefront-media/…`, `/api/store/assets/…`) come
+ *   back exactly as Morph sent them, relative, as the Starter's `content.ts`
+ *   keeps them. A hosted Theme's pages are served on the origin those paths
+ *   belong to; the content origin above is a platform address (the preview's
+ *   `.invalid` origin, a build's loopback prerender server) and must never
+ *   be written into a page. This mode is part of this entry's contract
+ *   (README.md, "Media URL mode"). `createMorph`, re-exported below, is the
+ *   external entry and keeps its own absolute mode.
  *
  * Server only. The reads go through `createServerOnlyFn`, so Start removes
  * the request access from the client bundle; call them from a loader's server
@@ -33,7 +41,8 @@
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 
-import { createMorph, MorphError } from "../src/index";
+import { createMorphReader } from "../src/client";
+import { MorphError } from "../src/index";
 import type {
   Morph,
   MorphPage,
@@ -87,7 +96,11 @@ export function contentOriginFor(
  * kept: the next call, from this request or another, reads the header again.
  */
 export const morphForRequest = createServerOnlyFn((): Morph => {
-  return createMorph({ baseUrl: contentOriginFor(getRequest()) });
+  return createMorphReader(
+    { baseUrl: contentOriginFor(getRequest()) },
+    // The hosted entry's mode, fixed here: see the comment at the top.
+    { mediaUrls: "relative" },
+  );
 });
 
 /**

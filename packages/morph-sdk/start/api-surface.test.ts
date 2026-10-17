@@ -16,11 +16,26 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
  *
  * Adding to the surface means adding to the lists here, deliberately.
  */
+const scope = vi.hoisted(() => ({ request: null as Request | null }));
 vi.mock("@tanstack/react-start/server", () => ({
   getRequest: () => {
-    throw new Error("No Start request in this test.");
+    if (!scope.request) throw new Error("No Start request in this test.");
+    return scope.request;
   },
 }));
+
+/** Serves one request at a time; enough for the checks below. */
+async function withRequest<T>(
+  request: Request,
+  run: () => Promise<T>,
+): Promise<T> {
+  scope.request = request;
+  try {
+    return await run();
+  } finally {
+    scope.request = null;
+  }
+}
 
 import * as core from "../src/index";
 import type {
@@ -161,6 +176,39 @@ describe("@morph/sdk/start public surface", () => {
     expect(Object.keys(start.morph).sort()).toEqual(["pages", "products"]);
     expect(Object.keys(start.morph.pages).sort()).toEqual(["get", "isHidden"]);
     expect(Object.keys(start.morph.products).sort()).toEqual(["get", "list"]);
+  });
+
+  it("keeps each entry's media URL mode: createMorph absolute, the hosted entry relative", async () => {
+    // Part of each entry's contract (README.md, "Media URL mode"): changing
+    // either is a breaking change. The mode is fixed by the entry, so it is
+    // not an option a caller can pass (`MorphOptions` stays as locked above).
+    const media = "/_storefront-media/abc";
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            slots: { hero: { image: media } },
+            hiddenSlots: [],
+          }),
+        ),
+    );
+    const external = await core
+      .createMorph({ baseUrl: "https://shop.example.com", fetch })
+      .pages.get("/");
+    expect(external.hero.image).toBe("https://shop.example.com" + media);
+
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const hosted = await withRequest(
+        new Request("https://theme.invalid/", {
+          headers: { "x-morph-content-origin": "https://content.invalid" },
+        }),
+        () => start.morph.pages.get("/"),
+      );
+      expect(hosted.hero.image).toBe(media);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps these signatures (checked by the compiler)", () => {

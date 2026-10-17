@@ -53,10 +53,11 @@ const WRANGLER = `{
 const BUILD_BUDGET_MS = 180_000;
 
 /**
- * A route reading content through the SDK's Start thin entry (spike M1b/M1c):
- * loader -> createServerFn -> `morph.pages.get("/")`, from whichever origin
- * the request names in x-morph-content-origin, as Core names it on the
- * public site. Not prerendered: it is read per request.
+ * A route reading content through the SDK's Start thin entry: loader ->
+ * createServerFn -> `morph.pages.get("/")`, from whichever origin the request
+ * names in x-morph-content-origin, as Core names it on the public site. Not
+ * prerendered: it is read per request. A media field is rendered as an
+ * image, so the page shows which URL the thin entry handed back.
  */
 const SDK_ROUTE = {
   path: "src/routes/sdk-thin-entry.tsx",
@@ -66,17 +67,28 @@ import { morph } from "@morph/sdk/start";
 
 const readHome = createServerFn().handler(async () => {
   const home = await morph.pages.get("/");
-  return String(home["sdk-probe"]?.title ?? "");
+  return {
+    title: String(home["sdk-probe"]?.title ?? ""),
+    image: String(home["sdk-probe"]?.image ?? ""),
+  };
 });
 
 export const Route = createFileRoute("/sdk-thin-entry")({
   loader: () => readHome(),
   component: function SdkThinEntry() {
-    return <p data-sdk="home">{Route.useLoaderData()}</p>;
+    const data = Route.useLoaderData();
+    return (
+      <>
+        <p data-sdk="home">{data.title}</p>
+        <img data-sdk="image" src={data.image} alt="" />
+      </>
+    );
   },
 });
 `,
 };
+/** Page media as Core sends it: a path on the public site's own origin. */
+const SDK_IMAGE = "/_storefront-media/sdk-probe?version=assets%2Fhero.png";
 
 /** A content service on loopback answering every page with its own name. */
 async function contentStore(name: string, delayMs: number) {
@@ -91,7 +103,7 @@ async function contentStore(name: string, delayMs: number) {
       res.setHeader("content-type", "application/json");
       res.end(
         JSON.stringify({
-          slots: { "sdk-probe": { title: name } },
+          slots: { "sdk-probe": { title: name, image: SDK_IMAGE } },
           hiddenSlots: [],
         }),
       );
@@ -253,6 +265,13 @@ describe("a TanStack Start project built with its own configuration", () => {
       expect(a.html).not.toContain("from-fast-store");
       expect(b.html).toContain('data-sdk="home">from-fast-store<');
       expect(b.html).not.toContain("from-slow-store");
+      // Media stay the relative path Core sent: the content origin is a
+      // loopback address here and must not be written into the page.
+      for (const { html } of [a, b]) {
+        expect(html).toContain(`data-sdk="image" src="${SDK_IMAGE}"`);
+        expect(html).not.toContain("127.0.0.1");
+        expect(html).not.toContain(".invalid");
+      }
 
       // No source named: the read fails rather than rendering defaults.
       const missing = await read({});

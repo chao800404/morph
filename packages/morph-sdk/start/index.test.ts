@@ -178,3 +178,111 @@ describe("@morph/sdk/start: the platform names each request's source", () => {
     ).toBe("https://named.example");
   });
 });
+
+describe("@morph/sdk/start: media URLs stay as Morph sent them", () => {
+  const MEDIA = "/_storefront-media/abc?version=assets%2Fx.png";
+  const ASSET = "/api/store/assets/11111111-1111-1111-1111-111111111111";
+  const CONTEXT = {
+    storeId: "store_1",
+    storefrontId: "sf_1",
+    salesChannelId: "sc_1",
+    regionId: null,
+    currencyCode: null,
+    automaticTaxes: false,
+    isTaxInclusive: false,
+    countryCode: null,
+    localeCode: null,
+  };
+  const ITEM = {
+    id: "prod_1",
+    title: "Linen shirt",
+    handle: "linen-shirt",
+    subtitle: null,
+    description: null,
+    thumbnailUrl: ASSET,
+    collectionId: null,
+    collectionTitle: null,
+    updatedAt: "2026-10-16T00:00:00.000Z",
+  };
+  const PRODUCT = {
+    ...ITEM,
+    assets: [{ id: "a1", name: "front", url: ASSET }],
+    options: [],
+    variants: [
+      {
+        id: "v1",
+        title: "S",
+        sku: null,
+        allowBackorder: false,
+        availableQuantity: 1,
+        optionValueIds: [],
+        assets: [{ id: "a1", name: "front", url: ASSET }],
+        price: null,
+      },
+    ],
+  };
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      headers: { "content-type": "application/json" },
+    });
+
+  it.each([
+    // The full-Start preview Worker's origin, and a build's loopback
+    // prerender server: neither may reach a page.
+    "http://morph-preview-content.invalid",
+    "http://127.0.0.1:43210",
+    "http://[::1]:43210",
+  ])(
+    "keeps page and product media relative when the source is %s",
+    async (origin) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          if (url.pathname === "/_morph/content") {
+            return json({
+              slots: {
+                hero: {
+                  image: MEDIA,
+                  gallery: [MEDIA, { src: ASSET }],
+                  nested: { deeper: [{ poster: MEDIA }] },
+                },
+              },
+              hiddenSlots: [],
+            });
+          }
+          if (url.pathname === "/api/store/products") {
+            return json({
+              products: [ITEM],
+              context: CONTEXT,
+              pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+            });
+          }
+          return json({ product: PRODUCT, context: CONTEXT });
+        }),
+      );
+
+      const read = await serve(
+        { "x-morph-content-origin": origin },
+        async () => ({
+          page: await morph.pages.get("/"),
+          list: await morph.products.list(),
+          one: await morph.products.get("linen-shirt"),
+          direct: await morphForRequest().pages.get("/"),
+        }),
+      );
+
+      expect(read.page.hero).toEqual({
+        image: MEDIA,
+        gallery: [MEDIA, { src: ASSET }],
+        nested: { deeper: [{ poster: MEDIA }] },
+      });
+      expect(read.direct).toEqual(read.page);
+      expect(read.list.products[0]!.thumbnailUrl).toBe(ASSET);
+      expect(read.one?.product).toEqual(PRODUCT);
+      const everything = JSON.stringify(read);
+      expect(everything).not.toContain(new URL(origin).host);
+      expect(everything).not.toContain(".invalid");
+    },
+  );
+});

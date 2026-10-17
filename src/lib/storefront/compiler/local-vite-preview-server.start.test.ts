@@ -38,9 +38,10 @@ import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner
  */
 
 /**
- * A route reading Morph content the way a hosted Start Theme would (spike
- * M1b/M1c): loader → createServerFn → the SDK's Start thin entry, which takes
- * its source from the request the preview Worker forwarded.
+ * A route reading Morph content the way a hosted Start Theme does: loader →
+ * createServerFn → the SDK's Start thin entry, which takes its source from
+ * the request the preview Worker forwarded. It renders a media field as an
+ * image, so the page shows which URL the thin entry handed back.
  */
 const SDK_THIN_ENTRY_ROUTE = {
   path: "src/routes/sdk-thin-entry.tsx",
@@ -50,18 +51,36 @@ import { morph } from "@morph/sdk/start";
 
 const readHome = createServerFn().handler(async () => {
   const home = await morph.pages.get("/");
-  return { title: String(home["sdk-probe"]?.title ?? ""), hidden: [...home._hidden] };
+  const probe = home["sdk-probe"] ?? {};
+  return {
+    title: String(probe.title ?? ""),
+    hidden: [...home._hidden],
+    image: String(probe.image ?? ""),
+    gallery: (probe.gallery ?? []).map((item: { src: string }) => String(item.src)),
+  };
 });
 
 export const Route = createFileRoute("/sdk-thin-entry")({
   loader: () => readHome(),
   component: function SdkThinEntry() {
-    return <p data-sdk="home">{JSON.stringify(Route.useLoaderData())}</p>;
+    const data = Route.useLoaderData();
+    return (
+      <>
+        <p data-sdk="home">{JSON.stringify({ title: data.title, hidden: data.hidden })}</p>
+        <img data-sdk="image" src={data.image} alt="" />
+        {data.gallery.map((src: string) => <img key={src} data-sdk="gallery" src={src} alt="" />)}
+      </>
+    );
   },
 });
 `,
 };
 const SDK_SNAPSHOT_TITLE = "Draft title from the preview snapshot";
+/** Media as Morph's preview snapshot carries it: paths on the page's origin. */
+const SDK_SNAPSHOT_IMAGE =
+  "/_storefront-media/sdk-probe?version=assets%2Fhero.png";
+const SDK_SNAPSHOT_ASSET =
+  "/api/store/assets/11111111-1111-1111-1111-111111111111";
 
 const WORKSPACES_ROOT = path.join(process.cwd(), ".morph-previews-start-test");
 const PREVIEW_ID = "start-preview-test";
@@ -116,7 +135,13 @@ beforeAll(async () => {
     previewContent: {
       templates: {
         index: {
-          slots: { "sdk-probe": { title: SDK_SNAPSHOT_TITLE } },
+          slots: {
+            "sdk-probe": {
+              title: SDK_SNAPSHOT_TITLE,
+              image: SDK_SNAPSHOT_IMAGE,
+              gallery: [{ src: SDK_SNAPSHOT_ASSET }],
+            },
+          },
           hiddenSlots: ["sdk-hidden"],
         },
       },
@@ -313,6 +338,17 @@ describe(
       });
       expect(forged.status).toBe(200);
       expect(forged.html).toContain(expected);
+      // Media stay the relative paths Morph sent: the content origin the
+      // preview Worker names (morph-preview-content.invalid) answers only
+      // inside the Worker and must never reach the page.
+      for (const { html } of [plain, forged]) {
+        expect(html).toContain(`data-sdk="image" src="${SDK_SNAPSHOT_IMAGE}"`);
+        expect(html).toContain(
+          `data-sdk="gallery" src="${SDK_SNAPSHOT_ASSET}"`,
+        );
+        expect(html).not.toContain("morph-preview-content.invalid");
+        expect(html).not.toMatch(/src="https?:\/\/[^"]*\/_storefront-media\//);
+      }
       // The thin entry's request access stays out of the browser's module.
       const client = await request("/src/routes/sdk-thin-entry.tsx");
       expect(client.status).toBe(200);
