@@ -43,7 +43,7 @@
    pnpm ship
    ```
 
-`pnpm ship` 預設等待所有 CI check。只有使用者明確要求縮短等待、且已理解其他 check 仍可能 pending 時，才可使用 `MORPH_SHIP_REQUIRED_ONLY=1 pnpm ship`；即使如此，已回報的任何失敗仍必須拒絕合併。
+`pnpm ship` 一律等待所有預期的 CI check（清單在 `scripts/ci-required-checks.mjs`），每一個都必須出現且結論為 `SUCCESS`；任何失敗、略過或始終未出現的 check 都拒絕合併。沒有縮短等待的開關：`MORPH_SHIP_REQUIRED_ONLY` 已移除，只要設定了它（任何值），`pnpm ship` 會在推送前直接失敗並要求取消設定。
 
 ## 本機驗證後 `main` 已前進
 

@@ -1,5 +1,9 @@
 packages:
   - "."
+  # The SDK read core (#245, #246). A workspace member so it installs and is
+  # checked as its own package (`pnpm check:sdk-package`); private and not
+  # imported by the app.
+  - "packages/morph-sdk"
 
 # Built because the test suite uses it directly: `better-sqlite3` is a
 # devDependency and thirty-nine DAL tests need its native binding. It arrived

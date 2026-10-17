@@ -74,3 +74,13 @@ Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"pro
   - draft reads (#214);
   - the platform's publishable-key path;
   - GraphQL.
+
+## As its own package
+
+- **A workspace member.** It is listed in `pnpm-workspace.yaml` and stays `private`. The app does not depend on it or import it; that is stage 2 (#245 §7).
+- **`pnpm check:sdk-package`** (CI: "Architecture guards") fails unless all of these hold:
+  - it compiles from `tsconfig.json` in this folder alone: no app `paths`, no `baseUrl`, no `extends`, no ambient types;
+  - every module a shipped file names is in this folder, or a dependency `package.json` declares;
+  - Vite bundles the entry for a browser, a worker and Node with nothing loaded from outside this folder, and the Node bundle imports.
+
+  This proves the package is self-contained and bundles for those targets. It does not prove that a Start or Astro app builds with it, or that it runs in a browser or a Worker.
