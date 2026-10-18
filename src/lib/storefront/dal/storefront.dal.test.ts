@@ -184,7 +184,18 @@ describe("the Live Preview runtime a Starter Theme records", () => {
     mocks.initStarterTheme.mockResolvedValue([]);
     mocks.getSourceGeneration.mockResolvedValue(4);
     mocks.saveFilesBatch.mockResolvedValue([]);
+    // The upgrade record is written as SQL handed to D1 directly (#260).
+    mocks.prepare.mockImplementation(() => ({
+      bind: () => ({
+        run: async () => ({ meta: { changes: 1 } }),
+        first: async () => null,
+      }),
+    }));
   });
+
+  /** Every statement the code handed to D1 directly in one test. */
+  const preparedSql = () =>
+    mocks.prepare.mock.calls.map((call) => String(call[0]));
 
   it(`records none for a Theme created from Starter ${STOREFRONT_STARTER_TEMPLATE_VERSION}`, async () => {
     // 29 today; the first Starter that records `start` is 30
@@ -224,17 +235,21 @@ describe("the Live Preview runtime a Starter Theme records", () => {
       }),
     ).resolves.toBe(true);
 
-    // The upgrade did write: the files, then the Theme's Starter version.
+    // The upgrade did write: the files, then the Theme's Starter version —
+    // since #260 as a json_set on metadata handed to D1 directly.
     expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
-    const sets = updateSets(db);
-    expect(sets).toContainEqual(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          starterTemplateVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
-        }),
-      }),
-    );
-    for (const set of sets) expect(set).not.toHaveProperty("previewRuntime");
+    const statements = preparedSql();
+    expect(
+      statements.some(
+        (statement) =>
+          /UPDATE storefront_themes/.test(statement) &&
+          /'\$\.starterTemplateVersion'/.test(statement),
+      ),
+    ).toBe(true);
+    for (const statement of statements)
+      expect(statement).not.toMatch(/preview_runtime/);
+    for (const set of updateSets(db))
+      expect(set).not.toHaveProperty("previewRuntime");
     expect(insertedRows(db)).toEqual([]);
   });
 
@@ -257,6 +272,8 @@ describe("the Live Preview runtime a Starter Theme records", () => {
     expect(insertedThemeRows(db)).toEqual([]);
     for (const set of updateSets(db as never))
       expect(set).not.toHaveProperty("previewRuntime");
+    for (const statement of preparedSql())
+      expect(statement).not.toMatch(/preview_runtime/);
   });
 });
 

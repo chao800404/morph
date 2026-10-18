@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -154,6 +155,66 @@ describe("check-pending-migrations.mjs --remote, the deploy gate", () => {
   const files = migrationFiles(readdirSync(join(root, "drizzle")));
   const RUNTIME = "0080_theme_preview_runtime.sql";
 
+  /**
+   * The gate's environment: the stub first on PATH, and nothing that could
+   * reach a real Cloudflare account if the stub were ever bypassed (the gate
+   * calling Wrangler another way, say). Every CLOUDFLARE_*, CF_* and
+   * WRANGLER_* variable is dropped, and HOME and XDG_CONFIG_HOME point at the
+   * temporary directory, so no stored `wrangler login` is found either. A
+   * bypassed stub then fails for lack of credentials, never against a live
+   * database.
+   */
+  function offlineEnv(stubDir) {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => !/^(CLOUDFLARE_|CF_|WRANGLER_)/.test(name),
+      ),
+    );
+    return {
+      ...env,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      HOME: stubDir,
+      XDG_CONFIG_HOME: stubDir,
+    };
+  }
+
+  it("leaves no Cloudflare credential in the gate's environment", () => {
+    // Set here, with placeholder values, so the filter is shown to drop
+    // them rather than passing because the shell had none.
+    const planted = {
+      CLOUDFLARE_API_TOKEN: "placeholder",
+      CLOUDFLARE_API_KEY: "placeholder",
+      CLOUDFLARE_EMAIL: "placeholder",
+      CLOUDFLARE_ACCOUNT_ID: "placeholder",
+      CF_API_TOKEN: "placeholder",
+      WRANGLER_AUTH_TOKEN: "placeholder",
+    };
+    const before = Object.fromEntries(
+      Object.keys(planted).map((name) => [name, process.env[name]]),
+    );
+    Object.assign(process.env, planted);
+    let env;
+    try {
+      env = offlineEnv("/nonexistent");
+    } finally {
+      for (const [name, value] of Object.entries(before)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    for (const name of Object.keys(planted)) {
+      assert.equal(env[name], undefined, name);
+    }
+    assert.deepEqual(
+      Object.keys(env).filter((name) =>
+        /^(CLOUDFLARE_|CF_|WRANGLER_)/.test(name),
+      ),
+      [],
+    );
+    assert.equal(env.HOME, "/nonexistent");
+    assert.equal(env.XDG_CONFIG_HOME, "/nonexistent");
+  });
+
   /** Runs the gate with Wrangler answering `applied`; never a real Wrangler. */
   function gate(applied) {
     const dir = mkdtempSync(join(tmpdir(), "deploy-gate-"));
@@ -172,11 +233,14 @@ describe("check-pending-migrations.mjs --remote, the deploy gate", () => {
       const result = spawnSync(
         process.execPath,
         [join(scriptsDir, "check-pending-migrations.mjs"), "--remote"],
-        {
-          cwd: root,
-          encoding: "utf8",
-          env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-        },
+        { cwd: root, encoding: "utf8", env: offlineEnv(dir) },
+      );
+      // The stub answered, or nothing here was tested: a gate that stopped
+      // calling `npx` through PATH must fail this test, not pass it on
+      // whatever a real Wrangler said.
+      assert.ok(
+        existsSync(join(dir, "args.txt")),
+        `The npx stub was not invoked:\n${result.stdout}${result.stderr}`,
       );
       return {
         status: result.status,

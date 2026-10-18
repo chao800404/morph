@@ -17,6 +17,19 @@ vi.mock("../default-storefront-document", async (importOriginal) => ({
   STOREFRONT_STARTER_TEMPLATE_VERSION: 30,
 }));
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
+// The Starter upgrade record is SQL handed to D1 directly (#260); it lands.
+vi.mock("cloudflare:workers", () => ({
+  env: {
+    DATABASE: {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => ({ meta: { changes: 1 } }),
+          first: async () => null,
+        }),
+      }),
+    },
+  },
+}));
 vi.mock("./storefront-theme-file.dal", () => ({
   storefrontThemeFileDal: {
     listFiles: mocks.listFiles,
