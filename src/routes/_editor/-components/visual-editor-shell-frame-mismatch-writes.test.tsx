@@ -25,6 +25,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  HISTORY_OTHER_PAGE_MESSAGE,
   PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
   VisualEditorShell,
   type EditorNavigationGuard,
@@ -326,6 +327,8 @@ type Harness = {
   holdLoads: () => void;
   /** Finishes the held load; later ones are not held. */
   finishLoad: () => void;
+  /** The editor's read of the Theme, as a refetch hands it over. */
+  setContext: (next: StorefrontThemeEditorDTO) => void;
 };
 
 function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
@@ -351,6 +354,8 @@ function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
   function Routed() {
     const [search, setSearch] = useState(initial);
     const [heading, setHeading] = useState(initial);
+    const [shellContext, setShellContext] = useState(context);
+    harness.setContext = setShellContext;
     harness.search = () => search;
     harness.holdLoads = () => {
       holding = true;
@@ -382,7 +387,7 @@ function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
     };
     return (
       <VisualEditorShell
-        context={context}
+        context={shellContext}
         search={search}
         onSearchChange={onSearchChange}
         navigatingRoutePath={heading.routePath || "/"}
@@ -998,5 +1003,221 @@ describe("every frame message that writes or moves the Inspector", () => {
     await tick(400);
     expect(writtenTemplates()).toEqual([]);
     expect(noticed()).toBe(true);
+  });
+});
+
+/**
+ * Undo and redo after a page switch. Both pages keep their own document, and
+ * their slots share ids; an edit's history belongs to the document it wrote.
+ *
+ * The server is played in full here: every write answers with the document
+ * it produced, and the editor's next read of the Theme returns it. Without
+ * that the editor's copy never moves, and an undo has nothing to undo.
+ */
+describe("undo and redo after a page switch", () => {
+  type Section = { id: string; type: string; props: Record<string, unknown> };
+  type Template = {
+    id: string;
+    draftGeneration: number;
+    document: { version: number; sections: Section[] };
+  };
+  function storedDocuments(harness: Harness) {
+    let templates = (context.templates as unknown as Template[]).map(
+      (template) => ({
+        ...template,
+        document: {
+          ...template.document,
+          sections: template.document.sections.map((section) => ({
+            ...section,
+            props: { ...section.props },
+          })),
+        },
+      }),
+    );
+    const read = () =>
+      ({ ...context, templates }) as unknown as StorefrontThemeEditorDTO;
+    getThemeEditor.mockImplementation(async () => ({
+      success: true,
+      message: "ok",
+      data: read(),
+    }));
+    updateSectionProps.mockImplementation(
+      async (request: {
+        data: {
+          templateId: string;
+          sectionId: string;
+          props: Record<string, unknown>;
+        };
+      }) => {
+        templates = templates.map((template) =>
+          template.id !== request.data.templateId
+            ? template
+            : {
+                ...template,
+                draftGeneration: template.draftGeneration + 1,
+                document: {
+                  ...template.document,
+                  sections: template.document.sections.map((section) =>
+                    section.id === request.data.sectionId
+                      ? {
+                          ...section,
+                          props: { ...section.props, ...request.data.props },
+                        }
+                      : section,
+                  ),
+                },
+              },
+        );
+        const stored = templates.find(
+          (template) => template.id === request.data.templateId,
+        )!;
+        // As the refetch after a write does.
+        queueMicrotask(() => harness.setContext(read()));
+        return {
+          success: true,
+          data: {
+            draftGeneration: stored.draftGeneration,
+            droppedProps: [],
+            document: stored.document,
+          },
+        };
+      },
+    );
+    return {
+      heading: (templateId: string, sectionId = "hero") =>
+        templates
+          .find((template) => template.id === templateId)
+          ?.document.sections.find((section) => section.id === sectionId)?.props
+          .heading,
+      /** Another value stored for /c's slot, so an undo onto it would show. */
+      store(templateId: string, sectionId: string, heading: string) {
+        templates = templates.map((template) =>
+          template.id !== templateId
+            ? template
+            : {
+                ...template,
+                document: {
+                  ...template.document,
+                  sections: template.document.sections.map((section) =>
+                    section.id === sectionId
+                      ? { ...section, props: { heading } }
+                      : section,
+                  ),
+                },
+              },
+        );
+        act(() => harness.setContext(read()));
+      },
+    };
+  }
+  const undoButton = () => screen.getByRole("button", { name: "Undo" });
+  const redoButton = () => screen.getByRole("button", { name: "Redo" });
+  const enabled = (button: HTMLElement) => !button.hasAttribute("disabled");
+  const shortcut = (direction: "undo" | "redo") =>
+    fromPreview({
+      type: "morph:storefront-preview-history-shortcut",
+      direction,
+    });
+  const ENTRY_POINTS = {
+    toolbar: (direction: "undo" | "redo") =>
+      act(() => (direction === "undo" ? undoButton() : redoButton()).click()),
+    "frame history-shortcut": shortcut,
+  };
+
+  /** Edits /b's slot and lets the write land: one entry on the stack. */
+  async function editedOnB() {
+    const harness = await settled(pageSearch("/b"));
+    const server = storedDocuments(harness);
+    server.store("template-c", "hero", "C heading");
+    enableSelection();
+    frameSelects("hero");
+    await tick(0);
+    frameCommitsText("hero", "Typed on B");
+    await tick(400);
+    expect(writtenTemplates()).toEqual(["template-b"]);
+    await waitFor(() => expect(enabled(undoButton())).toBe(true));
+    return { harness, server };
+  }
+  /** The page list's switch to /c, answered by the frame from /c. */
+  async function switchToC() {
+    const row = await screen.findByTitle("Preview /c");
+    act(() => row.click());
+    await tick(0);
+    applied(latestRequest()?.routeRequestId, "/c");
+    report("/c");
+    await tick(0);
+  }
+
+  describe.each(Object.entries(ENTRY_POINTS))("from the %s", (_name, press) => {
+    it("control: undo on the same page writes the value back to /b", async () => {
+      const { server } = await editedOnB();
+      press("undo");
+      await tick(400);
+      expect(writtenTemplates()).toEqual(["template-b", "template-b"]);
+      expect(server.heading("template-b")).toBe(SAME);
+      expect(server.heading("template-c")).toBe("C heading");
+    });
+
+    it("control: redo is not offered once the undo's own write landed", async () => {
+      // Pinned as it is, on main too: a content undo is replayed as an edit
+      // of its own, and recording it starts a new branch of the history.
+      const { server } = await editedOnB();
+      press("undo");
+      await tick(400);
+      expect(server.heading("template-b")).toBe(SAME);
+      expect(enabled(redoButton())).toBe(false);
+      const before = writtenTemplates().length;
+      press("redo");
+      await tick(400);
+      expect(writtenTemplates().length).toBe(before);
+    });
+
+    it("redo on /c applies nothing of /b's history to /c", async () => {
+      const { server } = await editedOnB();
+      press("undo");
+      await tick(400);
+      await switchToC();
+      const before = writtenTemplates().length;
+      press("redo");
+      await tick(400);
+      expect(writtenTemplates().slice(before)).toEqual([]);
+      expect(writtenTemplates()).not.toContain("template-c");
+      expect(server.heading("template-c")).toBe("C heading");
+      expect(saveThemeFile).not.toHaveBeenCalled();
+    });
+
+    it("undo on /c applies nothing of /b's history to /c", async () => {
+      const { server } = await editedOnB();
+      await switchToC();
+      press("undo");
+      await tick(400);
+      expect(writtenTemplates()).toEqual(["template-b"]);
+      expect(server.heading("template-c")).toBe("C heading");
+      expect(server.heading("template-b")).toBe("Typed on B");
+      expect(saveThemeFile).not.toHaveBeenCalled();
+      // Refused, and said: the entry is kept for /b.
+      expect(toast.error).toHaveBeenCalledWith(
+        `Could not undo: ${HISTORY_OTHER_PAGE_MESSAGE}`,
+      );
+      expect(enabled(undoButton())).toBe(true);
+    });
+
+    it("keeps /b's history for /b: back on /b, undo writes /b again", async () => {
+      const { server } = await editedOnB();
+      await switchToC();
+      press("undo");
+      await tick(400);
+      const row = await screen.findByTitle("Preview /b");
+      act(() => row.click());
+      await tick(0);
+      applied(latestRequest()?.routeRequestId, "/b");
+      report("/b");
+      await tick(0);
+      press("undo");
+      await tick(400);
+      expect(writtenTemplates()).toEqual(["template-b", "template-b"]);
+      expect(server.heading("template-b")).toBe(SAME);
+      expect(server.heading("template-c")).toBe("C heading");
+    });
   });
 });

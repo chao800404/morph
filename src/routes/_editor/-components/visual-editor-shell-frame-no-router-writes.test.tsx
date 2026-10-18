@@ -261,8 +261,19 @@ type Harness = {
 
 function renderRouted(
   initial: StorefrontThemeEditorSearch = homeSearch,
-  { treeRead = true }: { treeRead?: boolean } = {},
+  {
+    treeRead = true,
+    framework,
+  }: { treeRead?: boolean; framework?: string } = {},
 ) {
+  // The framework the site records for the Theme; absent reads as TanStack
+  // Start, as the editor's DTO says.
+  const shellContext = framework
+    ? ({
+        ...context,
+        theme: { ...context.theme, framework },
+      } as unknown as StorefrontThemeEditorDTO)
+    : context;
   const harness = { asked: [] } as unknown as Harness;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -324,7 +335,7 @@ function renderRouted(
     };
     return (
       <VisualEditorShell
-        context={context}
+        context={shellContext}
         search={search}
         onSearchChange={onSearchChange}
         navigatingRoutePath={heading.routePath || "/"}
@@ -567,19 +578,19 @@ beforeEach(() => {
 });
 
 describe("a frame with no router", () => {
-  it("is taken as the document on screen once the files are read: before it answered", async () => {
+  it("is not taken before it has answered the editor's route request", async () => {
     renderRouted(homeSearch);
     await frameUp(false);
     frameSelects("hero");
     await tick(0);
-    expect(selectedInInspector()).toBe("hero");
-    frameCommitsText("hero", "Typed on Home");
+    expect(selectedInInspector()).toBeNull();
+    frameCommitsText("hero", "Typed before the answer");
     await tick(400);
-    expect(writtenTemplates()).toEqual(["template-1"]);
-    expect(noticed()).toBe(false);
+    expect(writtenTemplates()).toEqual([]);
+    expect(noticed()).toBe(true);
   });
 
-  it("is taken as the document on screen once the files are read: after it answered with no route", async () => {
+  it("is taken as the document on screen once it answered with no route", async () => {
     renderRouted(homeSearch);
     await frameUp(true);
     frameSelects("hero");
@@ -629,3 +640,71 @@ describe("a frame with no router", () => {
     expect(noticed()).toBe(true);
   });
 });
+
+/**
+ * A preview that names no page and is not proven to be one document: an
+ * Astro Theme (its preview loads the same bridge, with no router: a page
+ * navigates as a document) or one recorded with a framework the editor does
+ * not know. Nothing it reports is taken unless it names the page on screen.
+ */
+describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
+  "a preview recorded as %s",
+  (framework) => {
+    async function refused() {
+      frameSelects("hero");
+      await tick(0);
+      expect(selectedInInspector()).toBeNull();
+      frameCommitsText("hero", "Typed on the frame's page");
+      await tick(400);
+      expect(writtenTemplates()).toEqual([]);
+      expect(noticed()).toBe(true);
+    }
+
+    it("is not taken once it answered with no route (unknown page)", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      await refused();
+    });
+
+    it("is not taken while the editor's switch is unanswered (editor ahead)", async () => {
+      const harness = renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      harness.moveTo(aboutSearch);
+      await tick(0);
+      await refused();
+    });
+
+    it("is not taken after it moved to another document by itself (frame ahead)", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      // A page-to-page navigation is a new document: a new ready, nothing named.
+      fromPreview({
+        type: "morph:storefront-preview-ready",
+        servedInstance: {
+          kind: "known",
+          instance: { session: SESSION, serial: 1 },
+        },
+      });
+      await tick(0);
+      await refused();
+    });
+
+    it("is taken while it names the page on screen", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      fromPreview({
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: "/",
+      });
+      await tick(0);
+      frameSelects("hero");
+      await tick(0);
+      expect(selectedInInspector()).toBe("hero");
+      frameCommitsText("hero", "Typed on Home");
+      await tick(400);
+      expect(writtenTemplates()).toEqual(["template-1"]);
+      expect(noticed()).toBe(false);
+    });
+  },
+);

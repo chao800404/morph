@@ -492,6 +492,12 @@ export const INLINE_TEXT_NOT_SAVED_MESSAGE =
  * Said when the canvas sends an edit while it shows another page than the
  * editor: the edit names a slot, not a page, and would be saved to this one.
  */
+/**
+ * Said, as "Could not undo: …", when the newest history entry is an edit of
+ * another page's document: it is kept for that page, never replayed here.
+ */
+export const HISTORY_OTHER_PAGE_MESSAGE =
+  "that edit was made on another page. Open that page to undo or redo it.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
 /**
@@ -1749,6 +1755,54 @@ export function VisualEditorShell({
 
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
+  /**
+   * The document a section's edits go to on the page on screen, resolved
+   * past a route document's placeholder id; set beside `templateIdForSection`.
+   */
+  const sectionDocumentRef = useRef<(sectionId: string) => string | null>(
+    () => null,
+  );
+  /**
+   * A section history entry, fenced to the document it edited.
+   *
+   * Section entries replay through the write path of the page on screen,
+   * which finds the section's document by its id. Two pages can each have a
+   * slot of the same id in their own documents, and history is kept across
+   * a page switch, so an entry recorded on one page would otherwise be
+   * written into the other page's document. Fenced, it runs only while the
+   * section's document on screen is the one it was recorded for — the same
+   * page, or a document both pages share, such as a layout's — and is
+   * otherwise refused and kept for that page.
+   */
+  const fenceSectionHistory = useCallback(
+    (
+      sectionId: string,
+      recordedTemplateId: string,
+      entry: Readonly<{
+        label: string;
+        undo: () => unknown;
+        redo: () => unknown;
+      }>,
+    ) => {
+      const resolve = (templateId: string) =>
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const fenced =
+        (action: () => unknown) => () => {
+          const now = sectionDocumentRef.current(sectionId);
+          if (now === null || now !== resolve(recordedTemplateId)) {
+            throw new Error(HISTORY_OTHER_PAGE_MESSAGE);
+          }
+          return action();
+        };
+      return {
+        label: entry.label,
+        scope: sectionHistoryScope(sectionId),
+        undo: fenced(entry.undo),
+        redo: fenced(entry.redo),
+      };
+    },
+    [],
+  );
 
   const enqueueTemplateMutation = useCallback(
     (
@@ -2058,27 +2112,29 @@ export function VisualEditorShell({
           onSaved: recordHistory
             ? (entry, baseline) => {
                 if (!baseline) return;
-                history.record({
-                  label: "Content",
-                  scope: sectionHistoryScope(entry.sectionId),
-                  undo: () =>
-                    contentChangeRef.current?.(
-                      entry.sectionId,
-                      Object.fromEntries(
-                        Object.keys(entry.props).map((key) => [
-                          key,
-                          baseline[key],
-                        ]),
+                history.record(
+                  fenceSectionHistory(entry.sectionId, tid, {
+                    label: "Content",
+                    undo: () =>
+                      contentChangeRef.current?.(
+                        entry.sectionId,
+                        Object.fromEntries(
+                          Object.keys(entry.props).map((key) => [
+                            key,
+                            baseline[key],
+                          ]),
+                        ),
+                        {
+                          historySourceGeneration:
+                            entry.expectedSourceGeneration,
+                        },
                       ),
-                      {
+                    redo: () =>
+                      contentChangeRef.current?.(entry.sectionId, entry.props, {
                         historySourceGeneration: entry.expectedSourceGeneration,
-                      },
-                    ),
-                  redo: () =>
-                    contentChangeRef.current?.(entry.sectionId, entry.props, {
-                      historySourceGeneration: entry.expectedSourceGeneration,
-                    }),
-                });
+                      }),
+                  }),
+                );
               }
             : undefined,
         });
@@ -3123,19 +3179,29 @@ export function VisualEditorShell({
   const themeRouteRegistryRef = useRef(themeRouteRegistry);
   themeRouteRegistryRef.current = themeRouteRegistry;
   /**
-   * Whether the Theme's source, once read, mounts its preview with no router,
-   * as the generated entry does for any framework but TanStack Start; null
-   * until the files are read. Such a frame never names a page.
+   * Whether this Theme's preview is proven to be one document; null until
+   * the Theme's files are read.
+   *
+   * Proven only for a Theme recorded as TanStack Start (`framework`, NULL
+   * reading as TanStack Start: `StorefrontThemeEditorDTO`), whose preview is
+   * planned by `createThemeBuildBootstrap`, and whose source has no router
+   * (`readRouterFramework`, the function that bootstrap decides with): the
+   * generated entry then mounts the one entry component and nothing else,
+   * with no router to show another page. Such a frame never names a page.
+   * Any other framework — Astro navigates page to page as documents — or a
+   * framework the editor does not know is not proven, and a frame of it that
+   * names no page is never taken as the editor's.
    */
-  const previewHasNoRouter = useMemo(
+  const previewIsSingleDocument = useMemo(
     () =>
       themeFilesQuery.data
-        ? readRouterFramework(effectiveThemeFiles) !== "tanstack-start"
+        ? (context.theme.framework ?? "tanstack-start") === "tanstack-start" &&
+          readRouterFramework(effectiveThemeFiles) !== "tanstack-start"
         : null,
-    [effectiveThemeFiles, themeFilesQuery.data],
+    [context.theme.framework, effectiveThemeFiles, themeFilesQuery.data],
   );
-  const previewHasNoRouterRef = useRef(previewHasNoRouter);
-  previewHasNoRouterRef.current = previewHasNoRouter;
+  const previewIsSingleDocumentRef = useRef(previewIsSingleDocument);
+  previewIsSingleDocumentRef.current = previewIsSingleDocument;
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -3391,6 +3457,12 @@ export function VisualEditorShell({
       sectionModel.bindings.get(sectionId)?.templateId ?? null,
     [sectionModel],
   );
+  sectionDocumentRef.current = (sectionId) => {
+    const templateId = templateIdForSection(sectionId);
+    return templateId === null
+      ? null
+      : (routeTemplateIdsRef.current.get(templateId) ?? templateId);
+  };
 
   const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
     if (!activeTemplate) return context;
@@ -7525,42 +7597,42 @@ export function VisualEditorShell({
     /**
      * Whether what this frame sends is about the editor's page.
      *
-     * A Theme with a router names its page in every structure report and
-     * route answer, its boot report included: its frame shows the editor's
-     * page while the page it last named, in this ready round, is that page.
-     * Before it has named one in this round — a frame just reloaded, one
-     * that never answers — its page is unknown, and unknown is not the
-     * editor's page.
+     * A frame with a router names its page in every structure report and
+     * route answer, its boot report included: it shows the editor's page
+     * while the page it last named, in this ready round, is that page.
      *
-     * A Theme whose source has no router (read from its files, as the
-     * generated entry is built) is mounted as one document, the one the
-     * editor sends it: its frame shows the editor's page, except while it
-     * is known to be behind — it answered a route request with no route, and
-     * the editor has sent a newer one it has not answered yet. Before the
-     * files are read, nothing is known.
+     * A frame that names no page shows the editor's page only when that is
+     * proven: the preview is one document (`previewIsSingleDocument`), and
+     * the frame answered the editor's latest route request in this round
+     * with no route, so the document on it is the one the editor last sent.
+     *
+     * Anything else is unknown — a frame just reloaded, one that never
+     * answers, one behind a newer request, an Astro or other page-to-page
+     * preview, a Theme whose files are not read — and unknown is not the
+     * editor's page.
      */
     const frameShowsEditorPage = () => {
       const frame = frameRouteRef.current;
       const round = previewReadyRoundRef.current;
-      if (frame === null || frame.key !== previewKey || frame.round !== round) {
-        return previewHasNoRouterRef.current === true;
-      }
-      if (frame.routePath === null) {
-        // Only for a Theme the editor itself knows has no router: from one
-        // that has, an answer of no router confirms nothing.
-        if (previewHasNoRouterRef.current !== true) return false;
-        const routeRequest = lastRouteRequestRef.current;
-        return (
-          routeRequest !== null &&
-          routeRequest.key === previewKey &&
-          routeRequest.round === round &&
-          routeRequest.id === routeRequestIdRef.current &&
-          routeRequest.answered
+      const named =
+        frame !== null && frame.key === previewKey && frame.round === round;
+      if (named && frame.routePath !== null) {
+        return previewStructureMatchesRoute(
+          frame.routePath,
+          currentSearchRoutePathRef.current,
         );
       }
-      return previewStructureMatchesRoute(
-        frame.routePath,
-        currentSearchRoutePathRef.current,
+      // No page named: only a preview proven to be one document, whose frame
+      // said so (no route) in answer to the editor's latest request, in this
+      // round. Then the document it shows is the one the editor sent.
+      if (previewIsSingleDocumentRef.current !== true || !named) return false;
+      const routeRequest = lastRouteRequestRef.current;
+      return (
+        routeRequest !== null &&
+        routeRequest.key === previewKey &&
+        routeRequest.round === round &&
+        routeRequest.id === routeRequestIdRef.current &&
+        routeRequest.answered
       );
     };
     /** Refuses an edit from a frame not on the editor's page, and says so. */
@@ -9270,23 +9342,24 @@ export function VisualEditorShell({
 
       syncPreviewSectionProps(sectionId, {}, undefined, fieldKeys);
       if (recordHistory && Object.keys(removed).length > 0) {
-        history.record({
-          label: "Use code default",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            contentChangeRef.current?.(sectionId, removed, {
-              historySourceGeneration: sourceGeneration,
-            }),
-          redo: async () => {
-            const replay = await handleResetContentFields(
-              sectionId,
-              fieldKeys,
-              false,
-              sourceGeneration,
-            );
-            if (!replay.success) throw sourceSelectionFailure();
-          },
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: "Use code default",
+            undo: () =>
+              contentChangeRef.current?.(sectionId, removed, {
+                historySourceGeneration: sourceGeneration,
+              }),
+            redo: async () => {
+              const replay = await handleResetContentFields(
+                sectionId,
+                fieldKeys,
+                false,
+                sourceGeneration,
+              );
+              if (!replay.success) throw sourceSelectionFailure();
+            },
+          }),
+        );
       }
       return { success: true };
     },
@@ -9750,22 +9823,23 @@ export function VisualEditorShell({
         await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
-        history.record({
-          label: "Reorder · item",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            handleSectionPropsChange(
-              sectionId,
-              { [arrayRoot]: currentProps[arrayRoot] },
-              { historySourceGeneration: generation },
-            ),
-          redo: () =>
-            handleSectionPropsChange(
-              sectionId,
-              { [arrayRoot]: result.value[arrayRoot] },
-              { historySourceGeneration: generation },
-            ),
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: "Reorder · item",
+            undo: () =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: currentProps[arrayRoot] },
+                { historySourceGeneration: generation },
+              ),
+            redo: () =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: result.value[arrayRoot] },
+                { historySourceGeneration: generation },
+              ),
+          }),
+        );
       } catch {
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
@@ -9870,22 +9944,23 @@ export function VisualEditorShell({
         return;
       }
       if (historyGeneration === undefined) {
-        history.record({
-          label: enabled ? "Show section" : "Hide section",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            handleSectionToggleEnabledRef.current?.(
-              sectionId,
-              !enabled,
-              generation,
-            ),
-          redo: () =>
-            handleSectionToggleEnabledRef.current?.(
-              sectionId,
-              enabled,
-              generation,
-            ),
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: enabled ? "Show section" : "Hide section",
+            undo: () =>
+              handleSectionToggleEnabledRef.current?.(
+                sectionId,
+                !enabled,
+                generation,
+              ),
+            redo: () =>
+              handleSectionToggleEnabledRef.current?.(
+                sectionId,
+                enabled,
+                generation,
+              ),
+          }),
+        );
       }
     },
     [

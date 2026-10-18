@@ -1,5 +1,3 @@
-import { noRouterThemeTree } from "@/lib/test-utils/no-router-theme-tree";
-import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { toast } from "sonner";
@@ -12,6 +10,7 @@ import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-s
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
+import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * The editor when the account, or its access to the Theme, changes under it.
@@ -29,6 +28,11 @@ import { VisualEditorShell } from "./visual-editor-shell";
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame({
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+});
 const OWNER = { id: "user-1", name: "Owner", email: "owner@morph.test" };
 
 const updateSectionProps = vi.hoisted(() => vi.fn());
@@ -129,11 +133,6 @@ function renderShell() {
       data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
     } as never,
   );
-  // Read, and with no router: the frame shows the one document sent to it.
-  client.setQueryData(
-    storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
-    noRouterThemeTree() as never,
-  );
   const retryRead = vi.fn();
   const shellWith = (
     themeRead: ThemeReadFailure | null,
@@ -159,6 +158,7 @@ function renderShell() {
 }
 
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -169,6 +169,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 const tick = (ms = 20) =>
