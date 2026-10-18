@@ -79,7 +79,13 @@ type EditorAssistantPanelProps = {
     styles: Record<string, string>,
     targetElement: string,
   ) => void;
+  /**
+   * Typing in a field, for the canvas to show before it is saved. Names the
+   * section this Inspector is bound to (`section.id`); the editor posts it
+   * only while that is the selected section.
+   */
   onPreviewSelectionField?: (
+    sectionId: string,
     fieldKey: string,
     fieldPath: string | null,
     value: string,

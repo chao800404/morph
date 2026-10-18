@@ -225,6 +225,7 @@ describe("code-authored text content", () => {
     expect(onPropsChange).not.toHaveBeenCalled();
     fireEvent.input(label, { target: { value: "Designed with purpose" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "label",
       null,
       "Designed with purpose",
@@ -305,6 +306,7 @@ describe("code-authored text content", () => {
       target: { value: "Designed for everyday use" },
     });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "heading",
       null,
       "Designed for everyday use",
@@ -447,6 +449,7 @@ describe("code-authored text content", () => {
     fireEvent.input(field, { target: { value: "saved nn" } });
 
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "nn",
       null,
       "saved nn",
@@ -670,6 +673,7 @@ describe("EditorStyleInspector selection content", () => {
     const alt = screen.getByRole("textbox", { name: "Media Image alt text" });
     fireEvent.input(alt, { target: { value: "Updated alt" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "image",
       "image.alt",
       "Updated alt",
@@ -1100,6 +1104,7 @@ describe("EditorStyleInspector selection content", () => {
     const heading = screen.getByPlaceholderText("Main headline...");
     fireEvent.input(heading, { target: { value: "Updated heading" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "heading",
       "heading",
       "Updated heading",
@@ -1162,6 +1167,7 @@ describe("EditorStyleInspector selection content", () => {
 
     fireEvent.input(title, { target: { value: "Updated second title" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "title",
       "items.1.title",
       "Updated second title",
@@ -1535,6 +1541,7 @@ describe("EditorStyleInspector selection content", () => {
     const input = screen.getByDisplayValue("Two");
     fireEvent.input(input, { target: { value: "Changed" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "title",
       "items.1.title",
       "Changed",
@@ -2587,6 +2594,7 @@ describe("EditorStyleInspector selection content", () => {
     const body = screen.getByDisplayValue("Second");
     fireEvent.input(body, { target: { value: "Changed body" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "body",
       "items.1.body",
       "Changed body",
@@ -2625,6 +2633,7 @@ describe("EditorStyleInspector selection content", () => {
     const body = screen.getByDisplayValue("Section body");
     fireEvent.input(body, { target: { value: "Updated section body" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "body",
       null,
       "Updated section body",

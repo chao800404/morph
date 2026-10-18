@@ -28,6 +28,10 @@
  * function of that name only once: a shadowing local or a redeclaration is
  * reported (`shadowed`) rather than trusted as the owner.
  *
+ * Inside its owner, a message must name the fields its receiver requires
+ * (`requiredFields`) as properties of its own, written out rather than spread
+ * in (`missing-field`): the selection-field message names its `sectionId`.
+ *
  * Outside the owners, two more shapes are reported: a fixed run of text (a
  * string, or a template's run) of 8 or more characters that is a piece of a
  * guarded type crossing one of its separators (`fragment`: `P +
@@ -63,8 +67,21 @@ export const GUARDED_MESSAGES = Object.freeze({
   "morph:storefront-preview-update-selection-field": Object.freeze({
     file: "src/routes/_editor/-components/visual-editor-shell.tsx",
     owner: "previewSelectionField",
+    // The frame applies the post only to the section it names; the owner
+    // writes the name out itself, so nothing spread in can drop or replace it.
+    requiredFields: Object.freeze(["sectionId"]),
   }),
 });
+
+/** Whether an object literal names `field` itself: written out, not spread in. */
+function namesOwnField(object, field) {
+  return object.properties.some(
+    (property) =>
+      (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+      (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+      property.name.text === field,
+  );
+}
 
 const FUNCTION_KINDS = new Set([
   ts.SyntaxKind.ArrowFunction,
@@ -232,7 +249,26 @@ export function scanSource(source, fileName) {
       kind === "parsed" ||
       kind === "compared" ||
       (kind === "built" && fileName === rule.file && owner === rule.owner);
-    if (!allowed) findings.push({ message, kind, owner, line: lineOf(node) });
+    if (!allowed) {
+      findings.push({ message, kind, owner, line: lineOf(node) });
+      return;
+    }
+    // Built in its owner: it must name the fields its receiver requires
+    // (`missing-field`). `node.parent` is the `type:` property.
+    if (kind === "built") {
+      const object = node.parent.parent;
+      for (const field of rule.requiredFields ?? []) {
+        if (!namesOwnField(object, field)) {
+          findings.push({
+            message,
+            kind: "missing-field",
+            owner,
+            field,
+            line: lineOf(node),
+          });
+        }
+      }
+    }
   };
   // Inside one of the owners, in the owners' file: the only place a guarded
   // type may be assembled from pieces.

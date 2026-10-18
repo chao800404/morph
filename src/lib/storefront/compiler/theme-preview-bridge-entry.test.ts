@@ -7,6 +7,13 @@ import {
 } from "./theme-preview-bridge-entry";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
 import { themePreviewContentModuleSource } from "./theme-preview-content";
+import { selectionFieldRefusal } from "@/lib/storefront/editor/preview-dom";
+
+// Node has no `CSS.escape`, which the section selector the refusal rule
+// builds reads; the ids here need no escaping.
+if (typeof globalThis.CSS?.escape !== "function") {
+  (globalThis as { CSS?: unknown }).CSS = { escape: (value: string) => value };
+}
 
 const BRIDGE = themePreviewBridgeEntrySource();
 
@@ -356,6 +363,10 @@ describe("a selection-field post for a hidden section", () => {
     setAttribute: (name: string, value: string) => void;
     matches: (selector: string) => boolean;
     querySelector: (selector: string) => FakeElement | null;
+    // Read by the shared refusal rule (`selectionFieldRefusal`): the section
+    // is on the page, and is not inside a hidden one.
+    isConnected: boolean;
+    closest: (selector: string) => FakeElement | null;
   };
 
   function element(tag: string, attributes: Record<string, string>): FakeElement {
@@ -366,6 +377,8 @@ describe("a selection-field post for a hidden section", () => {
       },
       matches: (selector) => selector.split(",").includes(tag),
       querySelector: () => null,
+      isConnected: true,
+      closest: () => null,
     };
     return self;
   }
@@ -378,6 +391,13 @@ describe("a selection-field post for a hidden section", () => {
     section.querySelector = (selector) => {
       const match = /data-storefront-field-path="([^"]+)"/.exec(selector);
       return match ? (byPath[match[1]!] ?? null) : null;
+    };
+    // The page, whose section id "hero" finds this section.
+    const page = {
+      querySelector: (selector: string) =>
+        selector.includes('[data-storefront-section-id="hero"]')
+          ? section
+          : section.querySelector(selector),
     };
     const content = { slots: {}, hiddenSlots };
     const drawOverlays = vi.fn();
@@ -392,23 +412,29 @@ describe("a selection-field post for a hidden section", () => {
       "previewSlotContent",
       "setFieldPathValue",
       "refreshPreviewContent",
+      "selectionFieldRefusal",
+      "logSelectionFieldRefusal",
       `${contentHiddenCheck()}
       function currentPreviewContent() { return content; }
       return (message) => ${selectionFieldBlock()};`,
     )(
       { sectionId: "hero", section, fieldKey: "image", element: image },
       content,
-      section,
+      page,
       { escape: (value: string) => value },
       drawOverlays,
       updatePreviewContent,
       () => ({}),
       (slot: Record<string, unknown>) => slot,
       vi.fn(),
+      selectionFieldRefusal,
+      vi.fn(),
     ) as (message: Record<string, unknown>) => void;
+    // Each post names the section, as the protocol now requires.
     const post = (fieldKey: string, fieldPath: string, value: string) =>
       handle({
         type: "morph:storefront-preview-update-selection-field",
+        sectionId: "hero",
         fieldKey,
         fieldPath,
         value,

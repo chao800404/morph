@@ -52,6 +52,26 @@ function latestRouteRequest() {
   return null;
 }
 
+/**
+ * What a current frame says it can do on ready: it reads the section an
+ * `update-selection-field` post names. A frame built before that says
+ * nothing, and the editor then sends it no such post.
+ */
+export const LIVE_FRAME_CAPABILITIES: readonly string[] = [
+  "selection-field-section",
+];
+
+/** The frame says it is ready, naming what it can do. */
+export function sendFrameReady(
+  address: PreviewFrameAddress,
+  capabilities: readonly string[] = LIVE_FRAME_CAPABILITIES,
+) {
+  send(address, {
+    type: READY,
+    ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {}),
+  });
+}
+
 /** Answers the editor's latest route request from the page it names. */
 export function answerLatestRouteRequest(address: PreviewFrameAddress) {
   const request = latestRouteRequest();
@@ -74,7 +94,11 @@ export function answerLatestRouteRequest(address: PreviewFrameAddress) {
  */
 export function createLiveFrame(
   address: PreviewFrameAddress,
-  options: Readonly<{ answerReady?: boolean }> = {},
+  options: Readonly<{
+    answerReady?: boolean;
+    /** What the frame's own ready (`ready()`) names; a frame built before these says none. */
+    capabilities?: readonly string[];
+  }> = {},
 ) {
   const up = new WeakSet<Window>();
   // A frame names its page in every structure report. Named this way, before
@@ -92,6 +116,22 @@ export function createLiveFrame(
   };
   return {
     up: bringUp,
+    /**
+     * The whole of what a live frame does on coming up: ready, naming what
+     * it can do; a structure report naming the page it is on; and its answer
+     * to the route request that ready brought.
+     */
+    ready() {
+      const frame = frameWindow();
+      if (frame) up.add(frame);
+      sendFrameReady(address, options.capabilities ?? LIVE_FRAME_CAPABILITIES);
+      send(address, {
+        type: "morph:storefront-preview-structure",
+        nodes: [],
+        routePath: latestRouteRequest()?.routePath ?? "/",
+      });
+      answerLatestRouteRequest(address);
+    },
     before(data: Readonly<{ type?: unknown }>) {
       if (data.type === READY) {
         const frame = frameWindow();

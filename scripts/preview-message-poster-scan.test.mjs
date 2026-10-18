@@ -30,12 +30,23 @@ const postPreviewSectionProps = useCallback((sectionId, props, enabled) => {
     enabled,
   });
 }, []);
-const previewSelectionField = useCallback((fieldKey, fieldPath, value) => {
+const previewSelectionField = useCallback((sectionId, fieldKey, fieldPath, value) => {
   postEditorToPreviewMessage(frame(), {
     type: "${FIELD}",
+    sectionId,
     fieldKey,
     fieldPath,
     value,
+  });
+}, [leaveGuard]);
+`;
+
+/** The selection-field owner, building its message with `fields` in place of its own. */
+const fieldOwnerWith = (fields) => `
+const previewSelectionField = useCallback((sectionId, fieldKey, fieldPath, value) => {
+  postEditorToPreviewMessage(frame(), {
+    type: "${FIELD}",
+    ${fields}
   });
 }, [leaveGuard]);
 `;
@@ -51,6 +62,35 @@ describe("the owners", () => {
 
   it("fail anywhere but the shell", () => {
     assert.equal(scanSource(OWNERS, "src/elsewhere.tsx").length, 2);
+  });
+});
+
+describe("a field the message must name", () => {
+  const missing = (fields) =>
+    scanSource(fieldOwnerWith(fields), SHELL).map(({ message, kind, owner, field }) => ({
+      message,
+      kind,
+      owner,
+      field,
+    }));
+  const finding = {
+    message: FIELD,
+    kind: "missing-field",
+    owner: "previewSelectionField",
+    field: "sectionId",
+  };
+
+  it("the selection-field owner fails without a sectionId of its own", () => {
+    assert.deepEqual(missing("fieldKey, fieldPath, value,"), [finding]);
+  });
+
+  it("a sectionId carried in by spread is not one of its own", () => {
+    assert.deepEqual(missing("...target, fieldKey, fieldPath, value,"), [finding]);
+  });
+
+  it("a written-out sectionId passes, shorthand or not", () => {
+    assert.deepEqual(missing("sectionId: activeSectionId, fieldKey, fieldPath, value,"), []);
+    assert.deepEqual(missing("sectionId, fieldKey, fieldPath, value,"), []);
   });
 });
 
