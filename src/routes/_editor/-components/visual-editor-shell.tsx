@@ -272,6 +272,10 @@ import {
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
+  PreviewClientOnlyNotice,
+  previewClientOnlyNoticeContent,
+} from "./preview-client-only-notice";
+import {
   describeThemeSourceChanges,
   describeContentChanges,
   describeUnpublishedChanges,
@@ -2534,6 +2538,12 @@ export function VisualEditorShell({
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const refetchPreviewServer = previewServer.refetch;
+  // What the client-only preview cannot run in this Theme, as the start that
+  // is serving it reported when it started; null for the full Start preview.
+  // Not recomputed on file apply: the notice says it reflects that start.
+  const previewClientOnlyNotice = previewClientOnlyNoticeContent(
+    previewServer.data,
+  );
   const previewServerUrl =
     previewLifecycle.phase !== "reconnecting" &&
     !previewServer.isFetching &&
@@ -12625,6 +12635,16 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {/* Always mounted: its live region must exist before the notice
+                appears in it, or screen readers may not announce it. */}
+            <PreviewClientOnlyNotice
+              content={previewClientOnlyNotice}
+              // One notice per start: a new start's answer replaces it, and
+              // brings it back if the author dismissed the last one.
+              startKey={previewServer.dataUpdatedAt}
+              onOpenFile={handleJumpToCode}
+            />
 
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
