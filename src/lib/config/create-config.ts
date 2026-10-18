@@ -10,11 +10,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import type { ComponentType } from "react";
-import type {
-  EmailAdapter,
-  EmailProviderConfig,
-  EmailSenderConfig,
-} from "../email/types";
+import type { EmailAdapter, EmailSenderConfig } from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
 import type { FulfillmentProvider } from "../fulfillment/providers/fulfillment-provider";
 import type { ShippingRateProvider } from "../shipping/providers/shipping-rate-provider";
@@ -359,7 +355,9 @@ export interface CMSUserConfig {
     database?: {
       connectionString: string | undefined;
     };
-    email?: EmailProviderConfig;
+    /** Construct any EmailAdapter here; the CMS does not choose a provider. */
+    email?: EmailAdapter;
+    emailSupportAddress?: string;
     /** Server-bundled provider implementations. Never expose provider secrets to the client. */
     fulfillmentProviders?: FulfillmentProvider[];
     shippingRateProviders?: ShippingRateProvider[];
