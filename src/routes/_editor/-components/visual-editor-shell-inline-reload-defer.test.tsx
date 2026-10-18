@@ -24,6 +24,10 @@ import {
   PREVIEW_RELOAD_DEFERRED_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
+import {
+  answerLatestRouteRequest,
+  createLiveFrame,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Text being typed on the canvas when the preview's dev server is replaced.
@@ -44,6 +48,11 @@ import {
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame(
+  { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+  { answerReady: false },
+);
 const SESSION = "aaaaaaaa-1111-4111-8111-111111111111";
 const TYPED = "Typed on the canvas";
 
@@ -231,6 +240,7 @@ function renderShell() {
 }
 
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -241,6 +251,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 const tick = (ms = 20) =>
@@ -284,6 +295,7 @@ async function frameUp() {
     servedInstance: { kind: "known", instance: { session: SESSION, serial: 1 } },
   });
   await tick(0);
+  answerLatestRouteRequest({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
   await tick(0);
   return shell;
 }
@@ -1350,6 +1362,13 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
+      });
+      await tick(0);
+      // And confirms its page, as a live frame does at once: what the author
+      // does on it is then the editor's page's.
+      answerLatestRouteRequest({
+        origin: PREVIEW_ORIGIN,
+        session: PREVIEW_SESSION,
       });
       await tick(0);
     }

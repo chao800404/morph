@@ -310,6 +310,16 @@ export function usePreviewSelection({
   }, [nextRevision, post]);
 
   const currentTarget = useCallback(() => lastRef.current, []);
+  /**
+   * Whether a report is a new click on the canvas rather than the answer to
+   * a request of the editor's own: newer than any revision the editor has
+   * minted or taken. Read only; nothing is accepted.
+   */
+  const isNewCanvasIntent = useCallback(
+    (message: Readonly<{ selectionRevision?: number }>) =>
+      (message.selectionRevision ?? 0) > revisionRef.current,
+    [],
+  );
 
   // Memoized so callers can depend on the object itself. A fresh one each
   // render would re-register every effect that reads it — including the one
@@ -325,6 +335,7 @@ export function usePreviewSelection({
       clear,
       leaveSelectionMode,
       currentTarget,
+      isNewCanvasIntent,
     }),
     [
       acceptReport,
@@ -333,6 +344,7 @@ export function usePreviewSelection({
       clear,
       currentTarget,
       forget,
+      isNewCanvasIntent,
       leaveSelectionMode,
       reassertMode,
       syncSection,
