@@ -19,6 +19,12 @@ const mocks = vi.hoisted(() => ({
   saveFilesBatch: vi.fn(),
   /** The DAL's own save, which records a revision with no manifest. */
   dalSaveFilesBatch: vi.fn(),
+  /** SQL handed to D1 directly: the upgrade record's conditional write. */
+  prepare: vi.fn(),
+}));
+
+vi.mock("cloudflare:workers", () => ({
+  env: { DATABASE: { prepare: mocks.prepare } },
 }));
 
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
@@ -261,6 +267,12 @@ describe("storefrontDal starter workspace provisioning", () => {
     mocks.initStarterTheme.mockResolvedValue([]);
     mocks.getSourceGeneration.mockResolvedValue(4);
     mocks.saveFilesBatch.mockResolvedValue([]);
+    mocks.prepare.mockImplementation(() => ({
+      bind: () => ({
+        run: async () => ({ meta: { changes: 1 } }),
+        first: async () => null,
+      }),
+    }));
   });
 
   it("creates the shell template for a theme that predates it", async () => {
@@ -449,6 +461,7 @@ describe("storefrontDal starter workspace provisioning", () => {
       expect(mocks.listFiles).not.toHaveBeenCalled();
       expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
+      expect(mocks.prepare).not.toHaveBeenCalled();
     });
 
     it("keeps the Theme on 27 when the write is refused, so the next load plans again", async () => {
@@ -470,6 +483,7 @@ describe("storefrontDal starter workspace provisioning", () => {
       ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
       // The version is written only after the files; it was not.
       expect(db.update).not.toHaveBeenCalled();
+      expect(mocks.prepare).not.toHaveBeenCalled();
     });
   });
 
