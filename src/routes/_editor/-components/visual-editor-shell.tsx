@@ -498,6 +498,14 @@ export const INLINE_TEXT_NOT_SAVED_MESSAGE =
  */
 export const HISTORY_OTHER_PAGE_MESSAGE =
   "that edit was made on another page. Open that page to undo or redo it.";
+/**
+ * Said when the canvas of a Theme whose framework is not TanStack Start is
+ * clicked or edited: its frame cannot say which page it shows, so nothing it
+ * sends is taken, now or later. Waiting does not help; the panel and Code
+ * mode still edit everything.
+ */
+export const CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
+  "Canvas editing isn't available for this Theme's framework yet. Use the panel on the right or Code mode.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
 /**
@@ -3202,6 +3210,15 @@ export function VisualEditorShell({
   );
   const previewIsSingleDocumentRef = useRef(previewIsSingleDocument);
   previewIsSingleDocumentRef.current = previewIsSingleDocument;
+  /**
+   * The canvas is not available at all for a Theme recorded with another
+   * framework than TanStack Start (NULL reads as TanStack Start): Astro, or
+   * one the editor does not know. Its frame names no page and its preview is
+   * not proven one document, so what the canvas sends is never taken.
+   */
+  const canvasUnavailableForFrameworkRef = useRef(false);
+  canvasUnavailableForFrameworkRef.current =
+    (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -7635,12 +7652,33 @@ export function VisualEditorShell({
         routeRequest.answered
       );
     };
+    /**
+     * Whether the canvas is unavailable here, rather than on another page:
+     * a Theme of another framework whose frame has named no page in this
+     * round. A frame that named a page is judged by that page.
+     */
+    const canvasUnavailableHere = () => {
+      if (!canvasUnavailableForFrameworkRef.current) return false;
+      const frame = frameRouteRef.current;
+      const named =
+        frame !== null &&
+        frame.key === previewKey &&
+        frame.round === previewReadyRoundRef.current &&
+        frame.routePath !== null;
+      return !named;
+    };
     /** Refuses an edit from a frame not on the editor's page, and says so. */
     const refuseOtherPageEdit = () => {
       if (frameShowsEditorPage()) return false;
-      toast.info(PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE, {
-        id: "preview-other-page-not-saved",
-      });
+      if (canvasUnavailableHere()) {
+        toast.info(CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE, {
+          id: "canvas-unavailable-for-framework",
+        });
+      } else {
+        toast.info(PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE, {
+          id: "preview-other-page-not-saved",
+        });
+      }
       return true;
     };
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
@@ -7954,7 +7992,19 @@ export function VisualEditorShell({
       // An element of another page, or of a page not known yet: its slot id
       // may be one this page has too, and the Inspector would then edit this
       // page's copy of it.
-      if (!frameShowsEditorPage()) return;
+      if (!frameShowsEditorPage()) {
+        // A click on a canvas that is never taken is said; the frame's answer
+        // to a selection the panel asked for is set aside as before.
+        if (
+          canvasUnavailableHere() &&
+          previewSelection.isNewCanvasIntent(message)
+        ) {
+          toast.info(CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE, {
+            id: "canvas-unavailable-for-framework",
+          });
+        }
+        return;
+      }
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;

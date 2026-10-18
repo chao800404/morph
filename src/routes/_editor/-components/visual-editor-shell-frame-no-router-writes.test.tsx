@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +25,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
   PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
   VisualEditorShell,
   type EditorNavigationGuard,
@@ -657,7 +664,15 @@ describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
       frameCommitsText("hero", "Typed on the frame's page");
       await tick(400);
       expect(writtenTemplates()).toEqual([]);
-      expect(noticed()).toBe(true);
+      // Said as unavailable: waiting for another page would never help here.
+      expect(noticed()).toBe(false);
+      expect(
+        vi
+          .mocked(toast.info)
+          .mock.calls.some(
+            (call) => call[0] === CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+          ),
+      ).toBe(true);
     }
 
     it("is not taken once it answered with no route (unknown page)", async () => {
@@ -705,6 +720,200 @@ describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
       await tick(400);
       expect(writtenTemplates()).toEqual(["template-1"]);
       expect(noticed()).toBe(false);
+    });
+  },
+);
+
+/**
+ * The limit, said, and nothing else changed. On a Theme of another framework
+ * the canvas is not available: every click and every edit from it is
+ * refused with a notice that says so, never "wait". The panel, Code mode and
+ * the preview itself work as on any Theme.
+ */
+describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
+  "the canvas of a Theme recorded as %s",
+  (framework) => {
+    const unavailableSaid = () =>
+      vi
+        .mocked(toast.info)
+        .mock.calls.filter(
+          (call) => call[0] === CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+        );
+    const SENDS: Record<string, () => void> = {
+      "a canvas click (select-section)": () => frameSelects("hero"),
+      "commit-inline-text": () => frameCommitsText("hero", "Typed"),
+      "commit-section-reorder": () =>
+        fromPreview({
+          type: "morph:storefront-preview-commit-section-reorder",
+          draggedSectionId: "promo",
+          targetSectionId: "hero",
+        }),
+      "commit-sibling-reorder": () =>
+        fromPreview({
+          type: "morph:storefront-preview-commit-sibling-reorder",
+          sectionId: "hero",
+          sourceFilePath: "src/hero/Hero.tsx",
+          draggedNodeId: "hero:node:heading",
+          targetNodeId: "hero:node:section",
+        }),
+      "commit-array-item-reorder": () =>
+        fromPreview({
+          type: "morph:storefront-preview-commit-array-item-reorder",
+          sectionId: "hero",
+          draggedFieldPath: "items.0",
+          targetFieldPath: "items.1",
+        }),
+    };
+    const WINDOWS: Record<
+      string,
+      (harness: ReturnType<typeof renderRouted>) => Promise<void>
+    > = {
+      "after the frame answered with no route": async () => {},
+      "while the editor's switch is unanswered": async (harness) => {
+        harness.moveTo(aboutSearch);
+        await tick(0);
+      },
+      "after the frame moved to another document": async () => {
+        fromPreview({
+          type: "morph:storefront-preview-ready",
+          servedInstance: {
+            kind: "known",
+            instance: { session: SESSION, serial: 1 },
+          },
+        });
+        await tick(0);
+      },
+    };
+
+    describe.each(Object.entries(WINDOWS))("%s", (_window, open) => {
+      it.each(Object.keys(SENDS))(
+        "%s is refused with the unavailable notice, and writes nothing",
+        async (name) => {
+          const harness = renderRouted(homeSearch, { framework });
+          await frameUp(true);
+          await open(harness);
+          SENDS[name]!();
+          await tick(400);
+          expect(unavailableSaid()).toEqual([
+            [
+              CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+              { id: "canvas-unavailable-for-framework" },
+            ],
+          ]);
+          // Never the "another page, wait" notice.
+          expect(noticed()).toBe(false);
+          expect(selectedInInspector()).toBeNull();
+          expect(writtenTemplates()).toEqual([]);
+          expect(saveThemeFile).not.toHaveBeenCalled();
+        },
+      );
+    });
+
+    it("says it once for repeated clicks: one stable id", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      frameSelects("hero");
+      frameSelects("promo");
+      await tick(0);
+      expect(
+        new Set(
+          vi
+            .mocked(toast.info)
+            .mock.calls.filter(
+              (call) => call[0] === CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+            )
+            .map((call) => (call[1] as { id?: string }).id),
+        ),
+      ).toEqual(new Set(["canvas-unavailable-for-framework"]));
+    });
+
+    it("leaves the panel as it was: a section picked there is edited and written, quietly", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      const row = screen.getAllByTitle("Select Hero; drag to reorder")[0]!;
+      act(() => row.click());
+      await tick(0);
+      // The frame answers the panel's request with its element, as the
+      // bridge does; set aside, and nothing said about the canvas.
+      const ask = log
+        .filter(
+          (message) => message.type === "morph:storefront-preview-set-section",
+        )
+        .at(-1);
+      fromPreview({
+        type: "morph:storefront-preview-select-section",
+        sectionId: "hero",
+        componentType: "Hero",
+        kind: "section",
+        nodeId: "hero",
+        sourceFilePath: "src/hero/Hero.tsx",
+        sourceLocation: null,
+        elementKey: null,
+        fieldKey: null,
+        field: null,
+        fieldPath: null,
+        descendantFields: [],
+        tagName: "section",
+        role: null,
+        inputType: null,
+        styleRevision: latestStyleRevision(),
+        className: "",
+        isSection: true,
+        inspectorOverride: null,
+        computedStyle: null,
+        parentComputedStyle: null,
+        sectionComputedStyle: null,
+        selectionRevision: ask?.selectionRevision ?? 0,
+      });
+      await tick(0);
+      expect(unavailableSaid()).toEqual([]);
+      act(() => screen.getByRole("button", { name: /^Content$/ }).click());
+      await tick(0);
+      const field = screen.getByDisplayValue(SAME);
+      fireEvent.focus(field);
+      fireEvent.input(field, { target: { value: "Panel edit" } });
+      fireEvent.blur(field);
+      await tick(400);
+      expect(writtenTemplates()).toEqual(["template-1"]);
+      expect(unavailableSaid()).toEqual([]);
+      expect(noticed()).toBe(false);
+      // And the preview is refreshed with it, as on any Theme.
+      expect(
+        log.some(
+          (message) =>
+            message.type === "morph:storefront-preview-update-section-props" &&
+            message.sectionId === "hero" &&
+            (message as { props?: { heading?: string } }).props?.heading ===
+              "Panel edit",
+        ),
+      ).toBe(true);
+    });
+
+    it("leaves the preview and Code mode as they were", async () => {
+      renderRouted(homeSearch, { framework });
+      await frameUp(true);
+      // The preview is framed, sent its route and the Theme's files.
+      expect(document.querySelector("iframe")).toBeTruthy();
+      expect(
+        log.some(
+          (message) => message.type === "morph:storefront-preview-set-route",
+        ),
+      ).toBe(true);
+      expect(
+        log.some(
+          (message) =>
+            message.type === "morph:storefront-preview-update-theme-files",
+        ),
+      ).toBe(true);
+      act(() => screen.getByRole("button", { name: /^Code$/ }).click());
+      await waitFor(
+        () =>
+          expect(
+            document.querySelector('[data-file-tree-file="src/hero/Hero.tsx"]'),
+          ).not.toBeNull(),
+        { timeout: 15_000 },
+      );
+      expect(unavailableSaid()).toEqual([]);
     });
   },
 );

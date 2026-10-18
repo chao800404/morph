@@ -25,6 +25,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
   HISTORY_OTHER_PAGE_MESSAGE,
   PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
   VisualEditorShell,
@@ -929,6 +930,14 @@ describe("every frame message that writes or moves the Inspector", () => {
         expect(saveThemeFile).not.toHaveBeenCalled();
         expect(selectedInInspector()).toBeNull();
         expect(noticed()).toBe(entry.notice);
+        // A Start Theme: the page is wrong or not known yet, never "unavailable".
+        expect(
+          vi
+            .mocked(toast.info)
+            .mock.calls.some(
+              (call) => call[0] === CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+            ),
+        ).toBe(false);
       });
     },
   );
