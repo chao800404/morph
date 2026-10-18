@@ -1,7 +1,8 @@
-
-
-
 export { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
+export {
+  CloudflareAdapter,
+  type CloudflareAdapterConfig,
+} from "./cloudflare.adapter";
 
 // 未來可以新增其他 adapters
 // export { AwsSesAdapter } from './aws-ses.adapter';
@@ -24,7 +25,7 @@ import { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
  * ```
  */
 export function resendAdapter(config: ResendAdapterConfig): EmailAdapter {
-    return new ResendAdapter(config);
+  return new ResendAdapter(config);
 }
 
 // 未來的 adapter helper functions
