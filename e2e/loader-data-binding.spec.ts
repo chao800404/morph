@@ -297,6 +297,11 @@ test.describe("case B in the full Start preview", () => {
     // The section wrapper itself is the editor naming the slot the loader
     // read, and the text is the Document's, not the component's default.
     await expect(heading(page)).toHaveText(STORED_TITLE);
+    // The Theme calls a server function, and this preview runs it: the
+    // client-only notice (shown on the default preview) is not here.
+    await expect(
+      page.locator('[data-slot="preview-client-only-notice"]'),
+    ).toHaveCount(0);
 
     await selectHeading(page);
     const field = titleField(page);

@@ -55,7 +55,11 @@ import {
   reorderCommitFor,
   reorderIdentity,
 } from "./preview/preview-reorder-identity";
-import { previewSlotContent, updatePreviewContent } from "./preview-content";
+import {
+  previewSlotContent,
+  previewSlotHidden,
+  updatePreviewContent,
+} from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
@@ -1319,6 +1323,11 @@ if (channel) {
       message?.type === "morph:storefront-preview-update-selection-field" &&
       selectedItem
     ) {
+      // A hidden slot's values stay with the editor. The attributes written
+      // below bypass the content object, so they ask the same list it does.
+      if (selectedItem.sectionId && previewSlotHidden(selectedItem.sectionId)) {
+        return;
+      }
       const scope = selectedItem.section ?? document;
       const fieldPath = message.fieldPath;
       const groupedImagePath =

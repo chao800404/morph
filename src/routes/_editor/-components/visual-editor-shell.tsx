@@ -264,11 +264,17 @@ import {
   type PreviewInstanceWatch,
 } from "@/lib/storefront/editor/preview-instance-watch";
 import {
+  contentEntryVisibilityIntent,
   createInstanceContentReplay,
-  instanceReplaySection,
+  previewSectionHidden,
+  previewSectionPost,
   type InstanceContentReplay,
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
+import {
+  PreviewClientOnlyNotice,
+  previewClientOnlyNoticeContent,
+} from "./preview-client-only-notice";
 import {
   describeThemeSourceChanges,
   describeContentChanges,
@@ -1640,6 +1646,39 @@ export function VisualEditorShell({
     () => setUnconfirmedContentCount(unconfirmedContentRef.current.size),
     [],
   );
+  /**
+   * A section's visibility as the editor holds it (`previewSectionHidden`),
+   * and the post that tells the preview so (`reconcilePreviewSection`). Set
+   * below, beside the preview poster; read here by the places that remove a
+   * pending or unanswered entry.
+   */
+  const previewVisibilityRef = useRef<{
+    isHidden: (sectionId: string) => boolean;
+    reconcile: (sectionId: string) => void;
+  }>({ isHidden: () => false, reconcile: () => {} });
+  /**
+   * After a pending or unanswered entry left: the preview is told the
+   * section's visibility as the editor now holds it, when the entry asked
+   * for one or the visibility moved with it. Idempotent; it keeps nothing.
+   */
+  const reconcileAfterRemoval = useCallback(
+    (
+      sectionId: string,
+      removed: PendingContentEntry | undefined,
+      hiddenBefore?: boolean,
+    ) => {
+      const visibility = previewVisibilityRef.current;
+      if (
+        contentEntryVisibilityIntent(removed) === "none" &&
+        (hiddenBefore === undefined ||
+          visibility.isHidden(sectionId) === hiddenBefore)
+      ) {
+        return;
+      }
+      visibility.reconcile(sectionId);
+    },
+    [],
+  );
 
   /**
    * A content write was saved: carry it into a preview that reads content on
@@ -2071,6 +2110,10 @@ export function VisualEditorShell({
               },
             ).then(
               (result) => {
+                const answered = sentEntry as PendingContentEntry | undefined;
+                const hiddenBefore = answered
+                  ? previewVisibilityRef.current.isHidden(answered.sectionId)
+                  : undefined;
                 // Answered, either way: nothing is left to find out.
                 if (unconfirmedContentRef.current.delete(key)) {
                   syncUnconfirmedContentCount();
@@ -2099,6 +2142,16 @@ export function VisualEditorShell({
                     },
                   );
                   if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
+                }
+                // A visibility this write carried is answered: the preview
+                // is told what the editor holds now, which a newer toggle
+                // still pending decides over this answer.
+                if (answered) {
+                  reconcileAfterRemoval(
+                    answered.sectionId,
+                    answered,
+                    hiddenBefore,
+                  );
                 }
                 return result;
               },
@@ -2181,6 +2234,7 @@ export function VisualEditorShell({
       context.theme.id,
       currentContentSourceGeneration,
       contentSnapshotForWrite,
+      reconcileAfterRemoval,
     ],
   );
 
@@ -2209,6 +2263,12 @@ export function VisualEditorShell({
         fresh.message ?? "Could not check whether your changes were saved.",
       );
     }
+    const hiddenBefore = new Map(
+      unconfirmed.map(([key, sent]) => [
+        key,
+        previewVisibilityRef.current.isHidden(sent.sectionId),
+      ]),
+    );
     // An unanswered write found to have landed is our own step, but only
     // when the document is exactly one generation past the one it was sent
     // at: anything more means someone else wrote too, and is theirs.
@@ -2273,6 +2333,10 @@ export function VisualEditorShell({
         });
       }
     }
+    // Each answer found: the preview is told the visibility it leaves.
+    for (const [key, sent] of unconfirmed) {
+      reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
+    }
     syncUnconfirmedContentCount();
   }, [
     acceptReadTemplates,
@@ -2280,6 +2344,7 @@ export function VisualEditorShell({
     context.theme.id,
     ownDraftSteps,
     queryClient,
+    reconcileAfterRemoval,
     syncUnconfirmedContentCount,
   ]);
 
@@ -2474,6 +2539,12 @@ export function VisualEditorShell({
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const refetchPreviewServer = previewServer.refetch;
+  // What the client-only preview cannot run in this Theme, as the start that
+  // is serving it reported when it started; null for the full Start preview.
+  // Not recomputed on file apply: the notice says it reflects that start.
+  const previewClientOnlyNotice = previewClientOnlyNoticeContent(
+    previewServer.data,
+  );
   const previewServerUrl =
     previewLifecycle.phase !== "reconnecting" &&
     !previewServer.isFetching &&
@@ -3475,6 +3546,36 @@ export function VisualEditorShell({
       sectionModel.bindings.get(sectionId)?.templateId ?? null,
     [sectionModel],
   );
+  /**
+   * What the editor holds about one section's visibility, read at the moment
+   * it is asked: the accepted copy, and the pending and unanswered entries,
+   * keyed as the write path keys them (`previewSectionHidden`). Nothing here
+   * is stored or changed; null for a section no template owns.
+   */
+  const previewSectionState = useCallback(
+    (sectionId: string) => {
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) return null;
+      const key = `${templateId}:${sectionId}`;
+      return {
+        snapshot: contentSnapshotsRef.current.get(
+          routeTemplateIdsRef.current.get(templateId) ?? templateId,
+        ),
+        sectionId,
+        pending: pendingPropsMapRef.current.get(key),
+        unconfirmed: unconfirmedContentRef.current.get(key),
+      };
+    },
+    [templateIdForSection],
+  );
+  /** Read by the preview poster, which is created once. */
+  const previewSectionStateRef = useRef(previewSectionState);
+  previewSectionStateRef.current = previewSectionState;
+  const previewSectionIsHidden = useCallback((sectionId: string) => {
+    const state = previewSectionStateRef.current(sectionId);
+    return state !== null && previewSectionHidden(state);
+  }, []);
+  previewVisibilityRef.current.isHidden = previewSectionIsHidden;
   sectionDocumentRef.current = (sectionId) => {
     const templateId = templateIdForSection(sectionId);
     return templateId === null
@@ -4061,6 +4162,10 @@ export function VisualEditorShell({
     (fieldKey: string, fieldPath: string | null, value: string) => {
       setFieldDraft(true);
       leaveGuard.noteInput();
+      // A hidden section's text stays out of the page: the field still
+      // saves as it would, only the canvas is not told.
+      const sectionId = activeSelection?.sectionId;
+      if (sectionId && previewSectionIsHidden(sectionId)) return;
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-field",
         fieldKey,
@@ -4069,7 +4174,7 @@ export function VisualEditorShell({
       });
       schedulePreviewRemeasureRef.current();
     },
-    [leaveGuard],
+    [activeSelection?.sectionId, leaveGuard, previewSectionIsHidden],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
@@ -8883,12 +8988,17 @@ export function VisualEditorShell({
       enabled: boolean | undefined,
       resetKeys?: string[],
     ) => {
+      // Decided as it is posted, from what the editor holds now: a section
+      // held as hidden is told it is hidden and nothing else, whatever this
+      // post was composed from. Only the message is changed; what is saved,
+      // pending or accepted is not touched.
+      const hidden = previewSectionIsHidden(sectionId);
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-section-props",
         sectionId,
-        props: resolvedProps,
-        enabled,
-        ...(resetKeys?.length ? { resetKeys } : {}),
+        props: hidden ? undefined : resolvedProps,
+        enabled: hidden ? false : enabled,
+        ...(!hidden && resetKeys?.length ? { resetKeys } : {}),
       });
       // Anything that changes what the canvas renders has to re-measure,
       // not just a file write. The theme's own `min-h-screen` resolves
@@ -8897,7 +9007,7 @@ export function VisualEditorShell({
       // otherwise leave the space it used to occupy behind.
       schedulePreviewRemeasureRef.current();
     },
-    [],
+    [previewSectionIsHidden],
   );
   const syncPreviewSectionProps = useCallback(
     (
@@ -8982,6 +9092,32 @@ export function VisualEditorShell({
     },
     [previewMediaCache, postPreviewSectionProps],
   );
+  /**
+   * Tells the preview a section's visibility as the editor holds it now: a
+   * hidden section as `{ enabled: false }`, a shown one with the accepted copy
+   * and the pending fields on top, shown in the same message
+   * (`previewSectionPost`). Through the one poster, so it is checked again as
+   * it is posted. Nothing is stored or changed.
+   */
+  const reconcilePreviewSection = useCallback(
+    (sectionId: string) => {
+      const state = previewSectionStateRef.current(sectionId);
+      if (!state) return;
+      const post = previewSectionPost({
+        ...state,
+        sourceGeneration: currentContentSourceGeneration(),
+      });
+      syncPreviewSectionProps(
+        sectionId,
+        post?.props
+          ? (parsePreviewSectionProps(post.props) ?? undefined)
+          : undefined,
+        post?.enabled ?? true,
+      );
+    },
+    [currentContentSourceGeneration, syncPreviewSectionProps],
+  );
+  previewVisibilityRef.current.reconcile = reconcilePreviewSection;
 
   // The frame `createPreviewInstanceWatch` brought up is given, once it is on
   // the route it was reloaded on, the latest accepted content with the
@@ -9021,7 +9157,9 @@ export function VisualEditorShell({
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
           const key = `${templateId}:${sectionId}`;
-          const section = instanceReplaySection({
+          // A hidden section is replayed as hidden, with no props: its
+          // stored values stay with the editor (`previewSectionPost`).
+          const section = previewSectionPost({
             snapshot: contentSnapshotsRef.current.get(
               routeTemplateIdsRef.current.get(templateId) ?? templateId,
             ),
@@ -9033,7 +9171,9 @@ export function VisualEditorShell({
           if (!section) continue;
           syncPreviewSectionProps(
             sectionId,
-            parsePreviewSectionProps(section.props) ?? undefined,
+            section.props
+              ? (parsePreviewSectionProps(section.props) ?? undefined)
+              : undefined,
             section.enabled,
             undefined,
             isCurrent,
@@ -9892,11 +10032,13 @@ export function VisualEditorShell({
           }),
         );
       } catch {
+        const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
           else pendingPropsMapRef.current.delete(key);
         }
         restoreSelectionAndProps();
+        reconcileAfterRemoval(sectionId, reorderPending, hiddenBefore);
       }
     },
     [
@@ -9904,6 +10046,8 @@ export function VisualEditorShell({
       handleSectionPropsChange,
       invalidateSectionHistory,
       commitSectionPending,
+      previewSectionIsHidden,
+      reconcileAfterRemoval,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -9957,11 +10101,13 @@ export function VisualEditorShell({
         return;
       }
       if (historyGeneration === undefined) invalidateSectionHistory(sectionId);
-      // 1. Instant 0ms visual toggle on canvas
-      syncPreviewSectionProps(sectionId, undefined, enabled);
 
       const templateId = templateIdForSection(sectionId);
-      if (!templateId) return;
+      if (!templateId) {
+        // Nothing stores it, so nothing holds an intent: the canvas toggles.
+        syncPreviewSectionProps(sectionId, undefined, enabled);
+        return;
+      }
       const key = `${templateId}:${sectionId}`;
 
       const existingTimer = pendingPropsTimersRef.current.get(key);
@@ -9979,7 +10125,10 @@ export function VisualEditorShell({
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
       });
-      if (!togglePending) return;
+      if (!togglePending) {
+        reconcilePreviewSection(sectionId);
+        return;
+      }
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(
           key,
@@ -9987,6 +10136,11 @@ export function VisualEditorShell({
         );
       }
       pendingPropsMapRef.current.set(key, togglePending);
+      // 1. Instant 0ms visual toggle on canvas, posted once this toggle is
+      // the intent the editor holds and before anything is awaited: a hide as
+      // `{ enabled: false }`, a show with the section's values in the same
+      // message (`reconcilePreviewSection`).
+      reconcilePreviewSection(sectionId);
 
       try {
         await commitSectionPending(templateId, key, false);
@@ -10027,6 +10181,7 @@ export function VisualEditorShell({
       updatePropsMutation,
       currentContentSourceGeneration,
       freshContentSelectionGeneration,
+      reconcilePreviewSection,
     ],
   );
 
@@ -10137,9 +10292,30 @@ export function VisualEditorShell({
     }
 
     const keys = new Set(entries.map(([key]) => key));
+    const hiddenBefore = new Map(
+      entries.map(([key, entry]) => [
+        key,
+        previewSectionIsHidden(entry.sectionId),
+      ]),
+    );
+    // The version just read is the one the discard leaves, so it becomes the
+    // accepted copy before the preview is told about it — as every other
+    // read does. Without it a write from elsewhere that landed after the
+    // conflict (another tab hiding the section) was missed, and the preview
+    // was posted the older copy shown.
+    acceptReadTemplates(fresh.data.templates);
     for (const key of keys) {
       pendingPropsMapRef.current.delete(key);
       pendingPropsBaselineRef.current.delete(key);
+    }
+    // The discarded draft may have held a hide: the preview is told the
+    // visibility the latest version leaves.
+    for (const [key, entry] of entries) {
+      reconcileAfterRemoval(
+        entry.sectionId,
+        confirmed.get(key),
+        hiddenBefore.get(key),
+      );
     }
     setContentConflicts((current) => {
       const next = { ...current };
@@ -10166,7 +10342,15 @@ export function VisualEditorShell({
       }
     }
     setContentResetEpoch((epoch) => epoch + 1);
-  }, [context.storefront.id, context.theme.id, listConflicts, queryClient]);
+  }, [
+    acceptReadTemplates,
+    context.storefront.id,
+    context.theme.id,
+    listConflicts,
+    previewSectionIsHidden,
+    queryClient,
+    reconcileAfterRemoval,
+  ]);
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
@@ -12452,6 +12636,16 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {/* Always mounted: its live region must exist before the notice
+                appears in it, or screen readers may not announce it. */}
+            <PreviewClientOnlyNotice
+              content={previewClientOnlyNotice}
+              // One notice per start: a new start's answer replaces it, and
+              // brings it back if the author dismissed the last one.
+              startKey={previewServer.dataUpdatedAt}
+              onOpenFile={handleJumpToCode}
+            />
 
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
