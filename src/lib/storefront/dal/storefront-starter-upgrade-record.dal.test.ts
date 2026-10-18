@@ -37,6 +37,12 @@ const hooks = vi.hoisted(() => ({
    */
   beforeRecordWrite: null as null | (() => void | Promise<void>),
   recordWriteAttempts: 0,
+  /**
+   * Runs immediately before any write to `storefront_theme_templates`,
+   * whether it goes through Drizzle or straight to D1, i.e. after the home
+   * rule read the home template and before it writes.
+   */
+  beforeTemplateWrite: null as null | (() => void),
 }));
 
 const workspace = vi.hoisted(() => ({
@@ -62,6 +68,9 @@ vi.mock("cloudflare:workers", () => ({
               ) {
                 hooks.recordWriteAttempts += 1;
                 await hooks.beforeRecordWrite?.();
+              }
+              if (sql.trim().startsWith("UPDATE storefront_theme_templates")) {
+                hooks.beforeTemplateWrite?.();
               }
               const result = sqlite.prepare(sql).run(params);
               return { meta: { changes: result.changes } };
@@ -306,10 +315,22 @@ beforeEach(() => {
     );
   `);
   vi.mocked(getDb).mockResolvedValue(
-    drizzle(sqlite, { schema: storefrontSchema }) as never,
+    drizzle(sqlite, {
+      schema: storefrontSchema,
+      // Drizzle logs each statement just before it runs it, which is where a
+      // writer between a read and a Drizzle template update has to land.
+      logger: {
+        logQuery(query: string) {
+          if (/^update "storefront_theme_templates"/i.test(query.trim())) {
+            hooks.beforeTemplateWrite?.();
+          }
+        },
+      },
+    }) as never,
   );
   hooks.beforeRecordWrite = null;
   hooks.recordWriteAttempts = 0;
+  hooks.beforeTemplateWrite = null;
   workspace.files.clear();
   workspace.generation.clear();
   workspace.saveFilesBatch.mockReset();
@@ -1029,5 +1050,281 @@ describe("a Theme row that disappears before the record write", () => {
       filesSaved: true,
       attempts: 1,
     });
+  });
+});
+
+/**
+ * The home rule: on a Theme whose Starter version is not current,
+ * `ensureDefault` may replace the home template's document with the default
+ * home document.
+ */
+describe("the Starter home document rule", () => {
+  /** Morph's own V14 Starter home, byte for byte. */
+  const LEGACY_HOME = {
+    version: 1,
+    sections: [
+      {
+        id: "starter-hero",
+        type: "hero",
+        enabled: true,
+        props: {
+          eyebrow: "New collection",
+          heading: "Objects for everyday rituals.",
+          description:
+            "Quiet essentials, thoughtfully made for the spaces you call home.",
+          actionLabel: "Explore the collection",
+          actionHref: "/collections/new",
+          imageSrc: "/static/storefront/theme-preview-default.png",
+          imageAlt: "A neutral collection of ceramic objects",
+        },
+      },
+    ],
+  };
+  const EMPTY_HOME = { version: 1, sections: [] };
+  const AUTHORED_HOME = {
+    version: 1,
+    sections: [
+      {
+        id: "author-banner",
+        type: "hero",
+        enabled: true,
+        props: { heading: "The author's own page" },
+      },
+    ],
+  };
+
+  function setHome(home: {
+    document: unknown;
+    draftRevisionId?: string | null;
+    publishedRevisionId?: string | null;
+    draftGeneration?: number;
+  }) {
+    sqlite
+      .prepare(
+        `UPDATE storefront_theme_templates
+         SET document = ?, draft_revision_id = ?, published_revision_id = ?,
+             draft_generation = ?
+         WHERE id = 'home'`,
+      )
+      .run(
+        JSON.stringify(home.document),
+        home.draftRevisionId ?? null,
+        home.publishedRevisionId ?? null,
+        home.draftGeneration ?? 1,
+      );
+  }
+
+  function storedHome(themeId = THEME_ID) {
+    const row = sqlite
+      .prepare(
+        `SELECT document, draft_revision_id, published_revision_id,
+                draft_generation, updated_at
+         FROM storefront_theme_templates
+         WHERE theme_id = ? AND type = 'index'`,
+      )
+      .get(themeId) as {
+      document: string;
+      draft_revision_id: string | null;
+      published_revision_id: string | null;
+      draft_generation: number;
+      updated_at: string;
+    };
+    return { ...row, document: JSON.parse(row.document) as unknown };
+  }
+
+  /**
+   * An author write that lands on the home template's own document: publishing
+   * the home, which stores the published document on the template and
+   * advances its draft generation (`storefront-theme.dal.ts`).
+   */
+  function authorPublishesHome() {
+    sqlite
+      .prepare(
+        `UPDATE storefront_theme_templates
+         SET document = ?, draft_revision_id = 'rev-author',
+             published_revision_id = 'rev-author',
+             draft_generation = draft_generation + 1,
+             updated_at = 'author-publish'
+         WHERE id = 'home'`,
+      )
+      .run(JSON.stringify(AUTHORED_HOME));
+  }
+
+  it.each([
+    ["an empty home", EMPTY_HOME],
+    ["Morph's legacy home", LEGACY_HOME],
+  ])(
+    "keeps an author write that lands between the home read and the home write (%s)",
+    async (_label, document) => {
+      seedTheme({});
+      setHome({ document });
+      let raced = 0;
+      hooks.beforeTemplateWrite = () => {
+        hooks.beforeTemplateWrite = null;
+        raced += 1;
+        authorPublishesHome();
+      };
+
+      await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+        undefined,
+      );
+
+      expect(raced).toBe(1);
+      // The author's write is exactly what is stored: the home rule's write
+      // lost its draft-generation condition and changed nothing.
+      expect(storedHome()).toEqual({
+        document: AUTHORED_HOME,
+        draft_revision_id: "rev-author",
+        published_revision_id: "rev-author",
+        draft_generation: 2,
+        updated_at: "author-publish",
+      });
+      // The record is written as before.
+      expect(storedRow().metadata).toEqual({
+        starterTemplateVersion: CURRENT,
+        starterUpgradeRecordRevision: 1,
+      });
+    },
+  );
+
+  it.each([
+    [
+      "published",
+      { draftRevisionId: "rev-a", publishedRevisionId: "rev-a", draftGeneration: 3 },
+    ],
+    [
+      "saved as a draft",
+      { draftRevisionId: "rev-b", publishedRevisionId: null, draftGeneration: 2 },
+    ],
+  ])("does not refill a home an author emptied and %s", async (_label, pointers) => {
+    seedTheme({});
+    setHome({ document: EMPTY_HOME, ...pointers });
+    const before = storedHome();
+
+    await storefrontDal.ensureDefault("channel-a");
+
+    expect(storedHome()).toEqual(before);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+
+  it("does not refill an emptied home on the editor's upgrade path either", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    setHome({
+      document: EMPTY_HOME,
+      draftRevisionId: "rev-a",
+      publishedRevisionId: "rev-a",
+      draftGeneration: 3,
+    });
+    const before = storedHome();
+
+    await expect(openEditor()).resolves.toBe(true);
+
+    expect(storedHome()).toEqual(before);
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+
+  it.each([
+    [
+      "no revision",
+      { draftRevisionId: null, publishedRevisionId: null, draftGeneration: 1 },
+    ],
+    [
+      "a published revision",
+      { draftRevisionId: "rev-a", publishedRevisionId: "rev-a", draftGeneration: 4 },
+    ],
+  ])(
+    "still upgrades Morph's legacy home when nothing raced (%s)",
+    async (_label, pointers) => {
+      seedTheme({});
+      setHome({ document: LEGACY_HOME, ...pointers });
+
+      await storefrontDal.ensureDefault("channel-a");
+
+      const home = storedHome();
+      expect(home.document).toEqual(createDefaultStorefrontHomeDocument());
+      expect(home.draft_revision_id).toBe(pointers.draftRevisionId);
+      expect(home.published_revision_id).toBe(pointers.publishedRevisionId);
+      // A document write names a new generation, as every other one does.
+      expect(home.draft_generation).toBe(pointers.draftGeneration + 1);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    },
+  );
+
+  it("fills an empty home no content write ever reached", async () => {
+    seedTheme({});
+    setHome({ document: EMPTY_HOME });
+
+    await storefrontDal.ensureDefault("channel-a");
+
+    const home = storedHome();
+    expect(home.document).toEqual(createDefaultStorefrontHomeDocument());
+    expect(home.draft_revision_id).toBeNull();
+    expect(home.published_revision_id).toBeNull();
+    expect(home.draft_generation).toBe(2);
+  });
+
+  it("gives a Theme store initialization creates its default home", async () => {
+    await storefrontDal.ensureDefault("channel-new");
+
+    const storefront = sqlite
+      .prepare(
+        "SELECT id, active_theme_id FROM storefronts WHERE sales_channel_id = ?",
+      )
+      .get("channel-new") as { id: string; active_theme_id: string };
+    const home = storedHome(storefront.active_theme_id);
+    expect(home.document).toEqual(createDefaultStorefrontHomeDocument());
+    expect(home.draft_revision_id).toBeNull();
+    expect(home.draft_generation).toBe(1);
+    expect(storedRow(storefront.active_theme_id).metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+    });
+  });
+});
+
+describe("a Starter version that is not a number", () => {
+  it.each([["28"], [true], [{ version: 28 }]])(
+    "is logged with the Theme's ids and a fixed reason only, then recorded as before (%j)",
+    async (stored) => {
+      seedTheme({
+        starterTemplateVersion: stored,
+        unrelated: "kept",
+      });
+
+      await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+        undefined,
+      );
+
+      expect(console.error).toHaveBeenCalledTimes(1);
+      expect(console.error).toHaveBeenCalledWith(
+        "Starter template version is not a number:",
+        JSON.stringify({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+          reason: "non-number-starter-template-version",
+        }),
+      );
+      // Overwritten as before (option c1).
+      expect(storedRow().metadata).toEqual({
+        starterTemplateVersion: CURRENT,
+        starterUpgradeRecordRevision: 1,
+        unrelated: "kept",
+      });
+    },
+  );
+
+  it.each([
+    ["a missing version", {}],
+    ["a JSON-null version", { starterTemplateVersion: null }],
+    ["a legacy number", { starterTemplateVersion: 3 }],
+  ])("is not logged for %s", async (_label, metadata) => {
+    seedTheme(metadata);
+
+    await storefrontDal.ensureDefault("channel-a");
+
+    expect(console.error).not.toHaveBeenCalled();
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
   });
 });

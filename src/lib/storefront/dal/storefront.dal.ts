@@ -34,6 +34,71 @@ const EMPTY_DOCUMENT: StorefrontPageDocument = { version: 1, sections: [] };
 
 type StorefrontDb = Awaited<ReturnType<typeof getDb>>;
 
+type StarterHomeTemplate = {
+  id: string;
+  document: StorefrontPageDocument;
+  draftRevisionId: string | null;
+  publishedRevisionId: string | null;
+  draftGeneration: number;
+};
+
+/** A version that is present but not a JSON number. Missing or null is unset. */
+function isNonNumberStarterVersion(value: unknown): boolean {
+  return value !== undefined && value !== null && typeof value !== "number";
+}
+
+/**
+ * Whether the home rule may replace this home with the default home.
+ *
+ * Morph's own legacy Starter home, byte for byte, is always Morph's to
+ * replace. An empty home is Morph's to fill only when no content write ever
+ * reached it. Every author save goes through a template revision and leaves
+ * a draft (and, once published, a published) revision id behind, so a home
+ * with either was emptied by its author and is left alone. A home emptied
+ * before template revisions existed cannot be told apart and is still filled.
+ */
+function isResettableStarterHome(home: StarterHomeTemplate): boolean {
+  if (!isUpgradeableStarterHomeDocument(home.document)) return false;
+  if (home.document.sections.length > 0) return true;
+  return home.draftRevisionId === null && home.publishedRevisionId === null;
+}
+
+/**
+ * Replaces the home document under the template document OCC: the draft
+ * generation and draft revision the home rule read, the same pair every
+ * template document write is conditioned on (`prepareTemplateDraftCASGuard`
+ * in `storefront-theme.dal.ts`). The write advances the generation, as every
+ * other document write does, so an editor holding the old one is refused
+ * instead of saving over the new document.
+ *
+ * On a miss another write changed the home after the read; nothing is written
+ * and the rule is not retried. Whatever that write stored is kept.
+ */
+async function resetStarterHomeDocument(
+  themeId: string,
+  home: StarterHomeTemplate,
+  now: string,
+): Promise<void> {
+  await env.DATABASE.prepare(
+    `UPDATE storefront_theme_templates
+     SET document = ?1, draft_generation = draft_generation + 1, updated_at = ?2
+     WHERE id = ?3
+       AND theme_id = ?4
+       AND deleted_at IS NULL
+       AND draft_generation = ?5
+       AND (draft_revision_id = ?6 OR (draft_revision_id IS NULL AND ?6 = ''))`,
+  )
+    .bind(
+      JSON.stringify(createDefaultStorefrontHomeDocument()),
+      now,
+      home.id,
+      themeId,
+      home.draftGeneration,
+      home.draftRevisionId ?? "",
+    )
+    .run();
+}
+
 async function ensureStarterHomeDocument(
   db: StorefrontDb,
   themeId: string,
@@ -53,6 +118,9 @@ async function ensureStarterHomeDocument(
     .select({
       id: storefrontThemeTemplates.id,
       document: storefrontThemeTemplates.document,
+      draftRevisionId: storefrontThemeTemplates.draftRevisionId,
+      publishedRevisionId: storefrontThemeTemplates.publishedRevisionId,
+      draftGeneration: storefrontThemeTemplates.draftGeneration,
     })
     .from(storefrontThemeTemplates)
     .where(
@@ -141,20 +209,28 @@ async function ensureStarterHomeDocument(
     };
   }
 
-  if (homeTemplate && isUpgradeableStarterHomeDocument(homeTemplate.document)) {
-    await db
-      .update(storefrontThemeTemplates)
-      .set({
-        document: createDefaultStorefrontHomeDocument(),
-        updatedAt: now,
-      })
-      .where(eq(storefrontThemeTemplates.id, homeTemplate.id));
+  const ids = { storefrontId: options.storefrontId, themeId };
+  if (isNonNumberStarterVersion(metadata.starterTemplateVersion)) {
+    // Kept as before: the version below is recorded over it. Logged because
+    // nothing known writes one, so it means the row was edited by hand or a
+    // new writer appeared. Ids and a fixed reason only, never the metadata.
+    console.error(
+      "Starter template version is not a number:",
+      JSON.stringify({
+        storefrontId: ids.storefrontId,
+        themeId: ids.themeId,
+        reason: "non-number-starter-template-version",
+      }),
+    );
+  }
+
+  if (homeTemplate && isResettableStarterHome(homeTemplate)) {
+    await resetStarterHomeDocument(themeId, homeTemplate, now);
   }
 
   const readRevision = readStarterUpgradeRecordRevision(
     metadata.starterUpgradeRecordRevision,
   );
-  const ids = { storefrontId: options.storefrontId, themeId };
   if (readRevision === null) {
     return reportIncompleteStarterUpgrade(ids, {
       status: "partial",
