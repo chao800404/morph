@@ -3,6 +3,8 @@ import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
+import { cloudflareAdapter, resendAdapter } from "./lib/email/adapters";
+import type { EmailAdapter, EmailSenderConfig } from "./lib/email/types";
 import {
   Account,
   Contents,
@@ -11,6 +13,13 @@ import {
   Marketing,
   OnlineStore,
 } from "./routes/_backend/dashboard/-collections";
+
+// Compatibility placeholders only. Replace with owner-approved identities before sending.
+const emailDefaults: EmailSenderConfig = {
+  defaultFromAddress: "medusa@mail.cmsapp.org",
+  defaultFromName: "medusa",
+  supportAddress: "support@morph.com",
+};
 
 /**
  * CMS Configuration
@@ -109,28 +118,53 @@ export const cmsConfig = defineConfig({
     },
   },
   trustedOrigins: cmsTrustedOrigins,
-  email: {
-    // Compatibility placeholders only. Replace with owner-approved identities before sending.
-    defaultFromAddress: "medusa@mail.cmsapp.org",
-    defaultFromName: "medusa",
-    supportAddress: "support@morph.com",
-  },
+  email: emailDefaults,
 
   // Server-only. Never reaches the browser.
-  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
-    database: {
-      connectionString: process.env.DATABASE_URL,
-    },
-    email: {
-      apiKey: process.env.RESEND_API_KEY || "",
-      provider: process.env.EMAIL_PROVIDER,
-      defaultFromAddress: process.env.EMAIL_FROM_ADDRESS,
-      defaultFromName: process.env.EMAIL_FROM_NAME,
-      supportAddress: process.env.EMAIL_SUPPORT_ADDRESS,
-      cloudflare: {
+  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => {
+    const sender: EmailSenderConfig = {
+      defaultFromAddress:
+        process.env.EMAIL_FROM_ADDRESS ?? emailDefaults.defaultFromAddress,
+      defaultFromName:
+        process.env.EMAIL_FROM_NAME ?? emailDefaults.defaultFromName,
+      supportAddress:
+        process.env.EMAIL_SUPPORT_ADDRESS ?? emailDefaults.supportAddress,
+    };
+
+    // This is the deployment's choice, not a CMS provider registry. Replace
+    // this selection with any EmailAdapter (including your own implementation).
+    const provider = process.env.EMAIL_PROVIDER ?? "resend";
+    let email: EmailAdapter;
+    if (provider === "resend") {
+      email = resendAdapter({
+        ...sender,
+        apiKey: process.env.RESEND_API_KEY ?? "",
+      });
+    } else if (provider === "cloudflare") {
+      email = cloudflareAdapter({
+        ...sender,
         accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
         apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
-      },
-    },
-  })),
+      });
+    } else {
+      // Invalid deployment settings must not select a different service.
+      // Keep CMS startup available, but make every send fail explicitly.
+      email = {
+        id: "unconfigured",
+        async send() {
+          console.error("Email service failed: INVALID_PROVIDER");
+          return {
+            success: false,
+            error: "Email service failed: INVALID_PROVIDER",
+          };
+        },
+      };
+    }
+
+    return {
+      database: { connectionString: process.env.DATABASE_URL },
+      email,
+      emailSupportAddress: sender.supportAddress,
+    };
+  }),
 });

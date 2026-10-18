@@ -1,6 +1,5 @@
 import { cmsConfig } from "@/cms.config";
 import { createCMSConfig } from "@/lib/config/create-config";
-import { configureEmail } from "@/lib/email/adapters/configure-email";
 import { fulfillmentProviderRegistry } from "@/lib/fulfillment/providers/fulfillment-provider-registry.server";
 import { shippingRateProviderRegistry } from "@/lib/shipping/providers/shipping-rate-provider-registry.server";
 import { taxProviderRegistry } from "@/lib/tax/providers/tax-provider-registry.server";
@@ -10,7 +9,7 @@ import { createIsomorphicFn } from "@tanstack/react-start";
  * Get CMS Configuration (Isomorphic)
  *
  * Splits the authored config into its two runtime views:
- * - Server: adapters built from `cmsConfig.server()` secrets
+ * - Server: adapters supplied directly by `cmsConfig.server()`
  * - Client: declarative subset only
  *
  * `server` is the only key carrying secrets, and its body is compiled out of
@@ -26,7 +25,8 @@ export const getConfig = createIsomorphicFn()
     return createCMSConfig({
       ...base,
       database: secrets.database,
-      ...configureEmail(email, secrets.email),
+      email: secrets.email,
+      emailSupportAddress: secrets.emailSupportAddress ?? email.supportAddress,
     });
   })
   .client(() => {

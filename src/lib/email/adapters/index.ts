@@ -12,6 +12,10 @@ export {
 // Helper functions to create adapters (PayloadCMS style)
 import type { EmailAdapter } from "../types";
 import { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
+import {
+  CloudflareAdapter,
+  type CloudflareAdapterConfig,
+} from "./cloudflare.adapter";
 
 /**
  * 創建 Resend adapter
@@ -26,6 +30,13 @@ import { ResendAdapter, type ResendAdapterConfig } from "./resend.adapter";
  */
 export function resendAdapter(config: ResendAdapterConfig): EmailAdapter {
   return new ResendAdapter(config);
+}
+
+/** Construct inside cmsConfig.server(), never at module scope. */
+export function cloudflareAdapter(
+  config: CloudflareAdapterConfig,
+): EmailAdapter {
+  return new CloudflareAdapter(config);
 }
 
 // 未來的 adapter helper functions
