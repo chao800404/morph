@@ -1,5 +1,6 @@
 import type {
   CollectionGroup,
+  CollectionItem,
   CollectionLoadContext,
 } from "@/lib/config/create-config";
 import { lazyView } from "@/lib/config/lazy-view";
@@ -44,7 +45,7 @@ const GiftCardDetailPendingView = CollectionDetailSkeleton;
 const GiftCardAdjustPendingView = createRouteSurfacePendingView(4);
 const GiftCardEditPendingView = createRouteSurfacePendingView(3);
 
-export const Marketing: CollectionGroup = {
+const marketingBase: CollectionGroup = {
   slug: "/",
   title: "Marketing",
   collections: [
@@ -760,4 +761,35 @@ export const Marketing: CollectionGroup = {
       },
     },
   ],
+};
+
+const promotionChildSlugs = ["campaigns", "store-credits", "gift-cards"];
+
+const toPromotionChild = (
+  collection: CollectionItem,
+): NonNullable<CollectionItem["items"]>[number] => ({
+  title: collection.title,
+  slug: collection.slug,
+  label: collection.label,
+  index: collection.index,
+  create: collection.create,
+  preview: collection.preview,
+  detail: collection.detail,
+  edit: collection.edit,
+  pages: collection.pages,
+});
+
+const promotionChildren = marketingBase.collections
+  .filter((collection) => promotionChildSlugs.includes(collection.slug))
+  .map(toPromotionChild);
+
+export const Marketing: CollectionGroup = {
+  ...marketingBase,
+  collections: marketingBase.collections
+    .filter((collection) => !promotionChildSlugs.includes(collection.slug))
+    .map((collection) =>
+      collection.slug === "promotions"
+        ? { ...collection, items: promotionChildren }
+        : collection,
+    ),
 };
