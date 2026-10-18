@@ -21,10 +21,12 @@ import {
  * 創建 Resend adapter
  * @example
  * ```ts
- * email: createServerOnlyFn(() => resendAdapter({
- *   apiKey: process.env.RESEND_API_KEY || '',
- *   defaultFromAddress: 'noreply@yourdomain.com',
- *   defaultFromName: 'Your Company',
+ * server: createServerOnlyFn(() => ({
+ *   email: resendAdapter({
+ *     apiKey: process.env.RESEND_API_KEY || '',
+ *     defaultFromAddress: 'noreply@yourdomain.com',
+ *     defaultFromName: 'Your Company',
+ *   }),
  * }))
  * ```
  */
@@ -32,7 +34,7 @@ export function resendAdapter(config: ResendAdapterConfig): EmailAdapter {
   return new ResendAdapter(config);
 }
 
-/** Construct inside the server-only cmsConfig.email() callback, never at module scope. */
+/** Construct inside cmsConfig.server(), never at module scope. */
 export function cloudflareAdapter(
   config: CloudflareAdapterConfig,
 ): EmailAdapter {

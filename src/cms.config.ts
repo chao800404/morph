@@ -20,8 +20,8 @@ import {
  * autocomplete and type-checking; `@/server/get-config` turns it into the
  * server and client views of the config.
  *
- * Everything outside `email` and `server` is declarative and ships to the browser.
- * Both callbacks use `createServerOnlyFn`, one of the TanStack Start
+ * Everything outside `server` is declarative and ships to the browser.
+ * That callback uses `createServerOnlyFn`, one of the TanStack Start
  * compiler's `transformFuncs`, so that function's body is removed from the
  * client bundle. Read `process.env` inside it, never as a module-level
  * constant, or the value is captured before the transform can strip it.
@@ -110,9 +110,11 @@ export const cmsConfig = defineConfig({
     },
   },
   trustedOrigins: cmsTrustedOrigins,
-  // Choose the adapter here. Identity and credentials have one configuration.
-  email: createServerOnlyFn(() =>
-    resendAdapter({
+  // Server-only. Never reaches the browser.
+  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
+    database: { connectionString: process.env.DATABASE_URL },
+    // Choose the adapter here. Identity and credentials have one configuration.
+    email: resendAdapter({
       // Compatibility placeholders; replace with owner-approved identities before sending.
       defaultFromAddress:
         process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
@@ -120,10 +122,5 @@ export const cmsConfig = defineConfig({
       supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
       apiKey: process.env.RESEND_API_KEY ?? "",
     }),
-  ),
-
-  // Server-only. Never reaches the browser.
-  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
-    database: { connectionString: process.env.DATABASE_URL },
   })),
 });
