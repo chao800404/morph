@@ -43,6 +43,7 @@ import { canSkipThemeWorkerDeployment } from "@/lib/storefront/service/theme-wor
 import { createServerThemeWorkerDeployer } from "@/lib/storefront/service/theme-worker-deployer.factory";
 import { getRequest } from "@tanstack/react-start/server";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
+import { deploymentThemePreviewRuntime } from "@/lib/storefront/theme-preview-runtime";
 
 /** Inspector tab the browser last used, so SSR renders the same one. */
 function parseEditorPanelTab(cookieHeader: string | null | undefined) {
@@ -129,6 +130,12 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
             ...context,
             panelWidths,
             panelTab,
+            // What a Theme recording no runtime is previewed with, read as
+            // startThemePreviewServer reads it.
+            previewRuntimeDefault: deploymentThemePreviewRuntime(
+              (cloudflareEnv as unknown as Record<string, unknown>)
+                .MORPH_THEME_PREVIEW_RUNTIME,
+            ),
             previewChannel: {
               editorOrigin,
               sessionId: crypto.randomUUID(),
