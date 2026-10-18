@@ -64,12 +64,30 @@ domain list.
 
 ### Transactional email providers
 
-Provider wiring is server-only in `cmsConfig.server()` and `getConfig`. Sender
-defaults live in `cmsConfig.email`; server environment overrides are
+`cmsConfig.server()` constructs and returns optional `email: EmailAdapter`, with optional
+`emailSupportAddress?: string`. Core `getConfig` consumes the returned adapter
+directly; it does not switch on provider names. Root `cmsConfig.email` remains
+`EmailSenderConfig`, containing declarative default identities rather than an
+adapter or credentials. Server environment overrides in the repo default are
 `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` and `EMAIL_SUPPORT_ADDRESS`. An explicitly
 empty display name sends the mailbox without a name. Support configuration changes
 the password-reset support link, not the message's Reply-To header; per-message
 `from` and `replyTo` remain supported.
+
+Import built-in `resendAdapter` / `cloudflareAdapter` helpers from
+`@/lib/email/adapters` and email types from `@/lib/email/types`. Construct the
+adapter and read credentials inside the `createServerOnlyFn` passed as `server`;
+never instantiate a credential-bearing client/adapter or read secrets at module
+scope or in client code. The [direct adapter example](README.md#transactional-email)
+shows the sender defaults, server overrides and return object together. Preserve
+the existing database and any other server configuration when replacing its email
+selection.
+
+`EMAIL_PROVIDER` belongs only to this repository's default `cms.config.ts`
+environment selector (`resend` or `cloudflare`); it is not a core registry or
+extension interface. You can replace that selector with a direct helper call or
+any custom `EmailAdapter` object. Adding a provider requires no provider-name
+registration or change to `getConfig`.
 
 **Owner action required before sending:** the existing defaults are preserved for
 compatibility: `medusa@mail.cmsapp.org`, `medusa`, and `support@morph.com`. The
@@ -78,10 +96,24 @@ addresses and verify the sending domain before enabling either provider. There i
 an explicit `it.todo` for rejecting `cmsapp.org` and its subdomains as the configured
 production sender; this is NOT a passing production-readiness check.
 
+If an authored server callback omits `email`, mail remains unconfigured; core does
+not invent a default provider. The repository's default callback supplies Resend
+unless another service is explicitly selected.
+
 #### Resend (unchanged default)
 
-Leave `EMAIL_PROVIDER` unset, or set it to `resend`, and configure
-`RESEND_API_KEY`. In the Resend account, verify the owner-selected sending domain
+With the repo-default selector, leave `EMAIL_PROVIDER` unset or set it to `resend`.
+For direct wiring, use this construction inside `createServerOnlyFn`, with
+`sender` built as in the README example:
+
+```ts
+const email: EmailAdapter = resendAdapter({
+  ...sender,
+  apiKey: process.env.RESEND_API_KEY ?? "",
+});
+```
+
+Configure `RESEND_API_KEY`. In the Resend account, verify the owner-selected sending domain
 and install the DNS records Resend supplies. Use a sending-only credential scoped
 to the intended domain. Leave the key unset for local/E2E/CI runs.
 
@@ -93,7 +125,21 @@ email credentials are not coupled to the Theme deployment credentials. No Worker
 binding, Wrangler configuration change, type regeneration or extra package is
 required.
 
-As checked against official documentation on 2026-10-18:
+To replace Resend directly, change the helper import to `cloudflareAdapter` from
+`@/lib/email/adapters` and use this construction inside the same
+`createServerOnlyFn`, returning `{ email, emailSupportAddress: sender.supportAddress }`
+alongside the other server fields:
+
+```ts
+const email: EmailAdapter = cloudflareAdapter({
+  ...sender,
+  accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+  apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+});
+```
+
+The following official-documentation review was recorded on 2026-10-18; this
+documentation update does not revalidate the remote service:
 
 - [Email Sending is beta](https://developers.cloudflare.com/email-service/).
   Sending to arbitrary customers requires Workers Paid and Email Sending access.
@@ -122,19 +168,62 @@ Operator steps, each requiring separate approval for remote changes:
    Supply `CLOUDFLARE_EMAIL_ACCOUNT_ID` and store
    `CLOUDFLARE_EMAIL_API_TOKEN` in the Worker's secret store. Do not reuse a broad
    deployment token, put secrets in `wrangler.jsonc`, or expose them as `VITE_*`.
-4. Set `EMAIL_PROVIDER=cloudflare` and the three sender/support settings above.
+4. Use the direct `cloudflareAdapter` wiring above, or set
+   `EMAIL_PROVIDER=cloudflare` with the repo-default selector. Configure the three
+   sender/support settings above.
    A support mailbox also needs its own receiving-mail or forwarding setup;
    outbound domain verification does not create an inbox.
 5. Only after authorization, validate one real delivery and sender authentication.
    This implementation has mock-only evidence: no DNS/account change, secret
    upload, deployment or real email has been performed.
 
+#### Custom email adapters
+
+Return any object satisfying `EmailAdapter` from `cmsConfig.server()`. Its required
+method is `send(params: SendEmailParams): Promise<SendEmailResult>`; `id?: string`
+and `sendBatch?(params: SendEmailParams[]): Promise<SendEmailResult[]>` are optional.
+Use a stable `id` to identify the adapter in commerce notification attempts. When
+`sendBatch` is absent, the existing mail helper calls `send` for each message using
+the same adapter; this is not a fallback to another provider.
+
+For a concrete custom object, replace the README example's adapter construction
+with this wrapper inside `createServerOnlyFn` (import `cloudflareAdapter` from
+`@/lib/email/adapters`). The returned `email` is an ordinary `EmailAdapter` object;
+the transport here reuses the built-in Cloudflare implementation:
+
+```ts
+const transport = cloudflareAdapter({
+  ...sender,
+  accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+  apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+});
+const email: EmailAdapter = {
+  id: "custom-cloudflare",
+  async send(params) {
+    return transport.send(params);
+  },
+};
+```
+
+For another service, replace the transport with your own server-only integration
+and map its response to `{ success: true, messageId? }` or
+`{ success: false, error }`. Handle `to` as a mailbox or array, the default sender,
+per-message `from` / `replyTo`, `subject`, `html`, optional `text` and attachments;
+reject unsupported inputs explicitly. Keep credentials and provider clients inside
+the server boundary and return safe errors without message bodies, OTPs, addresses
+or tokens. Do not report success for an unconfigured transport or silently retry
+an unknown delivery outcome. Return this object as `email` and keep
+`emailSupportAddress` separate; root `cmsConfig.email` remains sender defaults.
+No central provider union, registry or `getConfig` switch is needed.
+
 #### Failure and delivery semantics
 
-Selection never depends on which credential happens to exist. A misspelled
-provider, missing Cloudflare settings or provider rejection returns a visible
-failed result; it never switches to Resend. No configured provider retains the
-existing Resend not-configured warning and `success:false` behavior.
+The repo-default selector never depends on which credential happens to exist. A
+misspelled `EMAIL_PROVIDER`, missing Cloudflare settings or provider rejection
+returns a visible failed result; it never switches to Resend. Direct wiring uses
+the returned adapter regardless of `EMAIL_PROVIDER`. With the default Resend
+selection and no key, the existing not-configured warning and `success:false`
+behavior remain. Custom adapters must provide their own explicit failure handling.
 
 The REST adapter treats HTTP errors, invalid responses, permanent bounces,
 suppressed recipients and incomplete recipient acceptance as failures. Delivered

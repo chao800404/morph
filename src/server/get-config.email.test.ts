@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EmailProviderConfig } from "@/lib/email/types";
+import type { CMSUserConfig } from "@/lib/config/create-config";
+import type { EmailAdapter } from "@/lib/email/types";
+import { cloudflareAdapter, resendAdapter } from "@/lib/email/adapters";
 import { getConfig } from "./get-config";
 
 const state = vi.hoisted(() => ({
   client: false,
-  server: vi.fn<() => { email: EmailProviderConfig }>(),
+  server: vi.fn<CMSUserConfig["server"]>(),
   send: vi.fn(),
 }));
 vi.mock("@tanstack/react-start", () => ({
@@ -68,12 +70,12 @@ describe("server-only email composition", () => {
 
   it("wires configured sender and support values into the actual server config", async () => {
     state.server.mockReturnValue({
-      email: {
+      email: resendAdapter({
         apiKey: "fake-resend-key",
         defaultFromAddress: "override@example.com",
         defaultFromName: "Override",
-        supportAddress: "help@example.com",
-      },
+      }),
+      emailSupportAddress: "help@example.com",
     });
     const config = getConfig();
     expect(config.server.emailSupportAddress).toBe("help@example.com");
@@ -90,10 +92,11 @@ describe("server-only email composition", () => {
 
   it("wires an explicit Cloudflare provider without a Worker binding", async () => {
     state.server.mockReturnValue({
-      email: {
-        provider: "cloudflare",
-        cloudflare: { accountId: "a".repeat(32), apiToken: "fake-token" },
-      },
+      email: cloudflareAdapter({
+        defaultFromAddress: "mail@example.com",
+        accountId: "a".repeat(32),
+        apiToken: "fake-token",
+      }),
     });
     const fakeFetch = vi.fn().mockResolvedValue(
       Response.json({
@@ -132,5 +135,61 @@ describe("server-only email composition", () => {
     expect(config.server.emailSupportAddress).toBeUndefined();
     expect(config.client).not.toHaveProperty("email");
     expect(config.client).not.toHaveProperty("cloudflare");
+  });
+  it("passes an arbitrary adapter through unchanged without a provider registry", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue({ success: true, messageId: "custom-1" });
+    const sendBatch = vi.fn().mockResolvedValue([{ success: true }]);
+    const custom: EmailAdapter = {
+      id: "owner-custom-provider",
+      async send(params) {
+        expect(this).toBe(custom);
+        return send(params);
+      },
+      async sendBatch(params) {
+        expect(this).toBe(custom);
+        return sendBatch(params);
+      },
+    };
+    const server: CMSUserConfig["server"] = () => ({ email: custom });
+    state.server.mockImplementation(server);
+    const config = getConfig();
+    expect(config.server.email).toBe(custom);
+    expect(config.server.emailSupportAddress).toBe("support@example.com");
+    const message = { to: "buyer@example.com", subject: "Hi", html: "Hi" };
+    await expect(config.server.email?.send(message)).resolves.toEqual({
+      success: true,
+      messageId: "custom-1",
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith(message);
+    await config.server.email?.sendBatch?.([message]);
+    expect(sendBatch).toHaveBeenCalledExactlyOnceWith([message]);
+    expect(state.send).not.toHaveBeenCalled();
+  });
+
+  it("preserves a custom adapter's failure without replacing or retrying it", async () => {
+    const custom: EmailAdapter = {
+      id: "custom-failure",
+      send: vi
+        .fn()
+        .mockResolvedValue({ success: false, error: "CUSTOM_FAILURE" }),
+    };
+    state.server.mockReturnValue({ email: custom });
+    await expect(
+      getConfig().server.email?.send({
+        to: "buyer@example.com",
+        subject: "Hi",
+        html: "Hi",
+      }),
+    ).resolves.toEqual({ success: false, error: "CUSTOM_FAILURE" });
+    expect(custom.send).toHaveBeenCalledTimes(1);
+    expect(state.send).not.toHaveBeenCalled();
+  });
+
+  it("does not invent a provider when the server config omits email", () => {
+    state.server.mockReturnValue({});
+    expect(getConfig().server.email).toBeUndefined();
+    expect(state.send).not.toHaveBeenCalled();
   });
 });

@@ -37,13 +37,3 @@ export interface EmailSenderConfig {
   defaultFromName?: string;
   supportAddress?: string;
 }
-
-/** Read only inside cmsConfig.server(); never serialize provider credentials. */
-export interface EmailProviderConfig extends Partial<EmailSenderConfig> {
-  provider?: string;
-  apiKey?: string;
-  cloudflare?: {
-    accountId: string;
-    apiToken: string;
-  };
-}
