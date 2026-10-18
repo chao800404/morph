@@ -1,6 +1,6 @@
 import { cmsConfig } from "@/cms.config";
 import { createCMSConfig } from "@/lib/config/create-config";
-import { resendAdapter } from "@/lib/email/adapters";
+import { configureEmail } from "@/lib/email/adapters/configure-email";
 import { fulfillmentProviderRegistry } from "@/lib/fulfillment/providers/fulfillment-provider-registry.server";
 import { shippingRateProviderRegistry } from "@/lib/shipping/providers/shipping-rate-provider-registry.server";
 import { taxProviderRegistry } from "@/lib/tax/providers/tax-provider-registry.server";
@@ -26,10 +26,7 @@ export const getConfig = createIsomorphicFn()
     return createCMSConfig({
       ...base,
       database: secrets.database,
-      email: resendAdapter({
-        ...email,
-        apiKey: secrets.email?.apiKey ?? "",
-      }),
+      ...configureEmail(email, secrets.email),
     });
   })
   .client(() => {
@@ -38,5 +35,6 @@ export const getConfig = createIsomorphicFn()
       ...base,
       database: undefined,
       email: undefined,
+      emailSupportAddress: undefined,
     });
   });

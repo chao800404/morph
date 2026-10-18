@@ -68,18 +68,40 @@ cp .env.example .env.development
 
 ### Environment variables
 
-| Variable                 | Purpose                                                        |
-| ------------------------ | -------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`     | Signs Better Auth tokens and cookies; required                 |
-| `PUBLIC_URL`             | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production |
-| `MORPH_PLATFORM_HOSTNAMES` | Optional comma-separated CMS/staging hostnames kept on the platform router |
-| `MORPH_CMS_HOSTNAME`     | Optional single CMS hostname shortcut (hostname or full origin) |
-| `RESEND_API_KEY`         | Sends password-reset and verification email                    |
-| `CLOUDFLARE_ACCOUNT_ID`  | Required by Drizzle Kit for remote D1 access                   |
-| `CLOUDFLARE_DATABASE_ID` | Selects the remote D1 database                                 |
-| `CLOUDFLARE_D1_TOKEN`    | Authorizes remote D1 migrations and Studio                     |
+| Variable                      | Purpose                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`          | Signs Better Auth tokens and cookies; required                                                 |
+| `PUBLIC_URL`                  | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production |
+| `MORPH_PLATFORM_HOSTNAMES`    | Optional comma-separated CMS/staging hostnames kept on the platform router                     |
+| `MORPH_CMS_HOSTNAME`          | Optional single CMS hostname shortcut (hostname or full origin)                                |
+| `EMAIL_PROVIDER`              | Optional: `resend` (default) or explicit `cloudflare`; no automatic fallback                   |
+| `RESEND_API_KEY`              | Resend credential for transactional email                                                      |
+| `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Account for the Cloudflare Email Sending REST API                                              |
+| `CLOUDFLARE_EMAIL_API_TOKEN`  | Server-only token with Email Sending permission; not the deployment token                      |
+| `EMAIL_FROM_ADDRESS`          | Sender mailbox on your verified domain                                                         |
+| `EMAIL_FROM_NAME`             | Sender display name; an empty value omits the name                                             |
+| `EMAIL_SUPPORT_ADDRESS`       | Support mailbox shown in password-reset emails                                                 |
+| `CLOUDFLARE_ACCOUNT_ID`       | Required by Drizzle Kit for remote D1 access                                                   |
+| `CLOUDFLARE_DATABASE_ID`      | Selects the remote D1 database                                                                 |
+| `CLOUDFLARE_D1_TOKEN`         | Authorizes remote D1 migrations and Studio                                                     |
 
 Do not commit real credentials. Production secrets must be stored with Wrangler or in the deployment platform's secret store.
+
+### Transactional email
+
+All existing auth, invite and commerce mail uses the same adapter interface.
+Resend remains the default, even if Cloudflare credentials exist. Set
+`EMAIL_PROVIDER=cloudflare` explicitly to use Cloudflare Email Sending via REST;
+no `send_email` binding or new dependency is needed. A missing/invalid selected
+provider fails delivery visibly, without falling back or automatically retrying.
+Without credentials, local development/E2E/CI keep the existing not-configured
+behavior. Tests use fake providers only.
+
+**Before real sending:** choose your own sender and support mailboxes. Compatibility
+defaults still include the expired `medusa@mail.cmsapp.org` sender, display name
+`medusa`, and `support@morph.com`; these are placeholders, not approved identities.
+The production sender-domain guard remains an explicit test TODO until the owner
+selects a replacement. See [email setup and limitations](DEPLOY.md#transactional-email-providers).
 
 ## Architecture
 

@@ -102,6 +102,42 @@ describe("authentication email delivery", () => {
       }),
     ).rejects.toThrow("Password reset email could not be sent.");
   });
+
+  it("uses the configured support mailbox in the password-reset template", async () => {
+    send.mockResolvedValue({ success: true });
+    vi.mocked(getConfig).mockReturnValue({
+      server: {
+        appName: "Morph",
+        email: { send },
+        emailSupportAddress: "help@example.com",
+      },
+    } as never);
+    await sendPasswordResetEmail({
+      email: "member@example.com",
+      otp: "123456",
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("mailto:help@example.com"),
+      }),
+    );
+    expect(send.mock.calls[0][0].html).not.toContain(
+      "mailto:support@morph.com",
+    );
+  });
+
+  it("keeps the legacy support line when no support mailbox is configured", async () => {
+    send.mockResolvedValue({ success: true });
+    await sendPasswordResetEmail({
+      email: "member@example.com",
+      otp: "123456",
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: expect.stringContaining("mailto:support@morph.com"),
+      }),
+    );
+  });
 });
 
 describe("order exchange email delivery", () => {

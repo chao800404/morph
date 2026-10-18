@@ -25,6 +25,8 @@ const clientDir = join(projectRoot, "dist", "client");
  */
 const FORBIDDEN_NAMES = [
   "RESEND_API_KEY",
+  "CLOUDFLARE_EMAIL_API_TOKEN",
+  "CLOUDFLARE_EMAIL_ACCOUNT_ID",
   "DATABASE_URL",
   "BETTER_AUTH_SECRET",
   "CLOUDFLARE_D1_TOKEN",
@@ -83,7 +85,9 @@ for (const file of files) {
 }
 
 if (findings.length > 0) {
-  console.error("\n[check-client-bundle] Server-only values found in the client bundle:\n");
+  console.error(
+    "\n[check-client-bundle] Server-only values found in the client bundle:\n",
+  );
   for (const { file, hit } of findings) {
     console.error(`  ${file}\n    → ${hit}`);
   }

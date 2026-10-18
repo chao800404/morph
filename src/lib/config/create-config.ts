@@ -10,7 +10,11 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import type { ComponentType } from "react";
-import type { EmailAdapter } from "../email/types";
+import type {
+  EmailAdapter,
+  EmailProviderConfig,
+  EmailSenderConfig,
+} from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
 import type { FulfillmentProvider } from "../fulfillment/providers/fulfillment-provider";
 import type { ShippingRateProvider } from "../shipping/providers/shipping-rate-provider";
@@ -322,6 +326,7 @@ export interface CMSConfigInput {
     };
   };
   email?: EmailAdapter;
+  emailSupportAddress?: string;
   cloudflare?: CloudflareDeployment;
   theme?: ThemeConfig;
   trustedOrigins: string[];
@@ -348,18 +353,13 @@ export interface CMSUserConfig {
   cloudflare?: CloudflareDeployment;
   theme?: ThemeConfig;
   trustedOrigins: string[];
-  email: {
-    defaultFromAddress: string;
-    defaultFromName?: string;
-  };
+  email: EmailSenderConfig;
   /** Server-only values. Wrap with `createServerOnlyFn`. */
   server: () => {
     database?: {
       connectionString: string | undefined;
     };
-    email?: {
-      apiKey: string;
-    };
+    email?: EmailProviderConfig;
     /** Server-bundled provider implementations. Never expose provider secrets to the client. */
     fulfillmentProviders?: FulfillmentProvider[];
     shippingRateProviders?: ShippingRateProvider[];
