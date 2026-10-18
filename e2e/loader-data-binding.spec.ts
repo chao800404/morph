@@ -18,6 +18,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
 
 /**
  * Case B of the content binding contract, in the full Start preview: content
@@ -116,11 +117,13 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
     "--persist-to",
     process.env.MORPH_E2E_STATE_DIR!,
     "--command",
+    // Records the run's preview runtime, if it names one (unset in CI:
+    // none, so the deployment's runtime applies as before).
     `INSERT INTO storefront_themes
-    (id, storefront_id, name, metadata, created_at, updated_at)
+    (id, storefront_id, name, metadata, preview_runtime, created_at, updated_at)
     VALUES ('${created.themeId}', '${created.storefrontId}',
       'loader-data-binding-${created.themeId}', '{"starterTemplateVersion":1}',
-      '${now}', '${now}');`,
+      ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   ]);
   return created;
 }

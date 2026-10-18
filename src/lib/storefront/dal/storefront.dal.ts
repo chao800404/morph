@@ -21,6 +21,7 @@ import {
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 import { createStarterThemeWorkspaceUpgradePlan } from "../starter-theme-files";
 import { themeSourceStore } from "../storage/theme-storage.server";
+import { defaultPreviewRuntimeForNewTheme } from "../theme-preview-runtime";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -756,6 +757,13 @@ export const storefrontDal = {
         storefrontId,
         name: "Default",
         status: "published",
+        // Created from the current Starter, so it records what that Starter
+        // needs (R-0, R1). Only here, where the Theme is created: the
+        // upgrades below never write it, so an existing Theme keeps
+        // whatever it records, or nothing.
+        previewRuntime: defaultPreviewRuntimeForNewTheme(
+          STOREFRONT_STARTER_TEMPLATE_VERSION,
+        ),
         metadata: {},
         createdAt: now,
         updatedAt: now,

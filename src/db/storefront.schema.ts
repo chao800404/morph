@@ -168,6 +168,16 @@ export const storefrontThemes = sqliteTable(
      * step 6 chooses it when a site is created).
      */
     framework: text("framework"),
+    /**
+     * The Live Preview runtime the Theme records: `client` (browser-only
+     * preview) or `start` (the full TanStack Start server). NULL is a Theme
+     * that records none and is previewed as the deployment's
+     * `MORPH_THEME_PREVIEW_RUNTIME` says, which is every Theme from before
+     * this column (src/lib/storefront/theme-preview-runtime.ts). Set when a
+     * Theme is created from a Starter that needs it, or by the author; a
+     * Starter upgrade never writes it. Only TanStack Start records `start`.
+     */
+    previewRuntime: text("preview_runtime").$type<"client" | "start">(),
     metadata: metadata(),
     ...timestamps,
   },

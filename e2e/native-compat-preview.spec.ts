@@ -12,6 +12,10 @@ import {
   themeScopeFromEditorPath,
   writeThemeFiles,
 } from "./native-compat";
+import {
+  RECORDED_PREVIEW_RUNTIME,
+  recordThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 
 /**
  * Ordinary TanStack Start code in the Live Preview.
@@ -141,6 +145,9 @@ test.describe("TanStack Start in the Live Preview", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await signedInPage(browser);
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    // Only when the run names a runtime for its Themes to record (never in
+    // CI); every test below opens a page of its own, so starts with it.
+    if (RECORDED_PREVIEW_RUNTIME) recordThemePreviewRuntime(scope!);
     const saved = await writeThemeFiles(page, scope!, ALL_FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     await page.context().close();
