@@ -68,106 +68,95 @@ cp .env.example .env.development
 
 ### Environment variables
 
-| Variable                      | Purpose                                                                                         |
-| ----------------------------- | ----------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`          | Signs Better Auth tokens and cookies; required                                                  |
-| `PUBLIC_URL`                  | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production  |
-| `MORPH_PLATFORM_HOSTNAMES`    | Optional comma-separated CMS/staging hostnames kept on the platform router                      |
-| `MORPH_CMS_HOSTNAME`          | Optional single CMS hostname shortcut (hostname or full origin)                                 |
-| `EMAIL_PROVIDER`              | Repo-default `cms.config.ts` selector: `resend` (default) or `cloudflare`; not an extension API |
-| `RESEND_API_KEY`              | Resend credential for transactional email                                                       |
-| `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Account for the Cloudflare Email Sending REST API                                               |
-| `CLOUDFLARE_EMAIL_API_TOKEN`  | Server-only token with Email Sending permission; not the deployment token                       |
-| `EMAIL_FROM_ADDRESS`          | Sender mailbox on your verified domain                                                          |
-| `EMAIL_FROM_NAME`             | Sender display name; an empty value omits the name                                              |
-| `EMAIL_SUPPORT_ADDRESS`       | Support mailbox shown in password-reset emails                                                  |
-| `CLOUDFLARE_ACCOUNT_ID`       | Required by Drizzle Kit for remote D1 access                                                    |
-| `CLOUDFLARE_DATABASE_ID`      | Selects the remote D1 database                                                                  |
-| `CLOUDFLARE_D1_TOKEN`         | Authorizes remote D1 migrations and Studio                                                      |
+| Variable                      | Purpose                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`          | Signs Better Auth tokens and cookies; required                                                 |
+| `PUBLIC_URL`                  | Canonical CMS URL; use `http://localhost:3000` locally and the CMS custom domain in production |
+| `MORPH_PLATFORM_HOSTNAMES`    | Optional comma-separated CMS/staging hostnames kept on the platform router                     |
+| `MORPH_CMS_HOSTNAME`          | Optional single CMS hostname shortcut (hostname or full origin)                                |
+| `RESEND_API_KEY`              | Resend credential for transactional email                                                      |
+| `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Account for the Cloudflare Email Sending REST API                                              |
+| `CLOUDFLARE_EMAIL_API_TOKEN`  | Server-only token with Email Sending permission; not the deployment token                      |
+| `EMAIL_FROM_ADDRESS`          | Sender mailbox on your verified domain                                                         |
+| `EMAIL_FROM_NAME`             | Sender display name; an empty value omits the name                                             |
+| `EMAIL_SUPPORT_ADDRESS`       | Support mailbox shown in password-reset emails                                                 |
+| `CLOUDFLARE_ACCOUNT_ID`       | Required by Drizzle Kit for remote D1 access                                                   |
+| `CLOUDFLARE_DATABASE_ID`      | Selects the remote D1 database                                                                 |
+| `CLOUDFLARE_D1_TOKEN`         | Authorizes remote D1 migrations and Studio                                                     |
 
 Do not commit real credentials. Production secrets must be stored with Wrangler or in the deployment platform's secret store.
 
 ### Transactional email
 
 All existing auth, invite and commerce mail uses `EmailAdapter`.
-`cmsConfig.server()` constructs and returns the adapter; core `getConfig` consumes
-that instance directly, with no switch on provider names. Root `cmsConfig.email`
-remains an `EmailSenderConfig` containing default sender/support identities.
-The server return supplies an optional `email: EmailAdapter` and optional
-`emailSupportAddress?: string` for the password-reset support link.
-Omitting the adapter leaves email unconfigured; it does not make core choose a
-provider. The repository's default server callback always supplies its selected adapter.
+The single email configuration is the root `cmsConfig.email` factory:
+`CMSUserConfig.email?: () => EmailAdapter`. It constructs the adapter with its
+sender identity, support mailbox and credentials. `getConfig.server` consumes that
+instance directly and reads its optional `readonly supportAddress?: string` for
+existing mail templates. Built-in helpers retain this option as adapter metadata.
+The separate `server` callback contains database and other server configuration;
+it has no email fields. The client view executes neither callback.
 
-To choose an adapter directly, replace the email selection in `src/cms.config.ts`
-with the following pattern, retaining the other configuration fields:
+The default is Resend. Keep the existing CMS fields in `src/cms.config.ts` and
+configure its complete root email block as follows:
 
 ```ts
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { defineConfig } from "@/lib/config/create-config";
 import { resendAdapter } from "@/lib/email/adapters";
-import type { EmailAdapter, EmailSenderConfig } from "@/lib/email/types";
-
-// Example identities only; replace with owner-approved mailboxes before sending.
-const emailDefaults: EmailSenderConfig = {
-  defaultFromAddress: "noreply@example.com",
-  defaultFromName: "Your Store",
-  supportAddress: "support@example.com",
-};
 
 export const cmsConfig = defineConfig({
   // Keep the existing appName, collections and other CMS configuration here.
-  email: emailDefaults,
-  server: createServerOnlyFn(() => {
-    const sender: EmailSenderConfig = {
+  email: createServerOnlyFn(() =>
+    resendAdapter({
+      // Compatibility placeholders; replace with owner-approved identities before sending.
       defaultFromAddress:
-        process.env.EMAIL_FROM_ADDRESS ?? emailDefaults.defaultFromAddress,
-      defaultFromName:
-        process.env.EMAIL_FROM_NAME ?? emailDefaults.defaultFromName,
-      supportAddress:
-        process.env.EMAIL_SUPPORT_ADDRESS ?? emailDefaults.supportAddress,
-    };
-    const email: EmailAdapter = resendAdapter({
-      ...sender,
+        process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+      defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+      supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
       apiKey: process.env.RESEND_API_KEY ?? "",
-    });
-
-    return {
-      database: { connectionString: process.env.DATABASE_URL },
-      email,
-      emailSupportAddress: sender.supportAddress,
-    };
-  }),
+    }),
+  ),
+  server: createServerOnlyFn(() => ({
+    database: { connectionString: process.env.DATABASE_URL },
+  })),
 });
 ```
 
 To use Cloudflare instead, import `cloudflareAdapter` from
 `@/lib/email/adapters` and replace only the adapter construction inside that same
-`createServerOnlyFn` body:
+root email factory, keeping the same identity fields:
 
 ```ts
-const email: EmailAdapter = cloudflareAdapter({
-  ...sender,
-  accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
-  apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
-});
+email: createServerOnlyFn(() =>
+  cloudflareAdapter({
+    defaultFromAddress:
+      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+  }),
+),
 ```
 
 Keep credential reads, provider clients and adapter construction inside
 `createServerOnlyFn`; never capture credentials at module scope or expose them to
 the client. Import built-in helpers from `@/lib/email/adapters`, rather than the
 email sending entrypoint. Any custom object implementing `EmailAdapter` can be
-returned in the same position, without registering a provider name or editing
-`getConfig`; see [custom adapters](DEPLOY.md#custom-email-adapters).
+returned from the root factory and can include `supportAddress`, without
+registering a provider name or editing `getConfig`; see
+[custom adapters](DEPLOY.md#custom-email-adapters).
 
-The repo-default `cms.config.ts` retains `EMAIL_PROVIDER` only as an environment
-selection convenience: Resend is the default even if Cloudflare credentials
-exist; `EMAIL_PROVIDER=cloudflare` explicitly selects Cloudflare Email Sending via
-REST. Direct adapter wiring above replaces that selector, so it does not need
-`EMAIL_PROVIDER`. No `send_email` binding or new dependency is needed for the
-built-in Cloudflare adapter. An invalid explicit selection, or missing/invalid
-credentials for the selected service, fails delivery visibly without provider fallback. The Cloudflare adapter does not
-automatically retry. Without credentials, local development/E2E/CI keep the
-existing not-configured behavior. Tests use fake providers only.
+The old `EMAIL_PROVIDER` convenience option has been replaced by root adapter
+configuration and is no longer used; setting it cannot switch providers.
+Cloudflare credentials alone do not change the default Resend adapter. No
+`send_email` binding or new dependency is needed for the built-in Cloudflare
+adapter. Omitting the root factory leaves email unconfigured; core does not choose
+a provider. Missing/invalid credentials for the configured service fail delivery
+visibly without provider fallback. The Cloudflare adapter does not automatically
+retry. Without credentials, local development/E2E/CI keep the existing
+not-configured behavior. Tests use fake providers only.
 
 **Before real sending:** choose your own sender and support mailboxes. Compatibility
 defaults still include the expired `medusa@mail.cmsapp.org` sender, display name

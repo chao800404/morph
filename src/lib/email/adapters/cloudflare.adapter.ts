@@ -45,8 +45,11 @@ function mailbox(value: string): { address: string; name?: string } {
 /** Email Sending REST API. No routing-only binding, fallback, or automatic retry. */
 export class CloudflareAdapter implements EmailAdapter {
   readonly id = "cloudflare";
+  readonly supportAddress?: string;
 
-  constructor(private readonly config: CloudflareAdapterConfig) {}
+  constructor(private readonly config: CloudflareAdapterConfig) {
+    this.supportAddress = config.supportAddress;
+  }
 
   private fail(code: string): SendEmailResult {
     // Neither upstream error text nor message/recipient/credential data is logged.

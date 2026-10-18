@@ -10,7 +10,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import type { ComponentType } from "react";
-import type { EmailAdapter, EmailSenderConfig } from "../email/types";
+import type { EmailAdapter } from "../email/types";
 import type { DashboardSearch } from "../validations/dashboard-search";
 import type { FulfillmentProvider } from "../fulfillment/providers/fulfillment-provider";
 import type { ShippingRateProvider } from "../shipping/providers/shipping-rate-provider";
@@ -331,9 +331,9 @@ export interface CMSConfigInput {
 /**
  * The shape a user authors in `src/cms.config.ts`.
  *
- * Everything here is declarative and safe in both builds. Secrets go in
- * `server`, which is wrapped in `createServerOnlyFn` so the compiler removes
- * its body from the client bundle.
+ * Everything except `email` and `server` is declarative and safe in both builds.
+ * Wrap both callbacks in `createServerOnlyFn` so the compiler removes their
+ * bodies (adapter construction and credentials) from the client bundle.
  */
 export interface CMSUserConfig {
   appName: string;
@@ -349,15 +349,16 @@ export interface CMSUserConfig {
   cloudflare?: CloudflareDeployment;
   theme?: ThemeConfig;
   trustedOrigins: string[];
-  email: EmailSenderConfig;
+  /** Single email configuration: construct the adapter inside createServerOnlyFn. */
+  email?: () => EmailAdapter;
   /** Server-only values. Wrap with `createServerOnlyFn`. */
   server: () => {
     database?: {
       connectionString: string | undefined;
     };
-    /** Construct any EmailAdapter here; the CMS does not choose a provider. */
-    email?: EmailAdapter;
-    emailSupportAddress?: string;
+    /** Email belongs only to the root server-only factory, not this callback. */
+    email?: never;
+    emailSupportAddress?: never;
     /** Server-bundled provider implementations. Never expose provider secrets to the client. */
     fulfillmentProviders?: FulfillmentProvider[];
     shippingRateProviders?: ShippingRateProvider[];
