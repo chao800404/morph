@@ -309,6 +309,7 @@ import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-cata
 import {
   parsePreviewSectionProps,
   parsePreviewServedInstance,
+  type PreviewCapability,
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
@@ -510,6 +511,13 @@ export const CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
   "Canvas editing isn't available for this Theme's framework yet. Use the panel on the right or Code mode.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
+/**
+ * Shown near the preview while its frame did not say, on its ready, that it
+ * reads the section a field edit names (an older preview build): typing in
+ * the Inspector still saves, the canvas just does not follow each keystroke.
+ */
+export const LIVE_TYPING_UNAVAILABLE_MESSAGE =
+  "Live preview typing unavailable — reload the preview to restore";
 /**
  * Said, without interrupting, when the preview's dev server was replaced
  * while text is being typed on the canvas: the canvas is kept until the text
@@ -2657,6 +2665,35 @@ export function VisualEditorShell({
   /** Counts every ready message, of any frame: a frame's ready round. */
   const previewReadyRoundRef = useRef(0);
   /**
+   * What the frame said about itself on its latest ready, for that frame and
+   * round only: what it can do (`PREVIEW_CAPABILITIES`), and `documentId`,
+   * reserved for the frame's document identity (C5) and not read yet. No
+   * record for the frame and round on screen, or a capability it did not
+   * name, is unsupported: absent never matches.
+   */
+  const previewFrameRecordRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    capabilities: ReadonlySet<PreviewCapability>;
+    documentId: null;
+  } | null>(null);
+  /** Whether the frame on screen said, in this round, that it can `capability`. */
+  const frameCan = useCallback((capability: PreviewCapability) => {
+    const record = previewFrameRecordRef.current;
+    return (
+      record !== null &&
+      record.previewKey === previewKeyRef.current &&
+      record.readyRound === previewReadyRoundRef.current &&
+      record.capabilities.has(capability)
+    );
+  }, []);
+  /**
+   * #270's `frameShowsEditorPage`, for the frame on screen; assigned in the
+   * effect that defines it, unchanged. Until then, and for a frame that
+   * effect is not listening to, nothing is shown.
+   */
+  const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
+  /**
    * The page the frame last named, in a structure report or a route answer,
    * and the frame and ready round that named it; null for a frame that
    * answered that it has no router. A selection or an edit from the frame
@@ -4147,23 +4184,60 @@ export function VisualEditorShell({
     document.addEventListener("focusout", settle);
     return () => document.removeEventListener("focusout", settle);
   }, [fieldDraft]);
+  /**
+   * The frame on screen, and round, for which the author was told live
+   * typing is unavailable there; null while it is not.
+   */
+  const [liveTypingUnavailable, setLiveTypingUnavailable] = useState<
+    string | null
+  >(null);
+  const loggedLiveTypingUnavailableRef = useRef<string | null>(null);
+  // A new frame says for itself on its ready; until then nothing is claimed.
+  useEffect(() => {
+    setLiveTypingUnavailable(null);
+  }, [previewKey]);
   const previewSelectionField = useCallback(
-    (fieldKey: string, fieldPath: string | null, value: string) => {
+    (
+      sectionId: string,
+      fieldKey: string,
+      fieldPath: string | null,
+      value: string,
+    ) => {
       setFieldDraft(true);
       leaveGuard.noteInput();
-      // A hidden section's text stays out of the page: the field still
-      // saves as it would, only the canvas is not told.
-      const sectionId = activeSelection?.sectionId;
-      if (sectionId && previewSectionIsHidden(sectionId)) return;
+      // The canvas is told as the author types only when every one of these
+      // holds; otherwise the field still saves as it would, and the canvas
+      // shows the value once it is saved.
+      // 1. The Inspector types into the section selected — never another
+      //    one, and never in its place.
+      if (sectionId !== activeSelection?.sectionId) return;
+      // 2. A hidden section's text stays out of the page.
+      if (previewSectionIsHidden(sectionId)) return;
+      // 3. The frame shows the editor's page (#270).
+      if (!frameShowsEditorPageRef.current()) return;
+      // 4. The frame said, in this round, that it reads the section a post
+      //    names. One that did not would apply it to its own selection.
+      if (!frameCan("selection-field-section")) {
+        const frame = `${previewKeyRef.current ?? ""}#${previewReadyRoundRef.current}`;
+        setLiveTypingUnavailable(frame);
+        if (loggedLiveTypingUnavailableRef.current !== frame) {
+          loggedLiveTypingUnavailableRef.current = frame;
+          console.info(
+            `[preview] live typing unavailable: the preview (${frame}) did not say it reads the section a field edit names; reload the preview to restore it.`,
+          );
+        }
+        return;
+      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-field",
+        sectionId,
         fieldKey,
         fieldPath,
         value,
       });
       schedulePreviewRemeasureRef.current();
     },
-    [activeSelection?.sectionId, leaveGuard, previewSectionIsHidden],
+    [activeSelection?.sectionId, frameCan, leaveGuard, previewSectionIsHidden],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
@@ -7927,6 +8001,15 @@ export function VisualEditorShell({
       if (message.type === "morph:storefront-preview-ready") {
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
         previewReadyRoundRef.current += 1;
+        // This round's record replaces the last one: a capability counts only
+        // for the ready that named it.
+        previewFrameRecordRef.current = {
+          previewKey,
+          readyRound: previewReadyRoundRef.current,
+          capabilities: new Set(message.capabilities ?? []),
+          documentId: null,
+        };
+        setLiveTypingUnavailable(null);
         instanceContentReplayRef.current?.frameReady(
           previewKey,
           previewReadyRoundRef.current,
@@ -8200,8 +8283,15 @@ export function VisualEditorShell({
       }
     };
 
+    // The same predicate, for the Inspector's live typing.
+    frameShowsEditorPageRef.current = frameShowsEditorPage;
     window.addEventListener("message", handlePreviewSelection);
-    return () => window.removeEventListener("message", handlePreviewSelection);
+    return () => {
+      window.removeEventListener("message", handlePreviewSelection);
+      if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
+        frameShowsEditorPageRef.current = () => false;
+      }
+    };
   }, [
     activeTemplate,
     activeRouteSections,
@@ -12625,6 +12715,17 @@ export function VisualEditorShell({
                 ) : null}
               </>
             )}
+
+            {liveTypingUnavailable !== null ? (
+              // Quiet and in place, not a toast per keystroke: the field
+              // still saves, and the canvas shows the value once it has.
+              <div
+                role="status"
+                className="pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {LIVE_TYPING_UNAVAILABLE_MESSAGE}
+              </div>
+            ) : null}
 
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (

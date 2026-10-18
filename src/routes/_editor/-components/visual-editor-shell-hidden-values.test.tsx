@@ -16,6 +16,7 @@ import { createInlineTextEditor } from "@/lib/storefront/editor/inline-text-edit
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  sendFrameReady,
 } from "@/lib/test-utils/preview-frame-handshake";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
@@ -336,7 +337,7 @@ function bringFrameUp() {
   const frame = document.querySelector("iframe")?.contentWindow;
   if (!frame || framesUp.has(frame)) return;
   framesUp.add(frame);
-  dispatchFromFrame({ type: "morph:storefront-preview-ready" });
+  sendFrameReady(FRAME);
   liveFrame.up();
   answerLatestRouteRequest(FRAME);
 }

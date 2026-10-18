@@ -525,6 +525,7 @@ describe("unified action fields", () => {
     expect(label.closest('[data-slot="inspector-content-field"]')).toBeTruthy();
     fireEvent.input(label, { target: { value: "Explore" } });
     expect(onPreviewSelectionField).toHaveBeenLastCalledWith(
+      "section-1",
       "actionLabel",
       null,
       "Explore",
