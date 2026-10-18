@@ -3,8 +3,7 @@ import { defineConfig, type CMSUserConfig } from "./lib/config/create-config";
 import { localization } from "./lib/config/localization";
 import { cmsTrustedOrigins } from "./lib/config/trusted-origins";
 import { MAX_ASSETS_PER_RECORD } from "./lib/config/upload-limits";
-import { cloudflareAdapter, resendAdapter } from "./lib/email/adapters";
-import type { EmailAdapter, EmailSenderConfig } from "./lib/email/types";
+import { resendAdapter } from "./lib/email/adapters";
 import {
   Account,
   Contents,
@@ -14,13 +13,6 @@ import {
   OnlineStore,
 } from "./routes/_backend/dashboard/-collections";
 
-// Compatibility placeholders only. Replace with owner-approved identities before sending.
-const emailDefaults: EmailSenderConfig = {
-  defaultFromAddress: "medusa@mail.cmsapp.org",
-  defaultFromName: "medusa",
-  supportAddress: "support@morph.com",
-};
-
 /**
  * CMS Configuration
  *
@@ -28,8 +20,8 @@ const emailDefaults: EmailSenderConfig = {
  * autocomplete and type-checking; `@/server/get-config` turns it into the
  * server and client views of the config.
  *
- * Everything outside `server` is declarative and ships to the browser.
- * Secrets belong in `server`: `createServerOnlyFn` is one of the TanStack Start
+ * Everything outside `email` and `server` is declarative and ships to the browser.
+ * Both callbacks use `createServerOnlyFn`, one of the TanStack Start
  * compiler's `transformFuncs`, so that function's body is removed from the
  * client bundle. Read `process.env` inside it, never as a module-level
  * constant, or the value is captured before the transform can strip it.
@@ -118,53 +110,20 @@ export const cmsConfig = defineConfig({
     },
   },
   trustedOrigins: cmsTrustedOrigins,
-  email: emailDefaults,
+  // Choose the adapter here. Identity and credentials have one configuration.
+  email: createServerOnlyFn(() =>
+    resendAdapter({
+      // Compatibility placeholders; replace with owner-approved identities before sending.
+      defaultFromAddress:
+        process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+      defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+      supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+      apiKey: process.env.RESEND_API_KEY ?? "",
+    }),
+  ),
 
   // Server-only. Never reaches the browser.
-  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => {
-    const sender: EmailSenderConfig = {
-      defaultFromAddress:
-        process.env.EMAIL_FROM_ADDRESS ?? emailDefaults.defaultFromAddress,
-      defaultFromName:
-        process.env.EMAIL_FROM_NAME ?? emailDefaults.defaultFromName,
-      supportAddress:
-        process.env.EMAIL_SUPPORT_ADDRESS ?? emailDefaults.supportAddress,
-    };
-
-    // This is the deployment's choice, not a CMS provider registry. Replace
-    // this selection with any EmailAdapter (including your own implementation).
-    const provider = process.env.EMAIL_PROVIDER ?? "resend";
-    let email: EmailAdapter;
-    if (provider === "resend") {
-      email = resendAdapter({
-        ...sender,
-        apiKey: process.env.RESEND_API_KEY ?? "",
-      });
-    } else if (provider === "cloudflare") {
-      email = cloudflareAdapter({
-        ...sender,
-        accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
-        apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
-      });
-    } else {
-      // Invalid deployment settings must not select a different service.
-      // Keep CMS startup available, but make every send fail explicitly.
-      email = {
-        id: "unconfigured",
-        async send() {
-          console.error("Email service failed: INVALID_PROVIDER");
-          return {
-            success: false,
-            error: "Email service failed: INVALID_PROVIDER",
-          };
-        },
-      };
-    }
-
-    return {
-      database: { connectionString: process.env.DATABASE_URL },
-      email,
-      emailSupportAddress: sender.supportAddress,
-    };
-  }),
+  server: createServerOnlyFn((): ReturnType<CMSUserConfig["server"]> => ({
+    database: { connectionString: process.env.DATABASE_URL },
+  })),
 });
