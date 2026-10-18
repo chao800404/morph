@@ -16,6 +16,7 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
+import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Two edits #192 covered only below the shell: a style edit followed at once
@@ -36,6 +37,11 @@ import {
 
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame({
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+});
 const FILE_PATH = "src/components/Hero.tsx";
 const ORIGINAL = `export default function Hero() {
   return <section data-morph-node="hero-root" className="p-2">x</section>;
@@ -275,6 +281,7 @@ function renderShell() {
 }
 
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -285,6 +292,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 async function selectHeading() {

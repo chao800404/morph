@@ -1,3 +1,4 @@
+import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -87,6 +88,11 @@ vi.mock(
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame({
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+});
 
 const posted: Array<Record<string, unknown>> = [];
 
@@ -305,6 +311,7 @@ function renderShell(client = readyQueryClient()) {
 
 /** A message from the framed preview, addressed so the transport accepts it. */
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -315,6 +322,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 const messagesOfType = (type: string) =>
