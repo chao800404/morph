@@ -272,6 +272,10 @@ import {
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
 import {
+  PreviewClientOnlyNotice,
+  previewClientOnlyNoticeContent,
+} from "./preview-client-only-notice";
+import {
   describeThemeSourceChanges,
   describeContentChanges,
   describeUnpublishedChanges,
@@ -2542,6 +2546,12 @@ export function VisualEditorShell({
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const refetchPreviewServer = previewServer.refetch;
+  // What the client-only preview cannot run in this Theme, as the start that
+  // is serving it reported when it started; null for the full Start preview.
+  // Not recomputed on file apply: the notice says it reflects that start.
+  const previewClientOnlyNotice = previewClientOnlyNoticeContent(
+    previewServer.data,
+  );
   const previewServerUrl =
     previewLifecycle.phase !== "reconnecting" &&
     !previewServer.isFetching &&
@@ -12716,12 +12726,24 @@ export function VisualEditorShell({
               </>
             )}
 
+            {/* Always mounted: its live region must exist before the notice
+                appears in it, or screen readers may not announce it. */}
+            <PreviewClientOnlyNotice
+              content={previewClientOnlyNotice}
+              // One notice per start: a new start's answer replaces it, and
+              // brings it back if the author dismissed the last one.
+              startKey={previewServer.dataUpdatedAt}
+              onOpenFile={handleJumpToCode}
+            />
+
             {liveTypingUnavailable !== null ? (
               // Quiet and in place, not a toast per keystroke: the field
               // still saves, and the canvas shows the value once it has.
+              // Top right of the canvas, clear of the client-only notice
+              // (bottom left) and the canvas toolbar (bottom centre).
               <div
                 role="status"
-                className="pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                className="pointer-events-none absolute right-3 top-3 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
               >
                 {LIVE_TYPING_UNAVAILABLE_MESSAGE}
               </div>
