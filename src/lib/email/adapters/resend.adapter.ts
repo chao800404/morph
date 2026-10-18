@@ -1,21 +1,26 @@
 import { Resend } from "resend";
-import type { EmailAdapter, SendEmailParams, SendEmailResult } from "../types";
+import type {
+  EmailAdapter,
+  EmailSenderConfig,
+  SendEmailParams,
+  SendEmailResult,
+} from "../types";
 
-export interface ResendAdapterConfig {
+export interface ResendAdapterConfig extends EmailSenderConfig {
   apiKey: string;
-  defaultFromAddress: string;
-  defaultFromName?: string;
 }
 
 let hasWarnedMissingKey = false;
 
 export class ResendAdapter implements EmailAdapter {
   readonly id = "resend";
+  readonly supportAddress?: string;
   private client: Resend | null = null;
   private defaultFrom: string;
   private isConfigured: boolean = false;
 
   constructor(config: ResendAdapterConfig) {
+    this.supportAddress = config.supportAddress;
     // 驗證 API key
     if (!config.apiKey || config.apiKey.trim() === "") {
       if (!hasWarnedMissingKey) {
