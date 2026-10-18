@@ -17,8 +17,11 @@ PUBLIC_URL=http://localhost:3000
 
 # Email stays disabled without credentials. Do not add real mail credentials
 # to E2E/CI. Tests mock providers; never use real delivery as a test fixture.
-# Choose the adapter in src/cms.config.ts's root email factory (default Resend).
-# For Cloudflare, replace the factory's adapter call with cloudflareAdapter.
+# Choose email inside src/cms.config.ts's existing server: createServerOnlyFn(...)
+# callback, alongside database (default Resend); there is no root email setting.
+# Put all sender/support settings and credentials in the adapter options.
+# For Cloudflare, replace the server email adapter call and credentials with
+# cloudflareAdapter.
 # Credentials alone do not switch the adapter.
 # RESEND_API_KEY=
 # CLOUDFLARE_EMAIL_ACCOUNT_ID=

@@ -89,16 +89,17 @@ Do not commit real credentials. Production secrets must be stored with Wrangler 
 ### Transactional email
 
 All existing auth, invite and commerce mail uses `EmailAdapter`.
-The single email configuration is the root `cmsConfig.email` factory:
-`CMSUserConfig.email?: () => EmailAdapter`. It constructs the adapter with its
-sender identity, support mailbox and credentials. `getConfig.server` consumes that
-instance directly and reads its optional `readonly supportAddress?: string` for
-existing mail templates. Built-in helpers retain this option as adapter metadata.
-The separate `server` callback contains database and other server configuration;
-it has no email fields. The client view executes neither callback.
+Configure its optional `email?: EmailAdapter` inside the existing
+`cmsConfig.server: createServerOnlyFn(...)` callback, alongside `database` and other
+server settings. `CMSUserConfig` has no root email setting. All sender identity,
+support mailbox and credentials belong to the adapter options. `getConfig.server`
+consumes that instance directly and derives the internal support mailbox from its
+optional `readonly supportAddress?: string` for existing mail templates; there is
+no separate authored support setting. Built-in helpers retain this option as
+adapter metadata. The client view never invokes the server callback.
 
 The default is Resend. Keep the existing CMS fields in `src/cms.config.ts` and
-configure its complete root email block as follows:
+configure its server block as follows:
 
 ```ts
 import { createServerOnlyFn } from "@tanstack/react-start";
@@ -107,8 +108,9 @@ import { resendAdapter } from "@/lib/email/adapters";
 
 export const cmsConfig = defineConfig({
   // Keep the existing appName, collections and other CMS configuration here.
-  email: createServerOnlyFn(() =>
-    resendAdapter({
+  server: createServerOnlyFn(() => ({
+    database: { connectionString: process.env.DATABASE_URL },
+    email: resendAdapter({
       // Compatibility placeholders; replace with owner-approved identities before sending.
       defaultFromAddress:
         process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
@@ -116,20 +118,18 @@ export const cmsConfig = defineConfig({
       supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
       apiKey: process.env.RESEND_API_KEY ?? "",
     }),
-  ),
-  server: createServerOnlyFn(() => ({
-    database: { connectionString: process.env.DATABASE_URL },
   })),
 });
 ```
 
 To use Cloudflare instead, import `cloudflareAdapter` from
 `@/lib/email/adapters` and replace only the adapter construction inside that same
-root email factory, keeping the same identity fields:
+server callback, keeping the same identity fields and other server settings:
 
 ```ts
-email: createServerOnlyFn(() =>
-  cloudflareAdapter({
+server: createServerOnlyFn(() => ({
+  database: { connectionString: process.env.DATABASE_URL },
+  email: cloudflareAdapter({
     defaultFromAddress:
       process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
     defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
@@ -137,22 +137,22 @@ email: createServerOnlyFn(() =>
     accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
     apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
   }),
-),
+})),
 ```
 
 Keep credential reads, provider clients and adapter construction inside
 `createServerOnlyFn`; never capture credentials at module scope or expose them to
 the client. Import built-in helpers from `@/lib/email/adapters`, rather than the
 email sending entrypoint. Any custom object implementing `EmailAdapter` can be
-returned from the root factory and can include `supportAddress`, without
+returned as `server().email` and can include `supportAddress`, without
 registering a provider name or editing `getConfig`; see
 [custom adapters](DEPLOY.md#custom-email-adapters).
 
-The old `EMAIL_PROVIDER` convenience option has been replaced by root adapter
+The old `EMAIL_PROVIDER` convenience option has been replaced by server adapter
 configuration and is no longer used; setting it cannot switch providers.
 Cloudflare credentials alone do not change the default Resend adapter. No
 `send_email` binding or new dependency is needed for the built-in Cloudflare
-adapter. Omitting the root factory leaves email unconfigured; core does not choose
+adapter. Omitting `server().email` leaves email unconfigured; core does not choose
 a provider. Missing/invalid credentials for the configured service fail delivery
 visibly without provider fallback. The Cloudflare adapter does not automatically
 retry. Without credentials, local development/E2E/CI keep the existing
