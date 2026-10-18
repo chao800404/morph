@@ -41,12 +41,12 @@ const message = {
 };
 const fakeFetch = vi.fn<typeof fetch>();
 
-// The public configuration API: replace only the root factory to choose a service.
+// The public configuration API: select the adapter inside the server callback.
 function cloudflareConfig() {
   return defineConfig({
     ...cmsConfig,
-    email: createServerOnlyFn(() =>
-      cloudflareAdapter({
+    server: createServerOnlyFn(() => ({
+      email: cloudflareAdapter({
         defaultFromAddress:
           process.env.EMAIL_FROM_ADDRESS ?? "mail@example.com",
         defaultFromName: process.env.EMAIL_FROM_NAME ?? "Example",
@@ -54,8 +54,14 @@ function cloudflareConfig() {
         accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
         apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
       }),
-    ),
+    })),
   });
+}
+
+function emailFrom(config: CMSUserConfig = cmsConfig): EmailAdapter {
+  const adapter = config.server().email;
+  if (!adapter) throw new Error("Expected an explicitly configured adapter");
+  return adapter;
 }
 
 beforeEach(() => {
@@ -81,15 +87,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("single root server-only email configuration", () => {
+describe("single server-only email configuration", () => {
   it("constructs no adapter or credentials at config module load", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-import-token");
     vi.resetModules();
     const loaded = await import("./cms.config");
-    expect(typeof loaded.cmsConfig.email).toBe("function");
+    expect(typeof loaded.cmsConfig.server).toBe("function");
+    expect(loaded.cmsConfig).not.toHaveProperty("email");
     expect(resend.construct).not.toHaveBeenCalled();
     expect(JSON.stringify(loaded.cmsConfig)).not.toContain("fake-import-token");
-    loaded.cmsConfig.email();
+    emailFrom(loaded.cmsConfig);
     expect(resend.construct).toHaveBeenCalledExactlyOnceWith(
       "fake-import-token",
     );
@@ -101,7 +108,7 @@ describe("single root server-only email configuration", () => {
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-cf-token");
     // The former convenience selector is no longer a selection API.
     vi.stubEnv("EMAIL_PROVIDER", "cloudflare");
-    const adapter = cmsConfig.email();
+    const adapter = emailFrom();
     expect(adapter.id).toBe("resend");
     expect(adapter.supportAddress).toBe("support@morph.com");
     await expect(adapter.send(message)).resolves.toMatchObject({
@@ -113,12 +120,12 @@ describe("single root server-only email configuration", () => {
       }),
     );
     expect(fakeFetch).not.toHaveBeenCalled();
-    expect(cmsConfig.server()).not.toHaveProperty("email");
+    expect(cmsConfig).not.toHaveProperty("email");
     expect(cmsConfig.server()).not.toHaveProperty("emailSupportAddress");
   });
 
   it("preserves missing-Resend-key failure without network calls", async () => {
-    const adapter = cmsConfig.email();
+    const adapter = emailFrom();
     expect(adapter.id).toBe("resend");
     await expect(adapter.send(message)).resolves.toMatchObject({
       success: false,
@@ -129,12 +136,12 @@ describe("single root server-only email configuration", () => {
     expect(fakeFetch).not.toHaveBeenCalled();
   });
 
-  it("reads identity, credentials and support from the one factory at call time", async () => {
+  it("reads identity, credentials and support from the server callback at call time", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-first-key");
     vi.stubEnv("EMAIL_FROM_ADDRESS", "override@example.com");
     vi.stubEnv("EMAIL_FROM_NAME", "Override");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "support@example.com");
-    const first = cmsConfig.email();
+    const first = emailFrom();
     expect(first.supportAddress).toBe("support@example.com");
     await first.send(message);
     expect(resend.send).toHaveBeenLastCalledWith(
@@ -145,7 +152,7 @@ describe("single root server-only email configuration", () => {
     vi.stubEnv("RESEND_API_KEY", "fake-next-key");
     vi.stubEnv("EMAIL_FROM_ADDRESS", "next@example.com");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "next-help@example.com");
-    const next = cmsConfig.email();
+    const next = emailFrom();
     expect(next.supportAddress).toBe("next-help@example.com");
     await next.send(message);
     expect(resend.construct).toHaveBeenLastCalledWith("fake-next-key");
@@ -160,7 +167,7 @@ describe("single root server-only email configuration", () => {
   it("allows an explicitly empty display name", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-key");
     vi.stubEnv("EMAIL_FROM_NAME", "");
-    await cmsConfig.email().send(message);
+    await emailFrom().send(message);
     expect(resend.send).toHaveBeenCalledWith(
       expect.objectContaining({
         from: "medusa@mail.cmsapp.org",
@@ -168,7 +175,7 @@ describe("single root server-only email configuration", () => {
     );
   });
 
-  it("changes provider by replacing only the root factory, without duplicating identity", async () => {
+  it("changes provider by replacing only the server email adapter, without duplicating identity", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-resend-key");
     vi.stubEnv("CLOUDFLARE_EMAIL_ACCOUNT_ID", "a".repeat(32));
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-first-token");
@@ -182,7 +189,7 @@ describe("single root server-only email configuration", () => {
       }),
     );
     const configured = cloudflareConfig();
-    const first = configured.email();
+    const first = emailFrom(configured);
     expect(first.id).toBe("cloudflare");
     expect(first.supportAddress).toBe("first-help@example.com");
     await expect(first.send(message)).resolves.toMatchObject({ success: true });
@@ -197,7 +204,7 @@ describe("single root server-only email configuration", () => {
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-next-token");
     vi.stubEnv("EMAIL_FROM_ADDRESS", "next@example.com");
     vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "next-help@example.com");
-    const next = configured.email();
+    const next = emailFrom(configured);
     expect(next.supportAddress).toBe("next-help@example.com");
     await expect(next.send(message)).resolves.toMatchObject({ success: true });
     expect(fakeFetch.mock.calls[1]?.[1]?.headers).toMatchObject({
@@ -214,7 +221,7 @@ describe("single root server-only email configuration", () => {
 
   it("never falls back to Resend when the chosen Cloudflare adapter is unconfigured", async () => {
     vi.stubEnv("RESEND_API_KEY", "fake-key");
-    const adapter = cloudflareConfig().email();
+    const adapter = emailFrom(cloudflareConfig());
     expect(adapter.id).toBe("cloudflare");
     await expect(adapter.send(message)).resolves.toMatchObject({
       success: false,
@@ -229,7 +236,7 @@ describe("single root server-only email configuration", () => {
     vi.stubEnv("CLOUDFLARE_EMAIL_API_TOKEN", "fake-token");
     fakeFetch.mockResolvedValue(new Response("unavailable", { status: 503 }));
     await expect(
-      cloudflareConfig().email().send(message),
+      emailFrom(cloudflareConfig()).send(message),
     ).resolves.toMatchObject({
       success: false,
     });
@@ -237,13 +244,11 @@ describe("single root server-only email configuration", () => {
     expect(resend.send).not.toHaveBeenCalled();
   });
 
-  it("types the root as a factory and rejects the old duplicate server email fields", () => {
-    expectTypeOf<CMSUserConfig["email"]>().toEqualTypeOf<
-      (() => EmailAdapter) | undefined
+  it("types server email as an adapter and rejects duplicate root or support settings", () => {
+    expectTypeOf<CMSUserConfig["email"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<ReturnType<CMSUserConfig["server"]>["email"]>().toEqualTypeOf<
+      EmailAdapter | undefined
     >();
-    expectTypeOf<
-      ReturnType<CMSUserConfig["server"]>["email"]
-    >().toEqualTypeOf<undefined>();
     expectTypeOf<
       ReturnType<CMSUserConfig["server"]>["emailSupportAddress"]
     >().toEqualTypeOf<undefined>();

@@ -6,8 +6,6 @@ import { getConfig } from "./get-config";
 
 const state = vi.hoisted(() => ({
   client: false,
-  hasEmail: true,
-  email: vi.fn<NonNullable<CMSUserConfig["email"]>>(),
   server: vi.fn<CMSUserConfig["server"]>(),
   send: vi.fn(),
 }));
@@ -32,9 +30,6 @@ vi.mock("@/cms.config", () => ({
       maxAssetsPerRecord: 1,
       allowedTypes: [],
     },
-    get email() {
-      return state.hasEmail ? state.email : undefined;
-    },
     server: state.server,
   },
 }));
@@ -58,8 +53,6 @@ vi.mock("@/lib/tax/providers/tax-provider-registry.server", () => ({
 describe("server-only email composition", () => {
   beforeEach(() => {
     state.client = false;
-    state.hasEmail = true;
-    state.email.mockReset();
     state.server.mockReset().mockReturnValue({});
     state.send
       .mockReset()
@@ -71,15 +64,21 @@ describe("server-only email composition", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("wires configured sender and support values into the actual server config", async () => {
-    state.email.mockReturnValue(
-      resendAdapter({
+    state.server.mockReturnValue({
+      database: { connectionString: "fake-server-only-database" },
+      email: resendAdapter({
         apiKey: "fake-resend-key",
         defaultFromAddress: "override@example.com",
         defaultFromName: "Override",
         supportAddress: "help@example.com",
       }),
-    );
+    });
     const config = getConfig();
+    expect(state.server).toHaveBeenCalledTimes(1);
+    expect(config.server.database).toEqual({
+      connectionString: "fake-server-only-database",
+    });
+    expect(config.client).not.toHaveProperty("database");
     expect(config.server.emailSupportAddress).toBe("help@example.com");
     await config.server.email?.send({
       to: "buyer@example.com",
@@ -93,14 +92,14 @@ describe("server-only email composition", () => {
   });
 
   it("wires an explicit Cloudflare provider without a Worker binding", async () => {
-    state.email.mockReturnValue(
-      cloudflareAdapter({
+    state.server.mockReturnValue({
+      email: cloudflareAdapter({
         defaultFromAddress: "mail@example.com",
         accountId: "a".repeat(32),
         apiToken: "fake-token",
         supportAddress: "cloudflare-help@example.com",
       }),
-    );
+    });
     const fakeFetch = vi.fn().mockResolvedValue(
       Response.json({
         success: true,
@@ -118,7 +117,7 @@ describe("server-only email composition", () => {
     expect(config.server.emailSupportAddress).toBe(
       "cloudflare-help@example.com",
     );
-    expect(state.email).toHaveBeenCalledTimes(1);
+    expect(state.server).toHaveBeenCalledTimes(1);
     expect(
       (
         await config.server.email?.send({
@@ -136,12 +135,8 @@ describe("server-only email composition", () => {
     state.server.mockImplementation(() => {
       throw new Error("must not run");
     });
-    state.email.mockImplementation(() => {
-      throw new Error("email factory must not run");
-    });
     const config = getConfig();
     expect(state.server).not.toHaveBeenCalled();
-    expect(state.email).not.toHaveBeenCalled();
     expect(config.server.email).toBeUndefined();
     expect(config.server.emailSupportAddress).toBeUndefined();
     expect(config.client).not.toHaveProperty("email");
@@ -164,11 +159,11 @@ describe("server-only email composition", () => {
         return sendBatch(params);
       },
     };
-    const email: NonNullable<CMSUserConfig["email"]> = () => custom;
-    state.email.mockImplementation(email);
+    const server: CMSUserConfig["server"] = () => ({ email: custom });
+    state.server.mockImplementation(server);
     const config = getConfig();
     expect(config.server.email).toBe(custom);
-    expect(state.email).toHaveBeenCalledTimes(1);
+    expect(state.server).toHaveBeenCalledTimes(1);
     expect(config.server.emailSupportAddress).toBe("support@example.com");
     const message = { to: "buyer@example.com", subject: "Hi", html: "Hi" };
     await expect(config.server.email?.send(message)).resolves.toEqual({
@@ -188,7 +183,7 @@ describe("server-only email composition", () => {
         .fn()
         .mockResolvedValue({ success: false, error: "CUSTOM_FAILURE" }),
     };
-    state.email.mockReturnValue(custom);
+    state.server.mockReturnValue({ email: custom });
     await expect(
       getConfig().server.email?.send({
         to: "buyer@example.com",
@@ -200,22 +195,20 @@ describe("server-only email composition", () => {
     expect(state.send).not.toHaveBeenCalled();
   });
 
-  it("does not invent a provider when the root config omits email", () => {
-    state.hasEmail = false;
+  it("does not invent a provider when the server callback omits email", () => {
     const config = getConfig();
     expect(config.server.email).toBeUndefined();
     expect(config.server.emailSupportAddress).toBeUndefined();
-    expect(state.email).not.toHaveBeenCalled();
     expect(state.send).not.toHaveBeenCalled();
   });
 
-  it("propagates a selected factory failure without fallback", () => {
+  it("propagates a server adapter construction failure without fallback", () => {
     const failure = new Error("CUSTOM_CONFIGURATION_FAILURE");
-    state.email.mockImplementation(() => {
+    state.server.mockImplementation(() => {
       throw failure;
     });
     expect(() => getConfig()).toThrow(failure);
-    expect(state.email).toHaveBeenCalledTimes(1);
+    expect(state.server).toHaveBeenCalledTimes(1);
     expect(state.send).not.toHaveBeenCalled();
   });
 });

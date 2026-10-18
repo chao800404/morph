@@ -9,20 +9,20 @@ import { createIsomorphicFn } from "@tanstack/react-start";
  * Get CMS Configuration (Isomorphic)
  *
  * Splits the authored config into its two runtime views:
- * - Server: the adapter constructed by the server-only `cmsConfig.email()`
+ * - Server: the adapter constructed inside `cmsConfig.server()`
  * - Client: declarative subset only
  *
- * Both `email` and `server` carry server-only callbacks whose bodies are
- * compiled out of the client bundle. Neither is evaluated in the client view.
+ * The `server` callback's body is compiled out of the client bundle and is
+ * never evaluated in the client view.
  */
 export const getConfig = createIsomorphicFn()
   .server(() => {
-    const { server, email, ...base } = cmsConfig;
+    const { server, ...base } = cmsConfig;
     const secrets = server();
     fulfillmentProviderRegistry.configure(secrets.fulfillmentProviders);
     shippingRateProviderRegistry.configure(secrets.shippingRateProviders);
     taxProviderRegistry.configure(secrets.taxProviders);
-    const adapter = email?.();
+    const adapter = secrets.email;
     return createCMSConfig({
       ...base,
       database: secrets.database,
@@ -31,7 +31,7 @@ export const getConfig = createIsomorphicFn()
     });
   })
   .client(() => {
-    const { server: _server, email: _email, ...base } = cmsConfig;
+    const { server: _server, ...base } = cmsConfig;
     return createCMSConfig({
       ...base,
       database: undefined,
