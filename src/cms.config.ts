@@ -110,8 +110,10 @@ export const cmsConfig = defineConfig({
   },
   trustedOrigins: cmsTrustedOrigins,
   email: {
+    // Compatibility placeholders only. Replace with owner-approved identities before sending.
     defaultFromAddress: "medusa@mail.cmsapp.org",
     defaultFromName: "medusa",
+    supportAddress: "support@morph.com",
   },
 
   // Server-only. Never reaches the browser.
@@ -121,6 +123,14 @@ export const cmsConfig = defineConfig({
     },
     email: {
       apiKey: process.env.RESEND_API_KEY || "",
+      provider: process.env.EMAIL_PROVIDER,
+      defaultFromAddress: process.env.EMAIL_FROM_ADDRESS,
+      defaultFromName: process.env.EMAIL_FROM_NAME,
+      supportAddress: process.env.EMAIL_SUPPORT_ADDRESS,
+      cloudflare: {
+        accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+        apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+      },
     },
   })),
 });
