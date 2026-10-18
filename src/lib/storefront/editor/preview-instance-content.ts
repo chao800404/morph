@@ -155,6 +155,77 @@ export function instanceReplaySection(args: {
   return enabled === undefined ? { props: merged } : { props: merged, enabled };
 }
 
+/** What a pending or unanswered content entry asks of a section's visibility. */
+export type PreviewVisibilityIntent = "hide" | "show" | "none";
+
+/**
+ * The visibility an entry asks for: its `enabled`, whether or not the source
+ * refused it. A refused hide is still the author's hide — what the preview
+ * shows must not depend on whether the server has agreed yet.
+ */
+export function contentEntryVisibilityIntent(
+  entry: PendingContentEntry | undefined,
+): PreviewVisibilityIntent {
+  if (!entry) return "none";
+  const field = entry.fields?.enabled;
+  const value = field ? field.value : entry.props.enabled;
+  return value === false ? "hide" : value === true ? "show" : "none";
+}
+
+/**
+ * Whether the editor holds a section as hidden: V(S), read from what it
+ * already keeps and nothing else.
+ *
+ *   hidden ⇔ Intent = hide ∨ (accepted hidden ∧ Intent ≠ show)
+ *
+ * Intent is the pending entry's, else the unanswered entry's, else none.
+ * Unlike `instanceReplaySection`, which puts on the canvas only what a write
+ * would still send, an unanswered or refused hide counts here: it decides
+ * whether a section's values may be posted to the preview at all, never what
+ * is saved.
+ */
+export function previewSectionHidden(args: {
+  snapshot: ContentSnapshot | undefined;
+  sectionId: string;
+  pending: PendingContentEntry | undefined;
+  unconfirmed: PendingContentEntry | undefined;
+}): boolean {
+  let intent = contentEntryVisibilityIntent(args.pending);
+  if (intent === "none") intent = contentEntryVisibilityIntent(args.unconfirmed);
+  if (intent !== "none") return intent === "hide";
+  return (
+    args.snapshot?.sections.find((section) => section.id === args.sectionId)
+      ?.enabled === false
+  );
+}
+
+/** One section as the preview is told about it: shown with values, or hidden. */
+export type PreviewSectionPost = Readonly<{
+  props: Record<string, unknown> | undefined;
+  enabled: boolean;
+}>;
+
+/**
+ * The section as the preview should hold it now; null when nothing
+ * describes it.
+ *
+ * A hidden section is `{ enabled: false }` with no props at all: its stored
+ * values stay with the editor. A shown one is the accepted copy with the
+ * pending fields on top (`instanceReplaySection`), shown in the same message,
+ * so the page never receives values for a slot it still holds hidden.
+ */
+export function previewSectionPost(args: {
+  snapshot: ContentSnapshot | undefined;
+  sectionId: string;
+  pending: PendingContentEntry | undefined;
+  unconfirmed: PendingContentEntry | undefined;
+  sourceGeneration: number;
+}): PreviewSectionPost | null {
+  if (previewSectionHidden(args)) return { props: undefined, enabled: false };
+  const section = instanceReplaySection(args);
+  return section ? { props: section.props, enabled: true } : null;
+}
+
 /** The frame, ready round and route a replay is for. */
 export type InstanceReplayFrame = Readonly<{
   key: string;

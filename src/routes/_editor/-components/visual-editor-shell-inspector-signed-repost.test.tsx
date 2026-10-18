@@ -8,6 +8,7 @@ import { signThemePreviewMedia } from "@/server/storefront/storefront-preview-me
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { VisualEditorShell } from "./visual-editor-shell";
+import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * An Inspector text edit while a section's content is still waiting on media
@@ -26,6 +27,11 @@ import { VisualEditorShell } from "./visual-editor-shell";
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame({
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+});
 const ASSET = "0b9f3a52-2f7e-4c1a-9d4b-6a1f2e3d4c5b";
 const SIGNED_URL = "https://media.morph.test/signed-hero.png";
 /** An image field's stored value, as the media picker stores a library asset. */
@@ -171,6 +177,7 @@ function renderEditor() {
 }
 
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -181,6 +188,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 type Posted = { type: string; sectionId?: string; props?: Record<string, unknown> };

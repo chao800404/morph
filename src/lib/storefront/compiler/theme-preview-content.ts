@@ -337,6 +337,10 @@ export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
   }
   if (enabled === true) {
     content.hiddenSlots = content.hiddenSlots.filter((id) => id !== sectionId);
+  } else if (content.hiddenSlots.includes(sectionId)) {
+    // A hidden slot is written only by a show: a late edit, a signed repost
+    // or a reset for it must not put its values back on this page.
+    return;
   }
   if (props) content.slots[sectionId] = { ...(content.slots[sectionId] || {}), ...props };
   if (Array.isArray(resetKeys) && content.slots[sectionId]) {
@@ -357,6 +361,15 @@ function currentPreviewContent() {
 /** The values this page's content holds for one slot, as it renders from them. */
 export function previewSlotContent(sectionId) {
   return currentPreviewContent().slots[sectionId];
+}
+
+/**
+ * Whether this page holds a slot hidden: the list \`updatePreviewContent\`
+ * refuses value writes for. Anything else that puts a value on the page asks
+ * the same list.
+ */
+export function previewSlotHidden(sectionId) {
+  return currentPreviewContent().hiddenSlots.includes(sectionId);
 }
 
 const nativeFetch = window.fetch.bind(window);
