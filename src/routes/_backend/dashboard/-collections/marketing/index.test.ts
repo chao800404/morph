@@ -6,27 +6,25 @@ import {
 import { Marketing } from "./index";
 
 describe("Marketing navigation hierarchy", () => {
-  it("nests campaign-related collections under Promotions without changing their routes", () => {
+  it("nests campaigns and gift cards under Promotions without changing their routes", () => {
     const promotions = Marketing.collections.find(
       (collection) => collection.slug === "promotions",
     );
 
     expect(promotions?.items?.map(({ slug }) => slug)).toEqual([
       "campaigns",
-      "store-credits",
       "gift-cards",
     ]);
     expect(Marketing.collections.map(({ slug }) => slug)).not.toEqual(
-      expect.arrayContaining(["campaigns", "store-credits", "gift-cards"]),
+      expect.arrayContaining(["campaigns", "gift-cards"]),
     );
 
-    for (const slug of ["campaigns", "store-credits", "gift-cards"]) {
+    for (const slug of ["campaigns", "gift-cards"]) {
       expect(findCollection([Marketing], slug)?.slug).toBe(slug);
     }
 
     const children = [
       { slug: "campaigns", name: "Campaigns" },
-      { slug: "store-credits", name: "Store Credits" },
       { slug: "gift-cards", name: "Gift Cards" },
     ];
 
