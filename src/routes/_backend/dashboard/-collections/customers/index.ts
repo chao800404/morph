@@ -18,6 +18,76 @@ const CustomerGroupCreatePendingView = createRouteSurfacePendingView(3);
 const CustomerGroupEditPendingView = createRouteSurfacePendingView(3);
 const CustomerGroupMetadataPendingView = createRouteSurfacePendingView(2);
 const CustomerGroupMembersPendingView = createCollectionIndexPendingView(4);
+const StoreCreditAccountsIndexPendingView = createCollectionIndexPendingView(5);
+const StoreCreditAccountCreatePendingView = createRouteSurfacePendingView(4);
+const StoreCreditAccountDetailPendingView = CollectionDetailSkeleton;
+const StoreCreditAccountAdjustPendingView = createRouteSurfacePendingView(4);
+
+const storeCreditItem: NonNullable<CollectionItem["items"]>[number] = {
+  title: "Store Credits",
+  slug: "store-credits",
+  label: "Store Credits",
+  index: {
+    view: lazyView(() => import("@views/global/marketing/store-credits")),
+    pendingView: StoreCreditAccountsIndexPendingView,
+    prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
+      const { normalizeStoreCreditListParams, storeCreditQueries } =
+        await import("@queries/store-credit.queries");
+      void queryClient.prefetchQuery(
+        storeCreditQueries.list(normalizeStoreCreditListParams(search)),
+      );
+    },
+  },
+  create: {
+    view: lazyView(() => import("@views/global/marketing/store-credit-create")),
+    pendingView: StoreCreditAccountCreatePendingView,
+  },
+  detail: {
+    view: lazyView(() => import("@views/global/marketing/store-credit-detail")),
+    pendingView: StoreCreditAccountDetailPendingView,
+    breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+      if (!params.id) return null;
+      const { storeCreditQueries } =
+        await import("@queries/store-credit.queries");
+      const result = await queryClient.ensureQueryData(
+        storeCreditQueries.detail(params.id),
+      );
+      return result.success
+        ? `${result.data.account.customerEmail ?? "Unclaimed"} · ${result.data.account.id.slice(0, 8)}`
+        : null;
+    },
+    prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+      if (!params.id) return;
+      const { storeCreditQueries } =
+        await import("@queries/store-credit.queries");
+      void queryClient.prefetchQuery(storeCreditQueries.detail(params.id));
+    },
+  },
+  pages: {
+    adjust: {
+      view: lazyView(
+        () => import("@views/global/marketing/store-credit-adjust"),
+      ),
+      presentation: "replace",
+      pendingView: StoreCreditAccountAdjustPendingView,
+      breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+        if (!params.id) return null;
+        const { storeCreditQueries } =
+          await import("@queries/store-credit.queries");
+        const result = await queryClient.ensureQueryData(
+          storeCreditQueries.detail(params.id),
+        );
+        return result.success ? "Adjust balance" : null;
+      },
+      prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
+        if (!params.id) return;
+        const { storeCreditQueries } =
+          await import("@queries/store-credit.queries");
+        void queryClient.prefetchQuery(storeCreditQueries.detail(params.id));
+      },
+    },
+  },
+};
 
 const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
   title: "Customer Groups",
@@ -47,7 +117,8 @@ const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
     pendingView: CollectionDetailSkeleton,
     breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
       if (!params.id) return null;
-      const { customerGroupQueries } = await import("@queries/customer.queries");
+      const { customerGroupQueries } =
+        await import("@queries/customer.queries");
       const result = await queryClient.ensureQueryData(
         customerGroupQueries.detail(params.id),
       );
@@ -59,10 +130,8 @@ const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
       search,
     }: CollectionLoadContext) => {
       if (!params.id) return;
-      const {
-        customerGroupQueries,
-        normalizeCustomerGroupMemberListParams,
-      } = await import("@queries/customer.queries");
+      const { customerGroupQueries, normalizeCustomerGroupMemberListParams } =
+        await import("@queries/customer.queries");
       void queryClient.prefetchQuery(customerGroupQueries.detail(params.id));
       void queryClient.prefetchQuery(
         customerGroupQueries.members(
@@ -72,13 +141,12 @@ const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
     },
   },
   edit: {
-    view: lazyView(
-      () => import("@views/global/marketing/customer-group-edit"),
-    ),
+    view: lazyView(() => import("@views/global/marketing/customer-group-edit")),
     pendingView: CustomerGroupEditPendingView,
     prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
       if (!params.id) return;
-      const { customerGroupQueries } = await import("@queries/customer.queries");
+      const { customerGroupQueries } =
+        await import("@queries/customer.queries");
       void queryClient.prefetchQuery(customerGroupQueries.detail(params.id));
     },
   },
@@ -90,7 +158,8 @@ const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
       pendingView: CustomerGroupMetadataPendingView,
       prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
         if (!params.id) return;
-        const { customerGroupQueries } = await import("@queries/customer.queries");
+        const { customerGroupQueries } =
+          await import("@queries/customer.queries");
         void queryClient.prefetchQuery(customerGroupQueries.detail(params.id));
       },
     },
@@ -100,10 +169,17 @@ const customerGroupItem: NonNullable<CollectionItem["items"]>[number] = {
       ),
       presentation: "replace",
       pendingView: CustomerGroupMembersPendingView,
-      prefetch: async ({ queryClient, params, search }: CollectionLoadContext) => {
+      prefetch: async ({
+        queryClient,
+        params,
+        search,
+      }: CollectionLoadContext) => {
         if (!params.id) return;
-        const { customerGroupQueries, customerQueries, normalizeCustomerListParams } =
-          await import("@queries/customer.queries");
+        const {
+          customerGroupQueries,
+          customerQueries,
+          normalizeCustomerListParams,
+        } = await import("@queries/customer.queries");
         void queryClient.prefetchQuery(customerGroupQueries.detail(params.id));
         void queryClient.prefetchQuery(
           customerQueries.list({
@@ -170,9 +246,7 @@ const customerItem: CollectionItem = {
   },
   pages: {
     metadata: {
-      view: lazyView(
-        () => import("@views/global/marketing/customer-metadata"),
-      ),
+      view: lazyView(() => import("@views/global/marketing/customer-metadata")),
       pendingView: CustomerMetadataPendingView,
       prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
         if (!params.id) return;
@@ -203,7 +277,7 @@ const customerItem: CollectionItem = {
       },
     },
   },
-  items: [customerGroupItem],
+  items: [customerGroupItem, storeCreditItem],
 };
 
 export const CustomerManagement: CollectionGroup = {

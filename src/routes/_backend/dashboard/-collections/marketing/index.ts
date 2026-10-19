@@ -35,10 +35,6 @@ const CampaignsIndexPendingView = createCollectionIndexPendingView(5);
 const CampaignCreatePendingView = createRouteSurfacePendingView(7);
 const CampaignEditPendingView = createRouteSurfacePendingView(7);
 const CampaignDetailPendingView = CollectionDetailSkeleton;
-const StoreCreditAccountsIndexPendingView = createCollectionIndexPendingView(5);
-const StoreCreditAccountCreatePendingView = createRouteSurfacePendingView(4);
-const StoreCreditAccountDetailPendingView = CollectionDetailSkeleton;
-const StoreCreditAccountAdjustPendingView = createRouteSurfacePendingView(4);
 const GiftCardsIndexPendingView = createCollectionIndexPendingView(5);
 const GiftCardCreatePendingView = createRouteSurfacePendingView(5);
 const GiftCardDetailPendingView = CollectionDetailSkeleton;
@@ -593,81 +589,6 @@ const marketingBase: CollectionGroup = {
       },
     },
     {
-      title: "Store Credits",
-      slug: "store-credits",
-      icon: "WalletCards",
-      label: "Store Credits",
-      index: {
-        view: lazyView(() => import("@views/global/marketing/store-credits")),
-        pendingView: StoreCreditAccountsIndexPendingView,
-        prefetch: async ({ queryClient, search }: CollectionLoadContext) => {
-          const { normalizeStoreCreditListParams, storeCreditQueries } =
-            await import("@queries/store-credit.queries");
-          void queryClient.prefetchQuery(
-            storeCreditQueries.list(normalizeStoreCreditListParams(search)),
-          );
-        },
-      },
-      create: {
-        view: lazyView(
-          () => import("@views/global/marketing/store-credit-create"),
-        ),
-        pendingView: StoreCreditAccountCreatePendingView,
-      },
-      detail: {
-        view: lazyView(
-          () => import("@views/global/marketing/store-credit-detail"),
-        ),
-        pendingView: StoreCreditAccountDetailPendingView,
-        breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
-          if (!params.id) return null;
-          const { storeCreditQueries } =
-            await import("@queries/store-credit.queries");
-          const result = await queryClient.ensureQueryData(
-            storeCreditQueries.detail(params.id),
-          );
-          return result.success
-            ? `${result.data.account.customerEmail ?? "Unclaimed"} · ${result.data.account.id.slice(0, 8)}`
-            : null;
-        },
-        prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
-          if (!params.id) return;
-          const { storeCreditQueries } =
-            await import("@queries/store-credit.queries");
-          void queryClient.prefetchQuery(storeCreditQueries.detail(params.id));
-        },
-      },
-      pages: {
-        adjust: {
-          view: lazyView(
-            () => import("@views/global/marketing/store-credit-adjust"),
-          ),
-          presentation: "replace",
-          pendingView: StoreCreditAccountAdjustPendingView,
-          breadcrumb: async ({
-            queryClient,
-            params,
-          }: CollectionLoadContext) => {
-            if (!params.id) return null;
-            const { storeCreditQueries } =
-              await import("@queries/store-credit.queries");
-            const result = await queryClient.ensureQueryData(
-              storeCreditQueries.detail(params.id),
-            );
-            return result.success ? "Adjust balance" : null;
-          },
-          prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
-            if (!params.id) return;
-            const { storeCreditQueries } =
-              await import("@queries/store-credit.queries");
-            void queryClient.prefetchQuery(
-              storeCreditQueries.detail(params.id),
-            );
-          },
-        },
-      },
-    },
-    {
       title: "Gift Cards",
       slug: "gift-cards",
       icon: "Gift",
@@ -696,7 +617,8 @@ const marketingBase: CollectionGroup = {
         pendingView: GiftCardDetailPendingView,
         breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
           if (!params.id) return null;
-          const { giftCardQueries } = await import("@queries/gift-card.queries");
+          const { giftCardQueries } =
+            await import("@queries/gift-card.queries");
           const result = await queryClient.ensureQueryData(
             giftCardQueries.detail({ id: params.id, offset: 0, limit: 20 }),
           );
@@ -704,12 +626,14 @@ const marketingBase: CollectionGroup = {
             ? `Gift card · ${result.data.giftCard.id.slice(0, 8)}`
             : null;
         },
-        prefetch: async ({ queryClient, params, search }: CollectionLoadContext) => {
+        prefetch: async ({
+          queryClient,
+          params,
+          search,
+        }: CollectionLoadContext) => {
           if (!params.id) return;
-          const {
-            giftCardQueries,
-            normalizeGiftCardTransactionParams,
-          } = await import("@queries/gift-card.queries");
+          const { giftCardQueries, normalizeGiftCardTransactionParams } =
+            await import("@queries/gift-card.queries");
           void queryClient.prefetchQuery(
             giftCardQueries.detail(
               normalizeGiftCardTransactionParams(params.id, search),
@@ -718,13 +642,12 @@ const marketingBase: CollectionGroup = {
         },
       },
       edit: {
-        view: lazyView(
-          () => import("@views/global/marketing/gift-card-edit"),
-        ),
+        view: lazyView(() => import("@views/global/marketing/gift-card-edit")),
         pendingView: GiftCardEditPendingView,
         prefetch: async ({ queryClient, params }: CollectionLoadContext) => {
           if (!params.id) return;
-          const { giftCardQueries } = await import("@queries/gift-card.queries");
+          const { giftCardQueries } =
+            await import("@queries/gift-card.queries");
           void queryClient.prefetchQuery(
             giftCardQueries.detail({ id: params.id, offset: 0, limit: 1 }),
           );
@@ -737,20 +660,26 @@ const marketingBase: CollectionGroup = {
           ),
           presentation: "replace",
           pendingView: GiftCardAdjustPendingView,
-          breadcrumb: async ({ queryClient, params }: CollectionLoadContext) => {
+          breadcrumb: async ({
+            queryClient,
+            params,
+          }: CollectionLoadContext) => {
             if (!params.id) return null;
-            const { giftCardQueries } = await import("@queries/gift-card.queries");
+            const { giftCardQueries } =
+              await import("@queries/gift-card.queries");
             const result = await queryClient.ensureQueryData(
               giftCardQueries.detail({ id: params.id, offset: 0, limit: 20 }),
             );
             return result.success ? "Adjust balance" : null;
           },
-          prefetch: async ({ queryClient, params, search }: CollectionLoadContext) => {
+          prefetch: async ({
+            queryClient,
+            params,
+            search,
+          }: CollectionLoadContext) => {
             if (!params.id) return;
-            const {
-              giftCardQueries,
-              normalizeGiftCardTransactionParams,
-            } = await import("@queries/gift-card.queries");
+            const { giftCardQueries, normalizeGiftCardTransactionParams } =
+              await import("@queries/gift-card.queries");
             void queryClient.prefetchQuery(
               giftCardQueries.detail(
                 normalizeGiftCardTransactionParams(params.id, search),
@@ -763,7 +692,7 @@ const marketingBase: CollectionGroup = {
   ],
 };
 
-const promotionChildSlugs = ["campaigns", "store-credits", "gift-cards"];
+const promotionChildSlugs = ["campaigns", "gift-cards"];
 
 const toPromotionChild = (
   collection: CollectionItem,
