@@ -558,7 +558,9 @@ describe("StorefrontProductionService", () => {
         name: "a mapped service binding that is not bound",
         runtime: () =>
           createThemeRuntime({
-            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: FAKE_BINDING }),
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({
+              sf_1: FAKE_BINDING,
+            }),
           }),
         kind: "service-binding",
         code: "BINDING_UNMAPPED",
@@ -672,8 +674,15 @@ describe("StorefrontProductionService", () => {
           expect(errorSpy).toHaveBeenCalledTimes(1);
           for (const arg of errorSpy.mock.calls[0]!) {
             const text =
-              typeof arg === "string" ? arg : JSON.stringify(arg) ?? String(arg);
-            for (const value of [token, url, "origin.private.example", "sk_live"]) {
+              typeof arg === "string"
+                ? arg
+                : (JSON.stringify(arg) ?? String(arg));
+            for (const value of [
+              token,
+              url,
+              "origin.private.example",
+              "sk_live",
+            ]) {
               expect(text).not.toContain(value);
             }
             if (typeof arg === "object" && arg !== null) {
@@ -1406,6 +1415,52 @@ describe("published content endpoint", () => {
       publicationId: "pub_1",
       templateType: "index",
     });
+  });
+
+  it("reads only the active release's publication, whatever else the request names", async () => {
+    // Every selector a client might try for another publication, a draft or
+    // a preview. The endpoint reads `path` and nothing else: the publication
+    // comes from host resolution of the active release alone.
+    const selectors = new URLSearchParams({
+      path: "/",
+      publicationId: "pub_draft",
+      contentPublicationId: "pub_draft",
+      publication: "pub_draft",
+      releaseId: "rel_draft",
+      release: "rel_draft",
+      draft: "1",
+      preview: "1",
+      source: "draft",
+      ticket: "99",
+      storefrontId: "sf_other",
+      themeId: "theme_other",
+    });
+    contentPorts.getPublishedDocument.mockClear();
+    const plain = await (
+      await service().handleRequest(req("/_morph/content?path=/"))
+    ).json();
+    const plainCalls = contentPorts.getPublishedDocument.mock.calls.length;
+
+    contentPorts.getPublishedDocument.mockClear();
+    const res = await service().handleRequest(
+      req(`/_morph/content?${selectors}`, {
+        headers: {
+          "x-morph-content-publication-id": "pub_draft",
+          "x-morph-release-id": "rel_draft",
+          "x-morph-preview": "1",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(plain);
+    const calls = contentPorts.getPublishedDocument.mock.calls as unknown as [
+      { publicationId: string },
+    ][];
+    expect(calls.length).toBe(plainCalls);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [read] of calls) expect(read.publicationId).toBe("pub_1");
+    expect(res.headers.get("ETag")).toContain("rel_1");
   });
 
   it("versions the response by release so rollback restores content", async () => {
