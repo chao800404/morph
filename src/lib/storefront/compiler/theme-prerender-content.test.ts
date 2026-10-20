@@ -117,6 +117,76 @@ describe("frozen prerender content", () => {
     },
   );
 
+  it.each([
+    { address: "127.0.0.1", origin: "http://127.0.0.1:4321" },
+    { address: "::1", origin: "http://[::1]:4321" },
+  ])(
+    "replaces a forged x-morph-content-origin with its own $address listener, in headers and rawHeaders",
+    ({ address, origin }) => {
+      let middleware:
+        | ((req: object, res: object, next: (error?: Error) => void) => void)
+        | undefined;
+      const plugin = new Function(
+        "fs",
+        "path",
+        "process",
+        `return (${themePrerenderContentPluginSource("/workspace")});`,
+      )(
+        { readFileSync: () => "{}" },
+        { join: (...parts: string[]) => parts.join("/") },
+        { env: { TSS_PRERENDERING: "true" } },
+      );
+      plugin.configurePreviewServer({
+        httpServer: { address: () => ({ address, port: 4321 }) },
+        middlewares: {
+          use: (handler: typeof middleware) => {
+            middleware = handler;
+          },
+        },
+      });
+      const forged = "https://attacker.example";
+      const req = {
+        url: "/landing",
+        method: "GET",
+        headers: {
+          host: "127.0.0.1:4321",
+          "x-morph-content-origin": forged,
+        } as Record<string, string>,
+        // Cloudflare's Node adapter reads these, so a forged copy here
+        // (in any letter case) must not survive either.
+        rawHeaders: [
+          "Host",
+          "127.0.0.1:4321",
+          "X-Morph-Content-Origin",
+          forged,
+          "x-morph-content-origin",
+          forged,
+          "Accept",
+          "text/html",
+        ],
+      };
+      let passed = false;
+      middleware!(req, {}, (error) => {
+        expect(error).toBeUndefined();
+        passed = true;
+      });
+      expect(passed).toBe(true);
+      expect(req.headers["x-morph-content-origin"]).toBe(origin);
+      const named: string[] = [];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (req.rawHeaders[i]!.toLowerCase() === "x-morph-content-origin") {
+          named.push(req.rawHeaders[i + 1]!);
+        }
+      }
+      expect(named).toEqual([origin]);
+      expect(req.rawHeaders.join("\n")).not.toContain(forged);
+      // The Theme's other headers pass.
+      expect(req.rawHeaders).toEqual(
+        expect.arrayContaining(["Accept", "text/html"]),
+      );
+    },
+  );
+
   it("merges a frozen layout with no explicit website policy and the immutable index template", async () => {
     const data = snapshot();
     data.documents[0]!.item.metadata = { templateType: "index" };

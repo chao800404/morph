@@ -3,6 +3,7 @@ import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
 import { storefrontThemeBuildDal } from "../dal/storefront-theme-build.dal";
 import {
   NATIVE_START_COMPILER_ID,
@@ -746,7 +747,13 @@ export default defineConfig({ plugins: [cloudflare({ viteEnvironment: { name: "s
       });
       expect(input.buildMode).toBe("native");
       expect(input.compilerId).toBe(NATIVE_START_COMPILER_ID);
-      expect(input.compilerVersion).toBe(THEME_START_TOOLCHAIN.reactStart);
+      // The pinned Start version, with the injected SDK named after it.
+      expect(input.compilerVersion).toBe(
+        withThemeMorphSdkIdentity(THEME_START_TOOLCHAIN.reactStart),
+      );
+      expect(input.compilerVersion.startsWith(
+        `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.`,
+      )).toBe(true);
     });
   });
 

@@ -37,7 +37,11 @@ export type MorphProductListItem = Readonly<{
   handle: string;
   subtitle: string | null;
   description: string | null;
-  /** Absolute; resolved against the base URL when Morph sends a path. */
+  /**
+   * In the entry's media URL mode (README.md): from `createMorph`, a Morph
+   * path is made absolute against the base URL; from `@morph/sdk/start`, it
+   * stays as Morph sent it.
+   */
   thumbnailUrl: string | null;
   collectionId: string | null;
   collectionTitle: string | null;
