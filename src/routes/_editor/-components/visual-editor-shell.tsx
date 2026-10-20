@@ -2000,8 +2000,9 @@ export function VisualEditorShell({
   /**
    * The snapshot a content write to `templateId` is composed on, when sent.
    *
-   * Another of our writes (a rename, a promotion) can move the template's
-   * draft generation without returning the document it produced. Composing
+   * Another of our writes (a rename, or a promotion whose answer was not the
+   * direct successor of this copy) can move the template's draft generation
+   * without the document it produced reaching this snapshot. Composing
    * on the older copy at the newer generation is exactly the mismatch the
    * snapshot exists to prevent, so the document is read first; if it cannot
    * be read, nothing is sent and the input stays. A template with no
@@ -9378,10 +9379,16 @@ export function VisualEditorShell({
         );
       }
 
+      // Where the promotion was sent: its answer is accepted into the content
+      // snapshot only as the direct successor of the copy at that generation.
+      let sentDraftGeneration = 0;
+      let sentTemplateId = templateId;
       const result = await enqueueTemplateMutation(
         templateId,
-        (expectedDraftGeneration, resolvedTemplateId) =>
-          promoteStorefrontThemeText({
+        (expectedDraftGeneration, resolvedTemplateId) => {
+          sentDraftGeneration = expectedDraftGeneration;
+          sentTemplateId = resolvedTemplateId;
+          return promoteStorefrontThemeText({
             data: {
               storefrontId: workspaceScope.storefrontId,
               themeId: workspaceScope.themeId,
@@ -9401,7 +9408,8 @@ export function VisualEditorShell({
                 ? { confirmedImpact: [...request.confirmedImpact] }
                 : {}),
             },
-          }),
+          });
+        },
       );
       if (!result.success) {
         if (result.error === "SHARED_IMPACT_UNCONFIRMED") {
@@ -9416,6 +9424,23 @@ export function VisualEditorShell({
           { success: true }
         >
       ).data;
+      // The document the promotion wrote, with its generation, taken by the
+      // same rule as a content write's answer (`acceptAnsweredWrite`): only
+      // as the direct successor of the copy it was sent on, so a late or
+      // out-of-order answer changes nothing and the next read brings the
+      // document. Without it, the newest-copy decision (`newestAcceptedCopy`)
+      // saw neither copy holding the promoted value until the refetch.
+      const promotedSnapshot = acceptAnsweredWrite(
+        contentSnapshotsRef.current.get(sentTemplateId),
+        {
+          sentAt: sentDraftGeneration,
+          draftGeneration: saved.draftGeneration,
+          sections: saved.document?.sections,
+        },
+      );
+      if (promotedSnapshot) {
+        contentSnapshotsRef.current.set(sentTemplateId, promotedSnapshot);
+      }
       const promotionKey = fieldSelectionKey(
         request.sectionId,
         request.fieldName,
