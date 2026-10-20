@@ -27,6 +27,9 @@ import {
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -245,7 +248,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -1174,8 +1177,12 @@ describe("the frame brought up after the reload", () => {
     });
 
     it("is not posted to a frame that replaced it meanwhile", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       // Replaced, for another reason, while the image was being signed.
+      reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
@@ -1189,6 +1196,9 @@ describe("the frame brought up after the reload", () => {
   });
 
   it("sends nothing to a frame that is not the one the reload brought up", async () => {
+    // A current bridge: each document names itself and answers the editor's
+    // pings (C5 option A), so a reload in the frame is a confirmed new document.
+    modelCurrentBridge();
     await frameUp();
     await heldWhileTyping();
     commitAndClose(TYPED);
@@ -1200,6 +1210,7 @@ describe("the frame brought up after the reload", () => {
       servedInstance: { kind: "known", instance: serving },
     });
     await tick(0);
+    reloadFrameDocument();
     const from = await newFrameUp();
     expect(heroPosts(from)).toEqual([]);
     expect(replayedLines()).toEqual([]);
@@ -1429,6 +1440,7 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     }
     /** The frame is replaced for another reason: a new ready round. */
     async function frameReplaced() {
+      reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
@@ -1461,6 +1473,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6-binding: the replay's late post does not reach a frame that replaced it", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       await frameReplaced();
       await releaseSigning();
@@ -1469,6 +1484,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6c-a: an Inspector edit after the frame was replaced posts and signs nothing for the replay", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       await replayedWithUnsignedImage();
       await frameReplaced();
       const signedBefore = signedIds().length;
@@ -1481,6 +1499,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6c-b: a replacement made before the frame was replaced is not posted to the new frame", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       await replayedWithUnsignedImage();
       const before = posted().length;
       await inspectorSubheading("Sub newer");
