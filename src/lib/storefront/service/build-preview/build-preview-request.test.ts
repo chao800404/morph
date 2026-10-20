@@ -179,6 +179,22 @@ describe("a request on a Build Preview host", () => {
     expect(forwarded?.url).toBe(`https://${HOST}/products?q=a+b&x=%2F&x=2`);
   });
 
+  it("forwards a Theme's Authorization but not a Morph secret API key", async () => {
+    const morphKey = `sk_123e4567-e89b-12d3-a456-426614174000_${"a".repeat(48)}`;
+    const { deps, server } = setup();
+    await handleBuildPreviewRequest(
+      request("/account", { headers: { authorization: "Bearer theme-token" } }),
+      deps,
+    );
+    await handleBuildPreviewRequest(
+      request("/account", { headers: { authorization: `Basic ${morphKey}` } }),
+      deps,
+    );
+    const sent = vi.mocked(server.fetch).mock.calls.map((call) => call[1]);
+    expect(sent[0]?.headers.get("authorization")).toBe("Bearer theme-token");
+    expect(sent[1]?.headers.has("authorization")).toBe(false);
+  });
+
   it("starts the instance from the verified artifact when there is none", async () => {
     let running = false;
     const { deps, server } = setup({

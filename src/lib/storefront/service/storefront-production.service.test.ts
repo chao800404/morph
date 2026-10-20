@@ -1267,7 +1267,7 @@ describe("what of a shopper's request reaches the Theme Worker", () => {
       expect(seen.headers.get("cookie")).toBe(expected);
     });
 
-    it("leaves headers outside x-morph-* and cookie as they were", async () => {
+    it("leaves other headers, and an Authorization that is not a Morph secret API key, as they were", async () => {
       const seen = await forward(
         new Request(`https://${HOST}/about`, {
           headers: {
@@ -1281,6 +1281,24 @@ describe("what of a shopper's request reaches the Theme Worker", () => {
       expect(seen.headers.get("user-agent")).toBe("Shopper/1.0");
       expect(seen.headers.get("authorization")).toBe("Bearer theme-own");
     });
+
+    const morphKey = `sk_123e4567-e89b-12d3-a456-426614174000_${"a".repeat(48)}`;
+    it.each<readonly [string, string]>([
+      ["a direct Basic key", `Basic ${morphKey}`],
+      ["a base64 Basic key", `Basic ${btoa(`${morphKey}:`)}`],
+      ["a lowercase basic scheme", `basic ${morphKey}`],
+    ])(
+      "removes a Morph secret API key from Authorization given %s",
+      async (_case, authorization) => {
+        const seen = await forward(
+          new Request(`https://${HOST}/about`, {
+            headers: { authorization, "accept-language": "en" },
+          }),
+        );
+        expect(seen.headers.has("authorization")).toBe(false);
+        expect(seen.headers.get("accept-language")).toBe("en");
+      },
+    );
   });
 });
 
