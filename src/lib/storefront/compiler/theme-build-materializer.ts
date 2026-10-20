@@ -7,6 +7,7 @@ import type {
 import type { StorefrontThemeRevisionDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { safeThemeFilePathSchema } from "@/lib/validations/storefront-theme-file";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
+import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
 import { computeThemeInputHash } from "./theme-compiler-hasher";
 import type { ThemeCompilerFile } from "./theme-compiler.types";
 import { buildThemeRouteRegistry } from "./theme-route-registry";
@@ -460,8 +461,12 @@ export function materializeThemeBuildInput({
     buildMode === "native"
       ? themeFramework(framework, { astroThemes }).build.native.compilerIdentity()
       : null;
+  // A platform build is a TanStack Start build (Astro is native only), and its
+  // workspace carries the Morph SDK, so its version names that SDK too
+  // (theme-morph-sdk.ts). The runners expect the same value.
   const defaultCompilerId = nativeIdentity?.id ?? "tailwind-v4-build";
-  const defaultCompilerVersion = nativeIdentity?.version ?? TAILWIND_VERSION;
+  const defaultCompilerVersion =
+    nativeIdentity?.version ?? withThemeMorphSdkIdentity(TAILWIND_VERSION);
 
   // Determine compiler identity & guard against identity drift
   let compilerId: string;

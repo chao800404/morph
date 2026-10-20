@@ -8,7 +8,7 @@ import type {
   MorphProductListParams,
   MorphProductResult,
 } from "./types";
-import { absolutizeMorphPaths } from "./urls";
+import { resolveMorphPaths, type MorphMediaUrls } from "./urls";
 
 const TIMEOUT_MS = 15_000;
 /** The same cap as the local development proxy (`DEFAULT_MAX_BYTES`). */
@@ -120,14 +120,40 @@ async function readCapped(
 }
 
 /**
- * Creates a reader for one Morph origin.
+ * Creates a reader for one Morph origin, for a site on another domain.
  *
  * Holds only what is fixed at creation: the origin and the fetch to use.
  * Nothing about a request — which store, which preview, which credential —
  * is kept between calls, so two requests served at once cannot see each
  * other's answers.
+ *
+ * Morph's media paths come back absolute against `baseUrl` (`urls.ts`). That
+ * mode is part of this entry's contract.
  */
 export function createMorph(options: MorphOptions): Morph {
+  return createMorphReader(options, { mediaUrls: "absolute" });
+}
+
+const MEDIA_URL_MODES: ReadonlySet<string> = new Set<MorphMediaUrls>([
+  "absolute",
+  "relative",
+]);
+
+/**
+ * The reader every entry point builds on. Not part of the public surface:
+ * each entry fixes `mediaUrls` for its own contract — `createMorph` passes
+ * `"absolute"`, `@morph/sdk/start` passes `"relative"` — so a Theme or site
+ * never chooses it. There is one reading path; only the URL step differs.
+ */
+export function createMorphReader(
+  options: MorphOptions,
+  mode: Readonly<{ mediaUrls: MorphMediaUrls }>,
+): Morph {
+  const mediaUrls = mode?.mediaUrls;
+  if (typeof mediaUrls !== "string" || !MEDIA_URL_MODES.has(mediaUrls)) {
+    // A programming error in an entry point, not something a site can cause.
+    throw new TypeError("createMorphReader: unknown media URL mode.");
+  }
   const origin = parseBaseUrl(options?.baseUrl);
   const doFetch: MorphFetch =
     options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -215,7 +241,7 @@ export function createMorph(options: MorphOptions): Morph {
     if (Object.prototype.hasOwnProperty.call(body.slots, "_hidden")) {
       throw new MorphError("reserved_slot", "page", answer.status);
     }
-    const slots = absolutizeMorphPaths(body.slots, origin);
+    const slots = resolveMorphPaths(body.slots, origin, mediaUrls);
     return { ...slots, _hidden: [...(body.hiddenSlots as string[])] };
   }
 
@@ -319,7 +345,7 @@ export function createMorph(options: MorphOptions): Morph {
         ) {
           throw new MorphError("invalid_response", "product", answer.status);
         }
-        return absolutizeMorphPaths<unknown>(
+        return resolveMorphPaths<unknown>(
           {
             products: body.products,
             pagination: {
@@ -331,6 +357,7 @@ export function createMorph(options: MorphOptions): Morph {
             context: body.context,
           },
           origin,
+          mediaUrls,
         ) as MorphProductList;
       },
       async get(handle: string): Promise<MorphProductResult | null> {
@@ -367,9 +394,10 @@ export function createMorph(options: MorphOptions): Morph {
         ) {
           throw new MorphError("invalid_response", "product", answer.status);
         }
-        return absolutizeMorphPaths<unknown>(
+        return resolveMorphPaths<unknown>(
           { product: body.product, context: body.context },
           origin,
+          mediaUrls,
         ) as MorphProductResult;
       },
     },

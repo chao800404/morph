@@ -9,8 +9,25 @@
  * a reason that exists nowhere but the test environment. Workers have one
  * realm and no DOM, and nothing here touches a document.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { SVG_VALIDATOR_VERSION } from "@/lib/security/svg-validation";
 import { describe, expect, it, vi } from "vitest";
+
+// The Theme side of a forwarded request: Start's request-scoped
+// `getRequest()`, stood in for by the same AsyncLocalStorage mechanism, so the
+// SDK's Start thin entry can run as the Theme Worker would.
+const themeRequest = vi.hoisted(() => ({
+  scope: null as null | { getStore(): Request | undefined },
+}));
+vi.mock("@tanstack/react-start/server", () => ({
+  getRequest: () => {
+    const request = themeRequest.scope?.getStore();
+    if (!request) throw new Error("No Start request in scope.");
+    return request;
+  },
+}));
+
+import { morph as startMorph } from "../../../../packages/morph-sdk/start/index";
 import {
   StorefrontProductionService,
   THEME_RUNTIME_FAILURE_LOG_LABEL,
@@ -130,14 +147,17 @@ describe("StorefrontProductionService", () => {
   it("exposes only token-authorized order transfer confirmation on the store host", async () => {
     const confirmationHandler = vi.fn(
       async () =>
-        new Response(JSON.stringify({ orderTransfer: { status: "accepted" } }), {
-          headers: {
-            "access-control-allow-origin": "*",
-            "access-control-allow-methods": "GET, POST, OPTIONS",
-            "cache-control": "private, no-store",
-            "content-type": "application/json",
+        new Response(
+          JSON.stringify({ orderTransfer: { status: "accepted" } }),
+          {
+            headers: {
+              "access-control-allow-origin": "*",
+              "access-control-allow-methods": "GET, POST, OPTIONS",
+              "cache-control": "private, no-store",
+              "content-type": "application/json",
+            },
           },
-        }),
+        ),
     );
     const accountApiHandler = vi.fn(
       async () =>
@@ -196,7 +216,8 @@ describe("StorefrontProductionService", () => {
             "access-control-allow-origin": "*",
             "cache-control": "public, max-age=60",
             "content-type": "application/json",
-            "set-cookie": "better-auth.session_token=opaque; HttpOnly; Secure; Path=/; SameSite=Lax",
+            "set-cookie":
+              "better-auth.session_token=opaque; HttpOnly; Secure; Path=/; SameSite=Lax",
           },
         }),
     );
@@ -537,7 +558,9 @@ describe("StorefrontProductionService", () => {
         name: "a mapped service binding that is not bound",
         runtime: () =>
           createThemeRuntime({
-            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({ sf_1: FAKE_BINDING }),
+            MORPH_THEME_SERVICE_BINDINGS: JSON.stringify({
+              sf_1: FAKE_BINDING,
+            }),
           }),
         kind: "service-binding",
         code: "BINDING_UNMAPPED",
@@ -651,8 +674,15 @@ describe("StorefrontProductionService", () => {
           expect(errorSpy).toHaveBeenCalledTimes(1);
           for (const arg of errorSpy.mock.calls[0]!) {
             const text =
-              typeof arg === "string" ? arg : JSON.stringify(arg) ?? String(arg);
-            for (const value of [token, url, "origin.private.example", "sk_live"]) {
+              typeof arg === "string"
+                ? arg
+                : (JSON.stringify(arg) ?? String(arg));
+            for (const value of [
+              token,
+              url,
+              "origin.private.example",
+              "sk_live",
+            ]) {
               expect(text).not.toContain(value);
             }
             if (typeof arg === "object" && arg !== null) {
@@ -883,6 +913,52 @@ describe("ThemeRuntime transports", () => {
 
     expect(result.success).toBe(true);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("a forged content origin never reaches the SDK's Start thin entry, on any transport", async () => {
+    const scope = new AsyncLocalStorage<Request>();
+    themeRequest.scope = scope;
+    const contentReads: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input instanceof Request ? input.url : input);
+        contentReads.push(url);
+        return Response.json({ slots: {}, hiddenSlots: [] });
+      }),
+    );
+    // What the Theme Worker does with a page request: read through the thin
+    // entry while serving it.
+    const theme = async (request: Request) =>
+      scope.run(request, async () => {
+        await startMorph.pages.get("/");
+        return new Response("ok");
+      });
+    const spoofed = {
+      ...invocation,
+      request: new Request(`https://${HOST}/about?x=1`, {
+        headers: { "x-morph-content-origin": "https://attacker.example" },
+      }),
+    };
+    const transports = [
+      new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      new DispatchNamespaceThemeRuntime({ get: () => ({ fetch: theme }) }),
+      new LocalDirectThemeRuntime("http://127.0.0.1:8788", (async (
+        input: RequestInfo | URL,
+      ) => theme(input as Request)) as typeof fetch),
+    ];
+    try {
+      for (const transport of transports) {
+        const result = await transport.handle(spoofed);
+        expect(result.success, transport.kind).toBe(true);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      themeRequest.scope = null;
+    }
+    expect(contentReads).toEqual(
+      transports.map(() => `https://${HOST}/_morph/content?path=%2F`),
+    );
   });
 });
 
@@ -1339,6 +1415,52 @@ describe("published content endpoint", () => {
       publicationId: "pub_1",
       templateType: "index",
     });
+  });
+
+  it("reads only the active release's publication, whatever else the request names", async () => {
+    // Every selector a client might try for another publication, a draft or
+    // a preview. The endpoint reads `path` and nothing else: the publication
+    // comes from host resolution of the active release alone.
+    const selectors = new URLSearchParams({
+      path: "/",
+      publicationId: "pub_draft",
+      contentPublicationId: "pub_draft",
+      publication: "pub_draft",
+      releaseId: "rel_draft",
+      release: "rel_draft",
+      draft: "1",
+      preview: "1",
+      source: "draft",
+      ticket: "99",
+      storefrontId: "sf_other",
+      themeId: "theme_other",
+    });
+    contentPorts.getPublishedDocument.mockClear();
+    const plain = await (
+      await service().handleRequest(req("/_morph/content?path=/"))
+    ).json();
+    const plainCalls = contentPorts.getPublishedDocument.mock.calls.length;
+
+    contentPorts.getPublishedDocument.mockClear();
+    const res = await service().handleRequest(
+      req(`/_morph/content?${selectors}`, {
+        headers: {
+          "x-morph-content-publication-id": "pub_draft",
+          "x-morph-release-id": "rel_draft",
+          "x-morph-preview": "1",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(plain);
+    const calls = contentPorts.getPublishedDocument.mock.calls as unknown as [
+      { publicationId: string },
+    ][];
+    expect(calls.length).toBe(plainCalls);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [read] of calls) expect(read.publicationId).toBe("pub_1");
+    expect(res.headers.get("ETag")).toContain("rel_1");
   });
 
   it("versions the response by release so rollback restores content", async () => {

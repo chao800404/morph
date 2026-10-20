@@ -113,7 +113,9 @@ describe("planNativeStartBuild", () => {
 
   it("writes the build's sealed content for the prerender to read", () => {
     const sealed = {
-      content: { "/": { slots: { hero: { title: "Sealed" } }, hiddenSlots: [] } },
+      content: {
+        "/": { slots: { hero: { title: "Sealed" } }, hiddenSlots: [] },
+      },
       unavailable: { "/blog": "SSG_CONTENT_TEMPLATE_IDENTITY_REQUIRED" },
     };
     const plan = planNativeStartBuild(project(), { prerenderContent: sealed });
@@ -138,8 +140,23 @@ describe("planNativeStartBuild", () => {
     );
     expect(byPath.get(NATIVE_BUILD_HOOKS_PATH)).toBeDefined();
     expect(byPath.get(NATIVE_BUILD_LOADER_PATH)).toBeDefined();
-    expect(byPath.get(".morph-prerender-content.json")).not.toContain(
-      "forged",
+    expect(byPath.get(".morph-prerender-content.json")).not.toContain("forged");
+  });
+
+  it("carries Morph's SDK copy and aliases @morph/sdk and @morph/sdk/start to it", () => {
+    const plan = planNativeStartBuild(project());
+    if (!plan.ok) throw new Error(plan.message);
+    const byPath = new Map(plan.workspaceFiles.map((f) => [f.path, f.content]));
+    expect(byPath.get(".morph/sdk/start/index.ts")).toContain(
+      "x-morph-content-origin",
+    );
+    expect(byPath.has(".morph/sdk/src/client.ts")).toBe(true);
+    const wrapper = byPath.get(NATIVE_WRAPPER_CONFIG_PATH)!;
+    expect(wrapper).toContain(
+      'path.join(workspaceRoot, ".morph/sdk/start/index.ts")',
+    );
+    expect(wrapper).toContain(
+      'path.join(workspaceRoot, ".morph/sdk/src/index.ts")',
     );
   });
 
@@ -148,6 +165,7 @@ describe("planNativeStartBuild", () => {
     // a pre-seeded record, Miniflare state a prerender would read — so the
     // directories are refused whole (docs/astro-theme-plan.md 5.2.4).
     for (const path of [
+      ".morph/sdk/start/index.ts",
       ".morph/vite.config.ts",
       ".morph/prerender-refused-reads.ndjson",
       ".morph/native-build-hooks.mjs",
