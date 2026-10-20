@@ -59,15 +59,36 @@ try {
   process.exit(1);
 }
 
+/**
+ * A source map comment carrying the map inline (`//#` in JS, `/*#` in CSS).
+ * Line-leading only: bundled tooling can hold the same text inside a string
+ * literal, mid-line.
+ */
+const INLINE_SOURCE_MAP = /^(?:\/\/|\/\*)# sourceMappingURL=data:/m;
+
 const findings = [];
 
 for (const file of files) {
-  // Source maps mirror the original module text, so a hit there is expected
-  // noise rather than a leak in shipped code.
-  if (file.endsWith(".map")) continue;
+  const rel = relative(projectRoot, file);
+
+  // No source map may ship at all, rather than being scanned like code. The
+  // client build does not emit them (`build.sourcemap` is unset in
+  // vite.config.ts; only the SSR environment turns them on, into dist/server).
+  // A public map publishes the original text of every client module through
+  // `sourcesContent`, including source the compiler stripped from the chunk,
+  // such as a `createServerOnlyFn` body; scanning it for names would flag that
+  // stripped source as a leak. Refusing the file closes the gap without that
+  // noise: one appearing is a build configuration change to review.
+  if (file.endsWith(".map")) {
+    findings.push({ file: rel, hit: "source map shipped in the client output" });
+    continue;
+  }
 
   const content = readFileSync(file, "utf8");
-  const rel = relative(projectRoot, file);
+
+  if (INLINE_SOURCE_MAP.test(content)) {
+    findings.push({ file: rel, hit: "inline source map shipped in the client output" });
+  }
 
   for (const name of FORBIDDEN_NAMES) {
     if (content.includes(name)) {
@@ -89,7 +110,8 @@ if (findings.length > 0) {
   }
   console.error(
     "\nMove the value into `cmsConfig.server`, and read `process.env` inside\n" +
-      "that `createServerOnlyFn` callback rather than at module scope.\n",
+      "that `createServerOnlyFn` callback rather than at module scope.\n" +
+      "For a source map, leave `build.sourcemap` off for the client build.\n",
   );
   process.exit(1);
 }
