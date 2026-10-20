@@ -1,0 +1,18 @@
+---
+import Hero from "../components/Hero.astro";
+import { morph } from "../morph/content";
+
+const home = await morph.pages.get("/");
+const { hero } = home;
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Case A</title>
+  </head>
+  <body>
+    <main>
+      <Hero {...hero} />
+    </main>
+  </body>
+</html>
