@@ -241,6 +241,10 @@ import type {
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
+  codeComponentSourcePath,
+  sourceDefaultRefusalReader,
+} from "@/lib/storefront/editor/source-default-control";
+import {
   patchComponentDefaultProp,
   patchElementClassNameResult,
   removeJsxElement,
@@ -493,6 +497,13 @@ function borrowableTemplate<
  */
 export const INLINE_TEXT_REFUSED_MESSAGE =
   "This text can't be edited safely in place. Use the content fields on the right.";
+/**
+ * Said instead when the right-hand field is not offered either: the text is a
+ * component default the page overrides, or may override, in code
+ * (`source-default-control.ts`).
+ */
+export const INLINE_TEXT_CODE_CONTROLLED_MESSAGE =
+  "This text is controlled by code, so it can't be edited here or in the content fields. Edit it in Code.";
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
@@ -4141,6 +4152,32 @@ export function VisualEditorShell({
       originalValue: string;
     }) => void
   >(() => {});
+  /**
+   * What to say when the canvas would not open text for typing. It points to
+   * the right-hand field only where the panel offers one: a Document field, or
+   * a component default the canvas really shows. Asked as the panel asks.
+   */
+  const inlineTextRefusedMessageRef = useRef<
+    (sectionId: string, fieldPath: string) => string
+  >(() => INLINE_TEXT_REFUSED_MESSAGE);
+  useEffect(() => {
+    inlineTextRefusedMessageRef.current = (sectionId, fieldPath) => {
+      const stored = resolveEditorTemplate(
+        routeBackedContext,
+        search,
+      )?.document.sections.some((section) => section.id === sectionId);
+      if (stored) return INLINE_TEXT_REFUSED_MESSAGE;
+      const selection =
+        editableSelection?.sectionId === sectionId ? editableSelection : null;
+      const refused = sourceDefaultRefusalReader(
+        effectiveThemeFiles,
+        codeComponentSourcePath(selection, effectiveThemeFiles),
+      )(fieldPath.split(".")[0] ?? fieldPath);
+      return refused
+        ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+        : INLINE_TEXT_REFUSED_MESSAGE;
+    };
+  }, [editableSelection, effectiveThemeFiles, routeBackedContext, search]);
   /**
    * The last value an inline canvas edit wrote, for the Inspector.
    *
@@ -7983,9 +8020,13 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-inline-text-refused") {
-        toast.info(INLINE_TEXT_REFUSED_MESSAGE, {
-          id: "inline-text-refused",
-        });
+        toast.info(
+          inlineTextRefusedMessageRef.current(
+            message.sectionId,
+            message.fieldPath,
+          ),
+          { id: "inline-text-refused" },
+        );
         return;
       }
 

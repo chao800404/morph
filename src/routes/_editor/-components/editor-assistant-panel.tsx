@@ -19,7 +19,7 @@ import {
   SendHorizontal,
   WandSparkles,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
@@ -34,6 +34,10 @@ import type {
   TextPromotionRequest,
 } from "@/lib/storefront/editor/text-promotion-request";
 import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
+import {
+  codeComponentSourcePath,
+  sourceDefaultRefusalReader,
+} from "@/lib/storefront/editor/source-default-control";
 
 type EditorAssistantPanelProps = {
   /**
@@ -299,6 +303,25 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * lets a selection go by when a hide is confirmed.
    */
   const contentRefused = storedSection?.enabled === false;
+  /**
+   * Where an edit with no Document section behind it is written: the default
+   * props of the selected component's own source.
+   */
+  const codeComponentPath = useMemo(
+    () => codeComponentSourcePath(selection, themeFiles),
+    [selection, themeFiles],
+  );
+  /**
+   * Why a field's source default is not what the canvas shows, or null when
+   * it is (`source-default-control.ts`). A default the page overrides — or may
+   * override — is not edited from here: saving it would change nothing on
+   * screen. The Inspector shows those fields as controlled by code, and the
+   * write below drops them whatever the Inspector sends.
+   */
+  const sourceDefaultRefusal = useMemo(
+    () => sourceDefaultRefusalReader(themeFiles ?? [], codeComponentPath),
+    [codeComponentPath, themeFiles],
+  );
 
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const isInspectorTab = tab === "styles" || tab === "content";
@@ -330,25 +353,23 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         return;
       }
 
-      const sourcePath =
-        (selection?.sourceFilePath &&
-        themeFiles?.some((file) => file.path === selection.sourceFilePath)
-          ? selection.sourceFilePath
-          : null) ??
-        (selectedSection?.id &&
-        themeFiles?.some((file) => file.path === selectedSection.id)
-          ? selectedSection.id
-          : null);
-      if (sourcePath) onCodeComponentPropsChange?.(sourcePath, nextProps);
+      if (!codeComponentPath) return;
+      const writable = Object.entries(nextProps).filter(
+        ([fieldKey]) => sourceDefaultRefusal(fieldKey) === null,
+      );
+      if (writable.length === 0) return;
+      onCodeComponentPropsChange?.(
+        codeComponentPath,
+        Object.fromEntries(writable),
+      );
     },
     [
+      codeComponentPath,
       contentRefused,
       documentSection,
       onCodeComponentPropsChange,
       onSectionPropsChange,
-      selectedSection?.id,
-      selection?.sourceFilePath,
-      themeFiles,
+      sourceDefaultRefusal,
     ],
   );
   const inspectorContentBasis = useCallback(
@@ -518,6 +539,9 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               view={tab === "content" ? "content" : "styles"}
               section={selectedSection}
               contentStore={contentStore}
+              sourceDefaultRefusal={
+                contentStore === "source" ? sourceDefaultRefusal : undefined
+              }
               documentWritesRefused={contentRefused}
               themeFiles={themeFiles}
               routeSourcePath={routeSourcePath}
