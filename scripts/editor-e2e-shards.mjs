@@ -79,6 +79,8 @@ export const EDITOR_SHARDS = [
     "media-svg.spec.ts",
     "section-visibility-layout.spec.ts",
     "auth-failure.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "code-editor-local-monaco.spec.ts",
   ],
 ];
 
