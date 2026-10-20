@@ -698,3 +698,27 @@ describe("a frame whose bridge sends no id (unverified)", () => {
     expect(heroPosts(from)).toHaveLength(1);
   });
 });
+
+/**
+ * KNOWN GAP (2026-10-20): a late ready from an older document the editor
+ * never saw. To the editor its id is just an id not seen before — a new
+ * document — so today it ends the open edit as lost, makes the document the
+ * author is typing in a replaced one (whose close and commit are then not
+ * taken) and arms the replay. `it.fails` records that; see the PR's proposal.
+ */
+describe("KNOWN GAP: a late ready from a document the editor never saw", () => {
+  it.fails("does not end the edit open in the current document", async () => {
+    const STALE = "e".repeat(32);
+    await frameUp(DOC_A);
+    editing(DOC_A, true);
+    await tick(0);
+    const from = posted().length;
+    commit(DOC_A);
+    await tick(0);
+    await ready(STALE);
+    editing(DOC_A, false);
+    await tick(0);
+    expect(heroPosts(from).map((message) => message.props?.heading)).toEqual([TYPED]);
+    expect(replayedLines()).toEqual([]);
+  });
+});

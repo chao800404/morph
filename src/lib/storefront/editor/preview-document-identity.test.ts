@@ -222,3 +222,34 @@ describe("which document a frame message comes from (C5, A1)", () => {
     expect([...next.state.replaced]).toEqual([A]);
   });
 });
+
+/**
+ * KNOWN GAP (2026-10-20): a late ready from an older document whose id the
+ * editor never saw, or no longer remembers (past the 64-entry memory).
+ *
+ * Its input — frame key, type, an id never seen, arrival after the current
+ * document's ready — is exactly a genuine new document's, so no rule over the
+ * data A1 has can refuse one and take the other: these stay red until the
+ * ready carries something that orders documents (see the PR's proposal).
+ * They are `it.fails`, so the suite records the gap, and goes red the day it
+ * closes, when they should become plain tests.
+ */
+describe("KNOWN GAP: a late ready from an older document the editor never saw", () => {
+  const X = "e".repeat(32);
+
+  it.fails("is not taken (today an unseen id reads as a new document)", () => {
+    // X loaded before B; its ready arrives only now, after B's.
+    const { last, state } = run([ready(A), ready(B), ready(X)]);
+    expect(last).toEqual({ kind: "refused", why: "replaced-document" });
+    expect(state.current).toBe(B);
+  });
+
+  it.fails("past the memory: a replaced document's late ready is not taken", () => {
+    const ids = Array.from({ length: 66 }, (_, index) =>
+      index.toString(16).padStart(32, "0"),
+    );
+    const { last, state } = run([...ids.map((id) => ready(id)), ready(ids[0]!)]);
+    expect(last).toEqual({ kind: "refused", why: "replaced-document" });
+    expect(state.current).toBe(ids.at(-1));
+  });
+});
