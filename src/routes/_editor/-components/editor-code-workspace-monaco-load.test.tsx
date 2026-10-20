@@ -112,26 +112,37 @@ describe("EditorCodeWorkspace while Monaco loads", () => {
     store.updateLocalContent(file.path, DRAFT, scope);
   });
 
-  it("shows the failure with Retry, keeps the draft, and opens it once Retry loads Monaco", async () => {
+  it("loading: says so, with no Retry and no editor yet", () => {
+    control.importRuntime = () => new Promise(() => {});
+    renderWorkspace();
+    expect(screen.getByText(/Loading the code editor/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+  });
+
+  it("timeout: offers Retry, keeps the draft, and Retry opens the editor with it", async () => {
     const runtime = { Editor, monaco: {} } as unknown as EditorCodeMonacoRuntime;
-    control.importRuntime = vi
-      .fn<() => Promise<EditorCodeMonacoRuntime>>()
-      .mockRejectedValueOnce(
-        new TypeError("Failed to fetch dynamically imported module"),
-      )
-      .mockResolvedValueOnce(runtime);
+    let answer!: (value: EditorCodeMonacoRuntime) => void;
+    const open = new Promise<EditorCodeMonacoRuntime>((resolve) => {
+      answer = resolve;
+    });
+    control.importRuntime = vi.fn(() => open);
 
     renderWorkspace();
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("The code editor could not be loaded.");
-    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
-    // Nothing about the failure touched the draft.
+    expect(alert.textContent).toContain(
+      "The code editor is taking too long to load.",
+    );
+    expect(alert.getAttribute("data-code-editor-load-reason")).toBe("timeout");
     expect(
       useThemeWorkspaceStore.getState().files[file.path].localContent,
     ).toBe(DRAFT);
     expect(screen.getByText("1 unsaved")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByText(/Loading the code editor/)).toBeTruthy();
+    // The request that was still open answers.
+    answer(runtime);
     const editor = (await screen.findByRole("textbox", {
       name: "Code editor",
     })) as HTMLTextAreaElement;
@@ -140,18 +151,28 @@ describe("EditorCodeWorkspace while Monaco loads", () => {
     expect(control.importRuntime).toHaveBeenCalledTimes(2);
   });
 
-  it("does not stay on loading: a load that never answers becomes the timeout error", async () => {
-    control.importRuntime = () => new Promise(() => {});
-    renderWorkspace();
-    expect(screen.getByText(/Loading the code editor/)).toBeTruthy();
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain(
-      "The code editor is taking too long to load.",
+  it("failed: says a reload is needed, offers no Retry, and keeps the draft", async () => {
+    control.importRuntime = vi.fn(() =>
+      Promise.reject(
+        new TypeError("Failed to fetch dynamically imported module"),
+      ),
     );
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+
+    renderWorkspace();
+    const alert = await screen.findByRole("alert");
+    expect(alert.getAttribute("data-code-editor-load-reason")).toBe("failed");
+    expect(alert.textContent).toContain("The code editor could not be loaded.");
+    expect(alert.textContent).toContain("reload the page to open the code editor");
+    expect(alert.textContent).toContain(
+      "Unsaved changes are still in this tab, and reloading discards them.",
+    );
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
     expect(
       useThemeWorkspaceStore.getState().files[file.path].localContent,
     ).toBe(DRAFT);
+    expect(screen.getByText("1 unsaved")).toBeTruthy();
+    expect(control.importRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("mounts the editor with the draft once Monaco is ready", async () => {

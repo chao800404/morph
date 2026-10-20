@@ -44,7 +44,7 @@ describe("createEditorCodeMonacoLoader", () => {
     expect(importRuntime).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a failed import, and Retry imports again", async () => {
+  it("treats a failed import as final: Retry does not import again", async () => {
     const importRuntime = vi
       .fn<() => Promise<EditorCodeMonacoRuntime>>()
       .mockRejectedValueOnce(new TypeError("Failed to fetch dynamically imported module"))
@@ -57,11 +57,24 @@ describe("createEditorCodeMonacoLoader", () => {
     expect(loader.getState()).toEqual({ status: "error", reason: "failed" });
 
     loader.retry();
-    expect(loader.getState()).toEqual({ status: "loading" });
+    await vi.advanceTimersByTimeAsync(EDITOR_CODE_MONACO_TIMEOUT_MS);
+    expect(loader.getState()).toEqual({ status: "error", reason: "failed" });
+    expect(importRuntime).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(["error"]);
+  });
+
+  it("turns a timeout into the final failure when the open request rejects", async () => {
+    const pending = deferred<EditorCodeMonacoRuntime>();
+    const importRuntime = vi.fn(() => pending.promise);
+    const loader = createEditorCodeMonacoLoader({ importRuntime, timeoutMs: 100 });
+    loader.load();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(loader.getState()).toEqual({ status: "error", reason: "timeout" });
+    pending.reject(new TypeError("Failed to fetch dynamically imported module"));
     await vi.advanceTimersByTimeAsync(0);
-    expect(loader.getState()).toEqual({ status: "ready", runtime });
-    expect(importRuntime).toHaveBeenCalledTimes(2);
-    expect(seen).toEqual(["error", "loading", "ready"]);
+    expect(loader.getState()).toEqual({ status: "error", reason: "failed" });
+    loader.retry();
+    expect(importRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("shows a timeout instead of loading forever, and still takes a late answer", async () => {

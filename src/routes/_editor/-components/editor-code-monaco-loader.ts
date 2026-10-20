@@ -7,7 +7,21 @@ import { useEffect, useSyncExternalStore } from "react";
  * timeout and no error: a request that never answered left "Loading..." on
  * screen for good (CI run 39389278872). The runtime now ships with Morph and
  * is imported here, on demand, and the state is one of loading, ready or
- * error, so a failure is visible and can be retried.
+ * error, so a failure is visible.
+ *
+ * Retry is offered only where it can work:
+ *
+ * - `timeout`: no answer yet. The request is still open; a new `import()` of
+ *   the same module joins it, and the editor opens if it ever answers
+ *   (E2E: a held runtime request, released after Retry).
+ * - `failed`: the import rejected. That is final for this page in Chromium:
+ *   the HTML module map keeps a module whose fetch failed, or whose
+ *   `modulepreload` failed, as failed, and every later `import()` of it
+ *   rejects at once without a request (reproduced on Chromium 151, and in
+ *   E2E). A module that threw while evaluating is kept as errored the same
+ *   way. The rejection does not say which kind of failure it was, and other
+ *   engines are not verified, so every rejection is treated as final: the
+ *   page says a reload is needed and offers no Retry that would do nothing.
  *
  * The import is browser-only. `import.meta.env.SSR` is replaced at build
  * time, so the server build drops the `import()` and never contains Monaco;
@@ -26,7 +40,10 @@ export type EditorCodeMonacoState =
   | { status: "ready"; runtime: EditorCodeMonacoRuntime }
   | {
       status: "error";
-      /** `timeout`: no answer yet, still waiting. `failed`: the import threw. */
+      /**
+       * `timeout`: no answer yet, still waiting; Retry can work.
+       * `failed`: the import rejected; only a reload loads the editor.
+       */
       reason: "timeout" | "failed";
     };
 
@@ -45,7 +62,7 @@ export type EditorCodeMonacoLoader = {
   subscribe: (listener: () => void) => () => void;
   /** Starts a load unless one is running or Monaco is ready. */
   load: () => void;
-  /** A new attempt after an error; a no-op otherwise. */
+  /** A new attempt after a timeout; a no-op otherwise, `failed` included. */
   retry: () => void;
 };
 
@@ -108,7 +125,7 @@ export function createEditorCodeMonacoLoader({
       if (!started) start();
     },
     retry: () => {
-      if (state.status === "error") start();
+      if (state.status === "error" && state.reason === "timeout") start();
     },
   };
 }

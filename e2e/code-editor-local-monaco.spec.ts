@@ -19,12 +19,18 @@ import {
  * workers, CSS and codicon font served from the same origin. These cases run
  * with every request to any other origin aborted, so a dependency on another
  * host fails here rather than on someone's slow network; and they hold or
- * abort Morph's own Monaco runtime to show the editor says so, and recovers,
- * instead of loading forever.
+ * abort Morph's own Monaco runtime to show the editor says so instead of
+ * loading forever: a held request can be retried and recovers; a failed one
+ * cannot be fetched again in the same page, and the editor says a reload is
+ * needed.
  *
  * The preview frame may be served from another local origin; it is blocked
  * too, which Code mode does not need.
  */
+// Environment gate, as in every editor spec: without the runner's
+// disposable store (E2E_EDITOR_PATH) there is nothing to open. CI sets it on
+// every shard; that this file ran is shown per test by the shard's JSON report
+// (editor-e2e-results-<shard>-attempt-<n>/shard-<shard>.json), not by this line.
 test.skip(!EDITOR_PATH, "Requires the disposable editor store.");
 
 const PATH = "src/e2e-local-monaco.ts";
@@ -244,7 +250,7 @@ test.describe("Code mode's bundled Monaco", () => {
       .toBe(SOURCE);
   });
 
-  test("a runtime that fails to load shows the error with Retry, never an endless loading", async ({
+  test("a runtime that fails to load says a reload is needed, with no Retry", async ({
     page,
     baseURL,
   }) => {
@@ -260,31 +266,35 @@ test.describe("Code mode's bundled Monaco", () => {
       "failed",
       { timeout: 30_000 },
     );
-    await expect(page.getByRole("alert")).toContainText(
-      "The code editor could not be loaded.",
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("The code editor could not be loaded.");
+    await expect(alert).toContainText("reload the page to open the code editor");
+    await expect(alert).toContainText(
+      "Unsaved changes are still in this tab, and reloading discards them.",
     );
-    await expect(page.getByRole("alert")).toContainText(
-      "Unsaved changes are kept in this tab.",
-    );
+    await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await expect(page.locator(".monaco-editor")).toHaveCount(0);
 
-    // Chromium keeps a module whose fetch failed as failed for the rest of
-    // the page (the HTML module map), so this Retry may not get to fetch it
-    // again. Whichever way it goes, it settles: the editor, or the error with
-    // Retry, never a loading state with no end.
+    // Why no Retry: with the network back, the same import in this page still
+    // rejects, without a request. If a browser ever fetches it again, this
+    // fails and the choice above should be revisited.
     await page.unroute(`**${MONACO_RUNTIME_PATH}*`);
-    await page.getByRole("button", { name: "Retry" }).click();
-    const settled = page
-      .locator('.monaco-editor, [data-code-editor-load="error"]')
-      .first();
-    await expect(settled).toBeVisible({ timeout: 30_000 });
-    test.info().annotations.push({
-      type: "retry after a failed fetch",
-      description: (await page.locator(".monaco-editor").count())
-        ? "the editor opened"
-        : "the error stayed, with Retry",
+    let refetched = 0;
+    page.on("request", (request) => {
+      if (request.url().includes(MONACO_RUNTIME_PATH)) refetched += 1;
     });
-    await expect(
-      page.locator('[data-code-editor-load="loading"]'),
-    ).toHaveCount(0);
+    const again = await page.evaluate(async (runtime) => {
+      try {
+        await import(/* @vite-ignore */ runtime);
+        return "loaded";
+      } catch (error) {
+        return `rejected: ${(error as Error).message}`;
+      }
+    }, MONACO_RUNTIME_PATH);
+    expect(again).toMatch(/^rejected: /);
+    expect(refetched).toBe(0);
+    await expect(page.locator('[data-code-editor-load="loading"]')).toHaveCount(
+      0,
+    );
   });
 });
