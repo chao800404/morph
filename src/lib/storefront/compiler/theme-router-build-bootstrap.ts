@@ -10,7 +10,12 @@ export type ThemeBuildBootstrap = {
   routeRegistry: ReturnType<typeof buildThemeRouteRegistry> | null;
 };
 
-function readRouterFramework(
+/**
+ * The router framework the generated entry is built for: a Theme whose
+ * framework is not `tanstack-start` is mounted without a router. Read by the
+ * editor too, to know whether its preview frame can name a page.
+ */
+export function readRouterFramework(
   files: readonly ThemeCompilerFile[],
 ): string | null {
   // Source is the primary contract for migrated Themes. The manifest branch

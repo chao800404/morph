@@ -5,6 +5,7 @@ import {
   type ThemeRuntime,
   type ThemeRuntimeInvocation,
   type ThemeRuntimeResult,
+  type ThemeServiceBindingUnmappedSubcode,
 } from "./theme-runtime.types";
 
 /** Minimal shape of a Worker-to-Worker service binding. */
@@ -12,9 +13,27 @@ export type ThemeServiceBinding = Readonly<{
   fetch(request: Request): Promise<Response>;
 }>;
 
+/**
+ * A resolver's typed answer when no binding can be used. Carries a fixed
+ * code only, never the configured map or binding name.
+ */
+export type ThemeServiceBindingMiss = Readonly<{
+  unmapped: ThemeServiceBindingUnmappedSubcode;
+}>;
+
+/**
+ * Returns the binding to use, or a miss saying why there is none. `null` and
+ * `undefined` are read as `BINDING_ABSENT`.
+ */
 export type ThemeServiceBindingResolver = (
   resolved: ResolvedStorefrontHost,
-) => ThemeServiceBinding | null | undefined;
+) => ThemeServiceBinding | ThemeServiceBindingMiss | null | undefined;
+
+function isServiceBindingMiss(
+  value: ThemeServiceBinding | ThemeServiceBindingMiss,
+): value is ThemeServiceBindingMiss {
+  return "unmapped" in value;
+}
 
 /**
  * Copies the resolved storefront identity onto the forwarded request.
@@ -27,10 +46,11 @@ export type ThemeServiceBindingResolver = (
  * rule Live Preview applies: platform credential cookies are removed from
  * `cookie` (the Theme's own cookies pass, in order) and every inbound
  * `x-morph-*` header is dropped, so no name Core may later give meaning to
- * can arrive from a browser. `Authorization` is forwarded on purpose here, as
- * it is to a preview; removing Morph's own secret API key credentials from it
- * is a separate change. Filtering comes first so it can never remove a header
- * Core sets below.
+ * can arrive from a browser. `Authorization` is removed only when it is a
+ * Morph secret API key in the Basic form the Admin API accepts (a syntactic
+ * check, no lookup); every other value is the Theme's and is forwarded, as it
+ * is to a preview. Filtering comes first so it can never remove a header Core
+ * sets below.
  */
 function applyStorefrontContext(
   request: Request,
@@ -79,12 +99,23 @@ export class ServiceBindingThemeRuntime implements ThemeRuntime {
 
   async handle(invocation: ThemeRuntimeInvocation): Promise<ThemeRuntimeResult> {
     const binding = this.resolveBinding(invocation.resolved);
-    if (!binding || typeof binding.fetch !== "function") {
+    if (
+      !binding ||
+      isServiceBindingMiss(binding) ||
+      typeof binding.fetch !== "function"
+    ) {
       return {
         success: false,
         reason: "RUNTIME_NOT_CONFIGURED",
         status: 503,
         message: `No Theme Worker service binding is configured for storefront "${invocation.resolved.storefrontId}".`,
+        notConfigured: {
+          code: "BINDING_UNMAPPED",
+          subcode:
+            binding && isServiceBindingMiss(binding)
+              ? binding.unmapped
+              : "BINDING_ABSENT",
+        },
       };
     }
 
@@ -145,6 +176,7 @@ export class DispatchNamespaceThemeRuntime implements ThemeRuntime {
         reason: "RUNTIME_NOT_CONFIGURED",
         status: 503,
         message: "Theme dispatch namespace binding is not configured.",
+        notConfigured: { code: "DISPATCH_UNBOUND" },
       };
     }
 
@@ -287,6 +319,7 @@ export class UnavailableThemeRuntime implements ThemeRuntime {
       message:
         this.detail ??
         "No Theme Worker runtime is configured for this environment.",
+      notConfigured: { code: "NO_TRANSPORT" },
     };
   }
 }
