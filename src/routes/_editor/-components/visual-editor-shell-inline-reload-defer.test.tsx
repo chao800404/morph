@@ -1096,20 +1096,55 @@ describe("the frame brought up after the reload", () => {
       );
       expect(edited).toBeGreaterThan(0);
 
+      const editPost = heroPosts(from)[edited]!;
+      // The edit's own post goes before the image is signed: the stored
+      // library image, unsigned.
+      expect(imageSigned(editPost)).toBe(false);
+      expect(editPost.props?.image).toEqual(STORED_IMAGE);
+
       await sign();
       await tick(0);
-      // Nothing after the edit puts the older content back. (Before C5 this
+      // Nothing after the edit puts the older content back. Before C5 this
       // asserted that nothing at all came after the edit's post. Since C5 the
       // section a commit landed on is sent, when the edit ends, as the newest
       // copy the editor has accepted with the pending input on top — and that
       // copy, the replay's read, holds the image the edit's echo was composed
       // without — so the edit's own post may be followed by its own signed
-      // repost. What this guards is unchanged: the replay's late post, with
-      // the older text, is never sent after the edit.)
+      // repost. The user's conditions for accepting that (2026-10-20):
+      // (a) every post after the edit's own post is that edit's signed repost
+      //     of the SAME section: same props as the edit's post except the
+      //     library image, which goes from unsigned to signed, and nothing
+      //     else differs;
+      // (b) at most one such repost;
+      // (c) no post carries older text, and the replay's late post is never
+      //     sent;
+      // (d) a reverse check showing (a) and (b) catch an extra or different
+      //     post (run by hand: see the PR's reverse-check table).
+      const after = heroPosts(from).slice(edited + 1);
+      const withoutImage = (message: Posted) => ({
+        ...message,
+        props: { ...message.props, image: undefined },
+      });
+      // (a)
+      for (const message of after) {
+        expect(message.sectionId).toBe(editPost.sectionId);
+        expect(withoutImage(message)).toEqual(withoutImage(editPost));
+        // The same library image, now as its signed address.
+        expect(message.props?.image).toBe(SIGNED_URL);
+      }
+      // (b)
+      expect(after.length).toBeLessThanOrEqual(1);
+      // (c) No post from the edit's on carries older text, and the replay's
+      // late post (the older text with the signed image) is never sent.
       expect(
         heroPosts(from)
-          .slice(edited + 1)
+          .slice(edited)
           .filter((message) => message.props?.heading !== "Newer"),
+      ).toEqual([]);
+      expect(
+        heroPosts(from).filter(
+          (message) => message.props?.heading === TYPED && imageSigned(message),
+        ),
       ).toEqual([]);
       expect(heroPosts(from).at(-1)?.props?.heading).toBe("Newer");
     });
