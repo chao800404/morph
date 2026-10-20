@@ -5,6 +5,11 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
+import {
+  answerLatestRouteRequest,
+  createLiveFrame,
+  sendFrameReady,
+} from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
@@ -190,7 +195,7 @@ function renderEditor(context: StorefrontThemeEditorDTO) {
   );
 }
 
-function fromPreview(data: Record<string, unknown>) {
+function dispatchFromFrame(data: Record<string, unknown>) {
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -201,6 +206,32 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+}
+
+/**
+ * The frame comes up as a live one does before it sends anything else: it
+ * says it is ready, reports its structure naming the page it is on, and
+ * answers the route request that ready brought, with the request's own id
+ * (`preview-frame-handshake.ts`). Since #270 the editor takes a selection or
+ * a canvas commit only from a frame that has named the editor's page in this
+ * ready round; these tests are about what a promotion's answer does once it
+ * does.
+ */
+const FRAME = { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION } as const;
+const liveFrame = createLiveFrame(FRAME);
+const framesUp = new WeakSet<Window>();
+function bringFrameUp() {
+  const frame = document.querySelector("iframe")?.contentWindow;
+  if (!frame || framesUp.has(frame)) return;
+  framesUp.add(frame);
+  sendFrameReady(FRAME);
+  liveFrame.up();
+  answerLatestRouteRequest(FRAME);
+}
+
+function fromPreview(data: Record<string, unknown>) {
+  bringFrameUp();
+  dispatchFromFrame(data);
 }
 
 const settle = () =>
@@ -217,6 +248,9 @@ const saveSettles = async () => {
 
 let canvasRevision = 0;
 async function canvasSelectSection() {
+  // Up before the report is built: a live frame stamps it with the revisions
+  // the editor has told it, its ready's file sync included.
+  bringFrameUp();
   const revision =
     Math.max(
       canvasRevision,
