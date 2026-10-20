@@ -310,7 +310,13 @@ type EditorStyleInspectorProps = {
     styles: Record<string, string>,
     targetElement: string,
   ) => void;
+  /**
+   * Typing in a field, for the canvas to show before it is saved. Names the
+   * section this Inspector is bound to (`section.id`); the editor posts it
+   * only while that is the selected section.
+   */
   onPreviewSelectionField?: (
+    sectionId: string,
     fieldKey: string,
     fieldPath: string | null,
     value: string,
@@ -2690,6 +2696,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       defaultValue={String(selectedFieldValue("actionLabel") ?? "")}
       onInput={(e) =>
         onPreviewSelectionField?.(
+          section.id,
           "actionLabel",
           nestedFieldPath("actionLabel"),
           e.currentTarget.value,
@@ -2974,6 +2981,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           nextValue: string,
                         ) => {
                           onPreviewSelectionField?.(
+                            section.id,
                             fieldKey,
                             nestedFieldPath(fieldKey),
                             nextValue,
@@ -3206,6 +3214,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                             usesGroupedImage
                                               ? (next) =>
                                                   onPreviewSelectionField?.(
+                                                    section.id,
                                                     rowKey,
                                                     `${rowImagePath}.alt`,
                                                     next,
@@ -3365,6 +3374,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               value={value === true ? "true" : "false"}
                               onValueChange={(nextValue) => {
                                 onPreviewSelectionField?.(
+                                  section.id,
                                   fieldKey,
                                   nestedFieldPath(fieldKey),
                                   nextValue,
@@ -3425,6 +3435,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                               )}
                               onValueChange={(nextValue) => {
                                 onPreviewSelectionField?.(
+                                  section.id,
                                   fieldKey,
                                   nestedFieldPath(fieldKey),
                                   nextValue,
@@ -3475,6 +3486,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                                 step={definition.step}
                                 onInput={(event) => {
                                   onPreviewSelectionField?.(
+                                    section.id,
                                     fieldKey,
                                     nestedFieldPath(fieldKey),
                                     event.currentTarget.value,
@@ -3547,6 +3559,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             maxLength={declaredContentFieldMaxLength("eyebrow")}
                             onInput={(e) =>
                               onPreviewSelectionField?.(
+                                section.id,
                                 "eyebrow",
                                 nestedFieldPath("eyebrow"),
                                 e.currentTarget.value,
@@ -3587,6 +3600,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             maxLength={declaredContentFieldMaxLength("label")}
                             onInput={(e) =>
                               onPreviewSelectionField?.(
+                                section.id,
                                 "label",
                                 nestedFieldPath("label"),
                                 e.currentTarget.value,
@@ -3629,6 +3643,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             maxLength={declaredContentFieldMaxLength("heading")}
                             onInput={(e) =>
                               onPreviewSelectionField?.(
+                                section.id,
                                 "heading",
                                 nestedFieldPath("heading"),
                                 e.currentTarget.value,
@@ -3673,6 +3688,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             )}
                             onInput={(e) =>
                               onPreviewSelectionField?.(
+                                section.id,
                                 "description",
                                 nestedFieldPath("description"),
                                 e.currentTarget.value,
@@ -3715,6 +3731,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                             maxLength={declaredContentFieldMaxLength("body")}
                             onInput={(e) =>
                               onPreviewSelectionField?.(
+                                section.id,
                                 "body",
                                 nestedFieldPath("body"),
                                 e.currentTarget.value,
@@ -3968,6 +3985,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           altText={String(imageAltValue ?? "")}
                           onAltPreview={(next) =>
                             onPreviewSelectionField?.(
+                              section.id,
                               usesGroupedImage ? "image" : "imageAlt",
                               altPath,
                               next,
@@ -4035,6 +4053,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           defaultValue={String(value ?? "")}
                           onInput={(e) =>
                             onPreviewSelectionField?.(
+                              section.id,
                               key,
                               activeFieldPath + "." + key,
                               e.currentTarget.value,
@@ -4058,6 +4077,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                       defaultValue={String(fieldValue(selectedField) ?? "")}
                       onInput={(e) =>
                         onPreviewSelectionField?.(
+                          section.id,
                           selectedField,
                           activeFieldPath,
                           e.currentTarget.value,
@@ -4107,6 +4127,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                           defaultValue={String(value ?? "")}
                           onInput={(event) =>
                             onPreviewSelectionField?.(
+                              section.id,
                               binding.fieldKey,
                               binding.fieldPath,
                               event.currentTarget.value,

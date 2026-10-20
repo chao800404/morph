@@ -15,6 +15,7 @@ import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.q
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorStyleInspector } from "./editor-style-inspector";
 import { VisualEditorShell } from "./visual-editor-shell";
+import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * A hidden section is not selectable (content binding contract §6), and that
@@ -35,6 +36,11 @@ import { VisualEditorShell } from "./visual-editor-shell";
 const EDITOR_ORIGIN = "http://localhost:3000";
 const PREVIEW_ORIGIN = "https://preview.morph.test";
 const PREVIEW_SESSION = "5f0f0f6e-6c2e-4f1c-9a3e-0f9a2b7c1d4e";
+/** The frame comes up and names its page, as a live one does. */
+const liveFrame = createLiveFrame({
+  origin: PREVIEW_ORIGIN,
+  session: PREVIEW_SESSION,
+});
 const HERO_PATH = "src/components/Hero.tsx";
 
 const posted: Array<Record<string, unknown>> = [];
@@ -218,6 +224,7 @@ function renderShell(initial: StorefrontThemeEditorDTO = SHOWN) {
 }
 
 function fromPreview(data: Record<string, unknown>) {
+  liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
@@ -228,6 +235,7 @@ function fromPreview(data: Record<string, unknown>) {
       }),
     );
   });
+  liveFrame.after(data);
 }
 
 async function flushFrames() {

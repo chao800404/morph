@@ -351,6 +351,14 @@ export type EditorToPreviewMessage =
   | { type: "morph:storefront-preview-reset-selection-style-preview" }
   | {
       type: "morph:storefront-preview-update-selection-field";
+      /**
+       * The section the Inspector is typing into. Required: the frame applies
+       * the post only to this section, and only while it is the one selected
+       * there; a post naming none is refused, never applied to whatever the
+       * frame has selected. Sent only to a frame that announced
+       * `selection-field-section` on its ready.
+       */
+      sectionId: string;
       fieldKey: string;
       fieldPath: string | null;
       value: string;
@@ -397,6 +405,33 @@ export type PreviewSelectionMessage = {
   documentRect?: { top: number; height: number } | null;
 };
 
+/**
+ * What a preview page can say on ready that its bridge can do. Known tokens
+ * only: anything else a page names is dropped.
+ *
+ * - `selection-field-section`: it reads the `sectionId` an
+ *   `update-selection-field` post names, and applies the post only to that
+ *   section while it is the one selected.
+ */
+export const PREVIEW_CAPABILITIES = ["selection-field-section"] as const;
+export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
+const MAX_PREVIEW_CAPABILITIES = 16;
+
+/**
+ * The capabilities a ready names, known ones only, each once; an empty list
+ * for anything absent, malformed or longer than the bound.
+ */
+function parsePreviewCapabilities(value: unknown): PreviewCapability[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_PREVIEW_CAPABILITIES ||
+    !value.every((token) => isBoundedString(token, 64))
+  ) {
+    return [];
+  }
+  return PREVIEW_CAPABILITIES.filter((known) => value.includes(known));
+}
+
 /** A resource the preview page asked for and did not get. */
 export type PreviewResourceFailure = Readonly<{ path: string; status: number }>;
 
@@ -423,6 +458,12 @@ export type PreviewToEditorMessage =
        * names none.
        */
       servedInstance?: PreviewServedInstanceReport;
+      /**
+       * What this page's bridge can do (`PREVIEW_CAPABILITIES`), for this
+       * page only. Absent means none: an older bridge names nothing, and the
+       * editor sends it nothing that needs one.
+       */
+      capabilities?: PreviewCapability[];
     }
   | {
       /**
@@ -1222,11 +1263,14 @@ export function parseEditorToPreviewMessage(
     case "morph:storefront-preview-reset-selection-style-preview":
       return { type: value.type };
     case "morph:storefront-preview-update-selection-field":
-      return isBoundedString(value.fieldKey, 100) &&
+      return isBoundedString(value.sectionId, 100) &&
+        value.sectionId.length > 0 &&
+        isBoundedString(value.fieldKey, 100) &&
         isNullableBoundedString(value.fieldPath, 500) &&
         isBoundedString(value.value, 10_000)
         ? {
             type: value.type,
+            sectionId: value.sectionId,
             fieldKey: value.fieldKey,
             fieldPath: value.fieldPath,
             value: value.value,
@@ -1332,9 +1376,12 @@ export function parsePreviewToEditorMessage(
   switch (value.type) {
     case "morph:storefront-preview-ready": {
       const report = parsePreviewServedInstanceReport(value.servedInstance);
-      return report
-        ? { type: value.type, servedInstance: report }
-        : { type: value.type };
+      const capabilities = parsePreviewCapabilities(value.capabilities);
+      return {
+        type: value.type,
+        ...(report ? { servedInstance: report } : {}),
+        ...(capabilities.length > 0 ? { capabilities } : {}),
+      };
     }
     case "morph:storefront-preview-reset-canvas":
       return { type: value.type };

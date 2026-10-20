@@ -24,12 +24,15 @@ export function themePreviewBridgeEntrySource(): string {
   postPreviewToEditorMessage,
   documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
+  PREVIEW_CAPABILITIES,
   PREVIEW_SERVED_INSTANCE_TIMING,
   previewServedInstanceFromEntries,
 } from "./preview/preview-protocol";
 import {
   collectPreviewEditableNodes,
+  createSelectionFieldRefusalLog,
   previewSectionSelector,
+  selectionFieldRefusal,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
   selectionKindOf,
@@ -55,11 +58,17 @@ import {
   reorderCommitFor,
   reorderIdentity,
 } from "./preview/preview-reorder-identity";
-import { previewSlotContent, updatePreviewContent } from "./preview-content";
+import {
+  previewSlotContent,
+  previewSlotHidden,
+  updatePreviewContent,
+} from "./preview-content";
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
 const channel = documentPreviewRuntimeChannel();
+// A refused selection-field post is said here, in the page, and nowhere else.
+const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 
 // Updating the browser snapshot alone cannot update Start's hydrated route
 // context. Re-run the existing router loaders, which read that same snapshot
@@ -670,10 +679,19 @@ function servedInstanceReport() {
 function reportReady() {
   if (!channel) return;
   const servedInstance = servedInstanceReport();
+  // The capabilities say what this bridge reads: an editor posts a
+  // selection field only to a page that says it reads the section it names.
   postPreviewToEditorMessage(
     servedInstance
-      ? { type: "morph:storefront-preview-ready", servedInstance }
-      : { type: "morph:storefront-preview-ready" },
+      ? {
+          type: "morph:storefront-preview-ready",
+          servedInstance,
+          capabilities: [...PREVIEW_CAPABILITIES],
+        }
+      : {
+          type: "morph:storefront-preview-ready",
+          capabilities: [...PREVIEW_CAPABILITIES],
+        },
     channel,
   );
   reportStructure();
@@ -1315,10 +1333,21 @@ if (channel) {
       };
       return;
     }
-    if (
-      message?.type === "morph:storefront-preview-update-selection-field" &&
-      selectedItem
-    ) {
+    if (message?.type === "morph:storefront-preview-update-selection-field") {
+      // Applied only to the section the post names, while it is the one
+      // selected here and still on this page, and never to a hidden one: the
+      // attributes written below bypass the content object, so the hidden
+      // check asks the same list it does (\`selectionFieldRefusal\`).
+      const refusal = selectionFieldRefusal(
+        message,
+        selectedItem,
+        document,
+        previewSlotHidden,
+      );
+      if (refusal) {
+        logSelectionFieldRefusal(refusal, message.sectionId);
+        return;
+      }
       const scope = selectedItem.section ?? document;
       const fieldPath = message.fieldPath;
       const groupedImagePath =
@@ -1367,8 +1396,7 @@ if (channel) {
         // would show it unchanged, and would take the element from React,
         // which then keeps updating a node that is no longer on the page. The
         // value goes where the page reads its content, and the page renders.
-        const sectionId = selectedItem.sectionId;
-        if (!sectionId) return;
+        const sectionId = message.sectionId;
         updatePreviewContent(
           sectionId,
           setFieldPathValue(

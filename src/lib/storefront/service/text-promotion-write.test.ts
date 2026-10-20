@@ -93,6 +93,7 @@ beforeEach(() => {
       source_generation integer DEFAULT 1 NOT NULL,
       release_generation integer DEFAULT 1 NOT NULL,
       framework text,
+      preview_runtime text,
       metadata text,
       created_at text NOT NULL,
       updated_at text NOT NULL,

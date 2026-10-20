@@ -1178,3 +1178,88 @@ describe("the page confirming the route it was asked for", () => {
     }
   });
 });
+
+/**
+ * `update-selection-field` names the section it is for, and the frame says on
+ * `ready` that it reads that name (`selection-field-section`). A message
+ * without the name is refused rather than applied to whatever the frame has
+ * selected; a frame that does not say it reads the name is not sent one.
+ */
+describe("a selection-field message names its section", () => {
+  const field = {
+    type: "morph:storefront-preview-update-selection-field",
+    sectionId: "hero",
+    fieldKey: "heading",
+    fieldPath: "heading",
+    value: "Typed",
+  } as const;
+
+  it("P1: keeps the section it names", () => {
+    expect(parseEditorToPreviewMessage(field)).toEqual(field);
+  });
+
+  it("P2: refuses one that names no section", () => {
+    const { sectionId: _omitted, ...withoutSection } = field;
+    expect(parseEditorToPreviewMessage(withoutSection)).toBeNull();
+  });
+
+  it("P3: refuses a section that is not a bounded, non-empty string", () => {
+    for (const sectionId of [null, 7, "", "x".repeat(101), {}, ["hero"]]) {
+      expect(parseEditorToPreviewMessage({ ...field, sectionId })).toBeNull();
+    }
+    expect(
+      parseEditorToPreviewMessage({ ...field, sectionId: "x".repeat(100) }),
+    ).toEqual({ ...field, sectionId: "x".repeat(100) });
+  });
+
+  it("P5: refuses the shape an editor without the field sends", () => {
+    expect(
+      parseEditorToPreviewMessage({
+        type: "morph:storefront-preview-update-selection-field",
+        fieldKey: "heading",
+        fieldPath: null,
+        value: "Typed",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("what a frame says it can do on ready", () => {
+  const ready = { type: "morph:storefront-preview-ready" } as const;
+
+  it("P4: keeps the known capabilities a ready names", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        ...ready,
+        capabilities: ["selection-field-section"],
+      }),
+    ).toEqual({ ...ready, capabilities: ["selection-field-section"] });
+  });
+
+  it("P4: drops unknown tokens and repeats, and reads absent as none", () => {
+    expect(
+      parsePreviewToEditorMessage({
+        ...ready,
+        capabilities: ["future-thing", "selection-field-section", "selection-field-section"],
+      }),
+    ).toEqual({ ...ready, capabilities: ["selection-field-section"] });
+    expect(parsePreviewToEditorMessage(ready)).toEqual(ready);
+    expect(
+      parsePreviewToEditorMessage({ ...ready, capabilities: ["future-thing"] }),
+    ).toEqual(ready);
+  });
+
+  it("P4: reads a malformed or oversized list as none, and keeps the ready", () => {
+    for (const capabilities of [
+      "selection-field-section",
+      { 0: "selection-field-section" },
+      ["selection-field-section", 7],
+      ["x".repeat(65)],
+      Array.from({ length: 17 }, () => "selection-field-section"),
+    ]) {
+      expect(parsePreviewToEditorMessage({ ...ready, capabilities })).toEqual(
+        ready,
+      );
+    }
+  });
+});

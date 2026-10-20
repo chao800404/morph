@@ -7,7 +7,7 @@ import { astroThemesEnabled } from "@/lib/storefront/service/theme-build-service
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { fail, ok, parseInput } from "@/lib/db/server-result";
+import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
@@ -19,6 +19,10 @@ import {
   themePreviewWorkspaceInput,
 } from "@/lib/storefront/service/theme-preview-workspace-files";
 import { resolveThemeFramework } from "@/lib/storefront/theme-framework";
+import {
+  resolveThemePreviewRuntime,
+  THEME_PREVIEW_RUNTIMES,
+} from "@/lib/storefront/theme-preview-runtime";
 import { readAtSourceGeneration } from "@/lib/storefront/service/source-generation-snapshot";
 import {
   THEME_PREVIEW_SERVER_PORT,
@@ -42,6 +46,7 @@ import {
 } from "@/lib/storefront/compiler/theme-preview-content";
 import { readConsistentPreviewContent } from "@/lib/storefront/service/preview-content-read";
 import { previewContentRefresh } from "@/lib/storefront/service/preview-content-refresh";
+import { themePreviewRuntimeReport } from "@/lib/storefront/compiler/theme-client-only-preview-limits";
 import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
@@ -200,10 +205,19 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
     }
     const entry = previewEntry.entry;
 
+    // The Theme's own record first, read with its editor context above —
+    // behind the same session and storefront check as everything else here;
+    // a Theme recording none is previewed as the deployment says, as every
+    // Theme was before it could record one (R-0, R1).
+    const runtime = resolveThemePreviewRuntime({
+      recorded: editorContext.theme.previewRuntime,
+      deploymentEnvValue: (env as unknown as PreviewEnv)
+        .MORPH_THEME_PREVIEW_RUNTIME,
+    });
+    // `client` is passed as nothing, exactly as before: the transports and
+    // `previewContentRefresh` read only `start`.
     const previewRuntime =
-      (env as unknown as PreviewEnv).MORPH_THEME_PREVIEW_RUNTIME === "start"
-        ? ("start" as const)
-        : undefined;
+      runtime.runtime === "start" ? ("start" as const) : undefined;
     const server = selection.server;
     const started = await server.start({
       previewId,
@@ -281,6 +295,19 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       contentRefresh: previewContentRefresh({
         previewRuntime,
         devServer: framework.ok && Boolean(framework.framework.preview.devServer),
+      }),
+      // Which runtime served this start, and — for the client-only one —
+      // where the Theme uses server functions or server APIs it cannot run,
+      // read from the files this start previews (a static reading: it can
+      // over- and under-report, is byte-bounded, and says when it could not
+      // read everything). It never throws, so it cannot fail a start that has
+      // already succeeded. TanStack Start Themes only: an Astro start, or one
+      // whose framework did not resolve, gets none of these fields. The
+      // editor shows it as a notice; nothing here changes how the preview runs.
+      ...themePreviewRuntimeReport({
+        previewRuntime,
+        frameworkId: framework.ok ? framework.framework.id : null,
+        files: workspace.files,
       }),
     });
   });
@@ -597,6 +624,74 @@ export const stopThemePreviewServer = createServerFn({ method: "POST" })
     }
 
     return ok("Live Preview server stopped", { previewId });
+  });
+
+const setThemePreviewRuntimeInputSchema = themePreviewServerInputSchema.extend({
+  /** The runtime to record, or null to inherit the deployment's again. */
+  previewRuntime: z.enum(THEME_PREVIEW_RUNTIMES).nullable(),
+  /**
+   * What the author last saw the Theme record (null: none). Required: the
+   * write is a compare-and-set on it, never a blind overwrite.
+   */
+  expectedPreviewRuntime: z.enum(THEME_PREVIEW_RUNTIMES).nullable(),
+});
+
+/**
+ * Records the Live Preview runtime a Theme is previewed with, or clears it
+ * back to the deployment's (R-0, R1; the author's choice, D1 (b)). A Theme
+ * of another framework (Astro) is refused `start`. Written only while the
+ * Theme still records what the author saw; otherwise refused as
+ * `PREVIEW_RUNTIME_CONFLICT` with what it does record. Takes effect on the
+ * preview's next start, which the editor asks for once this answers;
+ * nothing here touches a running preview.
+ */
+export const setThemePreviewRuntime = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(setThemePreviewRuntimeInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    const { storefrontId, themeId, previewRuntime, expectedPreviewRuntime } =
+      input.data;
+    try {
+      const result = await storefrontThemeDal.setPreviewRuntime({
+        storefrontId,
+        themeId,
+        previewRuntime,
+        expectedPreviewRuntime,
+      });
+      if (!result) {
+        return fail("Storefront theme not found", { error: "NOT_FOUND" });
+      }
+      if (!result.ok && result.error === "PREVIEW_RUNTIME_CONFLICT") {
+        return {
+          ...fail(
+            "The Live Preview runtime was changed elsewhere. Showing the current one.",
+            { error: result.error },
+          ),
+          // What the Theme records now, so the editor shows it rather than
+          // sending its stale choice again.
+          previewRuntime: result.previewRuntime,
+        };
+      }
+      if (!result.ok) {
+        return fail(
+          "Only a TanStack Start Theme can use the full Start preview.",
+          { error: result.error },
+        );
+      }
+      return ok("Live Preview runtime saved", {
+        previewRuntime: result.previewRuntime,
+      });
+    } catch (error) {
+      return failure(
+        "Set theme preview runtime error",
+        error,
+        "UPDATE_FAILED",
+        "Failed to save the Live Preview runtime",
+      );
+    }
   });
 
 /**
