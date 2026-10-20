@@ -1144,3 +1144,40 @@ describe("the document id a preview page's messages carry (C5, A1)", () => {
     expect(BRIDGE).not.toContain("previewDocument");
   });
 });
+
+describe("the ping a ready is confirmed with (C5 option A)", () => {
+  type Node = { type: string; start: number; end: number; [key: string]: unknown };
+  const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] })
+    .program as unknown as Node & { body: Node[] };
+  const text = (node: Node) => BRIDGE.slice(node.start, node.end);
+
+  it("answers it from a listener added at module evaluation, before the ready is scheduled, through the protocol's poster", () => {
+    // Both are statements of the one top-level `if (channel) { ... }`
+    // block, run once when the module is evaluated: no function between.
+    const block = ast.body.find(
+      (node) => node.type === "IfStatement" && text(node.test as Node) === "channel",
+    ) as (Node & { consequent: { body: Node[] } }) | undefined;
+    expect(block).toBeDefined();
+    const body = block!.consequent.body;
+    const pingListener = body.findIndex(
+      (node) =>
+        node.type === "ExpressionStatement" &&
+        text(node).startsWith('window.addEventListener("message"') &&
+        text(node).includes('"morph:storefront-preview-ping"'),
+    );
+    const readySchedule = body.findIndex(
+      (node) =>
+        node.type === "IfStatement" &&
+        text(node).includes("queueMicrotask(reportReady)"),
+    );
+    expect(pingListener).toBeGreaterThanOrEqual(0);
+    expect(readySchedule).toBeGreaterThan(pingListener);
+    const listener = text(body[pingListener]!);
+    const pong = listener.slice(listener.indexOf('"morph:storefront-preview-ping"'));
+    // The answer goes out through the one poster, which stamps this
+    // document's id on it (`postPreviewToEditorMessage`).
+    expect(pong).toMatch(
+      /postPreviewToEditorMessage\(\s*\{\s*type: "morph:storefront-preview-pong",\s*heartbeatId: message\.heartbeatId,\s*\},\s*channel,\s*\)/,
+    );
+  });
+});
