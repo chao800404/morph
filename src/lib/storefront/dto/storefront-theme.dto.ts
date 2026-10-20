@@ -4,6 +4,7 @@ import type {
   StorefrontTemplateType,
   StorefrontThemeStatus,
 } from "@/db/storefront.schema";
+import type { ThemePreviewRuntime } from "@/lib/storefront/theme-preview-runtime";
 
 export interface StorefrontThemeEditorDTO {
   previewChannel?: {
@@ -28,6 +29,12 @@ export interface StorefrontThemeEditorDTO {
      * and refuses one it cannot serve.
      */
     framework: string | null;
+    /**
+     * The Live Preview runtime the Theme records
+     * (`storefront_themes.preview_runtime`), or null when it records none and
+     * is previewed as the deployment says (`previewRuntimeDefault`).
+     */
+    previewRuntime: ThemePreviewRuntime | null;
     activeRelease: {
       id: string;
       sourceRevisionId: string;
@@ -62,6 +69,12 @@ export interface StorefrontThemeEditorDTO {
    * render disagrees with the server's HTML and costs the whole tree.
    */
   panelTab?: string;
+  /**
+   * The deployment's Live Preview runtime (`MORPH_THEME_PREVIEW_RUNTIME`),
+   * which a Theme recording none is previewed with. Server-provided: the
+   * editor cannot read the deployment's environment.
+   */
+  previewRuntimeDefault?: ThemePreviewRuntime;
   panelWidths?: {
     left: number;
     right: number;

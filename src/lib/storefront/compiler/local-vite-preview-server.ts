@@ -151,6 +151,14 @@ type RunningPreview = Readonly<{
   /** Host path the workspace was laid out in. */
   root: string;
   workspaceFingerprint: string;
+  /**
+   * The runtime this server was started for. Reuse needs it to match as
+   * well as the fingerprint: a Theme without Start routes plans the same
+   * files for either runtime, yet a `start` preview runs in a child process
+   * at another path, so a matching fingerprint alone could hand a Theme that
+   * now records another runtime the server of the old one.
+   */
+  previewRuntime: ThemePreviewRuntime;
   url: string;
   origin: string;
   server: PreviewServerHandle;
@@ -575,9 +583,12 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
         const recordLaidOut = () =>
           this.fenceLedgers.set(input.previewId, plan.ledger);
         const existing = this.running.get(input.previewId);
+        const previewRuntime: ThemePreviewRuntime =
+          input.previewRuntime ?? "client";
         if (
           existing &&
-          existing.workspaceFingerprint === prepared.workspaceFingerprint
+          existing.workspaceFingerprint === prepared.workspaceFingerprint &&
+          existing.previewRuntime === previewRuntime
         ) {
           // The files it names are the ones already there. Its snapshot may
           // differ only in its ticket, which orders it against content syncs:
@@ -723,6 +734,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
             this.running.set(input.previewId, {
               root,
               workspaceFingerprint: prepared.workspaceFingerprint,
+              previewRuntime,
               url,
               origin,
               server: child.handle,
@@ -853,6 +865,7 @@ export class LocalVitePreviewServer implements ThemePreviewServer {
           this.running.set(input.previewId, {
             root,
             workspaceFingerprint: prepared.workspaceFingerprint,
+            previewRuntime,
             url,
             origin,
             server: {

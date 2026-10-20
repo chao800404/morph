@@ -264,11 +264,17 @@ import {
   type PreviewInstanceWatch,
 } from "@/lib/storefront/editor/preview-instance-watch";
 import {
+  contentEntryVisibilityIntent,
   createInstanceContentReplay,
-  instanceReplaySection,
+  previewSectionHidden,
+  previewSectionPost,
   type InstanceContentReplay,
 } from "@/lib/storefront/editor/preview-instance-content";
 import { PreviewCompileErrorAlert } from "./preview-compile-error-alert";
+import {
+  PreviewClientOnlyNotice,
+  previewClientOnlyNoticeContent,
+} from "./preview-client-only-notice";
 import {
   describeThemeSourceChanges,
   describeContentChanges,
@@ -288,6 +294,7 @@ import {
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
+import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
 import {
   startPreviewStaleProbe,
   type PreviewStaleProbe,
@@ -307,6 +314,7 @@ import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-cata
 import {
   parsePreviewSectionProps,
   parsePreviewServedInstance,
+  type PreviewCapability,
   type PreviewCatalogResponseBody,
   type PreviewEditableNode,
   type PreviewSectionProps,
@@ -395,7 +403,11 @@ import {
   toEditorRouteSearch,
 } from "./editor-template";
 import { contentTargetForRoutePath } from "@/lib/storefront/theme-template-routes";
-import { previewStructureMatchesRoute } from "@/lib/storefront/editor/preview-structure-route";
+import {
+  previewFrameNavigationRoute,
+  previewStructureMatchesRoute,
+} from "@/lib/storefront/editor/preview-structure-route";
+import { readRouterFramework } from "@/lib/storefront/compiler/theme-router-build-bootstrap";
 import {
   EditorToolbar,
   EditorToolbarGroup,
@@ -484,6 +496,33 @@ export const INLINE_TEXT_REFUSED_MESSAGE =
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
+/**
+ * Said when the canvas sends an edit while it shows another page than the
+ * editor: the edit names a slot, not a page, and would be saved to this one.
+ */
+/**
+ * Said, as "Could not undo: …", when the newest history entry is an edit of
+ * another page's document: it is kept for that page, never replayed here.
+ */
+export const HISTORY_OTHER_PAGE_MESSAGE =
+  "that edit was made on another page. Open that page to undo or redo it.";
+/**
+ * Said when the canvas of a Theme whose framework is not TanStack Start is
+ * clicked or edited: its frame cannot say which page it shows, so nothing it
+ * sends is taken, now or later. Waiting does not help; the panel and Code
+ * mode still edit everything.
+ */
+export const CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
+  "Canvas editing isn't available for this Theme's framework yet. Use the panel on the right or Code mode.";
+export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
+  "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
+/**
+ * Shown near the preview while its frame did not say, on its ready, that it
+ * reads the section a field edit names (an older preview build): typing in
+ * the Inspector still saves, the canvas just does not follow each keystroke.
+ */
+export const LIVE_TYPING_UNAVAILABLE_MESSAGE =
+  "Live preview typing unavailable — reload the preview to restore";
 /**
  * Said, without interrupting, when the preview's dev server was replaced
  * while text is being typed on the canvas: the canvas is kept until the text
@@ -1060,6 +1099,18 @@ export function VisualEditorShell({
   } | null>(null);
   const currentSearchRoutePathRef = useRef(search.routePath);
   currentSearchRoutePathRef.current = search.routePath;
+  // Read by the preview message handler, which is not rebuilt for either.
+  const pendingRoutePathRef = useRef(pendingRoutePath);
+  pendingRoutePathRef.current = pendingRoutePath;
+  const navigatingRoutePathRef = useRef(navigatingRoutePath);
+  navigatingRoutePathRef.current = navigatingRoutePath;
+  /**
+   * The page the editor is switching to because the frame went there by
+   * itself, while that switch is the one under way; null otherwise.
+   */
+  const frameFollowRef = useRef<string | null>(null);
+  /** Sends the frame back to the page on screen; set beside the route sync. */
+  const returnFrameToPageRef = useRef<() => void>(() => {});
   const handleRouteIntent = useCallback((routePath?: string) => {
     setPendingRoutePath(routePath ?? null);
   }, []);
@@ -1081,6 +1132,16 @@ export function VisualEditorShell({
       editorRoutePathsMatch(pendingRoutePath, search.routePath)
     ) {
       setPendingRoutePath(null);
+    }
+  }, [pendingRoutePath, search.routePath]);
+  useEffect(() => {
+    const follow = frameFollowRef.current;
+    if (
+      follow !== null &&
+      (pendingRoutePath !== follow ||
+        editorRoutePathsMatch(follow, search.routePath))
+    ) {
+      frameFollowRef.current = null;
     }
   }, [pendingRoutePath, search.routePath]);
 
@@ -1593,6 +1654,39 @@ export function VisualEditorShell({
     () => setUnconfirmedContentCount(unconfirmedContentRef.current.size),
     [],
   );
+  /**
+   * A section's visibility as the editor holds it (`previewSectionHidden`),
+   * and the post that tells the preview so (`reconcilePreviewSection`). Set
+   * below, beside the preview poster; read here by the places that remove a
+   * pending or unanswered entry.
+   */
+  const previewVisibilityRef = useRef<{
+    isHidden: (sectionId: string) => boolean;
+    reconcile: (sectionId: string) => void;
+  }>({ isHidden: () => false, reconcile: () => {} });
+  /**
+   * After a pending or unanswered entry left: the preview is told the
+   * section's visibility as the editor now holds it, when the entry asked
+   * for one or the visibility moved with it. Idempotent; it keeps nothing.
+   */
+  const reconcileAfterRemoval = useCallback(
+    (
+      sectionId: string,
+      removed: PendingContentEntry | undefined,
+      hiddenBefore?: boolean,
+    ) => {
+      const visibility = previewVisibilityRef.current;
+      if (
+        contentEntryVisibilityIntent(removed) === "none" &&
+        (hiddenBefore === undefined ||
+          visibility.isHidden(sectionId) === hiddenBefore)
+      ) {
+        return;
+      }
+      visibility.reconcile(sectionId);
+    },
+    [],
+  );
 
   /**
    * A content write was saved: carry it into a preview that reads content on
@@ -1717,6 +1811,54 @@ export function VisualEditorShell({
 
   /** Route documents created in this session, by the placeholder they replaced. */
   const routeTemplateIdsRef = useRef<Map<string, string>>(new Map());
+  /**
+   * The document a section's edits go to on the page on screen, resolved
+   * past a route document's placeholder id; set beside `templateIdForSection`.
+   */
+  const sectionDocumentRef = useRef<(sectionId: string) => string | null>(
+    () => null,
+  );
+  /**
+   * A section history entry, fenced to the document it edited.
+   *
+   * Section entries replay through the write path of the page on screen,
+   * which finds the section's document by its id. Two pages can each have a
+   * slot of the same id in their own documents, and history is kept across
+   * a page switch, so an entry recorded on one page would otherwise be
+   * written into the other page's document. Fenced, it runs only while the
+   * section's document on screen is the one it was recorded for — the same
+   * page, or a document both pages share, such as a layout's — and is
+   * otherwise refused and kept for that page.
+   */
+  const fenceSectionHistory = useCallback(
+    (
+      sectionId: string,
+      recordedTemplateId: string,
+      entry: Readonly<{
+        label: string;
+        undo: () => unknown;
+        redo: () => unknown;
+      }>,
+    ) => {
+      const resolve = (templateId: string) =>
+        routeTemplateIdsRef.current.get(templateId) ?? templateId;
+      const fenced =
+        (action: () => unknown) => () => {
+          const now = sectionDocumentRef.current(sectionId);
+          if (now === null || now !== resolve(recordedTemplateId)) {
+            throw new Error(HISTORY_OTHER_PAGE_MESSAGE);
+          }
+          return action();
+        };
+      return {
+        label: entry.label,
+        scope: sectionHistoryScope(sectionId),
+        undo: fenced(entry.undo),
+        redo: fenced(entry.redo),
+      };
+    },
+    [],
+  );
 
   const enqueueTemplateMutation = useCallback(
     (
@@ -1976,6 +2118,10 @@ export function VisualEditorShell({
               },
             ).then(
               (result) => {
+                const answered = sentEntry as PendingContentEntry | undefined;
+                const hiddenBefore = answered
+                  ? previewVisibilityRef.current.isHidden(answered.sectionId)
+                  : undefined;
                 // Answered, either way: nothing is left to find out.
                 if (unconfirmedContentRef.current.delete(key)) {
                   syncUnconfirmedContentCount();
@@ -2005,6 +2151,16 @@ export function VisualEditorShell({
                   );
                   if (next) contentSnapshotsRef.current.set(sentTemplateId, next);
                 }
+                // A visibility this write carried is answered: the preview
+                // is told what the editor holds now, which a newer toggle
+                // still pending decides over this answer.
+                if (answered) {
+                  reconcileAfterRemoval(
+                    answered.sectionId,
+                    answered,
+                    hiddenBefore,
+                  );
+                }
                 return result;
               },
               (error: unknown) => {
@@ -2026,27 +2182,29 @@ export function VisualEditorShell({
           onSaved: recordHistory
             ? (entry, baseline) => {
                 if (!baseline) return;
-                history.record({
-                  label: "Content",
-                  scope: sectionHistoryScope(entry.sectionId),
-                  undo: () =>
-                    contentChangeRef.current?.(
-                      entry.sectionId,
-                      Object.fromEntries(
-                        Object.keys(entry.props).map((key) => [
-                          key,
-                          baseline[key],
-                        ]),
+                history.record(
+                  fenceSectionHistory(entry.sectionId, tid, {
+                    label: "Content",
+                    undo: () =>
+                      contentChangeRef.current?.(
+                        entry.sectionId,
+                        Object.fromEntries(
+                          Object.keys(entry.props).map((key) => [
+                            key,
+                            baseline[key],
+                          ]),
+                        ),
+                        {
+                          historySourceGeneration:
+                            entry.expectedSourceGeneration,
+                        },
                       ),
-                      {
+                    redo: () =>
+                      contentChangeRef.current?.(entry.sectionId, entry.props, {
                         historySourceGeneration: entry.expectedSourceGeneration,
-                      },
-                    ),
-                  redo: () =>
-                    contentChangeRef.current?.(entry.sectionId, entry.props, {
-                      historySourceGeneration: entry.expectedSourceGeneration,
-                    }),
-                });
+                      }),
+                  }),
+                );
               }
             : undefined,
         });
@@ -2084,6 +2242,7 @@ export function VisualEditorShell({
       context.theme.id,
       currentContentSourceGeneration,
       contentSnapshotForWrite,
+      reconcileAfterRemoval,
     ],
   );
 
@@ -2112,6 +2271,12 @@ export function VisualEditorShell({
         fresh.message ?? "Could not check whether your changes were saved.",
       );
     }
+    const hiddenBefore = new Map(
+      unconfirmed.map(([key, sent]) => [
+        key,
+        previewVisibilityRef.current.isHidden(sent.sectionId),
+      ]),
+    );
     // An unanswered write found to have landed is our own step, but only
     // when the document is exactly one generation past the one it was sent
     // at: anything more means someone else wrote too, and is theirs.
@@ -2176,6 +2341,10 @@ export function VisualEditorShell({
         });
       }
     }
+    // Each answer found: the preview is told the visibility it leaves.
+    for (const [key, sent] of unconfirmed) {
+      reconcileAfterRemoval(sent.sectionId, sent, hiddenBefore.get(key));
+    }
     syncUnconfirmedContentCount();
   }, [
     acceptReadTemplates,
@@ -2183,6 +2352,7 @@ export function VisualEditorShell({
     context.theme.id,
     ownDraftSteps,
     queryClient,
+    reconcileAfterRemoval,
     syncUnconfirmedContentCount,
   ]);
 
@@ -2377,6 +2547,12 @@ export function VisualEditorShell({
     themePreviewServerQueries.forTheme(context.storefront.id, context.theme.id),
   );
   const refetchPreviewServer = previewServer.refetch;
+  // What the client-only preview cannot run in this Theme, as the start that
+  // is serving it reported when it started; null for the full Start preview.
+  // Not recomputed on file apply: the notice says it reflects that start.
+  const previewClientOnlyNotice = previewClientOnlyNoticeContent(
+    previewServer.data,
+  );
   const previewServerUrl =
     previewLifecycle.phase !== "reconnecting" &&
     !previewServer.isFetching &&
@@ -2499,6 +2675,48 @@ export function VisualEditorShell({
   const instanceContentReplayRef = useRef<InstanceContentReplay | null>(null);
   /** Counts every ready message, of any frame: a frame's ready round. */
   const previewReadyRoundRef = useRef(0);
+  /**
+   * What the frame said about itself on its latest ready, for that frame and
+   * round only: what it can do (`PREVIEW_CAPABILITIES`), and `documentId`,
+   * reserved for the frame's document identity (C5) and not read yet. No
+   * record for the frame and round on screen, or a capability it did not
+   * name, is unsupported: absent never matches.
+   */
+  const previewFrameRecordRef = useRef<{
+    previewKey: string;
+    readyRound: number;
+    capabilities: ReadonlySet<PreviewCapability>;
+    documentId: null;
+  } | null>(null);
+  /** Whether the frame on screen said, in this round, that it can `capability`. */
+  const frameCan = useCallback((capability: PreviewCapability) => {
+    const record = previewFrameRecordRef.current;
+    return (
+      record !== null &&
+      record.previewKey === previewKeyRef.current &&
+      record.readyRound === previewReadyRoundRef.current &&
+      record.capabilities.has(capability)
+    );
+  }, []);
+  /**
+   * #270's `frameShowsEditorPage`, for the frame on screen; assigned in the
+   * effect that defines it, unchanged. Until then, and for a frame that
+   * effect is not listening to, nothing is shown.
+   */
+  const frameShowsEditorPageRef = useRef<() => boolean>(() => false);
+  /**
+   * The page the frame last named, in a structure report or a route answer,
+   * and the frame and ready round that named it; null for a frame that
+   * answered that it has no router. A selection or an edit from the frame
+   * names a slot id, not a page, so it is taken only while this says the
+   * frame shows the editor's page (`frameShowsEditorPage`). Unknown — no
+   * record for this frame in this round — is not that.
+   */
+  const frameRouteRef = useRef<{
+    key: string;
+    round: number;
+    routePath: string | null;
+  } | null>(null);
   /** The route on screen, for that replay's binding. */
   const replayRoutePathRef = useRef(search.routePath ?? "/");
   replayRoutePathRef.current = search.routePath ?? "/";
@@ -3074,6 +3292,42 @@ export function VisualEditorShell({
     () => buildThemeRouteRegistry(effectiveThemeFiles),
     [effectiveThemeFiles],
   );
+  /** For the preview message handler, which is not rebuilt for it. */
+  const themeRouteRegistryRef = useRef(themeRouteRegistry);
+  themeRouteRegistryRef.current = themeRouteRegistry;
+  /**
+   * Whether this Theme's preview is proven to be one document; null until
+   * the Theme's files are read.
+   *
+   * Proven only for a Theme recorded as TanStack Start (`framework`, NULL
+   * reading as TanStack Start: `StorefrontThemeEditorDTO`), whose preview is
+   * planned by `createThemeBuildBootstrap`, and whose source has no router
+   * (`readRouterFramework`, the function that bootstrap decides with): the
+   * generated entry then mounts the one entry component and nothing else,
+   * with no router to show another page. Such a frame never names a page.
+   * Any other framework — Astro navigates page to page as documents — or a
+   * framework the editor does not know is not proven, and a frame of it that
+   * names no page is never taken as the editor's.
+   */
+  const previewIsSingleDocument = useMemo(
+    () =>
+      themeFilesQuery.data
+        ? (context.theme.framework ?? "tanstack-start") === "tanstack-start" &&
+          readRouterFramework(effectiveThemeFiles) !== "tanstack-start"
+        : null,
+    [context.theme.framework, effectiveThemeFiles, themeFilesQuery.data],
+  );
+  const previewIsSingleDocumentRef = useRef(previewIsSingleDocument);
+  previewIsSingleDocumentRef.current = previewIsSingleDocument;
+  /**
+   * The canvas is not available at all for a Theme recorded with another
+   * framework than TanStack Start (NULL reads as TanStack Start): Astro, or
+   * one the editor does not know. Its frame names no page and its preview is
+   * not proven one document, so what the canvas sends is never taken.
+   */
+  const canvasUnavailableForFrameworkRef = useRef(false);
+  canvasUnavailableForFrameworkRef.current =
+    (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -3329,6 +3583,42 @@ export function VisualEditorShell({
       sectionModel.bindings.get(sectionId)?.templateId ?? null,
     [sectionModel],
   );
+  /**
+   * What the editor holds about one section's visibility, read at the moment
+   * it is asked: the accepted copy, and the pending and unanswered entries,
+   * keyed as the write path keys them (`previewSectionHidden`). Nothing here
+   * is stored or changed; null for a section no template owns.
+   */
+  const previewSectionState = useCallback(
+    (sectionId: string) => {
+      const templateId = templateIdForSection(sectionId);
+      if (!templateId) return null;
+      const key = `${templateId}:${sectionId}`;
+      return {
+        snapshot: contentSnapshotsRef.current.get(
+          routeTemplateIdsRef.current.get(templateId) ?? templateId,
+        ),
+        sectionId,
+        pending: pendingPropsMapRef.current.get(key),
+        unconfirmed: unconfirmedContentRef.current.get(key),
+      };
+    },
+    [templateIdForSection],
+  );
+  /** Read by the preview poster, which is created once. */
+  const previewSectionStateRef = useRef(previewSectionState);
+  previewSectionStateRef.current = previewSectionState;
+  const previewSectionIsHidden = useCallback((sectionId: string) => {
+    const state = previewSectionStateRef.current(sectionId);
+    return state !== null && previewSectionHidden(state);
+  }, []);
+  previewVisibilityRef.current.isHidden = previewSectionIsHidden;
+  sectionDocumentRef.current = (sectionId) => {
+    const templateId = templateIdForSection(sectionId);
+    return templateId === null
+      ? null
+      : (routeTemplateIdsRef.current.get(templateId) ?? templateId);
+  };
 
   const routeBackedContext = useMemo<StorefrontThemeEditorDTO>(() => {
     if (!activeTemplate) return context;
@@ -3905,19 +4195,60 @@ export function VisualEditorShell({
     document.addEventListener("focusout", settle);
     return () => document.removeEventListener("focusout", settle);
   }, [fieldDraft]);
+  /**
+   * The frame on screen, and round, for which the author was told live
+   * typing is unavailable there; null while it is not.
+   */
+  const [liveTypingUnavailable, setLiveTypingUnavailable] = useState<
+    string | null
+  >(null);
+  const loggedLiveTypingUnavailableRef = useRef<string | null>(null);
+  // A new frame says for itself on its ready; until then nothing is claimed.
+  useEffect(() => {
+    setLiveTypingUnavailable(null);
+  }, [previewKey]);
   const previewSelectionField = useCallback(
-    (fieldKey: string, fieldPath: string | null, value: string) => {
+    (
+      sectionId: string,
+      fieldKey: string,
+      fieldPath: string | null,
+      value: string,
+    ) => {
       setFieldDraft(true);
       leaveGuard.noteInput();
+      // The canvas is told as the author types only when every one of these
+      // holds; otherwise the field still saves as it would, and the canvas
+      // shows the value once it is saved.
+      // 1. The Inspector types into the section selected — never another
+      //    one, and never in its place.
+      if (sectionId !== activeSelection?.sectionId) return;
+      // 2. A hidden section's text stays out of the page.
+      if (previewSectionIsHidden(sectionId)) return;
+      // 3. The frame shows the editor's page (#270).
+      if (!frameShowsEditorPageRef.current()) return;
+      // 4. The frame said, in this round, that it reads the section a post
+      //    names. One that did not would apply it to its own selection.
+      if (!frameCan("selection-field-section")) {
+        const frame = `${previewKeyRef.current ?? ""}#${previewReadyRoundRef.current}`;
+        setLiveTypingUnavailable(frame);
+        if (loggedLiveTypingUnavailableRef.current !== frame) {
+          loggedLiveTypingUnavailableRef.current = frame;
+          console.info(
+            `[preview] live typing unavailable: the preview (${frame}) did not say it reads the section a field edit names; reload the preview to restore it.`,
+          );
+        }
+        return;
+      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-field",
+        sectionId,
         fieldKey,
         fieldPath,
         value,
       });
       schedulePreviewRemeasureRef.current();
     },
-    [leaveGuard],
+    [activeSelection?.sectionId, frameCan, leaveGuard, previewSectionIsHidden],
   );
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
@@ -4039,6 +4370,13 @@ export function VisualEditorShell({
   /** The latest sync this tab sent for each path, to tell a retry is moot. */
   const previewSyncSequenceRef = useRef(0);
   const lastPreviewSyncByPathRef = useRef(new Map<string, number>());
+  /**
+   * Paths whose latest write to the preview is not settled yet: sent and
+   * unanswered, or refused and waiting to be sent again once this tab's own
+   * save is back. The preview may yet end up holding that write's content,
+   * so `previewWrittenRef` does not say what it will show.
+   */
+  const previewSyncUnsettledRef = useRef(new Map<string, number>());
   const postPreviewThemeFilesRef = useRef<
     ((...args: Parameters<typeof postPreviewThemeFiles>) => number) | null
   >(null);
@@ -4106,13 +4444,22 @@ export function VisualEditorShell({
       // A fresh preview holds the saved files, not what this tab wrote into
       // the one before it.
       if (options?.initialSync) previewWrittenRef.current = new Map();
+      // A file matching what this tab last wrote and saved is skipped as
+      // already there — unless a write of it is still unsettled. Undoing B
+      // back to A while B's refused write waits for its retry, or while B's
+      // write is unanswered, matched both, so the undo sent nothing and the
+      // preview kept B. Sending it makes it the latest write of that file,
+      // which also stands down the waiting retry (`superseded` below).
       const planned = planPreviewSync(
         files,
         useThemeWorkspaceStore
           .getState()
           .getWorkspaceFiles(context.storefront.id, context.theme.id),
         previewWrittenRef.current,
-        new Set(options?.justSavedPaths),
+        new Set([
+          ...(options?.justSavedPaths ?? []),
+          ...previewSyncUnsettledRef.current.keys(),
+        ]),
       );
       // Every revision is told to the page, written or not. It is the
       // handshake the page stamps its selection reports with, and the editor
@@ -4157,7 +4504,18 @@ export function VisualEditorShell({
       const sequence = ++previewSyncSequenceRef.current;
       for (const file of planned) {
         lastPreviewSyncByPathRef.current.set(file.path, sequence);
+        previewSyncUnsettledRef.current.set(file.path, sequence);
       }
+      // This write's paths are settled once it is answered for good, unless
+      // a later write of the same path has taken them over.
+      const settle = () => {
+        for (const file of planned) {
+          if (previewSyncUnsettledRef.current.get(file.path) === sequence) {
+            previewSyncUnsettledRef.current.delete(file.path);
+          }
+        }
+      };
+      let awaitingRetry = false;
       // Only a write the server made is announced as written: that is what
       // makes the page pull the hot update and confirm the revision.
       const announceWritten = () => {
@@ -4237,6 +4595,7 @@ export function VisualEditorShell({
                 ),
               )
             ) {
+              awaitingRetry = true;
               void waitForOwnSaves(
                 () =>
                   useThemeWorkspaceStore
@@ -4244,6 +4603,9 @@ export function VisualEditorShell({
                     .getWorkspaceFiles(context.storefront.id, context.theme.id),
                 stalePaths,
               ).then(() => {
+                // Settled here, before deciding: either a later write owns
+                // these paths, or the retry below is that write.
+                settle();
                 const superseded = stalePaths.some(
                   (path) =>
                     lastPreviewSyncByPathRef.current.get(path) !== sequence,
@@ -4299,6 +4661,9 @@ export function VisualEditorShell({
               "Live Preview could not update its sandbox after one automatic reconnect. Retry Preview.",
             at: Date.now(),
           });
+        })
+        .finally(() => {
+          if (!awaitingRetry) settle();
         });
       schedulePreviewRemeasureRef.current();
       return styleRevision;
@@ -6172,6 +6537,13 @@ export function VisualEditorShell({
       // taken there after all.
       setPendingRoutePath(null);
       setPendingRouteSelection(null);
+      // The frame went to that page by itself and is still there. Asked
+      // nothing, it would report that page again, and the switch would be
+      // asked for, and the author asked, again.
+      if (frameFollowRef.current !== null) {
+        frameFollowRef.current = null;
+        returnFrameToPageRef.current();
+      }
       if (why === "kept-editing") {
         toast.info("Stayed on this page because you kept editing.", {
           id: "editor-leave-kept-editing",
@@ -7419,6 +7791,76 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
+    /**
+     * Whether what this frame sends is about the editor's page.
+     *
+     * A frame with a router names its page in every structure report and
+     * route answer, its boot report included: it shows the editor's page
+     * while the page it last named, in this ready round, is that page.
+     *
+     * A frame that names no page shows the editor's page only when that is
+     * proven: the preview is one document (`previewIsSingleDocument`), and
+     * the frame answered the editor's latest route request in this round
+     * with no route, so the document on it is the one the editor last sent.
+     *
+     * Anything else is unknown — a frame just reloaded, one that never
+     * answers, one behind a newer request, an Astro or other page-to-page
+     * preview, a Theme whose files are not read — and unknown is not the
+     * editor's page.
+     */
+    const frameShowsEditorPage = () => {
+      const frame = frameRouteRef.current;
+      const round = previewReadyRoundRef.current;
+      const named =
+        frame !== null && frame.key === previewKey && frame.round === round;
+      if (named && frame.routePath !== null) {
+        return previewStructureMatchesRoute(
+          frame.routePath,
+          currentSearchRoutePathRef.current,
+        );
+      }
+      // No page named: only a preview proven to be one document, whose frame
+      // said so (no route) in answer to the editor's latest request, in this
+      // round. Then the document it shows is the one the editor sent.
+      if (previewIsSingleDocumentRef.current !== true || !named) return false;
+      const routeRequest = lastRouteRequestRef.current;
+      return (
+        routeRequest !== null &&
+        routeRequest.key === previewKey &&
+        routeRequest.round === round &&
+        routeRequest.id === routeRequestIdRef.current &&
+        routeRequest.answered
+      );
+    };
+    /**
+     * Whether the canvas is unavailable here, rather than on another page:
+     * a Theme of another framework whose frame has named no page in this
+     * round. A frame that named a page is judged by that page.
+     */
+    const canvasUnavailableHere = () => {
+      if (!canvasUnavailableForFrameworkRef.current) return false;
+      const frame = frameRouteRef.current;
+      const named =
+        frame !== null &&
+        frame.key === previewKey &&
+        frame.round === previewReadyRoundRef.current &&
+        frame.routePath !== null;
+      return !named;
+    };
+    /** Refuses an edit from a frame not on the editor's page, and says so. */
+    const refuseOtherPageEdit = () => {
+      if (frameShowsEditorPage()) return false;
+      if (canvasUnavailableHere()) {
+        toast.info(CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE, {
+          id: "canvas-unavailable-for-framework",
+        });
+      } else {
+        toast.info(PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE, {
+          id: "preview-other-page-not-saved",
+        });
+      }
+      return true;
+    };
     const handlePreviewSelection = (event: MessageEvent<unknown>) => {
       const message = parseLivePreviewMessage(event);
       if (!message) {
@@ -7508,6 +7950,7 @@ export function VisualEditorShell({
         message.type === "morph:storefront-preview-commit-array-item-reorder"
       ) {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         arrayItemReorderHandlerRef.current(
           message.sectionId,
           message.draggedFieldPath,
@@ -7528,6 +7971,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-inline-text") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         inlineTextCommitHandlerRef.current(message);
         return;
       }
@@ -7546,6 +7990,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-section-reorder") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         void sectionSwapHandlerRef.current(
           message.draggedSectionId,
           message.targetSectionId,
@@ -7555,6 +8000,7 @@ export function VisualEditorShell({
 
       if (message.type === "morph:storefront-preview-commit-sibling-reorder") {
         reportAuthenticatedUserActivity();
+        if (refuseOtherPageEdit()) return;
         void handleSwapThemeFileSiblings(
           message.sourceFilePath,
           message.draggedNodeId,
@@ -7566,6 +8012,15 @@ export function VisualEditorShell({
       if (message.type === "morph:storefront-preview-ready") {
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
         previewReadyRoundRef.current += 1;
+        // This round's record replaces the last one: a capability counts only
+        // for the ready that named it.
+        previewFrameRecordRef.current = {
+          previewKey,
+          readyRound: previewReadyRoundRef.current,
+          capabilities: new Set(message.capabilities ?? []),
+          documentId: null,
+        };
+        setLiveTypingUnavailable(null);
         instanceContentReplayRef.current?.frameReady(
           previewKey,
           previewReadyRoundRef.current,
@@ -7587,11 +8042,75 @@ export function VisualEditorShell({
           previewReadyRoundRef.current,
           message.routePath,
         );
+        if (message.routePath !== undefined) {
+          frameRouteRef.current = {
+            key: previewKey,
+            round: previewReadyRoundRef.current,
+            routePath: message.routePath,
+          };
+        }
         // A report sent while the preview was still on another route — it
         // boots on `/` — describes that route, not the selected one.
         if (
           !previewStructureMatchesRoute(message.routePath, search.routePath)
         ) {
+          // Still set aside. But a report that names another page while
+          // the editor is asking the frame for nothing is the author moving
+          // inside the frame, by a link or back and forward: the editor
+          // follows, through the same switch a page row asks for (the leave
+          // guard, a borrowed template, the set-route that answers it). The
+          // report the frame sends once that request is answered is the one
+          // taken.
+          const reportedRoutePath = message.routePath;
+          const routeRequest = lastRouteRequestRef.current;
+          const searchRoutePath = currentSearchRoutePathRef.current;
+          if (
+            reportedRoutePath !== undefined &&
+            // Code Mode never follows; returning to Design asks again.
+            editorModeRef.current !== "code" &&
+            !previewStructureMatchesRoute(reportedRoutePath, searchRoutePath) &&
+            // The latest request, sent to this frame in this ready round,
+            // answered. The boot report a frame sends with its ready comes
+            // before this round's request; a report from the old page comes
+            // before the answer to a switch the editor asked for.
+            routeRequest !== null &&
+            routeRequest.key === previewKey &&
+            routeRequest.round === previewReadyRoundRef.current &&
+            routeRequest.id === routeRequestIdRef.current &&
+            routeRequest.answered
+          ) {
+            const follow = frameFollowRef.current;
+            // No switch of the editor's own waiting or under way.
+            const editorSettled =
+              pendingRoutePathRef.current === null &&
+              editorRoutePathsMatch(
+                navigatingRoutePathRef.current ?? searchRoutePath,
+                searchRoutePath,
+              );
+            // Or the switch under way is one the frame started, and the
+            // router has not landed it: the frame has moved on again, and
+            // the switch goes where the frame is now. Once the route is on
+            // screen its set-route is out, and the frame's word waits for
+            // that answer like any other.
+            const followUnderWay =
+              follow !== null &&
+              pendingRoutePathRef.current === follow &&
+              !editorRoutePathsMatch(searchRoutePath, follow);
+            const route =
+              editorSettled || followUnderWay
+                ? previewFrameNavigationRoute(
+                    reportedRoutePath,
+                    themeRouteRegistryRef.current.routes,
+                  )
+                : null;
+            if (
+              route &&
+              !(followUnderWay && editorRoutePathsMatch(route.path, follow))
+            ) {
+              frameFollowRef.current = route.path;
+              setPendingRoutePath(route.path);
+            }
+          }
           return;
         }
         setPreviewStructure({
@@ -7610,6 +8129,22 @@ export function VisualEditorShell({
           message.routeRequestId,
           message.routePath,
         );
+        frameRouteRef.current = {
+          key: previewKey,
+          round: previewReadyRoundRef.current,
+          routePath: message.routePath,
+        };
+        // Answered only by this frame, in this ready round, for the latest
+        // request: an id alone carries over from the frame before.
+        const routeRequest = lastRouteRequestRef.current;
+        if (
+          routeRequest !== null &&
+          routeRequest.key === previewKey &&
+          routeRequest.round === previewReadyRoundRef.current &&
+          routeRequest.id === message.routeRequestId
+        ) {
+          routeRequest.answered = true;
+        }
         return;
       }
       if (message.type === "morph:storefront-preview-theme-files-applied") {
@@ -7643,6 +8178,22 @@ export function VisualEditorShell({
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
+      // An element of another page, or of a page not known yet: its slot id
+      // may be one this page has too, and the Inspector would then edit this
+      // page's copy of it.
+      if (!frameShowsEditorPage()) {
+        // A click on a canvas that is never taken is said; the frame's answer
+        // to a selection the panel asked for is set aside as before.
+        if (
+          canvasUnavailableHere() &&
+          previewSelection.isNewCanvasIntent(message)
+        ) {
+          toast.info(CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE, {
+            id: "canvas-unavailable-for-framework",
+          });
+        }
+        return;
+      }
 
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
@@ -7743,8 +8294,15 @@ export function VisualEditorShell({
       }
     };
 
+    // The same predicate, for the Inspector's live typing.
+    frameShowsEditorPageRef.current = frameShowsEditorPage;
     window.addEventListener("message", handlePreviewSelection);
-    return () => window.removeEventListener("message", handlePreviewSelection);
+    return () => {
+      window.removeEventListener("message", handlePreviewSelection);
+      if (frameShowsEditorPageRef.current === frameShowsEditorPage) {
+        frameShowsEditorPageRef.current = () => false;
+      }
+    };
   }, [
     activeTemplate,
     activeRouteSections,
@@ -7769,6 +8327,18 @@ export function VisualEditorShell({
   const activeTemplateId = activeTemplate?.id;
   /** Counts route requests, of any frame; the page echoes the one it answers. */
   const routeRequestIdRef = useRef(0);
+  /**
+   * The latest route request: the frame and ready round it was sent to, and
+   * whether that frame has answered it in that round. Until it has, a report
+   * naming another page is the editor's own switch on its way, or the page
+   * the frame booted on, and is never followed.
+   */
+  const lastRouteRequestRef = useRef<{
+    key: string;
+    round: number;
+    id: number;
+    answered: boolean;
+  } | null>(null);
   /** Sends the route on screen; the request's id, or null when none was sent. */
   const syncPreviewRoute = useCallback((): number | null => {
     if (!activeTemplateId) return null;
@@ -7789,6 +8359,12 @@ export function VisualEditorShell({
     const measurementRevision = beginPreviewSizeMeasurement();
     const routeRequestId = syncPreviewRoute();
     if (routeRequestId !== null) {
+      lastRouteRequestRef.current = {
+        key: previewKey,
+        round: previewReadyRoundRef.current,
+        id: routeRequestId,
+        answered: false,
+      };
       // A reloaded frame's content waits for the answer to this request
       // (`createInstanceContentReplay`); sending it is not the answer.
       instanceContentReplayRef.current?.routeSent(
@@ -7816,6 +8392,25 @@ export function VisualEditorShell({
     requestPreviewSize,
     syncPreviewRoute,
   ]);
+  // The route on screen sent again, as above, to a frame that moved away by
+  // itself; its answer and its report then come from this page.
+  returnFrameToPageRef.current = () => {
+    if (!previewKey || previewFrameReady?.key !== previewKey) return;
+    const routeRequestId = syncPreviewRoute();
+    if (routeRequestId === null) return;
+    lastRouteRequestRef.current = {
+      key: previewKey,
+      round: previewReadyRoundRef.current,
+      id: routeRequestId,
+      answered: false,
+    };
+    instanceContentReplayRef.current?.routeSent(
+      previewKey,
+      previewReadyRoundRef.current,
+      replayRoutePathRef.current,
+      routeRequestId,
+    );
+  };
 
   const syncPreviewSection = useCallback(() => {
     const currentSectionId = search.section ?? null;
@@ -8483,12 +9078,17 @@ export function VisualEditorShell({
       enabled: boolean | undefined,
       resetKeys?: string[],
     ) => {
+      // Decided as it is posted, from what the editor holds now: a section
+      // held as hidden is told it is hidden and nothing else, whatever this
+      // post was composed from. Only the message is changed; what is saved,
+      // pending or accepted is not touched.
+      const hidden = previewSectionIsHidden(sectionId);
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-section-props",
         sectionId,
-        props: resolvedProps,
-        enabled,
-        ...(resetKeys?.length ? { resetKeys } : {}),
+        props: hidden ? undefined : resolvedProps,
+        enabled: hidden ? false : enabled,
+        ...(!hidden && resetKeys?.length ? { resetKeys } : {}),
       });
       // Anything that changes what the canvas renders has to re-measure,
       // not just a file write. The theme's own `min-h-screen` resolves
@@ -8497,7 +9097,7 @@ export function VisualEditorShell({
       // otherwise leave the space it used to occupy behind.
       schedulePreviewRemeasureRef.current();
     },
-    [],
+    [previewSectionIsHidden],
   );
   const syncPreviewSectionProps = useCallback(
     (
@@ -8582,6 +9182,32 @@ export function VisualEditorShell({
     },
     [previewMediaCache, postPreviewSectionProps],
   );
+  /**
+   * Tells the preview a section's visibility as the editor holds it now: a
+   * hidden section as `{ enabled: false }`, a shown one with the accepted copy
+   * and the pending fields on top, shown in the same message
+   * (`previewSectionPost`). Through the one poster, so it is checked again as
+   * it is posted. Nothing is stored or changed.
+   */
+  const reconcilePreviewSection = useCallback(
+    (sectionId: string) => {
+      const state = previewSectionStateRef.current(sectionId);
+      if (!state) return;
+      const post = previewSectionPost({
+        ...state,
+        sourceGeneration: currentContentSourceGeneration(),
+      });
+      syncPreviewSectionProps(
+        sectionId,
+        post?.props
+          ? (parsePreviewSectionProps(post.props) ?? undefined)
+          : undefined,
+        post?.enabled ?? true,
+      );
+    },
+    [currentContentSourceGeneration, syncPreviewSectionProps],
+  );
+  previewVisibilityRef.current.reconcile = reconcilePreviewSection;
 
   // The frame `createPreviewInstanceWatch` brought up is given, once it is on
   // the route it was reloaded on, the latest accepted content with the
@@ -8621,7 +9247,9 @@ export function VisualEditorShell({
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
           const key = `${templateId}:${sectionId}`;
-          const section = instanceReplaySection({
+          // A hidden section is replayed as hidden, with no props: its
+          // stored values stay with the editor (`previewSectionPost`).
+          const section = previewSectionPost({
             snapshot: contentSnapshotsRef.current.get(
               routeTemplateIdsRef.current.get(templateId) ?? templateId,
             ),
@@ -8633,7 +9261,9 @@ export function VisualEditorShell({
           if (!section) continue;
           syncPreviewSectionProps(
             sectionId,
-            parsePreviewSectionProps(section.props) ?? undefined,
+            section.props
+              ? (parsePreviewSectionProps(section.props) ?? undefined)
+              : undefined,
             section.enabled,
             undefined,
             isCurrent,
@@ -8993,23 +9623,24 @@ export function VisualEditorShell({
 
       syncPreviewSectionProps(sectionId, {}, undefined, fieldKeys);
       if (recordHistory && Object.keys(removed).length > 0) {
-        history.record({
-          label: "Use code default",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            contentChangeRef.current?.(sectionId, removed, {
-              historySourceGeneration: sourceGeneration,
-            }),
-          redo: async () => {
-            const replay = await handleResetContentFields(
-              sectionId,
-              fieldKeys,
-              false,
-              sourceGeneration,
-            );
-            if (!replay.success) throw sourceSelectionFailure();
-          },
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: "Use code default",
+            undo: () =>
+              contentChangeRef.current?.(sectionId, removed, {
+                historySourceGeneration: sourceGeneration,
+              }),
+            redo: async () => {
+              const replay = await handleResetContentFields(
+                sectionId,
+                fieldKeys,
+                false,
+                sourceGeneration,
+              );
+              if (!replay.success) throw sourceSelectionFailure();
+            },
+          }),
+        );
       }
       return { success: true };
     },
@@ -9473,28 +10104,31 @@ export function VisualEditorShell({
         await commitSectionPending(templateId, key, false);
         // Reversing a swap is the same swap again, so both directions write the
         // props the other one started from.
-        history.record({
-          label: "Reorder · item",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            handleSectionPropsChange(
-              sectionId,
-              { [arrayRoot]: currentProps[arrayRoot] },
-              { historySourceGeneration: generation },
-            ),
-          redo: () =>
-            handleSectionPropsChange(
-              sectionId,
-              { [arrayRoot]: result.value[arrayRoot] },
-              { historySourceGeneration: generation },
-            ),
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: "Reorder · item",
+            undo: () =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: currentProps[arrayRoot] },
+                { historySourceGeneration: generation },
+              ),
+            redo: () =>
+              handleSectionPropsChange(
+                sectionId,
+                { [arrayRoot]: result.value[arrayRoot] },
+                { historySourceGeneration: generation },
+              ),
+          }),
+        );
       } catch {
+        const hiddenBefore = previewSectionIsHidden(sectionId);
         if (pendingPropsMapRef.current.get(key) === reorderPending) {
           if (priorPending) pendingPropsMapRef.current.set(key, priorPending);
           else pendingPropsMapRef.current.delete(key);
         }
         restoreSelectionAndProps();
+        reconcileAfterRemoval(sectionId, reorderPending, hiddenBefore);
       }
     },
     [
@@ -9502,6 +10136,8 @@ export function VisualEditorShell({
       handleSectionPropsChange,
       invalidateSectionHistory,
       commitSectionPending,
+      previewSectionIsHidden,
+      reconcileAfterRemoval,
       activeTemplate,
       enqueueTemplateMutation,
       syncPreviewSectionProps,
@@ -9555,11 +10191,13 @@ export function VisualEditorShell({
         return;
       }
       if (historyGeneration === undefined) invalidateSectionHistory(sectionId);
-      // 1. Instant 0ms visual toggle on canvas
-      syncPreviewSectionProps(sectionId, undefined, enabled);
 
       const templateId = templateIdForSection(sectionId);
-      if (!templateId) return;
+      if (!templateId) {
+        // Nothing stores it, so nothing holds an intent: the canvas toggles.
+        syncPreviewSectionProps(sectionId, undefined, enabled);
+        return;
+      }
       const key = `${templateId}:${sectionId}`;
 
       const existingTimer = pendingPropsTimersRef.current.get(key);
@@ -9577,7 +10215,10 @@ export function VisualEditorShell({
         sourceForPath: () => generation,
         basisDraftGeneration: contentBasisFor(templateId),
       });
-      if (!togglePending) return;
+      if (!togglePending) {
+        reconcilePreviewSection(sectionId);
+        return;
+      }
       if (!pendingPropsBaselineRef.current.has(key)) {
         pendingPropsBaselineRef.current.set(
           key,
@@ -9585,6 +10226,11 @@ export function VisualEditorShell({
         );
       }
       pendingPropsMapRef.current.set(key, togglePending);
+      // 1. Instant 0ms visual toggle on canvas, posted once this toggle is
+      // the intent the editor holds and before anything is awaited: a hide as
+      // `{ enabled: false }`, a show with the section's values in the same
+      // message (`reconcilePreviewSection`).
+      reconcilePreviewSection(sectionId);
 
       try {
         await commitSectionPending(templateId, key, false);
@@ -9593,22 +10239,23 @@ export function VisualEditorShell({
         return;
       }
       if (historyGeneration === undefined) {
-        history.record({
-          label: enabled ? "Show section" : "Hide section",
-          scope: sectionHistoryScope(sectionId),
-          undo: () =>
-            handleSectionToggleEnabledRef.current?.(
-              sectionId,
-              !enabled,
-              generation,
-            ),
-          redo: () =>
-            handleSectionToggleEnabledRef.current?.(
-              sectionId,
-              enabled,
-              generation,
-            ),
-        });
+        history.record(
+          fenceSectionHistory(sectionId, templateId, {
+            label: enabled ? "Show section" : "Hide section",
+            undo: () =>
+              handleSectionToggleEnabledRef.current?.(
+                sectionId,
+                !enabled,
+                generation,
+              ),
+            redo: () =>
+              handleSectionToggleEnabledRef.current?.(
+                sectionId,
+                enabled,
+                generation,
+              ),
+          }),
+        );
       }
     },
     [
@@ -9624,6 +10271,7 @@ export function VisualEditorShell({
       updatePropsMutation,
       currentContentSourceGeneration,
       freshContentSelectionGeneration,
+      reconcilePreviewSection,
     ],
   );
 
@@ -9734,9 +10382,30 @@ export function VisualEditorShell({
     }
 
     const keys = new Set(entries.map(([key]) => key));
+    const hiddenBefore = new Map(
+      entries.map(([key, entry]) => [
+        key,
+        previewSectionIsHidden(entry.sectionId),
+      ]),
+    );
+    // The version just read is the one the discard leaves, so it becomes the
+    // accepted copy before the preview is told about it — as every other
+    // read does. Without it a write from elsewhere that landed after the
+    // conflict (another tab hiding the section) was missed, and the preview
+    // was posted the older copy shown.
+    acceptReadTemplates(fresh.data.templates);
     for (const key of keys) {
       pendingPropsMapRef.current.delete(key);
       pendingPropsBaselineRef.current.delete(key);
+    }
+    // The discarded draft may have held a hide: the preview is told the
+    // visibility the latest version leaves.
+    for (const [key, entry] of entries) {
+      reconcileAfterRemoval(
+        entry.sectionId,
+        confirmed.get(key),
+        hiddenBefore.get(key),
+      );
     }
     setContentConflicts((current) => {
       const next = { ...current };
@@ -9763,7 +10432,15 @@ export function VisualEditorShell({
       }
     }
     setContentResetEpoch((epoch) => epoch + 1);
-  }, [context.storefront.id, context.theme.id, listConflicts, queryClient]);
+  }, [
+    acceptReadTemplates,
+    context.storefront.id,
+    context.theme.id,
+    listConflicts,
+    previewSectionIsHidden,
+    queryClient,
+    reconcileAfterRemoval,
+  ]);
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
@@ -10145,12 +10822,22 @@ export function VisualEditorShell({
   const switchToDesign = useCallback(() => {
     setEditorMode("design");
     syncPreviewSpacingOverlay();
+    // Code Mode does not follow the frame's own navigation. Asked where the
+    // frame is now, its answer is followed, or set aside, as any report is.
+    if (previewKey && previewFrameReady?.key === previewKey) {
+      postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+        type: "morph:storefront-preview-request-structure",
+      });
+    }
     if (isCommentMode) return;
 
     previewSelection.askForCurrent({ enabled: isSelectionMode });
   }, [
     isCommentMode,
     isSelectionMode,
+    postEditorToPreviewMessage,
+    previewFrameReady?.key,
+    previewKey,
     previewSelection,
     syncPreviewSpacingOverlay,
   ]);
@@ -12040,6 +12727,29 @@ export function VisualEditorShell({
               </>
             )}
 
+            {/* Always mounted: its live region must exist before the notice
+                appears in it, or screen readers may not announce it. */}
+            <PreviewClientOnlyNotice
+              content={previewClientOnlyNotice}
+              // One notice per start: a new start's answer replaces it, and
+              // brings it back if the author dismissed the last one.
+              startKey={previewServer.dataUpdatedAt}
+              onOpenFile={handleJumpToCode}
+            />
+
+            {liveTypingUnavailable !== null ? (
+              // Quiet and in place, not a toast per keystroke: the field
+              // still saves, and the canvas shows the value once it has.
+              // Top right of the canvas, clear of the client-only notice
+              // (bottom left) and the canvas toolbar (bottom centre).
+              <div
+                role="status"
+                className="pointer-events-none absolute right-3 top-3 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {LIVE_TYPING_UNAVAILABLE_MESSAGE}
+              </div>
+            ) : null}
+
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
               <PreviewCompileErrorAlert
@@ -12090,6 +12800,7 @@ export function VisualEditorShell({
             }}
             spacingOverlayMode={spacingOverlayMode}
             onSpacingOverlayModeChange={setSpacingOverlayMode}
+            onPreviewRuntimeChanged={retryLivePreview}
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -12294,6 +13005,7 @@ function EditorControls({
   onSelectionModeChange,
   spacingOverlayMode,
   onSpacingOverlayModeChange,
+  onPreviewRuntimeChanged,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -12308,6 +13020,8 @@ function EditorControls({
   onSelectionModeChange: (enabled: boolean) => void;
   spacingOverlayMode: PreviewSpacingOverlayMode;
   onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
+  /** Restarts the Live Preview once the Theme records another runtime. */
+  onPreviewRuntimeChanged: () => void;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -12410,6 +13124,10 @@ function EditorControls({
         >
           <MessageCircle />
         </Button>
+        <EditorPreviewRuntimeMenu
+          context={context}
+          onRuntimeChanged={onPreviewRuntimeChanged}
+        />
         <Button
           variant="ghost"
           size="icon"

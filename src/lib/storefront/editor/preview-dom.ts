@@ -328,6 +328,58 @@ export function previewSectionSelector(sectionId: string): string {
 }
 
 /**
+ * Why a frame must not apply an `update-selection-field` post, or null when
+ * it may: the one rule the Theme bridge and Morph's own preview route share.
+ *
+ * The post names the section the editor's Inspector is typing into. It is
+ * applied only to that section, only while it is the one this page has
+ * selected, only while the element selected for it is still on the page and
+ * is the element its id finds there (a render that replaced it, or a page
+ * the frame moved to by itself, leaves a stale one), and never to a section
+ * this page holds hidden. Defence in depth: the page runs Theme JavaScript,
+ * so the editor's own checks before it posts are the barrier that counts.
+ */
+export function selectionFieldRefusal(
+  message: Readonly<{ sectionId: string }>,
+  selected: Readonly<{ sectionId: string | null; section: Element | null }> | null,
+  root: Pick<Document, "querySelector">,
+  isHidden: (sectionId: string) => boolean,
+): string | null {
+  if (!selected) return "nothing is selected";
+  if (message.sectionId !== selected.sectionId) {
+    return "it names another section than the one selected";
+  }
+  const section = selected.section;
+  if (
+    !section ||
+    !section.isConnected ||
+    root.querySelector(previewSectionSelector(message.sectionId)) !== section
+  ) {
+    return "the selected section is not on this page";
+  }
+  if (isHidden(message.sectionId) || isInHiddenPreviewSection(section)) {
+    return "the section is hidden";
+  }
+  return null;
+}
+
+/**
+ * Logs a refused selection-field post to the page's own console, and says
+ * nothing to the editor. Bounded: the reason is one of a few fixed strings,
+ * the id is cut short, and a page logs at most `limit` of them.
+ */
+export function createSelectionFieldRefusalLog(limit = 20) {
+  let logged = 0;
+  return (reason: string, sectionId: unknown) => {
+    if (logged >= limit) return;
+    logged += 1;
+    console.debug(
+      `[morph] update-selection-field not applied: ${reason} (section ${String(sectionId).slice(0, 100)})`,
+    );
+  };
+}
+
+/**
  * The content field an element is bound to, or `null` when it names none the
  * editor can prove.
  *

@@ -228,9 +228,21 @@ export function resolveThemeServiceBindingName(
   env: Record<string, unknown> | undefined,
   storefrontId: string,
 ): string | null {
+  const target = resolveThemeServiceBindingTarget(env, storefrontId);
+  return "name" in target ? target.name : null;
+}
+
+/**
+ * Same mapping as `resolveThemeServiceBindingName`, but says why a storefront
+ * has no binding name, as a fixed code that never carries the map's contents.
+ */
+export function resolveThemeServiceBindingTarget(
+  env: Record<string, unknown> | undefined,
+  storefrontId: string,
+): { name: string } | { unmapped: "MAP_MALFORMED" | "ENTRY_MISSING" } {
   const raw = env?.MORPH_THEME_SERVICE_BINDINGS;
   if (typeof raw !== "string" || raw.trim() === "") {
-    return DEFAULT_THEME_SERVICE_BINDING;
+    return { name: DEFAULT_THEME_SERVICE_BINDING };
   }
 
   let parsed: unknown;
@@ -238,14 +250,16 @@ export function resolveThemeServiceBindingName(
     parsed = JSON.parse(raw);
   } catch {
     // A malformed map must not silently widen into the default binding.
-    return null;
+    return { unmapped: "MAP_MALFORMED" };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
+    return { unmapped: "MAP_MALFORMED" };
   }
 
   const mapped = (parsed as Record<string, unknown>)[storefrontId];
-  return typeof mapped === "string" && mapped.trim() !== "" ? mapped : null;
+  return typeof mapped === "string" && mapped.trim() !== ""
+    ? { name: mapped }
+    : { unmapped: "ENTRY_MISSING" };
 }
 
 /**
@@ -281,11 +295,12 @@ export function createThemeRuntime(
 
   if (hasServiceBinding) {
     return new ServiceBindingThemeRuntime((resolved) => {
-      const bindingName = resolveThemeServiceBindingName(
+      const target = resolveThemeServiceBindingTarget(
         environment,
         resolved.storefrontId,
       );
-      return bindingName ? readServiceBinding(bindingName) : null;
+      if (!("name" in target)) return target;
+      return readServiceBinding(target.name) ?? { unmapped: "BINDING_ABSENT" };
     });
   }
 

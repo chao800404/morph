@@ -54,6 +54,7 @@ import {
 } from "@/lib/storefront/editor/selection-style-preview";
 import {
   applyPreviewSectionProps,
+  PREVIEW_CAPABILITIES,
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
   type PreviewSectionProps,
@@ -79,14 +80,19 @@ const PREVIEW_GEOMETRY_MUTATION_MESSAGES = new Set([
 import {
   PREVIEW_EDITABLE_NODE_SELECTOR,
   collectPreviewEditableNodes,
+  createSelectionFieldRefusalLog,
   previewSectionSelector,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
+  selectionFieldRefusal,
   selectionKindOf,
   selectionMetadata,
   selectionStyleSnapshot,
   type SelectableInfo,
 } from "@/lib/storefront/editor/preview-dom";
+
+/** A refused selection-field post is said in this page's console only. */
+const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
 
 export {
   closestPreviewFieldElement,
@@ -565,7 +571,8 @@ function usePreviewDocument(document: StorefrontPageDocument | undefined) {
   return previewDocument;
 }
 
-function useStorefrontPreviewSelectionBridge(enabled: boolean) {
+/** Exported for its tests (`preview-route-selection-field.test.tsx`). */
+export function useStorefrontPreviewSelectionBridge(enabled: boolean) {
   useEffect(() => {
     if (!enabled || window.parent === window) return;
 
@@ -1841,10 +1848,23 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
         return;
       }
 
-      if (
-        message.type === "morph:storefront-preview-update-selection-field" &&
-        selectedItem
-      ) {
+      if (message.type === "morph:storefront-preview-update-selection-field") {
+        // The same rule as the Theme bridge (`selectionFieldRefusal`). This
+        // route renders no hidden section at all (see the route's tests), so
+        // a hidden one is a section its id finds no element for.
+        const refusal = selectionFieldRefusal(
+          message,
+          selectedItem,
+          document,
+          () => false,
+        );
+        if (refusal || !selectedItem) {
+          logSelectionFieldRefusal(
+            refusal ?? "nothing is selected",
+            message.sectionId,
+          );
+          return;
+        }
         const scope = selectedItem.section ?? document;
         const fieldPath = message.fieldPath;
         const groupedImagePath =
@@ -2092,7 +2112,10 @@ function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     // source bridge lives in a child tree, whose passive effect can run before
     // this outer bridge; announcing there let the editor restore its active
     // tool into a listener gap and left the toolbar and canvas out of sync.
-    postPreviewToEditorMessage({ type: "morph:storefront-preview-ready" });
+    postPreviewToEditorMessage({
+      type: "morph:storefront-preview-ready",
+      capabilities: [...PREVIEW_CAPABILITIES],
+    });
     /**
      * Clears the drag-time inline styles one frame after the source styles land.
      *

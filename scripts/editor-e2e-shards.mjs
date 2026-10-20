@@ -27,6 +27,8 @@ export const EDITOR_SHARDS = [
     "structure-editor-writes.spec.ts",
     "initial-code-publish.spec.ts",
     "object-position.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "selection-field-frame-navigated.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
