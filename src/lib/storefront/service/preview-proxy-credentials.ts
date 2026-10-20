@@ -1,4 +1,5 @@
 import { isPlatformCredentialCookieName } from "@/lib/auth/platform-cookies";
+import { parseSecretApiKeyAuthorization } from "@/server/admin-api/secret-api-key-auth";
 import { normalizeStorefrontHostname } from "./storefront-host-resolver";
 
 /**
@@ -9,16 +10,22 @@ import { normalizeStorefrontHostname } from "./storefront-host-resolver";
  * to it. Most of a request is the Theme's own business — its cookies, its
  * `Authorization`, whatever its routes read — and passes untouched, because a
  * preview that runs real TanStack Start has to see what a deployed one would.
- * Two things are not the Theme's:
+ * Three things are not the Theme's:
  *
  * - cookies Morph issues as credentials. A preview on a site of its own never
  *   receives them from a browser; removing them here means that staying true
  *   does not rest on configuration alone.
  * - `x-morph-*` headers. Core uses them to tell a Theme Worker what it has
  *   resolved, so a browser must not be able to assert them to Theme code.
+ * - an `Authorization` that is a Morph secret API key, as the Admin API
+ *   reads one (`parseSecretApiKeyAuthorization`). A client that sends its
+ *   admin key to the wrong host must not hand it to Theme code. The check is
+ *   syntactic, with no lookup, so a value that only looks like a Morph key
+ *   is removed too.
  *
- * `Authorization` passes: Morph never places one on a browser, so what reaches
- * a preview host is what the Theme's own code sent.
+ * Every other `Authorization`, Basic or Bearer, is the Theme's and passes
+ * unchanged: Morph never places one on a browser, so what reaches a preview
+ * host is what the Theme's own code sent.
  *
  * In the other direction a container may not set a cookie under a platform
  * credential's name, so that nothing a Theme does in its preview can plant one
@@ -67,6 +74,9 @@ export function previewRequestHeaders(headers: Headers): Headers {
   const forwarded = new Headers(headers);
   for (const name of [...forwarded.keys()]) {
     if (name.startsWith("x-morph-")) forwarded.delete(name);
+  }
+  if (parseSecretApiKeyAuthorization(forwarded.get("authorization"))) {
+    forwarded.delete("authorization");
   }
   const cookie = forwarded.get("cookie");
   if (cookie !== null) {
