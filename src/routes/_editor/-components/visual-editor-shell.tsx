@@ -531,6 +531,15 @@ export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
 export const LIVE_TYPING_UNAVAILABLE_MESSAGE =
   "Live preview typing unavailable — reload the preview to restore";
 /**
+ * Shown near the preview when a frame on a bridge older than document
+ * identity said it is ready again on the same frame: the editor cannot
+ * confirm which document that is, so it takes nothing from it — no edit is
+ * ended, no replay touched — and asks the author to reload instead. Never an
+ * automatic reload.
+ */
+export const PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE =
+  "Preview reloaded itself on an older bridge — reload the preview";
+/**
  * Said, without interrupting, when the preview's dev server was replaced
  * while text is being typed on the canvas: the canvas is kept until the text
  * is finished, and reloaded then.
@@ -4057,8 +4066,20 @@ export function VisualEditorShell({
     key: string;
     watchdog: PreviewFrameLoadWatchdog;
   } | null>(null);
-  // Takes a frame message only from the document the frame shows (C5):
-  // `previewDocumentOf` says, for a ready, whether it is a new document.
+  /**
+   * The frame on screen, while it is one on an older bridge that said it is
+   * ready again: what it now shows cannot be confirmed, so nothing was taken
+   * from it, and the author is asked to reload. Null otherwise.
+   */
+  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    setOlderBridgeReloaded(null);
+  }, [previewKey]);
+  // Takes a frame message only from the document the frame shows (C5): a
+  // ready only once the active document confirmed it (option A).
+  // `previewDocumentOf` says, for a ready, which document it is.
   const {
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
@@ -4067,6 +4088,9 @@ export function VisualEditorShell({
     livePreviewChannel,
     previewIframeRef,
     () => previewKeyRef.current,
+    {
+      onUnconfirmableReady: () => setOlderBridgeReloaded(previewKeyRef.current),
+    },
   );
 
   /**
@@ -8106,10 +8130,13 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-ready") {
-        // Only a ready from a new document reaches here: the same document
-        // announcing itself again, or one replaced, was not taken
-        // (`classifyPreviewDocument`). `documentId` is null for a frame whose
-        // bridge names no document, every ready of which is a replacement.
+        // Only a ready from a new document reaches here, and only once the
+        // document active in the frame confirmed it (option A): the same
+        // document announcing itself again, one replaced, one the active
+        // document did not answer for, was not taken
+        // (`classifyPreviewDocument`). `documentId` is null for a frame on
+        // an older bridge, whose first ready on this frame is the only one
+        // taken.
         const frameDocument = previewDocumentOf(event);
         const documentId =
           frameDocument?.kind === "ready" ? frameDocument.documentId : null;
@@ -12980,6 +13007,18 @@ export function VisualEditorShell({
               startKey={previewServer.dataUpdatedAt}
               onOpenFile={handleJumpToCode}
             />
+
+            {olderBridgeReloaded !== null &&
+            olderBridgeReloaded === previewKey ? (
+              // Quiet and in place: nothing was taken from the frame, and
+              // only a reload the author asks for brings it back in step.
+              <div
+                role="status"
+                className="pointer-events-none absolute right-3 top-12 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE}
+              </div>
+            ) : null}
 
             {liveTypingUnavailable !== null ? (
               // Quiet and in place, not a toast per keystroke: the field
