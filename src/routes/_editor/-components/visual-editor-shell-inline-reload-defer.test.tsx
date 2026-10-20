@@ -1098,9 +1098,44 @@ describe("the frame brought up after the reload", () => {
 
       await sign();
       await tick(0);
-      // Nothing after the edit puts the older content back.
-      expect(heroPosts(from).slice(edited + 1)).toEqual([]);
+      // Nothing after the edit puts the older content back. (Before C5 this
+      // asserted that nothing at all came after the edit's post. Since C5 the
+      // section a commit landed on is sent, when the edit ends, as the newest
+      // copy the editor has accepted with the pending input on top — and that
+      // copy, the replay's read, holds the image the edit's echo was composed
+      // without — so the edit's own post may be followed by its own signed
+      // repost. What this guards is unchanged: the replay's late post, with
+      // the older text, is never sent after the edit.)
+      expect(
+        heroPosts(from)
+          .slice(edited + 1)
+          .filter((message) => message.props?.heading !== "Newer"),
+      ).toEqual([]);
       expect(heroPosts(from).at(-1)?.props?.heading).toBe("Newer");
+    });
+
+    // C5: the section an inline commit landed on is sent, when the edit
+    // ends, from the stored copy with the pending input on top. That copy's
+    // library image is resolved for the canvas the way any edit's is: posted
+    // at once, then again once signed.
+    it("signs the stored image of a section an inline edit committed, when the edit ends", async () => {
+      const from = await replayedWithUnsignedImage();
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        value: "Newer",
+        originalValue: TYPED,
+      });
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      await tick(0);
+      await sign();
+      await tick(0);
+      const last = heroPosts(from).at(-1);
+      expect(last?.props?.heading).toBe("Newer");
+      expect(imageSigned(last)).toBe(true);
     });
 
     it("is not posted to a frame that replaced it meanwhile", async () => {
