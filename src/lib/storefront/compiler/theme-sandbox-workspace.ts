@@ -41,6 +41,11 @@ import {
 } from "@/lib/storefront/source-language/tsx-source-language";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "./preview-bridge-sources.generated";
 import {
+  THEME_MORPH_SDK_MODULES,
+  themeMorphSdkAliasesSource,
+  themeMorphSdkFiles,
+} from "./theme-morph-sdk";
+import {
   themePreviewBridgeEntrySource,
   THEME_PREVIEW_BRIDGE_PATH,
 } from "./theme-preview-bridge-entry";
@@ -596,6 +601,16 @@ export function planThemeSandboxWorkspace({
     );
   }
 
+  // The Morph SDK and its Start thin entry, which the config below resolves
+  // `@morph/sdk` and `@morph/sdk/start` to (theme-morph-sdk.ts). Written after
+  // the Theme's files, so a Theme file at the same path is replaced, never
+  // used. Start Themes only: the thin entry wraps Start's request.
+  if (routeRegistry) {
+    for (const module of themeMorphSdkFiles()) {
+      queueWorkspaceFile(`${workspaceRoot}/${module.path}`, module.content);
+    }
+  }
+
   if (startPreview) {
     queueWorkspaceFile(
       `${workspaceRoot}/${THEME_PREVIEW_START_WORKER_PATH}`,
@@ -724,6 +739,14 @@ const themeAliases = themeAliasDefinitions.map(({ key, target, wildcard }) => ({
   find: wildcard ? key : new RegExp("^" + escapeAliasRegex(key) + "$"),
   replacement: target,
 }));
+// The platform's SDK copy in this workspace (theme-morph-sdk.ts). Listed
+// before the Theme's own aliases, so a Theme alias cannot claim these names.
+const morphSdkAliases = ${
+    routeRegistry ? themeMorphSdkAliasesSource(hostRootLiteral) : "[]"
+  };
+const morphSdkModuleNames = new Set(${JSON.stringify(
+    routeRegistry ? Object.keys(THEME_MORPH_SDK_MODULES) : [],
+  )});
 // Route modules export TanStack Route objects, which are intentionally not a
 // React Fast Refresh boundary. The generated preview entry accepts those
 // modules and updates the existing router without replacing the iframe.
@@ -961,6 +984,11 @@ if (themeAliasDefinitions.some(({ key, wildcard }) =>
 )) {
   return null;
 }
+// Resolved by morphSdkAliases to the workspace's own copy, whose path the
+// containment check above judges once the alias has run.
+if (morphSdkModuleNames.has(source)) {
+  return null;
+}
 
 const basePkg = source.startsWith("@")
   ? source.split("/").slice(0, 2).join("/")
@@ -1041,7 +1069,7 @@ export default defineConfig({
     })}] : []),
   ],
   resolve: {
-    alias: themeAliases,
+    alias: [...morphSdkAliases, ...themeAliases],
     dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
   },
   // Keep these off esbuild's pre-bundling path so the preview's server-API
