@@ -117,9 +117,10 @@ test.describe("Code mode's bundled Monaco", () => {
 
     // Editing, then undoing and redoing it, through the keyboard as an author
     // does. One word, so Monaco holds it as one undo step. Each step is read
-    // back at once (Monaco applies undo synchronously) rather than polled:
-    // the workspace autosaves a draft 700 ms after edits settle, and the save
-    // formats the file, an edit of its own that would then be the next undo.
+    // back at once (Monaco applies undo synchronously) rather than polled,
+    // and no further round is taken: the workspace autosaves a draft shortly
+    // after edits settle, and the save formats the file, an edit of its own
+    // that would then be the next undo (seen on a loaded machine).
     const marker = "offlineUndoMarker";
     await page.locator(".monaco-editor .view-lines").first().click();
     await page.keyboard.press("Control+End");
@@ -130,8 +131,6 @@ test.describe("Code mode's bundled Monaco", () => {
     expect(await readMonacoModel(page, `/${PATH}`)).not.toContain(marker);
     await page.keyboard.press("Control+y");
     expect(await readMonacoModel(page, `/${PATH}`)).toContain(marker);
-    await page.keyboard.press("Control+z");
-    expect(await readMonacoModel(page, `/${PATH}`)).not.toContain(marker);
 
     // A type error only the TypeScript worker can find: its diagnostic is
     // the proof the worker started from this origin.
@@ -187,7 +186,8 @@ test.describe("Code mode's bundled Monaco", () => {
     await expect
       .poll(stored, { timeout: 15_000 })
       .toContain("offlineBroken: string = 42");
-    expect(await stored()).not.toContain(marker);
+    // The redone word was saved with the rest.
+    expect(await stored()).toContain(marker);
 
     // Everything Monaco needed came from this origin.
     expect(
