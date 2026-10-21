@@ -55,6 +55,9 @@ const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 const saveThemeFile = vi.hoisted(() => vi.fn());
 const panelSelections = vi.hoisted((): unknown[] => []);
+let lastPanelProps: ComponentProps<
+  typeof import("./editor-assistant-panel").EditorAssistantPanel
+> | null = null;
 
 vi.mock(
   "@/server/storefront/storefront-themes.serverFn",
@@ -131,6 +134,7 @@ vi.mock("./editor-assistant-panel", async (importOriginal) => {
   return {
     ...actual,
     EditorAssistantPanel: (props: ComponentProps<typeof RealPanel>) => {
+      lastPanelProps = props;
       panelSelections.push(props.selection ?? null);
       return <RealPanel {...props} />;
     },
@@ -270,8 +274,8 @@ export default function Hero({ heading = "Hero default" }: HeroProps) {
 `,
   ),
 ];
-const tree = () => ({
-  files: FILES,
+const tree = (files = FILES) => ({
+  files,
   tree: [
     {
       name: "src",
@@ -282,25 +286,25 @@ const tree = () => ({
           name: "routes",
           path: "src/routes",
           isDirectory: true,
-          children: FILES.filter((entry) =>
-            entry.path.startsWith("src/routes/"),
-          ).map((entry) => ({
-            name: entry.path.slice("src/routes/".length),
-            path: entry.path,
-            isDirectory: false,
-          })),
+          children: files
+            .filter((entry) => entry.path.startsWith("src/routes/"))
+            .map((entry) => ({
+              name: entry.path.slice("src/routes/".length),
+              path: entry.path,
+              isDirectory: false,
+            })),
         },
         {
           name: "hero",
           path: "src/hero",
           isDirectory: true,
-          children: FILES.filter((entry) =>
-            entry.path.startsWith("src/hero/"),
-          ).map((entry) => ({
-            name: entry.path.slice("src/hero/".length),
-            path: entry.path,
-            isDirectory: false,
-          })),
+          children: files
+            .filter((entry) => entry.path.startsWith("src/hero/"))
+            .map((entry) => ({
+              name: entry.path.slice("src/hero/".length),
+              path: entry.path,
+              isDirectory: false,
+            })),
         },
       ],
     },
@@ -332,7 +336,11 @@ type Harness = {
   setContext: (next: StorefrontThemeEditorDTO) => void;
 };
 
-function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
+function renderRouted(
+  initial: StorefrontThemeEditorSearch = homeSearch,
+  initialContext = context,
+  files = FILES,
+) {
   const harness = { asked: [] } as unknown as Harness;
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -347,7 +355,7 @@ function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
   );
   client.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
-    tree() as never,
+    tree(files) as never,
   );
   const guardRef: { current: EditorNavigationGuard | null } = { current: null };
   let holding = false;
@@ -355,7 +363,7 @@ function renderRouted(initial: StorefrontThemeEditorSearch = homeSearch) {
   function Routed() {
     const [search, setSearch] = useState(initial);
     const [heading, setHeading] = useState(initial);
-    const [shellContext, setShellContext] = useState(context);
+    const [shellContext, setShellContext] = useState(initialContext);
     harness.setContext = setShellContext;
     harness.search = () => search;
     harness.holdLoads = () => {
@@ -465,8 +473,12 @@ const shownRoute = (harness: Harness) => harness.search().routePath ?? "/";
  * Renders on `initial`, brings the frame up and lets it answer the editor's
  * route request: the editor is asking it for nothing.
  */
-async function settled(initial: StorefrontThemeEditorSearch = homeSearch) {
-  const harness = renderRouted(initial);
+async function settled(
+  initial: StorefrontThemeEditorSearch = homeSearch,
+  initialContext = context,
+  files = FILES,
+) {
+  const harness = renderRouted(initial, initialContext, files);
   await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
   fromPreview({
     type: "morph:storefront-preview-ready",
@@ -580,7 +592,7 @@ function enableSelection() {
   });
 }
 /** The author clicks a slot's heading on the page the frame shows. */
-function frameSelects(sectionId: "hero" | "promo") {
+function frameSelects(sectionId: "hero" | "promo", fieldPath = "heading") {
   selectionRevision += 1;
   fromPreview({
     type: "morph:storefront-preview-select-section",
@@ -591,9 +603,9 @@ function frameSelects(sectionId: "hero" | "promo") {
     sourceFilePath: "src/hero/Hero.tsx",
     sourceLocation: null,
     elementKey: "heading",
-    fieldKey: "heading",
-    field: "heading",
-    fieldPath: "heading",
+    fieldKey: fieldPath.split(".")[0],
+    field: fieldPath.split(".")[0],
+    fieldPath,
     descendantFields: [],
     tagName: "h2",
     role: null,
@@ -768,6 +780,7 @@ const WINDOWS: Record<string, () => Promise<unknown>> = {
 beforeEach(() => {
   selectionRevision = 10_000;
   panelSelections.length = 0;
+  lastPanelProps = null;
   saveThemeFile.mockReset();
   saveThemeFile.mockResolvedValue({
     success: false,
@@ -776,6 +789,159 @@ beforeEach(() => {
   updateSectionProps.mockResolvedValue({
     success: true,
     data: { draftGeneration: 2, droppedProps: [] },
+  });
+});
+
+describe("source-derived sorting with an unprojected stored Document", () => {
+  const unstoredContext = (): StorefrontThemeEditorDTO => ({
+    ...context,
+    templates: context.templates.map((template) =>
+      template.id === "template-b"
+        ? { ...template, document: { version: 1, sections: [] } }
+        : template,
+    ),
+  });
+
+  it("reorders proven virtual page slots without materializing their Document", async () => {
+    const raw = unstoredContext();
+    const before = JSON.stringify(raw);
+    await settled(homeSearch, raw);
+    enableSelection();
+    ENTRIES["commit-section-reorder"]!.send();
+    await waitFor(() => expect(saveThemeFile).toHaveBeenCalledTimes(1));
+    const saved = saveThemeFile.mock.calls[0]![0].data as {
+      path: string;
+      content: string;
+    };
+    expect(saved.path).toBe("src/routes/b.tsx");
+    expect(saved.content.indexOf('content("promo")')).toBeLessThan(
+      saved.content.indexOf('content("hero")'),
+    );
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(JSON.stringify(raw)).toBe(before);
+  });
+
+  it("refuses a section absent from the derived page view", async () => {
+    await settled(homeSearch, unstoredContext());
+    enableSelection();
+    fromPreview({
+      type: "morph:storefront-preview-commit-section-reorder",
+      draggedSectionId: "unknown",
+      targetSectionId: "hero",
+    });
+    await tick(20);
+    expect(saveThemeFile).not.toHaveBeenCalled();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+  });
+
+  it("uses only page-owned virtual slots when a shared layout surrounds them", async () => {
+    const raw = unstoredContext();
+    raw.templates.push({
+      ...raw.templates[0]!,
+      id: "template-layout",
+      type: "layout",
+      document: { version: 1, sections: [] },
+    });
+    const files = [
+      ...FILES,
+      file(
+        "morph.theme.json",
+        JSON.stringify({
+          documentLayout: { source: "src/Layout.tsx" },
+        }),
+      ),
+      file(
+        "src/Layout.tsx",
+        `import { content } from "./morph/content";
+import Hero from "./hero/Hero";
+export default function Layout({ children }) {
+  return <><Hero {...content("global-header")} />{children}</>;
+}`,
+      ),
+    ];
+    await settled(homeSearch, raw, files);
+    enableSelection();
+    ENTRIES["commit-section-reorder"]!.send();
+    await waitFor(() => expect(saveThemeFile).toHaveBeenCalledTimes(1));
+    expect(saveThemeFile.mock.calls[0]![0].data.path).toBe("src/routes/b.tsx");
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    // A shared section cannot be moved into this page's source order.
+    saveThemeFile.mockClear();
+    fromPreview({
+      type: "morph:storefront-preview-commit-section-reorder",
+      draggedSectionId: "global-header",
+      targetSectionId: "hero",
+    });
+    await tick(20);
+    expect(saveThemeFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses the whole source reorder when a stored slot is unbound", async () => {
+    const raw = unstoredContext();
+    const template = raw.templates.find((entry) => entry.id === "template-b")!;
+    template.document.sections.push({
+      id: "unbound",
+      type: "Hero",
+      enabled: false,
+      props: { heading: "Keep this stored content" },
+    });
+    const before = JSON.stringify(raw);
+    await settled(homeSearch, raw);
+    enableSelection();
+    ENTRIES["commit-section-reorder"]!.send();
+    await tick(20);
+    expect(saveThemeFile).not.toHaveBeenCalled();
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(JSON.stringify(raw)).toBe(before);
+  });
+
+  it("reorders pending array items on a proven virtual slot through the existing writer", async () => {
+    const raw = unstoredContext();
+    const before = JSON.stringify(raw);
+    const files = FILES.map((entry) =>
+      entry.path === "src/hero/Hero.fields.ts"
+        ? {
+            ...entry,
+            content: `export const contentFields = {
+  heading: { type: "text", label: "Hero heading" },
+  items: { type: "array", fields: { heading: { type: "text" } } },
+} as const;`,
+          }
+        : entry,
+    );
+    await settled(homeSearch, raw, files);
+    enableSelection();
+    // The author selects the array the edit and the reorder are made in: a
+    // selection of one item's heading is not a source capture for `items`,
+    // and the existing guard rightly asks to reselect (stored slot alike).
+    frameSelects("hero", "items");
+    await tick(0);
+    expect(selectedInInspector()).toBe("hero");
+    act(() => {
+      lastPanelProps?.onSectionPropsChange?.("hero", {
+        items: [
+          { id: "first", heading: "First" },
+          { id: "second", heading: "Second" },
+        ],
+      });
+    });
+    // Reorder before the pending edit's ordinary debounce sends it. The view
+    // owns the virtual slot; the raw Document must not fabricate it on read.
+    ENTRIES["commit-array-item-reorder"]!.send();
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    const saved = updateSectionProps.mock.calls[0]![0].data as {
+      templateId: string;
+      sectionId: string;
+      props: Record<string, unknown>;
+    };
+    expect(saved.templateId).toBe("template-b");
+    expect(saved.sectionId).toBe("hero");
+    expect(saved.props.items).toEqual([
+      { id: "second", heading: "Second" },
+      { id: "first", heading: "First" },
+    ]);
+    expect(saveThemeFile).not.toHaveBeenCalled();
+    expect(JSON.stringify(raw)).toBe(before);
   });
 });
 
