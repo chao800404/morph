@@ -7,6 +7,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { openContentTab, openEditor, settleSelection } from "../helpers";
+import { readMonacoModel, setMonacoModelValue } from "./monaco-models";
 
 /**
  * What the editor does with unsaved work when who is signed in changes.
@@ -120,26 +121,14 @@ export async function openHeroInCode(page: Page) {
   return hero;
 }
 
-export function readSource(page: Page, path: string) {
-  return page.evaluate(
-    (target) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .getValue() as string,
-    path,
-  );
+export async function readSource(page: Page, path: string) {
+  const source = await readMonacoModel(page, path);
+  if (source === undefined) throw new Error(`No Monaco model for ${path}`);
+  return source;
 }
 
 export async function editAndSave(page: Page, path: string, next: string) {
-  await page.evaluate(
-    ({ target, value }) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .setValue(value),
-    { target: path, value: next },
-  );
+  await setMonacoModelValue(page, path, next);
   await page.keyboard.press("Control+s");
 }
 

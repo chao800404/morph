@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { expect, test } from "@playwright/test";
+import { readMonacoModel } from "./helpers/monaco-models";
 
 import {
   clickExposedElement,
@@ -380,15 +381,8 @@ test.describe("publish loop", () => {
           .locator(`[data-file-tree-file="${stylesheet}"]`)
           .click({ timeout: 5_000 });
       }).toPass({ timeout: 60_000 });
-      const savedStylesheet = () =>
-        page.evaluate(
-          (target) =>
-            ((window as any).monaco?.editor
-              .getModels()
-              .find((model: any) => model.uri.path.endsWith(target))
-              ?.getValue() as string | undefined) ?? "",
-          stylesheet,
-        );
+      const savedStylesheet = async () =>
+        (await readMonacoModel(page, stylesheet)) ?? "";
       await expect
         .poll(savedStylesheet, { timeout: 30_000 })
         .toContain("url(/images/e2e-moved.png)");
