@@ -133,6 +133,7 @@ type PositionedSection = ThemeRouteSection &
     parent: any;
   }>;
 
+
 function normalizePath(path: string): string {
   const stack: string[] = [];
   for (const segment of path.replace(/\\/g, "/").split("/")) {
@@ -1026,9 +1027,7 @@ export function replaceThemeRouteSectionComponent(args: {
     };
   }
 
-  const filePaths = new Set(
-    sourceFiles.map((file) => normalizePath(file.path)),
-  );
+  const filePaths = new Set(sourceFiles.map((file) => normalizePath(file.path)));
   const declaration = (parsed.ast.program.body ?? []).find(
     (statement: any) =>
       statement?.type === "ImportDeclaration" &&
@@ -1056,7 +1055,8 @@ export function replaceThemeRouteSectionComponent(args: {
     return {
       code: args.source,
       changed: false,
-      diagnostic: "Namespace-imported sections must be detached in Code mode.",
+      diagnostic:
+        "Namespace-imported sections must be detached in Code mode.",
     };
   }
 
@@ -1071,8 +1071,7 @@ export function replaceThemeRouteSectionComponent(args: {
     }
   });
   const target = usages.find(
-    (node) =>
-      node.start === section.node.start && node.end === section.node.end,
+    (node) => node.start === section.node.start && node.end === section.node.end,
   );
   if (!target || usages.length === 0) {
     return {
@@ -1123,7 +1122,10 @@ export function replaceThemeRouteSectionComponent(args: {
     specifier.type === "ImportDefaultSpecifier"
       ? null
       : (specifier.imported?.name ?? specifier.imported?.value);
-  if (typeof importedName !== "string" && importedName !== null) {
+  if (
+    typeof importedName !== "string" &&
+    importedName !== null
+  ) {
     return {
       code: args.source,
       changed: false,
@@ -1795,11 +1797,7 @@ export function bindThemeRouteSection(args: {
     "bind this section",
   );
   if (!moduleCheck.ok) {
-    return {
-      code: args.source,
-      changed: false,
-      diagnostic: moduleCheck.message,
-    };
+    return { code: args.source, changed: false, diagnostic: moduleCheck.message };
   }
   const binding = contentBindingImport(ast, args.files, args.routeSourcePath);
   const inserted = insertContentSpread(
@@ -1915,11 +1913,7 @@ export function addThemeRouteSection(args: {
     "add a section",
   );
   if (!moduleCheck.ok) {
-    return {
-      code: args.source,
-      changed: false,
-      diagnostic: moduleCheck.message,
-    };
+    return { code: args.source, changed: false, diagnostic: moduleCheck.message };
   }
   const contentBinding = contentBindingImport(
     ast,

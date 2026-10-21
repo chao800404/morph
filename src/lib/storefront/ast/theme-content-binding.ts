@@ -276,9 +276,7 @@ export function themeImportBase(
 ): string | null {
   if (!specifier.startsWith(".")) return null;
   const from = normalizeThemeSourcePath(fromPath);
-  const directory = from.includes("/")
-    ? from.slice(0, from.lastIndexOf("/"))
-    : "";
+  const directory = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
   const base = normalizeThemeSourcePath(`${directory}/${specifier}`);
   return base.startsWith("src/") ? base : null;
 }
@@ -397,9 +395,7 @@ function serverFunctionPagePath(
   }
   const handler = handlerCall.arguments[0];
   const pageRead = (expression: AnyNode) =>
-    isPagesGetCall(expression, morphNames)
-      ? expression.arguments[0].value
-      : null;
+    isPagesGetCall(expression, morphNames) ? expression.arguments[0].value : null;
 
   const direct = returnedExpression(handler);
   if (direct) return pageRead(direct);
@@ -478,11 +474,7 @@ function serverFunctionPagePathFor(
 ): string | null {
   const filePaths = new Set(files.map((file) => file.path));
   const createServerFnIn = (module: AnyNode) =>
-    valueImportLocal(
-      module,
-      (source) => source === START_MODULE,
-      "createServerFn",
-    );
+    valueImportLocal(module, (source) => source === START_MODULE, "createServerFn");
 
   // Defined here, once.
   const local = topLevelConst(ast, name);
@@ -584,9 +576,7 @@ export function declarationCounts(ast: AnyNode): Map<string, number> {
       case "ObjectPattern":
         for (const property of pattern.properties ?? []) {
           addPattern(
-            property.type === "RestElement"
-              ? property.argument
-              : property.value,
+            property.type === "RestElement" ? property.argument : property.value,
           );
         }
         return;
@@ -614,10 +604,7 @@ export function declarationCounts(ast: AnyNode): Map<string, number> {
       case "ArrowFunctionExpression":
       case "ClassMethod":
       case "ObjectMethod":
-        if (
-          node.type === "FunctionDeclaration" ||
-          node.type === "FunctionExpression"
-        ) {
+        if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression") {
           add(node.id?.name);
         }
         for (const param of node.params ?? []) addPattern(param);
@@ -781,9 +768,7 @@ export function collectLoaderSlotBindingDetails(
   const routes: Array<{ name: string; options: AnyNode; path: string }> = [];
   for (const statement of ast?.program?.body ?? []) {
     const declaration =
-      statement?.type === "ExportNamedDeclaration"
-        ? statement.declaration
-        : null;
+      statement?.type === "ExportNamedDeclaration" ? statement.declaration : null;
     if (declaration?.type !== "VariableDeclaration") continue;
     for (const declarator of declaration.declarations ?? []) {
       const init = declarator.init;
@@ -808,8 +793,9 @@ export function collectLoaderSlotBindingDetails(
     }
   }
   if (routes.length !== 1) return NO_LOADER_SLOT_BINDING_DETAILS;
-  const [{ name: routeName, options: routeOptions, path: routePath }] =
-    routes as [{ name: string; options: AnyNode; path: string }];
+  const [{ name: routeName, options: routeOptions, path: routePath }] = routes as [
+    { name: string; options: AnyNode; path: string },
+  ];
   if (declarationCounts(ast).get(routeName) !== 1) {
     return NO_LOADER_SLOT_BINDING_DETAILS;
   }
@@ -824,8 +810,7 @@ export function collectLoaderSlotBindingDetails(
   const properties: AnyNode[] = routeOptions.properties ?? [];
   const optionsArePlain = properties.every(
     (property) =>
-      (property?.type === "ObjectProperty" ||
-        property?.type === "ObjectMethod") &&
+      (property?.type === "ObjectProperty" || property?.type === "ObjectMethod") &&
       !property.computed &&
       (property.key?.type === "Identifier" ||
         property.key?.type === "StringLiteral"),
@@ -937,7 +922,10 @@ export function collectLoaderSlotBindingDetails(
       if (node?.type === "Identifier" && node.name === name) {
         const parent = parents.get(node);
         // The declaration's own binding is not a use.
-        if (parent?.type === "VariableDeclarator" && parent.id === node) {
+        if (
+          parent?.type === "VariableDeclarator" &&
+          parent.id === node
+        ) {
           return;
         }
         if (
