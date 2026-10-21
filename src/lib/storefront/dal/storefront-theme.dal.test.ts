@@ -14,6 +14,9 @@ import {
 import { storefrontContentPublicationDal } from "./storefront-content-publication.dal";
 import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
 import { env as workerEnv } from "cloudflare:workers";
+import { createThemePreviewContentSnapshot } from "../compiler/theme-preview-content";
+import { resolveStorefrontContent } from "../service/storefront-content-runtime";
+import { mergeDocumentWithRouteSections } from "../compiler/theme-route-sections";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -238,6 +241,149 @@ afterEach(() => {
 
 /** The source revision check `publishTemplate` requires, accepting. */
 const acceptRevision = async () => {};
+
+describe("stored content survives unproven route bindings", () => {
+  const revisionId = "abaaaaaa-1111-4111-8111-111111111111";
+  const document: StorefrontPageDocument = {
+    version: 1,
+    sections: [
+      { id: "a", type: "a", componentRef: "src/components/A.tsx", enabled: true, props: { title: "A stored", retained: "not editable" } },
+      { id: "b", type: "b", componentRef: "src/components/B.tsx", enabled: true, props: { title: "B stored", extra: { nested: "keep" } } },
+      { id: "c", type: "c", enabled: true, props: { title: "C not rendered" } },
+      { id: "h", type: "b", enabled: false, props: { title: "H hidden" } },
+    ],
+  };
+  function seed(mode: "new" | "in-place" | "fork" = "new") {
+    const files = {
+      "src/routes/__root.tsx": `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: () => <Outlet /> });`,
+      "src/morph/content.ts": `export const morph = {}; export function content(slot: string) { return {}; }`,
+      "src/routes/index.tsx": `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import A from "../components/A";
+import B from "../components/B";
+const getPage = createServerFn().handler(() => morph.pages.get("/"));
+export const Route = createFileRoute("/")({ loader: () => getPage(), component: Home });
+function Home() { const { a, b } = Route.useLoaderData(); return <main><A {...a} /><B title={b.title} /></main>; }`,
+      "src/components/A.tsx": `export const contentFields = { title: { type: "text", label: "Title" } } as const;
+export default function A({ title = "default" }) { return <h2>{title}</h2>; }`,
+      "src/components/B.tsx": `export default function B({ title }) { return <h2>{title}</h2>; }`,
+    };
+    for (const [path, content] of Object.entries(files)) {
+      sqlite.prepare(`INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')`).run(path, path, content);
+    }
+    sqlite.prepare(`INSERT INTO storefront_theme_templates
+      (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+      VALUES ('unbound-template', 'theme-a', 'index', 'Home', ?, ?, ?, 'now', 'now')`)
+      .run(JSON.stringify(document), mode === "new" ? null : revisionId, mode === "fork" ? revisionId : null);
+    if (mode !== "new") {
+      sqlite.prepare(`INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at)
+        VALUES (?, 'unbound-template', 1, ?, 'now')`).run(revisionId, JSON.stringify(document));
+    }
+  }
+  function stored() {
+    const row = sqlite.prepare(`SELECT r.id, r.document FROM storefront_theme_templates t
+      JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+      WHERE t.id = 'unbound-template' AND r.template_id = t.id`).get() as { id: string; document: string };
+    return { id: row.id, document: JSON.parse(row.document) as StorefrontPageDocument };
+  }
+  const target = { storefrontId: "storefront-a", themeId: "theme-a", templateId: "unbound-template", expectedDraftGeneration: 1, createdBy: "user-1" };
+
+  it("returns every stored slot and hidden flag to Live Preview, like the published resolver", async () => {
+    seed();
+    const before = sqlite.prepare("SELECT document FROM storefront_theme_templates").get();
+    const context = await storefrontThemeDal.findEditorContext("storefront-a", "theme-a");
+    expect(context?.templates[0]?.document).toEqual(document);
+    const live = await createThemePreviewContentSnapshot({ templates: context!.templates, pages: [] });
+    const published = await resolveStorefrontContent({ ports: { getPublishedDocument: async ({ templateType }) => templateType === "index" ? document : null }, publicationId: "publication", pathname: "/" });
+    expect(live.templates.index).toEqual(published);
+    expect(live.templates.index?.slots).toMatchObject({ b: document.sections[1]!.props, c: document.sections[2]!.props });
+    expect(live.templates.index?.hiddenSlots).toEqual(["h"]);
+    expect(sqlite.prepare("SELECT document FROM storefront_theme_templates").get()).toEqual(before);
+  });
+
+  for (const mode of ["new", "in-place", "fork"] as const) {
+    for (const operation of ["props", "rename", "policy", "prepare"] as const) {
+      it(`${operation} preserves all unrelated stored sections and prop keys (${mode})`, async () => {
+        seed(mode);
+        const result = operation === "props"
+          ? await storefrontThemeDal.updateSectionProps({ ...target, expectedSourceGeneration: 1, sectionId: "a", props: { title: "A edited" }, routePath: "/" })
+          : operation === "rename"
+            ? await storefrontThemeDal.renameSection({ ...target, sectionId: "a", name: "Renamed" })
+            : operation === "policy"
+              ? await storefrontThemeDal.updateRenderPolicy({ ...target, expectedSourceGeneration: 1, setting: { scope: "page", policy: { mode: "ssr" } } })
+              : await storefrontThemeDal.prepareInitialTemplateDraft({ ...target, expectedSourceGeneration: 1, ...(mode === "new" ? {} : { expectedDraftRevisionId: revisionId }) });
+        expect(result).not.toBeNull();
+        const saved = stored();
+        expect(JSON.stringify(saved.document.sections.slice(1))).toBe(JSON.stringify(document.sections.slice(1)));
+        expect(saved.document.sections.map((section) => section.id)).toEqual(["a", "b", "c", "h"]);
+        expect(saved.document.sections[0]!.props.retained).toBe("not editable");
+        if (operation === "props") expect(saved.document.sections[0]!.props.title).toBe("A edited");
+        if (mode === "in-place") expect(saved.id).toBe(revisionId);
+        if (mode === "fork") {
+          expect(saved.id).not.toBe(revisionId);
+          expect(sqlite.prepare("SELECT document FROM storefront_theme_template_revisions WHERE id = ?").get(revisionId)).toEqual({ document: JSON.stringify(document) });
+        }
+      });
+    }
+  }
+
+  it("refuses reordering stored-but-unbound sections without any database write", async () => {
+    seed("in-place");
+    const before = stored();
+    const templateBefore = sqlite.prepare("SELECT * FROM storefront_theme_templates").all();
+    // This is the dangerous real request: the editor sends only the slot it
+    // can bind. Accepting it would silently omit all the other stored slots.
+    expect(await storefrontThemeDal.reorderSections({ ...target, sectionIds: ["a"] })).toBeNull();
+    expect(stored()).toEqual(before);
+    expect(sqlite.prepare("SELECT * FROM storefront_theme_templates").all()).toEqual(templateBefore);
+  });
+
+  it("still refuses an unproven field write and preserves the entire draft", async () => {
+    seed("in-place");
+    const before = stored();
+    await expect(storefrontThemeDal.updateSectionProps({ ...target, expectedSourceGeneration: 1, sectionId: "b", props: { title: "Not proven" }, routePath: "/" })).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
+    expect(stored()).toEqual(before);
+  });
+
+  it("still reorders a fully bound document without changing any section", async () => {
+    seed("in-place");
+    sqlite.prepare("UPDATE storefront_theme_files SET content = ? WHERE path = 'src/routes/index.tsx'").run(`import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import A from "../components/A";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><A {...content("a")} /><A {...content("b")} /><A {...content("c")} /><A {...content("h")} /></main>; }`);
+    const result = await storefrontThemeDal.reorderSections({ ...target, sectionIds: ["h", "c", "b", "a"] });
+    expect(result).not.toBeNull();
+    expect(stored().document.sections).toEqual([...document.sections].reverse());
+  });
+
+  it("orders proven virtual slots without materializing their defaults or losing stored slots", async () => {
+    seed();
+    sqlite.prepare("UPDATE storefront_theme_templates SET document = ?").run(JSON.stringify({ version: 1, sections: [] }));
+    // a is proven by source but has never been edited; b is not proven and
+    // has no stored content to protect. A valid reorder must still succeed.
+    const result = await storefrontThemeDal.reorderSections({ ...target, sectionIds: ["a"] });
+    expect(result).not.toBeNull();
+    expect(stored().document.sections).toEqual([]);
+  });
+
+  for (const conflict of ["draft", "source"] as const) {
+    it(`preserves the complete stored revision on a ${conflict} generation conflict`, async () => {
+      seed("in-place");
+      const before = stored();
+      await expect(storefrontThemeDal.updateSectionProps({
+        ...target, expectedDraftGeneration: conflict === "draft" ? 0 : 1,
+        expectedSourceGeneration: conflict === "source" ? 0 : 1,
+        sectionId: "a", props: { title: "Must not land" }, routePath: "/",
+      })).rejects.toThrow(conflict === "draft" ? "CONFLICT_DRAFT_GENERATION_MISMATCH" : "SELECTION_SOURCE_CONFLICT");
+      expect(stored()).toEqual(before);
+    });
+  }
+});
 
 describe("storefront theme DAL", () => {
   it("refuses to seal content that the publish step would still normalize", async () => {
@@ -1632,7 +1778,11 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
       "storefront-a",
       "theme-a",
     );
-    expect(context?.templates[0]?.document.sections).toEqual([
+    const template = context!.templates[0]!;
+    // Source structure is still available to the editor, but it is no longer
+    // fabricated stored content. The first edit below must create this slot.
+    expect(template.document.sections).toEqual([]);
+    expect(mergeDocumentWithRouteSections(template.document, template.routeStructure!.sections).sections).toEqual([
       {
         id: "promo",
         type: "promo",
@@ -2219,10 +2369,11 @@ export default function Hero() { return <h1 />; }`;
       const untouched = before?.templates.find(
         (item) => item.id === ensured.template.id,
       )?.document;
-      // This fixture declares a Hero in route source. Editor context derives
-      // that structure without a Design write; first publication must preserve
-      // it, not incorrectly insist that every new route has zero sections.
-      expect(untouched?.sections).toEqual([
+      // The route still declares its Hero, but publish preparation must seal
+      // stored content rather than turn the editor projection into content.
+      const derived = before!.templates.find((item) => item.id === ensured.template.id)!.routeStructure!;
+      expect(untouched?.sections).toEqual([]);
+      expect(mergeDocumentWithRouteSections(untouched!, derived.sections).sections).toEqual([
         {
           id: "about-hero",
           type: "hero",
@@ -2301,7 +2452,8 @@ export default function Hero() { return <h1 />; }`;
         (t) => t.id === about.template.id,
       );
       expect(aboutDoc?.routePath).toBe("/aboutus");
-      expect(aboutDoc?.document.sections.map((section) => section.id)).toEqual([
+      expect(aboutDoc?.document.sections).toEqual([]);
+      expect(aboutDoc?.routeStructure?.sections.map((section) => section.slotId)).toEqual([
         "about-hero",
       ]);
 

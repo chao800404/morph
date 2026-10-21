@@ -39,8 +39,9 @@ import {
 import {
   deriveThemeLayoutSections,
   deriveThemeRouteSections,
-  mergeDocumentWithRouteSections,
+  type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
+import { templateSectionWriteBase } from "../content/template-section-write-base";
 import {
   contentTargetForRoutePath,
   routeTemplatePathForRequest,
@@ -114,29 +115,20 @@ function findBoundTemplateRoute(
   );
 }
 
-function deriveTemplateDocumentFromRoutes(args: {
+function deriveTemplateRouteStructure(args: {
   type: string;
   /** Set for a document one route owns; that route, not a guess by type. */
   routePath?: string | null;
-  document: import("@/db/storefront.schema").StorefrontPageDocument;
   files: readonly { path: string; content: string }[];
-}) {
+}): ThemeRouteSectionResult | null {
+  if (args.type === "layout") return deriveThemeLayoutSections(args.files);
   const registry = buildThemeRouteRegistry(args.files);
-  if (!registry.valid) return args.document;
+  if (!registry.valid) return null;
   const route = args.routePath
     ? findBoundTemplateRoute(registry, args.routePath)
     : findDefaultTemplateRoute(registry, args.type);
-  if (!route) return args.document;
-  const derived = deriveThemeRouteSections(args.files, route.sourcePath);
-  if (
-    derived.diagnostics.length > 0 ||
-    (derived.sections.length === 0 && !derived.hasContentImport)
-  ) {
-    return args.document;
-  }
-  return mergeDocumentWithRouteSections(args.document, derived.sections, {
-    routeOwnsStructure: derived.hasContentImport,
-  });
+  if (!route) return null;
+  return deriveThemeRouteSections(args.files, route.sourcePath);
 }
 
 type SectionSourceComponent =
@@ -884,17 +876,20 @@ export const storefrontThemeDal = {
           // without having to remember to ask. The repair reaches the database
           // when the author's first real edit is saved, in the same batch and
           // for the same generation as the edit itself.
+          // Binding analysis is a view of source, not a content allowlist.
+          // Preview reads and every content writer share this stored base;
+          // filtering here would persist the projection on the next edit.
           document: normalizeDocumentRowIds(
-            deriveTemplateDocumentFromRoutes({
-              type: template.type,
-              routePath: template.routePath,
-              document: storefrontPageDocumentSchema.parse(
-                typeof document === "string" ? JSON.parse(document) : document,
-              ),
-              files: themeSourceFiles,
-            }),
+            storefrontPageDocumentSchema.parse(
+              typeof document === "string" ? JSON.parse(document) : document,
+            ),
             template.id,
           ).value,
+          routeStructure: deriveTemplateRouteStructure({
+            type: template.type,
+            routePath: template.routePath,
+            files: themeSourceFiles,
+          }),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
           draftGeneration: template.draftGeneration ?? 1,
@@ -1051,7 +1046,24 @@ export const storefrontThemeDal = {
     );
     if (!template) return null;
 
-    const currentIds = template.document.sections.map((section) => section.id);
+    // The editor cannot choose a position for content it cannot bind. Refuse
+    // the whole reorder, without writing, rather than moving or losing it.
+    const structure = template.routeStructure;
+    const routeOwnsOrder =
+      structure && (structure.hasContentImport || structure.sections.length > 0);
+    if (structure?.diagnostics.length) return null;
+    if (routeOwnsOrder) {
+      const boundIds = new Set(
+        structure.sections.map((section) => section.slotId),
+      );
+      if (template.document.sections.some((section) => !boundIds.has(section.id))) {
+        return null;
+      }
+    }
+
+    const currentIds = routeOwnsOrder
+      ? structure.sections.map((section) => section.slotId)
+      : template.document.sections.map((section) => section.id);
     if (
       currentIds.length !== data.sectionIds.length ||
       new Set(currentIds).size !== new Set(data.sectionIds).size ||
@@ -1074,7 +1086,12 @@ export const storefrontThemeDal = {
     );
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
-      sections: data.sectionIds.map((id) => sectionById.get(id)),
+      // Unedited route slots are still virtual. Ordering them must not
+      // fabricate content; only rearrange the stored slots that remain.
+      sections: data.sectionIds.flatMap((id) => {
+        const section = sectionById.get(id);
+        return section ? [section] : [];
+      }),
     });
 
     return writeTemplateDocument({
@@ -1121,7 +1138,8 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
-    if (!template.document.sections.some((s) => s.id === data.sectionId)) {
+    const baseDocument = templateSectionWriteBase(template, data.sectionId);
+    if (!baseDocument.sections.some((s) => s.id === data.sectionId)) {
       return null;
     }
 
@@ -1137,8 +1155,8 @@ export const storefrontThemeDal = {
 
     const trimmed = data.name?.trim() ?? "";
     const document = storefrontPageDocumentSchema.parse({
-      ...template.document,
-      sections: template.document.sections.map((section) => {
+      ...baseDocument,
+      sections: baseDocument.sections.map((section) => {
         if (section.id !== data.sectionId) return section;
         const { name: _previous, ...rest } = section;
         return trimmed ? { ...rest, name: trimmed } : rest;
@@ -1330,7 +1348,8 @@ export const storefrontThemeDal = {
       throw new Error(SELECTION_SOURCE_CONFLICT);
     }
 
-    const targetSection = template.document.sections.find(
+    const baseDocument = templateSectionWriteBase(template, data.sectionId);
+    const targetSection = baseDocument.sections.find(
       (section) => section.id === data.sectionId,
     );
     if (!targetSection) return null;
@@ -1504,8 +1523,8 @@ export const storefrontThemeDal = {
     );
 
     const document = storefrontPageDocumentSchema.parse({
-      ...template.document,
-      sections: template.document.sections.map((section) =>
+      ...baseDocument,
+      sections: baseDocument.sections.map((section) =>
         section.id === data.sectionId
           ? {
               ...section,
