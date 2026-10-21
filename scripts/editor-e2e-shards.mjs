@@ -31,6 +31,8 @@ export const EDITOR_SHARDS = [
     "selection-field-frame-navigated.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "preview-document-reload.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "spread-override-binding.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
