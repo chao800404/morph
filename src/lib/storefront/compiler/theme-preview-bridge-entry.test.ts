@@ -1064,3 +1064,120 @@ describe("answering the editor's request for a route", () => {
     );
   });
 });
+
+describe("the document id a preview page's messages carry (C5, A1)", () => {
+  type Node = { type: string; start: number; end: number; [key: string]: unknown };
+  const protocol = GENERATED_PREVIEW_BRIDGE_SOURCES.find(
+    (module) => module.path === "src/morph/preview/preview-protocol.ts",
+  )!.content;
+  const ast = parse(protocol, { sourceType: "module", plugins: ["typescript"] })
+    .program as unknown as Node & { body: Node[] };
+
+  function walk(root: Node, visit: (node: Node, ancestors: readonly Node[]) => void) {
+    const stack: Node[] = [];
+    const go = (node: Node) => {
+      visit(node, stack);
+      stack.push(node);
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "extra") continue;
+        for (const child of Array.isArray(value) ? value : [value]) {
+          if (child && typeof child === "object" && typeof (child as Node).type === "string") {
+            go(child as Node);
+          }
+        }
+      }
+      stack.pop();
+    };
+    go(root);
+  }
+  const functionName = (node: Node) =>
+    node.type === "FunctionDeclaration" ? ((node.id as Node | null)?.name as string) : null;
+
+  it("is minted in the copied protocol, held at module level and set only by its one minting function", () => {
+    const held = ast.body.filter(
+      (node) =>
+        node.type === "VariableDeclaration" &&
+        (node.declarations as Node[]).some(
+          (declaration) => (declaration.id as Node).name === "documentIdentity",
+        ),
+    );
+    expect(held).toHaveLength(1);
+    const assignedIn: (string | null)[] = [];
+    walk(ast, (node, ancestors) => {
+      if (
+        node.type === "AssignmentExpression" &&
+        (node.left as Node).type === "Identifier" &&
+        (node.left as Node).name === "documentIdentity"
+      ) {
+        assignedIn.push(
+          ancestors.map(functionName).filter((name) => name !== null).at(-1) ?? null,
+        );
+      }
+    });
+    expect(assignedIn).toEqual(["documentPreviewIdentity"]);
+    let mint: Node | null = null;
+    walk(ast, (node) => {
+      if (functionName(node) === "documentPreviewIdentity") mint = node;
+    });
+    expect(mint).not.toBeNull();
+    const mintText = protocol.slice(mint!.start, mint!.end);
+    // Not randomUUID: a preview served over plain HTTP is no secure context.
+    expect(mintText).toContain("crypto.getRandomValues(");
+    expect(mintText).not.toContain("randomUUID");
+  });
+
+  it("is stamped by the one frame→editor poster, so every message the bridge sends carries it", () => {
+    let poster: Node | null = null;
+    walk(ast, (node) => {
+      if (functionName(node) === "postPreviewToEditorMessage") poster = node;
+    });
+    expect(poster).not.toBeNull();
+    const text = protocol.slice(poster!.start, poster!.end);
+    expect(text).toContain("previewDocument: documentPreviewIdentity()");
+  });
+
+  it("comes from one module instance per page: the bridge and the content module import the same copy", () => {
+    expect(BRIDGE).toContain('from "./preview/preview-protocol"');
+    expect(themePreviewContentModuleSource()).toContain(
+      'from "./preview/preview-protocol"',
+    );
+    expect(BRIDGE).not.toContain("previewDocument");
+  });
+});
+
+describe("the ping a ready is confirmed with (C5 option A)", () => {
+  type Node = { type: string; start: number; end: number; [key: string]: unknown };
+  const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] })
+    .program as unknown as Node & { body: Node[] };
+  const text = (node: Node) => BRIDGE.slice(node.start, node.end);
+
+  it("answers it from a listener added at module evaluation, before the ready is scheduled, through the protocol's poster", () => {
+    // Both are statements of the one top-level `if (channel) { ... }`
+    // block, run once when the module is evaluated: no function between.
+    const block = ast.body.find(
+      (node) => node.type === "IfStatement" && text(node.test as Node) === "channel",
+    ) as (Node & { consequent: { body: Node[] } }) | undefined;
+    expect(block).toBeDefined();
+    const body = block!.consequent.body;
+    const pingListener = body.findIndex(
+      (node) =>
+        node.type === "ExpressionStatement" &&
+        text(node).startsWith('window.addEventListener("message"') &&
+        text(node).includes('"morph:storefront-preview-ping"'),
+    );
+    const readySchedule = body.findIndex(
+      (node) =>
+        node.type === "IfStatement" &&
+        text(node).includes("queueMicrotask(reportReady)"),
+    );
+    expect(pingListener).toBeGreaterThanOrEqual(0);
+    expect(readySchedule).toBeGreaterThan(pingListener);
+    const listener = text(body[pingListener]!);
+    const pong = listener.slice(listener.indexOf('"morph:storefront-preview-ping"'));
+    // The answer goes out through the one poster, which stamps this
+    // document's id on it (`postPreviewToEditorMessage`).
+    expect(pong).toMatch(
+      /postPreviewToEditorMessage\(\s*\{\s*type: "morph:storefront-preview-pong",\s*heartbeatId: message\.heartbeatId,\s*\},\s*channel,\s*\)/,
+    );
+  });
+});

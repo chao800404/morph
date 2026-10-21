@@ -1706,10 +1706,31 @@ function readDocumentRect(
   return { top: value.top as number, height: value.height as number };
 }
 
-export function parsePreviewToEditorEvent(
+/**
+ * A frame→editor message with the document it came from, as its envelope
+ * names it (`postPreviewToEditorMessage`).
+ *
+ * `previewDocument` is null when the envelope names none — a page on a bridge
+ * older than the id, or the diagnostic script, which runs outside the module
+ * graph — and when what it names is not an id (`malformedDocument`). Null is
+ * unverified: it never equals an id.
+ */
+export type PreviewToEditorEnvelope = Readonly<{
+  message: PreviewToEditorMessage;
+  previewDocument: string | null;
+  malformedDocument: boolean;
+}>;
+
+/**
+ * Parses a frame→editor event with the same origin, source, session and
+ * schema checks as `parsePreviewToEditorEvent`, and reads the document id
+ * from its envelope, once, here. Per-message parsers never see it, so none of
+ * them can drop it: the message itself is unchanged.
+ */
+export function parsePreviewToEditorEnvelope(
   event: MessageEvent<unknown>,
   security: PreviewMessageEventSecurity,
-): PreviewToEditorMessage | null {
+): PreviewToEditorEnvelope | null {
   if (
     event.origin !== security.expectedOrigin ||
     event.source !== security.expectedSource ||
@@ -1717,7 +1738,24 @@ export function parsePreviewToEditorEvent(
   ) {
     return null;
   }
-  return parsePreviewToEditorMessage(event.data);
+  const message = parsePreviewToEditorMessage(event.data);
+  if (!message) return null;
+  const named = "previewDocument" in event.data;
+  const previewDocument = isPreviewDocumentId(event.data.previewDocument)
+    ? event.data.previewDocument
+    : null;
+  return {
+    message,
+    previewDocument,
+    malformedDocument: named && previewDocument === null,
+  };
+}
+
+export function parsePreviewToEditorEvent(
+  event: MessageEvent<unknown>,
+  security: PreviewMessageEventSecurity,
+): PreviewToEditorMessage | null {
+  return parsePreviewToEditorEnvelope(event, security)?.message ?? null;
 }
 
 export function readPreviewRuntimeChannel(
@@ -1809,6 +1847,49 @@ export function postEditorToPreviewMessage(
   );
 }
 
+/** This document's id, once minted. */
+let documentIdentity: string | null = null;
+
+/**
+ * The id of the preview document this module runs in: one per document,
+ * minted on first use.
+ *
+ * Module-level, so it lives exactly as long as the module: the Theme bridge,
+ * its content module and its height reporter import one copy of this module
+ * per page, and the built-in route imports it directly, so an effect that
+ * runs again (or a StrictMode remount) in the same document keeps it, and a
+ * reloaded page has a new one. The editor uses it to tell a ready from a new
+ * document apart from the same document announcing itself again, and to drop
+ * a message a replaced document sent late (C5).
+ *
+ * Not a secret and not a capability: the channel's origin, source and
+ * session checks are unchanged. `crypto.getRandomValues`, not `randomUUID`,
+ * which needs a secure context a preview served over plain HTTP on a LAN
+ * address is not.
+ */
+export function documentPreviewIdentity(): string {
+  if (documentIdentity === null) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    documentIdentity = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
+  return documentIdentity;
+}
+
+const PREVIEW_DOCUMENT_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/** Whether `value` is a document id as `documentPreviewIdentity` mints one. */
+export function isPreviewDocumentId(value: unknown): value is string {
+  return typeof value === "string" && PREVIEW_DOCUMENT_ID_PATTERN.test(value);
+}
+
+/**
+ * Every frame→editor message goes through here, so every one carries this
+ * document's id on its envelope, after the message's own fields: a message
+ * cannot name another document.
+ */
 export function postPreviewToEditorMessage(
   message: PreviewToEditorMessage,
   channel = documentPreviewRuntimeChannel(),
@@ -1821,7 +1902,11 @@ export function postPreviewToEditorMessage(
     return;
   }
   window.parent.postMessage(
-    { ...message, previewSession: channel.previewSession },
+    {
+      ...message,
+      previewSession: channel.previewSession,
+      previewDocument: documentPreviewIdentity(),
+    },
     channel.targetOrigin,
   );
 }
