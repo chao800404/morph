@@ -127,6 +127,50 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
   return created;
 }
 
+type RawTemplate = {
+  id: string;
+  route_path: string | null;
+  draft_generation: number;
+  draft_revision_id: string | null;
+  /** The row's own document column. */
+  document: string;
+  /** The draft the row points at: where an edit is stored. */
+  draft_document: string | null;
+  revisions: number;
+};
+
+/**
+ * The Theme's templates as the database holds them, read with no server code
+ * in between: each row's document text, draft generation and draft revision,
+ * the document of the draft revision it points at (an edit is stored as a new
+ * revision, not in the row's own document column), and how many revisions it
+ * has.
+ */
+async function rawTemplates(scope: ThemeScope): Promise<RawTemplate[]> {
+  const { stdout } = await promisify(execFile)("npx", [
+    "wrangler",
+    "d1",
+    "execute",
+    "DATABASE",
+    "--local",
+    ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
+      ? ["--env", "local_preview_e2e"]
+      : []),
+    "--persist-to",
+    process.env.MORPH_E2E_STATE_DIR!,
+    "--json",
+    "--command",
+    `SELECT t.id, t.route_path, t.draft_generation, t.draft_revision_id, t.document,
+      (SELECT r.document FROM storefront_theme_template_revisions r WHERE r.id = t.draft_revision_id) AS draft_document,
+      (SELECT count(*) FROM storefront_theme_template_revisions r WHERE r.template_id = t.id) AS revisions
+    FROM storefront_theme_templates t
+    WHERE t.theme_id = '${scope.themeId}' AND t.deleted_at IS NULL
+    ORDER BY t.id;`,
+  ]);
+  const parsed = JSON.parse(stdout) as Array<{ results: RawTemplate[] }>;
+  return parsed[0]!.results;
+}
+
 async function signedInPage(browser: Browser) {
   const { baseURL, storageState } = test.info().project.use;
   const context = await browser.newContext({ baseURL, storageState });
@@ -571,6 +615,242 @@ for (const theme of [
       // no route document was created; the component source is as it was.
       expect(await storedTemplates(page, scope!)).toEqual(before);
       expect(await themeFile(page, scope!, COMPONENT_PATH)).toBe(sourceBefore);
+    });
+
+    test("a code default and a CMS field are two writes, each landing in its own store", async ({
+      page,
+    }) => {
+      test.setTimeout(300_000);
+      const allFiles = async () => {
+        const listed = (await page.evaluate(
+          async ({ module, scope }) => {
+            const fns = await import(/* @vite-ignore */ module);
+            return fns.listStorefrontThemeFiles({ data: scope });
+          },
+          {
+            module: "/src/server/storefront/storefront-theme-files.serverFn.ts",
+            scope: scope!,
+          },
+        )) as {
+          success: boolean;
+          data?: { files: Array<{ path: string; content: string }> };
+        };
+        expect(listed.success, JSON.stringify(listed)).toBe(true);
+        return Object.fromEntries(
+          listed.data!.files.map((file) => [file.path, file.content]),
+        );
+      };
+      const saveFeedback = async (label: string) => {
+        const status = page.locator("[data-editor-save-status]");
+        const feedback = {
+          label,
+          status: await status.getAttribute("aria-label"),
+          unpublishedReason: await status.getAttribute(
+            "data-unpublished-reason",
+          ),
+          toasts: await page.locator("[data-sonner-toast]").allInnerTexts(),
+        };
+        console.log(`### SAVE-FEEDBACK ${JSON.stringify(feedback)}`);
+        await test.info().attach(`save-feedback-${label}`, {
+          body: JSON.stringify(feedback, null, 2),
+          contentType: "application/json",
+        });
+      };
+
+      // 1. A component code default, edited under the page stand-in.
+      await openRoute(page);
+      const templatesBefore = await storedTemplates(page, scope!);
+      const rawBefore = await rawTemplates(scope!);
+      const filesBefore = await allFiles();
+      const sourceBefore = filesBefore[COMPONENT_PATH]!;
+      const currentDesc = /desc = "([^"]*)"/.exec(sourceBefore)?.[1];
+      expect(currentDesc, "the component states a desc default").toBeDefined();
+      await clickOnCanvas(page, currentDesc!);
+      const codeDefault = contentField(page, "Code desc");
+      // Named as what it is before anything is typed: the component's code
+      // default, in that file, not this page's content.
+      await expect(codeDefault).toHaveAttribute(
+        "data-content-store",
+        "source-default",
+      );
+      const badge = codeDefault.locator(
+        '[data-slot="inspector-code-default-badge"]',
+      );
+      await expect(badge).toHaveText("Component code default");
+      await expect(badge).toHaveAttribute(
+        "title",
+        new RegExp(
+          `Saved into ${COMPONENT_PATH.replace(/\./g, "\\.")}\\..*It is not this page's content\\.`,
+        ),
+      );
+      const newDefault = `Two-write default ${Date.now()}`;
+      const sourceSaved = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(response.url(), "saveStorefrontThemeFile") &&
+          (response.request().postData() ?? "").includes(newDefault),
+        { timeout: 30_000 },
+      );
+      const descInput = codeDefault.locator("input, textarea");
+      await descInput.fill(newDefault);
+      await descInput.press("Tab");
+      expect((await sourceSaved).ok()).toBe(true);
+      await expect(previewFrame(page).getByText(newDefault)).toBeVisible({
+        timeout: 30_000,
+      });
+      await saveFeedback("component-code-default");
+
+      // The source holds exactly that default and nothing else changed in it;
+      // no other Theme file changed.
+      const filesAfterSource = await allFiles();
+      expect(filesAfterSource[COMPONENT_PATH]).toBe(
+        sourceBefore.replace(
+          `desc = "${currentDesc}"`,
+          `desc = "${newDefault}"`,
+        ),
+      );
+      expect({ ...filesAfterSource, [COMPONENT_PATH]: "" }).toEqual({
+        ...filesBefore,
+        [COMPONENT_PATH]: "",
+      });
+      // No Document moved, read back from the server: every template's
+      // document, version and draftGeneration, and no route document made.
+      const templatesAfterSource = await storedTemplates(page, scope!);
+      expect(templatesAfterSource).toEqual(templatesBefore);
+      const rawAfterSource = await rawTemplates(scope!);
+      expect(rawAfterSource).toEqual(rawBefore);
+      expect(
+        rawAfterSource.some((row) => row.route_path === theme.routePath),
+      ).toBe(false);
+      expect(
+        templatesAfterSource.some(
+          (template) => template.routePath === theme.routePath,
+        ),
+      ).toBe(false);
+
+      // 2. A real Document field, on the home page's stored section.
+      await page.goto(editorPath!, { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible(
+        { timeout: 45_000 },
+      );
+      const sectionId = "starter-introduction";
+      const heading = previewFrame(page).locator(
+        `[data-storefront-section-id="${sectionId}"] [data-storefront-field="heading"]`,
+      );
+      await expect(heading).toBeVisible({ timeout: 90_000 });
+      const headingText = ((await heading.textContent()) ?? "").trim();
+      if (
+        await page
+          .getByRole("button", { name: "Enable section selection" })
+          .isVisible()
+          .catch(() => false)
+      ) {
+        await enableSelection(page);
+      }
+      await heading.scrollIntoViewIfNeeded();
+      expect(await clickExposedElement(page, heading)).not.toBeNull();
+      await settleSelection(page);
+      await openContentTab(page);
+      // A field node selected shows that field alone.
+      const field = page.locator('[data-slot="inspector-content-field"]');
+      await expect(field).toHaveCount(1);
+      await expect(field.locator("input, textarea")).toHaveValue(headingText);
+      await expect(field).toHaveAttribute("data-content-store", "document");
+      await expect(
+        page.locator('[data-slot="inspector-code-default-badge"]'),
+      ).toHaveCount(0);
+      const filesBeforeCms = await allFiles();
+      const templatesBeforeCms = await storedTemplates(page, scope!);
+      const rawBeforeCms = await rawTemplates(scope!);
+      const newHeading = `Two-write heading ${Date.now()}`;
+      const contentSaved = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(
+            response.url(),
+            "updateStorefrontThemeSectionProps",
+          ) && (response.request().postData() ?? "").includes(newHeading),
+        { timeout: 30_000 },
+      );
+      const headingInput = field.locator("input, textarea");
+      await headingInput.fill(newHeading);
+      await headingInput.press("Tab");
+      expect((await contentSaved).ok()).toBe(true);
+      await expect(heading).toHaveText(newHeading, { timeout: 30_000 });
+      await saveFeedback("cms-field");
+
+      // The Document changed in that field only; the Theme source is
+      // byte-identical.
+      const templatesAfterCms = await storedTemplates(page, scope!);
+      const homeBefore = templatesBeforeCms.find((t) => t.type === "index")!;
+      const homeAfter = templatesAfterCms.find((t) => t.type === "index")!;
+      type Doc = {
+        sections: Array<{ id: string; props?: Record<string, unknown> }>;
+      };
+      const sectionsBefore = (homeBefore.document as Doc).sections;
+      const sectionsAfter = (homeAfter.document as Doc).sections;
+      const expectedSections = sectionsBefore.map((section) =>
+        section.id === sectionId
+          ? {
+              ...section,
+              props: { ...(section.props ?? {}), heading: newHeading },
+            }
+          : section,
+      );
+      expect(sectionsAfter).toEqual(expectedSections);
+      expect({ ...(homeAfter.document as object), sections: [] }).toEqual({
+        ...(homeBefore.document as object),
+        sections: [],
+      });
+      expect(homeAfter.draftGeneration).toBeGreaterThan(
+        homeBefore.draftGeneration,
+      );
+      expect(
+        templatesAfterCms.filter((template) => template.id !== homeAfter.id),
+      ).toEqual(
+        templatesBeforeCms.filter((template) => template.id !== homeBefore.id),
+      );
+      // The same, in the rows themselves: only the home row moved, and in
+      // its document only that field.
+      const rawAfterCms = await rawTemplates(scope!);
+      const homeRowBefore = rawBeforeCms.find(
+        (row) => row.id === homeBefore.id,
+      )!;
+      const homeRowAfter = rawAfterCms.find((row) => row.id === homeBefore.id)!;
+      expect(rawAfterCms.filter((row) => row.id !== homeBefore.id)).toEqual(
+        rawBeforeCms.filter((row) => row.id !== homeBefore.id),
+      );
+      const rawDocBefore = JSON.parse(
+        homeRowBefore.draft_document ?? homeRowBefore.document,
+      ) as Doc;
+      expect(homeRowAfter.draft_document).not.toBeNull();
+      const rawDocAfter = JSON.parse(homeRowAfter.draft_document!) as Doc;
+      // The stored draft is the document the server showed before, with that
+      // one field changed. (A template seeded with legacy component refs has
+      // them stored resolved by its first draft write; the server already
+      // reads them resolved, so they are compared on that view.)
+      expect(rawDocAfter).toEqual({
+        ...(homeBefore.document as Doc),
+        sections: (homeBefore.document as Doc).sections.map((section) =>
+          section.id === sectionId
+            ? {
+                ...section,
+                props: { ...(section.props ?? {}), heading: newHeading },
+              }
+            : section,
+        ),
+      });
+      // The row's own document column (the seed it was created with) is not
+      // where an edit goes, and stays as it was. Compared with that seed, the
+      // first draft also stores what the server's read already normalizes
+      // (resolved component refs, list row ids), so the field-only check is
+      // the one above, against the document the server showed before.
+      expect(homeRowAfter.document).toBe(homeRowBefore.document);
+      expect(rawDocBefore.sections.map((section) => section.id)).toEqual(
+        rawDocAfter.sections.map((section) => section.id),
+      );
+      expect(homeRowAfter.draft_generation).toBeGreaterThan(
+        homeRowBefore.draft_generation,
+      );
+      expect(await allFiles()).toEqual(filesBeforeCms);
     });
   });
 }
