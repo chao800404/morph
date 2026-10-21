@@ -8,6 +8,7 @@ import {
   collectLoaderSlotBindingDetails,
   collectPageVariables,
   NO_LOADER_SLOT_BINDINGS,
+  propsReplacingSpread,
   readPageBindingKey,
   type LoaderSlotBindings,
   type LoaderSlotPage,
@@ -895,46 +896,6 @@ function readSectionSlot(
       : null;
   }
   return null;
-}
-
-/**
- * The props a section's call site sets in place of what its content spread
- * hands over, or `"any"` when which ones is only known at runtime.
- *
- * JSX builds one props object left to right, so an attribute after the spread
- * replaces the spread's prop of that name, whatever the stored content holds:
- * `<Hero {...content("hero")} title={other.title} />` shows `other.title`.
- * A later spread may set any prop. Children given between the tags replace
- * `children`. An attribute before the spread is replaced by the spread
- * whenever the stored content has that field — which is when a write to it
- * lands — so it is a default, like the component's own, and replaces nothing.
- */
-function propsReplacingSpread(
-  element: any,
-  spread: any,
-): ReadonlySet<string> | "any" {
-  const replaced = new Set<string>();
-  const attributes: any[] = element?.openingElement?.attributes ?? [];
-  const at = attributes.indexOf(spread);
-  for (const attribute of attributes.slice(at + 1)) {
-    if (attribute?.type === "JSXSpreadAttribute") return "any";
-    if (attribute?.type !== "JSXAttribute") return "any";
-    if (attribute.name?.type !== "JSXIdentifier") continue;
-    if (attribute.name.name === "key") continue;
-    replaced.add(attribute.name.name);
-  }
-  // React drops whitespace-only text that spans a line break; anything else
-  // between the tags is a child.
-  const hasChildren = (element?.children ?? []).some((child: any) =>
-    child?.type === "JSXText"
-      ? !(child.value.trim() === "" && child.value.includes("\n"))
-      : !(
-          child?.type === "JSXExpressionContainer" &&
-          child.expression?.type === "JSXEmptyExpression"
-        ),
-  );
-  if (hasChildren) replaced.add("children");
-  return replaced;
 }
 
 /** Whether a hand-written field marker sits anywhere in `node`. */

@@ -132,6 +132,7 @@ function contentRoute(body: string): File {
     content: `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
 import Hero from "../components/Hero";
+const extra = { title: "Sale" };
 export const Route = createFileRoute("/")({ component: Home });
 function Home() {
   const other = content("other");
@@ -415,9 +416,12 @@ let server: { sections: Sections; generation: number };
  * on another section moves `section` there, so the Inspector shows what the
  * click selected rather than the section the test opened on.
  */
-function renderEditor(files: readonly File[]) {
+function renderEditor(
+  files: readonly File[],
+  initial: StorefrontThemeEditorSearch = search,
+) {
   const queryClient = client(files);
-  let current = search;
+  let current = initial;
   const view = () => (
     <QueryClientProvider client={queryClient}>
       <VisualEditorShell
@@ -612,6 +616,152 @@ describe("a literal before the spread, both titles Sale", () => {
       },
     ]);
     await postCommits(commits);
+    expect(written()).toEqual([
+      { sectionId: "hero", props: { title: "Edited" } },
+    ]);
+  });
+});
+
+/**
+ * The section itself selected, from the structure panel or as the canvas
+ * reports a click on its wrapper: the Inspector's whole Content form for it.
+ *
+ * A field the call site sets in code is not the stored value the page shows,
+ * so the form does not offer it as a control; it says the code sets it. The
+ * fields the call site leaves alone stay editable, and their writes are the
+ * section's.
+ */
+const SECTION_ENTRY_OVERRIDDEN: Record<
+  string,
+  { files: readonly File[]; setInCode: readonly string[] }
+> = {
+  'content("hero"), then a literal': {
+    files: [HERO, contentRoute(`<Hero {...$hero} title="Sale" />`)],
+    setInCode: ["Title"],
+  },
+  'content("hero"), then another section\'s title (C4b)': {
+    files: [HERO, contentRoute(`<Hero {...$hero} title={other.title} />`)],
+    setInCode: ["Title"],
+  },
+  'content("hero"), then a later spread': {
+    files: [HERO, contentRoute(`<Hero {...$hero} {...extra} />`)],
+    setInCode: ["Title", "Subtitle"],
+  },
+  // The loader form binds no such call site, so the canvas has no wrapper to
+  // click; the stored section is still listed, and its form is what is shown.
+  "the loader form, then a literal": {
+    files: [HERO, loaderRoute(`<Hero {...$hero} title="Sale" />`)],
+    setInCode: ["Title"],
+  },
+  "the loader form, then another section's title (C4b)": {
+    files: [HERO, loaderRoute(`<Hero {...$hero} title={other.title} />`)],
+    setInCode: ["Title"],
+  },
+};
+
+/** Clicks the section's row in the structure panel. */
+async function selectFromStructurePanel(sectionId: string) {
+  const row = screen
+    .queryAllByRole("button")
+    .find((button) =>
+      (button.getAttribute("title") ?? "").startsWith(`Select ${sectionId};`),
+    );
+  expect(row, `a structure panel row for ${sectionId}`).toBeDefined();
+  fireEvent.click(row!);
+  await settle();
+  await settle();
+}
+
+async function openContent() {
+  const contentTab = screen.queryByRole("button", { name: /^Content$/ });
+  if (contentTab) fireEvent.click(contentTab);
+  await settle();
+}
+
+const editorInputs = (value: string) =>
+  screen
+    .queryAllByDisplayValue(value)
+    .filter((input) => !page?.contains(input));
+
+async function type(input: HTMLElement, value: string) {
+  fireEvent.focus(input);
+  fireEvent.input(input, { target: { value } });
+  fireEvent.blur(input);
+  await saveSettles();
+}
+
+const codeSetNotice = () =>
+  screen.queryByText(
+    (_, element) =>
+      element?.getAttribute("data-slot") === "inspector-code-set-fields",
+  );
+
+describe.each(Object.keys(SECTION_ENTRY_OVERRIDDEN))(
+  "%s, the section itself selected, every title Sale",
+  (name) => {
+    const { files, setInCode } = SECTION_ENTRY_OVERRIDDEN[name]!;
+    const subtitleSetInCode = setInCode.includes("Subtitle");
+
+    async function expectForm() {
+      await openContent();
+      // The title the page does not show from storage is not a control.
+      expect(editorInputs("Sale")).toEqual([]);
+      const notice = codeSetNotice();
+      expect(notice).not.toBeNull();
+      for (const label of setInCode)
+        expect(notice!.textContent).toContain(label);
+      const subtitle = editorInputs("Hero subtitle");
+      expect(subtitle).toHaveLength(subtitleSetInCode ? 0 : 1);
+      if (!subtitleSetInCode) {
+        await type(subtitle[0]!, "Edited subtitle");
+      }
+      expect(written().filter(({ props }) => "title" in props)).toEqual([]);
+      expect(written()).toEqual(
+        subtitleSetInCode
+          ? []
+          : [{ sectionId: "hero", props: { subtitle: "Edited subtitle" } }],
+      );
+    }
+
+    it("from the structure panel", async () => {
+      page = await renderPage(files, STORED);
+      renderEditor(files);
+      await settle();
+      await selectFromStructurePanel("hero");
+      await expectForm();
+    });
+
+    const loader = name.startsWith("the loader form");
+    if (!loader)
+      it("from a click on the section's wrapper on the canvas", async () => {
+        page = await renderPage(files, STORED);
+        renderEditor(files);
+        const wrapper = page.querySelector<HTMLElement>(
+          '[data-storefront-section-id="hero"]',
+        );
+        // The thread keeps the wrapper; every variant here takes the thread.
+        expect(wrapper).not.toBeNull();
+        const report = selectionReport(wrapper!);
+        expect(report.isSection).toBe(true);
+        fromPreview(report);
+        await settle();
+        await expectForm();
+      });
+  },
+);
+
+describe("a literal before the spread, the section itself selected", () => {
+  it("from the structure panel, Title stays a control and writes hero.title", async () => {
+    const files = [HERO, BEFORE];
+    page = await renderPage(files, STORED);
+    renderEditor(files);
+    await settle();
+    await selectFromStructurePanel("hero");
+    await openContent();
+    expect(codeSetNotice()).toBeNull();
+    const title = editorInputs("Sale");
+    expect(title).toHaveLength(1);
+    await type(title[0]!, "Edited");
     expect(written()).toEqual([
       { sectionId: "hero", props: { title: "Edited" } },
     ]);
