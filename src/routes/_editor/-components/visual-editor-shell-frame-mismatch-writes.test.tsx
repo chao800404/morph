@@ -31,6 +31,12 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
+import {
+  answerFramePings,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Whether a write can land on another page's document while the editor and
@@ -417,7 +423,7 @@ const currentWindow = () =>
   document.querySelector("iframe")?.contentWindow ?? null;
 const event = (data: Record<string, unknown>) =>
   new MessageEvent("message", {
-    data: { ...data, previewSession: PREVIEW_SESSION },
+    data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
     origin: PREVIEW_ORIGIN,
     source: currentWindow(),
   });
@@ -425,6 +431,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(event(data));
   });
+  answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
 }
 const report = (routePath: string | undefined, nodes: unknown[] = []) =>
   fromPreview({
@@ -695,8 +702,12 @@ async function editorAheadOfFrame() {
  * and has not named its page yet in this round.
  */
 async function frameReloadedUnnamed() {
+  // A current bridge: each document names itself and answers the editor's
+  // pings (C5 option A), so a reload in the frame is a confirmed new document.
+  modelCurrentBridge();
   const harness = await settled(pageSearch("/b"));
   enableSelection();
+  reloadFrameDocument();
   fromPreview({
     type: "morph:storefront-preview-ready",
     servedInstance: {
