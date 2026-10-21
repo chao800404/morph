@@ -300,19 +300,16 @@ function watchWrites(page: Page) {
  * Tries both editing routes on the heading: every field the Inspector offers
  * for it, and typing on the canvas. Nothing may be written.
  */
-const subtitleField = (page: Page) =>
-  page
-    .locator('[data-slot="inspector-content-field"]')
-    .filter({ hasText: "Override subtitle" })
-    .locator("input");
-
 /**
- * The section itself, selected from the structure panel: its whole Content
- * form. The title the code sets is not a control there and is named as set
- * in code; the subtitle the call site leaves alone is edited and stored as
- * the section's, and the stored title is left as it was.
+ * The section, selected from the structure panel. With a structure from the
+ * preview the row selects the section's root element; without one, the
+ * section itself. Either way the title the code sets is not a control: it is
+ * named as set in code, and nothing is written for it. (Which other fields
+ * the form offers depends on that entry; the shell test pins the section
+ * form, where the fields the call site leaves alone stay editable.)
  */
-async function sectionFormWithholdsTheTitle(page: Page, routePath: string) {
+async function structurePanelWithholdsTheTitle(page: Page, routePath: string) {
+  const writes = watchWrites(page);
   await openRoute(page, routePath);
   await page
     .locator('button[title^="Select "]')
@@ -324,23 +321,10 @@ async function sectionFormWithholdsTheTitle(page: Page, routePath: string) {
     page.locator('[data-slot="inspector-code-set-fields"]'),
   ).toContainText("Override title");
   await expect(titleField(page)).toHaveCount(0);
-  await expect(subtitleField(page)).toHaveValue(STORED.subtitle);
-  const edited = `Subtitle edited ${Date.now()}`;
-  const saved = page.waitForResponse(
-    (response) =>
-      isServerFunctionCall(
-        response.url(),
-        "updateStorefrontThemeSectionProps",
-      ) && (response.request().postData() ?? "").includes(edited),
-    { timeout: 30_000 },
-  );
-  await subtitleField(page).fill(edited);
-  await subtitleField(page).press("Tab");
-  expect((await saved).ok()).toBe(true);
-  expect(await storedProps(page, routePath)).toEqual({
-    title: SALE,
-    subtitle: edited,
-  });
+  // Long enough for a save the editor would send (its debounce is 400 ms).
+  await page.waitForTimeout(1_500);
+  expect(writes).toEqual([]);
+  expect(await storedProps(page, routePath)).toEqual(STORED);
   await expect(heading(page)).toHaveText(SALE);
 }
 
@@ -430,7 +414,7 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     await bothRoutesWriteNothing(page, AFTER_ROUTE);
     expect(await storedProps(page, AFTER_ROUTE)).toEqual(STORED);
 
-    await sectionFormWithholdsTheTitle(page, AFTER_ROUTE);
+    await structurePanelWithholdsTheTitle(page, AFTER_ROUTE);
   });
 
   test("content(): the spread after the literal wins, and both routes write hero.title", async ({
@@ -502,7 +486,7 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
         previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
       ).toHaveCount(0);
       await bothRoutesWriteNothing(page, LOADER_ROUTE);
-      await sectionFormWithholdsTheTitle(page, LOADER_ROUTE);
+      await structurePanelWithholdsTheTitle(page, LOADER_ROUTE);
     });
   }
 });
