@@ -194,7 +194,7 @@ describe("a prop set after the spread replaces the section's field", () => {
     ],
   ] as const;
 
-  describe.each(SPELLINGS)("%s", (spelling, route) => {
+  describe.each(SPELLINGS)("%s", (_spelling, route) => {
     it.each(overriding)(
       "%s: the title shown is not claimed as hero.title",
       async (_, body, sections, shown) => {

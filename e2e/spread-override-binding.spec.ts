@@ -80,7 +80,7 @@ export default function OverrideHero({
   subtitle = "Override default subtitle",
 }: OverrideHeroProps) {
   return (
-    <section className="px-6 py-10">
+    <section data-override-hero="" className="px-6 py-10">
       <h2 className="text-2xl font-semibold">{title}</h2>
       <p className="mt-2">{subtitle}</p>
     </section>
@@ -237,7 +237,8 @@ async function storedProps(page: Page, routePath: string) {
   );
 }
 
-const heading = (page: Page) => previewFrame(page).locator("main h2");
+const heading = (page: Page) =>
+  previewFrame(page).locator("[data-override-hero] h2");
 const inlineEditor = (page: Page) =>
   previewFrame(page).locator("[data-storefront-editor-inline-editing]");
 const offeredFields = (page: Page) =>
@@ -378,9 +379,9 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
       previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
     ).toHaveCount(1);
     await expect(heading(page)).toHaveAttribute("data-storefront-field", "");
-    await expect(previewFrame(page).locator("main p")).toHaveText(
-      STORED.subtitle,
-    );
+    await expect(
+      previewFrame(page).locator("[data-override-hero] p"),
+    ).toHaveText(STORED.subtitle);
 
     await bothRoutesWriteNothing(page, AFTER_ROUTE);
     expect(await storedProps(page, AFTER_ROUTE)).toEqual(STORED);
