@@ -252,6 +252,11 @@ import {
   sourceDefaultRefusalReader,
 } from "@/lib/storefront/editor/source-default-control";
 import {
+  acceptsPageStandIn,
+  isDocumentWriteTarget,
+  isPageStandInId,
+} from "@/lib/storefront/editor/page-stand-in";
+import {
   patchComponentDefaultProp,
   patchElementClassNameResult,
   removeJsxElement,
@@ -8397,6 +8402,30 @@ export function VisualEditorShell({
         return;
       }
 
+      // A page stand-in (a route path, not a section) is taken only from the
+      // confirmed current document, after it answered the editor's latest
+      // route request in this round, and only for the route asked for.
+      if (isPageStandInId(message.sectionId)) {
+        const frameDocument = previewDocumentOf(event);
+        const routeRequest = lastRouteRequestRef.current;
+        if (
+          !acceptsPageStandIn({
+            sectionId: message.sectionId,
+            requestedRoutePath: currentSearchRoutePathRef.current,
+            fromConfirmedDocument:
+              frameDocument?.kind === "message" && frameDocument.verified,
+            routeRequestAnswered:
+              routeRequest !== null &&
+              routeRequest.key === previewKey &&
+              routeRequest.round === previewReadyRoundRef.current &&
+              routeRequest.id === routeRequestIdRef.current &&
+              routeRequest.answered,
+          })
+        ) {
+          return;
+        }
+      }
+
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
       if (
@@ -8744,6 +8773,12 @@ export function VisualEditorShell({
     async (sectionId: string): Promise<EditorEditableNodeDeleteResult> => {
       reportAuthenticatedUserActivity();
 
+      if (isPageStandInId(sectionId)) {
+        return {
+          success: false,
+          message: "The page itself is not a section of this page.",
+        };
+      }
       if (!activeThemeRoute) {
         return {
           success: false,
@@ -9620,7 +9655,12 @@ export function VisualEditorShell({
         message,
       });
 
-      const templateId = templateIdForSection(request.sectionId);
+      const templateId = isDocumentWriteTarget(
+        request.sectionId,
+        templateIdForSection,
+      )
+        ? templateIdForSection(request.sectionId)
+        : null;
       if (!templateId) {
         return failed("This section has no document to store the text in.");
       }
@@ -9872,6 +9912,9 @@ export function VisualEditorShell({
       historyGeneration?: number,
     ): Promise<{ success: boolean; message?: string }> => {
       reportAuthenticatedUserActivity();
+      if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
+        return { success: false, message: "Nothing to reset here." };
+      }
       const templateId = templateIdForSection(sectionId);
       if (!templateId || fieldKeys.length === 0) {
         return { success: false, message: "Nothing to reset here." };
@@ -10010,6 +10053,9 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // A page stand-in is not a section: nothing to write, and nothing to
+      // show the canvas either.
+      if (isPageStandInId(sectionId)) return;
       // A history record keeps its original version, even after reselection.
       // Throw before changing the panel/preview so the history stays retryable.
       if (
@@ -10319,6 +10365,7 @@ export function VisualEditorShell({
       draggedFieldPath: string,
       targetFieldPath: string,
     ) => {
+      if (isPageStandInId(sectionId)) return;
       invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
       const section = activeTemplate.document.sections.find(
@@ -10514,6 +10561,8 @@ export function VisualEditorShell({
 
   const handleSectionToggleEnabled = useCallback(
     async (sectionId: string, enabled: boolean, historyGeneration?: number) => {
+      // A page stand-in is not a section: there is nothing to hide or show.
+      if (isPageStandInId(sectionId)) return;
       const generation = historyGeneration ?? freshContentSelectionGeneration();
       if (
         generation === null ||
@@ -10781,6 +10830,9 @@ export function VisualEditorShell({
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
+      if (isPageStandInId(sectionId)) {
+        throw new Error("No template owns this section.");
+      }
       // The binding, not the active template: on a page whose document is not
       // created yet that is a placeholder, and the queue creates it first.
       const boundTemplateId = sectionModel.bindings.get(sectionId)?.templateId;
@@ -10877,6 +10929,9 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
+      if (isPageStandInId(draggedSectionId) || isPageStandInId(targetSectionId)) {
+        return;
+      }
       const sectionIds = (activeTemplate?.document.sections ?? []).map(
         (section) => section.id,
       );

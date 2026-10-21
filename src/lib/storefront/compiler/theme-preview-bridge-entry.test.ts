@@ -1181,3 +1181,32 @@ describe("the ping a ready is confirmed with (C5 option A)", () => {
     );
   });
 });
+
+describe("a field outside every section (the page stand-in)", () => {
+  it("is resolved by the shared rule, for every pointer that selects", () => {
+    // Click, double click and hover all ask the same question, so a field
+    // the click selects is the one the pointer rings and the one a double
+    // click refuses with the editor's message.
+    expect(BRIDGE).toContain("function selectableAt(target)");
+    expect(BRIDGE).toContain("resolvePageStandIn(target, {");
+    expect(BRIDGE).toContain("owns: overlays?.owns,");
+    expect(BRIDGE.match(/selectableAt\(event\.target\)/g)).toHaveLength(2);
+    expect(BRIDGE).toContain("const item = selectableAt(target);");
+  });
+
+  it("is named only for the route this document applied and answered", () => {
+    // Cleared the moment a new request arrives; set only together with the
+    // answer the editor checks, to the route the editor asked for.
+    expect(BRIDGE).toContain("function applyEditorRoute(message) {\n  appliedRoutePath = null;");
+    expect(BRIDGE).toContain(
+      'appliedRoutePath = message.routePath ?? "/";\n          answerRouteRequest(message.routeRequestId, routePath);',
+    );
+  });
+
+  it("travels with the copied resolution, never a second one", () => {
+    const dom = GENERATED_PREVIEW_BRIDGE_SOURCES.find(
+      (module) => module.path === "src/morph/preview/preview-dom.ts",
+    );
+    expect(dom?.content).toContain("export function resolvePageStandIn(");
+  });
+});

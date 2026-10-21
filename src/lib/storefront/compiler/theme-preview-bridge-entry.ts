@@ -33,6 +33,7 @@ import {
   createSelectionFieldRefusalLog,
   previewSectionSelector,
   selectionFieldRefusal,
+  resolvePageStandIn,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
   selectionKindOf,
@@ -115,6 +116,13 @@ let selectedItem = null;
 let hoveredItem = null;
 let lastRestoreTarget = null;
 let selectedSectionId = null;
+/**
+ * The route the editor asked for, once this document has applied it and
+ * answered. The only id a field outside every section is reported under
+ * (\`resolvePageStandIn\`); never read from the page, and cleared while a
+ * new request is on its way.
+ */
+let appliedRoutePath = null;
 
 const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
@@ -250,6 +258,7 @@ function answerRouteRequest(routeRequestId, routePath) {
 }
 
 function applyEditorRoute(message) {
+  appliedRoutePath = null;
   // A real Theme owns its router, so the entry Morph generates hands it
   // over. Without one there is nothing to navigate and the page simply
   // stays where it is, which is better than reloading it out from under
@@ -277,7 +286,10 @@ function applyEditorRoute(message) {
         // Only a route the router matched is an answer; a page with a
         // router never says null, which means it has none.
         const routePath = currentRoutePattern();
-        if (routePath) answerRouteRequest(message.routeRequestId, routePath);
+        if (routePath) {
+          appliedRoutePath = message.routePath ?? "/";
+          answerRouteRequest(message.routeRequestId, routePath);
+        }
       });
     // The page it lands on is a different set of elements entirely.
     window.setTimeout(() => {
@@ -400,6 +412,17 @@ function restoreSelectedTarget(target) {
   const section = document.querySelector(
     previewSectionSelector(target.sectionId),
   );
+  if (
+    !section &&
+    target.sectionId === appliedRoutePath &&
+    selectedItem?.sectionId === target.sectionId &&
+    selectedItem.element?.isConnected
+  ) {
+    selectedItem.element.setAttribute("data-storefront-editor-selected", "true");
+    syncDragHandle();
+    drawOverlays();
+    return;
+  }
   if (!section) {
     selectedItem = null;
     syncDragHandle();
@@ -431,6 +454,20 @@ function restoreSelectedTarget(target) {
   drawOverlays();
 }
 
+/**
+ * What a click, a double click or the pointer is on: a section's element, or
+ * else a field a Theme component renders outside every section, named for
+ * the page (\`resolvePageStandIn\`). The editor decides what that may edit.
+ */
+function selectableAt(target) {
+  const item = resolveSelectable(target);
+  if (item?.sectionId) return item;
+  return resolvePageStandIn(target, {
+    routePath: appliedRoutePath,
+    owns: overlays?.owns,
+  });
+}
+
 function domElementMatchesTarget(element, targetKey, sourceLocation) {
   if (element.dataset.morphNode === targetKey) return true;
   if (element.dataset.morphElement === targetKey) return true;
@@ -446,7 +483,7 @@ function domElementMatchesTarget(element, targetKey, sourceLocation) {
  */
 function reportSelection(target) {
   if (!channel) return;
-  const item = resolveSelectable(target);
+  const item = selectableAt(target);
   if (!item?.sectionId) return;
   selectionRevision += 1;
   clearSelectionAttributes();
@@ -829,7 +866,7 @@ if (channel) {
     "dblclick",
     (event) => {
       if (!selectionEnabled) return;
-      const item = resolveSelectable(event.target);
+      const item = selectableAt(event.target);
       if (!item?.sectionId) return;
       if (
         inlineEditor.begin(
@@ -873,7 +910,7 @@ if (channel) {
     "pointermove",
     (event) => {
       if (!selectionEnabled) return;
-      const item = resolveSelectable(event.target);
+      const item = selectableAt(event.target);
       // Redraw only when the answer changed: this runs on every pixel of
       // movement, and the geometry it would otherwise recompute is the
       // expensive part.

@@ -110,9 +110,11 @@ import {
   Type,
 } from "lucide-react";
 import {
+  createContext,
   Fragment,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -5378,6 +5380,15 @@ const inspectorFieldHintClassName = "text-[11px] text-muted-foreground";
 const inspectorContentCardClassName =
   "w-full min-w-0 space-y-2 rounded-lg border p-1.5 transition-all";
 
+/**
+ * The component file whose code defaults the content fields edit, when they
+ * edit defaults rather than this page's content: a component with no
+ * Document section behind it, under the page stand-in or elsewhere. Every
+ * field then says so, so a default is never mistaken for this page's own
+ * CMS value. Provided by the panel that decides where the edit is written.
+ */
+export const InspectorCodeDefaultContext = createContext<string | null>(null);
+
 /** One surface for a simple text/number/boolean content field. */
 const inspectorContentFieldClassName =
   "w-full min-w-0 space-y-1 rounded-lg border p-1.5 shadow-xs transition-all duration-150";
@@ -5726,7 +5737,8 @@ function InspectorField({
   onReset?: () => void;
   children: React.ReactNode;
 }) {
-  const labelElement = (
+  const codeDefaultFile = useContext(InspectorCodeDefaultContext);
+  const labelText = (
     <label
       className={cn(
         inspectorFieldLabelClassName,
@@ -5737,9 +5749,26 @@ function InspectorField({
       {label}
     </label>
   );
+  // A code default edits the component for every place that renders it
+  // without a value of its own; it is not this page's content.
+  const labelElement = codeDefaultFile ? (
+    <div className="flex flex-wrap items-center justify-between gap-1">
+      {labelText}
+      <span
+        data-slot="inspector-code-default-badge"
+        title={`Saved into ${codeDefaultFile}. Every place that renders this component without a value of its own shows it. It is not this page's content.`}
+        className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      >
+        Component code default
+      </span>
+    </div>
+  ) : (
+    labelText
+  );
   return (
     <div
       data-slot="inspector-content-field"
+      data-content-store={codeDefaultFile ? "source-default" : "document"}
       className={cn(
         inspectorContentFieldClassName,
         isFocused

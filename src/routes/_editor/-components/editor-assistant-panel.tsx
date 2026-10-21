@@ -24,6 +24,7 @@ import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
   EditorStyleInspector,
+  InspectorCodeDefaultContext,
   type InspectorInlineTextCommit,
   type InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
@@ -531,38 +532,46 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           aria-hidden={!isInspectorTab}
         >
           {selectedSection && !(contentRefused && tab === "content") ? (
-            <EditorStyleInspector
-              sharedLayoutPaths={sharedLayoutPaths}
-              sectionTemplatePaths={sectionTemplatePaths}
-              resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
-              rowIdTemplateId={activeTemplate?.id}
-              view={tab === "content" ? "content" : "styles"}
-              section={selectedSection}
-              contentStore={contentStore}
-              sourceDefaultRefusal={
-                contentStore === "source" ? sourceDefaultRefusal : undefined
+            <InspectorCodeDefaultContext.Provider
+              value={
+                tab === "content" && contentStore === "source"
+                  ? codeComponentPath
+                  : null
               }
-              documentWritesRefused={contentRefused}
-              themeFiles={themeFiles}
-              routeSourcePath={routeSourcePath}
-              onPromoteText={onPromoteText}
-              onCreatePageCopy={onCreatePageCopy}
-              onResetContentFields={onResetContentFields}
-              selection={selection}
-              editableNodes={editableNodes}
-              activeComputedStyleRevision={activeComputedStyleRevision}
-              activeViewport={activeViewport ?? search.viewport}
-              onUpdateThemeFileStyle={onUpdateThemeFileStyle}
-              onPreviewSelectionStyle={onPreviewSelectionStyle}
-              onPreviewSelectionField={onPreviewSelectionField}
-              onRepairThemeLinkBinding={onRepairThemeLinkBinding}
-              onSwitchThemeLinkElement={onSwitchThemeLinkElement}
-              onPropsChange={handleInspectorPropsChange}
-              contentBasis={inspectorContentBasis}
-              inlineTextCommit={inlineTextCommit}
-              onJumpToCode={onJumpToCode}
-              selectionSourceCurrent={selectionSourceCurrent}
-            />
+            >
+              <EditorStyleInspector
+                sharedLayoutPaths={sharedLayoutPaths}
+                sectionTemplatePaths={sectionTemplatePaths}
+                resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
+                rowIdTemplateId={activeTemplate?.id}
+                view={tab === "content" ? "content" : "styles"}
+                section={selectedSection}
+                contentStore={contentStore}
+                sourceDefaultRefusal={
+                  contentStore === "source" ? sourceDefaultRefusal : undefined
+                }
+                documentWritesRefused={contentRefused}
+                themeFiles={themeFiles}
+                routeSourcePath={routeSourcePath}
+                onPromoteText={onPromoteText}
+                onCreatePageCopy={onCreatePageCopy}
+                onResetContentFields={onResetContentFields}
+                selection={selection}
+                editableNodes={editableNodes}
+                activeComputedStyleRevision={activeComputedStyleRevision}
+                activeViewport={activeViewport ?? search.viewport}
+                onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+                onPreviewSelectionStyle={onPreviewSelectionStyle}
+                onPreviewSelectionField={onPreviewSelectionField}
+                onRepairThemeLinkBinding={onRepairThemeLinkBinding}
+                onSwitchThemeLinkElement={onSwitchThemeLinkElement}
+                onPropsChange={handleInspectorPropsChange}
+                contentBasis={inspectorContentBasis}
+                inlineTextCommit={inlineTextCommit}
+                onJumpToCode={onJumpToCode}
+                selectionSourceCurrent={selectionSourceCurrent}
+              />
+            </InspectorCodeDefaultContext.Provider>
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
               <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">

@@ -933,13 +933,15 @@ export default function MarkedHero({
  * the same. Only a Theme rendering into the preview's `#root` gets a page
  * stand-in and was offered the default (code-controlled-field.spec.ts). Here
  * no default is offered, so nothing misleading is saved; but the field is not
- * marked as controlled by code either. Marking it needs the
- * bridge to report the click, which is a change to the generated bridge
- * sources and is left to a separate, approved change. This pins what holds
- * now: nothing is written from it.
+ * marked as controlled by code either.
  *
  * The Document holds the slot's values from when the route still spread it;
  * the explicit route falls back to its own text if the read returns no slot.
+ *
+ * Since the page stand-in (the bridge names such a field under the route the
+ * editor asked for, and the editor takes it only from the confirmed current
+ * document), the click is taken and the field is marked as controlled by
+ * code. Still nothing is written.
  */
 test.describe("explicit props in the full Start preview", () => {
   test.describe.configure({ mode: "serial" });
@@ -1056,7 +1058,7 @@ export default function ExplicitHero({
     await page.context().close();
   });
 
-  test("a click on a field the route passes writes nothing", async ({
+  test("a click on a field the route passes marks it controlled by code and writes nothing", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -1112,10 +1114,17 @@ export default function ExplicitHero({
     ).not.toBeNull();
     await settleSelection(page);
     await openContentTab(page);
-    await expect(title).not.toHaveAttribute(
+    // Taken as the page stand-in: selected, and the field it shows is
+    // marked as controlled by code — the route passes it.
+    await expect(title).toHaveAttribute(
       "data-storefront-editor-selected",
       "true",
     );
+    await expect(
+      page
+        .locator('[data-slot="inspector-code-controlled-field"]')
+        .filter({ hasText: "Explicit title" }),
+    ).toContainText(/controlled by code/i);
     // No default is offered for a value the route passes.
     expect(
       await page
@@ -1128,6 +1137,13 @@ export default function ExplicitHero({
     ).not.toContain("Explicit default title");
 
     await title.dblclick();
+    // Typing on the canvas is refused, and the editor says why without
+    // pointing to a field it does not offer.
+    await expect(
+      page.locator("[data-sonner-toast]").filter({
+        hasText: /controlled by code/i,
+      }),
+    ).toBeVisible({ timeout: 10_000 });
     await page.keyboard.type(" typed");
     await page.keyboard.press("Enter");
     await page.waitForTimeout(1_500);

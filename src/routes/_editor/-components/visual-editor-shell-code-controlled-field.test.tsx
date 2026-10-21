@@ -1,4 +1,8 @@
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+} from "@/lib/test-utils/preview-frame-handshake";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -18,6 +22,7 @@ import {
   vi,
 } from "vitest";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
@@ -226,13 +231,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function fromPreview(data: Record<string, unknown>) {
+/**
+ * A canvas answer is taken only when it is newer than every selection the
+ * editor asked the frame for, and measured at the style revision it last
+ * sent; the bridge stamps both, and so does this.
+ */
+function stampedReport(
+  report: Record<string, unknown>,
+): Record<string, unknown> {
+  const sent = vi
+    .mocked(postEditorToPreviewMessage)
+    .mock.calls.map((call) => call[1] as Record<string, unknown>);
+  const highest = (key: string) =>
+    Math.max(
+      0,
+      ...sent.map((message) =>
+        typeof message[key] === "number" ? (message[key] as number) : 0,
+      ),
+    );
+  return {
+    ...report,
+    selectionRevision: highest("selectionRevision") + 1,
+    styleRevision: highest("styleRevision"),
+  };
+}
+
+function fromPreview(given: Record<string, unknown>) {
+  const data =
+    given.type === "morph:storefront-preview-select-section"
+      ? stampedReport(given)
+      : given;
   liveFrame.before(data);
   const frame = document.querySelector("iframe");
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: SESSION },
+        data: frameEnvelope({ ...data, previewSession: SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -337,10 +371,19 @@ function mountShell(routeSource: string, section: string) {
   );
 }
 
-/** Clicks `selector` on the canvas and opens the Content tab. */
+/**
+ * Clicks `selector` on the canvas and opens the Content tab.
+ *
+ * The frame is a current bridge that has said it is ready and answered the
+ * editor's route: a page stand-in (`/`) is taken only from such a frame
+ * (`acceptsPageStandIn`).
+ */
 async function select(routeSource: string, selector: string) {
   const { report, text } = await canvasReport(routeSource, selector);
+  modelCurrentBridge();
   mountShell(routeSource, report.sectionId);
+  await wait(30);
+  liveFrame.ready();
   await wait(30);
   fromPreview(report);
   await wait(30);

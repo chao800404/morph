@@ -917,6 +917,75 @@ export const resolveSelectable = (
   };
 };
 
+/**
+ * Whether markup from this file is a Theme component's own. Route and layout
+ * files are the page's structure, and `src/morph/` is the platform's copy of
+ * its own modules: neither is a component instance a field belongs to.
+ */
+function isThemeComponentSourcePath(path: string | undefined): boolean {
+  return (
+    typeof path === "string" &&
+    path.startsWith("src/") &&
+    !path.startsWith("src/morph/") &&
+    !path.startsWith("src/routes/") &&
+    !path.startsWith("src/layouts/")
+  );
+}
+
+/**
+ * A field a Theme component renders outside every section, named for the
+ * page the editor asked for.
+ *
+ * A page whose root route owns the document (a full Start preview, the
+ * current Starter) has no root element of its own for an unsectioned click
+ * to fall back to, so such a click selected nothing and the editor could not
+ * say why the field cannot be edited. This answers it with the page as the
+ * section — the route path, which is never a slot id — so the editor can show
+ * the field's state. It is a status, not a place to store anything: the
+ * editor writes no Document under a route path.
+ *
+ * Narrow on purpose. Only once the editor's route was applied in this
+ * document (`routePath`, never read from the page), only for an element of
+ * this document that carries a field marker of its own, inside a Theme
+ * component's markup, outside the editor's overlays and outside every section
+ * — a hidden one included. Plain markup stays unselectable.
+ */
+export function resolvePageStandIn(
+  target: EventTarget | null,
+  page: Readonly<{
+    routePath: string | null;
+    owns?: (node: Node | null) => boolean;
+  }>,
+): SelectableInfo | null {
+  const routePath = page.routePath;
+  if (typeof routePath !== "string" || !routePath.startsWith("/")) return null;
+  if (
+    !(target instanceof HTMLElement) ||
+    !target.isConnected ||
+    target.ownerDocument !== document
+  ) {
+    return null;
+  }
+  if (
+    page.owns?.(target) ||
+    target.closest("[data-storefront-editor-drag-handle]")
+  ) {
+    return null;
+  }
+  const item = resolveSelectable(target);
+  if (!item || item.sectionId !== null || item.section !== null) return null;
+  if (item.descendantFields.length > 0) return null;
+  const binding = previewFieldBinding(item.element);
+  if (!binding || !item.fieldKey || !item.fieldPath) return null;
+  const component = item.element.closest<HTMLElement>(
+    "[data-morph-source-file]",
+  );
+  if (!isThemeComponentSourcePath(component?.dataset.morphSourceFile)) {
+    return null;
+  }
+  return { ...item, sectionId: routePath };
+}
+
 const resolveSelectableElement = (
   target: EventTarget | null,
 ): ResolvedElement | null => {
