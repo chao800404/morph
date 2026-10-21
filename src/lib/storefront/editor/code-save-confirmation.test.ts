@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSentCodeWrites,
   draftAfterConfirmedWrite,
+  draftAfterLostWriteSettled,
   syncBufferToServer,
 } from "./code-save-confirmation";
 
@@ -141,5 +142,58 @@ describe("two writes in flight", () => {
     writes.answered(two);
     expect(writes.awaitsAnswer(PATH, "same")).toBe(false);
     expect(writes.awaitsAnswer("src/other.ts", "same")).toBe(false);
+  });
+});
+
+describe("a lost write", () => {
+  it("stays tracked while the store holds it as unconfirmed, and no longer awaits an answer", () => {
+    const writes = createSentCodeWrites();
+    const write = { path: PATH, content: "A" };
+    writes.sent(write);
+    writes.lost(write);
+    expect(writes.awaitsAnswer(PATH, "A")).toBe(false);
+    expect(writes.settleLost(() => true)).toEqual([]);
+    expect(writes.settleLost(() => false)).toEqual([write]);
+    // Settled once.
+    expect(writes.settleLost(() => false)).toEqual([]);
+  });
+
+  it("settles each lost write by its own unconfirmed state", () => {
+    const writes = createSentCodeWrites();
+    const hero = { path: PATH, content: "A" };
+    const other = { path: "src/other.ts", content: "B" };
+    writes.lost(hero);
+    writes.lost(other);
+    expect(writes.settleLost((write) => write === other)).toEqual([hero]);
+    expect(writes.settleLost(() => false)).toEqual([other]);
+  });
+
+  it("confirms only itself once found to have landed", () => {
+    expect(
+      draftAfterLostWriteSettled({ lost: "a\n", serverContent: "a\n", draft: "a" }),
+    ).toBe("dirty");
+    expect(
+      draftAfterLostWriteSettled({
+        lost: "a\n",
+        serverContent: "a\n",
+        draft: "a\nb",
+      }),
+    ).toBe("dirty");
+    expect(
+      draftAfterLostWriteSettled({ lost: "a\n", serverContent: "a\n", draft: "a\n" }),
+    ).toBe("clean");
+  });
+
+  it("says nothing about the buffer when it did not land", () => {
+    expect(
+      draftAfterLostWriteSettled({ lost: "a\n", serverContent: "a", draft: "a" }),
+    ).toBe("untouched");
+    expect(
+      draftAfterLostWriteSettled({
+        lost: "a\n",
+        serverContent: undefined,
+        draft: "a",
+      }),
+    ).toBe("untouched");
   });
 });
