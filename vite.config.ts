@@ -299,6 +299,20 @@ const config = defineConfig({
   },
   optimizeDeps: {
     exclude: ["vinxi/http"],
+    /**
+     * Optimized at dev-server start, not when first met.
+     *
+     * No client module imports `buffer`. TanStack Start's dev-styles walk
+     * (`findModuleDeps` in @tanstack/start-plugin-core) resolves every import
+     * URL in the module graph of a route it server-renders, in the client
+     * environment too, and some routes' graphs carry a bare `buffer` import
+     * (first met on /dashboard/assets/create). Resolved there for the first
+     * time, Vite registers it as a new dependency, re-optimizes and fully
+     * reloads every open page. In the E2E suite that reload landed during
+     * media-svg's upload and lost the navigation after it (#285, shard 6).
+     * Listing it here optimizes it with everything else at start.
+     */
+    include: ["buffer"],
   },
 });
 
