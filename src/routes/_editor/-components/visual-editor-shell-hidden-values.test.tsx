@@ -1183,30 +1183,27 @@ describe("text typed on the canvas while a show is answered", () => {
       heading.dispatchEvent(new Event("input", { bubbles: true }));
       expect(heading.textContent).toBe(TYPED);
 
-      // The acknowledgement: the reconcile posts the section's truth.
+      // The acknowledgement: the reconcile composes the section's truth.
+      // C5 changed what this step asserts. It used to require that the
+      // reconcile reached the frame while the edit was open (and then that
+      // the edit survived it, because its values matched what React
+      // rendered). Since C5, no canvas post reaches the frame while an
+      // inline edit is open: the reconcile is held, and sent when the edit
+      // ends. So the precondition is now that it was composed and held —
+      // shown below by the post after blur carrying its `enabled: true` —
+      // and the survival check is stronger: nothing reached the frame.
       const beforeAck = posted.length;
       await releaseWrites();
-      // Precondition: the reconcile posted. It always names `enabled`; the
-      // show's signed second post does not.
-      const reconcileAt = () =>
-        heroPosts(beforeAck).findIndex((m) => typeof m.enabled === "boolean");
-      await waitFor(() => expect(reconcileAt()).toBeGreaterThanOrEqual(0));
       await flushFrames();
+      expect(heroPosts(beforeAck)).toEqual([]);
 
-      // Not lost: the frame took the post, the edit is still open on the
-      // same element, and the typed text is still there.
+      // Not lost: the edit is still open on the same element, and the typed
+      // text is still there.
       const during = page.render();
       expect(during.hiddenSlots).toEqual([]);
       expect(page.heading()).toBe(heading);
       expect(page.editor.editingElement()).toBe(heading);
       expect(heading.textContent).toBe(TYPED);
-      // Why: it re-posts what the show posted, the section shown with the
-      // stored value the edit began from, which React leaves alone.
-      expect(heroPosts(beforeAck)[reconcileAt()]).toMatchObject({
-        enabled: true,
-        props: { heading: STORED },
-      });
-      expect(heroPosts(beforeAck)[reconcileAt()]?.resetKeys).toBeUndefined();
       // The editor did not end the edit or leave select mode either.
       expect(
         posted
@@ -1223,6 +1220,16 @@ describe("text typed on the canvas while a show is answered", () => {
       const info = vi.spyOn(toast, "info").mockImplementation(() => "");
       heading.dispatchEvent(new FocusEvent("blur"));
       expect(page.editor.editingElement()).toBeNull();
+      // What the edit held goes now, in one post for the section the commit
+      // landed on: shown, as the held reconcile said, with what the editor
+      // holds — the typed text on the stored copy — and nothing reset.
+      const released = heroPosts(beforeAck);
+      expect(released).toHaveLength(1);
+      expect(released[0]).toMatchObject({
+        enabled: true,
+        props: { heading: TYPED },
+      });
+      expect(released[0]?.resetKeys).toBeUndefined();
       await waitFor(
         () => expect(updateSectionProps).toHaveBeenCalledTimes(2),
         { timeout: 3_000 },

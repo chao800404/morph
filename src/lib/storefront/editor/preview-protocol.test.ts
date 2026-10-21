@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   applyPreviewSectionProps,
+  documentPreviewIdentity,
   parseEditorToPreviewEvent,
   parseEditorToPreviewMessage,
+  parsePreviewToEditorEnvelope,
   parsePreviewToEditorEvent,
   parsePreviewToEditorMessage,
   postEditorToPreviewMessage,
+  postPreviewToEditorMessage,
   type PreviewEditableNode,
   type PreviewStyleSnapshot,
 } from "./preview-protocol";
@@ -1261,5 +1264,157 @@ describe("what a frame says it can do on ready", () => {
         ready,
       );
     }
+  });
+});
+
+describe("the document a frame→editor message comes from (C5, A1)", () => {
+  const SESSION = "11111111-1111-4111-8111-111111111111";
+  const ORIGIN = "https://preview.example.net";
+  const ID = /^[0-9a-f]{32}$/;
+
+  function framePosting() {
+    const postMessage = vi.fn();
+    const parent = Object.getOwnPropertyDescriptor(window, "parent");
+    Object.defineProperty(window, "parent", {
+      value: { postMessage },
+      configurable: true,
+    });
+    return {
+      postMessage,
+      restore: () => {
+        if (parent) Object.defineProperty(window, "parent", parent);
+      },
+    };
+  }
+
+  it("mints one bounded id per module instance, from getRandomValues", async () => {
+    const id = documentPreviewIdentity();
+    expect(id).toMatch(ID);
+    expect(documentPreviewIdentity()).toBe(id);
+    // A plain-HTTP LAN preview is not a secure context: randomUUID may be
+    // missing there, so the id never depends on it.
+    const randomUUID = vi
+      .spyOn(crypto, "randomUUID")
+      .mockImplementation(() => {
+        throw new Error("not a secure context");
+      });
+    vi.resetModules();
+    const other = await import("./preview-protocol");
+    const next = other.documentPreviewIdentity();
+    expect(next).toMatch(ID);
+    expect(next).not.toBe(id);
+    expect(other.documentPreviewIdentity()).toBe(next);
+    expect(randomUUID).not.toHaveBeenCalled();
+  });
+
+  it("stamps it on every frame→editor envelope, beside the session, over anything the message says", () => {
+    const frame = framePosting();
+    try {
+      postPreviewToEditorMessage(
+        {
+          type: "morph:storefront-preview-pong",
+          heartbeatId: 3,
+          // A message cannot name its own document.
+          previewDocument: "f".repeat(32),
+        } as never,
+        { targetOrigin: ORIGIN, previewSession: SESSION },
+      );
+      expect(frame.postMessage).toHaveBeenCalledWith(
+        {
+          type: "morph:storefront-preview-pong",
+          heartbeatId: 3,
+          previewSession: SESSION,
+          previewDocument: documentPreviewIdentity(),
+        },
+        ORIGIN,
+      );
+    } finally {
+      frame.restore();
+    }
+  });
+
+  describe("read once, at the envelope", () => {
+    const source = {} as Window;
+    const security = {
+      expectedOrigin: ORIGIN,
+      expectedSource: source,
+      previewSession: SESSION,
+    };
+    const eventWith = (extra: Record<string, unknown>) =>
+      ({
+        origin: ORIGIN,
+        source,
+        data: {
+          type: "morph:storefront-preview-pong",
+          heartbeatId: 1,
+          previewSession: SESSION,
+          ...extra,
+        },
+      }) as MessageEvent<unknown>;
+    const pong = { type: "morph:storefront-preview-pong", heartbeatId: 1 };
+
+    it("returns a present id beside the message, which stays as it was", () => {
+      const id = "0123456789abcdef0123456789abcdef";
+      expect(
+        parsePreviewToEditorEnvelope(eventWith({ previewDocument: id }), security),
+      ).toEqual({ message: pong, previewDocument: id, malformedDocument: false });
+      // The message parser itself never carries it.
+      expect(
+        parsePreviewToEditorEvent(eventWith({ previewDocument: id }), security),
+      ).toEqual(pong);
+    });
+
+    it("reads an absent id as null: unverified, never a match", () => {
+      expect(parsePreviewToEditorEnvelope(eventWith({}), security)).toEqual({
+        message: pong,
+        previewDocument: null,
+        malformedDocument: false,
+      });
+    });
+
+    it("reads a malformed id as absent, and says it was malformed", () => {
+      for (const previewDocument of [
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef-123456789abcdef",
+        42,
+        null,
+        { id: "0123456789abcdef0123456789abcdef" },
+      ]) {
+        expect(
+          parsePreviewToEditorEnvelope(eventWith({ previewDocument }), security),
+        ).toEqual({ message: pong, previewDocument: null, malformedDocument: true });
+      }
+    });
+
+    it("keeps every envelope check: origin, source, session, schema", () => {
+      const id = "0123456789abcdef0123456789abcdef";
+      const event = eventWith({ previewDocument: id });
+      expect(
+        parsePreviewToEditorEnvelope(event, {
+          ...security,
+          expectedOrigin: "https://attacker.example",
+        }),
+      ).toBeNull();
+      expect(
+        parsePreviewToEditorEnvelope(event, {
+          ...security,
+          expectedSource: {} as Window,
+        }),
+      ).toBeNull();
+      expect(
+        parsePreviewToEditorEnvelope(event, {
+          ...security,
+          previewSession: "22222222-2222-4222-8222-222222222222",
+        }),
+      ).toBeNull();
+      expect(
+        parsePreviewToEditorEnvelope(
+          eventWith({ previewDocument: id, heartbeatId: -1 }),
+          security,
+        ),
+      ).toBeNull();
+    });
   });
 });

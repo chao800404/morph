@@ -21,6 +21,12 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
+import {
+  answerFramePings,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * The author moving inside the preview frame — a `<Link>`, back, forward —
@@ -332,7 +338,7 @@ const currentWindow = () =>
   document.querySelector("iframe")?.contentWindow ?? null;
 const event = (data: Record<string, unknown>) =>
   new MessageEvent("message", {
-    data: { ...data, previewSession: PREVIEW_SESSION },
+    data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
     origin: PREVIEW_ORIGIN,
     source: currentWindow(),
   });
@@ -340,10 +346,15 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(event(data));
   });
+  answerFramePings({ origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION });
 }
 /** Delivered outside act: React has not committed what the handler set. */
 function fromPreviewUncommitted(data: Record<string, unknown>) {
   window.dispatchEvent(event(data));
+  answerFramePings(
+    { origin: PREVIEW_ORIGIN, session: PREVIEW_SESSION },
+    { committed: false },
+  );
 }
 const report = (routePath: string | undefined, nodes: unknown[] = []) =>
   fromPreview({
@@ -507,6 +518,9 @@ afterEach(() => {
 
 describe("following the author's navigation inside the preview frame", () => {
   it("does not take the report a frame sends with its ready as a navigation", async () => {
+    // A current bridge: each document names itself and answers the editor's
+    // pings (C5 option A), so a reload in the frame is a confirmed new document.
+    modelCurrentBridge();
     // On a page that is not the one every frame boots on.
     const harness = await settled({ ...homeSearch, routePath: "/b" });
     expect(shownRoute(harness)).toBe("/b");
@@ -515,6 +529,7 @@ describe("following the author's navigation inside the preview frame", () => {
     // The frame reloads itself: ready, and at once the report of the page it
     // booted on — both before the editor has sent this round's request. The
     // last request it knows of was answered, but by the frame's last round.
+    reloadFrameDocument();
     fromPreviewUncommitted({
       type: "morph:storefront-preview-ready",
       servedInstance: {

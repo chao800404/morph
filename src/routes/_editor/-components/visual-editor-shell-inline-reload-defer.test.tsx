@@ -27,6 +27,9 @@ import {
 import {
   answerLatestRouteRequest,
   createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 
 /**
@@ -245,7 +248,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -1096,16 +1099,90 @@ describe("the frame brought up after the reload", () => {
       );
       expect(edited).toBeGreaterThan(0);
 
+      const editPost = heroPosts(from)[edited]!;
+      // The edit's own post goes before the image is signed: the stored
+      // library image, unsigned.
+      expect(imageSigned(editPost)).toBe(false);
+      expect(editPost.props?.image).toEqual(STORED_IMAGE);
+
       await sign();
       await tick(0);
-      // Nothing after the edit puts the older content back.
-      expect(heroPosts(from).slice(edited + 1)).toEqual([]);
+      // Nothing after the edit puts the older content back. Before C5 this
+      // asserted that nothing at all came after the edit's post. Since C5 the
+      // section a commit landed on is sent, when the edit ends, as the newest
+      // copy the editor has accepted with the pending input on top — and that
+      // copy, the replay's read, holds the image the edit's echo was composed
+      // without — so the edit's own post may be followed by its own signed
+      // repost. The user's conditions for accepting that (2026-10-20):
+      // (a) every post after the edit's own post is that edit's signed repost
+      //     of the SAME section: same props as the edit's post except the
+      //     library image, which goes from unsigned to signed, and nothing
+      //     else differs;
+      // (b) at most one such repost;
+      // (c) no post carries older text, and the replay's late post is never
+      //     sent;
+      // (d) a reverse check showing (a) and (b) catch an extra or different
+      //     post (run by hand: see the PR's reverse-check table).
+      const after = heroPosts(from).slice(edited + 1);
+      const withoutImage = (message: Posted) => ({
+        ...message,
+        props: { ...message.props, image: undefined },
+      });
+      // (a)
+      for (const message of after) {
+        expect(message.sectionId).toBe(editPost.sectionId);
+        expect(withoutImage(message)).toEqual(withoutImage(editPost));
+        // The same library image, now as its signed address.
+        expect(message.props?.image).toBe(SIGNED_URL);
+      }
+      // (b)
+      expect(after.length).toBeLessThanOrEqual(1);
+      // (c) No post from the edit's on carries older text, and the replay's
+      // late post (the older text with the signed image) is never sent.
+      expect(
+        heroPosts(from)
+          .slice(edited)
+          .filter((message) => message.props?.heading !== "Newer"),
+      ).toEqual([]);
+      expect(
+        heroPosts(from).filter(
+          (message) => message.props?.heading === TYPED && imageSigned(message),
+        ),
+      ).toEqual([]);
       expect(heroPosts(from).at(-1)?.props?.heading).toBe("Newer");
     });
 
+    // C5: the section an inline commit landed on is sent, when the edit
+    // ends, from the stored copy with the pending input on top. That copy's
+    // library image is resolved for the canvas the way any edit's is: posted
+    // at once, then again once signed.
+    it("signs the stored image of a section an inline edit committed, when the edit ends", async () => {
+      const from = await replayedWithUnsignedImage();
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: true });
+      fromPreview({
+        type: "morph:storefront-preview-commit-inline-text",
+        sectionId: "hero",
+        fieldKey: "heading",
+        fieldPath: "heading",
+        value: "Newer",
+        originalValue: TYPED,
+      });
+      fromPreview({ type: "morph:storefront-preview-inline-text-editing", editing: false });
+      await tick(0);
+      await sign();
+      await tick(0);
+      const last = heroPosts(from).at(-1);
+      expect(last?.props?.heading).toBe("Newer");
+      expect(imageSigned(last)).toBe(true);
+    });
+
     it("is not posted to a frame that replaced it meanwhile", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       // Replaced, for another reason, while the image was being signed.
+      reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
@@ -1119,6 +1196,9 @@ describe("the frame brought up after the reload", () => {
   });
 
   it("sends nothing to a frame that is not the one the reload brought up", async () => {
+    // A current bridge: each document names itself and answers the editor's
+    // pings (C5 option A), so a reload in the frame is a confirmed new document.
+    modelCurrentBridge();
     await frameUp();
     await heldWhileTyping();
     commitAndClose(TYPED);
@@ -1130,6 +1210,7 @@ describe("the frame brought up after the reload", () => {
       servedInstance: { kind: "known", instance: serving },
     });
     await tick(0);
+    reloadFrameDocument();
     const from = await newFrameUp();
     expect(heroPosts(from)).toEqual([]);
     expect(replayedLines()).toEqual([]);
@@ -1359,6 +1440,7 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     }
     /** The frame is replaced for another reason: a new ready round. */
     async function frameReplaced() {
+      reloadFrameDocument();
       fromPreview({
         type: "morph:storefront-preview-ready",
         servedInstance: { kind: "known", instance: serving },
@@ -1391,6 +1473,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6-binding: the replay's late post does not reach a frame that replaced it", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       const from = await replayedWithUnsignedImage();
       await frameReplaced();
       await releaseSigning();
@@ -1399,6 +1484,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6c-a: an Inspector edit after the frame was replaced posts and signs nothing for the replay", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       await replayedWithUnsignedImage();
       await frameReplaced();
       const signedBefore = signedIds().length;
@@ -1411,6 +1499,9 @@ export function Hero({ heading = "Welcome", subheading = "Summary", image }) {
     });
 
     it("T6c-b: a replacement made before the frame was replaced is not posted to the new frame", async () => {
+      // A current bridge: each document names itself and answers the editor's
+      // pings (C5 option A), so a reload in the frame is a confirmed new document.
+      modelCurrentBridge();
       await replayedWithUnsignedImage();
       const before = posted().length;
       await inspectorSubheading("Sub newer");

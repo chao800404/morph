@@ -9,6 +9,10 @@ import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-t
 import {
   createLiveFrame,
   LIVE_FRAME_CAPABILITIES,
+  answerFramePings,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
@@ -184,12 +188,13 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
     );
   });
+  answerFramePings(FRAME);
 }
 
 async function flushFrames() {
@@ -326,11 +331,15 @@ describe("typing into an Inspector field", () => {
   });
 
   it("E3: a capability from the frame's previous ready does not count", async () => {
+    // A current bridge: each document names itself and answers the editor's
+    // pings (C5 option A), so a reload in the frame is a confirmed new document.
+    modelCurrentBridge();
     const field = await openHeading();
     fireEvent.input(field, { target: { value: "Typed" } });
     expect(fieldPosts()).toHaveLength(1);
     // The frame comes up again (a reload) and no longer says it.
     const before = posted.length;
+    reloadFrameDocument();
     createLiveFrame(FRAME, { capabilities: [] }).ready();
     fireEvent.input(field, { target: { value: "Typed after reload" } });
     expect(fieldPosts(before)).toEqual([]);
