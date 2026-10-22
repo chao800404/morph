@@ -63,6 +63,10 @@ const SLOT = "hero";
 const AFTER_ROUTE = "/spread-after";
 const BEFORE_ROUTE = "/spread-before";
 const LOADER_ROUTE = "/spread-after-loader";
+/** The overridden instance beside a second, untouched one. */
+const TWO_ROUTE = "/spread-two";
+const PLAIN = "plain";
+const PLAIN_STORED = { title: SALE, subtitle: "Plain subtitle" };
 const SALE = "Sale";
 const STORED = { title: SALE, subtitle: "Stored subtitle" };
 
@@ -139,6 +143,12 @@ function SpreadAfterLoaderRoute() {
 const FILES = [
   HERO_FILE,
   contentRoute(
+    TWO_ROUTE,
+    "SpreadTwoRoute",
+    `<OverrideHero {...content("${SLOT}")} title="${SALE}" />
+      <OverrideHero {...content("${PLAIN}")} />`,
+  ),
+  contentRoute(
     AFTER_ROUTE,
     "SpreadAfterRoute",
     `<OverrideHero {...content("${SLOT}")} title="${SALE}" />`,
@@ -185,6 +195,7 @@ async function storeSlot(
   page: Page,
   routePath: string,
   props: Record<string, string>,
+  sectionId = SLOT,
 ) {
   const ensured = (await serverFn(
     page,
@@ -200,7 +211,7 @@ async function storeSlot(
     {
       ...scope!,
       templateId: ensured.data!.id,
-      sectionId: SLOT,
+      sectionId,
       props,
       expectedDraftGeneration: ensured.data!.draftGeneration,
       expectedSourceGeneration: await themeSourceGeneration(page, scope!),
@@ -213,6 +224,54 @@ async function storeSlot(
 }
 
 /** The slot's stored props on a route, as the editor reads them. */
+/**
+ * A section's props as the database holds them: the route's draft revision,
+ * or the template's own document before it has one. Read from the
+ * runner-owned D1, not through the editor's read.
+ */
+async function rawStoredProps(
+  routePath: string,
+  sectionId: string,
+): Promise<Record<string, unknown> | null> {
+  if (!/^\/[a-z0-9-]+$/.test(routePath)) throw new Error(routePath);
+  if (!/^[0-9a-f-]{36}$/.test(scope!.themeId)) throw new Error("theme id");
+  const { stdout } = await promisify(execFile)(
+    "npx",
+    [
+      "wrangler",
+      "d1",
+      "execute",
+      "DATABASE",
+      "--local",
+      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
+      "local-sidecar"
+        ? ["--env", "local_preview_e2e"]
+        : []),
+      "--persist-to",
+      process.env.MORPH_E2E_STATE_DIR!,
+      "--json",
+      "--command",
+      `SELECT CASE WHEN t.draft_revision_id IS NULL THEN t.document ELSE r.document END AS document
+       FROM storefront_theme_templates t LEFT JOIN storefront_theme_template_revisions r
+         ON r.id = t.draft_revision_id AND r.template_id = t.id
+       WHERE t.theme_id = '${scope!.themeId}' AND t.route_path = '${routePath}'
+         AND t.deleted_at IS NULL`,
+    ],
+    { maxBuffer: 16 * 1024 * 1024 },
+  );
+  const rows =
+    (
+      JSON.parse(stdout) as Array<{ results?: Array<Record<string, unknown>> }>
+    )[0]?.results ?? [];
+  expect(rows, `one stored template for ${routePath}`).toHaveLength(1);
+  const document = JSON.parse(String(rows[0]!.document)) as {
+    sections: Array<{ id: string; props?: Record<string, unknown> }>;
+  };
+  return (
+    document.sections.find((section) => section.id === sectionId)?.props ?? null
+  );
+}
+
 async function storedProps(page: Page, routePath: string) {
   const editor = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
     ...scope!,
@@ -246,6 +305,26 @@ const offeredFields = (page: Page) =>
     .locator('[data-slot="inspector-content-field"]')
     .filter({ hasText: /Override (title|subtitle)/ })
     .locator("input");
+const subtitleField = (page: Page) =>
+  page
+    .locator('[data-slot="inspector-content-field"]')
+    .filter({ hasText: "Override subtitle" })
+    .locator("input");
+const codeSetNotice = (page: Page) =>
+  page.locator('[data-slot="inspector-code-set-fields"]');
+/** A section's row in the structure panel, by the preview's tree node. */
+const panelRow = (page: Page, sectionId: string) =>
+  page.locator(
+    `[data-editor-tree-node-id^="${sectionId}:"] button[title^="Select "]`,
+  );
+const sectionHeading = (page: Page, sectionId: string) =>
+  previewFrame(page).locator(
+    `[data-storefront-section-id="${sectionId}"] [data-override-hero] h2`,
+  );
+const sectionText = (page: Page, sectionId: string) =>
+  previewFrame(page).locator(
+    `[data-storefront-section-id="${sectionId}"] [data-override-hero] p`,
+  );
 const titleField = (page: Page) =>
   page
     .locator('[data-slot="inspector-content-field"]')
@@ -317,14 +396,15 @@ async function structurePanelWithholdsTheTitle(page: Page, routePath: string) {
     .first()
     .click();
   await openContentTab(page);
-  await expect(
-    page.locator('[data-slot="inspector-code-set-fields"]'),
-  ).toContainText("Override title");
+  await expect(codeSetNotice(page)).toContainText("Override title");
+  await expect(codeSetNotice(page)).toContainText(
+    "passes its own value for these fields after this section's content",
+  );
   await expect(titleField(page)).toHaveCount(0);
   // Long enough for a save the editor would send (its debounce is 400 ms).
   await page.waitForTimeout(1_500);
   expect(writes).toEqual([]);
-  expect(await storedProps(page, routePath)).toEqual(STORED);
+  expect(await rawStoredProps(routePath, SLOT)).toEqual(STORED);
   await expect(heading(page)).toHaveText(SALE);
 }
 
@@ -375,6 +455,10 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     // sets beside it, so both routes store the slot as they stand.
     await storeSlot(page, AFTER_ROUTE, STORED);
     await storeSlot(page, BEFORE_ROUTE, STORED);
+    await storeSlot(page, TWO_ROUTE, STORED);
+    await storeSlot(page, TWO_ROUTE, PLAIN_STORED, PLAIN);
+    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual(STORED);
+    expect(await rawStoredProps(TWO_ROUTE, PLAIN)).toEqual(PLAIN_STORED);
     expect(await storedProps(page, AFTER_ROUTE)).toEqual(STORED);
     expect(await storedProps(page, BEFORE_ROUTE)).toEqual(STORED);
 
@@ -474,6 +558,86 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     });
   });
 
+  test("content(), two instances: the overridden title is set in code, the untouched instance edits, saves and reloads", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const writes = watchWrites(page);
+    const url = new URL(editorPath!, "http://placeholder");
+    url.searchParams.set("routePath", TWO_ROUTE);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(sectionHeading(page, SLOT)).toHaveText(SALE, {
+      timeout: 90_000,
+    });
+    await expect(sectionHeading(page, PLAIN)).toHaveText(SALE);
+    await expect(sectionText(page, SLOT)).toHaveText(STORED.subtitle);
+    await expect(sectionText(page, PLAIN)).toHaveText(PLAIN_STORED.subtitle);
+
+    // The overridden instance, from its structure-panel row.
+    await panelRow(page, SLOT).click();
+    await openContentTab(page);
+    await expect(codeSetNotice(page)).toContainText("Override title");
+    await expect(codeSetNotice(page)).toContainText(
+      "passes its own value for these fields after this section's content",
+    );
+    await expect(titleField(page)).toHaveCount(0);
+    // The row selects the instance's root element, whose form offers the
+    // fields named beneath it. This instance names none on the canvas (the
+    // empty thread), so its subtitle is not offered from this entry either.
+    await expect(subtitleField(page)).toHaveCount(0);
+    await page.waitForTimeout(1_500);
+    expect(writes).toEqual([]);
+    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual(STORED);
+
+    // The untouched instance of the same component, from its row.
+    await panelRow(page, PLAIN).click();
+    await openContentTab(page);
+    await expect(codeSetNotice(page)).toHaveCount(0);
+    await expect(titleField(page)).toHaveValue(SALE);
+    await expect(subtitleField(page)).toHaveValue(PLAIN_STORED.subtitle);
+    const stamp = Date.now();
+    const subtitle = `Plain subtitle ${stamp}`;
+    const title = `Plain title ${stamp}`;
+    for (const [field, value] of [
+      [subtitleField(page), subtitle],
+      [titleField(page), title],
+    ] as const) {
+      const saved = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(
+            response.url(),
+            "updateStorefrontThemeSectionProps",
+          ) && (response.request().postData() ?? "").includes(value),
+        { timeout: 30_000 },
+      );
+      await field.fill(value);
+      await field.press("Tab");
+      expect((await saved).ok()).toBe(true);
+    }
+    expect(writes.length).toBeGreaterThan(0);
+    for (const body of writes) expect(body).toContain(`"${PLAIN}"`);
+    expect(await rawStoredProps(TWO_ROUTE, PLAIN)).toEqual({ title, subtitle });
+    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual(STORED);
+
+    // A fresh load: the canvas and the Inspector read the stored values.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(sectionHeading(page, PLAIN)).toHaveText(title, {
+      timeout: 90_000,
+    });
+    await expect(sectionText(page, PLAIN)).toHaveText(subtitle);
+    await expect(sectionHeading(page, SLOT)).toHaveText(SALE);
+    await expect(sectionText(page, SLOT)).toHaveText(STORED.subtitle);
+    await panelRow(page, PLAIN).click();
+    await openContentTab(page);
+    await expect(titleField(page)).toHaveValue(title);
+    await expect(subtitleField(page)).toHaveValue(subtitle);
+  });
+
   // The loader form runs a server function, which only the full Start
   // preview can run, so the test exists only there.
   if (RUNTIME === "start") {
@@ -486,10 +650,10 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
         previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
       ).toHaveCount(0);
       await bothRoutesWriteNothing(page, LOADER_ROUTE);
-      // No structure-panel step here: the editor's read drops a stored
-      // section the route analysis cannot bind (a separate fix), so the
-      // panel lists no row for it today. The shell test covers that entry
-      // on the stored section as if it were kept.
+      // The stored section is kept although the route analysis cannot bind
+      // it (#291), so the structure panel lists it, and its form withholds
+      // the title the code sets.
+      await structurePanelWithholdsTheTitle(page, LOADER_ROUTE);
     });
   }
 });
