@@ -57,7 +57,12 @@ describe("writing editor identity into a Theme for a real React preview", () => 
     expect(routeOutput).toContain('data-storefront-section-id="hero"');
     expect(componentOutput).toContain('__morphRowContext.fields["title"] ?? ""');
     expect(componentOutput).toContain('__morphRowContext.fields["desc"] ?? ""');
-    expect(componentOutput).not.toContain('data-storefront-field-path={__morphRowContext?.fields["title"]');
+    // The same component may also be rendered as a list row elsewhere in the
+    // workspace. Its generated path is therefore conditional on receiving an
+    // actual row path; the section thread alone must not manufacture one.
+    expect(componentOutput).toContain(
+      'data-storefront-field-path={__morphRowContext?.fields["title"] && __morphRowContext.path ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
+    );
   });
 
   it("evaluates a spread once and labels fields only when the spread owns them", () => {
@@ -1213,7 +1218,7 @@ export default function List({ items = [] }) {
       'data-storefront-field={__morphRowContext ? (__morphRowContext.fields["title"] ?? "") : "title"}',
     );
     expect(card).toContain(
-      'data-storefront-field-path={__morphRowContext?.fields["title"] ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
+      'data-storefront-field-path={__morphRowContext?.fields["title"] && __morphRowContext.path ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
     );
     // What the component returns is the row itself.
     expect(card).toMatch(

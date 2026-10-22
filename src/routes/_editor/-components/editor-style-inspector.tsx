@@ -60,6 +60,10 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  deriveThemeDocumentLayoutPath,
+  readSlotPropsSetInCode,
+} from "@/lib/storefront/compiler/theme-route-sections";
+import {
   isThemeLinkFieldBound,
   resolveLinkFieldKeysForRenderedField,
   patchThemeLinkBinding,
@@ -959,8 +963,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setTimeout(syncShownEpochs, 0);
   };
   /** Every content change, with the copy the focused input was made on. */
+  /**
+   * Fields of this section the page's code sets at the call site, after the
+   * section's content spread (`readSlotPropsSetInCode`):
+   * `<Hero {...content("hero")} title={other.title} />` shows `other.title`,
+   * whatever `hero.title` holds. A stored edit to such a field would change
+   * nothing on the page, so the panel offers no control for it and says the
+   * code sets it, and no write to it leaves here. `"any"` when a later spread
+   * may set any of them.
+   */
+  const propsSetInCode = useMemo(() => {
+    if (contentStore !== "document" || !themeFiles) return null;
+    const layoutPath = deriveThemeDocumentLayoutPath(themeFiles);
+    const paths = [routeSourcePath, layoutPath].filter(
+      (path): path is string => typeof path === "string" && path.length > 0,
+    );
+    return paths.length > 0
+      ? readSlotPropsSetInCode(themeFiles, paths, section.id)
+      : null;
+  }, [contentStore, routeSourcePath, section.id, themeFiles]);
+  const isSetInCode = useCallback(
+    (fieldKey: string) =>
+      propsSetInCode === "any" || (propsSetInCode?.has(fieldKey) ?? false),
+    [propsSetInCode],
+  );
   const onPropsChange = useCallback(
     (next: Record<string, unknown>, options?: InspectorPropsChangeOptions) => {
+      // Every write names the field it is for; one the code sets is not sent.
+      const root = options?.inputFieldPath?.split(".")[0];
+      if (propsSetInCode === "any" || (root && isSetInCode(root))) return;
       const basis = earlierBasis(
         options?.basisDraftGeneration,
         contentFocusRef.current?.basis,
@@ -972,7 +1003,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           : { ...options, basisDraftGeneration: basis },
       );
     },
-    [emitPropsChange],
+    [emitPropsChange, isSetInCode, propsSetInCode],
   );
   // The selected row, confirmed by its `id` against the rows as they are now:
   // its index may have moved since the click, and a write to the index as
@@ -1122,6 +1153,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         if (binding.sectionId !== null && binding.sectionId !== section.id) {
           return [];
         }
+        if (
+          isSetInCode((binding.fieldPath ?? binding.fieldKey).split(".")[0]!)
+        ) {
+          return [];
+        }
         const rebased = rebaseSelectedRowPath(
           binding.fieldPath,
           binding.itemId ?? selection?.itemId,
@@ -1132,7 +1168,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           ? [binding]
           : [{ ...binding, fieldPath: rebased.fieldPath ?? binding.fieldPath }];
       }),
-    [props, section.id, selection?.descendantFields, selection?.itemId],
+    [
+      isSetInCode,
+      props,
+      section.id,
+      selection?.descendantFields,
+      selection?.itemId,
+    ],
   );
   // Memoized because a `useMemo` downstream lists this among its dependencies,
   // and a Set rebuilt on every render is a new value every time — which made
@@ -1142,12 +1184,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     [descendantFields],
   );
   const showField = (...keys: string[]) =>
-    !isSelectedNode ||
-    keys.includes(selectedField ?? "") ||
-    keys.some((key) => descendantFieldKeys.has(key)) ||
-    (activeFieldPath
-      ? keys.includes(activeFieldPath.split(".").pop() ?? "")
-      : false);
+    !keys.some(isSetInCode) &&
+    (!isSelectedNode ||
+      keys.includes(selectedField ?? "") ||
+      keys.some((key) => descendantFieldKeys.has(key)) ||
+      (activeFieldPath
+        ? keys.includes(activeFieldPath.split(".").pop() ?? "")
+        : false));
   const fieldValue = (key: string): unknown =>
     activeFieldPath && activeFieldPath.endsWith("." + key)
       ? getFieldPathValue(props, activeFieldPath)
@@ -1325,7 +1368,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const file = themeFiles?.find((f) => f.path === contentSourcePath);
     return file?.content ? parseComponentSource(file.content, file.path) : null;
   }, [componentPath, contentSourcePath, parsedMeta, themeFiles]);
-  const resolvedContentFields = useMemo<
+  const declaredOrDefaultContentFields = useMemo<
     Record<string, ThemeContentFieldDefinition>
   >(() => {
     const declared = themeContentCapability?.fields ?? {};
@@ -1348,6 +1391,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ]),
     ) as Record<string, ThemeContentFieldDefinition>;
   }, [contentMeta?.defaultProps, themeContentCapability?.fields]);
+  const contentFieldsSetInCode = Object.entries(
+    declaredOrDefaultContentFields,
+  ).filter(([fieldKey]) => isSetInCode(fieldKey));
+  const resolvedContentFields = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(declaredOrDefaultContentFields).filter(
+          ([fieldKey]) => !isSetInCode(fieldKey),
+        ),
+      ) as Record<string, ThemeContentFieldDefinition>,
+    [declaredOrDefaultContentFields, isSetInCode],
+  );
   /**
    * Whether a field can be saved where this section's content is stored.
    *
@@ -2967,9 +3022,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         />
       ) : null}
 
+      {view === "content" && contentFieldsSetInCode.length > 0 ? (
+        <div
+          data-slot="inspector-code-set-fields"
+          className="rounded-xl border border-dashed p-3"
+        >
+          <p className="text-xs font-medium">Set in code on this page</p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
+            {contentFieldsSetInCode.map(([fieldKey, definition]) => (
+              <li key={fieldKey}>
+                {definition.label ?? fieldKey.replace(/[-_]/g, " ")}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {propsSetInCode === "any"
+              ? "This page's code spreads other values after this section's content, and those can replace any of its fields, so the page may not show what is stored. "
+              : "This page's code passes its own value for these fields after this section's content, so the page shows the code's value, not the stored one. "}
+            Edit them in Code; the other fields here are stored as usual.
+          </p>
+        </div>
+      ) : null}
+
       {view === "content" &&
       !contentWritesBlocked &&
       !hasEditableContent &&
+      contentFieldsSetInCode.length === 0 &&
       !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">

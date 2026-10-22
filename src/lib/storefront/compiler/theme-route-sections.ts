@@ -23,6 +23,7 @@ import {
   collectLoaderSlotBindings,
   collectPageVariables,
   isPageBindingExpression,
+  propsReplacingSpread,
   readPageBindingKey,
   resolveThemeSourceImport,
   themeImportBase,
@@ -771,6 +772,96 @@ export function deriveThemeLayoutSections(
     diagnostics: parsed.diagnostics,
     hasContentImport: parsed.hasContentImport,
   };
+}
+
+/**
+ * The props the code sets for a content slot in place of what the slot's
+ * spread hands over, at every call site in `sourcePaths` that spreads it:
+ * `<Hero {...content("hero")} title={other.title} />` sets `title`. `"any"`
+ * when a later spread may set any prop; null when nothing replaces anything.
+ *
+ * The page shows the code's value for such a prop, not the stored one, so a
+ * stored edit to it would change nothing on the page. Read with the preview's
+ * own rule (`propsReplacingSpread`), and over every spelling of a spread that
+ * could be this slot's — `content("hero")`, `page.hero` or `page["hero"]`,
+ * and a local named for the slot (`const { hero } = Route.useLoaderData()`,
+ * also when renamed) — including call sites the section analysis does not
+ * bind. Reading too many only withholds a control; reading too few lets an
+ * edit through that the page does not show.
+ */
+export function readSlotPropsSetInCode(
+  files: readonly ThemeSourceFile[],
+  sourcePaths: readonly string[],
+  slotId: string,
+): ReadonlySet<string> | "any" | null {
+  const set = new Set<string>();
+  for (const sourcePath of sourcePaths) {
+    const normalized = normalizePath(sourcePath);
+    const content = files.find(
+      (file) => normalizePath(file.path) === normalized,
+    )?.content;
+    if (typeof content !== "string") continue;
+    let ast: any;
+    try {
+      ast = parse(content, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      });
+    } catch {
+      continue;
+    }
+    // Locals the slot may be held in: its own name, and any name a
+    // destructuring gives the property of that name.
+    const locals = new Set<string>([slotId]);
+    walkWithParent(ast.program, null, (node, parent) => {
+      if (
+        node?.type === "ObjectProperty" &&
+        parent?.type === "ObjectPattern" &&
+        !node.computed &&
+        (node.key?.name ?? node.key?.value) === slotId &&
+        node.value?.type === "Identifier"
+      ) {
+        locals.add(node.value.name);
+      }
+    });
+    const namesSlot = (argument: any) => {
+      if (argument?.type === "Identifier") return locals.has(argument.name);
+      if (argument?.type === "MemberExpression") {
+        return argument.computed
+          ? argument.property?.type === "StringLiteral" &&
+              argument.property.value === slotId
+          : argument.property?.type === "Identifier" &&
+              argument.property.name === slotId;
+      }
+      return (
+        argument?.type === "CallExpression" &&
+        argument.callee?.type === "Identifier" &&
+        argument.callee.name === "content" &&
+        argument.arguments?.[0]?.type === "StringLiteral" &&
+        argument.arguments[0].value === slotId
+      );
+    };
+    let any = false;
+    walkWithParent(ast.program, null, (node) => {
+      if (any || node?.type !== "JSXElement") return;
+      for (const attribute of node.openingElement?.attributes ?? []) {
+        if (
+          attribute?.type !== "JSXSpreadAttribute" ||
+          !namesSlot(attribute.argument)
+        ) {
+          continue;
+        }
+        const replaced = propsReplacingSpread(node, attribute);
+        if (replaced === "any") {
+          any = true;
+          return;
+        }
+        for (const name of replaced) set.add(name);
+      }
+    });
+    if (any) return "any";
+  }
+  return set.size > 0 ? set : null;
 }
 
 /** Components the route author may add as editable sections. */
