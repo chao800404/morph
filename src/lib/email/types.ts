@@ -1,6 +1,8 @@
 export interface EmailAdapter {
   /** Stable provider key recorded with commerce notification attempts. */
   readonly id?: string;
+  /** Server-only support mailbox used by mail templates; not a Reply-To default. */
+  readonly supportAddress?: string;
   send(params: SendEmailParams): Promise<SendEmailResult>;
   sendBatch?(params: SendEmailParams[]): Promise<SendEmailResult[]>;
 }
@@ -30,4 +32,10 @@ export interface SendEmailResult {
 export interface EmailConfig {
   from: string;
   replyTo?: string;
+}
+
+export interface EmailSenderConfig {
+  defaultFromAddress: string;
+  defaultFromName?: string;
+  supportAddress?: string;
 }

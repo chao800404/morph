@@ -32,8 +32,11 @@ Store secrets through Wrangler rather than in `wrangler.jsonc`:
 
 ```bash
 pnpm wrangler secret put BETTER_AUTH_SECRET
-pnpm wrangler secret put RESEND_API_KEY
 ```
+
+Configure the selected email provider separately; see
+[Transactional email providers](#transactional-email-providers). The commands in
+that section are operator instructions, not actions performed by the adapter.
 
 `PUBLIC_URL` is a non-secret canonical CMS URL. For a split-domain deployment, set it to
 the CMS hostname (for example `https://shop.example.com`), not the `workers.dev` fallback.
@@ -58,6 +61,208 @@ Replace `shop.example.com` with the customer's real CMS hostname. The storefront
 then connected from Dashboard → Settings → Domains; it is stored as an active storefront
 domain and routed by the same Worker. Do not register the CMS hostname in that storefront
 domain list.
+
+### Transactional email providers
+
+The existing `cmsConfig.server: createServerOnlyFn(...)` callback returns
+`{ database?, email?: EmailAdapter, ... }`. `CMSUserConfig` has no root email
+setting. Construct the adapter in that callback with all sender identity, support
+mailbox and credentials in its options. Core `getConfig.server` consumes that
+instance directly and derives the internal support mailbox from its optional
+`readonly supportAddress?: string` for existing templates; built-in helpers retain
+this option as adapter metadata. There is no separate authored support setting.
+The client view never invokes the server callback. Server environment overrides
+in the repo default are `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME` and
+`EMAIL_SUPPORT_ADDRESS`. An explicitly
+empty display name sends the mailbox without a name. Support configuration changes
+the password-reset support link, not the message's Reply-To header; per-message
+`from` and `replyTo` remain supported.
+
+Import built-in `resendAdapter` / `cloudflareAdapter` helpers from
+`@/lib/email/adapters` and email types from `@/lib/email/types`. Construct the
+adapter and read credentials inside the existing
+`server: createServerOnlyFn(...)` callback;
+never instantiate a credential-bearing client/adapter or read secrets at module
+scope or in client code. The [direct adapter example](README.md#transactional-email)
+shows the server block containing both database and email settings.
+Replace the adapter call and credentials inside that server callback to change
+providers.
+
+The old `EMAIL_PROVIDER` convenience option has been replaced by server adapter
+configuration and is no longer used; setting it cannot switch providers. Set
+`server().email` to a built-in helper result or any custom `EmailAdapter`.
+Adding a provider requires no provider-name registration or change to `getConfig`.
+
+**Owner action required before sending:** the existing defaults are preserved for
+compatibility: `medusa@mail.cmsapp.org`, `medusa`, and `support@morph.com`. The
+sender domain has expired and no replacement has been selected. Set owner-approved
+addresses and verify the sending domain before enabling either provider. There is
+an explicit `it.todo` for rejecting `cmsapp.org` and its subdomains as the configured
+production sender; this is NOT a passing production-readiness check.
+
+If `server().email` is omitted, mail remains unconfigured; core does not
+invent a default provider. The repository's default server callback supplies Resend.
+
+#### Resend (unchanged default)
+
+The default server callback configures Resend alongside the database:
+
+```ts
+server: createServerOnlyFn(() => ({
+  database: { connectionString: process.env.DATABASE_URL },
+  email: resendAdapter({
+    defaultFromAddress:
+      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+    apiKey: process.env.RESEND_API_KEY ?? "",
+  }),
+})),
+```
+
+Configure `RESEND_API_KEY`. In the Resend account, verify the owner-selected sending domain
+and install the DNS records Resend supplies. Use a sending-only credential scoped
+to the intended domain. Leave the key unset for local/E2E/CI runs.
+
+#### Cloudflare Email Sending (explicit opt-in)
+
+This adapter uses the [Email Sending REST API](https://developers.cloudflare.com/email-service/api/send-emails/rest-api/),
+not an Email Routing-only setup. It uses a dedicated account ID and token, so
+email credentials are not coupled to the Theme deployment credentials. No Worker
+binding, Wrangler configuration change, type regeneration or extra package is
+required.
+
+To replace Resend directly, change the helper import to `cloudflareAdapter` from
+`@/lib/email/adapters` and use this construction inside the same
+server callback with the same identity fields and other server settings:
+
+```ts
+server: createServerOnlyFn(() => ({
+  database: { connectionString: process.env.DATABASE_URL },
+  email: cloudflareAdapter({
+    defaultFromAddress:
+      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+  }),
+})),
+```
+
+The following official-documentation review was recorded on 2026-10-18; this
+documentation update does not revalidate the remote service:
+
+- [Email Sending is beta](https://developers.cloudflare.com/email-service/).
+  Sending to arbitrary customers requires Workers Paid and Email Sending access.
+  Existing Email Routing access alone is not sufficient for that use case.
+- [Onboard a sending domain](https://developers.cloudflare.com/email-service/get-started/send-emails/)
+  using Cloudflare DNS. Without an onboarded sending domain, sends are restricted
+  to verified destination addresses. After onboarding, arbitrary recipients are
+  supported; account-specific quotas still apply.
+- The [Workers binding](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+  also supports Email Sending now. It is not inherently a verified-recipient-only
+  API, but binding restrictions and account/domain setup still matter. REST was
+  chosen here to avoid an optional-binding compatibility path in local/E2E/CI.
+- [Limits](https://developers.cloudflare.com/email-service/platform/limits/):
+  at most 50 recipients per message and 5 MiB total message size for arbitrary
+  recipients. The adapter also caps its JSON request at 5 MiB; this does not
+  replace Cloudflare's encoded-message size check. Daily quotas are account-specific.
+
+Operator steps, each requiring separate approval for remote changes:
+
+1. Confirm the target account has Email Sending access and the required plan.
+2. Choose the domain; in Compute → Email Service → Email Sending, onboard it.
+   Review the actual generated [sending DNS records](https://developers.cloudflare.com/email-service/configuration/domains/):
+   bounce MX/SPF on `cf-bounce`, sending DKIM and DMARC. Do not blindly replace
+   existing SPF, MX or DMARC records or enable inbound Email Routing just to send.
+3. Create an API token with **Email Sending: Edit** for the intended account.
+   Supply `CLOUDFLARE_EMAIL_ACCOUNT_ID` and store
+   `CLOUDFLARE_EMAIL_API_TOKEN` in the Worker's secret store. Do not reuse a broad
+   deployment token, put secrets in `wrangler.jsonc`, or expose them as `VITE_*`.
+4. Replace the email adapter call in the server callback with `cloudflareAdapter`
+   as shown above. Configure the three sender/support settings above.
+   A support mailbox also needs its own receiving-mail or forwarding setup;
+   outbound domain verification does not create an inbox.
+5. Only after authorization, validate one real delivery and sender authentication.
+   This implementation has mock-only evidence: no DNS/account change, secret
+   upload, deployment or real email has been performed.
+
+#### Custom email adapters
+
+Set `email` in the existing server callback to any object satisfying
+`EmailAdapter`. Its required method is
+`send(params: SendEmailParams): Promise<SendEmailResult>`; `readonly id?: string`,
+`readonly supportAddress?: string` and
+`sendBatch?(params: SendEmailParams[]): Promise<SendEmailResult[]>` are optional.
+`getConfig.server` reads the support mailbox from this same adapter for existing
+templates; it does not set a default Reply-To header.
+Use a stable `id` to identify the adapter in commerce notification attempts. When
+`sendBatch` is absent, the existing mail helper calls `send` for each message using
+the same adapter; this is not a fallback to another provider.
+
+For a concrete custom object, use this server block in the README example,
+preserving any other server settings (import `cloudflareAdapter` from
+`@/lib/email/adapters` and `EmailAdapter` from `@/lib/email/types`). The `email`
+value is an ordinary `EmailAdapter` object; the transport here reuses the built-in
+Cloudflare implementation:
+
+```ts
+server: createServerOnlyFn(() => {
+  const transport = cloudflareAdapter({
+    defaultFromAddress:
+      process.env.EMAIL_FROM_ADDRESS ?? "medusa@mail.cmsapp.org",
+    defaultFromName: process.env.EMAIL_FROM_NAME ?? "medusa",
+    supportAddress: process.env.EMAIL_SUPPORT_ADDRESS ?? "support@morph.com",
+    accountId: process.env.CLOUDFLARE_EMAIL_ACCOUNT_ID ?? "",
+    apiToken: process.env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+  });
+  const email: EmailAdapter = {
+    id: "custom-cloudflare",
+    supportAddress: transport.supportAddress,
+    async send(params) {
+      return transport.send(params);
+    },
+  };
+  return {
+    database: { connectionString: process.env.DATABASE_URL },
+    email,
+  };
+}),
+```
+
+For another service, replace the transport with your own server-only integration
+and map its response to `{ success: true, messageId? }` or
+`{ success: false, error }`. Handle `to` as a mailbox or array, the default sender,
+per-message `from` / `replyTo`, `subject`, `html`, optional `text` and attachments;
+reject unsupported inputs explicitly. Keep credentials and provider clients inside
+the server boundary and return safe errors without message bodies, OTPs, addresses
+or tokens. Do not report success for an unconfigured transport or silently retry
+an unknown delivery outcome. Return this object as `server().email` with
+any support mailbox on the adapter itself.
+No central provider union, registry or `getConfig` switch is needed.
+
+#### Failure and delivery semantics
+
+The server callback determines the adapter; available credentials do not select a
+provider. Missing Cloudflare settings or provider rejection returns a visible
+failed result; it never switches to Resend. With the default Resend adapter and
+no key, the existing not-configured warning and `success:false`
+behavior remain. Custom adapters must provide their own explicit failure handling.
+
+The REST adapter treats HTTP errors, invalid responses, permanent bounces,
+suppressed recipients and incomplete recipient acceptance as failures. Delivered
+or queued recipients count as accepted, not proof of inbox delivery. An optional
+`message_id` is retained when supplied; none is invented. Attachments use base64
+content, and REST uses `address` / `reply_to`, distinct from the binding's field
+names. A 15-second request deadline and refused redirects bound transport behavior.
+
+New Cloudflare diagnostics contain fixed reason codes only, never arbitrary
+provider error text, addresses, message bodies, OTPs or tokens. There is no
+automatic retry or fallback: a timeout/transport error can have an unknown send
+outcome, and a multi-recipient failure may already have delivered to some
+recipients. Existing notification idempotency and caller failure handling are
+unchanged. Resend's existing error handling is not redesigned by this change.
 
 ## 3. Apply database migrations
 
@@ -142,7 +347,7 @@ actually served.
 - The Theme Worker has no address of its own. Morph Core reaches it through
   the service binding only; the deployer writes `workers_dev: false` and
   `preview_urls: false`. In the Cloudflare dashboard, the Theme Worker's
-  *Domains & Routes* shows no workers.dev route and no preview URLs, and
+  _Domains & Routes_ shows no workers.dev route and no preview URLs, and
   `https://morph-theme-<storefront>.<subdomain>.workers.dev` does not answer
   with the storefront — while the storefront's own domain still does, which is
   the service binding working.
@@ -218,7 +423,7 @@ followed by a JSON object:
   address; every frame on the old one goes stale), or a `fail-closed` line.
 - `workspace.change` names the files that made a start rewrite the workspace,
   grouped as `preview-content`, `theme-source` and `platform`. `previous:
-  "dirty"` means an incremental sync touched the workspace since the last full
+"dirty"` means an incremental sync touched the workspace since the last full
   start.
 - `workspace.update` is what the start wrote: `none`, `content-only` (only
   the draft content snapshot changed, so Vite and every page it serves were

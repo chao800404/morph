@@ -15,6 +15,22 @@
 BETTER_AUTH_SECRET=generate_with_openssl_rand_base64_32
 PUBLIC_URL=http://localhost:3000
 
+# Email stays disabled without credentials. Do not add real mail credentials
+# to E2E/CI. Tests mock providers; never use real delivery as a test fixture.
+# Choose email inside src/cms.config.ts's existing server: createServerOnlyFn(...)
+# callback, alongside database (default Resend); there is no root email setting.
+# Put all sender/support settings and credentials in the adapter options.
+# For Cloudflare, replace the server email adapter call and credentials with
+# cloudflareAdapter.
+# Credentials alone do not switch the adapter.
+# RESEND_API_KEY=
+# CLOUDFLARE_EMAIL_ACCOUNT_ID=
+# CLOUDFLARE_EMAIL_API_TOKEN=
+# EMAIL_FROM_ADDRESS=noreply@your-verified-domain
+# EMAIL_FROM_NAME=Your Store
+# EMAIL_SUPPORT_ADDRESS=help@your-support-domain
+# Create local secret files with umask 077; verify their mode is 600.
+
 # Storefront domains and Theme Worker deployment.
 #
 # Leave these UNSET for local work. With real values set, activating a release
