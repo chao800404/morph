@@ -131,6 +131,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Require all validation jobs to succeed
         env:
           TYPECHECK_RESULT: ${{ needs.validate-typecheck.result }}
