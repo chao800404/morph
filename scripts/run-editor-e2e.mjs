@@ -238,15 +238,6 @@ function parseLateDependencyReoptimization(line) {
   };
 }
 
-function selectedSpecFrom(extra) {
-  const specs = extra.filter(
-    (argument) =>
-      !argument.startsWith("-") &&
-      /\.(?:spec|test)\.[cm]?[jt]sx?$/i.test(argument),
-  );
-  return specs.length === 1 ? path.normalize(specs[0]) : "unknown";
-}
-
 /**
  * Whether something already listens on a port.
  *
@@ -810,7 +801,6 @@ async function main() {
   const passed = process.argv.slice(2);
   const extra = passed[0] === "--" ? passed.slice(1) : passed;
   const selection = editorShardArguments(extra);
-  const selectedSpec = selectedSpecFrom(extra);
   if (USES_SIDECAR && !existsSync(SIDECAR_ENV_FILE)) {
     throw new Error(
       `MISSING_SIDECAR_ENV: ${SIDECAR_ENV_FILE} holds MORPH_LOCAL_THEME_PREVIEW_ORIGIN and MORPH_LOCAL_THEME_PREVIEW_TOKEN, which the Worker and the sidecar must agree on.`,
@@ -982,7 +972,10 @@ async function main() {
           const recorded = {
             timestamp: new Date().toISOString(),
             ...event,
-            spec: selectedSpec,
+            // The CLI selection names the requested suite, not the active test:
+            // Playwright may run setup and transport specs first. This runner
+            // has no reliable live-test signal, so do not guess.
+            spec: "unknown",
           };
           lateDependencyReoptimizations.push(recorded);
           log(`late-reoptimize ${JSON.stringify(recorded)}`);

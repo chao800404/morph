@@ -353,7 +353,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
   );
 
   it(
-    "records late dependency re-optimization with its selected spec and keeps a passing run green",
+    "records late dependency re-optimization without guessing the active spec and keeps a passing run green",
     async () => {
       const report = path.join(scratch, "late-events", "playwright.json");
       const eventReport = `${report}.late-dependency-reoptimizations.json`;
@@ -383,7 +383,7 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
         environment: "client",
         dependencies: ["buffer", "@vendor/dep"],
         kind: "dependencies-optimized",
-        spec: "fake.spec.ts",
+        spec: "unknown",
       });
       assert.match(events[0].timestamp, /^\d{4}-\d\d-\d\dT.*Z$/);
       assert.deepEqual(events[1], {
@@ -391,14 +391,14 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
         environment: "ssr",
         dependencies: null,
         kind: "optimized-dependencies-reloading",
-        spec: "fake.spec.ts",
+        spec: "unknown",
       });
       assert.deepEqual(events[2], {
         timestamp: events[2].timestamp,
         environment: null,
         dependencies: ["untagged-dep"],
         kind: "dependencies-optimized",
-        spec: "fake.spec.ts",
+        spec: "unknown",
       });
       assert.match(result.stdout, /\[e2e\] late-reoptimize /);
       assert.doesNotMatch(
