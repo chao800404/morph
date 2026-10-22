@@ -66,9 +66,9 @@ const LOADER_ROUTE = "/spread-after-loader";
 /** The overridden instance beside a second, untouched one. */
 const TWO_ROUTE = "/spread-two";
 const PLAIN = "plain";
-const PLAIN_STORED = { title: SALE, subtitle: "Plain subtitle" };
 const SALE = "Sale";
 const STORED = { title: SALE, subtitle: "Stored subtitle" };
+const PLAIN_STORED = { title: SALE, subtitle: "Plain subtitle" };
 
 const HERO_FILE = {
   path: "src/components/OverrideHero.tsx",
