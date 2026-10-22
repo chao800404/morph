@@ -21,8 +21,8 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import { B1_INTEGRATION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
-  BAS_CASES,
   BAS_HERO_LABELS,
   BAS_HERO_PATH,
   BAS_HERO_SOURCE,
@@ -214,7 +214,7 @@ async function ensureFixture(browser: Browser) {
     // Seed: every section spread once, the shape the product binds. Each
     // case and mode has a route and Document of its own, so what one walk
     // writes (or deletes) never becomes the next walk's starting point.
-    const walks = BAS_CASES.flatMap((testCase) =>
+    const walks = B1_INTEGRATION_CASES.flatMap((testCase) =>
       MODES.map((mode) => ({ testCase, ...routeFor(testCase, mode) })),
     );
     const seedFiles = [
@@ -305,6 +305,7 @@ async function canvasClaim(page: Page, testCase: BasCase, element: BasElement) {
         .closest("[data-storefront-section-id]")
         ?.getAttribute("data-storefront-section-id") ?? null,
     field: node.getAttribute("data-storefront-field"),
+    bindingState: node.getAttribute("data-morph-binding-state"),
     selected: node.getAttribute("data-storefront-editor-selected"),
     text: node.textContent,
   }));
@@ -433,14 +434,20 @@ async function expectShownAsCode(
   const claim = await canvasClaim(page, testCase, element);
   const storedIds = Object.keys(testCase.seed);
   expect(
-    claim.section !== null && storedIds.includes(claim.section) && claim.field !== null
+    claim.section !== null &&
+      storedIds.includes(claim.section) &&
+      claim.field !== null &&
+      claim.field.length > 0
       ? `${claim.section}.${claim.field}`
       : null,
     "a literal is not claimed as a stored field",
   ).toBeNull();
-  await expect(page.locator('[data-testid="editor-code-text-notice"]')).toBeVisible({
-    timeout: 10_000,
-  });
+  expect(claim.bindingState, "Design reports the proven non-CMS value").toBe(
+    "not-cms",
+  );
+  await expect(page.locator('[data-testid="inspector-content-binding-state"]'))
+    .toHaveAttribute("data-binding-state", "not-cms", { timeout: 10_000 });
+  await expect(inspectorInput(page, literalProp(element))).toHaveCount(0);
 }
 
 const LOCATE = {
@@ -497,7 +504,7 @@ async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
       );
       walk.observed.S2offered = await offeredFields(page).catch(() => null);
       walk.observed.S2notice = await page
-        .locator('[data-testid="editor-code-text-notice"], [data-slot="inspector-content-unavailable"]')
+        .locator('[data-testid="editor-code-text-notice"], [data-testid="inspector-content-binding-state"], [data-slot="inspector-content-unavailable"]')
         .allTextContents()
         .catch(() => null);
       walk.observed.S2noEditableContent = await page
@@ -705,7 +712,7 @@ async function expectCanvasAfterEdit(
   );
 }
 
-for (const testCase of BAS_CASES) {
+for (const testCase of B1_INTEGRATION_CASES) {
   test.describe(`binding acceptance (${RUNTIME}) ${testCase.id}: ${testCase.verifies}`, () => {
     test.beforeAll(async ({ browser }) => {
       test.setTimeout(600_000);

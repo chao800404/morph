@@ -14,6 +14,10 @@ import {
 
 const GATE = "process.env.MORPH_E2E_PREVIEW_RUNTIME";
 
+test("the B1 binding acceptance suite is part of full Start verification", () => {
+  assert.ok(START_PREVIEW_SPECS.includes("binding-acceptance.spec.ts"));
+});
+
 // The plan: every spec reading the gate is run or excluded with a reason.
 const sources = {
   "a.spec.ts": `test.skip(${GATE} !== "start")`,

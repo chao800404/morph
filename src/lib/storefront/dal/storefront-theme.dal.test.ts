@@ -349,6 +349,66 @@ export default function A({ title = "default" }) { return <h2>{title}</h2>; }`,
     expect(stored()).toEqual(before);
   });
 
+  it("re-derives the exact section field at write time and rejects a forged overridden field", async () => {
+    seed("in-place");
+    const documentWithDesc: StorefrontPageDocument = {
+      ...document,
+      sections: document.sections.map((section) =>
+        section.id === "a"
+          ? { ...section, props: { ...section.props, desc: "A description" } }
+          : section,
+      ),
+    };
+    const revision = stored();
+    sqlite.prepare("UPDATE storefront_theme_templates SET document = ? WHERE id = 'unbound-template'")
+      .run(JSON.stringify(documentWithDesc));
+    sqlite.prepare("UPDATE storefront_theme_template_revisions SET document = ? WHERE id = ?")
+      .run(JSON.stringify(documentWithDesc), revision.id);
+    sqlite.prepare("UPDATE storefront_theme_files SET content = ? WHERE path = 'src/components/A.tsx'")
+      .run(`export const contentFields = {
+  title: { type: "text", label: "Title" },
+  desc: { type: "text", label: "Description" },
+} as const;
+export default function A({ title = "default", desc = "" }) {
+  return <section><h2>{title}</h2><p>{desc}</p></section>;
+}`);
+    sqlite.prepare("UPDATE storefront_theme_files SET content = ? WHERE path = 'src/routes/index.tsx'")
+      .run(`import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import A from "../components/A";
+const getPage = createServerFn().handler(() => morph.pages.get("/"));
+export const Route = createFileRoute("/")({ loader: () => getPage(), component: Home });
+function Home() { const { a, b } = Route.useLoaderData(); return <main><A {...a} title={b.title} /></main>; }`);
+
+    const before = stored();
+    await expect(
+      storefrontThemeDal.updateSectionProps({
+        ...target,
+        expectedSourceGeneration: 1,
+        sectionId: "a",
+        props: { title: "Forged title" },
+        routePath: "/",
+      }),
+    ).rejects.toThrow("INVALID_THEME_CONTENT_FIELD_VALUE:title:unproven-source");
+    expect(stored()).toEqual(before);
+
+    const result = await storefrontThemeDal.updateSectionProps({
+      ...target,
+      expectedSourceGeneration: 1,
+      sectionId: "a",
+      props: { desc: "Updated description" },
+      routePath: "/",
+    });
+    expect(
+      result?.document.sections.find((section) => section.id === "a")?.props,
+    ).toMatchObject({
+      title: "A stored",
+      desc: "Updated description",
+      retained: "not editable",
+    });
+  });
+
   it("still reorders a fully bound document without changing any section", async () => {
     seed("in-place");
     sqlite.prepare("UPDATE storefront_theme_files SET content = ? WHERE path = 'src/routes/index.tsx'").run(`import { createFileRoute } from "@tanstack/react-router";

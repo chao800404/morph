@@ -27,6 +27,9 @@ export const START_PREVIEW_SPECS = [
   // Case B and the A6b-2 live canvas refresh. Needs the runner-owned store
   // (MORPH_E2E_STATE_DIR), which the runner provides.
   "loader-data-binding.spec.ts",
+  // B1's real Design flow must be exercised against both client-only and
+  // full Start runtimes; the Start run is part of the binding acceptance.
+  "binding-acceptance.spec.ts",
   // The native Start half of the compatibility matrix. Its client-only half
   // (the KNOWN GAP tests) skips under Start and runs on the shards instead.
   "native-compat-preview.spec.ts",

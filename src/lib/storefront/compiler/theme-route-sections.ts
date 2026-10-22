@@ -1,5 +1,10 @@
 import { parse } from "@babel/parser";
 import {
+  analyzeB1Route,
+  type B1Instance,
+} from "@/lib/storefront/ast/theme-content-provenance";
+import { parseThemeSourceAst } from "@/lib/storefront/ast/theme-source-ast";
+import {
   THEME_CONTENT_SLOT_HELPER,
   isValidThemeContentSlotId,
 } from "@/lib/storefront/theme-content-slots";
@@ -219,8 +224,10 @@ function readSlotId(
   node: any,
   pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
   loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
+  b1Instances?: ReadonlyMap<number, B1Instance>,
 ): string | null {
   if (node?.type !== "JSXElement") return null;
+  const b1Instance = b1Instances?.get(node.start);
   const loaderSlot = loaderSlots.get(node.start);
   if (loaderSlot !== undefined) {
     return isValidThemeContentSlotId(loaderSlot) ? loaderSlot : null;
@@ -248,7 +255,15 @@ function readSlotId(
       return argument.value;
     }
   }
-  return null;
+  // Keep the established direct-spread and loader readers authoritative for
+  // their existing forms. B1 supplies structural identity for newly
+  // supported per-prop forms only when those readers cannot identify a slot.
+  // B1 structural identity is an extension for explicitly passed declared
+  // props. Plain spreads stay with the existing loader/content readers so
+  // their conservative refusal cases remain unchanged.
+  return b1Instance?.hasDeclaredCallsiteProps
+    ? (b1Instance.section ?? null)
+    : null;
 }
 
 function jsxIdentifier(node: any): string | null {
@@ -327,24 +342,18 @@ function parsePositionedSections(
     };
   }
 
-  let ast: any;
-  try {
-    ast = parse(routeFile.content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch (error) {
+  const parsedRoute = parseThemeSourceAst(routeFile);
+  if (!parsedRoute.ok) {
     return {
       sections: [],
       unboundSections: [],
-      diagnostics: [
-        `${normalizedRoutePath}: ${error instanceof Error ? error.message : "Invalid route source"}`,
-      ],
+      diagnostics: [parsedRoute.message],
       ast: null,
       hasContentImport: false,
       structureLocked: null,
     };
   }
+  const ast = parsedRoute.ast;
 
   const filePaths = new Set(files.map((file) => normalizePath(file.path)));
   const imports = new Map<
@@ -367,7 +376,11 @@ function parsePositionedSections(
       const imported =
         specifier.type === "ImportDefaultSpecifier"
           ? "default"
-          : (specifier.imported?.name ?? specifier.imported?.value);
+          : specifier.type === "ImportSpecifier"
+            ? specifier.imported.type === "Identifier"
+              ? specifier.imported.name
+              : specifier.imported.value
+            : null;
       if (typeof imported === "string") {
         imports.set(specifier.local.name, { imported, sourcePath, missing });
       }
@@ -396,9 +409,21 @@ function parsePositionedSections(
     path: normalizedRoutePath,
     files: files.map((file) => ({ ...file, path: normalizePath(file.path) })),
   });
+  const b1Analysis = analyzeB1Route(
+    files.filter(
+      (file): file is ThemeSourceFile & { content: string } =>
+        typeof file.content === "string",
+    ),
+    normalizedRoutePath,
+    undefined,
+    new Map([[normalizedRoutePath, ast]]),
+  );
+  const b1Instances = new Map(
+    b1Analysis.instances.map((instance) => [instance.start, instance]),
+  );
   const seenSlots = new Set<string>();
   walkWithParent(ast.program, null, (node, parent) => {
-    const slotId = readSlotId(node, pageVariables, loaderSlots);
+    const slotId = readSlotId(node, pageVariables, loaderSlots, b1Instances);
     if (!slotId) return;
     const componentName = jsxIdentifier(node);
     const imported = componentName ? imports.get(componentName) : null;
@@ -468,7 +493,9 @@ function parsePositionedSections(
     const imported = imports.get(componentName);
     if (!imported || imported.missing) return;
     const option = addableBySource.get(normalizePath(imported.sourcePath));
-    if (!option || readSlotId(node, pageVariables, loaderSlots)) return;
+    if (!option || readSlotId(node, pageVariables, loaderSlots, b1Instances)) {
+      return;
+    }
     const sourceStart = node.start;
     const sourceEnd = node.end;
     const sourceLocation = sourceLocationFor(normalizedRoutePath, node);
@@ -511,7 +538,15 @@ function parsePositionedSections(
     diagnostics,
     ast,
     hasContentImport,
-    structureLocked: loaderSlots.size > 0 ? LOADER_STRUCTURE_LOCKED : null,
+    structureLocked:
+      loaderSlots.size > 0 ||
+      (b1Analysis.loaderOrigin &&
+        b1Analysis.instances.some(
+          (instance) =>
+            instance.section !== null && instance.hasDeclaredCallsiteProps,
+        ))
+        ? LOADER_STRUCTURE_LOCKED
+        : null,
   };
 }
 

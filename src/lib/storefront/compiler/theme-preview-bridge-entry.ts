@@ -329,6 +329,7 @@ function sendSelectionReport(item) {
       descendantFields: item.descendantFields,
       itemId: item.itemId,
       contentUnavailable: item.contentUnavailable,
+      bindingState: item.bindingState,
       ...selectionMetadata(item),
       styleRevision: latestBridgeStyleRevision || Number(
         document.documentElement.dataset.storefrontStyleRevision ?? 0,

@@ -394,7 +394,7 @@ jobs:
         env:
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/full-start.json
-        run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts e2e/native-compat-preview.spec.ts
+        run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts e2e/binding-acceptance.spec.ts e2e/native-compat-preview.spec.ts
 
       # Playwright passes a run whose tests skipped themselves, and every
       # Start test skips when the runtime did not reach it. Only the listed

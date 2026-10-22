@@ -32,10 +32,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
+import { B1_INTEGRATION_CASES } from "@/lib/test-utils/binding-acceptance-b1-cases";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { resolveSelectable } from "@/lib/storefront/editor/preview-dom";
 import {
-  BAS_CASES,
   BAS_HERO_PATH,
   BAS_HERO_SOURCE,
   basCaseRootId,
@@ -357,6 +357,7 @@ function selectionOf(caseRoot: HTMLElement | null, element: BasElement) {
     fieldKey: selection?.fieldKey ?? null,
     fieldPath: selection?.fieldPath ?? null,
     contentUnavailable: selection?.contentUnavailable ?? null,
+    bindingState: selection?.bindingState ?? null,
   };
 }
 
@@ -446,7 +447,7 @@ const SPELLINGS: ReadonlyArray<{ spelling: BasSpelling; runtime: string }> = [
 
 for (const { spelling, runtime } of SPELLINGS) {
   describe(`binding acceptance, ${runtime}`, () => {
-    for (const testCase of BAS_CASES) {
+    for (const testCase of B1_INTEGRATION_CASES) {
       describe(`${testCase.id}: ${testCase.verifies}`, () => {
         it("S1 the stored Document renders through the editor's read", async () => {
           await seed(testCase, spelling);
@@ -560,6 +561,26 @@ for (const { spelling, runtime } of SPELLINGS) {
           });
           expect(observed).toEqual(expected);
         });
+
+        if (["p1", "c6a", "c6b", "p4a"].includes(testCase.id)) {
+          it("reports provenance as descriptive selection metadata", async () => {
+            await seed(testCase, spelling);
+            const { caseRoot } = await renderCase(testCase, spelling);
+            const observeState = (elementIndex: number) =>
+              selectionOf(caseRoot, testCase.elements[elementIndex]!)
+                .bindingState;
+
+            if (testCase.id === "p1") {
+              expect(observeState(0)).toBe("cms-field");
+            } else if (testCase.id === "c6a") {
+              expect(observeState(0)).toBe("not-cms");
+            } else if (testCase.id === "c6b") {
+              expect(observeState(2)).toBe("derived");
+            } else {
+              expect(observeState(0)).toBe("not-cms");
+            }
+          });
+        }
 
         it("S3 the edit goes through the DAL write and its OCC guards", async () => {
           await seed(testCase, spelling);

@@ -672,12 +672,27 @@ export const getHome = createServerFn().handler(() => morph.pages.get("/"));`,
     );
   });
 
-  it("a prop written after the spread, overriding it", () => {
-    expectNotBound(
-      route({
-        body: '  const { hero } = Route.useLoaderData();\n  return <main><Hero {...hero} title="Sale" /></main>;',
-      }),
-    );
+  it("a literal after the spread is not claimed, while the other stored fields remain editable", async () => {
+    const source = route({
+      body: '  const { hero } = Route.useLoaderData();\n  return <main><Hero {...hero} title="Sale" /></main>;',
+    });
+    const { html } = await render(source);
+    const root = mountLivePreview(html);
+    const title = resolveSelectable(root.querySelector("h1"));
+    const subtitle = resolveSelectable(root.querySelector("p"));
+
+    expect(routeSlotIds(source)).toEqual(["hero"]);
+    expect(title?.element.textContent).toBe("Sale");
+    expect(title?.sectionId).toBe("hero");
+    expect(title?.fieldKey).toBeNull();
+    expect(subtitle?.element.textContent).toBe("Stored subtitle");
+    expect(subtitle?.sectionId).toBe("hero");
+    expect(subtitle?.fieldKey).toBe("subtitle");
+
+    const files = themeFiles(source);
+    const reordered = reorderThemeRouteSections(source, files, ROUTE, ["hero"]);
+    expect(reordered.changed).toBe(false);
+    expect(reordered.diagnostic).toMatch(/route loader/);
   });
 
   it("another spread on the same element", () => {

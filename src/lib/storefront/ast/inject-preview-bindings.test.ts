@@ -5,6 +5,15 @@ import { injectPreviewBindings } from "./inject-preview-bindings";
 import * as starterV3 from "../starter-theme-v3-files";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
+import {
+  BAS_CASES,
+  BAS_HERO_PATH,
+  BAS_HERO_SOURCE,
+  basRouteSource,
+} from "@/lib/test-utils/binding-acceptance-cases";
+import { B1_EXTRA_CASES } from "@/lib/test-utils/binding-acceptance-b1-cases";
+import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
+import { componentPropElements } from "./theme-content-provenance";
 
 const run = (content: string, path = "src/components/Hero.tsx") =>
   injectPreviewBindings([{ path, content }]).files[0]!.content;
@@ -20,6 +29,120 @@ const DECLARES = `export const contentFields = {
 `;
 
 describe("writing editor identity into a Theme for a real React preview", () => {
+  it("threads proven per-field props from a route into the component's DOM fields", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c2")!;
+    const route = basRouteSource(testCase, "content");
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: testCase.routeFile, content: route },
+    ];
+
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    const componentBinding = componentPropElements(
+      BAS_HERO_SOURCE,
+      "default",
+    );
+    expect(componentBinding.threadable).toBe(true);
+    expect(componentBinding.elements.map((element) => element.prop)).toEqual([
+      "title",
+      "desc",
+    ]);
+    expect(routeOutput).toContain(
+      '__morphRow={{ fields: { "title": "title", "desc": "desc" }, bindingStates: { "title": "cms-field", "desc": "cms-field" } }}',
+    );
+    expect(routeOutput).toContain('data-storefront-section-id="hero"');
+    expect(componentOutput).toContain('__morphRowContext.fields["title"] ?? ""');
+    expect(componentOutput).toContain('__morphRowContext.fields["desc"] ?? ""');
+    expect(componentOutput).not.toContain('data-storefront-field-path={__morphRowContext?.fields["title"]');
+  });
+
+  it("evaluates a spread once and labels fields only when the spread owns them", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c4a")!;
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: testCase.routeFile,
+        content: basRouteSource(testCase, "content"),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+
+    expect(routeOutput).toContain('__morphB1Spread0 = (content("hero"))');
+    expect(routeOutput).toContain('Object.prototype.hasOwnProperty.call(__morphB1Spread0, "title")');
+    expect(routeOutput).toContain('__morphB1Spread0["title"] !== undefined');
+    expect(routeOutput).toContain('"title": (__morphB1Spread0 != null');
+    expect(routeOutput).toContain(
+      '"title": (__morphB1Spread0 != null && Object.prototype.hasOwnProperty.call(__morphB1Spread0, "title")',
+    );
+    expect(routeOutput).toContain('? "cms-field" : "not-cms"');
+    expect(routeOutput.indexOf('{...(__morphB1Spread0 = (content("hero")))}'))
+      .toBeLessThan(routeOutput.indexOf("__morphRow={{ fields:"));
+    expect(
+      ts.transpileModule(routeOutput, {
+        compilerOptions: { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+        reportDiagnostics: true,
+      }).diagnostics,
+    ).toEqual([]);
+  });
+
+  it("keeps the literal fallback unclaimed when the later section spread lacks the prop", () => {
+    const testCase = B1_EXTRA_CASES.find((entry) => entry.id === "p4a")!;
+    const routePath = "/bas-p4a-inspector";
+    const routeFile = "src/routes/bas-p4a-inspector.tsx";
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: routeFile,
+        content: basRouteSource(testCase, "content", { routePath }),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    expect(routeOutput).toContain('title="Code literal P4a"');
+    expect(routeOutput).toContain('__morphRow={{ fields:');
+    expect(routeOutput).toContain('"title": (__morphB1Spread0 != null');
+    expect(routeOutput).toContain('? "title" : ""');
+    expect(routeOutput).toContain('? "cms-field" : "not-cms"');
+    expect(componentOutput).toContain('__morphRowContext.fields["title"] ?? ""');
+    expect(componentOutput).toContain(
+      'data-morph-binding-state={__morphRowContext?.bindingStates?.["title"] ?? undefined}',
+    );
+    expect(
+      ts.transpileModule(routeOutput, {
+        compilerOptions: { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+        reportDiagnostics: true,
+      }).diagnostics,
+    ).toEqual([]);
+  });
+
+  it("marks a derived prop as display-only metadata, not as a stored field claim", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c6b")!;
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: testCase.routeFile,
+        content: basRouteSource(testCase, "content"),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    expect(routeOutput).toContain('"title": "derived"');
+    expect(routeOutput).not.toContain('"title": "cms-field"');
+    expect(componentOutput).toContain("data-morph-binding-state=");
+  });
+
   it("names the field an element shows, from the expression it renders", () => {
     const out = run(`${DECLARES}
 export default function Hero({ heading }) {
