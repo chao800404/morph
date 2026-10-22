@@ -30,6 +30,11 @@ export const START_PREVIEW_SPECS = [
   // The native Start half of the compatibility matrix. Its client-only half
   // (the KNOWN GAP tests) skips under Start and runs on the shards instead.
   "native-compat-preview.spec.ts",
+  // The page stand-in and the two writes it must keep apart, on the current
+  // Starter, whose root route owns the document. The `#root` Theme case is
+  // client-only (a Start page needs its document shell) and is not defined
+  // under Start, so nothing here skips.
+  "code-controlled-field.spec.ts",
 ];
 
 /**

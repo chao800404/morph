@@ -14,6 +14,7 @@ import {
 import { THEMES, serverFn } from "./native-acceptance";
 import {
   themeScopeFromEditorPath,
+  themeSourceGeneration,
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
@@ -52,6 +53,19 @@ test.skip(
 );
 
 const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+
+/**
+ * Which preview runs: the default client-only one, or the full Start preview
+ * (the Worker's `MORPH_THEME_PREVIEW_RUNTIME=start`, announced to the specs as
+ * `MORPH_E2E_PREVIEW_RUNTIME=start`; scripts/editor-e2e-start.mjs). A Theme
+ * rendering into `#root` has no document shell, which a Start page needs, so
+ * that case is defined for the client-only preview only; everything on the
+ * current Starter runs in both.
+ */
+const PREVIEW_RUNTIME =
+  process.env.MORPH_E2E_PREVIEW_RUNTIME === "start"
+    ? "full Start"
+    : "client-only";
 
 const COMPONENT_PATH = "src/components/CodeHero.tsx";
 const PAGE_TITLE = "Title the page passes";
@@ -271,7 +285,8 @@ for (const theme of [
     documentShell: true,
   },
 ] as const) {
-  test.describe(`a component default the page overrides, in the client-only preview: ${theme.name}`, () => {
+  if (PREVIEW_RUNTIME === "full Start" && !theme.documentShell) continue;
+  test.describe(`a component default the page overrides, in the ${PREVIEW_RUNTIME} preview: ${theme.name}`, () => {
     test.describe.configure({ mode: "serial" });
 
     let scope: ThemeScope | null = null;
@@ -650,7 +665,6 @@ for (const theme of [
           ),
           toasts: await page.locator("[data-sonner-toast]").allInnerTexts(),
         };
-        console.log(`### SAVE-FEEDBACK ${JSON.stringify(feedback)}`);
         await test.info().attach(`save-feedback-${label}`, {
           body: JSON.stringify(feedback, null, 2),
           contentType: "application/json",
@@ -854,3 +868,498 @@ for (const theme of [
     });
   });
 }
+
+/**
+ * The two writes, measured on the stored rows themselves.
+ *
+ * The comparisons above read the Document back through the server, whose read
+ * is derived (sections joined to the route, refs resolved). A derived read
+ * that dropped stored content would agree with itself and prove nothing. So
+ * here every check is against the raw stored input, through D1 directly:
+ *
+ * - The seed is given content the route never binds: a stored section the
+ *   route does not render, a non-editable prop and section metadata.
+ * - The first draft write is diffed against that raw seed, leaf by leaf. The
+ *   only differences allowed are the edited field and an enumerated list of
+ *   normalisations, each named by its exact path.
+ * - A pre-normalised fixture is written as the draft revision of another
+ *   Theme, and the two writes are measured against it byte for byte: a code
+ *   default leaves every row and revision as it was; a CMS field makes one
+ *   new revision whose document is the fixture with only that field changed.
+ */
+type RawDoc = {
+  sections: Array<{
+    id: string;
+    type?: string;
+    name?: string;
+    componentRef?: string | null;
+    enabled?: boolean;
+    props?: Record<string, unknown>;
+  }>;
+} & Record<string, unknown>;
+type JsonDiff = Readonly<{ path: string; before: unknown; after: unknown }>;
+
+/** Every leaf where two JSON values differ, by path; a missing key is `undefined`. */
+function jsonDiff(before: unknown, after: unknown, path = "$"): JsonDiff[] {
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (Array.isArray(before) && Array.isArray(after)) {
+    const diffs: JsonDiff[] = [];
+    for (let i = 0; i < Math.max(before.length, after.length); i += 1) {
+      diffs.push(...jsonDiff(before[i], after[i], `${path}[${i}]`));
+    }
+    return diffs;
+  }
+  if (isObject(before) && isObject(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    return [...keys].flatMap((key) =>
+      jsonDiff(before[key], after[key], `${path}.${key}`),
+    );
+  }
+  return Object.is(before, after) ? [] : [{ path, before, after }];
+}
+
+async function d1(command: string): Promise<Array<Record<string, unknown>>> {
+  const { stdout } = await promisify(execFile)(
+    "npx",
+    [
+      "wrangler",
+      "d1",
+      "execute",
+      "DATABASE",
+      "--local",
+      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
+      "local-sidecar"
+        ? ["--env", "local_preview_e2e"]
+        : []),
+      "--persist-to",
+      process.env.MORPH_E2E_STATE_DIR!,
+      "--json",
+      "--command",
+      command,
+    ],
+    { maxBuffer: 16 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(stdout) as Array<{
+    results: Array<Record<string, unknown>>;
+  }>;
+  return parsed.at(-1)?.results ?? [];
+}
+const sqlText = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+type RawHome = {
+  draft_revision_id: string | null;
+  draft_generation: number;
+  document: string;
+  draft_document: string | null;
+  draft_version: number | null;
+  revisions: number;
+};
+
+/** The row and the revision it points at, raw. */
+async function rawHome(templateId: string): Promise<RawHome> {
+  const [row] = await d1(
+    `SELECT t.draft_revision_id, t.draft_generation, t.document,
+      r.document AS draft_document, r.version AS draft_version,
+      (SELECT count(*) FROM storefront_theme_template_revisions x WHERE x.template_id = t.id) AS revisions
+    FROM storefront_theme_templates t
+    LEFT JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+    WHERE t.id = ${sqlText(templateId)};`,
+  );
+  return row as unknown as RawHome;
+}
+/** The document the template's content is read from: its draft, else its seed. */
+const storedText = (row: RawHome) => row.draft_document ?? row.document;
+
+const RAW_ROUTE = "/code-controlled-raw";
+const RAW_SECTION = "starter-introduction";
+/** Stored content no route binds, and props no field declares. */
+const KEPT_UNBOUND = {
+  id: "kept-unbound-note",
+  type: "kept-note",
+  componentRef: "src/components/KeptNote.tsx",
+  name: "Kept unbound section",
+  enabled: true,
+  props: {
+    text: "Kept unbound text",
+    internal: { tier: 2, flags: ["a", "b"] },
+  },
+};
+const KEPT_PROP = { trackingId: "kept-tracking-1", layoutHint: { span: 3 } };
+const KEPT_NAME = "Kept introduction name";
+
+/** A Theme of its own, its home template seeded with the kept content. */
+type RawTheme = {
+  scope: ThemeScope;
+  editorPath: string;
+  homeId: string;
+  /** The raw seed after the kept content was added, before any draft write. */
+  seedText: string;
+};
+
+async function prepareRawTheme(browser: Browser): Promise<RawTheme> {
+  const page = await signedInPage(browser);
+  await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+  const scope = await createThrowawayTheme();
+  const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+    ...scope,
+  })) as {
+    success: boolean;
+    data?: { templates: Array<{ id: string; type: string }> };
+  };
+  expect(result.success, JSON.stringify(result)).toBe(true);
+  const homeId = result.data!.templates.find((t) => t.type === "index")!.id;
+  const editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${homeId}`;
+  const saved = await writeThemeFiles(
+    page,
+    scope,
+    files(RAW_ROUTE, "src/routes/code-controlled-raw.tsx"),
+  );
+  expect(saved.success, JSON.stringify(saved)).toBe(true);
+
+  // Kept content, written into whatever the template's content is read
+  // from, before any draft write: an unbound section at the end, a
+  // non-editable prop and a name on the section that will be edited.
+  const row = await rawHome(homeId);
+  const seed = JSON.parse(storedText(row)) as RawDoc;
+  const target = seed.sections.find((section) => section.id === RAW_SECTION);
+  expect(target, "the seed stores the introduction").toBeDefined();
+  target!.name = KEPT_NAME;
+  target!.props = { ...(target!.props ?? {}), ...KEPT_PROP };
+  seed.sections.push(KEPT_UNBOUND);
+  const seedText = JSON.stringify(seed);
+  await d1(
+    row.draft_revision_id
+      ? `UPDATE storefront_theme_template_revisions SET document = ${sqlText(seedText)} WHERE id = ${sqlText(row.draft_revision_id)};`
+      : `UPDATE storefront_theme_templates SET document = ${sqlText(seedText)} WHERE id = ${sqlText(homeId)};`,
+  );
+  expect(storedText(await rawHome(homeId))).toBe(seedText);
+  await page.context().close();
+  return { scope, editorPath, homeId, seedText };
+}
+
+async function listAllFiles(page: Page, scope: ThemeScope) {
+  const listed = (await page.evaluate(
+    async ({ module, scope }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      return fns.listStorefrontThemeFiles({ data: scope });
+    },
+    {
+      module: "/src/server/storefront/storefront-theme-files.serverFn.ts",
+      scope,
+    },
+  )) as {
+    success: boolean;
+    data?: { files: Array<{ path: string; content: string }> };
+  };
+  expect(listed.success, JSON.stringify(listed)).toBe(true);
+  return Object.fromEntries(
+    listed.data!.files.map((file) => [file.path, file.content]),
+  );
+}
+
+/** Edits the home page's introduction heading through the Inspector. */
+async function editHeading(page: Page, editorPath: string, value: string) {
+  await page.goto(editorPath, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+    timeout: 45_000,
+  });
+  const heading = previewFrame(page).locator(
+    `[data-storefront-section-id="${RAW_SECTION}"] [data-storefront-field="heading"]`,
+  );
+  await expect(heading).toBeVisible({ timeout: 90_000 });
+  if (
+    await page
+      .getByRole("button", { name: "Enable section selection" })
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await enableSelection(page);
+  }
+  await heading.scrollIntoViewIfNeeded();
+  expect(await clickExposedElement(page, heading)).not.toBeNull();
+  await settleSelection(page);
+  await openContentTab(page);
+  const field = page.locator('[data-slot="inspector-content-field"]');
+  await expect(field).toHaveCount(1);
+  await expect(field).toHaveAttribute("data-content-store", "document");
+  await expect(
+    page.locator('[data-slot="inspector-code-default-badge"]'),
+  ).toHaveCount(0);
+  const saved = page.waitForResponse(
+    (response) =>
+      isServerFunctionCall(
+        response.url(),
+        "updateStorefrontThemeSectionProps",
+      ) && (response.request().postData() ?? "").includes(value),
+    { timeout: 30_000 },
+  );
+  const input = field.locator("input, textarea");
+  await input.fill(value);
+  await input.press("Tab");
+  expect((await saved).ok()).toBe(true);
+  await expect(heading).toHaveText(value, { timeout: 30_000 });
+}
+
+test.describe(`the first draft write on the raw stored Document, in the ${PREVIEW_RUNTIME} preview`, () => {
+  let raw: RawTheme | null = null;
+  test.beforeAll(async ({ browser }) => {
+    raw = await prepareRawTheme(browser);
+  });
+
+  test("keeps every stored value but the field and the named normalisations", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const { editorPath, homeId, seedText } = raw!;
+    const seed = JSON.parse(seedText) as RawDoc;
+    const before = await rawHome(homeId);
+    const newHeading = `First-write heading ${Date.now()}`;
+    await editHeading(page, editorPath, newHeading);
+    const after = await rawHome(homeId);
+
+    // A new draft revision; the row's own seed column untouched when the
+    // seed was there.
+    expect(after.draft_revision_id).not.toBeNull();
+    expect(after.draft_revision_id).not.toBe(before.draft_revision_id);
+    expect(after.revisions).toBe(before.revisions + 1);
+    expect(after.draft_generation).toBeGreaterThan(before.draft_generation);
+    if (before.draft_revision_id === null) {
+      expect(after.document).toBe(before.document);
+    }
+
+    const stored = JSON.parse(after.draft_document!) as RawDoc;
+    const index = seed.sections.findIndex((s) => s.id === RAW_SECTION);
+    // The allowed differences, each by exact path:
+    // - the edited field;
+    // - a Starter section's legacy component ref, resolved to the file the
+    //   route renders it from (`src/components/page-sections/index/<id>/index.tsx`);
+    // - a generated row id (`morph-mig-<16 hex>`) on a list row that had none.
+    const allowed = new Map<
+      string,
+      (before: unknown, after: unknown) => boolean
+    >();
+    allowed.set(
+      `$.sections[${index}].props.heading`,
+      (_b, a) => a === newHeading,
+    );
+    seed.sections.forEach((section, i) => {
+      if (
+        section.id.startsWith("starter-") &&
+        typeof section.componentRef === "string" &&
+        !section.componentRef.startsWith("src/components/page-sections/")
+      ) {
+        allowed.set(
+          `$.sections[${i}].componentRef`,
+          (_b, a) =>
+            a === `src/components/page-sections/index/${section.id}/index.tsx`,
+        );
+      }
+      const items = section.props?.items;
+      if (Array.isArray(items)) {
+        items.forEach((item, j) => {
+          if (
+            item &&
+            typeof item === "object" &&
+            !("id" in (item as Record<string, unknown>))
+          ) {
+            allowed.set(
+              `$.sections[${i}].props.items[${j}].id`,
+              (b, a) =>
+                b === undefined &&
+                typeof a === "string" &&
+                /^morph-mig-[0-9a-f]{16}$/.test(a),
+            );
+          }
+        });
+      }
+    });
+    const diffs = jsonDiff(seed, stored);
+    await test.info().attach("first-write-diff", {
+      body: JSON.stringify({ allowed: [...allowed.keys()], diffs }, null, 2),
+      contentType: "application/json",
+    });
+    const unexplained = diffs.filter(
+      (diff) => !allowed.get(diff.path)?.(diff.before, diff.after),
+    );
+    expect(unexplained).toEqual([]);
+    expect(diffs.map((diff) => diff.path)).toContain(
+      `$.sections[${index}].props.heading`,
+    );
+    // Said once more, plainly: the kept content is there, in place.
+    expect(stored.sections.map((s) => s.id)).toEqual(
+      seed.sections.map((s) => s.id),
+    );
+    expect(stored.sections.at(-1)).toEqual(KEPT_UNBOUND);
+    expect(stored.sections[index]!.name).toBe(KEPT_NAME);
+    expect(stored.sections[index]!.props).toMatchObject(KEPT_PROP);
+  });
+});
+
+test.describe(`two writes on a pre-normalised raw Document, in the ${PREVIEW_RUNTIME} preview`, () => {
+  let raw: RawTheme | null = null;
+  /** The fixture as written: the draft revision's document text and id. */
+  let fixtureText: string | null = null;
+  let fixtureRevision: string | null = null;
+
+  test.beforeAll(async ({ browser }) => {
+    raw = await prepareRawTheme(browser);
+    const { scope, homeId } = raw;
+    // One draft write through the server, so the template has a draft
+    // revision the server has already normalised.
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const editor = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...scope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; draftGeneration: number }> };
+    };
+    expect(editor.success, JSON.stringify(editor)).toBe(true);
+    const home = editor.data!.templates.find((t) => t.id === homeId)!;
+    const primed = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...scope,
+        templateId: homeId,
+        sectionId: RAW_SECTION,
+        props: { heading: "Primed heading" },
+        expectedDraftGeneration: home.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, scope),
+      },
+    )) as { success: boolean };
+    expect(primed.success, JSON.stringify(primed)).toBe(true);
+    await page.context().close();
+
+    // The fixture: that normalised draft, holding the kept content (put
+    // back if the write lost it, so this test measures the next writes on
+    // it either way), one more non-editable prop on another section, written
+    // as a new draft revision.
+    const current = await rawHome(homeId);
+    expect(current.draft_revision_id).not.toBeNull();
+    const fixture = JSON.parse(current.draft_document!) as RawDoc;
+    if (!fixture.sections.some((s) => s.id === KEPT_UNBOUND.id)) {
+      fixture.sections.push(KEPT_UNBOUND);
+    }
+    const story = fixture.sections.find((s) => s.id === "starter-story");
+    expect(story, "the fixture stores the story section").toBeDefined();
+    story!.props = { ...(story!.props ?? {}), internalNote: "kept-note-2" };
+    fixtureText = JSON.stringify(fixture);
+    fixtureRevision = randomUUID();
+    await d1(
+      `INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_by, created_at)
+        SELECT ${sqlText(fixtureRevision)}, ${sqlText(homeId)},
+          (SELECT max(version) + 1 FROM storefront_theme_template_revisions WHERE template_id = ${sqlText(homeId)}),
+          ${sqlText(fixtureText)}, created_by, ${sqlText(new Date().toISOString())}
+        FROM storefront_theme_template_revisions WHERE id = ${sqlText(current.draft_revision_id!)};
+      UPDATE storefront_theme_templates
+        SET draft_revision_id = ${sqlText(fixtureRevision)}, draft_generation = draft_generation + 1
+        WHERE id = ${sqlText(homeId)};`,
+    );
+    const seeded = await rawHome(homeId);
+    expect(seeded.draft_revision_id).toBe(fixtureRevision);
+    expect(seeded.draft_document).toBe(fixtureText);
+  });
+
+  test("a code default and a CMS field each write only their own store, byte for byte", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const { scope, editorPath, homeId } = raw!;
+    const fixture = JSON.parse(fixtureText!) as RawDoc;
+    const seeded = await rawHome(homeId);
+    expect(seeded.draft_revision_id).toBe(fixtureRevision);
+
+    // 1. The component code default, under the page stand-in.
+    const url = new URL(editorPath, "http://placeholder");
+    url.searchParams.set("routePath", RAW_ROUTE);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(previewFrame(page).getByText(DEFAULT_DESC)).toBeVisible({
+      timeout: 90_000,
+    });
+    const filesBefore = await listAllFiles(page, scope);
+    await clickOnCanvas(page, DEFAULT_DESC);
+    const codeDefault = contentField(page, "Code desc");
+    await expect(codeDefault).toHaveAttribute(
+      "data-content-store",
+      "source-default",
+    );
+    const badge = codeDefault.locator(
+      '[data-slot="inspector-code-default-badge"]',
+    );
+    await expect(badge).toHaveText("Component code default");
+    await expect(badge).toHaveAttribute(
+      "title",
+      new RegExp(
+        `Saved into ${COMPONENT_PATH.replace(/\./g, "\\.")}\\..*It is not this page's content\\.`,
+      ),
+    );
+    const newDefault = `Raw default ${Date.now()}`;
+    const sourceSaved = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(response.url(), "saveStorefrontThemeFile") &&
+        (response.request().postData() ?? "").includes(newDefault),
+      { timeout: 30_000 },
+    );
+    await codeDefault.locator("input, textarea").fill(newDefault);
+    await codeDefault.locator("input, textarea").press("Tab");
+    expect((await sourceSaved).ok()).toBe(true);
+    await expect(previewFrame(page).getByText(newDefault)).toBeVisible({
+      timeout: 30_000,
+    });
+    // The row, its revision pointer, its revisions and the revision's
+    // document text are exactly as seeded.
+    expect(await rawHome(homeId)).toEqual(seeded);
+    const filesAfterSource = await listAllFiles(page, scope);
+    expect(filesAfterSource[COMPONENT_PATH]).toBe(
+      filesBefore[COMPONENT_PATH]!.replace(
+        `desc = "${DEFAULT_DESC}"`,
+        `desc = "${newDefault}"`,
+      ),
+    );
+    expect({ ...filesAfterSource, [COMPONENT_PATH]: "" }).toEqual({
+      ...filesBefore,
+      [COMPONENT_PATH]: "",
+    });
+    const routeRows = await d1(
+      `SELECT id FROM storefront_theme_templates WHERE theme_id = ${sqlText(scope.themeId)} AND route_path = ${sqlText(RAW_ROUTE)};`,
+    );
+    expect(routeRows).toEqual([]);
+
+    // 2. The CMS field on the home page's stored section.
+    const filesBeforeCms = await listAllFiles(page, scope);
+    const index = fixture.sections.findIndex((s) => s.id === RAW_SECTION);
+    const previousHeading = (fixture.sections[index]!.props ?? {}).heading;
+    const newHeading = `Raw heading ${Date.now()}`;
+    await editHeading(page, editorPath, newHeading);
+    const after = await rawHome(homeId);
+    expect(after.draft_revision_id).not.toBe(fixtureRevision);
+    expect(after.revisions).toBe(seeded.revisions + 1);
+    expect(after.draft_version).toBe((seeded.draft_version ?? 0) + 1);
+    expect(after.document).toBe(seeded.document);
+    // The new revision is the fixture with that one field changed: as a
+    // value tree, and as the stored text.
+    expect(jsonDiff(fixture, JSON.parse(after.draft_document!))).toEqual([
+      {
+        path: `$.sections[${index}].props.heading`,
+        before: previousHeading,
+        after: newHeading,
+      },
+    ]);
+    expect(after.draft_document).toBe(
+      fixtureText!.replace(
+        `"heading":${JSON.stringify(previousHeading)}`,
+        `"heading":${JSON.stringify(newHeading)}`,
+      ),
+    );
+    // The Theme source is byte-identical.
+    expect(await listAllFiles(page, scope)).toEqual(filesBeforeCms);
+  });
+});
