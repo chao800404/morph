@@ -1340,9 +1340,15 @@ test.describe(`two writes on a pre-normalised raw Document, in the ${PREVIEW_RUN
     const newHeading = `Raw heading ${Date.now()}`;
     await editHeading(page, editorPath, newHeading);
     const after = await rawHome(homeId);
-    expect(after.draft_revision_id).not.toBe(fixtureRevision);
-    expect(after.revisions).toBe(seeded.revisions + 1);
-    expect(after.draft_version).toBe((seeded.draft_version ?? 0) + 1);
+    // The fixture is an unpublished draft, which the writer rewrites in
+    // place (`prepareTemplateDocumentWrite`: an active draft no publication
+    // references is updated, not branched): same revision, same version, no
+    // new revision row, one generation further. The branch to a new revision
+    // is the first write's, measured in the test above.
+    expect(after.draft_revision_id).toBe(fixtureRevision);
+    expect(after.revisions).toBe(seeded.revisions);
+    expect(after.draft_version).toBe(seeded.draft_version);
+    expect(after.draft_generation).toBe(seeded.draft_generation + 1);
     expect(after.document).toBe(seeded.document);
     // The new revision is the fixture with that one field changed: as a
     // value tree, and as the stored text.
