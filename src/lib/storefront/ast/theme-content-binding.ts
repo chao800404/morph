@@ -17,7 +17,7 @@
  * guess from a variable name.
  */
 
-import { parse } from "@babel/parser";
+import { parseThemeSourceAst } from "./theme-source-ast";
 
 const CONTENT_MODULE_SPECIFIER = /(?:^|\/)morph\/content(?:\.[cm]?[jt]sx?)?$/;
 
@@ -449,15 +449,9 @@ function topLevelConst(
   return null;
 }
 
-function parseModule(content: string): AnyNode | null {
-  try {
-    return parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return null;
-  }
+function parseModule(content: string, path: string): AnyNode | null {
+  const result = parseThemeSourceAst({ path, content });
+  return result.ok ? result.ast : null;
 }
 
 /**
@@ -522,7 +516,7 @@ function serverFunctionPagePathFor(
   const { sourcePath, imported } = found;
   const content = files.find((file) => file.path === sourcePath)?.content;
   if (typeof content !== "string") return null;
-  const module = parseModule(content);
+  const module = parseModule(content, sourcePath);
   const exported = module ? topLevelConst(module, imported) : null;
   if (
     !module ||

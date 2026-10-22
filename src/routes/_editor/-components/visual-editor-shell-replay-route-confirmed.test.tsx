@@ -164,6 +164,10 @@ const file = (path: string, content: string) => ({
 // The route and component the E2E writes (e2e/preview-inline-reload-defer.spec.ts).
 const FILES = [
   file(
+    "src/morph/content.ts",
+    'export { content, morph, isSectionHidden } from "@morph/sdk";\n',
+  ),
+  file(
     "src/routes/index.tsx",
     'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/")({ component: () => <main /> });\n',
   ),

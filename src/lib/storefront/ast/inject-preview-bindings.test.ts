@@ -15,8 +15,28 @@ import { B1_EXTRA_CASES } from "@/lib/test-utils/binding-acceptance-b1-cases";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import { componentPropElements } from "./theme-content-provenance";
 
+const injectTestFiles = (
+  files: Array<{ path: string; content: string }>,
+) => {
+  const hasRoute = files.some((file) => file.path.startsWith("src/routes/"));
+  if (!hasRoute) return injectPreviewBindings(files);
+
+  const suppliedPaths = new Set(files.map((file) => file.path));
+  const platformFiles = livePreviewPlatformFiles().filter(
+    (file) =>
+      file.path === "src/morph/content.ts" && !suppliedPaths.has(file.path),
+  );
+  const routeComponents = ["Hero", "Promo", "CategoryShowcase"]
+    .map((name) => ({
+      path: `src/components/${name}.tsx`,
+      content: `export default function ${name}() { return null; }`,
+    }))
+    .filter((file) => !suppliedPaths.has(file.path));
+  return injectPreviewBindings([...files, ...platformFiles, ...routeComponents]);
+};
+
 const run = (content: string, path = "src/components/Hero.tsx") =>
-  injectPreviewBindings([{ path, content }]).files[0]!.content;
+  injectTestFiles([{ path, content }]).files[0]!.content;
 
 const DECLARES = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
@@ -405,7 +425,11 @@ export default function Hero({ items = [] }) {
 
     it("leaves a section alone, which is wrapped as a section already", () => {
       const out = run(
-        `export default function Page({ content }) {
+        `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Page });
+function Page() {
   return <main><Hero {...content("starter-hero")} /></main>;
 }
 `,
@@ -418,7 +442,11 @@ export default function Hero({ items = [] }) {
     it("wraps a section bound through a page variable the same way", () => {
       const out = run(
         `import { morph } from "../morph/content";
-export default async function Page() {
+import { createFileRoute } from "@tanstack/react-router";
+import Hero from "../components/Hero";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/home")({ component: Page });
+async function Page() {
   const home = await morph.pages.get("/home");
   return <main><Hero {...home["starter-hero"]} /><Promo {...home.promo} /></main>;
 }
@@ -591,7 +619,7 @@ export default function HomeRoute() {
 `;
 
   const runRoute = (source = ROUTE) =>
-    injectPreviewBindings([{ path: "src/routes/index.tsx", content: source }]);
+    injectTestFiles([{ path: "src/routes/index.tsx", content: source }]);
 
   it("wraps each section in something the page cannot see", () => {
     const out = runRoute().files[0]!.content;
@@ -819,6 +847,7 @@ describe("wrappers written back to back", () => {
   it("closes one section before the next one opens", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export default function Page() {
   return <main><Promo {...content("promo-a")} /><Promo {...content("promo-b")} /></main>;
 }
@@ -874,6 +903,7 @@ export default function Hero({ heading, tagline }) {
   it("closes a section before the content wrapper beside it opens", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export const contentFields = { heading: { type: "text" } } as const;
 export default function Page({ heading }) {
   return <main><Promo {...content("promo")} /><ThemeLink>{heading}</ThemeLink></main>;
@@ -905,6 +935,7 @@ export default function Page({ heading }) {
   it("nests a section inside the row wrapper around the same element", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export const contentFields = {
   items: { type: "array", fields: { title: { type: "text" } } },
 } as const;

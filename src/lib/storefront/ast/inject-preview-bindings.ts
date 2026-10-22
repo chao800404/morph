@@ -14,11 +14,6 @@ import {
 } from "./theme-content-fields-declaration";
 import {
   collectLoaderSlotBindingDetails,
-  collectPageVariables,
-  NO_LOADER_SLOT_BINDINGS,
-  propsReplacingSpread,
-  readPageBindingKey,
-  type LoaderSlotBindings,
   type LoaderSlotPage,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
@@ -860,59 +855,14 @@ function threadedFieldAttributes(
  */
 function readSectionSlotId(
   openingElement: any,
-  pageVariables: ReadonlySet<string>,
-  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
   b1Instances?: ReadonlyMap<number, B1Instance>,
 ): string | null {
-  const legacy = readSectionSlot(openingElement, pageVariables, loaderSlots);
-  if (legacy) return legacy.slotId;
   const b1Instance = b1Instances?.get(openingElement?.start);
-  // B1 adds structural identity for explicitly passed props. Plain spreads
-  // remain governed by the established content/loader readers above.
-  return b1Instance?.hasDeclaredCallsiteProps
-    ? (b1Instance.section ?? null)
-    : null;
-}
-
-/** `readSectionSlotId`, with the spread attribute that hands the slot over. */
-function readSectionSlot(
-  openingElement: any,
-  pageVariables: ReadonlySet<string>,
-  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
-): { slotId: string; spread: any } | null {
-  const loaderSlot = loaderSlots.get(openingElement?.start);
-  if (loaderSlot !== undefined) {
-    // The loader binding proves the spread is the element's only attribute
-    // besides a `key`.
-    const spread = (openingElement?.attributes ?? []).find(
-      (attribute: any) => attribute?.type === "JSXSpreadAttribute",
-    );
-    return loaderSlot.length > 0 && spread
-      ? { slotId: loaderSlot, spread }
-      : null;
-  }
-  for (const attribute of openingElement?.attributes ?? []) {
-    if (attribute?.type !== "JSXSpreadAttribute") continue;
-    const pageKey = readPageBindingKey(attribute.argument, pageVariables);
-    if (pageKey !== null) {
-      return pageKey.length > 0 ? { slotId: pageKey, spread: attribute } : null;
-    }
-    const call = attribute.argument;
-    if (
-      call?.type !== "CallExpression" ||
-      call.callee?.type !== "Identifier" ||
-      call.callee.name !== "content" ||
-      call.arguments?.length !== 1 ||
-      call.arguments[0]?.type !== "StringLiteral"
-    ) {
-      continue;
-    }
-    const slotId = call.arguments[0].value;
-    return typeof slotId === "string" && slotId.length > 0
-      ? { slotId, spread: attribute }
-      : null;
-  }
-  return null;
+  // Section identity and field provenance must come from the same scoped
+  // analysis. The former name-based readers could identify a slot while the
+  // B1 analyzer rejected its actual source, creating a wrapper that implied a
+  // stronger binding than the field claims supported.
+  return b1Instance?.section ?? null;
 }
 
 /** Whether a hand-written field marker sits anywhere in `node`. */
@@ -1228,9 +1178,7 @@ export function injectPreviewBindings(
   const sectionReaders = new Map<
     string,
     {
-      pageVariables: ReturnType<typeof collectPageVariables>;
       loaderSlotDetails: ReturnType<typeof collectLoaderSlotBindingDetails>;
-      loaderSlots: LoaderSlotBindings;
       b1Analysis: B1RouteAnalysis | null;
       b1Instances: ReadonlyMap<number, B1Instance>;
     }
@@ -1252,21 +1200,11 @@ export function injectPreviewBindings(
         files,
       });
       const b1Analysis =
-        path.startsWith("src/routes/") && isRouteAnalysisCandidate(ast)
+        isRouteAnalysisCandidate(ast)
         ? analyzeB1Route(files, path, undefined, asts)
         : null;
       reader = {
-        pageVariables: collectPageVariables(ast),
         loaderSlotDetails,
-        loaderSlots:
-          loaderSlotDetails.size === 0
-            ? NO_LOADER_SLOT_BINDINGS
-            : new Map(
-                [...loaderSlotDetails].map(([start, { slot }]) => [
-                  start,
-                  slot,
-                ]),
-              ),
         b1Analysis,
         b1Instances: new Map(
           (b1Analysis?.instances ?? []).map((instance) => [
@@ -1286,7 +1224,6 @@ export function injectPreviewBindings(
   const b1SectionInstances = new Map<string, B1Instance>();
   const b1ComponentPropElements = new Map<string, ReadonlyMap<number, string>>();
   for (const file of files) {
-    if (!file.path.startsWith("src/routes/")) continue;
     const routeAst = asts.get(file.path);
     if (!routeAst) continue;
     const analysis = sectionReaderFor(file.path, routeAst).b1Analysis;
@@ -1377,11 +1314,11 @@ export function injectPreviewBindings(
   const nestedThreadFunctions = new Map<string, any[]>();
   const unthreadableFunctions = new Map<string, any[]>();
   const scannedSubtrees = new Set<string>();
-  // Section call sites the preview does not mark as their section; see
-  // `propsReplacingSpread` below.
+  // Section call sites whose component cannot safely receive the provenance
+  // thread are not wrapped as editable sections.
   const unprovenSectionCallSites = new Set<string>();
-  // Section call sites that hand their component a thread naming the fields
-  // the call site leaves alone; see `propsReplacingSpread` below.
+  // For a row component also used as a section, preserve the per-prop mapping
+  // when the row thread takes precedence over the section thread.
   const sectionThreadFields = new Map<string, Record<string, string>>();
   const fileByPath = new Map(files.map((file) => [file.path, file]));
   const addFunction = (into: Map<string, any[]>, path: string, fn: any) => {
@@ -1419,10 +1356,7 @@ export function injectPreviewBindings(
     if (!ast || !file) return;
     const declared = declaredFor(file);
     const forwarding = attributeForwardingComponentNames(ast);
-    const { pageVariables, loaderSlots, b1Instances } = sectionReaderFor(
-      path,
-      ast,
-    );
+    const { b1Instances } = sectionReaderFor(path, ast);
     // Rows of a declared list: the row machinery above decides those.
     const ownedRows = new Set<number>();
     const visit = (node: any) => {
@@ -1442,7 +1376,7 @@ export function injectPreviewBindings(
       if (
         opening &&
         !isAttributeForwardingComponent(opening.name, forwarding) &&
-        (!readSectionSlotId(opening, pageVariables, loaderSlots, b1Instances) ||
+        (!readSectionSlotId(opening, b1Instances) ||
           unprovenSectionCallSites.has(`${path}:${opening.start}`))
       ) {
         const target = resolveComponent(path, ast, opening.name);
@@ -1485,107 +1419,92 @@ export function injectPreviewBindings(
     );
     if (fn) rowThreadedFunctions.add(`${thread.componentPath}:${fn.start}`);
   }
-  // Section call sites that set a prop in place of one of the section's
-  // fields (`propsReplacingSpread`).
-  //
-  // The component's elements name its own props, and inside the section's
-  // wrapper `title` reads as `hero.title`; after
-  // `<Hero {...content("hero")} title={other.title} />` the page shows
-  // `other.title` there. Which of the section's fields still come from the
-  // spread is known by name: every declared field the call site does not set.
-  // The call site hands the component #283's thread with those fields, each
-  // the section's field of the same name (`sectionThreadFields`), so the
-  // replaced ones name nothing and stay selectable with nothing to edit while
-  // the others are still the section's. After a later spread, which may set
-  // any prop, or for a component some list also renders as its rows, the
-  // thread names none (`fields: {}`). The section stays bound, so its stored
-  // content renders and saves as before.
-  //
-  // Where the thread cannot reach every element that could name a replaced
-  // field — the component is not found, declares no fields to compare with,
-  // takes its props whole, has the author's own row prop at this call site,
-  // carries a hand-written field marker the thread does not rewrite, or
-  // renders rows of a list the call site may replace — the call site is
-  // not marked as the section at all, the way the loader form leaves such a
-  // call site unbound. Inside another section it is then a component that
-  // section renders, like any other.
+  // Section-call field handoff is derived from the same B1 per-prop claims as
+  // section identity and preview injection. Do not independently infer an
+  // override from a variable name or prop-name equality: that was the source
+  // of the spread-after-override misbinding this path guards against.
   for (const file of files) {
     const ast = asts.get(file.path);
     if (!ast) continue;
-    const { pageVariables, loaderSlots } = sectionReaderFor(file.path, ast);
-    const findReplacingCallSites = (node: any) => {
+    const analysis = sectionReaderFor(file.path, ast).b1Analysis;
+    const openingByStart = new Map<number, any>();
+    const collectOpenings = (node: any) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) {
-        for (const child of node) findReplacingCallSites(child);
+        for (const child of node) collectOpenings(child);
         return;
       }
-      const section =
-        node.type === "JSXElement"
-          ? readSectionSlot(node.openingElement, pageVariables, loaderSlots)
-          : null;
-      const replaced = section
-        ? propsReplacingSpread(node, section.spread)
-        : null;
-      if (replaced && (replaced === "any" || replaced.size > 0)) {
-        const target = resolveComponent(
-          file.path,
-          ast,
-          node.openingElement.name,
-        );
-        const targetFile = target ? fileByPath.get(target.path) : undefined;
-        const declared = targetFile ? declaredFor(targetFile) : null;
-        const replacesField =
-          replaced === "any" ||
-          !declared ||
-          [...replaced].some((name) => declared.top.has(name));
-        if (replacesField) {
-          const replacesRows =
-            !declared ||
-            (replaced === "any"
-              ? declared.rows.size > 0
-              : [...replaced].some((name) => declared.rows.has(name)));
-          const callSite = `${file.path}:${node.openingElement.start}`;
-          if (
-            target &&
-            !replacesRows &&
-            threadablePropsPattern(target.fn) &&
-            !hasAttribute(node.openingElement, ROW_PROP) &&
-            !hasAuthoredFieldMarker(target.fn)
-          ) {
-            nestedCallSites.add(callSite);
-            addFunction(nestedThreadFunctions, target.path, target.fn);
-            if (
-              replaced !== "any" &&
-              !rowThreadedFunctions.has(`${target.path}:${target.fn.start}`)
-            ) {
-              sectionThreadFields.set(
-                callSite,
-                Object.fromEntries(
-                  [...declared!.top]
-                    .filter((name) => !replaced.has(name))
-                    .map((name) => [name, name]),
-                ),
-              );
-            }
-          } else {
-            unprovenSectionCallSites.add(callSite);
-          }
-        }
+      if (node.type === "JSXElement" && typeof node.start === "number") {
+        openingByStart.set(node.start, node.openingElement);
       }
       for (const [key, value] of Object.entries(node)) {
         if (key === "loc" || key === "leadingComments") continue;
-        findReplacingCallSites(value);
+        collectOpenings(value);
       }
     };
-    findReplacingCallSites(ast.program);
+    collectOpenings(ast.program);
+    for (const instance of analysis?.instances ?? []) {
+      if (instance.section === null || !instance.componentPath) continue;
+      const componentFn = instance.componentExport
+        ? findExportedFunction(
+            asts.get(instance.componentPath),
+            instance.componentExport,
+          )
+        : null;
+      const target = componentFn
+        ? { path: instance.componentPath, fn: componentFn }
+        : null;
+      const opening = openingByStart.get(instance.start);
+      const targetFile = target ? fileByPath.get(target.path) : undefined;
+      const declared = targetFile ? declaredFor(targetFile) : null;
+      const callSite = `${file.path}:${instance.start}`;
+      const sourceFieldMap = Object.fromEntries(
+        Object.entries(instance.claims).flatMap(([prop, claim]) =>
+          claim.kind === "claim" && claim.slot === instance.section
+            ? [[prop, claim.field]]
+            : [],
+        ),
+      );
+      const hasNonCmsField = instance.declaredFields.some((prop) => {
+        const value = instance.props[prop];
+        if (!value || value.kind === "unset") return false;
+        const claim = instance.claims[prop];
+        return claim?.kind !== "claim" || claim.slot !== instance.section;
+      });
+      if (!hasNonCmsField) continue;
+
+      const replacesRows =
+        !declared ||
+        instance.declaredFields.some((prop) => {
+          const value = instance.props[prop];
+          const claim = instance.claims[prop];
+          const isNonCms =
+            Boolean(value && value.kind !== "unset") &&
+            (claim?.kind !== "claim" || claim.slot !== instance.section);
+          return isNonCms && declared.rows.has(prop);
+        });
+      if (
+        target &&
+        opening &&
+        !replacesRows &&
+        threadablePropsPattern(target.fn) &&
+        !hasAttribute(opening, ROW_PROP) &&
+        !hasAuthoredFieldMarker(target.fn)
+      ) {
+        nestedCallSites.add(callSite);
+        addFunction(nestedThreadFunctions, target.path, target.fn);
+        if (!rowThreadedFunctions.has(`${target.path}:${target.fn.start}`)) {
+          sectionThreadFields.set(callSite, sourceFieldMap);
+        }
+      } else {
+        unprovenSectionCallSites.add(callSite);
+      }
+    }
   }
   for (const file of files) {
     const ast = asts.get(file.path);
     if (!ast) continue;
-    const { pageVariables, loaderSlots, b1Instances } = sectionReaderFor(
-      file.path,
-      ast,
-    );
+    const { b1Instances } = sectionReaderFor(file.path, ast);
     const findSections = (node: any) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) {
@@ -1594,12 +1513,7 @@ export function injectPreviewBindings(
       }
       if (
         node.type === "JSXElement" &&
-        readSectionSlotId(
-          node.openingElement,
-          pageVariables,
-          loaderSlots,
-          b1Instances,
-        ) &&
+        readSectionSlotId(node.openingElement, b1Instances) &&
         !unprovenSectionCallSites.has(
           `${file.path}:${node.openingElement.start}`,
         )
@@ -1638,9 +1552,7 @@ export function injectPreviewBindings(
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
     const {
-      pageVariables,
       loaderSlotDetails,
-      loaderSlots,
       b1Instances,
     } = sectionReaderFor(file.path, ast);
     const insertions: Insertion[] = [];
@@ -1882,12 +1794,7 @@ export function injectPreviewBindings(
         // a component's element and an attribute put there becomes a prop the
         // component is free to ignore — it would never reach the page. The
         // wrapper is taken out of layout so the page looks the same.
-        const slotId = readSectionSlotId(
-          opening,
-          pageVariables,
-          loaderSlots,
-          b1Instances,
-        );
+        const slotId = readSectionSlotId(opening, b1Instances);
         if (
           slotId &&
           node.start != null &&

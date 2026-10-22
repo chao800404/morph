@@ -633,12 +633,20 @@ export const getHome = createServerFn().handler(() => morph.pages.get("/"));`,
     );
   });
 
-  it("a rest element in the destructuring", () => {
-    expectNotBound(
-      route({
-        body: "  const { hero, ...rest } = Route.useLoaderData();\n  return <main><Hero {...hero} /></main>;",
-      }),
-    );
+  it("a rest element leaves the explicitly destructured slot traceable", async () => {
+    const source = route({
+      body: "  const { hero, ...rest } = Route.useLoaderData();\n  return <main><Hero {...hero} /></main>;",
+    });
+    const { html } = await render(source);
+    const root = mountLivePreview(html);
+    const title = resolveSelectable(root.querySelector("h1"));
+    const subtitle = resolveSelectable(root.querySelector("p"));
+
+    expect(routeSlotIds(source)).toEqual(["hero"]);
+    expect(title?.sectionId).toBe("hero");
+    expect(title?.fieldKey).toBe("title");
+    expect(subtitle?.sectionId).toBe("hero");
+    expect(subtitle?.fieldKey).toBe("subtitle");
   });
 
   it("a binding that is reassigned", () => {
@@ -651,12 +659,18 @@ export const getHome = createServerFn().handler(() => morph.pages.get("/"));`,
     );
   });
 
-  it("a binding read anywhere besides its spread", () => {
-    expectNotBound(
-      route({
-        body: "  const { hero } = Route.useLoaderData();\n  return <main><Hero {...hero} />{hero.title}</main>;",
-      }),
-    );
+  it("a separate rendered read does not change the component prop's source", async () => {
+    const source = route({
+      body: "  const { hero } = Route.useLoaderData();\n  return <main><Hero {...hero} />{hero.title}</main>;",
+    });
+    const { html } = await render(source);
+    const root = mountLivePreview(html);
+    const title = resolveSelectable(root.querySelector("h1"));
+
+    expect(routeSlotIds(source)).toEqual(["hero"]);
+    expect(title?.sectionId).toBe("hero");
+    expect(title?.fieldKey).toBe("title");
+    expect(root.querySelector("main")?.textContent).toContain("Stored title");
   });
 
   it("a name redeclared in an inner scope", () => {
@@ -695,7 +709,7 @@ export const getHome = createServerFn().handler(() => morph.pages.get("/"));`,
     expect(reordered.diagnostic).toMatch(/route loader/);
   });
 
-  it("another spread on the same element", () => {
+  it("another untraced spread makes the element's section ambiguous", () => {
     expectNotBound(
       route({
         body: `  const { hero } = Route.useLoaderData();

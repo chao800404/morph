@@ -11,6 +11,7 @@ import {
 } from "@/lib/test-utils/binding-acceptance-cases";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
+  findB1WriteProvenanceFailure,
   analyzeB1Route,
   type B1Claim,
   type B1SourceFile,
@@ -139,6 +140,227 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     ]);
   });
 
+  it("tracks page-object fields only when morph.pages.get matches this route", () => {
+    const routeFile = "src/routes/index.tsx";
+    const files: B1SourceFile[] = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { morph } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+async function Home() {
+  const page = await morph.pages.get("/");
+  const { hero } = page;
+  const { heading } = hero;
+  return <Promo heading={heading} />;
+}`,
+      },
+      { path: "src/morph/content.ts", content: "export const morph = {} as any;" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+    const [sameRoute] = analyzeB1Route(files, routeFile).instances;
+    expect(sameRoute?.claims.heading).toMatchObject({
+      kind: "claim",
+      slot: "hero",
+      field: "heading",
+      sourceRoute: "/",
+    });
+
+    const mismatched = files.map((file) =>
+      file.path === routeFile
+        ? { ...file, content: file.content.replace('get("/")', 'get("/other")') }
+        : file,
+    );
+    const [otherRoute] = analyzeB1Route(mismatched, routeFile).instances;
+    expect(otherRoute?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+      reason: "the page Document path does not match this route",
+    });
+  });
+
+  it("refuses a page-object field that is changed through an alias before render", () => {
+    const routeFile = "src/routes/index.tsx";
+    const files: B1SourceFile[] = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { morph } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+async function Home() {
+  const page = await morph.pages.get("/");
+  const alias = page;
+  alias.hero.heading = "changed";
+  return <Promo heading={page.hero.heading} />;
+}`,
+      },
+      { path: "src/morph/content.ts", content: "export const morph = {} as any;" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+    const [instance] = analyzeB1Route(files, routeFile).instances;
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+      reason: '"hero.heading" may be changed by code before it renders',
+    });
+  });
+
+  it("does not choose the first section when multiple spreads can supply one component", () => {
+    const files: B1SourceFile[] = [
+      {
+        path: "src/routes/__root.tsx",
+        content: `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`,
+      },
+      {
+        path: "src/routes/index.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() { return <main><Promo {...content("hero")} {...content("promo")} /></main>; }`,
+      },
+      { path: "src/morph/content.ts", content: "export const content = () => ({});" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+
+    const [instance] = analyzeB1Route(files, "src/routes/index.tsx").instances;
+    expect(instance?.section).toBeNull();
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+    });
+  });
+
+  it("keeps the section identity through its matching Morph hidden-section guard", () => {
+    const files: B1SourceFile[] = [
+      {
+        path: "src/routes/index.tsx",
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main>{!isSectionHidden("promo") && <Promo {...content("promo")} />}</main>;
+}`,
+      },
+      { path: "src/morph/content.ts", content: "export const content = () => ({}); export const isSectionHidden = () => false;" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+
+    const [instance] = analyzeB1Route(files, "src/routes/index.tsx").instances;
+    expect(instance?.section).toBe("promo");
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "claim",
+      slot: "promo",
+      field: "heading",
+    });
+  });
+
+  it("does not treat a mismatched hidden-section guard as direct", () => {
+    const routeFile = "src/routes/index.tsx";
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main>{!isSectionHidden("other") && <Promo {...content("promo")} />}</main>;
+}`;
+    const files: B1SourceFile[] = [
+      { path: routeFile, content: source },
+      { path: "src/morph/content.ts", content: "export const content = () => ({}); export const isSectionHidden = () => false;" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+
+    const [instance] = analyzeB1Route(files, routeFile).instances;
+    expect(instance?.section).toBe("promo");
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+    });
+  });
+
+  it("does not trust a shadowing local with the platform guard's name", () => {
+    const routeFile = "src/routes/index.tsx";
+    const files: B1SourceFile[] = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home(isSectionHidden) {
+  return <main>{!isSectionHidden("promo") && <Promo {...content("promo")} />}</main>;
+}`,
+      },
+      { path: "src/morph/content.ts", content: "export const content = () => ({}); export const isSectionHidden = () => false;" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+
+    const [instance] = analyzeB1Route(files, routeFile).instances;
+    expect(instance?.section).toBe("promo");
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+    });
+  });
+
+  it("keeps section identity in a repeated call but refuses a per-field target", () => {
+    const routeFile = "src/routes/index.tsx";
+    const files: B1SourceFile[] = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home({ items }) {
+  return <main>{items.map((item) => <Promo {...content("promo")} heading={item.title} />)}</main>;
+}`,
+      },
+      { path: "src/morph/content.ts", content: "export const content = () => ({});" },
+      {
+        path: "src/components/Promo.tsx",
+        content: `export const contentFields = { heading: { type: "text", label: "Heading" } } as const;
+export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>; }`,
+      },
+    ];
+
+    const [instance] = analyzeB1Route(files, routeFile).instances;
+    expect(instance?.section).toBe("promo");
+    expect(instance?.claims.heading).toMatchObject({
+      kind: "none",
+      state: "unknown",
+    });
+  });
+
   it("does not let an unrelated route's same-slot content use taint this route", () => {
     const routeFile = "src/routes/bas-p4a-inspector.tsx";
     const files: B1SourceFile[] = [
@@ -225,5 +447,78 @@ JSON.stringify(content("hero"));`,
       state: "unknown",
       reason: '"hero.desc" may be changed by code before it renders',
     });
+  });
+});
+
+describe("server-side B1 write proof", () => {
+  const claim: Extract<B1Claim, { kind: "claim" }> = {
+    kind: "claim",
+    slot: "hero",
+    field: "title",
+    conditional: null,
+  };
+
+  it("fails closed when a writable field has no unique source claim", () => {
+    expect(
+      findB1WriteProvenanceFailure({
+        sectionId: "hero",
+        allowedFields: new Set(["title"]),
+        requestedFields: ["title"],
+        claimsByStoredField: new Map(),
+        storedProps: {},
+      }),
+    ).toEqual({ field: "title", reason: "unproven-source" });
+  });
+
+  it("requires the claim to prove the exact section and stored field pair", () => {
+    expect(
+      findB1WriteProvenanceFailure({
+        sectionId: "hero",
+        allowedFields: new Set(["title"]),
+        requestedFields: ["title"],
+        claimsByStoredField: new Map([
+          ["title", { ...claim, slot: "other" }],
+        ]),
+        storedProps: { title: "SALE" },
+      }),
+    ).toEqual({ field: "title", reason: "unproven-source" });
+  });
+
+  it("requires a conditional spread's own key to exist in the stored section", () => {
+    const conditional: Extract<B1Claim, { kind: "claim" }> = {
+      ...claim,
+      conditional: {
+        spread: { start: 1, end: 2 },
+        otherwiseLabel: "literal",
+        requiresOwnKey: true,
+      },
+    };
+    const args = {
+      sectionId: "hero",
+      allowedFields: new Set(["title"]),
+      requestedFields: ["title"],
+      claimsByStoredField: new Map([["title", conditional]]),
+    };
+    expect(
+      findB1WriteProvenanceFailure({ ...args, storedProps: {} }),
+    ).toEqual({ field: "title", reason: "source-key-absent" });
+    expect(
+      findB1WriteProvenanceFailure({
+        ...args,
+        storedProps: { title: "SALE" },
+      }),
+    ).toBeNull();
+  });
+
+  it("leaves undeclared keys to the existing capability filter", () => {
+    expect(
+      findB1WriteProvenanceFailure({
+        sectionId: "hero",
+        allowedFields: new Set(["title"]),
+        requestedFields: ["runtimeOnly"],
+        claimsByStoredField: new Map(),
+        storedProps: {},
+      }),
+    ).toBeNull();
   });
 });

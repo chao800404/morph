@@ -31,7 +31,11 @@ import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
-import { analyzeB1Route } from "@/lib/storefront/ast/theme-content-provenance";
+import {
+  analyzeB1Route,
+  findB1WriteProvenanceFailure,
+  type B1Claim,
+} from "@/lib/storefront/ast/theme-content-provenance";
 import { normalizeThemeSourcePath } from "@/lib/storefront/ast/theme-content-binding";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
@@ -1380,20 +1384,15 @@ export const storefrontThemeDal = {
     // In a route-backed Theme, derive the write mapping again from the exact
     // source snapshot used to resolve this section. Canvas metadata is only a
     // locator: it cannot authorize or redirect a Document write.
-    let b1Claims: ReadonlyMap<
-      string,
-      | Extract<
-          ReturnType<typeof analyzeB1Route>["instances"][number]["claims"][string],
-          { kind: "claim" }
-        >
-      | null
-    > | null = null;
-    let b1DeclaredFields: ReadonlySet<string> | null = null;
-    if (
+    const b1ProofRequired =
       template.type !== "layout" &&
       sourceComponent.kind === "confirmed" &&
-      sourceComponent.callSitePath.startsWith("src/routes/")
-    ) {
+      sourceComponent.callSitePath.startsWith("src/routes/");
+    let b1Claims: ReadonlyMap<
+      string,
+      Extract<B1Claim, { kind: "claim" }> | null
+    > = new Map();
+    if (b1ProofRequired) {
       const sourceAnalysis = analyzeB1Route(
         themeSourceFiles.filter(
           (file): file is typeof file & { content: string } =>
@@ -1411,42 +1410,32 @@ export const storefrontThemeDal = {
           normalizeThemeSourcePath(instance.componentPath) ===
             normalizedComponentPath,
       );
-      // The old direct-spread resolver remains authoritative for legacy
-      // sources that do not give B1 a complete provenance input (for example
-      // pre-contract Themes). B1's additional write check activates only when
-      // this exact route-backed instance is independently proven. New per-prop
-      // forms are structurally visible only through this analyzer and thus
-      // cannot reach the writer without an exact match.
-      if (matchingInstances.length === 1) {
+      // A confirmed route-backed section must also have one exact B1 source
+      // instance. Missing, duplicate or diagnostically ambiguous provenance
+      // leaves an empty proof map, so every capability-allowed write fails
+      // closed below; it never falls back to a name-based/legacy guess.
+      if (matchingInstances.length === 1 && sourceAnalysis.diagnostics.length === 0) {
         const instance = matchingInstances[0]!;
-        if (instance.declaredFields.length > 0) {
-          b1DeclaredFields = new Set(instance.declaredFields);
-          const claimsByStoredField = new Map<
-            string,
-            | Extract<
-                (typeof instance.claims)[string],
-                { kind: "claim" }
-              >
-            | null
-          >();
-          for (const claim of Object.values(instance.claims)) {
-            if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
-              continue;
-            }
-            const previous = claimsByStoredField.get(claim.field);
-            if (previous === undefined) {
-              claimsByStoredField.set(claim.field, claim);
-            } else if (
-              previous === null ||
-              JSON.stringify(previous.conditional) !==
-                JSON.stringify(claim.conditional)
-            ) {
-              claimsByStoredField.set(claim.field, null);
-            }
+        const claimsByStoredField = new Map<
+          string,
+          Extract<B1Claim, { kind: "claim" }> | null
+        >();
+        for (const claim of Object.values(instance.claims)) {
+          if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
+            continue;
           }
-          b1Claims = claimsByStoredField;
-          if (sourceAnalysis.diagnostics.length > 0) b1Claims = new Map();
+          const previous = claimsByStoredField.get(claim.field);
+          if (previous === undefined) {
+            claimsByStoredField.set(claim.field, claim);
+          } else if (
+            previous === null ||
+            JSON.stringify(previous.conditional) !==
+              JSON.stringify(claim.conditional)
+          ) {
+            claimsByStoredField.set(claim.field, null);
+          }
         }
+        b1Claims = claimsByStoredField;
       }
     }
 
@@ -1521,28 +1510,26 @@ export const storefrontThemeDal = {
       null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
-    if (b1DeclaredFields && b1Claims) {
-      const existingProps =
-        (targetSection.props as Record<string, unknown> | null) ?? {};
-      for (const key of [
+    if (b1ProofRequired) {
+      const b1Failure = findB1WriteProvenanceFailure({
+        sectionId: data.sectionId,
+        allowedFields: sectionContentFieldKeys(
+          targetSection.type,
+          resolvedComponentRef,
+          themeCapabilities,
+        ),
+        requestedFields: [
         ...Object.keys(restProps),
         ...(data.resetProps ?? []),
-      ]) {
-        // Undeclared keys are handled by the established capability filter
-        // below; provenance controls writes only to CMS content fields.
-        if (!b1DeclaredFields.has(key)) continue;
-        const claim = b1Claims.get(key);
-        if (!claim) {
-          throw new Error(`${INVALID_CONTENT_FIELD_ERROR}:${key}:unproven-source`);
-        }
-        if (
-          claim.conditional &&
-          claim.conditional.requiresOwnKey &&
-          (!Object.prototype.hasOwnProperty.call(existingProps, claim.field) ||
-            existingProps[claim.field] === undefined)
-        ) {
-          throw new Error(`${INVALID_CONTENT_FIELD_ERROR}:${key}:source-key-absent`);
-        }
+        ],
+        claimsByStoredField: b1Claims,
+        storedProps:
+          (targetSection.props as Record<string, unknown> | null) ?? null,
+      });
+      if (b1Failure) {
+        throw new Error(
+          `${INVALID_CONTENT_FIELD_ERROR}:${b1Failure.field}:${b1Failure.reason}`,
+        );
       }
     }
     // Asset references are resolved against the library before anything is

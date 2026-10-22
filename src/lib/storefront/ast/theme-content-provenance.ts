@@ -50,6 +50,10 @@ import {
   readComponentContentFields,
 } from "./theme-content-fields-declaration";
 import {
+  readComponentSourcePaths,
+  resolveThemeContentCapabilitiesFromFiles,
+} from "../theme-content-capability-resolver";
+import {
   buildHandScopeOracle,
   type AnyNode,
   type B1Binding,
@@ -59,12 +63,13 @@ import {
   parseThemeSourceAst,
   type ParsedThemeAst,
 } from "./theme-source-ast";
+import { isValidThemeContentSlotId } from "../theme-content-slots";
 
 export type B1SourceFile = Readonly<{ path: string; content: string }>;
 
 export type B1ScopeBackend = (ast: ParsedThemeAst) => B1ScopeOracle;
 
-export type B1Root = "content" | "loader";
+export type B1Root = "content" | "loader" | "page";
 
 export type B1PropValue =
   | Readonly<{
@@ -72,6 +77,8 @@ export type B1PropValue =
       root: B1Root;
       slot: string;
       field: string;
+      /** Page-object root path, when the value came from morph.pages.get(). */
+      sourceRoute?: string;
       /** A section spread set it; the claim applies only if it owns the key. */
       viaSpread?: Readonly<{
         spread: Readonly<{ start: number; end: number }>;
@@ -83,6 +90,8 @@ export type B1PropValue =
       root: B1Root;
       slot: string;
       field: string;
+      /** Page-object root path, when the value came from morph.pages.get(). */
+      sourceRoute?: string;
       /** The spread attribute whose own keys decide, by its source range. */
       spread: Readonly<{ start: number; end: number }>;
       otherwise: B1PropValue;
@@ -92,6 +101,7 @@ export type B1PropValue =
       kind: "derived";
       root: B1Root;
       slot: string;
+      sourceRoute?: string;
       reason: string;
     }>
   | Readonly<{ kind: "literal" }>
@@ -104,6 +114,8 @@ export type B1Claim =
       kind: "claim";
       slot: string;
       field: string;
+      /** Page Documents must match the route being edited. */
+      sourceRoute?: string;
       /** Set when the claim holds only while the spread object has the key. */
       conditional: Readonly<{
         spread: Readonly<{ start: number; end: number }>;
@@ -117,6 +129,48 @@ export type B1Claim =
       state: "literal" | "unset" | "derived" | "unknown";
       reason: string;
     }>;
+
+export type B1WriteProvenanceFailure = Readonly<{
+  field: string;
+  reason: "unproven-source" | "source-key-absent";
+}>;
+
+/**
+ * Validate the source proof for every requested writable Document field.
+ * The caller supplies the server-resolved capability allowlist; provenance
+ * never grants a field permission. A missing/ambiguous proof is a refusal.
+ */
+export function findB1WriteProvenanceFailure(args: {
+  sectionId: string;
+  allowedFields: ReadonlySet<string>;
+  requestedFields: readonly string[];
+  claimsByStoredField: ReadonlyMap<
+    string,
+    Extract<B1Claim, { kind: "claim" }> | null
+  >;
+  storedProps: Readonly<Record<string, unknown>> | null;
+}): B1WriteProvenanceFailure | null {
+  for (const field of args.requestedFields) {
+    if (!args.allowedFields.has(field)) continue;
+    const claim = args.claimsByStoredField.get(field);
+    if (
+      !claim ||
+      claim.slot !== args.sectionId ||
+      claim.field !== field
+    ) {
+      return { field, reason: "unproven-source" };
+    }
+    if (
+      claim.conditional?.requiresOwnKey &&
+      (!args.storedProps ||
+        !Object.prototype.hasOwnProperty.call(args.storedProps, claim.field) ||
+        args.storedProps[claim.field] === undefined)
+    ) {
+      return { field, reason: "source-key-absent" };
+    }
+  }
+  return null;
+}
 
 export type B1Instance = Readonly<{
   routeFile: string;
@@ -133,6 +187,12 @@ export type B1Instance = Readonly<{
   declaredFields: readonly string[];
   /** Whether this call site explicitly writes a declared prop. */
   hasDeclaredCallsiteProps: boolean;
+  /** Distinct section roots spread at this call site, in source order. */
+  sourceSlots: readonly string[];
+  /** Root kinds supplying those section spreads, in source order. */
+  sourceRoots: readonly B1Root[];
+  /** A spread whose object could not be traced to one section root. */
+  hasUntracedSpread: boolean;
   props: Readonly<Record<string, B1PropValue>>;
   /** The section this instance is wrapped as, or null. */
   section: string | null;
@@ -309,9 +369,13 @@ type ModuleContext = {
   ast: ParsedThemeAst;
   oracle: B1ScopeOracle;
   contentBinding: B1Binding | null;
+  morphBinding: B1Binding | null;
+  sectionHiddenBinding: B1Binding | null;
   routeBinding: B1Binding | null;
   /** Whether `Route.useLoaderData()` is proven to be `morph.pages.get(route)`. */
   loaderOrigin: boolean;
+  /** Static route path in `createFileRoute("/…")`, or null if unknown. */
+  routePath: string | null;
 };
 
 function contentImportBinding(
@@ -347,10 +411,67 @@ function contentImportBinding(
   return { binding: aliases === 1 ? found : null, aliases };
 }
 
+function morphImportBinding(
+  ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
+  filePaths: ReadonlySet<string>,
+): B1Binding | null {
+  const bindings: B1Binding[] = [];
+  for (const statement of ctx.ast.program.body ?? []) {
+    if (
+      statement.type !== "ImportDeclaration" ||
+      statement.importKind === "type" ||
+      resolveThemeSourceImport(ctx.path, statement.source.value, filePaths) !==
+        CONTENT_MODULE_PATH
+    ) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (
+        specifier.type === "ImportSpecifier" &&
+        specifier.importKind !== "type" &&
+        moduleExportName(specifier.imported) === "morph"
+      ) {
+        const binding = ctx.oracle.bindingOf(specifier.local);
+        if (binding) bindings.push(binding);
+      }
+    }
+  }
+  return bindings.length === 1 ? bindings[0]! : null;
+}
+
+function sectionHiddenImportBinding(
+  ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
+  filePaths: ReadonlySet<string>,
+): B1Binding | null {
+  const bindings: B1Binding[] = [];
+  for (const statement of ctx.ast.program.body ?? []) {
+    if (
+      statement.type !== "ImportDeclaration" ||
+      statement.importKind === "type" ||
+      resolveThemeSourceImport(ctx.path, statement.source.value, filePaths) !==
+        CONTENT_MODULE_PATH
+    ) {
+      continue;
+    }
+    for (const specifier of statement.specifiers ?? []) {
+      if (
+        specifier.type === "ImportSpecifier" &&
+        specifier.importKind !== "type" &&
+        moduleExportName(specifier.imported) === "isSectionHidden"
+      ) {
+        const binding = ctx.oracle.bindingOf(specifier.local);
+        if (binding) bindings.push(binding);
+      }
+    }
+  }
+  return bindings.length === 1 ? bindings[0]! : null;
+}
+
 /** `export const Route = createFileRoute("…")({ … })`, the binding. */
 function routeBindingOf(ctx: Pick<ModuleContext, "ast" | "oracle">): {
   binding: B1Binding | null;
   componentName: string | null;
+  routePath: string | null;
 } {
   let createFileRoute: B1Binding | null = null;
   for (const statement of ctx.ast.program.body ?? []) {
@@ -369,7 +490,8 @@ function routeBindingOf(ctx: Pick<ModuleContext, "ast" | "oracle">): {
       }
     }
   }
-  if (!createFileRoute) return { binding: null, componentName: null };
+  if (!createFileRoute)
+    return { binding: null, componentName: null, routePath: null };
   for (const statement of ctx.ast.program.body ?? []) {
     const declaration =
       statement.type === "ExportNamedDeclaration"
@@ -392,6 +514,8 @@ function routeBindingOf(ctx: Pick<ModuleContext, "ast" | "oracle">): {
       ) {
         const binding = ctx.oracle.bindingOf(declarator.id);
         const options = init.arguments?.[0];
+        const factory = init.callee;
+        const routePathArg = factory.arguments?.[0];
         const component =
           options?.type === "ObjectExpression"
             ? options.properties.find(
@@ -406,6 +530,10 @@ function routeBindingOf(ctx: Pick<ModuleContext, "ast" | "oracle">): {
             : undefined;
         return {
           binding,
+          routePath:
+            routePathArg?.type === "StringLiteral"
+              ? normalizePagePath(routePathArg.value)
+              : null,
           componentName:
             component?.value?.type === "Identifier"
               ? component.value.name
@@ -414,7 +542,23 @@ function routeBindingOf(ctx: Pick<ModuleContext, "ast" | "oracle">): {
       }
     }
   }
-  return { binding: null, componentName: null };
+  return { binding: null, componentName: null, routePath: null };
+}
+
+function normalizePagePath(path: string): string | null {
+  if (!path.startsWith("/")) return null;
+  const normalized = path.replace(/\/+$/, "") || "/";
+  if (
+    normalized.split("/").some((segment) =>
+      segment.startsWith("$") ||
+      segment.startsWith("_") ||
+      segment.startsWith("(") ||
+      segment.includes("{"),
+    )
+  ) {
+    return null;
+  }
+  return normalized;
 }
 
 /**
@@ -714,6 +858,35 @@ function collectTaints(ctx: ModuleContext, taints: TaintSet): void {
       }
     }
   }
+  // `morph.pages.get("/")` is another supported root. Its returned object is
+  // followed through locals and destructuring just like `content("slot")`;
+  // writes through any alias must taint the affected section field before a
+  // later JSX prop can be advertised as an editable CMS field.
+  if (ctx.morphBinding) {
+    for (const reference of ctx.morphBinding.references) {
+      const pages = oracle.parentOf(reference);
+      const get = pages ? oracle.parentOf(pages) : null;
+      const call = get ? oracle.parentOf(get) : null;
+      const args = isCall(call) ? call.arguments ?? [] : [];
+      if (
+        isMember(pages) &&
+        pages.object === reference &&
+        staticKey(pages) === "pages" &&
+        isMember(get) &&
+        get.object === pages &&
+        staticKey(get) === "get" &&
+        isCall(call) &&
+        call.callee === get &&
+        args.length === 1 &&
+        args[0]?.type === "StringLiteral" &&
+        normalizePagePath(args[0].value)
+      ) {
+        checkUse(call, "page", []);
+      } else {
+        taints.add(taintKey("page", null));
+      }
+    }
+  }
   // `Route`: `Route.useLoaderData()` is the root; other hooks that cannot
   // reach the data are fine; anything else may hand the data out.
   if (ctx.routeBinding) {
@@ -884,11 +1057,17 @@ function reachableThemeModules(
 // The resolver: an expression's symbolic origin.
 
 type Origin =
-  | Readonly<{ kind: "root"; root: B1Root; path: readonly string[] }>
+  | Readonly<{
+      kind: "root";
+      root: B1Root;
+      path: readonly string[];
+      sourceRoute?: string;
+    }>
   | Readonly<{
       kind: "derived";
       root: B1Root;
       slot: string;
+      sourceRoute?: string;
       reason: string;
     }>
   | Readonly<{ kind: "literal" }>
@@ -909,21 +1088,24 @@ function deriveOrigin(
   const sources = origins.flatMap((origin) =>
     origin.kind === "root"
       ? origin.path.length > 0
-        ? [{ root: origin.root, slot: origin.path[0]! }]
+        ? [{ root: origin.root, sourceRoute: origin.sourceRoute, slot: origin.path[0]! }]
         : []
       : origin.kind === "derived"
-        ? [{ root: origin.root, slot: origin.slot }]
+        ? [{ root: origin.root, sourceRoute: origin.sourceRoute, slot: origin.slot }]
         : [],
   );
   const unique = new Map(
-    sources.map((source) => [`${source.root}:${source.slot}`, source]),
+    sources.map(
+      (source) =>
+        [`${source.root}:${source.sourceRoute ?? ""}:${source.slot}`, source] as const,
+    ),
   );
   if (unique.size === 0) return { kind: "literal" };
   if (unique.size !== 1) {
     return { kind: "unknown", reason: `${reason} combines multiple sections` };
   }
-  const [{ root, slot }] = [...unique.values()];
-  return { kind: "derived", root, slot, reason };
+  const [{ root, sourceRoute, slot }] = [...unique.values()];
+  return { kind: "derived", root, sourceRoute, slot, reason };
 }
 
 function resolveOrigin(
@@ -996,6 +1178,30 @@ function resolveOrigin(
               reason: "the route's loader is not proven to return the page",
             };
       }
+      if (
+        isMember(callee) &&
+        staticKey(callee) === "get" &&
+        isMember(callee.object) &&
+        staticKey(callee.object) === "pages" &&
+        callee.object.object?.type === "Identifier" &&
+        ctx.morphBinding &&
+        ctx.oracle.bindingOf(callee.object.object) === ctx.morphBinding
+      ) {
+        const args = node.arguments ?? [];
+        if (args.length !== 1 || args[0]?.type !== "StringLiteral") {
+          return {
+            kind: "unknown",
+            reason: "morph.pages.get() with a computed path",
+          };
+        }
+        const sourceRoute = normalizePagePath(args[0].value);
+        return sourceRoute
+          ? { kind: "root", root: "page", path: [], sourceRoute }
+          : {
+              kind: "unknown",
+              reason: "morph.pages.get() with a non-static page path",
+            };
+      }
       return {
         kind: "unknown",
         reason: "a call to code this analysis does not follow",
@@ -1056,6 +1262,8 @@ function resolveOrigin(
       }
       return { ...init, path: [...init.path, ...located.keys] };
     }
+    case "AwaitExpression":
+      return resolveOrigin(ctx, node.argument, seen);
     default:
       return { kind: "unknown", reason: `${node.type} is not traced` };
   }
@@ -1089,6 +1297,7 @@ function fieldValue(origin: Origin, taints: TaintSet): B1PropValue {
     root: origin.root,
     slot: origin.path[0]!,
     field: origin.path[1]!,
+    ...(origin.sourceRoute ? { sourceRoute: origin.sourceRoute } : {}),
   };
 }
 
@@ -1149,11 +1358,42 @@ function declaredFieldsOf(
 }
 
 /** Whether a call site renders exactly once where it stands. */
-function isDirectPosition(ctx: ModuleContext, element: AnyNode): boolean {
+function isDirectPosition(
+  ctx: ModuleContext,
+  element: AnyNode,
+  sourceSlots: readonly string[],
+): boolean {
   const parent = ctx.oracle.parentOf(element);
   if (parent?.type === "JSXElement" || parent?.type === "JSXFragment")
     return true;
-  return parent?.type === "ReturnStatement";
+  if (parent?.type === "ReturnStatement") return true;
+
+  // Morph's supported visibility guard is the only conditional that still
+  // identifies one section instance: the same static slot must be used by
+  // both the imported guard and the content() spread. Arbitrary conditions
+  // remain non-direct because the call site may not render as one instance.
+  if (
+    parent?.type !== "LogicalExpression" ||
+    parent.operator !== "&&" ||
+    parent.right !== element ||
+    sourceSlots.length !== 1 ||
+    !ctx.sectionHiddenBinding
+  ) {
+    return false;
+  }
+  let guard = unwrapTs(parent.left);
+  if (guard.type !== "UnaryExpression" || guard.operator !== "!") return false;
+  guard = unwrapTs(guard.argument);
+  if (
+    !isCall(guard) ||
+    guard.callee?.type !== "Identifier" ||
+    ctx.oracle.bindingOf(guard.callee) !== ctx.sectionHiddenBinding ||
+    (guard.arguments ?? []).length !== 1 ||
+    guard.arguments[0]?.type !== "StringLiteral"
+  ) {
+    return false;
+  }
+  return guard.arguments[0].value === sourceSlots[0];
 }
 
 function propsAtCallSite(
@@ -1229,6 +1469,7 @@ function propsAtCallSite(
         root: origin.root,
         slot,
         field: prop,
+        ...(origin.sourceRoute ? { sourceRoute: origin.sourceRoute } : {}),
         viaSpread: { spread: range, otherwiseLabel: "" },
       };
       if (isTainted(taints, origin.root, [slot, prop])) {
@@ -1243,7 +1484,10 @@ function propsAtCallSite(
       if (previous.kind === "unset") return field;
       // Which of two spreads wins depends on both objects' keys; one runtime
       // condition is all the prototype labels.
-      if (previous.kind === "spread-field") {
+      if (
+        previous.kind === "spread-field" ||
+        (previous.kind === "field" && previous.viaSpread !== undefined)
+      ) {
         return unknown("two spreads may each set this prop");
       }
       return {
@@ -1251,6 +1495,7 @@ function propsAtCallSite(
         root: origin.root,
         slot,
         field: prop,
+        ...(origin.sourceRoute ? { sourceRoute: origin.sourceRoute } : {}),
         spread: range,
         otherwise: previous,
       };
@@ -1273,6 +1518,7 @@ function claimFor(value: B1PropValue): B1Claim {
         kind: "claim",
         slot: value.slot,
         field: value.field,
+        ...(value.sourceRoute ? { sourceRoute: value.sourceRoute } : {}),
         conditional: value.viaSpread
           ? {
               spread: value.viaSpread.spread,
@@ -1287,6 +1533,7 @@ function claimFor(value: B1PropValue): B1Claim {
         kind: "claim",
         slot: value.slot,
         field: value.field,
+        ...(value.sourceRoute ? { sourceRoute: value.sourceRoute } : {}),
         conditional: {
           spread: value.spread,
           // Filled in by `resolveSections` once the instance's section is known.
@@ -1334,6 +1581,18 @@ export function analyzeB1Route(
   const contentByPath = new Map(
     normalizedFiles.map((file) => [file.path, file.content]),
   );
+  const contentCapabilities = resolveThemeContentCapabilitiesFromFiles(
+    normalizedFiles,
+  );
+  const manifestSourceByRef = readComponentSourcePaths(
+    contentByPath.get("morph.theme.json") ?? null,
+  );
+  const componentRefBySource = new Map(
+    [...manifestSourceByRef].map(([componentRef, sourcePath]) => [
+      normalizeThemeSourcePath(sourcePath),
+      componentRef,
+    ]),
+  );
   const diagnostics: string[] = [];
   const routeSource = contentByPath.get(normalizedRoute);
   const routeEntry = normalizedFiles.find(
@@ -1363,6 +1622,8 @@ export function analyzeB1Route(
     filePaths,
   );
   if (aliases > 1) diagnostics.push("content is imported more than once");
+  const morphBinding = morphImportBinding(partial, filePaths);
+  const sectionHiddenBinding = sectionHiddenImportBinding(partial, filePaths);
   const route = routeBindingOf(partial);
   const routeName = route.binding?.name ?? null;
   const loaderOrigin =
@@ -1377,8 +1638,11 @@ export function analyzeB1Route(
   const ctx: ModuleContext = {
     ...partial,
     contentBinding,
+    morphBinding,
+    sectionHiddenBinding,
     routeBinding: route.binding,
     loaderOrigin,
+    routePath: route.routePath,
   };
 
   // Taints from this route and the modules it can actually reach. A separate
@@ -1396,6 +1660,7 @@ export function analyzeB1Route(
   if (reachable.unboundedDynamicImport || reachable.unparseable) {
     taints.add(taintKey("content", null));
     taints.add(taintKey("loader", null));
+    taints.add(taintKey("page", null));
   }
   for (const file of normalizedFiles) {
     if (
@@ -1415,14 +1680,18 @@ export function analyzeB1Route(
     const otherOracle = backend(other);
     const otherPartial = { ast: other, oracle: otherOracle, path: file.path };
     const otherContent = contentImportBinding(otherPartial, filePaths);
+    const otherMorph = morphImportBinding(otherPartial, filePaths);
     if (otherContent.aliases > 1) taints.add(taintKey("content", null));
     if (otherContent.binding) {
       collectTaints(
         {
           ...otherPartial,
           contentBinding: otherContent.binding,
+          morphBinding: otherMorph,
+          sectionHiddenBinding: null,
           routeBinding: null,
           loaderOrigin: false,
+          routePath: null,
         },
         taints,
       );
@@ -1454,7 +1723,47 @@ export function analyzeB1Route(
         const nameIndex = nameCounts.get(name.name) ?? 0;
         nameCounts.set(name.name, nameIndex + 1);
         const target = componentTarget(ctx, opening, filePaths);
-        const declared = declaredFieldsOf(target.path, contentByPath);
+        const componentRef = target.path
+          ? componentRefBySource.get(target.path)
+          : undefined;
+        const capability = target.path
+          ? (contentCapabilities.sourceScan.capabilities[target.path] ??
+            (componentRef
+              ? contentCapabilities.capabilities[componentRef]
+              : undefined))
+          : undefined;
+        const declared = capability
+          ? Object.keys(capability.fields)
+          : declaredFieldsOf(target.path, contentByPath);
+        const sourceSlots = (opening.attributes ?? []).flatMap(
+          (attribute: AnyNode) => {
+            if (attribute.type !== "JSXSpreadAttribute") return [];
+            const origin = resolveOrigin(ctx, attribute.argument);
+            return origin.kind === "root" && origin.path.length === 1
+              ? [origin.path[0]!]
+              : [];
+          },
+        );
+        const sourceRoots = (opening.attributes ?? []).flatMap(
+          (attribute: AnyNode) => {
+            if (attribute.type !== "JSXSpreadAttribute") return [];
+            const origin = resolveOrigin(ctx, attribute.argument);
+            return origin.kind === "root" && origin.path.length === 1
+              ? [origin.root]
+              : [];
+          },
+        );
+        const hasUntracedSpread = (opening.attributes ?? []).some(
+          (attribute: AnyNode) => {
+            if (attribute.type !== "JSXSpreadAttribute") return false;
+            const origin = resolveOrigin(ctx, attribute.argument);
+            return (
+              origin.kind !== "root" ||
+              origin.path.length !== 1 ||
+              isTainted(taints, origin.root, origin.path)
+            );
+          },
+        );
         if (typeof node.start !== "number" || typeof node.end !== "number") {
           return;
         }
@@ -1473,8 +1782,11 @@ export function analyzeB1Route(
               attribute.name?.type === "JSXIdentifier" &&
               declared.includes(attribute.name.name),
           ),
+          sourceSlots: [...new Set(sourceSlots)],
+          sourceRoots: [...new Set(sourceRoots)],
+          hasUntracedSpread,
           props: propsAtCallSite(ctx, opening, declared, taints),
-          direct: isDirectPosition(ctx, node),
+          direct: isDirectPosition(ctx, node, [...new Set(sourceSlots)]),
         });
       }
     }
@@ -1493,6 +1805,25 @@ export function analyzeB1Route(
   // Sections: one slot per instance, one instance per slot.
   const slotUses = new Map<string, number>();
   const sectionOf = (instance: (typeof instances)[number]): string | null => {
+    // Section identity and field provenance are separate proofs. An explicit,
+    // unique section root still identifies this structural instance even if
+    // a later untraced spread may override its props; propsAtCallSite marks
+    // those fields unknown, so the wrapper can be selected/reordered without
+    // advertising a field write that the source cannot prove. Multiple known
+    // roots remain ambiguous and are refused below. Loader spreads retain the
+    // existing stricter rule: if any spread at the call site is untraced, the
+    // route value no longer proves that this element belongs to the section.
+    if (
+      instance.hasUntracedSpread &&
+      instance.sourceRoots.includes("loader")
+    ) {
+      return null;
+    }
+    if (instance.sourceSlots.length > 1) return null;
+    if (instance.sourceSlots.length === 1) {
+      const slot = instance.sourceSlots[0]!;
+      return isValidThemeContentSlotId(slot) ? slot : null;
+    }
     const slots = new Set<string>();
     for (const field of instance.declaredFields) {
       const value = instance.props[field];
@@ -1505,34 +1836,18 @@ export function analyzeB1Route(
     }
     if (slots.size === 1) return [...slots][0]!;
     if (slots.size === 0) return null;
-    // Mixed: the slot the instance spreads names it, if any.
-    const spreadSlots = new Set<string>();
-    for (const field of instance.declaredFields) {
-      const value = instance.props[field];
-      if (
-        value?.kind === "spread-field" ||
-        (value?.kind === "field" && value.viaSpread)
-      ) {
-        spreadSlots.add(value.slot);
-      }
-    }
-    return spreadSlots.size === 1 ? [...spreadSlots][0]! : null;
+    return null;
   };
   const withSections = instances.map((instance) => {
-    const section =
-      instance.direct && instance.componentPath ? sectionOf(instance) : null;
-    const allSlots = new Set<string>();
-    for (const field of instance.declaredFields) {
-      const value = instance.props[field];
-      if (
-        value?.kind === "field" ||
-        value?.kind === "spread-field" ||
-        value?.kind === "derived"
-      )
-        allSlots.add(value.slot);
+    // A uniquely sourced call site still identifies which Document section
+    // this rendered node came from inside a conditional or repeat. `direct`
+    // remains a separate requirement for per-field edit claims below: a
+    // repeated/conditional runtime instance is not one statically unique
+    // field-edit target.
+    const section = instance.componentPath ? sectionOf(instance) : null;
+    if (section !== null) {
+      slotUses.set(section, (slotUses.get(section) ?? 0) + 1);
     }
-    for (const slot of allSlots)
-      slotUses.set(slot, (slotUses.get(slot) ?? 0) + 1);
     return { instance, section };
   });
 
@@ -1553,6 +1868,15 @@ export function analyzeB1Route(
             kind: "none",
             state: "unknown",
             reason: `"${claim.field}" is not a field the component declares`,
+          };
+        } else if (
+          claim.sourceRoute !== undefined &&
+          claim.sourceRoute !== route.routePath
+        ) {
+          claim = {
+            kind: "none",
+            state: "unknown",
+            reason: "the page Document path does not match this route",
           };
         } else if ((slotUses.get(claim.slot) ?? 0) > 1) {
           claim = {

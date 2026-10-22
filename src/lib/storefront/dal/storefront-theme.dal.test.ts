@@ -1826,6 +1826,11 @@ export default function Promo({ heading = "Promo" }) { return <h2>{heading}</h2>
     insertFile.run("file-root", "src/routes/__root.tsx", root);
     insertFile.run("file-route", "src/routes/index.tsx", route);
     insertFile.run("file-promo", "src/components/Promo.tsx", promo);
+    insertFile.run(
+      "file-content",
+      "src/morph/content.ts",
+      "export const content = () => ({});",
+    );
     sqlite
       .prepare(
         `INSERT INTO storefront_theme_templates
@@ -1899,6 +1904,11 @@ export default function Hero({ heading = "Hero", badge = "" }) {
     `);
     insertFile.run("file-root", "src/routes/__root.tsx", root);
     insertFile.run("file-route", "src/routes/index.tsx", route);
+    insertFile.run(
+      "file-content",
+      "src/morph/content.ts",
+      "export const content = () => ({});",
+    );
     insertFile.run("file-template", "src/components/Hero.tsx", template);
     insertFile.run(
       "file-copy",
@@ -1967,6 +1977,11 @@ export default function Hero() { return <h1 />; }`;
         VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
       `);
       insertFile.run("f-root", "src/routes/__root.tsx", root);
+      insertFile.run(
+        "f-content",
+        "src/morph/content.ts",
+        "export const content = () => ({});",
+      );
       // One template, two routes, a different component behind the same slot.
       // Both under /products/, so both are routes of the product template.
       insertFile.run(
@@ -2061,15 +2076,6 @@ export default function Hero() { return <h1 />; }`;
 import { content } from "../morph/content";
 export const Route = createFileRoute("/products/featured")({ component: Page });
 function Page() { return <main />; }`);
-      // The content contract has to exist for the import to count as the
-      // route adopting route-owned structure, as it does in every real Theme.
-      sqlite
-        .prepare(
-          `INSERT INTO storefront_theme_files
-            (id, storefront_id, theme_id, path, content, created_at, updated_at)
-          VALUES ('f-content', 'storefront-a', 'theme-a', 'src/morph/content.ts', 'export const content = () => ({});', 'now', 'now')`,
-        )
-        .run();
       await expect(
         write({ heading: "x" }, "/products/featured"),
       ).rejects.toThrow('does not render section "hero"');
@@ -2137,6 +2143,7 @@ import { content } from "../morph/content";
 import Hero from "../components/Hero";
 export const Route = createFileRoute("/")({ component: Home });
 function Home() { return <main><Hero {...content("hero")} /><Hero {...content("hero")} /></main>; }`,
+        "src/morph/content.ts": "export const content = () => ({});",
         "src/components/Hero.tsx": hero,
       });
       await expect(write()).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
@@ -2150,6 +2157,7 @@ import { content } from "../morph/content";
 import Hero from "../components/Hero";
 export const Route = createFileRoute("/")({ component: Home });
 function Home() { return <main><Hero {...content("hero")} /></main>; }`,
+        "src/morph/content.ts": "export const content = () => ({});",
         "src/components/Hero.tsx": hero,
       });
       await expect(write()).rejects.toThrow("SECTION_SOURCE_UNCONFIRMED");
@@ -2634,6 +2642,11 @@ export default function SiteHeader() { return <header />; }`;
     insertFile.run("l-root", "src/routes/__root.tsx", root);
     insertFile.run("l-layout", "src/layouts/StorefrontLayout.tsx", layout);
     insertFile.run("l-header", "src/components/SiteHeader.tsx", header);
+    insertFile.run(
+      "l-content",
+      "src/morph/content.ts",
+      "export const content = () => ({});",
+    );
     // Stored while the layout still rendered a header this Theme has removed.
     sqlite
       .prepare(

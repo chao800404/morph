@@ -255,6 +255,17 @@ function client(files: readonly File[]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  const sourceFiles = files.some((file) => file.path === "src/morph/content.ts")
+    ? files
+    : [
+        ...files,
+        {
+          path: "src/morph/content.ts",
+          content: `export function content(_slot: string) { return {}; }
+export function isSectionHidden(_slot: string) { return false; }
+export const morph = { pages: { get(_path: string) { return {}; } } };`,
+        },
+      ];
   queryClient.setQueryData(
     themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
     {
@@ -266,7 +277,7 @@ function client(files: readonly File[]) {
   queryClient.setQueryData(
     storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
     {
-      files: files.map((file, index) => ({
+      files: sourceFiles.map((file, index) => ({
         id: `file-${index}`,
         storefrontId: "storefront-1",
         themeId: "theme-1",
