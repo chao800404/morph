@@ -100,8 +100,11 @@ export function inferBoundPropName(
     // stored value and the right side is only what shows when it is missing.
     case "LogicalExpression":
       return inferBoundPropName(expression.left, itemVariableName);
+    // `{cond ? title : subtitle}` shows one of two values, and which one is
+    // only known when it runs: naming the consequent claimed `title` while
+    // the page showed the subtitle. Neither branch is the element's field.
     case "ConditionalExpression":
-      return inferBoundPropName(expression.consequent, itemVariableName);
+      return null;
     case "TSAsExpression":
     case "TSNonNullExpression":
       return inferBoundPropName(expression.expression, itemVariableName);

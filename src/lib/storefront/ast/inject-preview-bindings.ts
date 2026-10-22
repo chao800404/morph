@@ -629,6 +629,41 @@ function isFunctionNode(node: any): boolean {
   );
 }
 
+function declaredFunction(declaration: any, name: string): any {
+  if (
+    declaration?.type === "FunctionDeclaration" &&
+    declaration.id?.name === name
+  ) {
+    return declaration;
+  }
+  if (declaration?.type === "VariableDeclaration") {
+    for (const declarator of declaration.declarations ?? []) {
+      if (
+        declarator.id?.type === "Identifier" &&
+        declarator.id.name === name &&
+        (declarator.init?.type === "ArrowFunctionExpression" ||
+          declarator.init?.type === "FunctionExpression")
+      ) {
+        return declarator.init;
+      }
+    }
+  }
+  return null;
+}
+
+/** A plain function a module declares at its top level under `name`. */
+function findModuleFunction(ast: any, name: string): any {
+  for (const statement of ast?.program?.body ?? []) {
+    const found =
+      declaredFunction(statement, name) ??
+      (statement?.type === "ExportNamedDeclaration"
+        ? declaredFunction(statement.declaration, name)
+        : null);
+    if (found) return found;
+  }
+  return null;
+}
+
 /**
  * The function an export names, when it is a plain function component.
  *
@@ -639,38 +674,7 @@ function isFunctionNode(node: any): boolean {
  */
 function findExportedFunction(ast: any, exportName: string): any {
   const body: any[] = ast?.program?.body ?? [];
-  const declaredFunction = (declaration: any, name: string): any => {
-    if (
-      declaration?.type === "FunctionDeclaration" &&
-      declaration.id?.name === name
-    ) {
-      return declaration;
-    }
-    if (declaration?.type === "VariableDeclaration") {
-      for (const declarator of declaration.declarations ?? []) {
-        if (
-          declarator.id?.type === "Identifier" &&
-          declarator.id.name === name &&
-          (declarator.init?.type === "ArrowFunctionExpression" ||
-            declarator.init?.type === "FunctionExpression")
-        ) {
-          return declarator.init;
-        }
-      }
-    }
-    return null;
-  };
-  const localFunction = (name: string): any => {
-    for (const statement of body) {
-      const found =
-        declaredFunction(statement, name) ??
-        (statement?.type === "ExportNamedDeclaration"
-          ? declaredFunction(statement.declaration, name)
-          : null);
-      if (found) return found;
-    }
-    return null;
-  };
+  const localFunction = (name: string): any => findModuleFunction(ast, name);
 
   for (const statement of body) {
     if (
@@ -1166,6 +1170,180 @@ export function injectPreviewBindings(
     visitForRows(ast.program);
   }
 
+  // How each module's sections are found, read once for both passes.
+  const sectionReaders = new Map<
+    string,
+    {
+      pageVariables: ReturnType<typeof collectPageVariables>;
+      loaderSlotDetails: ReturnType<typeof collectLoaderSlotBindingDetails>;
+      loaderSlots: LoaderSlotBindings;
+    }
+  >();
+  const sectionReaderFor = (path: string, ast: any) => {
+    let reader = sectionReaders.get(path);
+    if (!reader) {
+      const loaderSlotDetails = collectLoaderSlotBindingDetails(ast, {
+        path,
+        files,
+      });
+      reader = {
+        pageVariables: collectPageVariables(ast),
+        loaderSlotDetails,
+        loaderSlots:
+          loaderSlotDetails.size === 0
+            ? NO_LOADER_SLOT_BINDINGS
+            : new Map(
+                [...loaderSlotDetails].map(([start, { slot }]) => [
+                  start,
+                  slot,
+                ]),
+              ),
+      };
+      sectionReaders.set(path, reader);
+    }
+    return reader;
+  };
+
+  // Components rendered inside a section by another component.
+  //
+  // A component names its own props: Heading's `<h2>{title}</h2>` claims
+  // `title`. Rendered as the section (`<Hero {...hero} />`), a prop is the
+  // section's field of that name, which is what a sole spread hands over.
+  // Rendered by Hero, it is whatever Hero passed — `<Heading title={subtitle} />`
+  // — and inside Hero's section wrapper the claim would read as `hero.title`
+  // while the page shows the subtitle. Nothing yet proves which of Hero's
+  // fields a nested prop holds, so each such call site hands the component the
+  // thread an unproven row prop gets (`threadedFieldAttributes`): its elements
+  // stay selectable and name nothing to edit. Rendered anywhere else, with no
+  // thread, the component keeps its own fields as before.
+  //
+  // A component that cannot take the thread (its props are not destructured)
+  // names nothing anywhere once it is found inside a section. One that cannot
+  // be found at all (`memo()`, a package or an aliased import) is not reached.
+  const nestedCallSites = new Set<string>();
+  const nestedThreadFunctions = new Map<string, any[]>();
+  const unthreadableFunctions = new Map<string, any[]>();
+  const scannedSubtrees = new Set<string>();
+  const fileByPath = new Map(files.map((file) => [file.path, file]));
+  const addFunction = (into: Map<string, any[]>, path: string, fn: any) => {
+    const list = into.get(path) ?? [];
+    if (!list.includes(fn)) list.push(fn);
+    into.set(path, list);
+  };
+  const resolveComponent = (
+    path: string,
+    ast: any,
+    name: any,
+  ): { path: string; fn: any } | null => {
+    if (name?.type !== "JSXIdentifier" || !/^[A-Z]/.test(name.name ?? "")) {
+      return null;
+    }
+    const binding = readImportBinding(ast, name.name);
+    if (!binding) {
+      const fn = findModuleFunction(ast, name.name);
+      return fn ? { path, fn } : null;
+    }
+    const componentPath = binding.specifier.startsWith(".")
+      ? resolveLocalModulePathFromFiles(path, binding.specifier, filePaths)
+      : null;
+    if (!componentPath || !JSX_FILE.test(componentPath)) return null;
+    const fn = findExportedFunction(
+      asts.get(componentPath),
+      binding.exportName,
+    );
+    return fn ? { path: componentPath, fn } : null;
+  };
+  /** Every component call in `root`, which renders inside some section. */
+  const scanSectionSubtree = (path: string, root: any) => {
+    const ast = asts.get(path);
+    const file = fileByPath.get(path);
+    if (!ast || !file) return;
+    const declared = declaredFor(file);
+    const forwarding = attributeForwardingComponentNames(ast);
+    const { pageVariables, loaderSlots } = sectionReaderFor(path, ast);
+    // Rows of a declared list: the row machinery above decides those.
+    const ownedRows = new Set<number>();
+    const visit = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) visit(child);
+        return;
+      }
+      const mapCall = readMapCall(node);
+      if (
+        mapCall?.rowElement?.start != null &&
+        declared?.rows.has(mapCall.arrayPath)
+      ) {
+        ownedRows.add(mapCall.rowElement.start);
+      }
+      const opening = node.type === "JSXElement" ? node.openingElement : null;
+      if (
+        opening &&
+        !isAttributeForwardingComponent(opening.name, forwarding) &&
+        !readSectionSlotId(opening, pageVariables, loaderSlots)
+      ) {
+        const target = resolveComponent(path, ast, opening.name);
+        if (target) {
+          if (!ownedRows.has(node.start)) {
+            if (
+              threadablePropsPattern(target.fn) &&
+              !hasAttribute(opening, ROW_PROP)
+            ) {
+              nestedCallSites.add(`${path}:${opening.start}`);
+              addFunction(nestedThreadFunctions, target.path, target.fn);
+            } else {
+              addFunction(unthreadableFunctions, target.path, target.fn);
+            }
+          }
+          scanComponent(target.path, target.fn);
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "leadingComments") continue;
+        visit(value);
+      }
+    };
+    visit(root);
+  };
+  /** What a component renders, once it is known to render inside a section. */
+  const scanComponent = (path: string, fn: any) => {
+    const key = `${path}:${fn.start}`;
+    if (scannedSubtrees.has(key)) return;
+    scannedSubtrees.add(key);
+    scanSectionSubtree(path, fn.body);
+  };
+  for (const file of files) {
+    const ast = asts.get(file.path);
+    if (!ast) continue;
+    const { pageVariables, loaderSlots } = sectionReaderFor(file.path, ast);
+    const findSections = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) findSections(child);
+        return;
+      }
+      if (
+        node.type === "JSXElement" &&
+        readSectionSlotId(node.openingElement, pageVariables, loaderSlots)
+      ) {
+        // The section's own component, and anything handed to it to render.
+        const target = resolveComponent(
+          file.path,
+          ast,
+          node.openingElement.name,
+        );
+        if (target) scanComponent(target.path, target.fn);
+        scanSectionSubtree(file.path, node.openingElement.attributes);
+        scanSectionSubtree(file.path, node.children);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "leadingComments") continue;
+        findSections(value);
+      }
+    };
+    findSections(ast.program);
+  }
+
   const out = files.map((file) => {
     if (!JSX_FILE.test(file.path)) return file;
 
@@ -1181,17 +1359,10 @@ export function injectPreviewBindings(
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
-    const pageVariables = collectPageVariables(ast);
-    const loaderSlotDetails = collectLoaderSlotBindingDetails(ast, {
-      path: file.path,
-      files,
-    });
-    const loaderSlots: LoaderSlotBindings =
-      loaderSlotDetails.size === 0
-        ? NO_LOADER_SLOT_BINDINGS
-        : new Map(
-            [...loaderSlotDetails].map(([start, { slot }]) => [start, slot]),
-          );
+    const { pageVariables, loaderSlotDetails, loaderSlots } = sectionReaderFor(
+      file.path,
+      ast,
+    );
     const insertions: Insertion[] = [];
 
     // The `_hidden` list of the page a loader slot came from, as an expression
@@ -1215,16 +1386,21 @@ export function injectPreviewBindings(
       return local;
     };
 
-    // This module's components that render some list's rows: each takes the
-    // row through its own props, under a name nothing in the module uses.
+    // This module's components that render some list's rows, or render inside
+    // a section another component renders: each takes the row through its own
+    // props, under a name nothing in the module uses.
     const threadedFunctions: Array<{
       start: number;
       end: number;
       local: string;
       roots: ReadonlySet<number>;
     }> = [];
-    for (const exportName of threadedExports.get(file.path) ?? []) {
-      const fn = findExportedFunction(ast, exportName);
+    for (const fn of [
+      ...[...(threadedExports.get(file.path) ?? [])].map((exportName) =>
+        findExportedFunction(ast, exportName),
+      ),
+      ...(nestedThreadFunctions.get(file.path) ?? []),
+    ]) {
       const pattern = threadablePropsPattern(fn);
       if (
         !pattern ||
@@ -1260,6 +1436,10 @@ export function injectPreviewBindings(
       threadedFunctions.find(
         (threaded) => threaded.start <= position && position < threaded.end,
       ) ?? null;
+    // Components found inside a section that cannot take the thread.
+    const unthreadable = unthreadableFunctions.get(file.path) ?? [];
+    const unthreadableAt = (position: number) =>
+      unthreadable.some((fn) => fn.start <= position && position < fn.end);
     const wrap = (
       kind: WrapperKind,
       start: number,
@@ -1430,6 +1610,18 @@ export function injectPreviewBindings(
           );
         }
 
+        // A component rendered inside a section by another component: its
+        // own fields are not provably the section's (`nestedCallSites`).
+        if (
+          opening?.name?.end != null &&
+          nestedCallSites.has(`${file.path}:${opening.start}`)
+        ) {
+          insertions.push({
+            at: opening.name.end,
+            text: ` ${ROW_PROP}={{ fields: {} }}`,
+          });
+        }
+
         if (
           isHostElement(opening?.name) ||
           isAttributeForwardingComponent(
@@ -1484,7 +1676,9 @@ export function injectPreviewBindings(
                     field,
                     !hasAttribute(opening, FIELD_PATH_ATTRIBUTE),
                   )
-                : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"`,
+                : !arrayPath && unthreadableAt(node.start)
+                  ? ` ${FIELD_ATTRIBUTE}=""`
+                  : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"`,
             );
           } else if (
             thread &&
@@ -1589,13 +1783,15 @@ export function injectPreviewBindings(
           if (field && allowed) {
             const attributes = thread
               ? threadedFieldAttributes(thread.local, field, true)
-              : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
-                (arrayPath && scope.index
-                  ? ` ${FIELD_PATH_ATTRIBUTE}={\`${arrayPath}.\${${scope.index}}.${field}\`}`
-                  : "") +
-                (arrayPath && scope.item
-                  ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
-                  : "");
+              : !arrayPath && unthreadableAt(node.start)
+                ? ` ${FIELD_ATTRIBUTE}=""`
+                : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
+                  (arrayPath && scope.index
+                    ? ` ${FIELD_PATH_ATTRIBUTE}={\`${arrayPath}.\${${scope.index}}.${field}\`}`
+                    : "") +
+                  (arrayPath && scope.item
+                    ? ` ${ITEM_ID_ATTRIBUTE}={${scope.item}?.id}`
+                    : "");
             wrap(
               "content",
               node.start,

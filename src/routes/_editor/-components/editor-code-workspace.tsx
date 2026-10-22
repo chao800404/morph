@@ -92,7 +92,11 @@ import {
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+// Types only: the editor component and Monaco itself come from the bundled
+// runtime, loaded on demand (editor-code-monaco-loader.ts).
+import type { Monaco, OnMount } from "@monaco-editor/react";
+import { useEditorCodeMonaco } from "./editor-code-monaco-loader";
+import { EditorCodeMonacoStatus } from "./editor-code-monaco-status";
 import { PointerActivationConstraints } from "@dnd-kit/dom";
 import {
   DragDropProvider,
@@ -555,6 +559,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   // `monaco-editor` just to name them.
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
+  // Starts loading the bundled Monaco when the workspace mounts. Until it is
+  // ready the editor pane shows its state; drafts stay where they are.
+  const { state: monacoLoad, retry: retryMonacoLoad } = useEditorCodeMonaco();
+  const MonacoEditor =
+    monacoLoad.status === "ready" ? monacoLoad.runtime.Editor : null;
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
   const routeCompletionProviderRef = useRef<{ dispose: () => void } | null>(
     null,
@@ -4706,8 +4715,13 @@ const EditorCodeWorkspaceContent = forwardRef<
 
         {/* Monaco Editor Container */}
         <div className="flex-1 min-h-0 relative">
-          {activeFile ? (
-            <Editor
+          {activeFile && monacoLoad.status !== "ready" ? (
+            <EditorCodeMonacoStatus
+              state={monacoLoad}
+              onRetry={retryMonacoLoad}
+            />
+          ) : activeFile && MonacoEditor ? (
+            <MonacoEditor
               height="100%"
               path={getThemeModelUri(workspaceScope, activeFilePath)}
               language={getLanguage(activeFilePath)}
