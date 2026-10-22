@@ -19,6 +19,7 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import { unboundSectionsFixture, UNBOUND_TITLE } from "./helpers/unbound-sections";
 
 /**
  * Case B of the content binding contract, in the full Start preview: content
@@ -48,6 +49,20 @@ test.skip(
 );
 
 const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+
+test("explicit props read stored hero before and after another section's edit", async ({ page }) => {
+  test.setTimeout(240_000);
+  const fixture = await unboundSectionsFixture(page);
+  await page.goto(fixture.editorPath, { waitUntil: "domcontentloaded" });
+  await expect(previewFrame(page).getByRole("heading", { name: UNBOUND_TITLE, exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(previewFrame(page).locator("main[data-hidden-slots]")).toHaveAttribute("data-hidden-slots", "hidden");
+  await fixture.editOtherSection();
+  // Reload exercises the real Start server function and loader on the saved
+  // revision, not a value kept alive in the previous browser render.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(previewFrame(page).getByRole("heading", { name: UNBOUND_TITLE, exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(previewFrame(page).getByRole("heading", { name: "Other section edited", exact: true })).toBeVisible();
+});
 let scope: ThemeScope | null = null;
 let editorPath: string | null = null;
 
