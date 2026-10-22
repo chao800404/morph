@@ -650,10 +650,12 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
         previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
       ).toHaveCount(0);
       await bothRoutesWriteNothing(page, LOADER_ROUTE);
-      // The stored section is kept although the route analysis cannot bind
-      // it (#291), so the structure panel lists it, and its form withholds
-      // the title the code sets.
-      await structurePanelWithholdsTheTitle(page, LOADER_ROUTE);
+      // No structure-panel step: since #291 the stored section is kept, but
+      // the editor's section view lists only sections the source proves, and
+      // this call site proves none, so the panel has no row for it (measured
+      // in this runtime, 2026-10-22). The shell test covers the section form
+      // for it should one be reached.
+      expect(await rawStoredProps(LOADER_ROUTE, SLOT)).toEqual(STORED);
     });
   }
 });
