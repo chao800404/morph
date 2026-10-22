@@ -18,6 +18,7 @@ import {
   textPromotionSharedImpact,
 } from "../editor/text-promotion-impact";
 import { recordsForWorkspaceSave } from "../storage/d1-theme-storage";
+import { templateSectionWriteBase } from "../content/template-section-write-base";
 
 /**
  * The first Design edit of fixed text: the component gains a field whose
@@ -114,10 +115,13 @@ export async function promoteTextToField(input: TextPromotionWriteInput) {
   const template = context?.templates.find(
     (candidate) => candidate.id === input.templateId,
   );
-  const section = template?.document.sections.find(
+  const baseDocument = template
+    ? templateSectionWriteBase(template, input.sectionId)
+    : null;
+  const section = baseDocument?.sections.find(
     (candidate) => candidate.id === input.sectionId,
   );
-  if (!context || !template || !section) {
+  if (!context || !template || !section || !baseDocument) {
     return {
       ok: false,
       error: "NOT_FOUND",
@@ -203,8 +207,8 @@ export async function promoteTextToField(input: TextPromotionWriteInput) {
   }
 
   const document = storefrontPageDocumentSchema.parse({
-    ...template.document,
-    sections: template.document.sections.map((candidate) =>
+    ...baseDocument,
+    sections: baseDocument.sections.map((candidate) =>
       candidate.id === input.sectionId
         ? {
             ...candidate,

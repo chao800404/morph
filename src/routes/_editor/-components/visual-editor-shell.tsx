@@ -10280,9 +10280,15 @@ export function VisualEditorShell({
     ) => {
       invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
-      const section = activeTemplate.document.sections.find(
-        (candidate) => candidate.id === sectionId,
-      );
+      // The section as this page shows it: a slot its source proves is one
+      // even before anything is stored for it. Read only — the stored copy
+      // below (`sectionPropsSnapshot`) stays what the write is based on.
+      const section =
+        sectionModel.bindings.get(sectionId)?.owner === "page"
+          ? sectionModel.document.sections.find(
+              (candidate) => candidate.id === sectionId,
+            )
+          : undefined;
       if (!section) {
         toast.error("Cannot reorder: the selected section is unavailable.");
         return;
@@ -10438,6 +10444,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       routePathForTemplate,
+      sectionModel,
       templateIdForSection,
       updatePropsMutation,
       selectedFieldBaseline,
@@ -10836,12 +10843,31 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
-      const sectionIds = (activeTemplate?.document.sections ?? []).map(
-        (section) => section.id,
-      );
+      // This page's own sections in the order it shows them, slots its source
+      // proves included. A shell section is the layout's, never this page's
+      // to move.
+      const sectionIds = sectionModel.document.sections
+        .filter(
+          (section) => sectionModel.bindings.get(section.id)?.owner === "page",
+        )
+        .map((section) => section.id);
       const from = sectionIds.indexOf(draggedSectionId);
       const to = sectionIds.indexOf(targetSectionId);
       if (from < 0 || to < 0 || from === to) return;
+      // Stored content the source does not show has no position in that
+      // order. The whole reorder is refused rather than leaving it somewhere
+      // nobody chose; nothing is written.
+      const shown = new Set(sectionIds);
+      const stored =
+        activeTemplate && activeTemplate.id === pageTemplateId
+          ? activeTemplate.document.sections
+          : [];
+      if (stored.some((section) => !shown.has(section.id))) {
+        toast.error(
+          "Failed to reorder sections: this page stores content its source does not show, so nothing was moved.",
+        );
+        return;
+      }
       const next = [...sectionIds];
       next[from] = targetSectionId;
       next[to] = draggedSectionId;
@@ -10853,7 +10879,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [activeTemplate, handleReorderSections],
+    [activeTemplate, handleReorderSections, pageTemplateId, sectionModel],
   );
 
   useEffect(() => {

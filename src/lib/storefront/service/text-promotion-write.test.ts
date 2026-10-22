@@ -356,6 +356,81 @@ const storedProps = async () => {
 };
 
 describe("promoteTextToField", () => {
+  for (const mode of ["new", "in-place", "fork"] as const) {
+    it(`preserves unbound stored sections and prop keys during promotion (${mode})`, async () => {
+      seed();
+      const revisionId = "aabbbbbb-1111-4111-8111-111111111111";
+      const unchanged = [
+        {
+          id: "b",
+          type: "b",
+          enabled: true,
+          props: { title: "Not bound", nested: { keep: 7 } },
+        },
+        { id: "h", type: "b", enabled: false, props: { title: "Hidden" } },
+      ];
+      const before = JSON.stringify({
+        version: 1,
+        sections: [
+          {
+            id: "promo",
+            type: "promo",
+            componentRef: COPY,
+            enabled: true,
+            props: { runtimeOnly: "keep" },
+          },
+          ...unchanged,
+        ],
+      });
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_templates SET document = ?, draft_revision_id = ?, published_revision_id = ?",
+        )
+        .run(
+          before,
+          mode === "new" ? null : revisionId,
+          mode === "fork" ? revisionId : null,
+        );
+      if (mode !== "new")
+        sqlite
+          .prepare(
+            `INSERT INTO storefront_theme_template_revisions (id, template_id, version, document, created_at)
+        VALUES (?, 'template-home', 1, ?, 'now')`,
+          )
+          .run(revisionId, before);
+      expect(await promote()).toMatchObject({ ok: true, draftGeneration: 2 });
+      // Read the actual persisted revision, not the editor's view of it.
+      const row = sqlite
+        .prepare(
+          `SELECT r.id, r.document FROM storefront_theme_templates t
+        JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id AND r.template_id = t.id
+        WHERE t.id = 'template-home'`,
+        )
+        .get() as { id: string; document: string };
+      const saved = JSON.parse(row.document) as {
+        sections: { id: string; props: Record<string, unknown> }[];
+      };
+      expect(JSON.stringify(saved.sections.slice(1))).toBe(
+        JSON.stringify(unchanged),
+      );
+      expect(saved.sections[0]!.props).toEqual({
+        runtimeOnly: "keep",
+        text: "Hello there",
+      });
+      if (mode === "in-place") expect(row.id).toBe(revisionId);
+      if (mode === "fork") {
+        expect(row.id).not.toBe(revisionId);
+        expect(
+          sqlite
+            .prepare(
+              "SELECT document FROM storefront_theme_template_revisions WHERE id = ?",
+            )
+            .get(revisionId),
+        ).toEqual({ document: before });
+      }
+    });
+  }
+
   it("writes the field into the source and the value into this page together", async () => {
     seed();
     const result = await promote();
