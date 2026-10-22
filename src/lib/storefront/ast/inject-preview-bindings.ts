@@ -8,6 +8,7 @@ import {
   collectLoaderSlotBindingDetails,
   collectPageVariables,
   NO_LOADER_SLOT_BINDINGS,
+  propsReplacingSpread,
   readPageBindingKey,
   type LoaderSlotBindings,
   type LoaderSlotPage,
@@ -828,12 +829,21 @@ function threadedFieldAttributes(
   local: string,
   field: string,
   withPath: boolean,
+  /**
+   * The component is never handed a row, only a section's fields
+   * (`sectionThreadFields`): a thread with no `path`, whose fields are
+   * top-level, so a named field carries no path of its own and the editor
+   * reads the field key as one.
+   */
+  pathless = false,
 ): string {
   const key = JSON.stringify(field);
   return (
     ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? "") : ${key}}` +
     (withPath
-      ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+      ? pathless
+        ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] && ${local}.path ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+        : ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
       : "")
   );
 }
@@ -851,14 +861,34 @@ function readSectionSlotId(
   pageVariables: ReadonlySet<string>,
   loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
 ): string | null {
+  return (
+    readSectionSlot(openingElement, pageVariables, loaderSlots)?.slotId ?? null
+  );
+}
+
+/** `readSectionSlotId`, with the spread attribute that hands the slot over. */
+function readSectionSlot(
+  openingElement: any,
+  pageVariables: ReadonlySet<string>,
+  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
+): { slotId: string; spread: any } | null {
   const loaderSlot = loaderSlots.get(openingElement?.start);
   if (loaderSlot !== undefined) {
-    return loaderSlot.length > 0 ? loaderSlot : null;
+    // The loader binding proves the spread is the element's only attribute
+    // besides a `key`.
+    const spread = (openingElement?.attributes ?? []).find(
+      (attribute: any) => attribute?.type === "JSXSpreadAttribute",
+    );
+    return loaderSlot.length > 0 && spread
+      ? { slotId: loaderSlot, spread }
+      : null;
   }
   for (const attribute of openingElement?.attributes ?? []) {
     if (attribute?.type !== "JSXSpreadAttribute") continue;
     const pageKey = readPageBindingKey(attribute.argument, pageVariables);
-    if (pageKey !== null) return pageKey.length > 0 ? pageKey : null;
+    if (pageKey !== null) {
+      return pageKey.length > 0 ? { slotId: pageKey, spread: attribute } : null;
+    }
     const call = attribute.argument;
     if (
       call?.type !== "CallExpression" ||
@@ -870,9 +900,31 @@ function readSectionSlotId(
       continue;
     }
     const slotId = call.arguments[0].value;
-    return typeof slotId === "string" && slotId.length > 0 ? slotId : null;
+    return typeof slotId === "string" && slotId.length > 0
+      ? { slotId, spread: attribute }
+      : null;
   }
   return null;
+}
+
+/** Whether a hand-written field marker sits anywhere in `node`. */
+function hasAuthoredFieldMarker(node: any): boolean {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(hasAuthoredFieldMarker);
+  if (
+    node.type === "JSXAttribute" &&
+    node.name?.type === "JSXIdentifier" &&
+    (node.name.name === FIELD_ATTRIBUTE ||
+      node.name.name === FIELD_PATH_ATTRIBUTE)
+  ) {
+    return true;
+  }
+  return Object.entries(node).some(
+    ([key, value]) =>
+      key !== "loc" &&
+      key !== "leadingComments" &&
+      hasAuthoredFieldMarker(value),
+  );
 }
 
 function escapeAttribute(value: string): string {
@@ -1224,6 +1276,12 @@ export function injectPreviewBindings(
   const nestedThreadFunctions = new Map<string, any[]>();
   const unthreadableFunctions = new Map<string, any[]>();
   const scannedSubtrees = new Set<string>();
+  // Section call sites the preview does not mark as their section; see
+  // `propsReplacingSpread` below.
+  const unprovenSectionCallSites = new Set<string>();
+  // Section call sites that hand their component a thread naming the fields
+  // the call site leaves alone; see `propsReplacingSpread` below.
+  const sectionThreadFields = new Map<string, Record<string, string>>();
   const fileByPath = new Map(files.map((file) => [file.path, file]));
   const addFunction = (into: Map<string, any[]>, path: string, fn: any) => {
     const list = into.get(path) ?? [];
@@ -1280,7 +1338,8 @@ export function injectPreviewBindings(
       if (
         opening &&
         !isAttributeForwardingComponent(opening.name, forwarding) &&
-        !readSectionSlotId(opening, pageVariables, loaderSlots)
+        (!readSectionSlotId(opening, pageVariables, loaderSlots) ||
+          unprovenSectionCallSites.has(`${path}:${opening.start}`))
       ) {
         const target = resolveComponent(path, ast, opening.name);
         if (target) {
@@ -1312,6 +1371,109 @@ export function injectPreviewBindings(
     scannedSubtrees.add(key);
     scanSectionSubtree(path, fn.body);
   };
+  // Components some list renders as its rows. Their field elements build a
+  // row's path, so a section's thread, which has none, is not handed to them.
+  const rowThreadedFunctions = new Set<string>();
+  for (const [path, exportNames] of threadedExports) {
+    for (const exportName of exportNames) {
+      const fn = findExportedFunction(asts.get(path), exportName);
+      if (fn) rowThreadedFunctions.add(`${path}:${fn.start}`);
+    }
+  }
+  // Section call sites that set a prop in place of one of the section's
+  // fields (`propsReplacingSpread`).
+  //
+  // The component's elements name its own props, and inside the section's
+  // wrapper `title` reads as `hero.title`; after
+  // `<Hero {...content("hero")} title={other.title} />` the page shows
+  // `other.title` there. Which of the section's fields still come from the
+  // spread is known by name: every declared field the call site does not set.
+  // The call site hands the component #283's thread with those fields, each
+  // the section's field of the same name (`sectionThreadFields`), so the
+  // replaced ones name nothing and stay selectable with nothing to edit while
+  // the others are still the section's. After a later spread, which may set
+  // any prop, or for a component some list also renders as its rows, the
+  // thread names none (`fields: {}`). The section stays bound, so its stored
+  // content renders and saves as before.
+  //
+  // Where the thread cannot reach every element that could name a replaced
+  // field — the component is not found, declares no fields to compare with,
+  // takes its props whole, has the author's own row prop at this call site,
+  // carries a hand-written field marker the thread does not rewrite, or
+  // renders rows of a list the call site may replace — the call site is
+  // not marked as the section at all, the way the loader form leaves such a
+  // call site unbound. Inside another section it is then a component that
+  // section renders, like any other.
+  for (const file of files) {
+    const ast = asts.get(file.path);
+    if (!ast) continue;
+    const { pageVariables, loaderSlots } = sectionReaderFor(file.path, ast);
+    const findReplacingCallSites = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) findReplacingCallSites(child);
+        return;
+      }
+      const section =
+        node.type === "JSXElement"
+          ? readSectionSlot(node.openingElement, pageVariables, loaderSlots)
+          : null;
+      const replaced = section
+        ? propsReplacingSpread(node, section.spread)
+        : null;
+      if (replaced && (replaced === "any" || replaced.size > 0)) {
+        const target = resolveComponent(
+          file.path,
+          ast,
+          node.openingElement.name,
+        );
+        const targetFile = target ? fileByPath.get(target.path) : undefined;
+        const declared = targetFile ? declaredFor(targetFile) : null;
+        const replacesField =
+          replaced === "any" ||
+          !declared ||
+          [...replaced].some((name) => declared.top.has(name));
+        if (replacesField) {
+          const replacesRows =
+            !declared ||
+            (replaced === "any"
+              ? declared.rows.size > 0
+              : [...replaced].some((name) => declared.rows.has(name)));
+          const callSite = `${file.path}:${node.openingElement.start}`;
+          if (
+            target &&
+            !replacesRows &&
+            threadablePropsPattern(target.fn) &&
+            !hasAttribute(node.openingElement, ROW_PROP) &&
+            !hasAuthoredFieldMarker(target.fn)
+          ) {
+            nestedCallSites.add(callSite);
+            addFunction(nestedThreadFunctions, target.path, target.fn);
+            if (
+              replaced !== "any" &&
+              !rowThreadedFunctions.has(`${target.path}:${target.fn.start}`)
+            ) {
+              sectionThreadFields.set(
+                callSite,
+                Object.fromEntries(
+                  [...declared!.top]
+                    .filter((name) => !replaced.has(name))
+                    .map((name) => [name, name]),
+                ),
+              );
+            }
+          } else {
+            unprovenSectionCallSites.add(callSite);
+          }
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "leadingComments") continue;
+        findReplacingCallSites(value);
+      }
+    };
+    findReplacingCallSites(ast.program);
+  }
   for (const file of files) {
     const ast = asts.get(file.path);
     if (!ast) continue;
@@ -1324,7 +1486,10 @@ export function injectPreviewBindings(
       }
       if (
         node.type === "JSXElement" &&
-        readSectionSlotId(node.openingElement, pageVariables, loaderSlots)
+        readSectionSlotId(node.openingElement, pageVariables, loaderSlots) &&
+        !unprovenSectionCallSites.has(
+          `${file.path}:${node.openingElement.start}`,
+        )
       ) {
         // The section's own component, and anything handed to it to render.
         const target = resolveComponent(
@@ -1394,6 +1559,8 @@ export function injectPreviewBindings(
       end: number;
       local: string;
       roots: ReadonlySet<number>;
+      /** Never a list's row component: its thread carries no row path. */
+      pathless: boolean;
     }> = [];
     for (const fn of [
       ...[...(threadedExports.get(file.path) ?? [])].map((exportName) =>
@@ -1430,6 +1597,7 @@ export function injectPreviewBindings(
         end: fn.end,
         local,
         roots: componentRootStarts(fn),
+        pathless: !rowThreadedFunctions.has(`${file.path}:${fn.start}`),
       });
     }
     const threadAt = (position: number) =>
@@ -1590,7 +1758,12 @@ export function injectPreviewBindings(
         // component is free to ignore — it would never reach the page. The
         // wrapper is taken out of layout so the page looks the same.
         const slotId = readSectionSlotId(opening, pageVariables, loaderSlots);
-        if (slotId && node.start != null && node.end != null) {
+        if (
+          slotId &&
+          node.start != null &&
+          node.end != null &&
+          !unprovenSectionCallSites.has(`${file.path}:${opening.start}`)
+        ) {
           slotIds.push(slotId);
           // A loader slot the author hid still renders here, with the
           // component's defaults; `content("x")` call sites are guarded by
@@ -1616,9 +1789,12 @@ export function injectPreviewBindings(
           opening?.name?.end != null &&
           nestedCallSites.has(`${file.path}:${opening.start}`)
         ) {
+          const sectionFields = sectionThreadFields.get(
+            `${file.path}:${opening.start}`,
+          );
           insertions.push({
             at: opening.name.end,
-            text: ` ${ROW_PROP}={{ fields: {} }}`,
+            text: ` ${ROW_PROP}={{ fields: ${sectionFields ? JSON.stringify(sectionFields) : "{}"} }}`,
           });
         }
 
@@ -1675,6 +1851,7 @@ export function injectPreviewBindings(
                     thread.local,
                     field,
                     !hasAttribute(opening, FIELD_PATH_ATTRIBUTE),
+                    thread.pathless,
                   )
                 : !arrayPath && unthreadableAt(node.start)
                   ? ` ${FIELD_ATTRIBUTE}=""`
@@ -1782,7 +1959,12 @@ export function injectPreviewBindings(
           const thread = !arrayPath ? threadAt(node.start) : null;
           if (field && allowed) {
             const attributes = thread
-              ? threadedFieldAttributes(thread.local, field, true)
+              ? threadedFieldAttributes(
+                  thread.local,
+                  field,
+                  true,
+                  thread.pathless,
+                )
               : !arrayPath && unthreadableAt(node.start)
                 ? ` ${FIELD_ATTRIBUTE}=""`
                 : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +
