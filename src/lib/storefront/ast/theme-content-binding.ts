@@ -79,6 +79,46 @@ function isPagesGetCall(call: AnyNode, morphNames: ReadonlySet<string>) {
 }
 
 /**
+ * The props a section's call site sets in place of what its content spread
+ * hands over, or `"any"` when which ones is only known at runtime.
+ *
+ * JSX builds one props object left to right, so an attribute after the spread
+ * replaces the spread's prop of that name, whatever the stored content holds:
+ * `<Hero {...content("hero")} title={other.title} />` shows `other.title`.
+ * A later spread may set any prop. Children given between the tags replace
+ * `children`. An attribute before the spread is replaced by the spread
+ * whenever the stored content has that field — which is when a write to it
+ * lands — so it is a default, like the component's own, and replaces nothing.
+ */
+export function propsReplacingSpread(
+  element: AnyNode,
+  spread: AnyNode,
+): ReadonlySet<string> | "any" {
+  const replaced = new Set<string>();
+  const attributes: AnyNode[] = element?.openingElement?.attributes ?? [];
+  const at = attributes.indexOf(spread);
+  for (const attribute of attributes.slice(at + 1)) {
+    if (attribute?.type === "JSXSpreadAttribute") return "any";
+    if (attribute?.type !== "JSXAttribute") return "any";
+    if (attribute.name?.type !== "JSXIdentifier") continue;
+    if (attribute.name.name === "key") continue;
+    replaced.add(attribute.name.name);
+  }
+  // React drops whitespace-only text that spans a line break; anything else
+  // between the tags is a child.
+  const hasChildren = (element?.children ?? []).some((child: AnyNode) =>
+    child?.type === "JSXText"
+      ? !(child.value.trim() === "" && child.value.includes("\n"))
+      : !(
+          child?.type === "JSXExpressionContainer" &&
+          child.expression?.type === "JSXEmptyExpression"
+        ),
+  );
+  if (hasChildren) replaced.add("children");
+  return replaced;
+}
+
+/**
  * Variables declared as `const x = await morph.pages.get("/path")`.
  *
  * Name-based, with no scope tracking: two functions in one route that both

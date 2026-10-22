@@ -30,6 +30,9 @@ export const START_PREVIEW_SPECS = [
   // The native Start half of the compatibility matrix. Its client-only half
   // (the KNOWN GAP tests) skips under Start and runs on the shards instead.
   "native-compat-preview.spec.ts",
+  // A prop beside a section's content spread: the loader form, and the
+  // `content("x")` form under the Start runtime. Needs the runner-owned store.
+  "spread-override-binding.spec.ts",
 ];
 
 /**
