@@ -103,13 +103,14 @@ function followRestoredRow(
   return target;
 }
 
-export function resolvePreviewSelectionRestoreElement(
-  section: HTMLElement,
+/** Finds a selection target within a rendered page without broadening to its root. */
+export function findPreviewSelectionRestoreElement(
+  root: HTMLElement,
   target: PreviewSelectionRestoreTarget,
   retainedElement?: HTMLElement | null,
-): HTMLElement {
-  if (target.isSection) return section;
-  target = followRestoredRow(section, target);
+): HTMLElement | null {
+  if (target.isSection) return null;
+  target = followRestoredRow(root, target);
   const sourceLocationSelector = target.sourceLocation
     ? `[data-morph-loc="${CSS.escape(target.sourceLocation)}"]`
     : null;
@@ -172,7 +173,7 @@ export function resolvePreviewSelectionRestoreElement(
     // takes no space and would leave the selection with nothing to outline.
     // A field the editor refused is never restored onto at all.
     let wrapper: HTMLElement | null = null;
-    for (const match of section.querySelectorAll<HTMLElement>(selector)) {
+    for (const match of root.querySelectorAll<HTMLElement>(selector)) {
       if (
         match.hasAttribute("data-storefront-field") &&
         !previewFieldBinding(match)?.fieldKey
@@ -190,7 +191,7 @@ export function resolvePreviewSelectionRestoreElement(
   // every plain element in the same section would resolve to the previously
   // selected sibling simply because it remains connected to the DOM.
   if (sourceLocationSelector) {
-    const match = section.querySelector<HTMLElement>(sourceLocationSelector);
+    const match = root.querySelector<HTMLElement>(sourceLocationSelector);
     if (match) return match;
   }
 
@@ -201,13 +202,25 @@ export function resolvePreviewSelectionRestoreElement(
   // exposes one.
   if (
     retainedElement?.isConnected &&
-    retainedElement !== section &&
-    section.contains(retainedElement)
+    retainedElement !== root &&
+    root.contains(retainedElement)
   ) {
     return retainedElement;
   }
 
-  return section;
+  return null;
+}
+
+export function resolvePreviewSelectionRestoreElement(
+  section: HTMLElement,
+  target: PreviewSelectionRestoreTarget,
+  retainedElement?: HTMLElement | null,
+): HTMLElement {
+  if (target.isSection) return section;
+  return (
+    findPreviewSelectionRestoreElement(section, target, retainedElement) ??
+    section
+  );
 }
 
 export const PREVIEW_EDITABLE_NODE_SELECTOR = [
@@ -341,7 +354,10 @@ export function previewSectionSelector(sectionId: string): string {
  */
 export function selectionFieldRefusal(
   message: Readonly<{ sectionId: string }>,
-  selected: Readonly<{ sectionId: string | null; section: Element | null }> | null,
+  selected: Readonly<{
+    sectionId: string | null;
+    section: Element | null;
+  }> | null,
   root: Pick<Document, "querySelector">,
   isHidden: (sectionId: string) => boolean,
 ): string | null {

@@ -319,7 +319,22 @@ function callSitesInModule(
   const unresolvableAlias = (specifier: unknown): boolean =>
     typeof specifier === "string" &&
     ALIAS_SPECIFIER.test(specifier) &&
-    baseNames.has(lastSegment(specifier));
+    (baseNames.has(lastSegment(specifier)) ||
+      (() => {
+        // `@/components` can be a barrel for `src/components/Hero.tsx` even
+        // though the alias's last segment does not name the component. The
+        // analyzer cannot know a Theme's alias map, so an alias matching a
+        // source directory containing this component must remain unknown.
+        const aliasedPath = normalizeThemeSourcePath(
+          `src/${specifier.replace(/^(?:@\/|~\/|#\/|\/)/, "")}`,
+        ).replace(SOURCE_FILE, "");
+        const componentSourcePath = componentPath.replace(SOURCE_FILE, "");
+        return (
+          aliasedPath.length > 0 &&
+          (componentSourcePath === aliasedPath ||
+            componentSourcePath.startsWith(`${aliasedPath}/`))
+        );
+      })());
 
   const locals: string[] = [];
   for (const statement of ast.program?.body ?? []) {

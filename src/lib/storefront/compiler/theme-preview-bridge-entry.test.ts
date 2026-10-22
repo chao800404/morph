@@ -319,7 +319,10 @@ describe("a selection-field post for a hidden section", () => {
   >;
 
   function selectionFieldBlock(): string {
-    const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] });
+    const ast = parse(BRIDGE, {
+      sourceType: "module",
+      plugins: ["typescript"],
+    });
     let block: string | null = null;
     const visit = (value: unknown) => {
       if (!value || typeof value !== "object") return;
@@ -355,7 +358,10 @@ describe("a selection-field post for a hidden section", () => {
     expect(start, "the content module's previewSlotHidden").toBeGreaterThan(-1);
     return source
       .slice(start, end + 2)
-      .replace("export function previewSlotHidden", "function previewSlotHidden");
+      .replace(
+        "export function previewSlotHidden",
+        "function previewSlotHidden",
+      );
   }
 
   type FakeElement = {
@@ -369,7 +375,10 @@ describe("a selection-field post for a hidden section", () => {
     closest: (selector: string) => FakeElement | null;
   };
 
-  function element(tag: string, attributes: Record<string, string>): FakeElement {
+  function element(
+    tag: string,
+    attributes: Record<string, string>,
+  ): FakeElement {
     const self: FakeElement = {
       attributes: { ...attributes },
       setAttribute: (name, value) => {
@@ -457,7 +466,10 @@ describe("a selection-field post for a hidden section", () => {
 
   it("still applies the same posts to a section the page shows", () => {
     const { image, link, drawOverlays } = run([]);
-    expect(image.attributes).toEqual({ src: "/posted-src.jpg", alt: "Posted alt" });
+    expect(image.attributes).toEqual({
+      src: "/posted-src.jpg",
+      alt: "Posted alt",
+    });
     expect(link.attributes).toEqual({ href: "/posted" });
     expect(drawOverlays).toHaveBeenCalledTimes(5);
   });
@@ -605,7 +617,10 @@ describe("editing text in the page it is rendered on", () => {
       };
       visit(ast.program);
       expect(onCommit, "the bridge's onCommit handler").not.toBeNull();
-      expect(finishBlock, "the bridge's finish-inline-text block").not.toBeNull();
+      expect(
+        finishBlock,
+        "the bridge's finish-inline-text block",
+      ).not.toBeNull();
       return { onCommit: onCommit!, finishBlock: finishBlock! };
     }
 
@@ -623,8 +638,10 @@ describe("editing text in the page it is rendered on", () => {
      */
     function runBridge(finishThrows = false) {
       const { onCommit, finishBlock } = bridgeCommitCode();
-      const posted: Array<{ message: Record<string, unknown>; channel: unknown }> =
-        [];
+      const posted: Array<{
+        message: Record<string, unknown>;
+        channel: unknown;
+      }> = [];
       const channel = { previewSession: "session" };
       const build = new Function(
         "postPreviewToEditorMessage",
@@ -708,9 +725,9 @@ describe("editing text in the page it is rendered on", () => {
       expect(() => bridge.handle(finish(true, 9))).toThrow("finish failed");
       bridge.onCommit(typed);
 
-      expect(bridge.posted.map(({ message }) => message.finishRequestId)).toEqual(
-        [9, undefined],
-      );
+      expect(
+        bridge.posted.map(({ message }) => message.finishRequestId),
+      ).toEqual([9, undefined]);
     });
   });
 });
@@ -936,7 +953,10 @@ describe("a field typed into in the Inspector", () => {
 describe("answering the editor's request for a route", () => {
   type Router = { navigate: (to: unknown) => Promise<void> } | undefined;
   /** The bridge's route handler, run with stand-ins for the page around it. */
-  function routeHandler(options: { router: Router; matched: () => string | undefined }) {
+  function routeHandler(options: {
+    router: Router;
+    matched: () => string | undefined;
+  }) {
     const source = BRIDGE.slice(
       BRIDGE.indexOf("function answerRouteRequest"),
       BRIDGE.indexOf("function clearSelectionAttributes"),
@@ -1000,8 +1020,12 @@ describe("answering the editor's request for a route", () => {
     let matched: string | undefined = "/";
     const page = routeHandler({ router: { navigate }, matched: () => matched });
     page.apply({ routePath: "/inline-reload-defer", routeRequestId: 3 });
-    expect(navigate).toHaveBeenCalledExactlyOnceWith({ to: "/inline-reload-defer" });
-    expect(page.attributes["data-morph-route-path"]).toBe("/inline-reload-defer");
+    expect(navigate).toHaveBeenCalledExactlyOnceWith({
+      to: "/inline-reload-defer",
+    });
+    expect(page.attributes["data-morph-route-path"]).toBe(
+      "/inline-reload-defer",
+    );
     await settle();
     // Still on the way: nothing is said about where it is.
     expect(page.posted).toEqual([]);
@@ -1024,13 +1048,20 @@ describe("answering the editor's request for a route", () => {
     page.apply({ routePath: "/inline-reload-defer", routeRequestId: 4 });
     await settle();
     expect(page.posted).toEqual([
-      { type: "morph:storefront-preview-route-applied", routeRequestId: 4, routePath: "/" },
+      {
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 4,
+        routePath: "/",
+      },
     ]);
   });
 
   it("does not answer with a router that matched no route", async () => {
     const navigate = vi.fn(() => Promise.resolve());
-    const page = routeHandler({ router: { navigate }, matched: () => undefined });
+    const page = routeHandler({
+      router: { navigate },
+      matched: () => undefined,
+    });
     page.apply({ routePath: "/missing", routeRequestId: 5 });
     await settle();
     expect(page.posted).toEqual([]);
@@ -1040,7 +1071,11 @@ describe("answering the editor's request for a route", () => {
     const page = routeHandler({ router: undefined, matched: () => undefined });
     page.apply({ routePath: "/inline-reload-defer", routeRequestId: 6 });
     expect(page.posted).toEqual([
-      { type: "morph:storefront-preview-route-applied", routeRequestId: 6, routePath: null },
+      {
+        type: "morph:storefront-preview-route-applied",
+        routeRequestId: 6,
+        routePath: null,
+      },
     ]);
     expect(page.steps).toEqual(["answer"]);
     expect(page.timers).toEqual([]);
@@ -1048,7 +1083,10 @@ describe("answering the editor's request for a route", () => {
 
   it("answers nothing to a request that carries no id", async () => {
     const navigate = vi.fn(() => Promise.resolve());
-    const routed = routeHandler({ router: { navigate }, matched: () => "/about" });
+    const routed = routeHandler({
+      router: { navigate },
+      matched: () => "/about",
+    });
     routed.apply({ routePath: "/about" });
     const plain = routeHandler({ router: undefined, matched: () => undefined });
     plain.apply({ routePath: "/about" });
@@ -1058,7 +1096,9 @@ describe("answering the editor's request for a route", () => {
   });
 
   it("is what the page's message listener runs for set-route", () => {
-    const listener = BRIDGE.slice(BRIDGE.indexOf('window.addEventListener("message"'));
+    const listener = BRIDGE.slice(
+      BRIDGE.indexOf('window.addEventListener("message"'),
+    );
     expect(listener).toContain(
       'if (message?.type === "morph:storefront-preview-set-route") {\n      applyEditorRoute(message);',
     );
@@ -1066,14 +1106,22 @@ describe("answering the editor's request for a route", () => {
 });
 
 describe("the document id a preview page's messages carry (C5, A1)", () => {
-  type Node = { type: string; start: number; end: number; [key: string]: unknown };
+  type Node = {
+    type: string;
+    start: number;
+    end: number;
+    [key: string]: unknown;
+  };
   const protocol = GENERATED_PREVIEW_BRIDGE_SOURCES.find(
     (module) => module.path === "src/morph/preview/preview-protocol.ts",
   )!.content;
   const ast = parse(protocol, { sourceType: "module", plugins: ["typescript"] })
     .program as unknown as Node & { body: Node[] };
 
-  function walk(root: Node, visit: (node: Node, ancestors: readonly Node[]) => void) {
+  function walk(
+    root: Node,
+    visit: (node: Node, ancestors: readonly Node[]) => void,
+  ) {
     const stack: Node[] = [];
     const go = (node: Node) => {
       visit(node, stack);
@@ -1081,7 +1129,11 @@ describe("the document id a preview page's messages carry (C5, A1)", () => {
       for (const [key, value] of Object.entries(node)) {
         if (key === "loc" || key === "extra") continue;
         for (const child of Array.isArray(value) ? value : [value]) {
-          if (child && typeof child === "object" && typeof (child as Node).type === "string") {
+          if (
+            child &&
+            typeof child === "object" &&
+            typeof (child as Node).type === "string"
+          ) {
             go(child as Node);
           }
         }
@@ -1091,7 +1143,9 @@ describe("the document id a preview page's messages carry (C5, A1)", () => {
     go(root);
   }
   const functionName = (node: Node) =>
-    node.type === "FunctionDeclaration" ? ((node.id as Node | null)?.name as string) : null;
+    node.type === "FunctionDeclaration"
+      ? ((node.id as Node | null)?.name as string)
+      : null;
 
   it("is minted in the copied protocol, held at module level and set only by its one minting function", () => {
     const held = ast.body.filter(
@@ -1110,7 +1164,10 @@ describe("the document id a preview page's messages carry (C5, A1)", () => {
         (node.left as Node).name === "documentIdentity"
       ) {
         assignedIn.push(
-          ancestors.map(functionName).filter((name) => name !== null).at(-1) ?? null,
+          ancestors
+            .map(functionName)
+            .filter((name) => name !== null)
+            .at(-1) ?? null,
         );
       }
     });
@@ -1146,7 +1203,12 @@ describe("the document id a preview page's messages carry (C5, A1)", () => {
 });
 
 describe("the ping a ready is confirmed with (C5 option A)", () => {
-  type Node = { type: string; start: number; end: number; [key: string]: unknown };
+  type Node = {
+    type: string;
+    start: number;
+    end: number;
+    [key: string]: unknown;
+  };
   const ast = parse(BRIDGE, { sourceType: "module", plugins: ["typescript"] })
     .program as unknown as Node & { body: Node[] };
   const text = (node: Node) => BRIDGE.slice(node.start, node.end);
@@ -1155,7 +1217,8 @@ describe("the ping a ready is confirmed with (C5 option A)", () => {
     // Both are statements of the one top-level `if (channel) { ... }`
     // block, run once when the module is evaluated: no function between.
     const block = ast.body.find(
-      (node) => node.type === "IfStatement" && text(node.test as Node) === "channel",
+      (node) =>
+        node.type === "IfStatement" && text(node.test as Node) === "channel",
     ) as (Node & { consequent: { body: Node[] } }) | undefined;
     expect(block).toBeDefined();
     const body = block!.consequent.body;
@@ -1173,7 +1236,9 @@ describe("the ping a ready is confirmed with (C5 option A)", () => {
     expect(pingListener).toBeGreaterThanOrEqual(0);
     expect(readySchedule).toBeGreaterThan(pingListener);
     const listener = text(body[pingListener]!);
-    const pong = listener.slice(listener.indexOf('"morph:storefront-preview-ping"'));
+    const pong = listener.slice(
+      listener.indexOf('"morph:storefront-preview-ping"'),
+    );
     // The answer goes out through the one poster, which stamps this
     // document's id on it (`postPreviewToEditorMessage`).
     expect(pong).toMatch(
@@ -1197,7 +1262,9 @@ describe("a field outside every section (the page stand-in)", () => {
   it("is named only for the route this document applied and answered", () => {
     // Cleared the moment a new request arrives; set only together with the
     // answer the editor checks, to the route the editor asked for.
-    expect(BRIDGE).toContain("function applyEditorRoute(message) {\n  appliedRoutePath = null;");
+    expect(BRIDGE).toContain(
+      "function applyEditorRoute(message) {\n  appliedRoutePath = null;",
+    );
     expect(BRIDGE).toContain(
       'appliedRoutePath = message.routePath ?? "/";\n          answerRouteRequest(message.routeRequestId, routePath);',
     );
@@ -1208,5 +1275,24 @@ describe("a field outside every section (the page stand-in)", () => {
       (module) => module.path === "src/morph/preview/preview-dom.ts",
     );
     expect(dom?.content).toContain("export function resolvePageStandIn(");
+  });
+
+  it("rebinds a replaced stand-in by identity after the route has no section root", () => {
+    const restore = BRIDGE.slice(
+      BRIDGE.indexOf("function restoreSelectedTarget"),
+      BRIDGE.indexOf("function selectableAt"),
+    );
+    expect(restore).toContain(
+      "findPreviewSelectionRestoreElement(\n      document.documentElement,",
+    );
+    expect(restore).toContain("resolvePageStandIn(restoredPageElement, {");
+    expect(restore).toContain("target.sectionId === appliedRoutePath");
+
+    const dom = GENERATED_PREVIEW_BRIDGE_SOURCES.find(
+      (module) => module.path === "src/morph/preview/preview-dom.ts",
+    );
+    expect(dom?.content).toContain(
+      "export function findPreviewSelectionRestoreElement(",
+    );
   });
 });

@@ -1,5 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { resolvePageStandIn } from "./preview-dom";
+import {
+  findPreviewSelectionRestoreElement,
+  resolvePageStandIn,
+} from "./preview-dom";
 import {
   acceptsPageStandIn,
   isDocumentWriteTarget,
@@ -78,6 +81,34 @@ describe("resolvePageStandIn (in the preview)", () => {
       section: null,
     });
     expect(item?.element).toBe(byId("title"));
+  });
+
+  it("rebinds a replaced page field by its stable identity", () => {
+    const { byId, owns } = mountPage();
+    const previous = byId("title");
+    const previousComponent = previous.parentElement!;
+    const replacementComponent = previousComponent.cloneNode(
+      false,
+    ) as HTMLElement;
+    const replacement = previous.cloneNode(true) as HTMLElement;
+    replacement.id = "replacement-title";
+    replacementComponent.insertAdjacentElement("beforeend", replacement);
+    previousComponent.replaceWith(replacementComponent);
+
+    const restored = findPreviewSelectionRestoreElement(
+      document.documentElement,
+      {
+        sectionId: "/explicit",
+        sourceLocation: "src/components/Hero.tsx:11:7",
+        fieldKey: "title",
+        fieldPath: "title",
+      },
+    );
+
+    expect(restored).toBe(replacement);
+    expect(
+      resolvePageStandIn(restored, { routePath: "/explicit", owns }),
+    ).toMatchObject({ sectionId: "/explicit", fieldKey: "title" });
   });
 
   it("gives nothing before the editor's route is applied, or for a non-route id", () => {

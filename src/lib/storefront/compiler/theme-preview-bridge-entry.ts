@@ -34,6 +34,7 @@ import {
   previewSectionSelector,
   selectionFieldRefusal,
   resolvePageStandIn,
+  findPreviewSelectionRestoreElement,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
   selectionKindOf,
@@ -422,6 +423,33 @@ function restoreSelectedTarget(target) {
     syncDragHandle();
     drawOverlays();
     return;
+  }
+  if (!section && target.sectionId === appliedRoutePath) {
+    const restoredPageElement = findPreviewSelectionRestoreElement(
+      document.documentElement,
+      target,
+      selectedItem?.element,
+    );
+    const restoredPageItem = restoredPageElement
+      ? resolvePageStandIn(restoredPageElement, {
+          routePath: target.sectionId,
+          owns: overlays?.owns,
+        })
+      : null;
+    if (restoredPageItem) {
+      selectedItem = {
+        ...restoredPageItem,
+        fieldPath: target.fieldPath ?? restoredPageItem.fieldPath,
+        fieldKey: target.fieldKey ?? restoredPageItem.fieldKey,
+      };
+      selectedItem.element.setAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+      syncDragHandle();
+      drawOverlays();
+      return;
+    }
   }
   if (!section) {
     selectedItem = null;

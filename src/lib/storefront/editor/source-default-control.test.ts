@@ -14,8 +14,12 @@ export default function Hero({ title = "Default title", desc = "Default desc" })
     </section>
   );
 }`;
-const route = (imports: string, body: string) => ({
-  path: "src/routes/index.tsx",
+const route = (
+  imports: string,
+  body: string,
+  path = "src/routes/index.tsx",
+) => ({
+  path,
   content: `import { createFileRoute } from "@tanstack/react-router";
 ${imports}
 export const Route = createFileRoute("/")({ component: Home });
@@ -171,6 +175,27 @@ describe("analyzeSourceDefaultFields", () => {
     expect(result.title).toEqual({
       status: "code",
       reason: "call-site-unknown",
+    });
+  });
+
+  it("an alias to a component directory may hide another call site in a barrel", () => {
+    const result = analyze(
+      withHero(
+        route(
+          `import Hero from "../components/Hero";`,
+          `  return <main><Hero /></main>;`,
+          "src/routes/first.tsx",
+        ),
+        route(
+          `import Hero from "@/components";`,
+          `  return <main><Hero title="Route title" /></main>;`,
+          "src/routes/second.tsx",
+        ),
+      ),
+    );
+    expect(result).toEqual({
+      title: { status: "code", reason: "call-site-unknown" },
+      desc: { status: "code", reason: "call-site-unknown" },
     });
   });
 
