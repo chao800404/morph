@@ -76,12 +76,21 @@ if (tool === "vite") {
   // Written to first, as the real one has been by then: \`process.stdout\` is
   // created on first use, and creating it sets O_NONBLOCK again.
   console.log("[fake-dev] starting");
+  console.log("[vite] Re-optimizing dependencies because vite config has changed");
   spawnSync("true", { stdio: "inherit" });
   const port = Number(rest[rest.indexOf("--port") + 1]);
   const line = "x".repeat(200);
+  let emittedLateOptimize = false;
   http
     .createServer((request, response) => {
       if (request.url === "/log") {
+        if (process.env.FAKE_VITE_REOPTIMIZE && !emittedLateOptimize) {
+          emittedLateOptimize = true;
+          console.log("[vite] (client) ✨ new dependencies optimized: buffer, @vendor/dep");
+          console.log("[vite] (ssr) ✨ optimized dependencies changed. reloading");
+          console.log("[vite] ✨ new dependencies optimized: untagged-dep");
+          console.log("[vite] unrelated development message");
+        }
         // One write per line, as a logging dev server does. ~200 KB a request,
         // which is about what the pipe holds, so the old runner stalls within a
         // few requests rather than on the first.
@@ -340,6 +349,109 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       assert.match(result.stdout, /\[e2e\] passed/);
       assert.equal(result.code, 0, result.stderr);
       assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "records late dependency re-optimization with its selected spec and keeps a passing run green",
+    async () => {
+      const report = path.join(scratch, "late-events", "playwright.json");
+      const eventReport = `${report}.late-dependency-reoptimizations.json`;
+      const result = await runRunner(
+        {
+          FAKE_VITE_REOPTIMIZE: "1",
+          FAKE_REPORT_STATUS: "passed",
+          MORPH_E2E_REPORT_PATH: report,
+        },
+        undefined,
+        ["fake.spec.ts"],
+      );
+
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      assert.match(result.stdout, /FAKE_PLAYWRIGHT_ANSWERED 10/);
+      const reportJson = JSON.parse(await readFile(report, "utf8"));
+      assert.equal(
+        reportJson.suites[0].specs[0].tests[0].results[0].status,
+        "passed",
+      );
+      const { lateDependencyReoptimizations: events } = JSON.parse(
+        await readFile(eventReport, "utf8"),
+      );
+      assert.equal(events.length, 3);
+      assert.deepEqual(events[0], {
+        timestamp: events[0].timestamp,
+        environment: "client",
+        dependencies: ["buffer", "@vendor/dep"],
+        kind: "dependencies-optimized",
+        spec: "fake.spec.ts",
+      });
+      assert.match(events[0].timestamp, /^\d{4}-\d\d-\d\dT.*Z$/);
+      assert.deepEqual(events[1], {
+        timestamp: events[1].timestamp,
+        environment: "ssr",
+        dependencies: null,
+        kind: "optimized-dependencies-reloading",
+        spec: "fake.spec.ts",
+      });
+      assert.deepEqual(events[2], {
+        timestamp: events[2].timestamp,
+        environment: null,
+        dependencies: ["untagged-dep"],
+        kind: "dependencies-optimized",
+        spec: "fake.spec.ts",
+      });
+      assert.match(result.stdout, /\[e2e\] late-reoptimize /);
+      assert.doesNotMatch(
+        result.stdout,
+        /late-reoptimize.*Re-optimizing dependencies because vite config has changed/,
+      );
+      assert.doesNotMatch(result.stdout, /late-reoptimize.*unrelated development message/);
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
+
+  it(
+    "records unknown spec for a shard and does not change a failing suite's exit status",
+    async () => {
+      const report = path.join(scratch, "late-unknown", "playwright.json");
+      const eventReport = `${report}.late-dependency-reoptimizations.json`;
+      const result = await runRunner(
+        {
+          FAKE_VITE_REOPTIMIZE: "1",
+          FAKE_REPORT_STATUS: "passed",
+          MORPH_E2E_REPORT_PATH: report,
+        },
+        undefined,
+        [FIRST_SHARD],
+      );
+
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      const events = JSON.parse(await readFile(eventReport, "utf8"))
+        .lateDependencyReoptimizations;
+      assert.equal(events.length, 3);
+      assert.equal(events[0].spec, "unknown");
+
+      const failReport = path.join(scratch, "late-fail", "playwright.json");
+      const failing = await runRunner({
+        FAKE_VITE_REOPTIMIZE: "1",
+        FAKE_PLAYWRIGHT_MODE: "fail",
+        MORPH_E2E_REPORT_PATH: failReport,
+      });
+      assert.equal(failing.code, 1);
+      assert.match(
+        failing.stderr,
+        /npx playwright test --project=editor --reporter=line,json fake\.spec\.ts exited with 1/,
+      );
+      assert.equal(
+        JSON.parse(
+          await readFile(
+            `${failReport}.late-dependency-reoptimizations.json`,
+            "utf8",
+          ),
+        ).lateDependencyReoptimizations.length,
+        3,
+      );
+      assert.deepEqual(failing.leftBehind, []);
     },
   );
 
