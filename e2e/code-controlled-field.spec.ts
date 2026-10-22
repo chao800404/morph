@@ -797,17 +797,25 @@ for (const theme of [
       const homeBefore = templatesBeforeCms.find((t) => t.type === "index")!;
       const homeAfter = templatesAfterCms.find((t) => t.type === "index")!;
       type Doc = {
-        sections: Array<{ id: string; props?: Record<string, unknown> }>;
+        sections: Array<{
+          id: string;
+          componentRef?: string | null;
+          props?: Record<string, unknown>;
+        }>;
       };
+      // The edited section as the write stores it: that field changed, and
+      // its component ref the one the route renders it from, which the write
+      // resolves for the section it writes (a legacy ref in the seed reads
+      // back as stored since #291). Nothing else in it, and no other section.
+      const edited = (section: Doc["sections"][number]) => ({
+        ...section,
+        componentRef: `src/components/page-sections/index/${sectionId}/index.tsx`,
+        props: { ...(section.props ?? {}), heading: newHeading },
+      });
       const sectionsBefore = (homeBefore.document as Doc).sections;
       const sectionsAfter = (homeAfter.document as Doc).sections;
       const expectedSections = sectionsBefore.map((section) =>
-        section.id === sectionId
-          ? {
-              ...section,
-              props: { ...(section.props ?? {}), heading: newHeading },
-            }
-          : section,
+        section.id === sectionId ? edited(section) : section,
       );
       expect(sectionsAfter).toEqual(expectedSections);
       expect({ ...(homeAfter.document as object), sections: [] }).toEqual({
@@ -844,12 +852,7 @@ for (const theme of [
       expect(rawDocAfter).toEqual({
         ...(homeBefore.document as Doc),
         sections: (homeBefore.document as Doc).sections.map((section) =>
-          section.id === sectionId
-            ? {
-                ...section,
-                props: { ...(section.props ?? {}), heading: newHeading },
-              }
-            : section,
+          section.id === sectionId ? edited(section) : section,
         ),
       });
       // The row's own document column (the seed it was created with) is not
