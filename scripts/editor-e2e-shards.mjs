@@ -85,6 +85,9 @@ export const EDITOR_SHARDS = [
     "auth-failure.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "code-editor-local-monaco.spec.ts",
+    // Added after the duration measurement above; B1's client-only Design
+    // acceptance runs here as well as in the dedicated full Start job.
+    "binding-acceptance.spec.ts",
   ],
 ];
 
