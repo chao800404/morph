@@ -21,6 +21,11 @@ import { START_PREVIEW_JOB_NAME } from "./editor-e2e-start.mjs";
 export const REQUIRED_CHECK = "Architecture guards";
 
 export const VALIDATE_CHECK = "Typecheck, test, build";
+export const VALIDATION_CHECKS = [
+  "Validation typecheck",
+  "Validation tests",
+  "Validation build",
+];
 
 /** The aggregate job that says every shard ran (`needs:` the shard matrix). */
 export const E2E_ACCEPTANCE_CHECK =
@@ -40,6 +45,7 @@ export const EDITOR_SHARD_CHECKS = Array.from(
 export const EXPECTED_CI_CHECKS = [
   REQUIRED_CHECK,
   VALIDATE_CHECK,
+  ...VALIDATION_CHECKS,
   START_PREVIEW_JOB_NAME,
   ...EDITOR_SHARD_CHECKS,
   E2E_ACCEPTANCE_CHECK,
@@ -53,5 +59,6 @@ export const EXPECTED_CI_CHECKS = [
  * @type {Record<string, string[]>}
  */
 export const CHECK_DEPENDENCIES = {
+  [VALIDATE_CHECK]: VALIDATION_CHECKS,
   [E2E_ACCEPTANCE_CHECK]: EDITOR_SHARD_CHECKS,
 };
