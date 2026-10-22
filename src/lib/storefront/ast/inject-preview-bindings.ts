@@ -829,12 +829,21 @@ function threadedFieldAttributes(
   local: string,
   field: string,
   withPath: boolean,
+  /**
+   * The component is never handed a row, only a section's fields
+   * (`sectionThreadFields`): a thread with no `path`, whose fields are
+   * top-level, so a named field carries no path of its own and the editor
+   * reads the field key as one.
+   */
+  pathless = false,
 ): string {
   const key = JSON.stringify(field);
   return (
     ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? "") : ${key}}` +
     (withPath
-      ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+      ? pathless
+        ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] && ${local}.path ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+        : ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
       : "")
   );
 }
@@ -1270,6 +1279,9 @@ export function injectPreviewBindings(
   // Section call sites the preview does not mark as their section; see
   // `propsReplacingSpread` below.
   const unprovenSectionCallSites = new Set<string>();
+  // Section call sites that hand their component a thread naming the fields
+  // the call site leaves alone; see `propsReplacingSpread` below.
+  const sectionThreadFields = new Map<string, Record<string, string>>();
   const fileByPath = new Map(files.map((file) => [file.path, file]));
   const addFunction = (into: Map<string, any[]>, path: string, fn: any) => {
     const list = into.get(path) ?? [];
@@ -1359,6 +1371,15 @@ export function injectPreviewBindings(
     scannedSubtrees.add(key);
     scanSectionSubtree(path, fn.body);
   };
+  // Components some list renders as its rows. Their field elements build a
+  // row's path, so a section's thread, which has none, is not handed to them.
+  const rowThreadedFunctions = new Set<string>();
+  for (const [path, exportNames] of threadedExports) {
+    for (const exportName of exportNames) {
+      const fn = findExportedFunction(asts.get(path), exportName);
+      if (fn) rowThreadedFunctions.add(`${path}:${fn.start}`);
+    }
+  }
   // Section call sites that set a prop in place of one of the section's
   // fields (`propsReplacingSpread`).
   //
@@ -1366,10 +1387,14 @@ export function injectPreviewBindings(
   // wrapper `title` reads as `hero.title`; after
   // `<Hero {...content("hero")} title={other.title} />` the page shows
   // `other.title` there. Which of the section's fields still come from the
-  // spread is not proven field by field yet, so the instance names none: the
-  // call site hands the component the same empty thread a nested component
-  // gets, and its elements stay selectable with nothing to edit. The section
-  // stays bound, so its stored content renders and saves as before.
+  // spread is known by name: every declared field the call site does not set.
+  // The call site hands the component #283's thread with those fields, each
+  // the section's field of the same name (`sectionThreadFields`), so the
+  // replaced ones name nothing and stay selectable with nothing to edit while
+  // the others are still the section's. After a later spread, which may set
+  // any prop, or for a component some list also renders as its rows, the
+  // thread names none (`fields: {}`). The section stays bound, so its stored
+  // content renders and saves as before.
   //
   // Where the thread cannot reach every element that could name a replaced
   // field — the component is not found, declares no fields to compare with,
@@ -1424,6 +1449,19 @@ export function injectPreviewBindings(
           ) {
             nestedCallSites.add(callSite);
             addFunction(nestedThreadFunctions, target.path, target.fn);
+            if (
+              replaced !== "any" &&
+              !rowThreadedFunctions.has(`${target.path}:${target.fn.start}`)
+            ) {
+              sectionThreadFields.set(
+                callSite,
+                Object.fromEntries(
+                  [...declared!.top]
+                    .filter((name) => !replaced.has(name))
+                    .map((name) => [name, name]),
+                ),
+              );
+            }
           } else {
             unprovenSectionCallSites.add(callSite);
           }
@@ -1521,6 +1559,8 @@ export function injectPreviewBindings(
       end: number;
       local: string;
       roots: ReadonlySet<number>;
+      /** Never a list's row component: its thread carries no row path. */
+      pathless: boolean;
     }> = [];
     for (const fn of [
       ...[...(threadedExports.get(file.path) ?? [])].map((exportName) =>
@@ -1557,6 +1597,7 @@ export function injectPreviewBindings(
         end: fn.end,
         local,
         roots: componentRootStarts(fn),
+        pathless: !rowThreadedFunctions.has(`${file.path}:${fn.start}`),
       });
     }
     const threadAt = (position: number) =>
@@ -1748,9 +1789,12 @@ export function injectPreviewBindings(
           opening?.name?.end != null &&
           nestedCallSites.has(`${file.path}:${opening.start}`)
         ) {
+          const sectionFields = sectionThreadFields.get(
+            `${file.path}:${opening.start}`,
+          );
           insertions.push({
             at: opening.name.end,
-            text: ` ${ROW_PROP}={{ fields: {} }}`,
+            text: ` ${ROW_PROP}={{ fields: ${sectionFields ? JSON.stringify(sectionFields) : "{}"} }}`,
           });
         }
 
@@ -1807,6 +1851,7 @@ export function injectPreviewBindings(
                     thread.local,
                     field,
                     !hasAttribute(opening, FIELD_PATH_ATTRIBUTE),
+                    thread.pathless,
                   )
                 : !arrayPath && unthreadableAt(node.start)
                   ? ` ${FIELD_ATTRIBUTE}=""`
@@ -1914,7 +1959,12 @@ export function injectPreviewBindings(
           const thread = !arrayPath ? threadAt(node.start) : null;
           if (field && allowed) {
             const attributes = thread
-              ? threadedFieldAttributes(thread.local, field, true)
+              ? threadedFieldAttributes(
+                  thread.local,
+                  field,
+                  true,
+                  thread.pathless,
+                )
               : !arrayPath && unthreadableAt(node.start)
                 ? ` ${FIELD_ATTRIBUTE}=""`
                 : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +

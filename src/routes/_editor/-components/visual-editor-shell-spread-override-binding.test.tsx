@@ -580,6 +580,56 @@ describe.each(Object.keys(OVERRIDDEN))("%s, every title Sale", (name) => {
   });
 });
 
+/**
+ * The field the call site leaves alone, clicked on the canvas of an
+ * overridden instance: it is still the section's, and only it is written.
+ */
+describe.each([
+  'content("hero"), then a literal',
+  'content("hero"), then another section\'s title (C4b)',
+])("%s, the subtitle the call site leaves alone", (name) => {
+  const files = OVERRIDDEN[name]!;
+
+  it("the Inspector writes hero.subtitle, and only it", async () => {
+    page = await renderPage(files, STORED);
+    renderEditor(files);
+    const p = page.querySelector<HTMLElement>("p")!;
+    expect(p.textContent).toBe("Hero subtitle");
+    fromPreview(selectionReport(p));
+    await settle();
+    await openContent();
+    expect(editorInputs("Sale")).toEqual([]);
+    const subtitle = editorInputs("Hero subtitle");
+    expect(subtitle).toHaveLength(1);
+    await type(subtitle[0]!, "Edited subtitle");
+    expect(written()).toEqual([
+      { sectionId: "hero", props: { subtitle: "Edited subtitle" } },
+    ]);
+  });
+
+  it("an inline edit writes hero.subtitle, and only it", async () => {
+    page = await renderPage(files, STORED);
+    renderEditor(files);
+    const p = page.querySelector<HTMLElement>("p")!;
+    await selectForInlineEditing(p);
+    const { began, commits } = inlineEdit(p, STORED, "Edited subtitle");
+    expect(began).toBe(true);
+    expect(commits).toEqual([
+      {
+        sectionId: "hero",
+        fieldKey: "subtitle",
+        fieldPath: "subtitle",
+        value: "Edited subtitle",
+        originalValue: "Hero subtitle",
+      },
+    ]);
+    await postCommits(commits);
+    expect(written()).toEqual([
+      { sectionId: "hero", props: { subtitle: "Edited subtitle" } },
+    ]);
+  });
+});
+
 describe("a literal before the spread, both titles Sale", () => {
   const files = [HERO, BEFORE];
 

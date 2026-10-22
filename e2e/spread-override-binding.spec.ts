@@ -586,13 +586,43 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
       "passes its own value for these fields after this section's content",
     );
     await expect(titleField(page)).toHaveCount(0);
-    // The row selects the instance's root element, whose form offers the
-    // fields named beneath it. This instance names none on the canvas (the
-    // empty thread), so its subtitle is not offered from this entry either.
-    await expect(subtitleField(page)).toHaveCount(0);
     await page.waitForTimeout(1_500);
     expect(writes).toEqual([]);
     expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual(STORED);
+
+    // The subtitle the call site leaves alone is still hero.subtitle: the
+    // row's form offers it, and so does a click on it on the canvas.
+    await expect(subtitleField(page)).toHaveValue(STORED.subtitle);
+    await clickOnCanvas(page, sectionText(page, SLOT));
+    await openContentTab(page);
+    await expect(titleField(page)).toHaveCount(0);
+    await expect(subtitleField(page)).toHaveValue(STORED.subtitle);
+    const heroSubtitle = `Hero subtitle ${Date.now()}`;
+    const heroSaved = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) && (response.request().postData() ?? "").includes(heroSubtitle),
+      { timeout: 30_000 },
+    );
+    await subtitleField(page).fill(heroSubtitle);
+    await subtitleField(page).press("Tab");
+    expect((await heroSaved).ok()).toBe(true);
+    // Only hero.subtitle changed; the title stays as stored, and so does the
+    // other instance.
+    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual({
+      ...STORED,
+      subtitle: heroSubtitle,
+    });
+    expect(await rawStoredProps(TWO_ROUTE, PLAIN)).toEqual(PLAIN_STORED);
+    await expect(sectionText(page, SLOT)).toHaveText(heroSubtitle, {
+      timeout: 30_000,
+    });
+    await expect(sectionHeading(page, SLOT)).toHaveText(SALE);
+    const heroWrites = writes.length;
+    expect(heroWrites).toBeGreaterThan(0);
+    for (const body of writes) expect(body).toContain(`"${SLOT}"`);
 
     // The untouched instance of the same component, from its row.
     await panelRow(page, PLAIN).click();
@@ -619,10 +649,15 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
       await field.press("Tab");
       expect((await saved).ok()).toBe(true);
     }
-    expect(writes.length).toBeGreaterThan(0);
-    for (const body of writes) expect(body).toContain(`"${PLAIN}"`);
+    expect(writes.length).toBeGreaterThan(heroWrites);
+    for (const body of writes.slice(heroWrites)) {
+      expect(body).toContain(`"${PLAIN}"`);
+    }
     expect(await rawStoredProps(TWO_ROUTE, PLAIN)).toEqual({ title, subtitle });
-    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual(STORED);
+    expect(await rawStoredProps(TWO_ROUTE, SLOT)).toEqual({
+      ...STORED,
+      subtitle: heroSubtitle,
+    });
 
     // A fresh load: the canvas and the Inspector read the stored values.
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -631,11 +666,16 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     });
     await expect(sectionText(page, PLAIN)).toHaveText(subtitle);
     await expect(sectionHeading(page, SLOT)).toHaveText(SALE);
-    await expect(sectionText(page, SLOT)).toHaveText(STORED.subtitle);
+    await expect(sectionText(page, SLOT)).toHaveText(heroSubtitle);
     await panelRow(page, PLAIN).click();
     await openContentTab(page);
     await expect(titleField(page)).toHaveValue(title);
     await expect(subtitleField(page)).toHaveValue(subtitle);
+    await panelRow(page, SLOT).click();
+    await openContentTab(page);
+    await expect(codeSetNotice(page)).toContainText("Override title");
+    await expect(titleField(page)).toHaveCount(0);
+    await expect(subtitleField(page)).toHaveValue(heroSubtitle);
   });
 
   // The loader form runs a server function, which only the full Start

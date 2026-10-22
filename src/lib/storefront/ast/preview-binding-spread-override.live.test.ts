@@ -211,7 +211,7 @@ describe("a prop set after the spread replaces the section's field", () => {
   });
 
   it.each(overriding)(
-    'content("hero"), %s: the section stays bound and the instance names no field',
+    'content("hero"), %s: the section stays bound, the title names nothing, and a field the call site leaves alone stays the section\'s',
     async (_, body, sections, shown) => {
       const root = await mount(contentRoute(body), sections);
       const h1 = only(root, "h1");
@@ -223,16 +223,16 @@ describe("a prop set after the spread replaces the section's field", () => {
         fieldKey: null,
         fieldPath: null,
       });
-      // The stored subtitle still renders. This first version does not prove
-      // the fields the call site left alone one by one, so the instance names
-      // none of them: refused, never claimed wrongly.
+      // The stored subtitle still renders, and the call site does not set
+      // it, so it is still the section's field. A later spread may set any
+      // prop, so after one it is not.
       const p = only(root, "p");
       expect(p.textContent).toBe("Stored subtitle");
-      expect(clicked(p)).toEqual({
-        sectionId: "hero",
-        fieldKey: null,
-        fieldPath: null,
-      });
+      expect(clicked(p)).toEqual(
+        body.includes("{...extra}")
+          ? { sectionId: "hero", fieldKey: null, fieldPath: null }
+          : { sectionId: "hero", fieldKey: "subtitle", fieldPath: "subtitle" },
+      );
       expect(
         all(root, "[data-storefront-section-id]").map(
           (element) => element.dataset.storefrontSectionId,
@@ -259,6 +259,11 @@ describe("a prop set after the spread replaces the section's field", () => {
     const [overridden, plain] = all(root, "h1");
     expect(overridden!.textContent).toBe("Sale");
     expect(clicked(overridden!).fieldKey).toBeNull();
+    expect(clicked(all(root, "p")[0]!)).toEqual({
+      sectionId: "hero",
+      fieldKey: "subtitle",
+      fieldPath: "subtitle",
+    });
     expect(plain!.textContent).toBe("Sale");
     expect(clicked(plain!)).toEqual({
       sectionId: "plain",
@@ -379,6 +384,85 @@ export default function Hero({ title = "Default title", subtitle = "Default subt
     expect(all(root, '[data-storefront-section-id="hero"]')).toHaveLength(0);
     expect(claimsHero(only(root, "h1"))).toBe(false);
     expect(claimsHero(only(root, "p"))).toBe(false);
+  });
+
+  it("a component a list also renders as its rows names nothing at an overriding call site", async () => {
+    // Its field elements build a row's path from the thread, and a section's
+    // thread has none, so the call site hands it the empty one.
+    const { html } = await renderLivePreviewRoute({
+      files: [
+        ...livePreviewPlatformFiles(),
+        {
+          path: "src/components/Card.tsx",
+          content: `export const contentFields = {
+  heading: { type: "text" },
+  sub: { type: "text" },
+};
+export default function Card({ heading = "", sub = "" }) {
+  return <article><h3>{heading}</h3><p>{sub}</p></article>;
+}`,
+        },
+        {
+          path: "src/components/List.tsx",
+          content: `import Card from "./Card";
+export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+};
+export default function List({ items = [] }) {
+  return <section>{items.map((item, index) => <Card key={item.id} heading={item.title} />)}</section>;
+}`,
+        },
+        {
+          path: ROUTE,
+          content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Card from "../components/Card";
+import List from "../components/List";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  return <main><List {...content("list")} /><Card {...content("hero")} heading="Sale" /></main>;
+}`,
+        },
+      ],
+      documents: {
+        index: {
+          version: 1,
+          sections: [
+            {
+              id: "list",
+              type: "list",
+              enabled: true,
+              props: { items: [{ id: "r1", title: "Row" }] },
+            },
+            {
+              id: "hero",
+              type: "card",
+              enabled: true,
+              props: { heading: "Sale", sub: "Stored sub" },
+            },
+          ],
+        } as unknown as StorefrontPageDocument,
+      },
+    });
+    const root = mountLivePreview(
+      `<div id="root" data-morph-route-path="/">${html}</div>`,
+    );
+    const [row, hero] = all(root, "article");
+    expect(clicked(row!.querySelector("h3")!)).toEqual({
+      sectionId: "list",
+      fieldKey: "title",
+      fieldPath: "items.0.title",
+    });
+    expect(clicked(hero!.querySelector("h3")!)).toEqual({
+      sectionId: "hero",
+      fieldKey: null,
+      fieldPath: null,
+    });
+    expect(clicked(hero!.querySelector("p")!)).toEqual({
+      sectionId: "hero",
+      fieldKey: null,
+      fieldPath: null,
+    });
   });
 
   it("a list the call site leaves alone keeps the thread: the heading it replaces names nothing", async () => {
