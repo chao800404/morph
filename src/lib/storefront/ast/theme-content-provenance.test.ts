@@ -406,6 +406,50 @@ export const unrelated = JSON.stringify(content("hero"));`,
     });
   });
 
+  it("refuses spread-field claims when safe tracking would change await scope", () => {
+    const routeFile = "src/routes/awaited-spread.tsx";
+    const files: B1SourceFile[] = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/awaited-spread")({ component: Home });
+async function Home() {
+  const hero = content("hero");
+  return <main><BasHero title="Code literal" {...hero} desc={await Promise.resolve("async desc")} /></main>;
+}`,
+      },
+    ];
+
+    const result = analyzeB1Route(files, routeFile);
+    const instance = result.instances[0];
+    expect(result.diagnostics).toEqual([]);
+    expect(instance?.section).toBe("hero");
+    expect(instance?.claims.title).toMatchObject({
+      kind: "none",
+      state: "unknown",
+    });
+
+    const failure = findB1WriteProvenanceFailure({
+      sectionId: "hero",
+      allowedFields: new Set(["title"]),
+      requestedFields: ["title"],
+      claimsByStoredField: new Map([
+        [
+          "title",
+          instance?.claims.title?.kind === "claim"
+            ? instance.claims.title
+            : null,
+        ],
+      ]),
+      storedProps: { title: "Stored title" },
+    });
+    expect(failure).toEqual({ field: "title", reason: "unproven-source" });
+  });
+
   it("still taints a route when a reachable module can mutate its same-slot value", () => {
     const routeFile = "src/routes/bas-p4a-inspector.tsx";
     const files: B1SourceFile[] = [

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import ts from "typescript";
+import { parse as parseBabel } from "@babel/parser";
 import { describe, expect, it } from "vitest";
 import { injectPreviewBindings } from "./inject-preview-bindings";
 import * as starterV3 from "../starter-theme-v3-files";
@@ -184,6 +185,60 @@ function Home() {
         reportDiagnostics: true,
       }).diagnostics,
     ).toEqual([]);
+  });
+
+  it("does not change an awaited JSX prop's scope to track a conditional spread", () => {
+    const routeFile = "src/routes/awaited-spread.tsx";
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/awaited-spread")({ component: Home });
+async function Home() {
+  const hero = content("hero");
+  return <main><BasHero title="Code literal" {...hero} desc={await Promise.resolve("async desc")} /></main>;
+}`;
+    const output = injectPreviewBindings([
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: routeFile, content: source },
+    ]).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain('desc={await Promise.resolve("async desc")}');
+    expect(routeOutput).toContain('"title": "untraced"');
+    expect(routeOutput).not.toContain("__morphB1Spread0");
+    expect(() =>
+      parseBabel(routeOutput, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("keeps spread tracking when await belongs to a nested async prop callback", () => {
+    const routeFile = "src/routes/nested-async-spread.tsx";
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/nested-async-spread")({ component: Home });
+function Home() {
+  const hero = content("hero");
+  return <main><BasHero {...hero} desc={async () => await Promise.resolve("async desc")} /></main>;
+}`;
+    const output = injectPreviewBindings([
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: routeFile, content: source },
+    ]).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain("__morphB1Spread0");
+    expect(() =>
+      parseBabel(routeOutput, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    ).not.toThrow();
   });
 
   it("keeps the literal fallback unclaimed when the later section spread lacks the prop", () => {

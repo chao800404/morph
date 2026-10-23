@@ -1409,11 +1409,54 @@ function isDirectPosition(
   return guard.arguments[0].value === sourceSlots[0];
 }
 
+const FUNCTION_SCOPE_NODE_TYPES = new Set([
+  "ArrowFunctionExpression",
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ObjectMethod",
+  "ClassMethod",
+  "ClassPrivateMethod",
+]);
+
+/**
+ * The preview injector captures a conditional spread once by wrapping its JSX
+ * element in a synchronous arrow. An `await` or `yield` whose lexical owner is
+ * outside that element would become nested under the new arrow and stop
+ * parsing. Do not report such a spread as a field source; the server uses this
+ * same analysis when it re-derives write provenance.
+ *
+ * Nested functions are separate lexical owners and remain valid inside the
+ * wrapper, so their bodies do not make the surrounding JSX unsafe.
+ */
+function hasSuspensionOutsideNestedFunction(node: AnyNode): boolean {
+  const visit = (value: unknown, isRoot = false): boolean => {
+    if (Array.isArray(value)) return value.some((child) => visit(child));
+    if (!value || typeof value !== "object") return false;
+
+    const candidate = value as Record<string, unknown>;
+    const type = candidate.type;
+    if (typeof type !== "string") return false;
+    if (!isRoot && FUNCTION_SCOPE_NODE_TYPES.has(type)) return false;
+    if (type === "AwaitExpression" || type === "YieldExpression") return true;
+
+    return Object.entries(candidate).some(
+      ([key, child]) =>
+        key !== "loc" &&
+        key !== "leadingComments" &&
+        key !== "trailingComments" &&
+        visit(child),
+    );
+  };
+
+  return visit(node, true);
+}
+
 function propsAtCallSite(
   ctx: ModuleContext,
   opening: Extract<AnyNode, { type: "JSXOpeningElement" }>,
   declared: readonly string[],
   taints: TaintSet,
+  hasSuspension: boolean,
 ): Record<string, B1PropValue> {
   const state = new Map<string, B1PropValue>();
   let wildcard: B1PropValue = { kind: "unset" };
@@ -1471,6 +1514,13 @@ function propsAtCallSite(
         origin.path.length !== 1
           ? "a spread of something other than one section"
           : `"${origin.path.join(".")}" may be changed by code before it renders`;
+      for (const prop of interest) state.set(prop, unknown(reason));
+      wildcard = unknown(reason);
+      continue;
+    }
+    if (hasSuspension) {
+      const reason =
+        "capturing this spread would change the scope of an await or yield expression in the JSX element";
       for (const prop of interest) state.set(prop, unknown(reason));
       wildcard = unknown(reason);
       continue;
@@ -1810,7 +1860,13 @@ export function analyzeB1Route(
           sourceSlots: [...new Set(sourceSlots)],
           sourceRoots: [...new Set(sourceRoots)],
           hasUntracedSpread,
-          props: propsAtCallSite(ctx, opening, declared, taints),
+          props: propsAtCallSite(
+            ctx,
+            opening,
+            declared,
+            taints,
+            hasSuspensionOutsideNestedFunction(node),
+          ),
           direct: isDirectPosition(ctx, node, [...new Set(sourceSlots)]),
         });
       }
