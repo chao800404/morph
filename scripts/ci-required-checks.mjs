@@ -11,7 +11,10 @@
  * pull request; the name contract fails otherwise.
  */
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
-import { START_PREVIEW_JOB_NAME } from "./editor-e2e-start.mjs";
+import {
+  START_PREVIEW_JOB_NAME,
+  START_PREVIEW_SHARD_COUNT,
+} from "./editor-e2e-start.mjs";
 
 /**
  * The one check `main`'s branch protection requires, spelled the way GitHub
@@ -41,12 +44,19 @@ export const EDITOR_SHARD_CHECKS = Array.from(
   (_, index) => editorShardCheckName(index + 1),
 );
 
+export const START_PREVIEW_SHARD_CHECKS = Array.from(
+  { length: START_PREVIEW_SHARD_COUNT },
+  (_, index) =>
+    `Editor E2E full Start shard ${index + 1}/${START_PREVIEW_SHARD_COUNT}`,
+);
+
 /** Every one of these must be present and report SUCCESS itself. */
 export const EXPECTED_CI_CHECKS = [
   REQUIRED_CHECK,
   VALIDATE_CHECK,
   ...VALIDATION_CHECKS,
   START_PREVIEW_JOB_NAME,
+  ...START_PREVIEW_SHARD_CHECKS,
   ...EDITOR_SHARD_CHECKS,
   E2E_ACCEPTANCE_CHECK,
 ];
@@ -61,4 +71,5 @@ export const EXPECTED_CI_CHECKS = [
 export const CHECK_DEPENDENCIES = {
   [VALIDATE_CHECK]: VALIDATION_CHECKS,
   [E2E_ACCEPTANCE_CHECK]: EDITOR_SHARD_CHECKS,
+  [START_PREVIEW_JOB_NAME]: START_PREVIEW_SHARD_CHECKS,
 };
