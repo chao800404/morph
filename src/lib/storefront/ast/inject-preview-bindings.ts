@@ -6,7 +6,9 @@ import {
   type B1PropValue,
   type B1RouteAnalysis,
 } from "./theme-content-provenance";
-import { parseThemeSourceAst } from "./theme-source-ast";
+import {
+  createThemeSourceAstReader,
+} from "./theme-source-ast";
 import { inferBoundPropName } from "./theme-field-binding";
 import {
   contentFieldsSidecarPath,
@@ -171,6 +173,7 @@ function compareInsertions(
 type RowScope = Readonly<{ item: string | null; index: string | null }>;
 
 const JSX_FILE = /\.(tsx|jsx)$/;
+const SCRIPT_FILE = /\.(tsx|jsx|ts|js|mjs|cjs)$/;
 
 function isHostElement(name: any): boolean {
   // Lowercase names are DOM elements. A capitalised name is another component,
@@ -515,6 +518,7 @@ function declaredFields(
    * has no known shape, and nothing in it is marked.
    */
   rowFieldsOf?: (specifier: string) => ReadonlySet<string> | null,
+  parsedAstFor?: (path: string, content: string) => any | null,
 ): {
   top: ReadonlySet<string>;
   rows: ReadonlyMap<string, ReadonlySet<string>>;
@@ -523,6 +527,18 @@ function declaredFields(
     path: file.path,
     source: file.content,
     sidecar: file.sidecar,
+    ...(parsedAstFor
+      ? {
+          parsedSourceAst: parsedAstFor(file.path, file.content),
+          parsedSidecarAst:
+            typeof file.sidecar === "string"
+              ? parsedAstFor(
+                  contentFieldsSidecarPath(file.path) ?? file.path,
+                  file.sidecar,
+                )
+              : undefined,
+        }
+      : {}),
   });
   if (parsed.declaration !== "valid" || !parsed.fields) return null;
 
@@ -1064,6 +1080,8 @@ export function injectPreviewBindings(
   const warnings: Array<{ path: string; message: string }> = [];
   const contentByPath = new Map(files.map((file) => [file.path, file.content]));
   const filePaths = new Set(contentByPath.keys());
+  const sourceAstReader = createThemeSourceAstReader(files);
+  const parsedAstFor = sourceAstReader.ast;
 
   const sidecarOf = (path: string) => {
     const sidecarPath = contentFieldsSidecarPath(path);
@@ -1085,6 +1103,14 @@ export function injectPreviewBindings(
               path,
               source: content,
               sidecar: sidecarOf(path),
+              parsedSourceAst: parsedAstFor(path, content),
+              parsedSidecarAst:
+                typeof sidecarOf(path) === "string"
+                  ? parsedAstFor(
+                      contentFieldsSidecarPath(path) ?? path,
+                      sidecarOf(path)!,
+                    )
+                  : undefined,
             });
       ownFieldsCache.set(
         path,
@@ -1094,17 +1120,21 @@ export function injectPreviewBindings(
     return ownFieldsCache.get(path);
   };
   const declaredFor = (file: PreviewBindingFile) =>
-    declaredFields({ ...file, sidecar: sidecarOf(file.path) }, (specifier) => {
-      const fields = resolveRowFields(file.path, specifier, ownFields);
-      return fields ? new Set(Object.keys(fields)) : null;
-    });
+    declaredFields(
+      { ...file, sidecar: sidecarOf(file.path) },
+      (specifier) => {
+        const fields = resolveRowFields(file.path, specifier, ownFields);
+        return fields ? new Set(Object.keys(fields)) : null;
+      },
+      parsedAstFor,
+    );
 
   const asts = new Map<string, any>();
   for (const file of files) {
-    if (!JSX_FILE.test(file.path)) continue;
-    const parsed = parseThemeSourceAst(file);
+    if (!SCRIPT_FILE.test(file.path)) continue;
+    const parsed = sourceAstReader.read(file.path, file.content);
     if (parsed.ok) asts.set(file.path, parsed.ast);
-    else if (parsed.reason === "too-large") {
+    else if (parsed.reason === "too-large" && JSX_FILE.test(file.path)) {
       skipped.push({ path: file.path, reason: parsed.message });
     }
   }
@@ -1198,10 +1228,17 @@ export function injectPreviewBindings(
       const loaderSlotDetails = collectLoaderSlotBindingDetails(ast, {
         path,
         files,
+        parsedAstFor,
       });
       const b1Analysis =
         isRouteAnalysisCandidate(ast)
-        ? analyzeB1Route(files, path, undefined, asts)
+        ? analyzeB1Route(
+            files,
+            path,
+            undefined,
+            undefined,
+            sourceAstReader.read,
+          )
         : null;
       reader = {
         loaderSlotDetails,
@@ -1928,6 +1965,8 @@ export function injectPreviewBindings(
               expression = JSON.stringify(
                 claim.state === "literal" || claim.state === "unset"
                   ? "not-cms"
+                  : claim.state === "unknown"
+                    ? "untraced"
                   : claim.state,
               );
             }

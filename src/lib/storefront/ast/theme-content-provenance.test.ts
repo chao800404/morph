@@ -30,6 +30,7 @@ const EXPECTED_FIELDS: Readonly<Record<string, readonly string[]>> = {
   p3: ["hero.desc"],
   p4a: ["hero.title", "hero.desc"],
   p5: ["heroA.title", "heroA.desc", "heroB.title", "heroB.desc"],
+  p6: ["hero.desc"],
 };
 
 function analyze(testCase: BasCase, spelling: BasSpelling) {

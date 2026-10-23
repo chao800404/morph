@@ -49,6 +49,46 @@ const DECLARES = `export const contentFields = {
 `;
 
 describe("writing editor identity into a Theme for a real React preview", () => {
+  it("keeps section and field markers when a recovered route uses its remaining component", () => {
+    const routeFile = "src/routes/error-recovery.tsx";
+    const componentFile = "src/components/KeptCard.tsx";
+    const files = [
+      ...livePreviewPlatformFiles(),
+      {
+        path: componentFile,
+        content: `export const contentFields = {
+  title: { type: "text", label: "Card title" },
+} as const;
+type KeptCardProps = { title?: string };
+export default function KeptCard({ title = "Kept default" }: KeptCardProps) {
+  return <section><h2>{title}</h2></section>;
+}`,
+      },
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import KeptCard from "../components/KeptCard";
+export const Route = createFileRoute("/error-recovery")({ component: Page });
+function Page() {
+  return <main><KeptCard {...content("error-recovery")} /></main>;
+}`,
+      },
+    ];
+
+    const result = injectPreviewBindings(files);
+    const routeOutput = result.files.find((file) => file.path === routeFile)!.content;
+    const componentOutput = result.files.find(
+      (file) => file.path === componentFile,
+    )!.content;
+
+    expect(result.sections[routeFile]).toContain("error-recovery");
+    expect(routeOutput).toContain(
+      '<div data-storefront-section-id="error-recovery" style={{ display: "contents" }}>',
+    );
+    expect(componentOutput).toContain('data-storefront-field="title"');
+  });
+
   it("threads proven per-field props from a route into the component's DOM fields", () => {
     const testCase = BAS_CASES.find((entry) => entry.id === "c2")!;
     const route = basRouteSource(testCase, "content");
@@ -83,6 +123,36 @@ describe("writing editor identity into a Theme for a real React preview", () => 
     expect(componentOutput).toContain(
       'data-storefront-field-path={__morphRowContext?.fields["title"] && __morphRowContext.path ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
     );
+  });
+
+  it("emits the protocol's untraced state when a prop passes through author code", () => {
+    const routeFile = "src/routes/b1-untraced-state.tsx";
+    const files = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/b1-untraced-state")({ component: Home });
+function opaque(value: string) { return value; }
+function Home() {
+  const hero = content("hero");
+  return <BasHero title={opaque(hero.title)} desc={hero.desc} />;
+}`,
+      },
+      {
+        path: BAS_HERO_PATH,
+        content: `${BAS_HERO_SOURCE}`,
+      },
+    ];
+
+    const output = injectTestFiles(files).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain(
+      'bindingStates: { "title": "untraced", "desc": "cms-field" }',
+    );
+    expect(routeOutput).not.toContain('"title": "unknown"');
   });
 
   it("evaluates a spread once and labels fields only when the spread owns them", () => {

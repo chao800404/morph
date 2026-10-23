@@ -47,6 +47,10 @@ function world(initial: { version: number; content: string }) {
           }),
         ),
         generation,
+        sourceFiles: paths.flatMap((path) => {
+          const saved = database.get(path);
+          return saved ? [{ path, content: saved.content }] : [];
+        }),
       }),
       prepare: (files) => files,
       isGenerated: () => false,
@@ -101,6 +105,40 @@ function gate() {
 }
 
 describe("syncPreviewFiles", () => {
+  it("passes the source snapshot from the checked generation into preparation", async () => {
+    const sourceFiles = [
+      { path: "src/components/KeptCard.tsx", content: "export default function KeptCard() {}" },
+      { path: "src/routes/error-recovery.tsx", content: "saved route" },
+    ];
+    let receivedSourceFiles:
+      | readonly { path: string; content: string }[]
+      | undefined;
+
+    const result = await syncPreviewFiles({
+      files: [{ path: "src/routes/error-recovery.tsx", content: "edited route", baseVersion: 1 }],
+      readSaved: async () => ({
+        files: new Map([
+          ["src/routes/error-recovery.tsx", { version: 1, content: "saved route" }],
+        ]),
+        generation: 12,
+        sourceFiles,
+      }),
+      prepare: (files, fullSourceFiles) => {
+        receivedSourceFiles = fullSourceFiles;
+        return files;
+      },
+      isGenerated: () => false,
+      write: async (files, generation) => ({
+        changed: files.map((file) => file.path),
+        unchanged: [],
+        ...(generation === 12 ? {} : { refused: files.map((file) => file.path) }),
+      }),
+    });
+
+    expect(result).toMatchObject({ ok: true, changed: ["src/routes/error-recovery.tsx"] });
+    expect(receivedSourceFiles).toEqual(sourceFiles);
+  });
+
   it("writes an edit of the saved version", async () => {
     const w = world({ version: 3, content: "hero v3" });
     expect(await w.sync("hero v3 + edit", 3)).toMatchObject({
@@ -268,6 +306,7 @@ describe("saving a file that stays in the Theme's source only", () => {
           ),
         ),
         generation: 1,
+        sourceFiles: paths.map((path) => ({ path, content: "saved" })),
       }),
       prepare: (files) => files,
       isGenerated: isPreviewSyncSkippedPath,

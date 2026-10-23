@@ -69,6 +69,7 @@ export type StoredSections = Readonly<Record<string, StoredProps>>;
 export type BasTarget =
   | Readonly<{ kind: "field"; section: string; field: "title" | "desc" }>
   | Readonly<{ kind: "literal" }>
+  | Readonly<{ kind: "untraced" }>
   | Readonly<{
       kind: "composed";
       section: string;

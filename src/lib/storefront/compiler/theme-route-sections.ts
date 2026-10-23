@@ -4,6 +4,7 @@ import {
   type B1Instance,
 } from "@/lib/storefront/ast/theme-content-provenance";
 import {
+  createThemeSourceAstReader,
   parseThemeSourceAst,
   type ParsedThemeAst,
 } from "@/lib/storefront/ast/theme-source-ast";
@@ -281,6 +282,7 @@ const LOADER_STRUCTURE_LOCKED =
 function parsePositionedSections(
   files: readonly ThemeSourceFile[],
   routeSourcePath: string,
+  sourceAstReader = createThemeSourceAstReader(files),
 ): {
   sections: PositionedSection[];
   unboundSections: ThemeUnboundRouteSection[];
@@ -304,7 +306,7 @@ function parsePositionedSections(
     };
   }
 
-  const parsedRoute = parseThemeSourceAst(routeFile);
+  const parsedRoute = sourceAstReader.read(routeFile.path, routeFile.content);
   if (!parsedRoute.ok) {
     return {
       sections: [],
@@ -370,6 +372,7 @@ function parsePositionedSections(
   const loaderSlots = collectLoaderSlotBindings(ast, {
     path: normalizedRoutePath,
     files: files.map((file) => ({ ...file, path: normalizePath(file.path) })),
+    parsedAstFor: sourceAstReader.ast,
   });
   const b1Analysis = analyzeB1Route(
     files.filter(
@@ -378,7 +381,8 @@ function parsePositionedSections(
     ),
     normalizedRoutePath,
     undefined,
-    new Map([[normalizedRoutePath, ast]]),
+    undefined,
+    sourceAstReader.read,
   );
   const b1Instances = new Map(
     b1Analysis.instances.map((instance) => [instance.start, instance]),
@@ -443,7 +447,7 @@ function parsePositionedSections(
   });
 
   const addableBySource = new Map(
-    listBindableSectionOptions(files).map(
+    listBindableSectionOptions(files, sourceAstReader.ast).map(
       (option) => [normalizePath(option.componentSourcePath), option] as const,
     ),
   );
@@ -539,6 +543,7 @@ export function deriveThemeRouteSections(
  */
 function deriveDocumentLayoutPathFromRoute(
   files: readonly ThemeSourceFile[],
+  sourceAstReader = createThemeSourceAstReader(files),
 ): string | null {
   const routeFile = files.find((file) => {
     const path = normalizePath(file.path);
@@ -546,15 +551,9 @@ function deriveDocumentLayoutPathFromRoute(
   });
   if (typeof routeFile?.content !== "string") return null;
 
-  let ast: any;
-  try {
-    ast = parse(routeFile.content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return null;
-  }
+  const parsed = sourceAstReader.read(routeFile.path, routeFile.content);
+  if (!parsed.ok) return null;
+  const ast = parsed.ast;
 
   const filePaths = new Set(files.map((file) => normalizePath(file.path)));
   const layoutImports = new Map<string, string>();
@@ -606,7 +605,14 @@ function deriveDocumentLayoutPathFromRoute(
 export function deriveThemeDocumentLayoutPath(
   files: readonly ThemeSourceFile[],
 ): string | null {
-  const derived = deriveDocumentLayoutPathFromRoute(files);
+  return readDocumentLayoutPath(files, createThemeSourceAstReader(files));
+}
+
+function readDocumentLayoutPath(
+  files: readonly ThemeSourceFile[],
+  sourceAstReader = createThemeSourceAstReader(files),
+): string | null {
+  const derived = deriveDocumentLayoutPathFromRoute(files, sourceAstReader);
   if (derived) return derived;
 
   const manifest = readManifestContent(files);
@@ -633,12 +639,6 @@ export function deriveThemeDocumentLayoutPath(
   } catch {
     return null;
   }
-}
-
-function readDocumentLayoutPath(
-  files: readonly ThemeSourceFile[],
-): string | null {
-  return deriveThemeDocumentLayoutPath(files);
 }
 
 function readLayoutPageBoundary(
@@ -708,7 +708,8 @@ function readLayoutPageBoundary(
 export function deriveThemeLayoutSections(
   files: readonly ThemeSourceFile[],
 ): ThemeRouteSectionResult {
-  const layoutPath = readDocumentLayoutPath(files);
+  const sourceAstReader = createThemeSourceAstReader(files);
+  const layoutPath = readDocumentLayoutPath(files, sourceAstReader);
   if (!layoutPath) {
     return {
       sections: [],
@@ -717,7 +718,7 @@ export function deriveThemeLayoutSections(
       hasContentImport: false,
     };
   }
-  const parsed = parsePositionedSections(files, layoutPath);
+  const parsed = parsePositionedSections(files, layoutPath, sourceAstReader);
   const pageBoundary = readLayoutPageBoundary(parsed.ast, parsed.sections);
   return {
     sections: parsed.sections.map(({ node, parent: _parent, ...section }) => ({
@@ -839,9 +840,12 @@ export function readSlotPropsSetInCode(
  */
 function readRowComponentPaths(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): ReadonlySet<string> {
   const rowPaths = new Set<string>();
-  const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files);
+  const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files, {
+    parsedAstFor,
+  });
   for (const [componentRef, capability] of Object.entries(capabilities)) {
     if (!componentRef.startsWith("src/")) continue;
     for (const definition of Object.values(capability.fields)) {
@@ -878,8 +882,9 @@ function resolveRelativeComponentPath(
 
 export function listThemeRouteSectionOptions(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): readonly ThemeRouteSectionOption[] {
-  const rowComponents = readRowComponentPaths(files);
+  const rowComponents = readRowComponentPaths(files, parsedAstFor);
   // Add section is deliberately driven by the source folder convention. The
   // manifest still participates in capability resolution above so existing
   // route slots and legacy content fields keep working, but a component must
@@ -912,8 +917,9 @@ export function listThemeRouteSectionOptions(
  */
 function listBindableSectionOptions(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): readonly ThemeRouteSectionOption[] {
-  const rowComponents = readRowComponentPaths(files);
+  const rowComponents = readRowComponentPaths(files, parsedAstFor);
   const pageCopies = files
     .map((file) => readThemePageSectionEntry(file.path))
     .filter((entry) => entry !== null)
@@ -930,7 +936,10 @@ function listBindableSectionOptions(
       componentName: entry.componentName,
       componentSourcePath: entry.componentSourcePath,
     }));
-  return [...listThemeRouteSectionOptions(files), ...pageCopies];
+  return [
+    ...listThemeRouteSectionOptions(files, parsedAstFor),
+    ...pageCopies,
+  ];
 }
 
 function replaceRange(

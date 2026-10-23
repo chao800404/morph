@@ -9,7 +9,7 @@ type ThemeSourceFile = Readonly<{
   content?: string | null;
 }>;
 
-type ThemeSourceAstResult =
+export type ThemeSourceAstResult =
   | Readonly<{ ok: true; ast: ParseResult }>
   | Readonly<{
       ok: false;
@@ -21,6 +21,11 @@ type CachedAst = Readonly<{
   path: string;
   content: string;
   result: ThemeSourceAstResult;
+}>;
+
+export type ThemeSourceAstReader = Readonly<{
+  read: (path: string, content: string) => ThemeSourceAstResult;
+  ast: (path: string, content: string) => ParseResult | null;
 }>;
 
 /**
@@ -96,4 +101,46 @@ export function parseThemeSourceAst(file: ThemeSourceFile): ThemeSourceAstResult
 
   astBySource.set(file as object, { path: file.path, content, result });
   return result;
+}
+
+/**
+ * Shares parsed source across every analysis in one operation. Several readers
+ * need the same module (the loader proof, provenance graph and field
+ * declarations); each gets the exact same AST instead of reparsing a copied
+ * `{ path, content }` object. The cache is deliberately operation-scoped so a
+ * later workspace generation cannot reuse stale syntax.
+ */
+export function createThemeSourceAstReader(
+  files: readonly ThemeSourceFile[],
+): ThemeSourceAstReader {
+  const sourceByPath = new Map(
+    files.map((file) => [file.path.replace(/\\/g, "/"), file]),
+  );
+  const parsedByPath = new Map<
+    string,
+    Readonly<{ content: string; result: ThemeSourceAstResult }>
+  >();
+
+  const read = (path: string, content: string): ThemeSourceAstResult => {
+    const normalizedPath = path.replace(/\\/g, "/");
+    const cached = parsedByPath.get(normalizedPath);
+    if (cached?.content === content) return cached.result;
+
+    const original = sourceByPath.get(normalizedPath);
+    const source =
+      original?.content === content
+        ? original
+        : { path: normalizedPath, content };
+    const result = parseThemeSourceAst(source);
+    parsedByPath.set(normalizedPath, { content, result });
+    return result;
+  };
+
+  return {
+    read,
+    ast: (path, content) => {
+      const result = read(path, content);
+      return result.ok ? result.ast : null;
+    },
+  };
 }

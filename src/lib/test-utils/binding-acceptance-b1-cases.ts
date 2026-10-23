@@ -240,6 +240,45 @@ export const B1_EXTRA_CASES: readonly BasCase[] = [
       inlineWrites: true,
     },
   },
+  {
+    id: "p6",
+    verifies:
+      "a value passed through author code is marked untraced and cannot be visually written",
+    routePath: "/b1-p6",
+    routeFile: "src/routes/b1-p6.tsx",
+    slots: ["hero"],
+    seed: { hero: { title: SALE, desc: SALE } },
+    body: {
+      loader: `  const opaque = (value: string) => value;
+  return (
+    <main data-bas-case="p6">
+      <BasHero title={opaque(hero.title)} desc={hero.desc} />
+    </main>
+  );`,
+      content: `${contentLocals(["hero"])}
+  const opaque = (value: string) => value;
+  return (
+    <main data-bas-case="p6">
+      <BasHero title={opaque(hero.title)} desc={hero.desc} />
+    </main>
+  );`,
+    },
+    elements: [
+      {
+        tag: "h1",
+        nth: 0,
+        text: (s) => v(s, "hero", "title"),
+        target: { kind: "untraced" },
+      },
+      {
+        tag: "p",
+        nth: 0,
+        text: (s) => v(s, "hero", "desc"),
+        target: { kind: "field", section: "hero", field: "desc" },
+      },
+    ],
+    edit: { element: 0, inspector: null, inlineWrites: false },
+  },
 ];
 
 /** Cases formally in scope for B1. c4b and c6b remain explicit gaps. */

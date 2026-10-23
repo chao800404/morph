@@ -433,6 +433,7 @@ async function expectShownAsCode(
 ) {
   const claim = await canvasClaim(page, testCase, element);
   const storedIds = Object.keys(testCase.seed);
+  const expectedState = element.target.kind === "untraced" ? "untraced" : "not-cms";
   expect(
     claim.section !== null &&
       storedIds.includes(claim.section) &&
@@ -442,11 +443,11 @@ async function expectShownAsCode(
       : null,
     "a literal is not claimed as a stored field",
   ).toBeNull();
-  expect(claim.bindingState, "Design reports the proven non-CMS value").toBe(
-    "not-cms",
+  expect(claim.bindingState, "Design reports the correct non-editable value state").toBe(
+    expectedState,
   );
   await expect(page.locator('[data-testid="inspector-content-binding-state"]'))
-    .toHaveAttribute("data-binding-state", "not-cms", { timeout: 10_000 });
+    .toHaveAttribute("data-binding-state", expectedState, { timeout: 10_000 });
   await expect(inspectorInput(page, literalProp(element))).toHaveCount(0);
 }
 
@@ -454,6 +455,7 @@ const LOCATE = {
   field: expectLocatedField,
   composed: expectLocatedRawFields,
   literal: expectShownAsCode,
+  untraced: expectShownAsCode,
 } as const;
 
 async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
@@ -655,6 +657,11 @@ async function inlineEdit(
   await page.mouse.dblclick(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.waitForTimeout(800);
   walk.observed.S3editable = await target.getAttribute("contenteditable").catch(() => null);
+  if (element.target.kind === "untraced") {
+    expect(walk.observed.S3editable, "an untraced value cannot enter canvas editing").toBeNull();
+    walk.observed.S3refused = true;
+    return;
+  }
   // Over a direct field, editing must have begun before anything is typed.
   expect(
     change ? walk.observed.S3editable : "plaintext-only",

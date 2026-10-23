@@ -562,7 +562,7 @@ for (const { spelling, runtime } of SPELLINGS) {
           expect(observed).toEqual(expected);
         });
 
-        if (["p1", "c6a", "c6b", "p4a"].includes(testCase.id)) {
+        if (["p1", "c6a", "c6b", "p4a", "p6"].includes(testCase.id)) {
           it("reports provenance as descriptive selection metadata", async () => {
             await seed(testCase, spelling);
             const { caseRoot } = await renderCase(testCase, spelling);
@@ -574,6 +574,8 @@ for (const { spelling, runtime } of SPELLINGS) {
               expect(observeState(0)).toBe("cms-field");
             } else if (testCase.id === "c6a") {
               expect(observeState(0)).toBe("not-cms");
+            } else if (testCase.id === "p6") {
+              expect(observeState(0)).toBe("untraced");
             } else if (testCase.id === "c6b") {
               expect(observeState(2)).toBe("derived");
             } else {

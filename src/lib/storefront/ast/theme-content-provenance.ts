@@ -32,8 +32,8 @@
  * - Not a proof of what the Theme's own `src/morph/content.ts` does. The root
  *   is the platform contract "content(slot) returns the stored props of
  *   `slot`"; an author who edits that module can break it. The loader root is
- *   proven link by link by the product's own `collectLoaderSlotBindingDetails`
- *   (re-used, not re-implemented).
+ *   proven link by link by the product's own route-loader proof (re-used, not
+ *   re-implemented).
  * - Not an inter-procedural analysis: any value that passes through a call to
  *   an author function is `unknown`, and any use that could mutate a traced
  *   object (an assignment through any alias, `Object.assign`, passing it to a
@@ -41,7 +41,7 @@
  *   `unknown` — in every module of the Theme that can reach the same object.
  */
 import {
-  collectLoaderSlotBindingDetails,
+  hasProvenRouteLoaderPageOrigin,
   normalizeThemeSourcePath,
   resolveThemeSourceImport,
 } from "./theme-content-binding";
@@ -61,6 +61,7 @@ import {
 } from "./b1-scope";
 import {
   parseThemeSourceAst,
+  type ThemeSourceAstResult,
   type ParsedThemeAst,
 } from "./theme-source-ast";
 import { isValidThemeContentSlotId } from "../theme-content-slots";
@@ -239,6 +240,31 @@ function parseModule(
 ): ParsedThemeAst | null {
   const result = parseThemeSourceAst({ path, content });
   return result.ok ? result.ast : null;
+}
+
+function createAnalysisSourceParser(
+  files: readonly Readonly<{ path: string; content: string }>[],
+  parsedModules?: B1ParsedModules,
+): (path: string, content: string) => ThemeSourceAstResult {
+  const byPath = new Map(files.map((file) => [file.path, file.content]));
+  const cache = new Map<string, { content: string; result: ThemeSourceAstResult }>();
+  for (const [path, ast] of parsedModules ?? []) {
+    const content = byPath.get(normalizeThemeSourcePath(path));
+    if (content !== undefined) {
+      cache.set(normalizeThemeSourcePath(path), {
+        content,
+        result: { ok: true, ast },
+      });
+    }
+  }
+  return (sourcePath, content) => {
+    const path = normalizeThemeSourcePath(sourcePath);
+    const cached = cache.get(path);
+    if (cached?.content === content) return cached.result;
+    const result = parseThemeSourceAst({ path, content });
+    cache.set(path, { content, result });
+    return result;
+  };
 }
 
 const unknown = (reason: string): B1PropValue => ({ kind: "unknown", reason });
@@ -562,46 +588,29 @@ function normalizePagePath(path: string): string | null {
 }
 
 /**
- * Whether the route's loader is the product's proven loader spelling, asked
- * of the product's own analysis: the component body is replaced by the one
- * shape `collectLoaderSlotBindingDetails` accepts, and the question is
- * whether it binds. Every other link (the server function returns
- * `morph.pages.get(route)`, the loader returns its result, the route path)
- * is then the product's proof, not this prototype's.
+ * Whether the route's loader is the product's proven loader spelling. This
+ * reuses the route-loader proof directly instead of synthesizing and parsing
+ * a modified route.
  */
 function provenLoaderOrigin(
   ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
-  source: string,
   files: readonly B1SourceFile[],
   routeName: string,
   componentName: string | null,
+  parsedAstFor: (path: string, content: string) => ThemeSourceAstResult,
 ): boolean {
   if (!componentName) return false;
-  const component = (ctx.ast.program.body ?? []).find(
-    (statement): statement is Extract<AnyNode, { type: "FunctionDeclaration" }> =>
-      statement.type === "FunctionDeclaration" &&
-      statement.id?.name === componentName,
-  );
-  if (component?.body?.type !== "BlockStatement") return false;
-  if (typeof component.body.start !== "number" || typeof component.body.end !== "number") {
-    return false;
-  }
-  const probe = `{ const { __morphB1LoaderProbe } = ${routeName}.useLoaderData(); return <__MorphB1Probe {...__morphB1LoaderProbe} />; }`;
-  const canonical =
-    source.slice(0, component.body.start) +
-    probe +
-    source.slice(component.body.end);
-  const ast = parseModule(canonical);
-  if (!ast) return false;
-  const details = collectLoaderSlotBindingDetails(ast, {
+  return hasProvenRouteLoaderPageOrigin(ctx.ast, {
     path: ctx.path,
-    files: files.map((file) =>
-      file.path === ctx.path ? { path: file.path, content: canonical } : file,
-    ),
+    files: files.map((file) => ({ path: file.path, content: file.content })),
+    parsedAstFor: (path, content) => {
+      const result = parsedAstFor(path, content);
+      return result.ok ? result.ast : null;
+    },
+  }, {
+    routeName,
+    componentName,
   });
-  return [...details.values()].some(
-    ({ slot }) => slot === "__morphB1LoaderProbe",
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -923,8 +932,8 @@ function otherModuleReachesLoaderData(
   file: B1SourceFile,
   routeFile: string,
   filePaths: ReadonlySet<string>,
+  ast: ParsedThemeAst | null,
 ): boolean {
-  const ast = parseModule(file.content);
   if (!ast) return true;
   for (const statement of ast.program.body ?? []) {
     if (statement.type !== "ImportDeclaration") continue;
@@ -965,7 +974,7 @@ function reachableThemeModules(
   routeFile: string,
   files: readonly B1SourceFile[],
   filePaths: ReadonlySet<string>,
-  parsedModules?: B1ParsedModules,
+  parsedAstFor: (path: string, content: string) => ThemeSourceAstResult,
 ): ReachableThemeModules {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const paths = new Set<string>();
@@ -983,10 +992,7 @@ function reachableThemeModules(
     const file = byPath.get(path);
     if (!file) continue;
 
-    const cached = parsedModules?.get(path);
-    const parsed = cached
-      ? { ok: true as const, ast: cached }
-      : parseThemeSourceAst(file);
+    const parsed = parsedAstFor(file.path, file.content);
     if (!parsed.ok) {
       unparseable = true;
       continue;
@@ -1344,15 +1350,22 @@ function componentTarget(
 function declaredFieldsOf(
   componentPath: string | null,
   contentByPath: ReadonlyMap<string, string>,
+  parsedAstFor: (path: string, content: string) => ParsedThemeAst | null,
 ): string[] {
   if (!componentPath) return [];
   const source = contentByPath.get(componentPath);
   if (source === undefined) return [];
   const sidecarPath = contentFieldsSidecarPath(componentPath);
+  const sidecar = sidecarPath ? contentByPath.get(sidecarPath) : undefined;
   const parsed = readComponentContentFields({
     path: componentPath,
     source,
-    sidecar: sidecarPath ? contentByPath.get(sidecarPath) : undefined,
+    sidecar,
+    parsedSourceAst: parsedAstFor(componentPath, source),
+    parsedSidecarAst:
+      typeof sidecar === "string" && sidecarPath
+        ? parsedAstFor(sidecarPath, sidecar)
+        : undefined,
   });
   return parsed.declaration === "valid" ? Object.keys(parsed.fields ?? {}) : [];
 }
@@ -1570,6 +1583,10 @@ export function analyzeB1Route(
   routeFile: string,
   backend: B1ScopeBackend = buildHandScopeOracle,
   parsedModules?: B1ParsedModules,
+  sharedSourceParser?: (
+    path: string,
+    content: string,
+  ) => ThemeSourceAstResult,
 ): B1RouteAnalysis {
   const normalizedRoute = normalizeThemeSourcePath(routeFile);
   const normalizedFiles = files.map((file) => ({
@@ -1581,8 +1598,19 @@ export function analyzeB1Route(
   const contentByPath = new Map(
     normalizedFiles.map((file) => [file.path, file.content]),
   );
+  const parsedSourceFor =
+    sharedSourceParser ??
+    createAnalysisSourceParser(
+      normalizedFiles.map(({ path, content }) => ({ path, content })),
+      parsedModules,
+    );
+  const parsedAstFor = (path: string, content: string) => {
+    const result = parsedSourceFor(path, content);
+    return result.ok ? result.ast : null;
+  };
   const contentCapabilities = resolveThemeContentCapabilitiesFromFiles(
     normalizedFiles,
+    { parsedAstFor },
   );
   const manifestSourceByRef = readComponentSourcePaths(
     contentByPath.get("morph.theme.json") ?? null,
@@ -1599,7 +1627,7 @@ export function analyzeB1Route(
     (file) => file.path === normalizedRoute,
   );
   const routeAstResult = routeEntry
-    ? parseThemeSourceAst(routeEntry.source)
+    ? parsedSourceFor(routeEntry.path, routeEntry.content)
     : null;
   const ast =
     parsedModules?.get(normalizedRoute) ??
@@ -1630,10 +1658,10 @@ export function analyzeB1Route(
     routeName !== null &&
     provenLoaderOrigin(
       partial,
-      routeSource,
       normalizedFiles,
       routeName,
       route.componentName,
+      parsedSourceFor,
     );
   const ctx: ModuleContext = {
     ...partial,
@@ -1655,7 +1683,7 @@ export function analyzeB1Route(
     normalizedRoute,
     normalizedFiles.map(({ path, content }) => ({ path, content })),
     filePaths,
-    parsedModules,
+    parsedSourceFor,
   );
   if (reachable.unboundedDynamicImport || reachable.unparseable) {
     taints.add(taintKey("content", null));
@@ -1671,10 +1699,7 @@ export function analyzeB1Route(
       continue;
     }
     if (file.path === CONTENT_MODULE_PATH) continue;
-    const cachedOther = parsedModules?.get(file.path);
-    const otherAstResult = cachedOther
-      ? { ok: true as const, ast: cachedOther }
-      : parseThemeSourceAst(file.source);
+    const otherAstResult = parsedSourceFor(file.path, file.content);
     const other = otherAstResult.ok ? otherAstResult.ast : null;
     if (!other) continue;
     const otherOracle = backend(other);
@@ -1696,7 +1721,7 @@ export function analyzeB1Route(
         taints,
       );
     }
-    if (otherModuleReachesLoaderData(file, normalizedRoute, filePaths)) {
+    if (otherModuleReachesLoaderData(file, normalizedRoute, filePaths, other)) {
       // Only this route's own loader data matters; a module that can reach
       // router state can reach it.
       if (file.path !== "src/routes/__root.tsx" || rootReadsLoaderData(other)) {
@@ -1734,7 +1759,7 @@ export function analyzeB1Route(
           : undefined;
         const declared = capability
           ? Object.keys(capability.fields)
-          : declaredFieldsOf(target.path, contentByPath);
+          : declaredFieldsOf(target.path, contentByPath, parsedAstFor);
         const sourceSlots = (opening.attributes ?? []).flatMap(
           (attribute: AnyNode) => {
             if (attribute.type !== "JSXSpreadAttribute") return [];
