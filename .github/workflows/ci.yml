@@ -25,10 +25,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Typecheck, test, build
+  # These run on separate runners so the test suite cannot consume Build's budget.
+  validate-typecheck:
+    name: Validation typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -62,6 +63,30 @@ jobs:
       - name: Check migration timestamps
         run: pnpm check:sql-timestamps
 
+  validate-test:
+    name: Validation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       # The Astro toolchain the Sandbox image installs, from the same lockfile,
       # so the Astro prerender build tests run against what a build container
       # runs. Without it those tests fail in CI rather than skip.
@@ -71,22 +96,56 @@ jobs:
       - name: Test
         run: pnpm test
 
+  validate-build:
+    name: Validation build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build
         run: pnpm build
 
-  # Its own job, on purpose, and the reason is mechanical rather than tidiness.
-  #
-  # A failed *step* makes GitHub Actions skip every step after it, so a guard
-  # that can legitimately be red cannot be a step inside `validate`: it would
-  # take Test and Build down with it, and those two are the only signals a
-  # migration has while it runs. This guard was red for exactly that long, and
-  # is green now that the last call site moved. The reason above is about the
-  # next migration, not this one — a separate job fails on its own, costs no
-  # wall time from the others, and is the unit a branch protection rule can
-  # require.
-  #
-  # The existing static checks are green by nature, which is why this assumption
-  # never showed up in their placement.
+  # Keep the existing check name, and reject every result except success.
+  validate:
+    name: Typecheck, test, build
+    needs: [validate-typecheck, validate-test, validate-build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require all validation jobs to succeed
+        env:
+          TYPECHECK_RESULT: ${{ needs.validate-typecheck.result }}
+          TEST_RESULT: ${{ needs.validate-test.result }}
+          BUILD_RESULT: ${{ needs.validate-build.result }}
+        run: |
+          test "$TYPECHECK_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$BUILD_RESULT" = success
+
+  # Architecture guards report independently, so a guard failure still leaves
+  # typecheck, test and build evidence available for the same commit.
   architecture-guards:
     # This string is not only a label. GitHub keeps a second copy of it, in
     # branch protection on `main`, as the required status check context
@@ -130,7 +189,9 @@ jobs:
       # a pure function over a check rollup; the script itself is not exercised
       # here, and nothing in CI ships anything.
       - name: Check the ship gate
-        run: pnpm check:ship
+        run: |
+          node --test scripts/ci-workflow.test.mjs
+          pnpm check:ship
 
       # `pnpm run deploy` refuses while the remote D1 database and `drizzle/`
       # disagree. That reads a database, so CI runs the rule's tests and the
