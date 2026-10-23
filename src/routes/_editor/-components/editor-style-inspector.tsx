@@ -422,7 +422,7 @@ const CONTENT_BINDING_STATE_MESSAGES: Record<
   untraced:
     "This value's source has not been traced. Design cannot safely associate it with a CMS field, so content editing is disabled.",
   derived:
-    "This value comes from CMS data but is transformed in code. Its original field cannot be inferred safely from the rendered value, so direct visual editing is disabled.",
+    "This value can resolve to CMS data or Theme code depending on a spread or code transformation. Design cannot safely map the rendered value to one editable field, so direct visual editing is disabled.",
 };
 
 const STRING_IMAGE_FIELD_HINT =

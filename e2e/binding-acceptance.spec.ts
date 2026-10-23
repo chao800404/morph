@@ -433,7 +433,12 @@ async function expectShownAsCode(
 ) {
   const claim = await canvasClaim(page, testCase, element);
   const storedIds = Object.keys(testCase.seed);
-  const expectedState = element.target.kind === "untraced" ? "untraced" : "not-cms";
+  const expectedState =
+    element.target.kind === "untraced"
+      ? "untraced"
+      : testCase.id === "p4a"
+        ? "derived"
+        : "not-cms";
   expect(
     claim.section !== null &&
       storedIds.includes(claim.section) &&

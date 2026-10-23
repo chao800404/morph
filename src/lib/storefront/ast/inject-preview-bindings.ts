@@ -1950,14 +1950,18 @@ export function injectPreviewBindings(
                 const sourceField = claim.field;
                 const hasOwn =
                   `${local} != null && Object.prototype.hasOwnProperty.call(${local}, ${JSON.stringify(sourceField)})`;
-                const fallback =
-                  value?.kind === "spread-field"
+                const conditionalFallback = claim.conditional.requiresOwnKey
+                  ? "derived"
+                  : value?.kind === "spread-field"
                     ? stateForValue(value.otherwise)
                     : "not-cms";
+                const undefinedValueState = claim.conditional.requiresOwnKey
+                  ? "derived"
+                  : "not-cms";
                 expression =
                   `(${hasOwn} ? (${local}[${JSON.stringify(sourceField)}] !== undefined` +
-                  ` ? ${JSON.stringify("cms-field")} : ${JSON.stringify("not-cms")})` +
-                  ` : ${JSON.stringify(fallback)})`;
+                  ` ? ${JSON.stringify("cms-field")} : ${JSON.stringify(undefinedValueState)})` +
+                  ` : ${JSON.stringify(conditionalFallback)})`;
               }
             } else if (claim?.kind === "claim") {
               expression = JSON.stringify("cms-field");

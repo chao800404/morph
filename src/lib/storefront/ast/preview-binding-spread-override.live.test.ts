@@ -544,7 +544,9 @@ describe("a prop set before the spread is a default the spread replaces", () => 
       fieldKey: null,
       fieldPath: null,
     });
-    expect(before.getAttribute("data-morph-binding-state")).toBe("not-cms");
+    // The later spread can supply this field, so the literal is not safely
+    // classifiable as code-only when the key is currently absent.
+    expect(before.getAttribute("data-morph-binding-state")).toBe("derived");
     // Once the stored field exists, the later spread supplies the displayed
     // value and the same element is correctly bound to that CMS field.
     const after = only(

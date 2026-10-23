@@ -316,8 +316,13 @@ async function seed(testCase: BasCase, spelling: BasSpelling) {
 }
 
 /** Renders the route with the Document the editor gives the preview. */
-async function renderCase(testCase: BasCase, spelling: BasSpelling) {
-  const document = await editorDocument();
+async function renderCase(
+  testCase: BasCase,
+  spelling: BasSpelling,
+  adjustDocument?: (document: StorefrontPageDocument) => void,
+) {
+  const document = structuredClone(await editorDocument());
+  adjustDocument?.(document);
   const files = themeFiles(basRouteSource(testCase, spelling, { routePath: "/" }));
   const { html } = await renderLivePreviewRoute({
     files,
@@ -562,7 +567,7 @@ for (const { spelling, runtime } of SPELLINGS) {
           expect(observed).toEqual(expected);
         });
 
-        if (["p1", "c6a", "c6b", "p4a", "p6"].includes(testCase.id)) {
+        if (["p1", "c4a", "c6a", "c6b", "p4a", "p6"].includes(testCase.id)) {
           it("reports provenance as descriptive selection metadata", async () => {
             await seed(testCase, spelling);
             const { caseRoot } = await renderCase(testCase, spelling);
@@ -572,6 +577,8 @@ for (const { spelling, runtime } of SPELLINGS) {
 
             if (testCase.id === "p1") {
               expect(observeState(0)).toBe("cms-field");
+            } else if (testCase.id === "c4a") {
+              expect(observeState(0)).toBe("cms-field");
             } else if (testCase.id === "c6a") {
               expect(observeState(0)).toBe("not-cms");
             } else if (testCase.id === "p6") {
@@ -579,8 +586,25 @@ for (const { spelling, runtime } of SPELLINGS) {
             } else if (testCase.id === "c6b") {
               expect(observeState(2)).toBe("derived");
             } else {
-              expect(observeState(0)).toBe("not-cms");
+              expect(observeState(0)).toBe("derived");
             }
+          });
+        }
+
+        if (testCase.id === "p4a") {
+          it("keeps an own undefined spread value distinct from a code-only value", async () => {
+            await seed(testCase, spelling);
+            const { caseRoot } = await renderCase(testCase, spelling, (document) => {
+              const section = document.sections.find((item) => item.id === "hero");
+              if (!section) throw new Error("p4a fixture has no hero section");
+              const mutable = section as unknown as {
+                props?: Record<string, unknown>;
+              };
+              mutable.props = { ...mutable.props, title: undefined };
+            });
+            expect(
+              selectionOf(caseRoot, testCase.elements[0]!).bindingState,
+            ).toBe("derived");
           });
         }
 

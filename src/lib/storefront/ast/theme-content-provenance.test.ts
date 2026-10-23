@@ -506,6 +506,12 @@ describe("server-side B1 write proof", () => {
     expect(
       findB1WriteProvenanceFailure({
         ...args,
+        storedProps: { title: undefined },
+      }),
+    ).toEqual({ field: "title", reason: "source-key-absent" });
+    expect(
+      findB1WriteProvenanceFailure({
+        ...args,
         storedProps: { title: "SALE" },
       }),
     ).toBeNull();
