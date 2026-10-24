@@ -60,6 +60,24 @@ export function isSelectionKind(value: string): value is SelectionKind {
   return (SELECTION_KINDS as readonly string[]).includes(value);
 }
 
+/** Descriptive provenance for a selected value; it is never write authority. */
+export const CONTENT_BINDING_STATES = [
+  "cms-field",
+  "not-cms",
+  "untraced",
+  "derived",
+] as const;
+export type ContentBindingState = (typeof CONTENT_BINDING_STATES)[number];
+
+export function isContentBindingState(
+  value: unknown,
+): value is ContentBindingState {
+  return (
+    typeof value === "string" &&
+    (CONTENT_BINDING_STATES as readonly string[]).includes(value)
+  );
+}
+
 export type SelectionCapabilities = {
   content: boolean;
   typography: boolean;
@@ -140,6 +158,8 @@ export type EditorSelectionDescriptor = {
   itemId?: string | null;
   /** Why the element offers no content, when the preview could tell. */
   contentUnavailable?: ContentUnavailableReason | null;
+  /** Provenance for the selected element, when the preview can prove it. */
+  bindingState?: ContentBindingState | null;
   kind: SelectionKind;
   componentType: string;
   tagName: string | null;

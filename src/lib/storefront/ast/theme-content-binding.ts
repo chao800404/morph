@@ -17,11 +17,18 @@
  * guess from a variable name.
  */
 
-import { parse } from "@babel/parser";
+import { parseThemeSourceAst } from "./theme-source-ast";
 
 const CONTENT_MODULE_SPECIFIER = /(?:^|\/)morph\/content(?:\.[cm]?[jt]sx?)?$/;
 
 type AnyNode = any;
+
+type LoaderBindingInput = Readonly<{
+  path: string;
+  files: readonly LoaderBindingFile[];
+  /** Operation-scoped AST lookup supplied by callers that already parsed sources. */
+  parsedAstFor?: (path: string, content: string) => AnyNode | null;
+}>;
 
 export function walk(node: AnyNode, visit: (node: AnyNode) => void): void {
   if (!node || typeof node !== "object") return;
@@ -449,15 +456,9 @@ function topLevelConst(
   return null;
 }
 
-function parseModule(content: string): AnyNode | null {
-  try {
-    return parse(content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return null;
-  }
+function parseModule(content: string, path: string): AnyNode | null {
+  const result = parseThemeSourceAst({ path, content });
+  return result.ok ? result.ast : null;
 }
 
 /**
@@ -471,6 +472,7 @@ function serverFunctionPagePathFor(
   name: string,
   routePath: string,
   files: readonly LoaderBindingFile[],
+  parsedAstFor?: (path: string, content: string) => AnyNode | null,
 ): string | null {
   const filePaths = new Set(files.map((file) => file.path));
   const createServerFnIn = (module: AnyNode) =>
@@ -522,7 +524,9 @@ function serverFunctionPagePathFor(
   const { sourcePath, imported } = found;
   const content = files.find((file) => file.path === sourcePath)?.content;
   if (typeof content !== "string") return null;
-  const module = parseModule(content);
+  const module = parsedAstFor
+    ? parsedAstFor(sourcePath, content)
+    : parseModule(content, sourcePath);
   const exported = module ? topLevelConst(module, imported) : null;
   if (
     !module ||
@@ -559,6 +563,141 @@ function staticPagePath(path: string): string | null {
     return null;
   }
   return normalized;
+}
+
+/**
+ * Proves that this route's own `useLoaderData()` is the page object returned
+ * by its statically matched `createServerFn` loader. This is the route-root
+ * proof is delegated to `collectLoaderSlotBindingDetails`: clone the parsed
+ * route AST, replace only the selected component body with its recognized
+ * loader-spread shape, and ask the same product analysis. This avoids parsing
+ * a synthetic source string and keeps the product proof as the single source
+ * of truth.
+ */
+export function hasProvenRouteLoaderPageOrigin(
+  ast: AnyNode,
+  input: LoaderBindingInput,
+  expected: Readonly<{
+    routeName: string;
+    componentName: string;
+  }>,
+): boolean {
+  try {
+    const copy = structuredClone(ast);
+    const component = (copy.program.body ?? [])
+      .map((statement: AnyNode) =>
+        statement?.type === "ExportNamedDeclaration"
+          ? statement.declaration
+          : statement,
+      )
+      .flatMap((declaration: AnyNode) => {
+        if (declaration?.type === "FunctionDeclaration") {
+          return [declaration.id?.name === expected.componentName ? declaration : null];
+        }
+        if (declaration?.type !== "VariableDeclaration") return [];
+        return (declaration.declarations ?? []).map((item: AnyNode) =>
+          item.id?.type === "Identifier" &&
+          item.id.name === expected.componentName &&
+          (item.init?.type === "ArrowFunctionExpression" ||
+            item.init?.type === "FunctionExpression")
+            ? item.init
+            : null,
+        );
+      })
+      .find((candidate: AnyNode) => candidate?.body?.type === "BlockStatement");
+    if (!component) return false;
+
+    const id = (name: string, start: number, end: number) => ({
+      type: "Identifier",
+      name,
+      start,
+      end,
+    });
+    const slot = "__morphB1LoaderProbe";
+    const jsxStart = 100;
+    const jsxEnd = 200;
+    component.body.start = 0;
+    component.body.end = 1000;
+    component.body.body = [
+      {
+        type: "VariableDeclaration",
+        kind: "const",
+        start: 1,
+        end: 80,
+        declarations: [
+          {
+            type: "VariableDeclarator",
+            start: 5,
+            end: 75,
+            id: {
+              type: "ObjectPattern",
+              start: 5,
+              end: 40,
+              properties: [
+                {
+                  type: "ObjectProperty",
+                  start: 10,
+                  end: 35,
+                  key: id(slot, 10, 30),
+                  value: id(slot, 31, 35),
+                  shorthand: true,
+                  computed: false,
+                },
+              ],
+            },
+            init: {
+              type: "CallExpression",
+              start: 45,
+              end: 75,
+              callee: {
+                type: "MemberExpression",
+                start: 45,
+                end: 70,
+                object: id(expected.routeName, 45, 55),
+                property: id("useLoaderData", 56, 69),
+                computed: false,
+                optional: false,
+              },
+              arguments: [],
+              optional: false,
+            },
+          },
+        ],
+      },
+      {
+        type: "ReturnStatement",
+        start: jsxStart,
+        end: jsxEnd,
+        argument: {
+          type: "JSXElement",
+          start: jsxStart,
+          end: jsxEnd,
+          openingElement: {
+            type: "JSXOpeningElement",
+            start: jsxStart,
+            end: jsxEnd,
+            name: { type: "JSXIdentifier", name: "__MorphB1Probe" },
+            attributes: [
+              {
+                type: "JSXSpreadAttribute",
+                start: jsxStart + 1,
+                end: jsxEnd - 1,
+                argument: id(slot, jsxStart + 5, jsxEnd - 5),
+              },
+            ],
+            selfClosing: true,
+          },
+          closingElement: null,
+          children: [],
+        },
+      },
+    ];
+
+    const details = collectLoaderSlotBindingDetails(copy, input);
+    return details.get(jsxStart)?.slot === slot;
+  } catch {
+    return false;
+  }
 }
 
 /** Every name a binding in this module declares, with how many times. */
@@ -734,7 +873,7 @@ export function isReference(node: AnyNode, parent: AnyNode): boolean {
 
 export function collectLoaderSlotBindings(
   ast: AnyNode,
-  file: Readonly<{ path: string; files: readonly LoaderBindingFile[] }>,
+  file: LoaderBindingInput,
 ): LoaderSlotBindings {
   const details = collectLoaderSlotBindingDetails(ast, file);
   if (details.size === 0) return NO_LOADER_SLOT_BINDINGS;
@@ -747,7 +886,7 @@ export function collectLoaderSlotBindings(
  */
 export function collectLoaderSlotBindingDetails(
   ast: AnyNode,
-  file: Readonly<{ path: string; files: readonly LoaderBindingFile[] }>,
+  file: LoaderBindingInput,
 ): LoaderSlotBindingDetails {
   // Paths as the section derivation and the preview both name them, so the
   // two callers resolve every import the same way.
@@ -839,6 +978,7 @@ export function collectLoaderSlotBindingDetails(
     loaderCall.callee.name,
     modulePath,
     files,
+    file.parsedAstFor,
   );
   if (pagePath === null || staticPagePath(pagePath) !== pagePathOfRoute) {
     return NO_LOADER_SLOT_BINDING_DETAILS;

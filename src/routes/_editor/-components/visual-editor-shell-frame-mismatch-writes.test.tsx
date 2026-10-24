@@ -254,6 +254,10 @@ const FILES = [
     'import { createRootRoute } from "@tanstack/react-router";\nexport const Route = createRootRoute({});\n',
   ),
   file(
+    "src/morph/content.ts",
+    'export { content, morph, isSectionHidden } from "@morph/sdk";\n',
+  ),
+  file(
     "src/routes/index.tsx",
     'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/")({ component: () => <main /> });\n',
   ),

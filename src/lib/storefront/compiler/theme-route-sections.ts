@@ -1,5 +1,14 @@
 import { parse } from "@babel/parser";
 import {
+  analyzeB1Route,
+  type B1Instance,
+} from "@/lib/storefront/ast/theme-content-provenance";
+import {
+  createThemeSourceAstReader,
+  parseThemeSourceAst,
+  type ParsedThemeAst,
+} from "@/lib/storefront/ast/theme-source-ast";
+import {
   THEME_CONTENT_SLOT_HELPER,
   isValidThemeContentSlotId,
 } from "@/lib/storefront/theme-content-slots";
@@ -13,16 +22,12 @@ import {
   resolveThemeContentCapabilitiesFromFiles,
 } from "@/lib/storefront/theme-content-capability-resolver";
 import {
-  NO_LOADER_SLOT_BINDINGS,
   NO_PAGE_VARIABLES,
   collectLoaderSlotBindings,
   collectPageVariables,
   isPageBindingExpression,
-  propsReplacingSpread,
-  readPageBindingKey,
   resolveThemeSourceImport,
   themeImportBase,
-  type LoaderSlotBindings,
 } from "@/lib/storefront/ast/theme-content-binding";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 
@@ -218,38 +223,10 @@ function walkWithParent(
 
 function readSlotId(
   node: any,
-  pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
-  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
+  b1Instances?: ReadonlyMap<number, B1Instance>,
 ): string | null {
   if (node?.type !== "JSXElement") return null;
-  const loaderSlot = loaderSlots.get(node.start);
-  if (loaderSlot !== undefined) {
-    return isValidThemeContentSlotId(loaderSlot) ? loaderSlot : null;
-  }
-  for (const attribute of node.openingElement?.attributes ?? []) {
-    const spread =
-      attribute?.type === "JSXSpreadAttribute" ? attribute.argument : null;
-    const pageKey = readPageBindingKey(spread, pageVariables);
-    if (pageKey !== null) {
-      if (isValidThemeContentSlotId(pageKey)) return pageKey;
-      continue;
-    }
-    if (
-      spread?.type !== "CallExpression" ||
-      spread.callee?.type !== "Identifier" ||
-      spread.callee.name !== "content"
-    ) {
-      continue;
-    }
-    const argument = spread.arguments?.[0];
-    if (
-      argument?.type === "StringLiteral" &&
-      isValidThemeContentSlotId(argument.value)
-    ) {
-      return argument.value;
-    }
-  }
-  return null;
+  return b1Instances?.get(node.start)?.section ?? null;
 }
 
 function jsxIdentifier(node: any): string | null {
@@ -305,6 +282,7 @@ const LOADER_STRUCTURE_LOCKED =
 function parsePositionedSections(
   files: readonly ThemeSourceFile[],
   routeSourcePath: string,
+  sourceAstReader = createThemeSourceAstReader(files),
 ): {
   sections: PositionedSection[];
   unboundSections: ThemeUnboundRouteSection[];
@@ -328,24 +306,18 @@ function parsePositionedSections(
     };
   }
 
-  let ast: any;
-  try {
-    ast = parse(routeFile.content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch (error) {
+  const parsedRoute = sourceAstReader.read(routeFile.path, routeFile.content);
+  if (!parsedRoute.ok) {
     return {
       sections: [],
       unboundSections: [],
-      diagnostics: [
-        `${normalizedRoutePath}: ${error instanceof Error ? error.message : "Invalid route source"}`,
-      ],
+      diagnostics: [parsedRoute.message],
       ast: null,
       hasContentImport: false,
       structureLocked: null,
     };
   }
+  const ast = parsedRoute.ast;
 
   const filePaths = new Set(files.map((file) => normalizePath(file.path)));
   const imports = new Map<
@@ -368,7 +340,11 @@ function parsePositionedSections(
       const imported =
         specifier.type === "ImportDefaultSpecifier"
           ? "default"
-          : (specifier.imported?.name ?? specifier.imported?.value);
+          : specifier.type === "ImportSpecifier"
+            ? specifier.imported.type === "Identifier"
+              ? specifier.imported.name
+              : specifier.imported.value
+            : null;
       if (typeof imported === "string") {
         imports.set(specifier.local.name, { imported, sourcePath, missing });
       }
@@ -396,10 +372,24 @@ function parsePositionedSections(
   const loaderSlots = collectLoaderSlotBindings(ast, {
     path: normalizedRoutePath,
     files: files.map((file) => ({ ...file, path: normalizePath(file.path) })),
+    parsedAstFor: sourceAstReader.ast,
   });
+  const b1Analysis = analyzeB1Route(
+    files.filter(
+      (file): file is ThemeSourceFile & { content: string } =>
+        typeof file.content === "string",
+    ),
+    normalizedRoutePath,
+    undefined,
+    undefined,
+    sourceAstReader.read,
+  );
+  const b1Instances = new Map(
+    b1Analysis.instances.map((instance) => [instance.start, instance]),
+  );
   const seenSlots = new Set<string>();
   walkWithParent(ast.program, null, (node, parent) => {
-    const slotId = readSlotId(node, pageVariables, loaderSlots);
+    const slotId = readSlotId(node, b1Instances);
     if (!slotId) return;
     const componentName = jsxIdentifier(node);
     const imported = componentName ? imports.get(componentName) : null;
@@ -457,7 +447,7 @@ function parsePositionedSections(
   });
 
   const addableBySource = new Map(
-    listBindableSectionOptions(files).map(
+    listBindableSectionOptions(files, sourceAstReader.ast).map(
       (option) => [normalizePath(option.componentSourcePath), option] as const,
     ),
   );
@@ -469,7 +459,9 @@ function parsePositionedSections(
     const imported = imports.get(componentName);
     if (!imported || imported.missing) return;
     const option = addableBySource.get(normalizePath(imported.sourcePath));
-    if (!option || readSlotId(node, pageVariables, loaderSlots)) return;
+    if (!option || readSlotId(node, b1Instances)) {
+      return;
+    }
     const sourceStart = node.start;
     const sourceEnd = node.end;
     const sourceLocation = sourceLocationFor(normalizedRoutePath, node);
@@ -512,7 +504,15 @@ function parsePositionedSections(
     diagnostics,
     ast,
     hasContentImport,
-    structureLocked: loaderSlots.size > 0 ? LOADER_STRUCTURE_LOCKED : null,
+    structureLocked:
+      loaderSlots.size > 0 ||
+      (b1Analysis.loaderOrigin &&
+        b1Analysis.instances.some(
+          (instance) =>
+            instance.section !== null && instance.hasDeclaredCallsiteProps,
+        ))
+        ? LOADER_STRUCTURE_LOCKED
+        : null,
   };
 }
 
@@ -543,6 +543,7 @@ export function deriveThemeRouteSections(
  */
 function deriveDocumentLayoutPathFromRoute(
   files: readonly ThemeSourceFile[],
+  sourceAstReader = createThemeSourceAstReader(files),
 ): string | null {
   const routeFile = files.find((file) => {
     const path = normalizePath(file.path);
@@ -550,15 +551,9 @@ function deriveDocumentLayoutPathFromRoute(
   });
   if (typeof routeFile?.content !== "string") return null;
 
-  let ast: any;
-  try {
-    ast = parse(routeFile.content, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return null;
-  }
+  const parsed = sourceAstReader.read(routeFile.path, routeFile.content);
+  if (!parsed.ok) return null;
+  const ast = parsed.ast;
 
   const filePaths = new Set(files.map((file) => normalizePath(file.path)));
   const layoutImports = new Map<string, string>();
@@ -610,7 +605,14 @@ function deriveDocumentLayoutPathFromRoute(
 export function deriveThemeDocumentLayoutPath(
   files: readonly ThemeSourceFile[],
 ): string | null {
-  const derived = deriveDocumentLayoutPathFromRoute(files);
+  return readDocumentLayoutPath(files, createThemeSourceAstReader(files));
+}
+
+function readDocumentLayoutPath(
+  files: readonly ThemeSourceFile[],
+  sourceAstReader = createThemeSourceAstReader(files),
+): string | null {
+  const derived = deriveDocumentLayoutPathFromRoute(files, sourceAstReader);
   if (derived) return derived;
 
   const manifest = readManifestContent(files);
@@ -637,12 +639,6 @@ export function deriveThemeDocumentLayoutPath(
   } catch {
     return null;
   }
-}
-
-function readDocumentLayoutPath(
-  files: readonly ThemeSourceFile[],
-): string | null {
-  return deriveThemeDocumentLayoutPath(files);
 }
 
 function readLayoutPageBoundary(
@@ -712,7 +708,8 @@ function readLayoutPageBoundary(
 export function deriveThemeLayoutSections(
   files: readonly ThemeSourceFile[],
 ): ThemeRouteSectionResult {
-  const layoutPath = readDocumentLayoutPath(files);
+  const sourceAstReader = createThemeSourceAstReader(files);
+  const layoutPath = readDocumentLayoutPath(files, sourceAstReader);
   if (!layoutPath) {
     return {
       sections: [],
@@ -721,7 +718,7 @@ export function deriveThemeLayoutSections(
       hasContentImport: false,
     };
   }
-  const parsed = parsePositionedSections(files, layoutPath);
+  const parsed = parsePositionedSections(files, layoutPath, sourceAstReader);
   const pageBoundary = readLayoutPageBoundary(parsed.ast, parsed.sections);
   return {
     sections: parsed.sections.map(({ node, parent: _parent, ...section }) => ({
@@ -740,19 +737,12 @@ export function deriveThemeLayoutSections(
 }
 
 /**
- * The props the code sets for a content slot in place of what the slot's
- * spread hands over, at every call site in `sourcePaths` that spreads it:
- * `<Hero {...content("hero")} title={other.title} />` sets `title`. `"any"`
- * when a later spread may set any prop; null when nothing replaces anything.
- *
- * The page shows the code's value for such a prop, not the stored one, so a
- * stored edit to it would change nothing on the page. Read with the preview's
- * own rule (`propsReplacingSpread`), and over every spelling of a spread that
- * could be this slot's — `content("hero")`, `page.hero` or `page["hero"]`,
- * and a local named for the slot (`const { hero } = Route.useLoaderData()`,
- * also when renamed) — including call sites the section analysis does not
- * bind. Reading too many only withholds a control; reading too few lets an
- * edit through that the page does not show.
+ * The component props that are not proven to display this section's matching
+ * stored fields. This uses the same scoped provenance result as section
+ * discovery and preview injection; variable names and spread order are not
+ * independently re-interpreted here. An unparseable or ambiguous source fails
+ * closed because the Inspector must not offer a control that cannot affect the
+ * rendered page.
  */
 export function readSlotPropsSetInCode(
   files: readonly ThemeSourceFile[],
@@ -760,71 +750,82 @@ export function readSlotPropsSetInCode(
   slotId: string,
 ): ReadonlySet<string> | "any" | null {
   const set = new Set<string>();
+  const sourceFiles = files.flatMap((file) =>
+    typeof file.content === "string"
+      ? [{ path: normalizePath(file.path), content: file.content }]
+      : [],
+  );
+  const parsedModules = new Map<string, ParsedThemeAst>();
   for (const sourcePath of sourcePaths) {
     const normalized = normalizePath(sourcePath);
-    const content = files.find(
-      (file) => normalizePath(file.path) === normalized,
-    )?.content;
-    if (typeof content !== "string") continue;
-    let ast: any;
-    try {
-      ast = parse(content, {
-        sourceType: "module",
-        plugins: ["jsx", "typescript"],
-      });
-    } catch {
-      continue;
+    const sourceFile = sourceFiles.find((file) => file.path === normalized);
+    if (!sourceFile) return "any";
+    const parsed = parseThemeSourceAst(sourceFile);
+    if (!parsed.ok) return "any";
+    parsedModules.set(normalized, parsed.ast);
+  }
+
+  for (const sourcePath of sourcePaths) {
+    const normalized = normalizePath(sourcePath);
+    const analysis = analyzeB1Route(
+      sourceFiles,
+      normalized,
+      undefined,
+      parsedModules,
+    );
+    if (analysis.diagnostics.length > 0) return "any";
+
+    const possiblyRelevant = analysis.instances.filter((instance) =>
+      instance.sourceSlots.includes(slotId) ||
+      Object.values(instance.props).some(
+        (value) =>
+          (value.kind === "field" ||
+            value.kind === "spread-field" ||
+            value.kind === "derived") &&
+          value.slot === slotId,
+      ),
+    );
+    if (possiblyRelevant.some((instance) => instance.section === null)) {
+      return "any";
     }
-    // Locals the slot may be held in: its own name, and any name a
-    // destructuring gives the property of that name.
-    const locals = new Set<string>([slotId]);
-    walkWithParent(ast.program, null, (node, parent) => {
-      if (
-        node?.type === "ObjectProperty" &&
-        parent?.type === "ObjectPattern" &&
-        !node.computed &&
-        (node.key?.name ?? node.key?.value) === slotId &&
-        node.value?.type === "Identifier"
-      ) {
-        locals.add(node.value.name);
+    const instances = analysis.instances.filter(
+      (instance) => instance.section === slotId,
+    );
+    for (const instance of instances) {
+      if (instance.hasUntracedSpread) return "any";
+      const props = new Set([
+        ...instance.declaredFields,
+        ...Object.keys(instance.props),
+      ]);
+      for (const prop of props) {
+        const value = instance.props[prop];
+        // An omitted component prop is not a route-level override. In
+        // particular, the section's stored field may flow into a differently
+        // named prop (`title={heading}` where `heading` is `hero.desc`); an
+        // unrelated declared prop left unset must not hide that CMS source
+        // field from the Inspector.
+        if (value?.kind === "unset") continue;
+        const isSameStoredField =
+          (value?.kind === "field" || value?.kind === "spread-field") &&
+          value.slot === slotId &&
+          value.field === prop;
+        if (!isSameStoredField) set.add(prop);
       }
-    });
-    const namesSlot = (argument: any) => {
-      if (argument?.type === "Identifier") return locals.has(argument.name);
-      if (argument?.type === "MemberExpression") {
-        return argument.computed
-          ? argument.property?.type === "StringLiteral" &&
-              argument.property.value === slotId
-          : argument.property?.type === "Identifier" &&
-              argument.property.name === slotId;
-      }
-      return (
-        argument?.type === "CallExpression" &&
-        argument.callee?.type === "Identifier" &&
-        argument.callee.name === "content" &&
-        argument.arguments?.[0]?.type === "StringLiteral" &&
-        argument.arguments[0].value === slotId
-      );
-    };
-    let any = false;
-    walkWithParent(ast.program, null, (node) => {
-      if (any || node?.type !== "JSXElement") return;
-      for (const attribute of node.openingElement?.attributes ?? []) {
+
+      const ast = parsedModules.get(normalized);
+      walkWithParent(ast?.program, null, (node) => {
         if (
-          attribute?.type !== "JSXSpreadAttribute" ||
-          !namesSlot(attribute.argument)
+          node?.type === "JSXElement" &&
+          node.start === instance.start &&
+          (node.children ?? []).some(
+            (child: any) =>
+              child?.type !== "JSXText" || child.value.trim() !== "",
+          )
         ) {
-          continue;
+          set.add("children");
         }
-        const replaced = propsReplacingSpread(node, attribute);
-        if (replaced === "any") {
-          any = true;
-          return;
-        }
-        for (const name of replaced) set.add(name);
-      }
-    });
-    if (any) return "any";
+      });
+    }
   }
   return set.size > 0 ? set : null;
 }
@@ -839,9 +840,12 @@ export function readSlotPropsSetInCode(
  */
 function readRowComponentPaths(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): ReadonlySet<string> {
   const rowPaths = new Set<string>();
-  const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files);
+  const { capabilities } = resolveThemeContentCapabilitiesFromFiles(files, {
+    parsedAstFor,
+  });
   for (const [componentRef, capability] of Object.entries(capabilities)) {
     if (!componentRef.startsWith("src/")) continue;
     for (const definition of Object.values(capability.fields)) {
@@ -878,8 +882,9 @@ function resolveRelativeComponentPath(
 
 export function listThemeRouteSectionOptions(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): readonly ThemeRouteSectionOption[] {
-  const rowComponents = readRowComponentPaths(files);
+  const rowComponents = readRowComponentPaths(files, parsedAstFor);
   // Add section is deliberately driven by the source folder convention. The
   // manifest still participates in capability resolution above so existing
   // route slots and legacy content fields keep working, but a component must
@@ -912,8 +917,9 @@ export function listThemeRouteSectionOptions(
  */
 function listBindableSectionOptions(
   files: readonly ThemeSourceFile[],
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null,
 ): readonly ThemeRouteSectionOption[] {
-  const rowComponents = readRowComponentPaths(files);
+  const rowComponents = readRowComponentPaths(files, parsedAstFor);
   const pageCopies = files
     .map((file) => readThemePageSectionEntry(file.path))
     .filter((entry) => entry !== null)
@@ -930,7 +936,10 @@ function listBindableSectionOptions(
       componentName: entry.componentName,
       componentSourcePath: entry.componentSourcePath,
     }));
-  return [...listThemeRouteSectionOptions(files), ...pageCopies];
+  return [
+    ...listThemeRouteSectionOptions(files, parsedAstFor),
+    ...pageCopies,
+  ];
 }
 
 function replaceRange(

@@ -3,6 +3,7 @@ import {
   themeContentFieldDefinitionSchema,
   type ThemeContentFieldDefinition,
 } from "@/lib/storefront/theme-content-capabilities";
+import type { ParsedThemeAst } from "./theme-source-ast";
 
 /** Matches the manifest limit so both declaration sources accept the same set. */
 const MAX_COMPONENT_CONTENT_FIELDS = 100;
@@ -153,6 +154,7 @@ function cacheParse(
 
 export function parseColocatedContentFields(
   sourceCode: string,
+  parsedAst?: ParsedThemeAst | null,
 ): ColocatedContentFieldsResult {
   if (typeof sourceCode !== "string" || sourceCode.trim() === "") {
     return { declaration: "absent", fields: null, diagnostics: [] };
@@ -180,18 +182,29 @@ export function parseColocatedContentFields(
   }
 
   let ast: any;
-  try {
-    ast = parseAst(sourceCode);
-  } catch (error) {
-    return cacheParse(sourceCode, {
-      declaration: "invalid",
-      fields: null,
-      diagnostics: [
-        `Could not parse component source: ${
-          error instanceof Error ? error.message : "invalid source"
-        }`,
-      ],
-    });
+  if (parsedAst !== undefined) {
+    if (parsedAst === null) {
+      return cacheParse(sourceCode, {
+        declaration: "invalid",
+        fields: null,
+        diagnostics: ["Could not parse component source."],
+      });
+    }
+    ast = parsedAst;
+  } else {
+    try {
+      ast = parseAst(sourceCode);
+    } catch (error) {
+      return cacheParse(sourceCode, {
+        declaration: "invalid",
+        fields: null,
+        diagnostics: [
+          `Could not parse component source: ${
+            error instanceof Error ? error.message : "invalid source"
+          }`,
+        ],
+      });
+    }
   }
 
   const initializer = findContentFieldsInitializer(ast);

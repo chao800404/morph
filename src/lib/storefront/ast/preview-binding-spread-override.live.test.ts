@@ -241,14 +241,24 @@ describe("a prop set after the spread replaces the section's field", () => {
     },
   );
 
-  it("the loader form does not bind the call site, so nothing names hero", async () => {
+  it("the loader form selectively binds only the field the spread supplies", async () => {
     const root = await mount(loaderRoute(`<Hero {...$hero} title="Sale" />`), {
       hero: SALE,
     });
-    expect(all(root, '[data-storefront-section-id="hero"]')).toHaveLength(0);
-    for (const element of [only(root, "h1"), only(root, "p")]) {
-      expect(clicked(element).sectionId).not.toBe("hero");
-    }
+    expect(all(root, '[data-storefront-section-id="hero"]')).toHaveLength(1);
+    const heading = only(root, "h1");
+    expect(heading.textContent).toBe("Sale");
+    expect(clicked(heading)).toEqual({
+      sectionId: "hero",
+      fieldKey: null,
+      fieldPath: null,
+    });
+    expect(heading.getAttribute("data-morph-binding-state")).toBe("not-cms");
+    expect(clicked(only(root, "p"))).toEqual({
+      sectionId: "hero",
+      fieldKey: "subtitle",
+      fieldPath: "subtitle",
+    });
   });
 
   it("only the instance that overrides refuses: the same Hero elsewhere keeps its fields", async () => {
@@ -521,7 +531,7 @@ describe("a prop set before the spread is a default the spread replaces", () => 
     expect(clicked(h1).fieldKey).toBe("title");
   });
 
-  it("names hero.title while the stored content lacks it, as a component default does", async () => {
+  it("keeps the code literal unbound until the stored field exists", async () => {
     const files = (sections: Record<string, Props>) =>
       mount(contentRoute(`<Hero title="Fixed text" {...$hero} />`), sections);
     const before = only(
@@ -531,14 +541,23 @@ describe("a prop set before the spread is a default the spread replaces", () => 
     expect(before.textContent).toBe("Fixed text");
     expect(clicked(before)).toEqual({
       sectionId: "hero",
-      fieldKey: "title",
-      fieldPath: "title",
+      fieldKey: null,
+      fieldPath: null,
     });
-    // What a write to that field does: the spread now carries it, and it wins.
+    // The later spread can supply this field, so the literal is not safely
+    // classifiable as code-only when the key is currently absent.
+    expect(before.getAttribute("data-morph-binding-state")).toBe("derived");
+    // Once the stored field exists, the later spread supplies the displayed
+    // value and the same element is correctly bound to that CMS field.
     const after = only(
       await files({ hero: { title: "Written", subtitle: "Stored subtitle" } }),
       "h1",
     );
     expect(after.textContent).toBe("Written");
+    expect(clicked(after)).toEqual({
+      sectionId: "hero",
+      fieldKey: "title",
+      fieldPath: "title",
+    });
   });
 });

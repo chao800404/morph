@@ -40,6 +40,10 @@ describe("layout sections derived from the starter shell", () => {
     const customFiles = [
       { path: "morph.theme.json", content: manifest },
       {
+        path: "src/morph/content.ts",
+        content: 'export { content, morph, isSectionHidden } from "@morph/sdk";\n',
+      },
+      {
         path: "src/layouts/Shell.tsx",
         content: `import { Outlet } from "@tanstack/react-router";
 import Header from "../components/Header";

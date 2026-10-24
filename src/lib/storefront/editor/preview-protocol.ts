@@ -1,6 +1,8 @@
 import {
+  isContentBindingState,
   isContentUnavailableReason,
   isSelectionKind,
+  type ContentBindingState,
   type ContentUnavailableReason,
   type EditableDescendantField,
   type SelectionKind,
@@ -381,6 +383,8 @@ export type PreviewSelectionMessage = {
   itemId?: string | null;
   /** Why the element offers no content to edit, when the preview can say. */
   contentUnavailable?: ContentUnavailableReason | null;
+  /** Provenance for the selected value; descriptive only, never write authority. */
+  bindingState?: ContentBindingState | null;
   /** Monotonically increasing editor intent, used to reject stale replies. */
   selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
@@ -1468,6 +1472,9 @@ export function parsePreviewToEditorMessage(
         (value.contentUnavailable !== undefined &&
           value.contentUnavailable !== null &&
           !isContentUnavailableReason(value.contentUnavailable)) ||
+        (value.bindingState !== undefined &&
+          value.bindingState !== null &&
+          !isContentBindingState(value.bindingState)) ||
         (value.selectionRevision !== undefined &&
           !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
@@ -1507,6 +1514,9 @@ export function parsePreviewToEditorMessage(
         fieldPath: value.fieldPath,
         itemId: value.itemId ?? null,
         contentUnavailable: value.contentUnavailable ?? null,
+        ...(value.bindingState === undefined
+          ? {}
+          : { bindingState: value.bindingState }),
         ...(value.selectionRevision === undefined
           ? {}
           : { selectionRevision: value.selectionRevision }),

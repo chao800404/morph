@@ -12,12 +12,29 @@ function read(body: string, preamble = "") {
   const files = [
     {
       path: ROUTE,
-      content: `import { content } from "../morph/content";
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { content, morph } from "../morph/content";
 import Hero from "../components/Hero";
-${preamble}
-export function Home() {
+export const Route = createFileRoute("/")({ component: Home });
+export async function Home() {
+  const home = await morph.pages.get("/");
+  const hero = home.hero;
+  ${preamble}
   return <main>${body}</main>;
 }`,
+    },
+    {
+      path: "src/morph/content.ts",
+      content: `export const morph = { pages: { get: async () => ({}) } }; export const content = (slot) => ({ slot });`,
+    },
+    {
+      path: "src/components/Hero.tsx",
+      content: `export const contentFields = {
+  title: { type: "text", label: "Title" },
+  badge: { type: "text", label: "Badge" },
+  children: { type: "text", label: "Children" },
+} as const;
+export default function Hero({ title, badge, children }) { return null; }`,
     },
   ];
   const result = readSlotPropsSetInCode(files, [ROUTE], "hero");
@@ -63,7 +80,16 @@ describe("readSlotPropsSetInCode", () => {
 
   it("a local the slot is destructured into under another name", () => {
     expect(
-      read(`<Hero {...h} title="Sale" />`, `const { hero: h } = { hero: {} };`),
+      read(`<Hero {...h} title="Sale" />`, `const { hero: h } = home;`),
+    ).toEqual(["title"]);
+  });
+
+  it("does not hide a CMS source field merely because its component prop is unset", () => {
+    expect(
+      read(
+        `<Hero title={heading} />`,
+        `const { desc: heading } = hero;`,
+      ),
     ).toEqual(["title"]);
   });
 
@@ -99,6 +125,15 @@ export default function Shell() {
   return <Header {...content("hero")} title="Shop" />;
 }`,
       },
+      {
+        path: "src/components/Header.tsx",
+        content: `export const contentFields = { title: { type: "text", label: "Title" } } as const;
+export default function Header({ title }) { return null; }`,
+      },
+      {
+        path: "src/morph/content.ts",
+        content: `export const content = (slot) => ({ slot });`,
+      },
     ];
     expect(readSlotPropsSetInCode(files, [ROUTE], "hero")).toBeNull();
     expect([
@@ -110,13 +145,13 @@ export default function Shell() {
     ]).toEqual(["title"]);
   });
 
-  it("a file that does not parse names nothing", () => {
+  it("fails closed when a file does not parse", () => {
     expect(
       readSlotPropsSetInCode(
         [{ path: ROUTE, content: "<<<" }],
         [ROUTE],
         "hero",
       ),
-    ).toBeNull();
+    ).toBe("any");
   });
 });

@@ -41,9 +41,9 @@ import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
  * editor that writes nothing at all.
  *
  * Both runtimes run the `content("x")` form. The full Start preview
- * (`MORPH_E2E_PREVIEW_RUNTIME=start`) also runs the loader form, which binds
- * a call site only when nothing but a `key` sits beside its spread: there the
- * overridden call site is not the section, and nothing is written either.
+ * (`MORPH_E2E_PREVIEW_RUNTIME=start`) also runs the loader form, verifying
+ * that the section and untouched fields remain bound while a literal override
+ * is still code-controlled and cannot be written as CMS content.
  *
  * Runs on a Theme of its own in the runner-owned database.
  */
@@ -69,6 +69,10 @@ const PLAIN = "plain";
 const SALE = "Sale";
 const STORED = { title: SALE, subtitle: "Stored subtitle" };
 const PLAIN_STORED = { title: SALE, subtitle: "Plain subtitle" };
+const LOADER_STORED = {
+  title: "Stored loader title",
+  subtitle: "Stored loader subtitle",
+};
 
 const HERO_FILE = {
   path: "src/components/OverrideHero.tsx",
@@ -142,6 +146,25 @@ function SpreadAfterLoaderRoute() {
 
 const FILES = [
   HERO_FILE,
+  contentRoute(
+    TWO_ROUTE,
+    "SpreadTwoRoute",
+    `<OverrideHero {...content("${SLOT}")} />
+      <OverrideHero {...content("${PLAIN}")} />`,
+  ),
+  contentRoute(
+    AFTER_ROUTE,
+    "SpreadAfterRoute",
+    `<OverrideHero {...content("${SLOT}")} />`,
+  ),
+  contentRoute(
+    BEFORE_ROUTE,
+    "SpreadBeforeRoute",
+    `<OverrideHero {...content("${SLOT}")} />`,
+  ),
+];
+
+const OVERRIDE_FILES = [
   contentRoute(
     TWO_ROUTE,
     "SpreadTwoRoute",
@@ -451,8 +474,9 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`;
     const saved = await writeThemeFiles(page, scope, FILES);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
-    // The section analysis binds `content("hero")` whatever the call site
-    // sets beside it, so both routes store the slot as they stand.
+    // Seed the sections while every call site is a plain content spread.
+    // The server correctly rejects writes to a field that a later literal
+    // overrides, so install the override forms only after the seed is stored.
     await storeSlot(page, AFTER_ROUTE, STORED);
     await storeSlot(page, BEFORE_ROUTE, STORED);
     await storeSlot(page, TWO_ROUTE, STORED);
@@ -462,6 +486,9 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
     expect(await storedProps(page, AFTER_ROUTE)).toEqual(STORED);
     expect(await storedProps(page, BEFORE_ROUTE)).toEqual(STORED);
 
+    const overridesSaved = await writeThemeFiles(page, scope, OVERRIDE_FILES);
+    expect(overridesSaved.success, JSON.stringify(overridesSaved)).toBe(true);
+
     if (RUNTIME === "start") {
       // The loader form does not bind the overridden call site, so the slot
       // is stored while the route spreads it alone, and the route is then
@@ -470,8 +497,8 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
         loaderRoute(`<OverrideHero {...${SLOT}} />`),
       ]);
       expect(sole.success, JSON.stringify(sole)).toBe(true);
-      await storeSlot(page, LOADER_ROUTE, STORED);
-      expect(await storedProps(page, LOADER_ROUTE)).toEqual(STORED);
+      await storeSlot(page, LOADER_ROUTE, LOADER_STORED);
+      expect(await storedProps(page, LOADER_ROUTE)).toEqual(LOADER_STORED);
       const overridden = await writeThemeFiles(page, scope, [
         loaderRoute(`<OverrideHero {...${SLOT}} title="${SALE}" />`),
       ]);
@@ -681,21 +708,104 @@ test.describe(`a prop beside the content spread (${RUNTIME} preview)`, () => {
   // The loader form runs a server function, which only the full Start
   // preview can run, so the test exists only there.
   if (RUNTIME === "start") {
-    test("the loader form: the overridden call site is not the section, and nothing is written", async ({
+    test("the loader form: the section and untouched field stay bound, but its literal override is not writable", async ({
       page,
     }) => {
       test.setTimeout(240_000);
+      const writes = watchWrites(page);
       await openRoute(page, LOADER_ROUTE);
+      const loaderHeading = sectionHeading(page, SLOT);
+      const loaderSubtitle = sectionText(page, SLOT);
       await expect(
         previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
-      ).toHaveCount(0);
-      await bothRoutesWriteNothing(page, LOADER_ROUTE);
-      // No structure-panel step: since #291 the stored section is kept, but
-      // the editor's section view lists only sections the source proves, and
-      // this call site proves none, so the panel has no row for it (measured
-      // in this runtime, 2026-10-22). The shell test covers the section form
-      // for it should one be reached.
-      expect(await rawStoredProps(LOADER_ROUTE, SLOT)).toEqual(STORED);
+      ).toHaveCount(1);
+      await expect(loaderHeading).toHaveText(SALE);
+      await expect(loaderHeading).toHaveAttribute("data-storefront-field", "");
+      await expect(loaderSubtitle).toHaveText(LOADER_STORED.subtitle);
+      await expect(loaderSubtitle).toHaveAttribute(
+        "data-storefront-field",
+        "subtitle",
+      );
+
+      // Selecting the section exposes the code-controlled title as a reason,
+      // not as an editable CMS input. A canvas attempt on that literal must
+      // also leave both the write log and the stored props unchanged.
+      await panelRow(page, SLOT).click();
+      await openContentTab(page);
+      await expect(codeSetNotice(page)).toContainText("Override title");
+      await expect(titleField(page)).toHaveCount(0);
+      await expect(subtitleField(page)).toHaveValue(LOADER_STORED.subtitle);
+      await loaderHeading.dblclick();
+      await expect(inlineEditor(page)).toHaveCount(0);
+      await page.keyboard.type(" should not persist");
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(1_500);
+      expect(writes).toEqual([]);
+      expect(await rawStoredProps(LOADER_ROUTE, SLOT)).toEqual(LOADER_STORED);
+      await expect(loaderHeading).toHaveText(SALE);
+
+      // Inspector edit follows the loader provenance and changes only the
+      // untouched CMS field; the separately stored title must stay intact.
+      await clickOnCanvas(page, loaderSubtitle);
+      await openContentTab(page);
+      await expect(codeSetNotice(page)).toContainText("Override title");
+      await expect(titleField(page)).toHaveCount(0);
+      await expect(subtitleField(page)).toHaveValue(LOADER_STORED.subtitle);
+      const inspectorValue = `Loader subtitle ${Date.now()}`;
+      const inspectorSaved = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(
+            response.url(),
+            "updateStorefrontThemeSectionProps",
+          ) && (response.request().postData() ?? "").includes(inspectorValue),
+        { timeout: 30_000 },
+      );
+      await subtitleField(page).fill(inspectorValue);
+      await subtitleField(page).press("Tab");
+      const inspectorResponse = await inspectorSaved;
+      expect(inspectorResponse.ok(), await inspectorResponse.text()).toBe(true);
+      expect(await rawStoredProps(LOADER_ROUTE, SLOT)).toEqual({
+        ...LOADER_STORED,
+        subtitle: inspectorValue,
+      });
+      await expect(loaderSubtitle).toHaveText(inspectorValue, {
+        timeout: 30_000,
+      });
+
+      // Inline editing follows the same field provenance. Read D1 after the
+      // write so this cannot pass merely because the preview changed locally.
+      await clickOnCanvas(page, loaderSubtitle);
+      const box = await loaderSubtitle.boundingBox();
+      expect(box, "no box for the loader subtitle").not.toBeNull();
+      await page.mouse.dblclick(
+        box!.x + box!.width / 2,
+        box!.y + box!.height / 2,
+      );
+      await expect(inlineEditor(page)).toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press("End");
+      await page.keyboard.type(" inline");
+      const inlineValue = `${inspectorValue} inline`;
+      const inlineSaved = page.waitForResponse(
+        (response) =>
+          isServerFunctionCall(
+            response.url(),
+            "updateStorefrontThemeSectionProps",
+          ) && (response.request().postData() ?? "").includes(inlineValue),
+        { timeout: 30_000 },
+      );
+      await page.keyboard.press("Enter");
+      const inlineResponse = await inlineSaved;
+      expect(inlineResponse.ok(), await inlineResponse.text()).toBe(true);
+      expect(await rawStoredProps(LOADER_ROUTE, SLOT)).toEqual({
+        ...LOADER_STORED,
+        subtitle: inlineValue,
+      });
+      expect(writes).toHaveLength(2);
+      for (const body of writes) expect(body).toContain(`"${SLOT}"`);
+
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(loaderHeading).toHaveText(SALE, { timeout: 90_000 });
+      await expect(loaderSubtitle).toHaveText(inlineValue);
     });
   }
 });

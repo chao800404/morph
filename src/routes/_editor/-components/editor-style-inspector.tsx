@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { TailwindClassTokenInput } from "./tailwind-class-token-input";
 import {
   getFieldPathValue,
+  type ContentBindingState,
   setFieldPathValue,
   type ContentUnavailableReason,
   type EditorSelectionDescriptor,
@@ -410,6 +411,18 @@ const CONTENT_BLOCKED_MESSAGES: Record<
     "This element's data-storefront-field names one field, but it shows another, so the editor will not guess which one an edit belongs to. The page previews and builds as written; edit this text in Code, or remove the attribute so the editor follows what the element shows.",
   "marker-unproven":
     "This element's data-storefront-field names a field, but the editor cannot trace what the element shows back to it (for example, the value passes through a local first). The page previews and builds as written; edit this text in Code for now.",
+};
+
+const CONTENT_BINDING_STATE_MESSAGES: Record<
+  Exclude<ContentBindingState, "cms-field">,
+  string
+> = {
+  "not-cms":
+    "This value is set in Theme code, not stored as CMS content. Design will not save it as page content.",
+  untraced:
+    "This value's source has not been traced. Design cannot safely associate it with a CMS field, so content editing is disabled.",
+  derived:
+    "This value can resolve to CMS data or Theme code depending on a spread or code transformation. Design cannot safely map the rendered value to one editable field, so direct visual editing is disabled.",
 };
 
 const STRING_IMAGE_FIELD_HINT =
@@ -1012,6 +1025,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const contentBlockedReason:
     ContentUnavailableReason | SelectedRowRefusal | null =
     selectedRowRefused ?? selection?.contentUnavailable ?? null;
+  const contentBindingState = selection?.bindingState ?? null;
+  const contentBindingBlocksWrite =
+    contentBindingState !== null && contentBindingState !== "cms-field";
   /**
    * The list a row selected without an id belongs to.
    *
@@ -1029,7 +1045,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : null;
   /** Whether nothing may be written: blocked, with no list offered instead. */
   const contentWritesBlocked = Boolean(
-    contentBlockedReason && !unconfirmedRowListKey,
+    (contentBlockedReason && !unconfirmedRowListKey) ||
+      contentBindingBlocksWrite,
   );
   const contentBlockedRef = useRef(contentWritesBlocked);
   contentBlockedRef.current = contentWritesBlocked;
@@ -2974,6 +2991,21 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         >
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             {CONTENT_BLOCKED_MESSAGES[contentBlockedReason]}
+          </p>
+        </div>
+      ) : null}
+
+      {view === "content" &&
+      contentBindingState !== null &&
+      contentBindingState !== "cms-field" ? (
+        <div
+          data-testid="inspector-content-binding-state"
+          data-binding-state={contentBindingState}
+          className="rounded-xl border border-dashed p-3"
+          role="status"
+        >
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {CONTENT_BINDING_STATE_MESSAGES[contentBindingState]}
           </p>
         </div>
       ) : null}

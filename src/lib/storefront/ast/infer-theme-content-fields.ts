@@ -3,6 +3,7 @@ import type {
   ThemeContentFieldDefinition,
   ThemeScalarContentFieldDefinition,
 } from "@/lib/storefront/theme-content-capabilities";
+import type { ParsedThemeAst } from "./theme-source-ast";
 
 const MAX_INFERRED_FIELDS = 100;
 
@@ -309,15 +310,21 @@ function fieldsByMemberName(
  */
 export function inferThemeContentFields(
   sourceCode: string,
+  parsedAst?: ParsedThemeAst | null,
 ): InferredThemeContentFieldsResult {
   if (typeof sourceCode !== "string" || sourceCode.trim() === "") {
     return { fields: {} };
   }
   let ast: any;
-  try {
-    ast = parseAst(sourceCode);
-  } catch {
-    return { fields: {} };
+  if (parsedAst !== undefined) {
+    if (parsedAst === null) return { fields: {} };
+    ast = parsedAst;
+  } else {
+    try {
+      ast = parseAst(sourceCode);
+    } catch {
+      return { fields: {} };
+    }
   }
 
   const aliases = collectAliases(ast);

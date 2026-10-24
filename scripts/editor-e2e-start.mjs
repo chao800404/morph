@@ -22,10 +22,11 @@
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
-/** Whole-file shards. B1's long acceptance spec can join shard 2 when merged. */
+/** Whole-file shards. B1 acceptance is split into C and P files across shards 2 and 3. */
 export const START_PREVIEW_SHARDS = [
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts"],
-  ["spread-override-binding.spec.ts"],
+  ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts"],
+  ["binding-acceptance-p.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 

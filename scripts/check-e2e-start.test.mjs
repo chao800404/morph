@@ -19,6 +19,11 @@ import {
 
 const GATE = "process.env.MORPH_E2E_PREVIEW_RUNTIME";
 
+test("the B1 binding acceptance suite is part of full Start verification", () => {
+  assert.ok(START_PREVIEW_SPECS.includes("binding-acceptance-c.spec.ts"));
+  assert.ok(START_PREVIEW_SPECS.includes("binding-acceptance-p.spec.ts"));
+});
+
 // The plan: every spec reading the gate is run or excluded with a reason.
 const sources = {
   "a.spec.ts": `test.skip(${GATE} !== "start")`,
@@ -117,7 +122,7 @@ test("Start shards allocate every file once and keep a separate aggregate gate",
   assert.equal(new Set(START_PREVIEW_SPECS).size, START_PREVIEW_SPECS.length);
   assert.ok(START_PREVIEW_SHARDS.every((shard) => shard.length > 0));
   assert.deepEqual(startPreviewFilesForShard(2), START_PREVIEW_SHARDS[1]);
-  assert.throws(() => startPreviewFilesForShard(3), /START_SHARD_INVALID/);
+  assert.throws(() => startPreviewFilesForShard(4), /START_SHARD_INVALID/);
   assert.throws(
     () =>
       verifyStartWorkflow(
@@ -275,9 +280,14 @@ test("aggregate reads every Start shard's latest attempt and rejects missing or 
       /Missing report for Start shard 2/,
     );
     put(2, 1, reportFor(2));
+    assert.throws(
+      () => verifyStartShardReports(directory),
+      /Missing report for Start shard 3/,
+    );
+    put(3, 1, reportFor(3));
     assert.deepEqual(
       verifyStartShardReports(directory).map((result) => result.passed),
-      [2, 1],
+      [2, 2, 1],
     );
     const bad = reportFor(2);
     bad.suites[2] = spec(startPreviewFilesForShard(2)[0], "failed", ["failed"]);
