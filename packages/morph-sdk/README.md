@@ -2,7 +2,7 @@
 
 One framework-agnostic core for reading published Morph content and public products. It imports nothing outside this folder: no React, TanStack Start, Astro or Morph server code. It talks to Morph over HTTP only.
 
-The contract is `docs/morph-sdk-read-contract.md` (#245). It is **not published to npm**. The app's own code does not import it; the platform copies it into every TanStack Start Theme workspace (see "How a Theme gets the SDK"). `start/` is the platform's thin entry for a hosted Start Theme (`@morph/sdk/start`). The Starter migration comes later.
+The contract is proposed in [draft PR #245](https://github.com/chao800404/morph/pull/245). It is **not published to npm**. The app's own code does not import it; the platform copies it into every TanStack Start Theme workspace (see "How a Theme gets the SDK"). `start/` is the platform's thin entry for a hosted Start Theme (`@morph/sdk/start`). The Starter migration comes later.
 
 ```ts
 import { createMorph, MorphError } from "@morph/sdk";
