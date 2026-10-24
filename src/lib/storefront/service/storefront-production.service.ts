@@ -25,6 +25,7 @@ import type {
   ThemeRuntimeNotConfigured,
 } from "./theme-runtime.types";
 import { isolateSvgResponse, isSvgContentType } from "../theme-svg-isolation";
+import { withoutPlatformCookies } from "./preview-proxy-credentials";
 
 const DEFAULT_CLIENT_ASSETS_DIRECTORY = "runtime/client";
 const STOREFRONT_AUTH_POST_PATHS = new Set([
@@ -338,8 +339,11 @@ export class StorefrontProductionService {
       );
     }
     // A Theme route may answer with an SVG of its own; it is isolated like
-    // any other the storefront sends.
-    return isolateSvgResponse(runtimeResult.response);
+    // any other the storefront sends. Its Set-Cookie may not carry a platform
+    // credential's name either, as in Live and Build Preview: defence in depth
+    // for server-set cookies. Theme code in the browser can still write
+    // document.cookie or send Clear-Site-Data; this does not cover that.
+    return withoutPlatformCookies(isolateSvgResponse(runtimeResult.response));
   }
 
   /**
