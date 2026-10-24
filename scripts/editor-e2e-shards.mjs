@@ -87,7 +87,8 @@ export const EDITOR_SHARDS = [
     "code-editor-local-monaco.spec.ts",
     // Added after the duration measurement above; B1's client-only Design
     // acceptance runs here as well as in the dedicated full Start job.
-    "binding-acceptance.spec.ts",
+    "binding-acceptance-c.spec.ts",
+    "binding-acceptance-p.spec.ts",
   ],
 ];
 

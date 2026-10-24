@@ -67,12 +67,7 @@ import {
  * binds, and the case shapes are then saved over it; saving source writes no
  * content.
  */
-test.skip(
-  !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
-  "Needs the runner-owned throwaway store.",
-);
-
-const RUNTIME =
+export const RUNTIME =
   process.env.MORPH_E2E_PREVIEW_RUNTIME === "start" ? "start" : "client";
 const SPELLING = RUNTIME === "start" ? "loader" : "content";
 
@@ -190,7 +185,7 @@ async function storeSlot(
  * fixture is kept in the run's own state directory so a restart reuses it
  * instead of building a second Theme.
  */
-async function ensureFixture(browser: Browser) {
+export async function ensureFixture(browser: Browser) {
   const cache = join(process.env.MORPH_E2E_STATE_DIR!, `bas-fixture-${RUNTIME}.json`);
   if (existsSync(cache)) {
     fixture = JSON.parse(readFileSync(cache, "utf8")) as Fixture;
@@ -463,7 +458,7 @@ const LOCATE = {
   untraced: expectShownAsCode,
 } as const;
 
-async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
+export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
   test.setTimeout(420_000);
   // This walk's own route and Document.
   const testCase: BasCase = { ...sharedCase, ...routeFor(sharedCase, mode) };
@@ -722,21 +717,4 @@ async function expectCanvasAfterEdit(
     change ? element.text(applyChange(storedBefore, change)) : (shownBefore ?? ""),
     { timeout: 15_000 },
   );
-}
-
-for (const testCase of B1_INTEGRATION_CASES) {
-  test.describe(`binding acceptance (${RUNTIME}) ${testCase.id}: ${testCase.verifies}`, () => {
-    test.beforeAll(async ({ browser }) => {
-      test.setTimeout(600_000);
-      await ensureFixture(browser);
-    });
-
-    test(`${testCase.id} Inspector edit walks S1-S5`, async ({ page }) => {
-      await walkCase(page, testCase, "inspector");
-    });
-
-    test(`${testCase.id} inline canvas edit walks S1-S5`, async ({ page }) => {
-      await walkCase(page, testCase, "inline");
-    });
-  });
 }
