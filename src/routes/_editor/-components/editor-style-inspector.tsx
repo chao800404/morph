@@ -429,6 +429,8 @@ const CONTENT_BINDING_STATE_MESSAGES: Record<
   Exclude<ContentBindingState, "cms-field">,
   string
 > = {
+  "code-default":
+    "This is the component's code default. Design edits it in the component source, not as page content.",
   "not-cms":
     "This value is set in Theme code, not stored as CMS content. Design will not save it as page content.",
   untraced:
@@ -1040,7 +1042,9 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     selectedRowRefused ?? selection?.contentUnavailable ?? null;
   const contentBindingState = selection?.bindingState ?? null;
   const contentBindingBlocksWrite =
-    contentBindingState !== null && contentBindingState !== "cms-field";
+    contentBindingState !== null &&
+    contentBindingState !== "cms-field" &&
+    contentBindingState !== "code-default";
   /**
    * The list a row selected without an id belongs to.
    *
@@ -3076,7 +3080,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
 
       {view === "content" &&
       contentBindingState !== null &&
-      contentBindingState !== "cms-field" ? (
+      contentBindingState !== "cms-field" &&
+      contentBindingState !== "code-default" ? (
         <div
           data-testid="inspector-content-binding-state"
           data-binding-state={contentBindingState}

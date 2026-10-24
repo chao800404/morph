@@ -280,6 +280,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * Document slot to write values into yet.
    */
   const storedSection = selectionSection ?? documentSection;
+  const isCodeDefaultSelection = selection?.bindingState === "code-default";
   const selectedSection: typeof documentSection =
     storedSection ??
     (selection?.sectionId
@@ -291,11 +292,21 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         } as NonNullable<typeof documentSection>)
       : undefined);
   /**
-   * A stand-in carries no values because none are stored for it. Saying so
-   * lets the Inspector offer only what the source patcher can write, instead
-   * of rendering a list editor over an empty object and discarding the edits.
+   * A stand-in carries no values because none are stored for it, and a field
+   * marked `code-default` renders the component's own source default even when
+   * other props of the same component come from a stored Document section.
+   * Saying `source` lets the Inspector offer and write the component's default
+   * prop literal rather than reading or mutating the Document slot.
    */
-  const contentStore = storedSection ? "document" : "source";
+  const contentStore =
+    storedSection && !isCodeDefaultSelection ? "document" : "source";
+  const inspectorSection = useMemo(
+    () =>
+      selectedSection && contentStore === "source" && storedSection
+        ? { ...selectedSection, props: {} }
+        : selectedSection,
+    [contentStore, selectedSection, storedSection],
+  );
   /**
    * A hidden section opens no content editing (content binding contract §6),
    * whichever entry named it: a canvas selection, its Sections-panel row, or
@@ -349,8 +360,8 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     ) => {
       // Nothing is written into a hidden section from this panel.
       if (contentRefused) return;
-      if (documentSection) {
-        onSectionPropsChange?.(documentSection.id, nextProps, options);
+      if (contentStore === "document" && storedSection) {
+        onSectionPropsChange?.(storedSection.id, nextProps, options);
         return;
       }
 
@@ -367,10 +378,11 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     [
       codeComponentPath,
       contentRefused,
-      documentSection,
+      contentStore,
       onCodeComponentPropsChange,
       onSectionPropsChange,
       sourceDefaultRefusal,
+      storedSection,
     ],
   );
   const inspectorContentBasis = useCallback(
@@ -531,7 +543,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
-          {selectedSection && !(contentRefused && tab === "content") ? (
+          {inspectorSection && !(contentRefused && tab === "content") ? (
             <InspectorCodeDefaultContext.Provider
               value={
                 tab === "content" && contentStore === "source"
@@ -542,10 +554,10 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
               <EditorStyleInspector
                 sharedLayoutPaths={sharedLayoutPaths}
                 sectionTemplatePaths={sectionTemplatePaths}
-                resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
+                resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
                 rowIdTemplateId={activeTemplate?.id}
                 view={tab === "content" ? "content" : "styles"}
-                section={selectedSection}
+                section={inspectorSection}
                 contentStore={contentStore}
                 sourceDefaultRefusal={
                   contentStore === "source" ? sourceDefaultRefusal : undefined

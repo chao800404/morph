@@ -143,12 +143,12 @@ export const Route = createFileRoute("/")({ loader: () => getHome(), component: 
 function Home() {
 ${body}
 }`;
-const EXPLICIT = route(`  const { hero } = Route.useLoaderData();
-  const { title, desc } = hero;
-  return <main><Hero title={title} desc={desc} /></main>;`);
-const TITLE_ONLY = route(`  const { hero } = Route.useLoaderData();
-  const { title } = hero;
-  return <main><Hero title={title} /></main>;`);
+const EXPLICIT = route(
+  `  return <main><Hero title="Stored title" desc="Stored desc" /></main>;`,
+);
+const TITLE_ONLY = route(
+  `  return <main><Hero title="Stored title" /></main>;`,
+);
 const SPREAD = route(`  const { hero } = Route.useLoaderData();
   return <main><Hero {...hero} /></main>;`);
 

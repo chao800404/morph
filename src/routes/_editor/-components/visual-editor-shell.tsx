@@ -252,12 +252,16 @@ import {
   sourceDefaultRefusalReader,
 } from "@/lib/storefront/editor/source-default-control";
 import {
+  patchStringLiteralAt,
+  resolveSourceDefaultNode,
+} from "@/lib/storefront/editor/source-default-node";
+import type { CodeDefaultWriteProof } from "@/lib/validations/storefront-theme-file";
+import {
   acceptsPageStandIn,
   isDocumentWriteTarget,
   isPageStandInId,
 } from "@/lib/storefront/editor/page-stand-in";
 import {
-  patchComponentDefaultProp,
   patchElementClassNameResult,
   removeJsxElement,
   swapSiblingMorphNodes,
@@ -328,6 +332,7 @@ import {
 } from "@/lib/storefront/editor/preview-content-sync";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
+  EDITOR_CAPABILITIES,
   parsePreviewSectionProps,
   parsePreviewServedInstance,
   type PreviewCapability,
@@ -4259,13 +4264,17 @@ export function VisualEditorShell({
   >(() => INLINE_TEXT_REFUSED_MESSAGE);
   useEffect(() => {
     inlineTextRefusedMessageRef.current = (sectionId, fieldPath) => {
+      const selection =
+        editableSelection?.sectionId === sectionId ? editableSelection : null;
       const stored = resolveEditorTemplate(
         routeBackedContext,
         search,
       )?.document.sections.some((section) => section.id === sectionId);
-      if (stored) return INLINE_TEXT_REFUSED_MESSAGE;
-      const selection =
-        editableSelection?.sectionId === sectionId ? editableSelection : null;
+      if (stored && selection?.bindingState !== "code-default") {
+        return selection?.bindingState && selection.bindingState !== "cms-field"
+          ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+          : INLINE_TEXT_REFUSED_MESSAGE;
+      }
       const refused = sourceDefaultRefusalReader(
         effectiveThemeFiles,
         codeComponentSourcePath(selection, effectiveThemeFiles),
@@ -5200,6 +5209,10 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
+      codeDefaultSave?: {
+        operation: "code-default";
+        codeDefault: CodeDefaultWriteProof;
+      },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5317,6 +5330,12 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
+                        ...(codeDefaultSave
+                          ? {
+                              operation: codeDefaultSave.operation,
+                              codeDefault: codeDefaultSave.codeDefault,
+                            }
+                          : {}),
                       },
                     }),
               );
@@ -5506,6 +5525,8 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
+          operation?: "code-default";
+          codeDefault?: CodeDefaultWriteProof;
         },
       ) => Promise<unknown>)
     | null
@@ -5521,6 +5542,8 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
+        operation?: "code-default";
+        codeDefault?: CodeDefaultWriteProof;
       },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
@@ -5573,6 +5596,12 @@ export function VisualEditorShell({
         content,
         nextRevision,
         options?.confirmed ?? false,
+        options?.operation === "code-default" && options.codeDefault
+          ? {
+              operation: "code-default",
+              codeDefault: options.codeDefault,
+            }
+          : undefined,
       );
       if (
         result.status === "superseded" ||
@@ -5585,6 +5614,10 @@ export function VisualEditorShell({
       // Only a landed write is reversible, and only one that actually changed
       // something: recording a no-op would spend an undo press doing nothing.
       if (before !== null && before !== content) {
+        const codeDefaultOption =
+          options?.operation === "code-default" && options.codeDefault
+            ? options.codeDefault
+            : undefined;
         history.record({
           label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
           scope: themeFileHistoryScope(filePath),
@@ -5592,11 +5625,27 @@ export function VisualEditorShell({
             handleUnifiedSaveFileRef.current?.(filePath, before, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: {
+                      ...codeDefaultOption,
+                      expectedCurrentDefault: codeDefaultOption.value,
+                      value: codeDefaultOption.expectedCurrentDefault,
+                    },
+                  }
+                : {}),
             }),
           redo: () =>
             handleUnifiedSaveFileRef.current?.(filePath, content, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: codeDefaultOption,
+                  }
+                : {}),
             }),
         });
       }
@@ -7303,25 +7352,82 @@ export function VisualEditorShell({
   const handleCodeComponentPropsChange = useCallback(
     (filePath: string, nextProps: Record<string, unknown>) => {
       if (refuseSectionTemplateWrite(filePath)) return;
-      const workspaceFile = useThemeWorkspaceStore
+      const workspaceFilesMap = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
-        filePath
-      ];
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const workspaceFile = workspaceFilesMap[filePath];
       const currentSource =
         workspaceFile?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) return;
 
+      const entries = Object.entries(nextProps);
+      if (entries.length === 0) return;
+
+      const currentFiles = themeFiles.map((file) => ({
+        path: file.path,
+        content: workspaceFilesMap[file.path]?.localContent ?? file.content,
+      }));
+
       let nextSource = currentSource;
-      for (const [fieldKey, value] of Object.entries(nextProps)) {
-        if (typeof value !== "string") continue;
-        nextSource = patchComponentDefaultProp(nextSource, fieldKey, value);
+      let codeDefaultProof: CodeDefaultWriteProof | undefined;
+      for (const [fieldKey, value] of entries) {
+        if (typeof value !== "string") {
+          toast.error(
+            "Cannot edit this code default: only static string literal defaults can be edited here.",
+          );
+          return;
+        }
+        const resolved = resolveSourceDefaultNode({
+          files: currentFiles,
+          componentSourcePath: filePath,
+          fieldKey,
+        });
+        if (resolved.status !== "default") {
+          toast.error(
+            "Cannot edit this code default: the component's default value is not a static string literal.",
+          );
+          return;
+        }
+        if (resolved.value === value) {
+          continue;
+        }
+        if (codeDefaultProof) {
+          toast.error(
+            "Cannot edit multiple code defaults in a single operation.",
+          );
+          return;
+        }
+        const patched = patchStringLiteralAt(
+          currentSource,
+          resolved.target,
+          value,
+        );
+        if (!patched || patched === currentSource) {
+          toast.error(
+            "Cannot edit this code default: failed to patch the component's string literal default.",
+          );
+          return;
+        }
+        nextSource = patched;
+        const componentName =
+          resolved.component.localName ??
+          resolved.component.exportNames[0] ??
+          undefined;
+        codeDefaultProof = {
+          componentPath: filePath,
+          ...(componentName ? { componentName } : {}),
+          fieldKey,
+          expectedCurrentDefault: resolved.value,
+          value,
+        };
       }
-      if (nextSource === currentSource) return;
+      if (!codeDefaultProof || nextSource === currentSource) return;
 
       void handleUnifiedSaveFile(filePath, nextSource, {
         preserveCanvasPosition: true,
+        operation: "code-default",
+        codeDefault: codeDefaultProof,
       });
     },
     [
@@ -8213,6 +8319,20 @@ export function VisualEditorShell({
           capabilities: new Set(message.capabilities ?? []),
           documentId,
         };
+        // Tell this document what the editor can read back, only when this
+        // ready carries a document id and the bridge said it reads the token.
+        // The id names the round, not a permission: the bridge ignores any
+        // announcement for another document.
+        if (
+          documentId &&
+          (message.capabilities ?? []).includes("code-default-selection")
+        ) {
+          postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+            type: "morph:storefront-preview-editor-capabilities",
+            capabilities: [...EDITOR_CAPABILITIES],
+            previewDocument: documentId,
+          });
+        }
         setLiveTypingUnavailable(null);
         instanceContentReplayRef.current?.frameReady(
           previewKey,
@@ -10233,6 +10353,9 @@ export function VisualEditorShell({
           descendantFieldCount: selection.descendantFields?.length ?? 1,
           isSection: selection.isSection,
         }) ||
+        (selection.bindingState !== undefined &&
+          selection.bindingState !== null &&
+          selection.bindingState !== "cms-field") ||
         selection.sectionId !== message.sectionId ||
         selection.fieldKey !== message.fieldKey ||
         selection.fieldPath !== message.fieldPath ||

@@ -223,6 +223,21 @@ export type PreviewEditableNode = Readonly<{
 export type EditorToPreviewMessage =
   | {
       /**
+       * What this editor can read back, sent after every ready. The bridge
+       * keeps it for that document only and reports `code-default` fields
+       * after it; an older editor never sends it and gets the section.
+       */
+      type: "morph:storefront-preview-editor-capabilities";
+      capabilities: EditorCapability[];
+      /**
+       * The ready this answers, as its envelope named it. The bridge accepts
+       * the message only for its own document; an id missing, malformed or
+       * naming an older document is ignored. Round identity, not authority.
+       */
+      previewDocument: string;
+    }
+  | {
+      /**
        * Liveness probe for a preview that was ready once but may have lost its
        * sandbox port. The response is deliberately a separate message rather
        * than reusing `ready`, so readiness remains tied to document startup.
@@ -417,8 +432,20 @@ export type PreviewSelectionMessage = {
  *   `update-selection-field` post names, and applies the post only to that
  *   section while it is the one selected.
  */
-export const PREVIEW_CAPABILITIES = ["selection-field-section"] as const;
+export const PREVIEW_CAPABILITIES = [
+  "selection-field-section",
+  "code-default-selection",
+] as const;
 export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
+
+/**
+ * What this editor can read back from a preview page. An editor names these
+ * after every ready; a bridge that does not hear `code-default-selection`
+ * reports a proven component default as the section it sits in, never as an
+ * editable field.
+ */
+export const EDITOR_CAPABILITIES = ["code-default-selection"] as const;
+export type EditorCapability = (typeof EDITOR_CAPABILITIES)[number];
 const MAX_PREVIEW_CAPABILITIES = 16;
 
 /**
@@ -1082,6 +1109,19 @@ export function parseEditorToPreviewMessage(
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
+    case "morph:storefront-preview-editor-capabilities": {
+      if (!isPreviewDocumentId(value.previewDocument)) return null;
+      const capabilities = Array.isArray(value.capabilities)
+        ? EDITOR_CAPABILITIES.filter((known) =>
+            (value.capabilities as unknown[]).includes(known),
+          )
+        : [];
+      return {
+        type: value.type,
+        capabilities,
+        previewDocument: value.previewDocument,
+      };
+    }
     case "morph:storefront-preview-ping":
       return isSafeRevision(value.heartbeatId)
         ? { type: value.type, heartbeatId: value.heartbeatId }
@@ -1672,6 +1712,19 @@ function hasExpectedPreviewSession(
     isPreviewSession(previewSession) &&
     value.previewSession === previewSession
   );
+}
+
+/** The capabilities an announcement grants for this document, if any. */
+export function acceptedEditorCapabilities(
+  message: EditorToPreviewMessage | null,
+  documentIdentity: string,
+): EditorCapability[] {
+  if (message?.type !== "morph:storefront-preview-editor-capabilities") {
+    return [];
+  }
+  return message.previewDocument === documentIdentity
+    ? message.capabilities
+    : [];
 }
 
 export function parseEditorToPreviewEvent(

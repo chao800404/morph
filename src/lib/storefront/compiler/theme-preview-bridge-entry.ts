@@ -24,7 +24,10 @@ export function themePreviewBridgeEntrySource(): string {
   postPreviewToEditorMessage,
   documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
+  documentPreviewIdentity,
+  acceptedEditorCapabilities,
   PREVIEW_CAPABILITIES,
+  type PreviewCapability,
   PREVIEW_SERVED_INSTANCE_TIMING,
   previewServedInstanceFromEntries,
 } from "./preview/preview-protocol";
@@ -37,6 +40,7 @@ import {
   findPreviewSelectionRestoreElement,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
+  selectionForEditor,
   selectionKindOf,
   selectionMetadata,
   selectionStyleSnapshot,
@@ -68,6 +72,16 @@ import {
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
+/**
+ * What this page's bridge itself implements. Deliberately local rather than
+ * the shared PREVIEW_CAPABILITIES list: a page may only advertise a token
+ * after its own code reads the editor message and applies the rule.
+ */
+const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = [
+  "selection-field-section",
+  "code-default-selection",
+];
+
 const channel = documentPreviewRuntimeChannel();
 // A refused selection-field post is said here, in the page, and nowhere else.
 const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
@@ -130,6 +144,8 @@ const overlays = channel ? createPreviewSelectionOverlays() : null;
 
 /** The editor's finish request being answered, while finish runs. */
 let answeringFinishRequest = null;
+/** Set only by this document's editor; a new ready clears it. */
+let editorSupportsCodeDefault = false;
 
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
@@ -316,6 +332,10 @@ function clearSelectionAttributes() {
 
 function sendSelectionReport(item) {
   if (!channel || !item?.sectionId) return;
+  // A bridge that has not heard code-default-selection reports a proven
+  // component default as the section it sits in: the whole report comes from
+  // the section, so no field, path or descendant field leaks through.
+  item = selectionForEditor(item, editorSupportsCodeDefault);
   const styleOf = (element) =>
     element ? selectionStyleSnapshot(window.getComputedStyle(element)) : null;
 
@@ -744,6 +764,9 @@ function servedInstanceReport() {
 
 function reportReady() {
   if (!channel) return;
+  // A capability belongs to the ready that carried it: a new document starts
+  // without it until its editor names one again.
+  editorSupportsCodeDefault = false;
   const servedInstance = servedInstanceReport();
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
@@ -752,11 +775,11 @@ function reportReady() {
       ? {
           type: "morph:storefront-preview-ready",
           servedInstance,
-          capabilities: [...PREVIEW_CAPABILITIES],
+          capabilities: [...BRIDGE_CAPABILITIES],
         }
       : {
           type: "morph:storefront-preview-ready",
-          capabilities: [...PREVIEW_CAPABILITIES],
+          capabilities: [...BRIDGE_CAPABILITIES],
         },
     channel,
   );
@@ -1195,6 +1218,12 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-editor-capabilities") {
+      editorSupportsCodeDefault = acceptedEditorCapabilities(
+        message,
+        documentPreviewIdentity(),
+      ).includes("code-default-selection");
     }
     if (message?.type === "morph:storefront-preview-finish-inline-text") {
       // The author chose, in the editor, what happens to the open edit. The

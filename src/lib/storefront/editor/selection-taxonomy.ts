@@ -63,6 +63,7 @@ export function isSelectionKind(value: string): value is SelectionKind {
 /** Descriptive provenance for a selected value; it is never write authority. */
 export const CONTENT_BINDING_STATES = [
   "cms-field",
+  "code-default",
   "not-cms",
   "untraced",
   "derived",

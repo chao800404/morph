@@ -6,6 +6,12 @@ import {
   parentMap,
   resolveThemeSourceImport,
 } from "../ast/theme-content-binding";
+import { createThemeSourceAstReader } from "../ast/theme-source-ast";
+import {
+  patchStringLiteralAt,
+  resolveSourceDefaultNode,
+  type ResolvedDefaultNode,
+} from "./source-default-node";
 import { parseSource, type AnyNode } from "./text-promotion";
 
 /**
@@ -55,6 +61,12 @@ export type SourceDefaultControlInput = Readonly<{
   fieldKeys: readonly string[];
   /** Parses a module; a caller asking repeatedly can pass one that remembers. */
   parse?: (content: string) => AnyNode | null;
+  /**
+   * Parses a module with its path, so a caller that already owns a bounded
+   * reader (the injector's 512 KiB, per-path AST reader) can share it instead
+   * of parsing the workspace again per field.
+   */
+  parseForPath?: (path: string, content: string) => AnyNode | null;
 }>;
 
 const SOURCE_FILE = /\.(tsx|ts|jsx|js)$/;
@@ -180,15 +192,6 @@ function patchedComponent(
     }
   }
   return { localName: component.localName, isDefault, exportedNames };
-}
-
-/** The offset of the first character two strings differ at. */
-function firstDifference(a: string, b: string): number {
-  const length = Math.min(a.length, b.length);
-  for (let index = 0; index < length; index += 1) {
-    if (a[index] !== b[index]) return index;
-  }
-  return length;
 }
 
 type CallSites = { unknown: true } | { unknown: false; elements: AnyNode[] };
@@ -455,12 +458,16 @@ export function analyzeSourceDefaultFields(
       ]),
     );
   const parse = input.parse ?? parseSource;
+  const parseAt = (path: string, content: string) =>
+    input.parseForPath ? input.parseForPath(path, content) : parse(content);
   const componentFile = input.files.find(
     (file) => normalizeThemeSourcePath(file.path) === componentPath,
   );
   const componentSource = componentFile?.content;
   const componentAst =
-    typeof componentSource === "string" ? parse(componentSource) : null;
+    typeof componentSource === "string"
+      ? parseAt(componentPath, componentSource)
+      : null;
   if (!componentSource || !componentAst) return everyField("call-site-unknown");
 
   const filePaths = new Set(
@@ -492,7 +499,7 @@ export function analyzeSourceDefaultFields(
       }
       // Cheap first: a module that never names the file cannot import it.
       if (![...baseNames].some((name) => content.includes(name))) continue;
-      const ast = parse(content);
+      const ast = parseAt(path, content);
       if (!ast) {
         result = { unknown: true };
         break;
@@ -518,17 +525,37 @@ export function analyzeSourceDefaultFields(
 
   return Object.fromEntries(
     input.fieldKeys.map((fieldKey): [string, SourceDefaultFieldControl] => {
-      const probe = patchComponentDefaultProp(
-        componentSource,
+      const resolved = resolveSourceDefaultNode({
+        files: input.files,
+        componentSourcePath: componentPath,
         fieldKey,
-        SENTINEL,
-      );
-      if (probe === componentSource) {
-        return [fieldKey, { status: "code", reason: "no-default" }];
+        parseForPath: parseAt,
+      });
+      if (resolved.status !== "default") {
+        const probe = patchComponentDefaultProp(
+          componentSource,
+          fieldKey,
+          SENTINEL,
+          undefined,
+          (content) => parseAt(componentPath, content),
+        );
+        if (probe === componentSource) {
+          return [
+            fieldKey,
+            {
+              status: "code",
+              reason:
+                resolved.status === "missing"
+                  ? "no-default"
+                  : "call-site-unknown",
+            },
+          ];
+        }
+        return [fieldKey, { status: "code", reason: "call-site-unknown" }];
       }
       const component = patchedComponent(
         componentAst.program,
-        firstDifference(componentSource, probe),
+        resolved.target.start,
       );
       if (!component) {
         return [fieldKey, { status: "code", reason: "call-site-unknown" }];
@@ -544,6 +571,257 @@ export function analyzeSourceDefaultFields(
       return [fieldKey, { status: "default" }];
     }),
   );
+}
+
+export type ProvenSourceDefaultPatch =
+  | Readonly<{
+      status: "ok";
+      noop: boolean;
+      currentDefaultValue: string;
+      nextContent: string;
+      component: Extract<ResolvedDefaultNode, { status: "default" }>["component"];
+      target: Extract<ResolvedDefaultNode, { status: "default" }>["target"];
+    }>
+  | Readonly<{
+      status: "refused";
+      error:
+        | "SOURCE_DEFAULT_MISSING"
+        | "SOURCE_DEFAULT_UNREADABLE"
+        | "SOURCE_DEFAULT_COMPONENT_UNKNOWN"
+        | "SOURCE_DEFAULT_AMBIGUOUS"
+        | "SOURCE_DEFAULT_CALL_SITE_UNKNOWN"
+        | "SOURCE_DEFAULT_PASSED_BY_CALLER"
+        | "SOURCE_DEFAULT_SPREAD_BY_CALLER"
+        | "SOURCE_DEFAULT_STALE";
+      message: string;
+    }>;
+
+/**
+ * Re-proves on a single current workspace snapshot that:
+ * 1. The target component and its string literal default node exist and are unambiguous.
+ * 2. Every call site across the workspace leaves `fieldKey` out and does not spread props.
+ * 3. `expectedCurrentDefault` equals the current AST-decoded default value.
+ * 4. Patching the exact target byte range yields valid TSX whose AST resolves the exact same
+ *    component/field node to `value`.
+ */
+export function proveAndPatchSourceDefault(input: {
+  files: readonly Readonly<{ path: string; content?: string | null }>[];
+  componentSourcePath: string;
+  componentName?: string;
+  fieldKey: string;
+  expectedCurrentDefault: string;
+  value: string;
+}): ProvenSourceDefaultPatch {
+  const reader = createThemeSourceAstReader(input.files);
+  const componentPath = normalizeThemeSourcePath(input.componentSourcePath);
+  const componentFile = input.files.find(
+    (file) => normalizeThemeSourcePath(file.path) === componentPath,
+  );
+  const componentSource = componentFile?.content;
+  if (typeof componentSource !== "string") {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_MISSING",
+      message: `Source file "${componentPath}" is missing.`,
+    };
+  }
+  const componentAstResult = reader.read(componentPath, componentSource);
+  if (!componentAstResult.ok) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_UNREADABLE",
+      message: componentAstResult.message,
+    };
+  }
+
+  const resolved = resolveSourceDefaultNode({
+    files: input.files,
+    componentSourcePath: componentPath,
+    componentName: input.componentName,
+    fieldKey: input.fieldKey,
+    parseForPath: reader.ast,
+  });
+  if (resolved.status === "missing") {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_MISSING",
+      message: describeSourceDefaultRefusal("no-default"),
+    };
+  }
+  if (resolved.status === "unreadable") {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_UNREADABLE",
+      message: `Theme source "${componentPath}" could not be parsed.`,
+    };
+  }
+  if (resolved.status === "component-unknown") {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_COMPONENT_UNKNOWN",
+      message: `Component "${input.componentName ?? ""}" was not found in "${componentPath}".`,
+    };
+  }
+  if (resolved.status === "ambiguous") {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_AMBIGUOUS",
+      message: `Multiple components in "${componentPath}" declare a default for "${input.fieldKey}".`,
+    };
+  }
+  if (!("target" in resolved)) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_MISSING",
+      message: describeSourceDefaultRefusal("no-default"),
+    };
+  }
+
+  const component = patchedComponent(
+    componentAstResult.ast.program,
+    resolved.target.start,
+  );
+  if (!component) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_CALL_SITE_UNKNOWN",
+      message: describeSourceDefaultRefusal("call-site-unknown"),
+    };
+  }
+
+  const filePaths = new Set(
+    input.files.map((file) => normalizeThemeSourcePath(file.path)),
+  );
+  const baseNames = componentBaseNames(componentPath);
+  const elements: AnyNode[] = [];
+  for (const file of input.files) {
+    const path = normalizeThemeSourcePath(file.path);
+    if (!path.startsWith("src/") || !SOURCE_FILE.test(path)) continue;
+    const content = file.content;
+    if (typeof content !== "string") continue;
+    if (path === componentPath) {
+      if (component.localName) {
+        const own = elementsRendering(
+          componentAstResult.ast,
+          component.localName,
+        );
+        if (own.unknown) {
+          return {
+            status: "refused",
+            error: "SOURCE_DEFAULT_CALL_SITE_UNKNOWN",
+            message: describeSourceDefaultRefusal("call-site-unknown"),
+          };
+        }
+        elements.push(...own.elements);
+      }
+      continue;
+    }
+    if (![...baseNames].some((name) => content.includes(name))) continue;
+    const astResult = reader.read(path, content);
+    if (!astResult.ok) {
+      return {
+        status: "refused",
+        error: "SOURCE_DEFAULT_CALL_SITE_UNKNOWN",
+        message: describeSourceDefaultRefusal("call-site-unknown"),
+      };
+    }
+    const found = callSitesInModule(
+      astResult.ast,
+      path,
+      component,
+      componentPath,
+      filePaths,
+    );
+    if (found.unknown) {
+      return {
+        status: "refused",
+        error: "SOURCE_DEFAULT_CALL_SITE_UNKNOWN",
+        message: describeSourceDefaultRefusal("call-site-unknown"),
+      };
+    }
+    elements.push(...found.elements);
+  }
+
+  if (elements.length === 0) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_CALL_SITE_UNKNOWN",
+      message: describeSourceDefaultRefusal("call-site-unknown"),
+    };
+  }
+
+  for (const element of elements) {
+    const override = attributeOverride(element, input.fieldKey);
+    if (override === "spread-by-caller") {
+      return {
+        status: "refused",
+        error: "SOURCE_DEFAULT_SPREAD_BY_CALLER",
+        message: describeSourceDefaultRefusal("spread-by-caller"),
+      };
+    }
+    if (override === "passed-by-caller") {
+      return {
+        status: "refused",
+        error: "SOURCE_DEFAULT_PASSED_BY_CALLER",
+        message: describeSourceDefaultRefusal("passed-by-caller"),
+      };
+    }
+  }
+
+  if (resolved.value !== input.expectedCurrentDefault) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_STALE",
+      message:
+        "The component's default value changed since it was selected. Reload or select the element again.",
+    };
+  }
+
+  if (input.value === resolved.value) {
+    return {
+      status: "ok",
+      noop: true,
+      currentDefaultValue: resolved.value,
+      nextContent: componentSource,
+      component: resolved.component,
+      target: resolved.target,
+    };
+  }
+
+  const nextContent = patchStringLiteralAt(
+    componentSource,
+    resolved.target,
+    input.value,
+  );
+  const patchedCheck = resolveSourceDefaultNode({
+    files: [{ path: componentPath, content: nextContent }],
+    componentSourcePath: componentPath,
+    componentName:
+      input.componentName ?? resolved.component.localName ?? undefined,
+    fieldKey: input.fieldKey,
+    parseForPath: reader.ast,
+  });
+  if (
+    patchedCheck.status !== "default" ||
+    !("target" in patchedCheck) ||
+    patchedCheck.value !== input.value ||
+    patchedCheck.target.start !== resolved.target.start
+  ) {
+    return {
+      status: "refused",
+      error: "SOURCE_DEFAULT_UNREADABLE",
+      message: "Patched source default failed AST verification.",
+    };
+  }
+
+  return {
+    status: "ok",
+    noop: false,
+    currentDefaultValue: resolved.value,
+    nextContent,
+    component: resolved.component,
+    target: resolved.target,
+  };
 }
 
 /** One line an author can act on, for each reason. */

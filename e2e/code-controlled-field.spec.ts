@@ -1372,3 +1372,470 @@ test.describe(`two writes on a pre-normalised raw Document, in the ${PREVIEW_RUN
     expect(await listAllFiles(page, scope)).toEqual(filesBeforeCms);
   });
 });
+
+/**
+ * Per field on one component in a bound section (`cms-field` + `code-default`),
+ * rendered across two instances on the same route, in the ${PREVIEW_RUNTIME}
+ * preview.
+ *
+ * `DualDefaultHero` declares `title` and `desc` with defaults in
+ * `src/components/DualDefaultHero.tsx`. The route renders two bound section
+ * instances (`heroA` and `heroB`), passing `title={...}` from the Document on
+ * both and leaving `desc` out on both.
+ *
+ * The stored Document holds `title` AND `desc` on both `heroA` and `heroB`
+ * (including `heroA.props.desc === DEFAULT_DUAL_DESC` to exercise the
+ * equal-text inline guard).
+ *
+ * Verifies:
+ * 1. Canvas selection of `heroA`'s `title` (`cms-field`) -> Inspector shows
+ *    `data-content-store="document"`, saves via
+ *    `updateStorefrontThemeSectionProps`, updates only `heroA.props.title` in
+ *    raw D1, leaves `DualDefaultHero.tsx` byte-identical.
+ * 2. Canvas selection of `heroA`'s `desc` (`code-default`) -> double-click inline
+ *    editing on canvas is refused with the code-default toast and writes
+ *    nothing; Inspector shows `data-content-store="source-default"` and the
+ *    `Component code default` badge, saves via `saveStorefrontThemeFile` with
+ *    `operation: "code-default"` and `codeDefault` proof, and never calls
+ *    `updateStorefrontThemeSectionProps`.
+ * 3. Raw D1 template row and draft revision are byte-identical before and after
+ *    the `code-default` save.
+ * 4. Exact source diff: `DualDefaultHero.tsx` differs only on the `desc = "..."`
+ *    default literal; `title = "..."` and all other Theme files are
+ *    byte-identical.
+ * 5. Second instance (`heroB`) on the canvas updates to the new `desc` default
+ *    while keeping its own `title`, and after `page.reload()` both instances
+ *    and the Inspector still agree.
+ */
+const DUAL_ROUTE = "/code-controlled-dual";
+const DUAL_ROUTE_FILE = "src/routes/code-controlled-dual.tsx";
+const DUAL_COMPONENT_PATH = "src/components/DualDefaultHero.tsx";
+const DEFAULT_DUAL_TITLE = "Dual default title";
+const DEFAULT_DUAL_DESC = "Dual default desc";
+const STORED_HERO_A = {
+  title: "Stored heroA title",
+  desc: DEFAULT_DUAL_DESC,
+};
+const STORED_HERO_B = {
+  title: "Stored heroB title",
+  desc: "Unused stored heroB desc",
+};
+
+function dualRouteContent(
+  mode: "seed" | "per-field",
+  runtime: typeof PREVIEW_RUNTIME,
+) {
+  const callA =
+    mode === "seed"
+      ? runtime === "full Start"
+        ? `<DualDefaultHero {...heroA} />`
+        : `<DualDefaultHero {...content("heroA")} />`
+      : `<DualDefaultHero title={heroA.title} />`;
+  const callB =
+    mode === "seed"
+      ? runtime === "full Start"
+        ? `<DualDefaultHero {...heroB} />`
+        : `<DualDefaultHero {...content("heroB")} />`
+      : `<DualDefaultHero title={heroB.title} />`;
+
+  if (runtime === "full Start") {
+    return `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import DualDefaultHero from "../components/DualDefaultHero";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${DUAL_ROUTE}"));
+
+export const Route = createFileRoute("${DUAL_ROUTE}")({
+  loader: () => getPage(),
+  component: DualDefaultRoute,
+});
+
+function DualDefaultRoute() {
+  const { heroA, heroB } = Route.useLoaderData();
+  return (
+    <main>
+      ${callA}
+      ${callB}
+    </main>
+  );
+}
+`;
+  }
+
+  return `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import DualDefaultHero from "../components/DualDefaultHero";
+
+export const Route = createFileRoute("${DUAL_ROUTE}")({
+  component: DualDefaultRoute,
+});
+
+function DualDefaultRoute() {
+  const heroA = content("heroA");
+  const heroB = content("heroB");
+  return (
+    <main>
+      ${callA}
+      ${callB}
+    </main>
+  );
+}
+`;
+}
+
+const DUAL_COMPONENT_FILE = {
+  path: DUAL_COMPONENT_PATH,
+  content: `export const contentFields = {
+  title: { type: "text", label: "Dual title" },
+  desc: { type: "text", label: "Dual desc" },
+} as const;
+
+type DualDefaultHeroProps = { title?: string; desc?: string };
+
+export default function DualDefaultHero({
+  title = "${DEFAULT_DUAL_TITLE}",
+  desc = "${DEFAULT_DUAL_DESC}",
+}: DualDefaultHeroProps) {
+  return (
+    <section data-dual-hero="" className="px-6 py-10">
+      <h2 className="text-2xl font-semibold">{title}</h2>
+      <p className="mt-2">{desc}</p>
+    </section>
+  );
+}
+`,
+};
+
+async function rawRouteRow(
+  scope: ThemeScope,
+  routePath: string,
+): Promise<RawHome> {
+  const [row] = await d1(
+    `SELECT t.draft_revision_id, t.draft_generation, t.document,
+      r.document AS draft_document, r.version AS draft_version,
+      (SELECT count(*) FROM storefront_theme_template_revisions x WHERE x.template_id = t.id) AS revisions
+    FROM storefront_theme_templates t
+    LEFT JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+    WHERE t.theme_id = ${sqlText(scope.themeId)}
+      AND t.route_path = ${sqlText(routePath)}
+      AND t.deleted_at IS NULL;`,
+  );
+  expect(row, `expected one route template row for ${routePath}`).toBeDefined();
+  return row as unknown as RawHome;
+}
+
+test.describe(`per-field CMS and code-default routing across two instances, in the ${PREVIEW_RUNTIME} preview`, () => {
+  let scope: ThemeScope | null = null;
+  let editorPath: string | null = null;
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(300_000);
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    scope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...scope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find((t) => t.type === "index")!;
+    editorPath = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home.id}`;
+
+    // Write the spread seed route first so both title and desc can be stored
+    // on heroA and heroB, then switch the route to pass only `title={...}`
+    // while leaving `desc` to the component's default.
+    const seedSaved = await writeThemeFiles(page, scope, [
+      DUAL_COMPONENT_FILE,
+      {
+        path: DUAL_ROUTE_FILE,
+        content: dualRouteContent("seed", PREVIEW_RUNTIME),
+      },
+    ]);
+    expect(seedSaved.success, JSON.stringify(seedSaved)).toBe(true);
+
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...scope, routePath: DUAL_ROUTE },
+    )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+
+    const storedA = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...scope,
+        templateId: ensured.data!.id,
+        sectionId: "heroA",
+        props: STORED_HERO_A,
+        expectedDraftGeneration: ensured.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, scope),
+        routePath: DUAL_ROUTE,
+      },
+    )) as {
+      success: boolean;
+      data?: { draftGeneration: number };
+    };
+    expect(storedA.success, JSON.stringify(storedA)).toBe(true);
+
+    const storedB = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...scope,
+        templateId: ensured.data!.id,
+        sectionId: "heroB",
+        props: STORED_HERO_B,
+        expectedDraftGeneration: storedA.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, scope),
+        routePath: DUAL_ROUTE,
+      },
+    )) as { success: boolean };
+    expect(storedB.success, JSON.stringify(storedB)).toBe(true);
+
+    const perFieldSaved = await writeThemeFiles(page, scope, [
+      {
+        path: DUAL_ROUTE_FILE,
+        content: dualRouteContent("per-field", PREVIEW_RUNTIME),
+      },
+    ]);
+    expect(perFieldSaved.success, JSON.stringify(perFieldSaved)).toBe(true);
+    await page.context().close();
+  });
+
+  test("routes title to Document and desc to source default with proof, updates both instances, and survives reload", async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const url = new URL(editorPath!, "http://placeholder");
+    url.searchParams.set("routePath", DUAL_ROUTE);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+
+    const heroATitle = previewFrame(page).locator(
+      '[data-storefront-section-id="heroA"] [data-dual-hero] h2',
+    );
+    const heroADesc = previewFrame(page).locator(
+      '[data-storefront-section-id="heroA"] [data-dual-hero] p',
+    );
+    const heroBTitle = previewFrame(page).locator(
+      '[data-storefront-section-id="heroB"] [data-dual-hero] h2',
+    );
+    const heroBDesc = previewFrame(page).locator(
+      '[data-storefront-section-id="heroB"] [data-dual-hero] p',
+    );
+
+    await expect(heroATitle).toHaveText(STORED_HERO_A.title, {
+      timeout: 90_000,
+    });
+    await expect(heroBTitle).toHaveText(STORED_HERO_B.title);
+    await expect(heroADesc).toHaveText(DEFAULT_DUAL_DESC);
+    await expect(heroBDesc).toHaveText(DEFAULT_DUAL_DESC);
+
+    // 1. Select heroA's title (`cms-field`) -> writes Document only, leaves
+    //    `DualDefaultHero.tsx` untouched.
+    const filesBeforeTitle = await listAllFiles(page, scope!);
+    const rawBeforeTitle = await rawRouteRow(scope!, DUAL_ROUTE);
+
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    await heroATitle.scrollIntoViewIfNeeded();
+    expect(await clickExposedElement(page, heroATitle)).not.toBeNull();
+    await settleSelection(page);
+    await openContentTab(page);
+
+    const titleField = contentField(page, "Dual title");
+    await expect(titleField).toHaveAttribute("data-content-store", "document");
+    await expect(
+      titleField.locator('[data-slot="inspector-code-default-badge"]'),
+    ).toHaveCount(0);
+    const titleInput = titleField.locator("input, textarea");
+    await expect(titleInput).toHaveValue(STORED_HERO_A.title);
+
+    const newHeroATitle = `Edited heroA title ${Date.now()}`;
+    const titleSaved = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(
+          response.url(),
+          "updateStorefrontThemeSectionProps",
+        ) && (response.request().postData() ?? "").includes(newHeroATitle),
+      { timeout: 30_000 },
+    );
+    await titleInput.fill(newHeroATitle);
+    await titleInput.press("Tab");
+    expect((await titleSaved).ok()).toBe(true);
+    await expect(heroATitle).toHaveText(newHeroATitle, { timeout: 30_000 });
+    await expect(heroBTitle).toHaveText(STORED_HERO_B.title);
+
+    const rawAfterTitle = await rawRouteRow(scope!, DUAL_ROUTE);
+    expect(rawAfterTitle.draft_generation).toBe(
+      rawBeforeTitle.draft_generation + 1,
+    );
+    const docBeforeTitle = JSON.parse(storedText(rawBeforeTitle)) as RawDoc;
+    const docAfterTitle = JSON.parse(storedText(rawAfterTitle)) as RawDoc;
+    const heroAIndex = docBeforeTitle.sections.findIndex(
+      (s) => s.id === "heroA",
+    );
+    expect(jsonDiff(docBeforeTitle, docAfterTitle)).toEqual([
+      {
+        path: `$.sections[${heroAIndex}].props.title`,
+        before: STORED_HERO_A.title,
+        after: newHeroATitle,
+      },
+    ]);
+    expect(await listAllFiles(page, scope!)).toEqual(filesBeforeTitle);
+
+    // 2. Select heroA's desc (`code-default`) -> double-click inline editing
+    //    on canvas is refused even though `heroA.props.desc` holds equal text;
+    //    Inspector shows `source-default` + `Component code default` badge,
+    //    saves via `saveStorefrontThemeFile` with `operation: "code-default"`
+    //    and `codeDefault` proof, and leaves raw D1 byte-identical.
+    const docWritesDuringDesc: string[] = [];
+    const fileWritesDuringDesc: string[] = [];
+    const onRequest = (request: { method: () => string; url: () => string; postData: () => string | null }) => {
+      if (request.method() !== "POST") return;
+      if (
+        isServerFunctionCall(request.url(), "updateStorefrontThemeSectionProps")
+      ) {
+        docWritesDuringDesc.push(request.postData() ?? "");
+      }
+      if (isServerFunctionCall(request.url(), "saveStorefrontThemeFile")) {
+        fileWritesDuringDesc.push(request.postData() ?? "");
+      }
+    };
+    page.on("request", onRequest);
+
+    await heroADesc.scrollIntoViewIfNeeded();
+    expect(await clickExposedElement(page, heroADesc)).not.toBeNull();
+    await settleSelection(page);
+    await openContentTab(page);
+
+    // Inline double-click on the `code-default` element is refused and opens
+    // no inline editor.
+    await heroADesc.dblclick();
+    await expect(
+      previewFrame(page).locator("[data-storefront-editor-inline-editing]"),
+    ).toHaveCount(0);
+    await expect(
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /content fields on the right/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    expect(docWritesDuringDesc).toEqual([]);
+    expect(fileWritesDuringDesc).toEqual([]);
+
+    const descField = contentField(page, "Dual desc");
+    await expect(descField).toHaveAttribute(
+      "data-content-store",
+      "source-default",
+    );
+    const badge = descField.locator(
+      '[data-slot="inspector-code-default-badge"]',
+    );
+    await expect(badge).toHaveText("Component code default");
+    const descInput = descField.locator("input, textarea");
+    await expect(descInput).toHaveValue(DEFAULT_DUAL_DESC);
+
+    const filesBeforeDesc = await listAllFiles(page, scope!);
+    const rawBeforeDesc = await rawRouteRow(scope!, DUAL_ROUTE);
+    const allTemplatesBeforeDesc = await rawTemplates(scope!);
+
+    const newDualDesc = `Edited dual default desc ${Date.now()}`;
+    const descSaved = page.waitForResponse(
+      (response) =>
+        isServerFunctionCall(response.url(), "saveStorefrontThemeFile") &&
+        (response.request().postData() ?? "").includes(newDualDesc),
+      { timeout: 30_000 },
+    );
+    await descInput.fill(newDualDesc);
+    await descInput.press("Tab");
+    const descResponse = await descSaved;
+    expect(descResponse.ok()).toBe(true);
+    page.off("request", onRequest);
+
+    // Sent as an explicit `operation: "code-default"` write with proof, and
+    // never wrote the Document.
+    expect(docWritesDuringDesc).toEqual([]);
+    expect(fileWritesDuringDesc.length).toBeGreaterThan(0);
+    for (const payload of fileWritesDuringDesc) {
+      expect(payload).toContain('"operation"');
+      expect(payload).toContain('"code-default"');
+      expect(payload).toContain('"codeDefault"');
+      expect(payload).toContain(`"${DUAL_COMPONENT_PATH}"`);
+      expect(payload).toContain('"DualDefaultHero"');
+      expect(payload).toContain('"expectedCurrentDefault"');
+    }
+
+    // Both instances on the canvas update to the new component default while
+    // keeping their respective Document titles.
+    await expect(heroADesc).toHaveText(newDualDesc, { timeout: 30_000 });
+    await expect(heroBDesc).toHaveText(newDualDesc, { timeout: 30_000 });
+    await expect(heroATitle).toHaveText(newHeroATitle);
+    await expect(heroBTitle).toHaveText(STORED_HERO_B.title);
+
+    // Raw D1 is byte-identical before and after the code-default save.
+    expect(await rawRouteRow(scope!, DUAL_ROUTE)).toEqual(rawBeforeDesc);
+    expect(await rawTemplates(scope!)).toEqual(allTemplatesBeforeDesc);
+
+    // Exact source diff: only `desc = "..."` in `DualDefaultHero.tsx` changed.
+    const filesAfterDesc = await listAllFiles(page, scope!);
+    expect(filesAfterDesc[DUAL_COMPONENT_PATH]).toBe(
+      filesBeforeDesc[DUAL_COMPONENT_PATH]!.replace(
+        `desc = "${DEFAULT_DUAL_DESC}"`,
+        `desc = "${newDualDesc}"`,
+      ),
+    );
+    expect(filesAfterDesc[DUAL_COMPONENT_PATH]).toContain(
+      `title = "${DEFAULT_DUAL_TITLE}"`,
+    );
+    expect({ ...filesAfterDesc, [DUAL_COMPONENT_PATH]: "" }).toEqual({
+      ...filesBeforeDesc,
+      [DUAL_COMPONENT_PATH]: "",
+    });
+
+    // Reload: both instances and the Inspector read back the updated source
+    // default and the stored Document titles.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(heroATitle).toHaveText(newHeroATitle, { timeout: 90_000 });
+    await expect(heroBTitle).toHaveText(STORED_HERO_B.title);
+    await expect(heroADesc).toHaveText(newDualDesc);
+    await expect(heroBDesc).toHaveText(newDualDesc);
+
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    await heroBDesc.scrollIntoViewIfNeeded();
+    expect(await clickExposedElement(page, heroBDesc)).not.toBeNull();
+    await settleSelection(page);
+    await openContentTab(page);
+    const reloadedDescField = contentField(page, "Dual desc");
+    await expect(reloadedDescField).toHaveAttribute(
+      "data-content-store",
+      "source-default",
+    );
+    await expect(reloadedDescField.locator("input, textarea")).toHaveValue(
+      newDualDesc,
+    );
+  });
+});

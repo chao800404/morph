@@ -947,9 +947,11 @@ export function patchComponentDefaultProp(
   propName: string,
   newValue: string,
   componentName?: string,
+  parse: (source: string) => unknown = parseAst,
 ): string {
   try {
-    const ast = parseAst(sourceCode);
+    const ast = parse(sourceCode) as Node | null;
+    if (!ast) return sourceCode;
     let targetNode: Node | null = null;
 
     walk(ast, (node) => {

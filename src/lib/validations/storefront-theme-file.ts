@@ -95,6 +95,69 @@ export const getThemeFileInputSchema = z.object({
   path: safeThemeFilePathSchema,
 });
 
+export const codeDefaultWriteProofSchema = z.object({
+  componentPath: themeTextFilePathSchema.optional(),
+  componentName: z.string().trim().min(1).max(200).optional(),
+  fieldKey: z.string().trim().min(1).max(100),
+  expectedCurrentDefault: z.string(),
+  value: z.string(),
+});
+
+export type CodeDefaultWriteProof = z.infer<typeof codeDefaultWriteProofSchema>;
+
+export function requireCodeDefaultOperationPairing(
+  value: {
+    path?: string;
+    operation?: "save" | "code-default";
+    codeDefault?: {
+      componentPath?: string;
+    };
+    expectMissing?: boolean;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const isCodeDefaultOperation = value.operation === "code-default";
+  const hasCodeDefaultProof = value.codeDefault !== undefined;
+
+  if (isCodeDefaultOperation && !hasCodeDefaultProof) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["codeDefault"],
+      message: "operation 'code-default' requires a codeDefault proof",
+    });
+  }
+
+  if (!isCodeDefaultOperation && hasCodeDefaultProof) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["operation"],
+      message:
+        "codeDefault proof is only allowed when operation is 'code-default'",
+    });
+  }
+
+  if (isCodeDefaultOperation && value.expectMissing) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectMissing"],
+      message: "code-default operation requires an existing component file",
+    });
+  }
+
+  if (
+    isCodeDefaultOperation &&
+    value.codeDefault?.componentPath !== undefined &&
+    value.path !== undefined &&
+    value.codeDefault.componentPath !== value.path
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["codeDefault", "componentPath"],
+      message: "codeDefault.componentPath must match path",
+    });
+  }
+}
+
 export const saveThemeFileInputSchema = z
   .object({
     storefrontId: z.string().min(1),
@@ -108,8 +171,11 @@ export const saveThemeFileInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
+    operation: z.enum(["save", "code-default"]).optional(),
+    codeDefault: codeDefaultWriteProofSchema.optional(),
   })
-  .superRefine(requireWritePrecondition);
+  .superRefine(requireWritePrecondition)
+  .superRefine(requireCodeDefaultOperationPairing);
 
 const batchFileSchema = z
   .object({

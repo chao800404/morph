@@ -45,16 +45,14 @@ import {
  * A component's source default is offered for editing only where it is what
  * the canvas shows (content binding contract, ROADMAP 1.2).
  *
- * A route that hands CMS values to a component through explicit props —
- * `<Hero title={title} />` — gives the component no Document section: only a
- * sole spread proves one. Where the preview has a page root (the client-only
- * preview of a Theme rendering into `#root`), the click then lands on the
- * page's stand-in section and the Inspector offers the component's default
- * props, which it saves by rewriting the default in `Hero.tsx`. Where the route passes the prop, that
- * default never renders: the save landed, the canvas did not change, and
- * nothing said so. Each field is now judged on its own: one the route leaves
- * out renders the default and stays editable; one it passes, or may pass
- * through a spread, is shown as controlled by code and nothing is written.
+ * A route that hands CMS values to a component through explicit props
+ * (`const { title } = hero; <Hero title={title} />`) is traced: the prop is
+ * proven against the section the loader serves, so the Inspector offers it as
+ * that CMS field and an edit writes the Document, never the component source.
+ * A literal or an untraced value stays unproven: the field is not offered, the
+ * canvas says why, and nothing is written. Each field is judged on its own; a
+ * literal that overrides one prop does not remove the section's other proven
+ * fields from the Document.
  *
  * Everything between the click and the write is real: the preview pass and
  * its injected markers, the selection the bridge would report from them, the
@@ -63,7 +61,12 @@ import {
  */
 
 const savedFiles = vi.hoisted(
-  (): Array<{ path?: string; content?: string }> => [],
+  (): Array<{
+    path?: string;
+    content?: string;
+    operation?: string;
+    codeDefault?: Record<string, unknown>;
+  }> => [],
 );
 // Records what a source save writes, and accepts it as the server would.
 vi.mock(
@@ -311,6 +314,7 @@ async function canvasReport(routeSource: string, selector: string) {
           ? null
           : (item.fieldKey ?? item.elementKey),
       descendantFields: item.descendantFields,
+      bindingState: item.bindingState ?? null,
       itemId: item.itemId,
       contentUnavailable: item.contentUnavailable,
       ...selectionMetadata(item),
@@ -427,26 +431,36 @@ const heroDefaultLine = (key: string) =>
     );
 
 describe("explicit props from loader data (the audit's case)", () => {
-  it("the title is controlled by code and nothing is written", async () => {
-    const { text } = await select(EXPLICIT, "h1");
+  it("the title is the CMS field it was traced to, and writes the Document", async () => {
+    const { text, report } = await select(EXPLICIT, "h1");
     // The canvas shows the stored value the route passes, not the default.
     expect(text).toBe("Stored title");
-    await editIfOffered("Default title", "Edited in Inspector");
+    expect(report.sectionId).toBe("hero");
+    expect(report.bindingState).toBe("cms-field");
+    expect(await editIfOffered("Stored title", "Edited in Inspector")).toBe(
+      true,
+    );
 
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps.mock.calls[0]![0].data).toMatchObject({
+      sectionId: "hero",
+      props: { title: "Edited in Inspector" },
+    });
     expect(savedFiles).toEqual([]);
-    expect(updateSectionProps).not.toHaveBeenCalled();
-    expect(inputWithValue("Default title")).toBeUndefined();
-    expect(codeControlled("Title")?.textContent).toMatch(/controlled by code/i);
   });
 
-  it("the description is controlled by code and nothing is written", async () => {
-    await select(EXPLICIT, "p");
-    await editIfOffered("Default desc", "Edited desc");
+  it("the description is the CMS field it was traced to, and writes the Document", async () => {
+    const { report } = await select(EXPLICIT, "p");
+    expect(report.sectionId).toBe("hero");
+    expect(report.bindingState).toBe("cms-field");
+    expect(await editIfOffered("Stored desc", "Edited desc")).toBe(true);
 
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps.mock.calls[0]![0].data).toMatchObject({
+      sectionId: "hero",
+      props: { desc: "Edited desc" },
+    });
     expect(savedFiles).toEqual([]);
-    expect(updateSectionProps).not.toHaveBeenCalled();
-    expect(inputWithValue("Default desc")).toBeUndefined();
-    expect(codeControlled("Desc")?.textContent).toMatch(/controlled by code/i);
   });
 });
 
@@ -479,53 +493,123 @@ describe("the sole spread form", () => {
 });
 
 describe("per field, on one component", () => {
-  it("title passed, desc left out: the title is controlled, the desc default is editable", async () => {
-    await select(TITLE_ONLY, "h1");
-    await editIfOffered("Default title", "Leaked title");
+  it("title passed writes the Document; desc left out stays a source default", async () => {
+    const first = await select(TITLE_ONLY, "h1");
+    expect(first.report.sectionId).toBe("hero");
+    expect(first.report.bindingState).toBe("cms-field");
+    expect(await editIfOffered("Stored title", "Leaked title")).toBe(true);
     expect(savedFiles).toEqual([]);
-    expect(codeControlled("Title")?.textContent).toMatch(/controlled by code/i);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
     cleanup();
 
-    const { text } = await select(TITLE_ONLY, "p");
-    expect(text).toBe("Default desc");
-    expect(codeControlled("Desc")).toBeUndefined();
+    const second = await select(TITLE_ONLY, "p");
+    expect(second.text).toBe("Default desc");
+    expect(second.report.bindingState).toBe("code-default");
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "desc",
+      fieldPath: "desc",
+      value: "Leaked inline desc",
+      originalValue: "Default desc",
+    });
+    expect(savedFiles).toEqual([]);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
     expect(await editIfOffered("Default desc", "Edited desc default")).toBe(
       true,
     );
     expect(heroDefaultLine("desc")).toContain('desc = "Edited desc default"');
-    // The title's default was not touched by that save.
+    expect(savedFiles.at(-1)).toMatchObject({
+      path: HERO,
+      operation: "code-default",
+      codeDefault: {
+        componentPath: HERO,
+        componentName: "Hero",
+        fieldKey: "desc",
+        expectedCurrentDefault: "Default desc",
+        value: "Edited desc default",
+      },
+    });
+    // The title's default was not touched by that save, and the source write
+    // did not become a Document write.
     expect(heroDefaultLine("title")).toEqual(['title = "Default title"']);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
   });
 
-  it("a spread plus an explicit title: both are controlled, nothing is written", async () => {
-    const { report } = await select(SPREAD_AND_TITLE, "h1");
-    // Not a sole spread, so no Document section is proven.
-    expect(report.sectionId).toBe("/");
-    await editIfOffered("Default title", "Leaked title");
-    expect(codeControlled("Title")?.textContent).toMatch(/controlled by code/i);
-    cleanup();
+  it("refuses and never falls back to a full-file save when the component source no longer has a provable static string default at save time", async () => {
+    const second = await select(TITLE_ONLY, "p");
+    expect(second.text).toBe("Default desc");
+    expect(second.report.bindingState).toBe("code-default");
+    const input = inputWithValue("Default desc");
+    expect(input).toBeDefined();
 
-    await select(SPREAD_AND_TITLE, "p");
-    await editIfOffered("Default desc", "Leaked desc");
-    expect(codeControlled("Desc")?.textContent).toMatch(/controlled by code/i);
+    // Mutate the workspace file underneath the mounted Inspector so `desc` no
+    // longer has a static string literal default (`desc = fallbackDesc`),
+    // forcing `handleCodeComponentPropsChange` into the unprovable-default path.
+    const nonLiteralHero = heroSource.replace(
+      'export default function Hero({ title = "Default title", desc = "Default desc" })',
+      'const fallbackDesc = "Default desc";\nexport default function Hero({ title = "Default title", desc = fallbackDesc })',
+    );
+    useThemeWorkspaceStore.getState().updateLocalContent(
+      HERO,
+      nonLiteralHero,
+      {
+        storefrontId: "storefront-1",
+        themeId: "theme-1",
+      },
+    );
+
+    fireEvent.input(input!, { target: { value: "Attempted fallback edit" } });
+    fireEvent.blur(input!);
+    await wait(1800);
     expect(savedFiles).toEqual([]);
     expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("a spread plus an explicit title keeps the section: the literal is not writable, the spread field is", async () => {
+    const literal = await select(SPREAD_AND_TITLE, "h1");
+    // The section is proven, but the literal that overrides title is not a CMS
+    // field and must not be written.
+    expect(literal.report.sectionId).toBe("hero");
+    expect(literal.report.bindingState).toBe("not-cms");
+    expect(inputWithValue("Code title")).toBeUndefined();
+    await editIfOffered("Code title", "Leaked title");
+    expect(savedFiles).toEqual([]);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    cleanup();
+
+    const spread = await select(SPREAD_AND_TITLE, "p");
+    expect(spread.report.sectionId).toBe("hero");
+    expect(spread.report.bindingState).toBe("cms-field");
+    expect(await editIfOffered("Stored desc", "Edited desc")).toBe(true);
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+    expect(updateSectionProps.mock.calls[0]![0].data).toMatchObject({
+      sectionId: "hero",
+      props: { desc: "Edited desc" },
+    });
+    expect(savedFiles).toEqual([]);
   });
 });
 
 describe("the inline-edit refusal names only a field that can be used", () => {
-  it("for a field controlled by code it says so, and points to Code", async () => {
+  it("for a CMS field it points to a field the Inspector actually offers", async () => {
     const info = vi.spyOn(toast, "info").mockImplementation(() => "");
     const { report } = await select(EXPLICIT, "h1");
+    expect(report.bindingState).toBe("cms-field");
+    expect(
+      inputWithValue("Stored title"),
+      "the Inspector must offer the field the message points to",
+    ).toBeDefined();
+
     fromPreview({
       type: "morph:storefront-preview-inline-text-refused",
       sectionId: report.sectionId,
       fieldPath: "title",
     });
     const messages = info.mock.calls.map((call) => String(call[0]));
-    expect(messages).not.toContain(INLINE_TEXT_REFUSED_MESSAGE);
-    expect(messages.join("\n")).not.toMatch(/content fields on the right/i);
-    expect(messages.join("\n")).toMatch(/controlled by code/i);
+    expect(messages).toContain(INLINE_TEXT_REFUSED_MESSAGE);
+    expect(messages.join("\n")).not.toMatch(/controlled by code/i);
   });
 
   it("for a default the Inspector edits, it still points to the right-hand field", async () => {

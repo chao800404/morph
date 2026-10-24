@@ -943,6 +943,65 @@ export const resolveSelectable = (
 };
 
 /**
+ * What the editor should receive for this selection.
+ *
+ * A bridge whose editor has not announced `code-default-selection` reports a
+ * proven component default as the section it sits in: the same report a click
+ * on that section produces (field, path and descendant fields all from the
+ * section), not a field report with a few keys emptied.
+ */
+export function selectionForEditor(
+  item: SelectableInfo,
+  editorSupportsCodeDefault: boolean,
+): SelectableInfo {
+  if (editorSupportsCodeDefault || item.bindingState !== "code-default") {
+    return item;
+  }
+  if (item.section) {
+    const section = resolveSelectable(item.section);
+    if (section) {
+      // The section's descendants include the element just clicked; an editor
+      // without the capability must not receive it as an editable field. Drop
+      // a field only when every element carrying it is a code default.
+      const states = new Map<string, Set<string>>();
+      for (const element of [
+        item.section,
+        ...item.section.querySelectorAll<HTMLElement>(
+          "[data-storefront-field]",
+        ),
+      ]) {
+        const key = previewFieldBinding(element)?.fieldKey;
+        if (!key) continue;
+        const set = states.get(key) ?? new Set<string>();
+        set.add(previewContentBindingState(element) ?? "");
+        states.set(key, set);
+      }
+      const codeDefaultOnly = new Set(
+        [...states]
+          .filter(([, set]) => [...set].every((state) => state === "code-default"))
+          .map(([key]) => key),
+      );
+      return {
+        ...section,
+        descendantFields: section.descendantFields.filter(
+          (field) => !codeDefaultOnly.has(field.fieldKey),
+        ),
+      };
+    }
+  }
+  return {
+    ...item,
+    element: item.section ?? item.element,
+    elementKey: null,
+    fieldKey: null,
+    field: null,
+    fieldPath: null,
+    descendantFields: [],
+    bindingState: undefined,
+  };
+}
+
+/**
  * Whether markup from this file is a Theme component's own. Route and layout
  * files are the page's structure, and `src/morph/` is the platform's copy of
  * its own modules: neither is a component instance a field belongs to.
