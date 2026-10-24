@@ -22,21 +22,28 @@
 /** The job's name, as GitHub reports the check. */
 export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 
-/** Spec files (relative to e2e/) the job runs under the full Start preview. */
-export const START_PREVIEW_SPECS = [
-  // Case B and the A6b-2 live canvas refresh. Needs the runner-owned store
-  // (MORPH_E2E_STATE_DIR), which the runner provides.
-  "loader-data-binding.spec.ts",
-  // B1's real Design flow must be exercised against both client-only and
-  // full Start runtimes; the Start run is part of the binding acceptance.
-  "binding-acceptance.spec.ts",
-  // The native Start half of the compatibility matrix. Its client-only half
-  // (the KNOWN GAP tests) skips under Start and runs on the shards instead.
-  "native-compat-preview.spec.ts",
-  // A prop beside a section's content spread: the loader form, and the
-  // `content("x")` form under the Start runtime. Needs the runner-owned store.
-  "spread-override-binding.spec.ts",
+/** Whole-file shards. B1's long acceptance spec joins the lighter shard 2. */
+export const START_PREVIEW_SHARDS = [
+  ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts"],
+  ["spread-override-binding.spec.ts", "binding-acceptance.spec.ts"],
 ];
+export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
+
+/** Spec files (relative to e2e/) the job runs under the full Start preview. */
+export const START_PREVIEW_SPECS = START_PREVIEW_SHARDS.flat();
+
+/** @param {number} shard */
+export function startPreviewFilesForShard(shard) {
+  if (
+    !Number.isInteger(shard) ||
+    shard < 1 ||
+    shard > START_PREVIEW_SHARD_COUNT
+  )
+    throw new Error(
+      `START_SHARD_INVALID: expected 1..${START_PREVIEW_SHARD_COUNT}`,
+    );
+  return START_PREVIEW_SHARDS[shard - 1];
+}
 
 /**
  * Specs that read `MORPH_E2E_PREVIEW_RUNTIME` but are not run by the job, and
@@ -68,11 +75,3 @@ export const START_PREVIEW_EXPECTED_SKIPS = [
     title: "KNOWN GAP: server routes do not exist",
   },
 ];
-
-/** Where the job asks the runner to write Playwright's JSON report. */
-export const START_PREVIEW_REPORT_PATH = "test-results/full-start.json";
-
-/** The runner command the job runs, spelled exactly as in ci.yml. */
-export function startPreviewCommand() {
-  return `pnpm test:e2e:local-preview -- ${START_PREVIEW_SPECS.map((file) => `e2e/${file}`).join(" ")}`;
-}

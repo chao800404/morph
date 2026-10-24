@@ -25,10 +25,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Typecheck, test, build
+  # These run on separate runners so the test suite cannot consume Build's budget.
+  validate-typecheck:
+    name: Validation typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -62,6 +63,30 @@ jobs:
       - name: Check migration timestamps
         run: pnpm check:sql-timestamps
 
+  validate-test:
+    name: Validation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       # The Astro toolchain the Sandbox image installs, from the same lockfile,
       # so the Astro prerender build tests run against what a build container
       # runs. Without it those tests fail in CI rather than skip.
@@ -71,22 +96,56 @@ jobs:
       - name: Test
         run: pnpm test
 
+  validate-build:
+    name: Validation build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build
         run: pnpm build
 
-  # Its own job, on purpose, and the reason is mechanical rather than tidiness.
-  #
-  # A failed *step* makes GitHub Actions skip every step after it, so a guard
-  # that can legitimately be red cannot be a step inside `validate`: it would
-  # take Test and Build down with it, and those two are the only signals a
-  # migration has while it runs. This guard was red for exactly that long, and
-  # is green now that the last call site moved. The reason above is about the
-  # next migration, not this one — a separate job fails on its own, costs no
-  # wall time from the others, and is the unit a branch protection rule can
-  # require.
-  #
-  # The existing static checks are green by nature, which is why this assumption
-  # never showed up in their placement.
+  # Keep the existing check name, and reject every result except success.
+  validate:
+    name: Typecheck, test, build
+    needs: [validate-typecheck, validate-test, validate-build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require all validation jobs to succeed
+        env:
+          TYPECHECK_RESULT: ${{ needs.validate-typecheck.result }}
+          TEST_RESULT: ${{ needs.validate-test.result }}
+          BUILD_RESULT: ${{ needs.validate-build.result }}
+        run: |
+          test "$TYPECHECK_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$BUILD_RESULT" = success
+
+  # Architecture guards report independently, so a guard failure still leaves
+  # typecheck, test and build evidence available for the same commit.
   architecture-guards:
     # This string is not only a label. GitHub keeps a second copy of it, in
     # branch protection on `main`, as the required status check context
@@ -130,7 +189,9 @@ jobs:
       # a pure function over a check rollup; the script itself is not exercised
       # here, and nothing in CI ships anything.
       - name: Check the ship gate
-        run: pnpm check:ship
+        run: |
+          node --test scripts/ci-workflow.test.mjs
+          pnpm check:ship
 
       # `pnpm run deploy` refuses while the remote D1 database and `drizzle/`
       # disagree. That reads a database, so CI runs the rule's tests and the
@@ -328,9 +389,13 @@ jobs:
   # The file list and its exclusions live in scripts/editor-e2e-start.mjs;
   # Architecture guards checks this job against it.
   editor-e2e-full-start:
-    name: Editor E2E full Start preview
+    name: Editor E2E full Start shard ${{ matrix.shard }}/2
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
 
     steps:
       - name: Checkout
@@ -393,14 +458,14 @@ jobs:
       - name: Editor end-to-end, full Start preview
         env:
           MORPH_E2E_PREVIEW_RUNTIME: start
-          MORPH_E2E_REPORT_PATH: test-results/full-start.json
-        run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts e2e/binding-acceptance.spec.ts e2e/native-compat-preview.spec.ts e2e/spread-override-binding.spec.ts
+          MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json
+        run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}
 
       # Playwright passes a run whose tests skipped themselves, and every
       # Start test skips when the runtime did not reach it. Only the listed
       # by-design skips may skip; anything else fails the job.
       - name: Require every Start test to have run
-        run: node scripts/check-e2e-start.mjs test-results/full-start.json
+        run: node scripts/check-e2e-start.mjs test-results/full-start-${{ matrix.shard }}.json ${{ matrix.shard }}
 
       # Not under `editor-e2e-results-*`: the acceptance job downloads that
       # pattern and reads it as shard reports.
@@ -408,7 +473,38 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: editor-e2e-full-start-attempt-${{ github.run_attempt }}
+          name: editor-e2e-full-start-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: test-results/
           retention-days: 7
           if-no-files-found: error
+
+  # Keep the established required check: it is green only after both full
+  # Start shards succeeded and their latest-attempt reports passed inspection.
+  editor-e2e-full-start-acceptance:
+    name: Editor E2E full Start preview
+    needs: editor-e2e-full-start
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require every Start shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.editor-e2e-full-start.result }}
+        run: test "$SHARD_RESULT" = success
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download Start shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: editor-e2e-full-start-*-attempt-*
+          path: start-shard-artifacts
+
+      - name: Verify complete full Start reports
+        run: node scripts/check-e2e-start.mjs start-shard-artifacts

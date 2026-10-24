@@ -134,7 +134,30 @@ the missing checks named. Skipped or neutral is not success. There is no
 required-only shortcut: `MORPH_SHIP_REQUIRED_ONLY` was removed, and ship stops
 before pushing if it is set. Branch protection is unchanged.
 
-Typecheck, Vitest and Build remain in their existing job for this first stage.
+## Full Start preview whole-file shards (2026-10-23)
+
+The full Start preview is separate from the six client-only shards. CI run
+39934613168 reached the 30-minute job limit with this suite still running;
+a local full Start run with B1's acceptance spec took 39.2 minutes, of which
+the acceptance file took 21.8 minutes. These are observations, not a promise
+of future duration.
+
+`START_PREVIEW_SHARDS` in `scripts/editor-e2e-start.mjs` allocates complete
+spec files to two independent jobs. Each still uses one Playwright worker,
+zero retries, and its own disposable database and sidecar. The job timeout and
+test assertions are unchanged. The B1 acceptance spec is not in this branch;
+when B1 is integrated, add it to the lighter full Start shard and remeasure
+both jobs. If that one file exceeds the budget by itself, split the spec into
+multiple physical files, preserving all cases and assertions.
+
+The original `Editor E2E full Start preview` check remains as an aggregate.
+It requires both matrix jobs to succeed and rechecks their latest-attempt JSON
+reports, including setup and preview transport, the complete file plan, and
+the three documented design skips. `pnpm ship` waits for both shard checks and
+the aggregate. A missing, failed, cancelled, or skipped shard cannot be
+accepted as a passing full Start run.
+
+Typecheck, Vitest, and Build are split into parallel validation jobs by #293.
 Wall-clock savings and runner-minute costs must be measured on the new CI;
 more runners are not a guarantee of a proportional speedup.
 

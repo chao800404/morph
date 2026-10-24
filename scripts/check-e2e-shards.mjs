@@ -93,10 +93,14 @@ export function verifyWorkflowWiring(workflow, count = EDITOR_SHARD_COUNT) {
     jobBlock(workflow, "editor-e2e-acceptance"),
   );
   const matrixPattern = /^\s+shard:\s*\[([^\]]*)\]/gm;
+  const otherMatrices =
+    [...workflow.matchAll(matrixPattern)].length -
+    [...jobBlock(workflow, "editor-e2e-full-start").matchAll(matrixPattern)]
+      .length;
   assert.equal(
-    [...workflow.matchAll(matrixPattern)].length,
+    otherMatrices,
     1,
-    "The workflow must declare exactly one editor E2E shard matrix",
+    "The workflow must declare exactly one editor E2E shard matrix outside the full Start job",
   );
   const matrices = [...shardJob.matchAll(matrixPattern)];
   assert.equal(
