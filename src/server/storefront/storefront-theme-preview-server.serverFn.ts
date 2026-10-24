@@ -11,6 +11,7 @@ import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import { idSchema } from "@/lib/validations/commerce";
 import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { storefrontThemeFileDal } from "@/lib/storefront/dal/storefront-theme-file.dal";
+import { isBinaryThemeFile } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
 import { themeSourceStore } from "@/lib/storefront/storage/theme-storage.server";
@@ -32,7 +33,7 @@ import {
   newDirtyWorkspaceMarker,
   refuseThemeWorkspacePath,
 } from "@/lib/storefront/compiler/theme-workspace-path";
-import { prepareSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
+import { prepareChangedSourcesForLivePreview } from "@/lib/storefront/source-language/tsx-source-language";
 import { deriveThemePreviewSessionId } from "@/lib/storefront/service/theme-preview-session-id";
 import { createServerThemePreviewServer } from "@/lib/storefront/service/theme-preview-server.factory";
 import {
@@ -1026,19 +1027,32 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
         readSaved: async (paths) => {
           const { value, generation } = await readAtSourceGeneration(
             () => themeSourceStore.getSourceGeneration(storefrontId, themeId),
-            () =>
-              storefrontThemeFileDal.listSavedFiles(
-                storefrontId,
-                themeId,
-                paths,
-              ),
+            async () => {
+              const [savedFiles, workspaceEntries] = await Promise.all([
+                storefrontThemeFileDal.listSavedFiles(
+                  storefrontId,
+                  themeId,
+                  paths,
+                ),
+                themeSourceStore.getWorkspaceSnapshot(storefrontId, themeId),
+              ]);
+              return {
+                files: savedFiles,
+                sourceFiles: workspaceEntries.flatMap((entry) =>
+                  isBinaryThemeFile(entry)
+                    ? []
+                    : [{ path: entry.path, content: entry.content }],
+                ),
+              };
+            },
           );
-          return { files: value, generation };
+          return { ...value, generation };
         },
         // The same passes the workspace was laid out with. A file written
         // without them would lose its editor identity the moment it was saved,
         // and the preview would quietly stop being selectable.
-        prepare: (prepared) => prepareSourcesForLivePreview(prepared).files,
+        prepare: (changedFiles, sourceFiles) =>
+          prepareChangedSourcesForLivePreview(changedFiles, sourceFiles).files,
         isGenerated: isPreviewSyncSkippedPath,
         write,
       });

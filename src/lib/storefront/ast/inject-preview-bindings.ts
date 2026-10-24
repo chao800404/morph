@@ -1,4 +1,14 @@
 import { parse } from "@babel/parser";
+import {
+  analyzeB1Route,
+  componentPropElements,
+  type B1Instance,
+  type B1PropValue,
+  type B1RouteAnalysis,
+} from "./theme-content-provenance";
+import {
+  createThemeSourceAstReader,
+} from "./theme-source-ast";
 import { inferBoundPropName } from "./theme-field-binding";
 import {
   contentFieldsSidecarPath,
@@ -6,10 +16,6 @@ import {
 } from "./theme-content-fields-declaration";
 import {
   collectLoaderSlotBindingDetails,
-  collectPageVariables,
-  NO_LOADER_SLOT_BINDINGS,
-  readPageBindingKey,
-  type LoaderSlotBindings,
   type LoaderSlotPage,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
@@ -41,6 +47,7 @@ import {
 
 const FIELD_ATTRIBUTE = "data-storefront-field";
 const FIELD_PATH_ATTRIBUTE = "data-storefront-field-path";
+const BINDING_STATE_ATTRIBUTE = "data-morph-binding-state";
 const ITEM_ID_ATTRIBUTE = "data-storefront-item-id";
 const PREVIEW_ROW_WRAPPER_ATTRIBUTE = "data-morph-preview-row-wrapper";
 const SECTION_ID_ATTRIBUTE = "data-storefront-section-id";
@@ -113,7 +120,7 @@ type Insertion = {
   }>;
 };
 
-type WrapperKind = "row" | "section" | "content";
+type WrapperKind = "row" | "section" | "content" | "evaluation";
 
 /**
  * Which wrapper goes outside when two enclose exactly the same element. A row
@@ -126,6 +133,7 @@ const WRAPPER_NESTING: Readonly<Record<WrapperKind, number>> = {
   row: 0,
   section: 1,
   content: 2,
+  evaluation: 3,
 };
 
 /**
@@ -165,6 +173,7 @@ function compareInsertions(
 type RowScope = Readonly<{ item: string | null; index: string | null }>;
 
 const JSX_FILE = /\.(tsx|jsx)$/;
+const SCRIPT_FILE = /\.(tsx|jsx|ts|js|mjs|cjs)$/;
 
 function isHostElement(name: any): boolean {
   // Lowercase names are DOM elements. A capitalised name is another component,
@@ -509,6 +518,7 @@ function declaredFields(
    * has no known shape, and nothing in it is marked.
    */
   rowFieldsOf?: (specifier: string) => ReadonlySet<string> | null,
+  parsedAstFor?: (path: string, content: string) => any | null,
 ): {
   top: ReadonlySet<string>;
   rows: ReadonlyMap<string, ReadonlySet<string>>;
@@ -517,6 +527,18 @@ function declaredFields(
     path: file.path,
     source: file.content,
     sidecar: file.sidecar,
+    ...(parsedAstFor
+      ? {
+          parsedSourceAst: parsedAstFor(file.path, file.content),
+          parsedSidecarAst:
+            typeof file.sidecar === "string"
+              ? parsedAstFor(
+                  contentFieldsSidecarPath(file.path) ?? file.path,
+                  file.sidecar,
+                )
+              : undefined,
+        }
+      : {}),
   });
   if (parsed.declaration !== "valid" || !parsed.fields) return null;
 
@@ -832,8 +854,9 @@ function threadedFieldAttributes(
   const key = JSON.stringify(field);
   return (
     ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? "") : ${key}}` +
+    ` ${BINDING_STATE_ATTRIBUTE}={${local}?.bindingStates?.[${key}] ?? undefined}` +
     (withPath
-      ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
+      ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] && ${local}.path ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
       : "")
   );
 }
@@ -848,31 +871,34 @@ function threadedFieldAttributes(
  */
 function readSectionSlotId(
   openingElement: any,
-  pageVariables: ReadonlySet<string>,
-  loaderSlots: LoaderSlotBindings = NO_LOADER_SLOT_BINDINGS,
+  b1Instances?: ReadonlyMap<number, B1Instance>,
 ): string | null {
-  const loaderSlot = loaderSlots.get(openingElement?.start);
-  if (loaderSlot !== undefined) {
-    return loaderSlot.length > 0 ? loaderSlot : null;
+  const b1Instance = b1Instances?.get(openingElement?.start);
+  // Section identity and field provenance must come from the same scoped
+  // analysis. The former name-based readers could identify a slot while the
+  // B1 analyzer rejected its actual source, creating a wrapper that implied a
+  // stronger binding than the field claims supported.
+  return b1Instance?.section ?? null;
+}
+
+/** Whether a hand-written field marker sits anywhere in `node`. */
+function hasAuthoredFieldMarker(node: any): boolean {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(hasAuthoredFieldMarker);
+  if (
+    node.type === "JSXAttribute" &&
+    node.name?.type === "JSXIdentifier" &&
+    (node.name.name === FIELD_ATTRIBUTE ||
+      node.name.name === FIELD_PATH_ATTRIBUTE)
+  ) {
+    return true;
   }
-  for (const attribute of openingElement?.attributes ?? []) {
-    if (attribute?.type !== "JSXSpreadAttribute") continue;
-    const pageKey = readPageBindingKey(attribute.argument, pageVariables);
-    if (pageKey !== null) return pageKey.length > 0 ? pageKey : null;
-    const call = attribute.argument;
-    if (
-      call?.type !== "CallExpression" ||
-      call.callee?.type !== "Identifier" ||
-      call.callee.name !== "content" ||
-      call.arguments?.length !== 1 ||
-      call.arguments[0]?.type !== "StringLiteral"
-    ) {
-      continue;
-    }
-    const slotId = call.arguments[0].value;
-    return typeof slotId === "string" && slotId.length > 0 ? slotId : null;
-  }
-  return null;
+  return Object.entries(node).some(
+    ([key, value]) =>
+      key !== "loc" &&
+      key !== "leadingComments" &&
+      hasAuthoredFieldMarker(value),
+  );
 }
 
 function escapeAttribute(value: string): string {
@@ -1054,6 +1080,8 @@ export function injectPreviewBindings(
   const warnings: Array<{ path: string; message: string }> = [];
   const contentByPath = new Map(files.map((file) => [file.path, file.content]));
   const filePaths = new Set(contentByPath.keys());
+  const sourceAstReader = createThemeSourceAstReader(files);
+  const parsedAstFor = sourceAstReader.ast;
 
   const sidecarOf = (path: string) => {
     const sidecarPath = contentFieldsSidecarPath(path);
@@ -1075,6 +1103,14 @@ export function injectPreviewBindings(
               path,
               source: content,
               sidecar: sidecarOf(path),
+              parsedSourceAst: parsedAstFor(path, content),
+              parsedSidecarAst:
+                typeof sidecarOf(path) === "string"
+                  ? parsedAstFor(
+                      contentFieldsSidecarPath(path) ?? path,
+                      sidecarOf(path)!,
+                    )
+                  : undefined,
             });
       ownFieldsCache.set(
         path,
@@ -1084,24 +1120,22 @@ export function injectPreviewBindings(
     return ownFieldsCache.get(path);
   };
   const declaredFor = (file: PreviewBindingFile) =>
-    declaredFields({ ...file, sidecar: sidecarOf(file.path) }, (specifier) => {
-      const fields = resolveRowFields(file.path, specifier, ownFields);
-      return fields ? new Set(Object.keys(fields)) : null;
-    });
+    declaredFields(
+      { ...file, sidecar: sidecarOf(file.path) },
+      (specifier) => {
+        const fields = resolveRowFields(file.path, specifier, ownFields);
+        return fields ? new Set(Object.keys(fields)) : null;
+      },
+      parsedAstFor,
+    );
 
   const asts = new Map<string, any>();
   for (const file of files) {
-    if (!JSX_FILE.test(file.path)) continue;
-    try {
-      asts.set(
-        file.path,
-        parse(file.content, {
-          sourceType: "module",
-          plugins: ["jsx", "typescript"],
-        }),
-      );
-    } catch {
-      // Reported where the file itself is handled, below.
+    if (!SCRIPT_FILE.test(file.path)) continue;
+    const parsed = sourceAstReader.read(file.path, file.content);
+    if (parsed.ok) asts.set(file.path, parsed.ast);
+    else if (parsed.reason === "too-large" && JSX_FILE.test(file.path)) {
+      skipped.push({ path: file.path, reason: parsed.message });
     }
   }
 
@@ -1174,35 +1208,128 @@ export function injectPreviewBindings(
   const sectionReaders = new Map<
     string,
     {
-      pageVariables: ReturnType<typeof collectPageVariables>;
       loaderSlotDetails: ReturnType<typeof collectLoaderSlotBindingDetails>;
-      loaderSlots: LoaderSlotBindings;
+      b1Analysis: B1RouteAnalysis | null;
+      b1Instances: ReadonlyMap<number, B1Instance>;
     }
   >();
+  const isRouteAnalysisCandidate = (ast: any) =>
+    (ast.program.body ?? []).some(
+      (statement: any) =>
+        statement?.type === "ImportDeclaration" &&
+        (statement.source?.value === "@tanstack/react-router" ||
+          /(?:^|\/)morph\/content(?:\.[cm]?[jt]sx?)?$/.test(
+            statement.source?.value ?? "",
+          )),
+    );
   const sectionReaderFor = (path: string, ast: any) => {
     let reader = sectionReaders.get(path);
     if (!reader) {
       const loaderSlotDetails = collectLoaderSlotBindingDetails(ast, {
         path,
         files,
+        parsedAstFor,
       });
+      const b1Analysis =
+        isRouteAnalysisCandidate(ast)
+        ? analyzeB1Route(
+            files,
+            path,
+            undefined,
+            undefined,
+            sourceAstReader.read,
+          )
+        : null;
       reader = {
-        pageVariables: collectPageVariables(ast),
         loaderSlotDetails,
-        loaderSlots:
-          loaderSlotDetails.size === 0
-            ? NO_LOADER_SLOT_BINDINGS
-            : new Map(
-                [...loaderSlotDetails].map(([start, { slot }]) => [
-                  start,
-                  slot,
-                ]),
-              ),
+        b1Analysis,
+        b1Instances: new Map(
+          (b1Analysis?.instances ?? []).map((instance) => [
+            instance.start,
+            instance,
+          ]),
+        ),
       };
       sectionReaders.set(path, reader);
     }
     return reader;
   };
+
+  // A route instance passes its proven prop -> stored-field mapping through
+  // the existing private row context. This carries display identity only;
+  // the server independently re-derives the same provenance before a write.
+  const b1SectionInstances = new Map<string, B1Instance>();
+  const b1ComponentPropElements = new Map<string, ReadonlyMap<number, string>>();
+  for (const file of files) {
+    const routeAst = asts.get(file.path);
+    if (!routeAst) continue;
+    const analysis = sectionReaderFor(file.path, routeAst).b1Analysis;
+    for (const instance of analysis?.instances ?? []) {
+      if (
+        !instance.hasDeclaredCallsiteProps ||
+        instance.section === null ||
+        !instance.componentPath ||
+        !instance.componentExport
+      ) {
+        continue;
+      }
+      const needsThread = instance.declaredFields.some(
+        (field) => instance.props[field]?.kind !== "unset",
+      );
+      if (!needsThread) continue;
+      const componentFile = files.find(
+        (candidate) => candidate.path === instance.componentPath,
+      );
+      const componentAst = asts.get(instance.componentPath);
+      if (!componentFile || !componentAst) continue;
+
+      const routeNode = (() => {
+        let found: any = null;
+        const visit = (node: any) => {
+          if (!node || typeof node !== "object" || found) return;
+          if (Array.isArray(node)) return node.forEach(visit);
+          if (node.type === "JSXElement" && node.start === instance.start) {
+            found = node;
+            return;
+          }
+          for (const [key, value] of Object.entries(node)) {
+            if (key !== "loc") visit(value);
+          }
+        };
+        visit(routeAst.program);
+        return found;
+      })();
+      if (!routeNode || hasAttribute(routeNode.openingElement, ROW_PROP)) {
+        continue;
+      }
+
+      const componentBinding = componentPropElements(
+        componentFile.content,
+        instance.componentExport,
+        undefined,
+        componentAst,
+      );
+      if (
+        !componentBinding.threadable ||
+        !threadablePropsPattern(componentBinding.fn)
+      ) {
+        continue;
+      }
+      const elements = new Map(
+        componentBinding.elements.map((element) => [element.start, element.prop]),
+      );
+      if (elements.size === 0) continue;
+
+      b1SectionInstances.set(`${file.path}:${instance.start}`, instance);
+      b1ComponentPropElements.set(
+        `${instance.componentPath}:${componentBinding.fn!.start}`,
+        elements,
+      );
+      const exports = threadedExports.get(instance.componentPath) ?? new Set();
+      exports.add(instance.componentExport);
+      threadedExports.set(instance.componentPath, exports);
+    }
+  }
 
   // Components rendered inside a section by another component.
   //
@@ -1224,6 +1351,12 @@ export function injectPreviewBindings(
   const nestedThreadFunctions = new Map<string, any[]>();
   const unthreadableFunctions = new Map<string, any[]>();
   const scannedSubtrees = new Set<string>();
+  // Section call sites whose component cannot safely receive the provenance
+  // thread are not wrapped as editable sections.
+  const unprovenSectionCallSites = new Set<string>();
+  // For a row component also used as a section, preserve the per-prop mapping
+  // when the row thread takes precedence over the section thread.
+  const sectionThreadFields = new Map<string, Record<string, string>>();
   const fileByPath = new Map(files.map((file) => [file.path, file]));
   const addFunction = (into: Map<string, any[]>, path: string, fn: any) => {
     const list = into.get(path) ?? [];
@@ -1260,7 +1393,7 @@ export function injectPreviewBindings(
     if (!ast || !file) return;
     const declared = declaredFor(file);
     const forwarding = attributeForwardingComponentNames(ast);
-    const { pageVariables, loaderSlots } = sectionReaderFor(path, ast);
+    const { b1Instances } = sectionReaderFor(path, ast);
     // Rows of a declared list: the row machinery above decides those.
     const ownedRows = new Set<number>();
     const visit = (node: any) => {
@@ -1280,7 +1413,8 @@ export function injectPreviewBindings(
       if (
         opening &&
         !isAttributeForwardingComponent(opening.name, forwarding) &&
-        !readSectionSlotId(opening, pageVariables, loaderSlots)
+        (!readSectionSlotId(opening, b1Instances) ||
+          unprovenSectionCallSites.has(`${path}:${opening.start}`))
       ) {
         const target = resolveComponent(path, ast, opening.name);
         if (target) {
@@ -1312,10 +1446,102 @@ export function injectPreviewBindings(
     scannedSubtrees.add(key);
     scanSectionSubtree(path, fn.body);
   };
+  // Components some list renders as its rows. Their field elements build a
+  // row's path, so a section's thread, which has none, is not handed to them.
+  const rowThreadedFunctions = new Set<string>();
+  for (const thread of rowThreads.values()) {
+    const fn = findExportedFunction(
+      asts.get(thread.componentPath),
+      thread.exportName,
+    );
+    if (fn) rowThreadedFunctions.add(`${thread.componentPath}:${fn.start}`);
+  }
+  // Section-call field handoff is derived from the same B1 per-prop claims as
+  // section identity and preview injection. Do not independently infer an
+  // override from a variable name or prop-name equality: that was the source
+  // of the spread-after-override misbinding this path guards against.
   for (const file of files) {
     const ast = asts.get(file.path);
     if (!ast) continue;
-    const { pageVariables, loaderSlots } = sectionReaderFor(file.path, ast);
+    const analysis = sectionReaderFor(file.path, ast).b1Analysis;
+    const openingByStart = new Map<number, any>();
+    const collectOpenings = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) collectOpenings(child);
+        return;
+      }
+      if (node.type === "JSXElement" && typeof node.start === "number") {
+        openingByStart.set(node.start, node.openingElement);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "loc" || key === "leadingComments") continue;
+        collectOpenings(value);
+      }
+    };
+    collectOpenings(ast.program);
+    for (const instance of analysis?.instances ?? []) {
+      if (instance.section === null || !instance.componentPath) continue;
+      const componentFn = instance.componentExport
+        ? findExportedFunction(
+            asts.get(instance.componentPath),
+            instance.componentExport,
+          )
+        : null;
+      const target = componentFn
+        ? { path: instance.componentPath, fn: componentFn }
+        : null;
+      const opening = openingByStart.get(instance.start);
+      const targetFile = target ? fileByPath.get(target.path) : undefined;
+      const declared = targetFile ? declaredFor(targetFile) : null;
+      const callSite = `${file.path}:${instance.start}`;
+      const sourceFieldMap = Object.fromEntries(
+        Object.entries(instance.claims).flatMap(([prop, claim]) =>
+          claim.kind === "claim" && claim.slot === instance.section
+            ? [[prop, claim.field]]
+            : [],
+        ),
+      );
+      const hasNonCmsField = instance.declaredFields.some((prop) => {
+        const value = instance.props[prop];
+        if (!value || value.kind === "unset") return false;
+        const claim = instance.claims[prop];
+        return claim?.kind !== "claim" || claim.slot !== instance.section;
+      });
+      if (!hasNonCmsField) continue;
+
+      const replacesRows =
+        !declared ||
+        instance.declaredFields.some((prop) => {
+          const value = instance.props[prop];
+          const claim = instance.claims[prop];
+          const isNonCms =
+            Boolean(value && value.kind !== "unset") &&
+            (claim?.kind !== "claim" || claim.slot !== instance.section);
+          return isNonCms && declared.rows.has(prop);
+        });
+      if (
+        target &&
+        opening &&
+        !replacesRows &&
+        threadablePropsPattern(target.fn) &&
+        !hasAttribute(opening, ROW_PROP) &&
+        !hasAuthoredFieldMarker(target.fn)
+      ) {
+        nestedCallSites.add(callSite);
+        addFunction(nestedThreadFunctions, target.path, target.fn);
+        if (!rowThreadedFunctions.has(`${target.path}:${target.fn.start}`)) {
+          sectionThreadFields.set(callSite, sourceFieldMap);
+        }
+      } else {
+        unprovenSectionCallSites.add(callSite);
+      }
+    }
+  }
+  for (const file of files) {
+    const ast = asts.get(file.path);
+    if (!ast) continue;
+    const { b1Instances } = sectionReaderFor(file.path, ast);
     const findSections = (node: any) => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) {
@@ -1324,7 +1550,10 @@ export function injectPreviewBindings(
       }
       if (
         node.type === "JSXElement" &&
-        readSectionSlotId(node.openingElement, pageVariables, loaderSlots)
+        readSectionSlotId(node.openingElement, b1Instances) &&
+        !unprovenSectionCallSites.has(
+          `${file.path}:${node.openingElement.start}`,
+        )
       ) {
         // The section's own component, and anything handed to it to render.
         const target = resolveComponent(
@@ -1359,10 +1588,10 @@ export function injectPreviewBindings(
     const attributeForwardingComponents =
       attributeForwardingComponentNames(ast);
     const usedIdentifierNames = identifierNames(ast);
-    const { pageVariables, loaderSlotDetails, loaderSlots } = sectionReaderFor(
-      file.path,
-      ast,
-    );
+    const {
+      loaderSlotDetails,
+      b1Instances,
+    } = sectionReaderFor(file.path, ast);
     const insertions: Insertion[] = [];
 
     // The `_hidden` list of the page a loader slot came from, as an expression
@@ -1394,6 +1623,7 @@ export function injectPreviewBindings(
       end: number;
       local: string;
       roots: ReadonlySet<number>;
+      sectionProps: ReadonlyMap<number, string>;
     }> = [];
     for (const fn of [
       ...[...(threadedExports.get(file.path) ?? [])].map((exportName) =>
@@ -1430,6 +1660,8 @@ export function injectPreviewBindings(
         end: fn.end,
         local,
         roots: componentRootStarts(fn),
+        sectionProps:
+          b1ComponentPropElements.get(`${file.path}:${fn.start}`) ?? new Map(),
       });
     }
     const threadAt = (position: number) =>
@@ -1475,6 +1707,16 @@ export function injectPreviewBindings(
       do {
         name = `__morphRow${synthesizedIndexes}`;
         synthesizedIndexes += 1;
+      } while (usedIdentifierNames.has(name));
+      usedIdentifierNames.add(name);
+      return name;
+    };
+    let b1SpreadIndex = 0;
+    const nextB1SpreadLocal = () => {
+      let name: string;
+      do {
+        name = `__morphB1Spread${b1SpreadIndex}`;
+        b1SpreadIndex += 1;
       } while (usedIdentifierNames.has(name));
       usedIdentifierNames.add(name);
       return name;
@@ -1589,8 +1831,13 @@ export function injectPreviewBindings(
         // a component's element and an attribute put there becomes a prop the
         // component is free to ignore — it would never reach the page. The
         // wrapper is taken out of layout so the page looks the same.
-        const slotId = readSectionSlotId(opening, pageVariables, loaderSlots);
-        if (slotId && node.start != null && node.end != null) {
+        const slotId = readSectionSlotId(opening, b1Instances);
+        if (
+          slotId &&
+          node.start != null &&
+          node.end != null &&
+          !unprovenSectionCallSites.has(`${file.path}:${opening.start}`)
+        ) {
           slotIds.push(slotId);
           // A loader slot the author hid still renders here, with the
           // component's defaults; `content("x")` call sites are guarded by
@@ -1610,15 +1857,176 @@ export function injectPreviewBindings(
           );
         }
 
+        const b1Instance =
+          node.start != null
+            ? b1SectionInstances.get(`${file.path}:${node.start}`)
+            : undefined;
+        const b1Component = b1Instance
+          ? resolveComponent(file.path, ast, opening?.name)
+          : null;
+        const b1UsesRowThreadForOverride =
+          Boolean(b1Instance) &&
+          nestedCallSites.has(`${file.path}:${opening?.start}`) &&
+          Boolean(
+            b1Component &&
+              rowThreadedFunctions.has(
+                `${b1Component.path}:${b1Component.fn.start}`,
+              ),
+          );
+        if (
+          b1Instance &&
+          opening?.name?.end != null &&
+          !unprovenSectionCallSites.has(`${file.path}:${opening.start}`) &&
+          !b1UsesRowThreadForOverride &&
+          !hasAttribute(opening, ROW_PROP)
+        ) {
+          const fields: string[] = [];
+          const bindingStates: string[] = [];
+          const spreadLocals = new Map<string, string>();
+          const spreadAttributes = new Map<string, any>();
+          for (const [prop, claim] of Object.entries(b1Instance.claims)) {
+            if (claim.kind !== "claim" || claim.slot !== b1Instance.section) {
+              continue;
+            }
+            let expression = JSON.stringify(claim.field);
+            if (claim.conditional) {
+              const key = `${claim.conditional.spread.start}:${claim.conditional.spread.end}`;
+              const spread = (opening.attributes ?? []).find(
+                (attribute: any) =>
+                  attribute?.type === "JSXSpreadAttribute" &&
+                  attribute.start === claim.conditional!.spread.start &&
+                  attribute.end === claim.conditional!.spread.end,
+              );
+              if (!spread?.argument) continue;
+              let local = spreadLocals.get(key);
+              if (!local) {
+                local = nextB1SpreadLocal();
+                spreadLocals.set(key, local);
+                spreadAttributes.set(key, spread);
+              }
+              expression =
+                `(${local} != null && Object.prototype.hasOwnProperty.call(${local}, ${JSON.stringify(claim.field)})` +
+                ` ? (${local}[${JSON.stringify(claim.field)}] !== undefined ? ${JSON.stringify(claim.field)} : "")` +
+                ` : ${JSON.stringify(claim.conditional.otherwiseLabel)})`;
+            }
+            fields.push(`${JSON.stringify(prop)}: ${expression}`);
+          }
+          const stateForValue = (
+            value: B1PropValue | undefined,
+          ): "cms-field" | "not-cms" | "untraced" | "derived" => {
+            if (!value) return "untraced";
+            switch (value.kind) {
+              case "field":
+                return value.slot === b1Instance.section
+                  ? "cms-field"
+                  : "untraced";
+              case "spread-field":
+                return "untraced";
+              case "derived":
+                return value.slot === b1Instance.section
+                  ? "derived"
+                  : "untraced";
+              case "literal":
+              case "unset":
+                return "not-cms";
+              case "unknown":
+                return "untraced";
+            }
+          };
+          for (const prop of b1Instance.declaredFields) {
+            const value = b1Instance.props[prop];
+            // Keep the existing component-code-default path intact when this
+            // call site simply does not pass the prop. `unset` is represented
+            // by that dedicated source editor, not as a route-level binding.
+            if (value?.kind === "unset") continue;
+            const claim = b1Instance.claims[prop];
+            let expression = JSON.stringify(stateForValue(value));
+            if (claim?.kind === "claim" && claim.conditional) {
+              const spreadKey = `${claim.conditional.spread.start}:${claim.conditional.spread.end}`;
+              const local = spreadLocals.get(spreadKey);
+              if (!local) {
+                expression = JSON.stringify("untraced");
+              } else {
+                const sourceField = claim.field;
+                const hasOwn =
+                  `${local} != null && Object.prototype.hasOwnProperty.call(${local}, ${JSON.stringify(sourceField)})`;
+                const conditionalFallback = claim.conditional.requiresOwnKey
+                  ? "derived"
+                  : value?.kind === "spread-field"
+                    ? stateForValue(value.otherwise)
+                    : "not-cms";
+                const undefinedValueState = claim.conditional.requiresOwnKey
+                  ? "derived"
+                  : "not-cms";
+                expression =
+                  `(${hasOwn} ? (${local}[${JSON.stringify(sourceField)}] !== undefined` +
+                  ` ? ${JSON.stringify("cms-field")} : ${JSON.stringify(undefinedValueState)})` +
+                  ` : ${JSON.stringify(conditionalFallback)})`;
+              }
+            } else if (claim?.kind === "claim") {
+              expression = JSON.stringify("cms-field");
+            } else if (claim?.kind === "none") {
+              expression = JSON.stringify(
+                claim.state === "literal" || claim.state === "unset"
+                  ? "not-cms"
+                  : claim.state === "unknown"
+                    ? "untraced"
+                  : claim.state,
+              );
+            }
+            bindingStates.push(`${JSON.stringify(prop)}: ${expression}`);
+          }
+          const hasExplicitCallsiteValue = b1Instance.declaredFields.some(
+            (field) => b1Instance.props[field]?.kind !== "unset",
+          );
+          if (fields.length > 0 || hasExplicitCallsiteValue) {
+            if (spreadLocals.size > 0 && node.start != null && node.end != null) {
+              const locals = [...spreadLocals.values()];
+              wrap(
+                "evaluation",
+                node.start,
+                node.end,
+                `${insideJsx ? "{" : ""}(() => { let ${locals.join(", ")}; return `,
+                `; })()${insideJsx ? "}" : ""}`,
+              );
+              for (const [key, local] of spreadLocals) {
+                const spread = spreadAttributes.get(key);
+                if (spread?.argument?.start == null || spread.argument.end == null) {
+                  continue;
+                }
+                insertions.push({
+                  at: spread.argument.start,
+                  text: `(${local} = (`,
+                });
+                insertions.push({ at: spread.argument.end, text: "))" });
+              }
+            }
+            // Append editor metadata after the author's attributes. In
+            // particular, a spread may assign one of the captured-once
+            // locals above; reading it before that spread would make every
+            // field appear unbound at runtime.
+            const lastAttribute = (opening.attributes ?? []).at(-1);
+            insertions.push({
+              at: lastAttribute?.end ?? opening.name.end,
+              text: ` ${ROW_PROP}={{ fields: { ${fields.join(", ")} }, bindingStates: { ${bindingStates.join(", ")} } }}`,
+            });
+          }
+        }
+
         // A component rendered inside a section by another component: its
         // own fields are not provably the section's (`nestedCallSites`).
         if (
           opening?.name?.end != null &&
-          nestedCallSites.has(`${file.path}:${opening.start}`)
+          nestedCallSites.has(`${file.path}:${opening.start}`) &&
+          (!b1SectionInstances.has(`${file.path}:${opening.start}`) ||
+            b1UsesRowThreadForOverride)
         ) {
+          const sectionFields = sectionThreadFields.get(
+            `${file.path}:${opening.start}`,
+          );
           insertions.push({
             at: opening.name.end,
-            text: ` ${ROW_PROP}={{ fields: {} }}`,
+            text: ` ${ROW_PROP}={{ fields: ${sectionFields ? JSON.stringify(sectionFields) : "{}"} }}`,
           });
         }
 
@@ -1656,7 +2064,11 @@ export function injectPreviewBindings(
             );
           }
 
-          const field = fieldForElement(node, arrayPath ? scope.item : null);
+          const thread =
+            !arrayPath && node.start != null ? threadAt(node.start) : null;
+          const sectionProp = thread?.sectionProps.get(node.start);
+          const field =
+            sectionProp ?? fieldForElement(node, arrayPath ? scope.item : null);
           const allowed = declared
             ? arrayPath
               ? (declared.rows.get(arrayPath)?.has(field ?? "") ?? false)
@@ -1665,8 +2077,6 @@ export function injectPreviewBindings(
           // Inside a component some list renders as its row. Its own `.map()`
           // is left as it was: a row holds no list, so nothing in one is the
           // outer row's content, and the editor refuses it there.
-          const thread =
-            !arrayPath && node.start != null ? threadAt(node.start) : null;
 
           if (field && allowed && !hasAttribute(opening, FIELD_ATTRIBUTE)) {
             parts.push(
@@ -1782,7 +2192,11 @@ export function injectPreviewBindings(
           const thread = !arrayPath ? threadAt(node.start) : null;
           if (field && allowed) {
             const attributes = thread
-              ? threadedFieldAttributes(thread.local, field, true)
+              ? threadedFieldAttributes(
+                  thread.local,
+                  field,
+                  true,
+                )
               : !arrayPath && unthreadableAt(node.start)
                 ? ` ${FIELD_ATTRIBUTE}=""`
                 : ` ${FIELD_ATTRIBUTE}="${escapeAttribute(field)}"` +

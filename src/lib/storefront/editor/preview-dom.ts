@@ -1,5 +1,7 @@
 import {
+  isContentBindingState,
   selectionKindFromElement,
+  type ContentBindingState,
   type ContentUnavailableReason,
   type EditableDescendantField,
 } from "./selection-taxonomy";
@@ -815,9 +817,14 @@ export type SelectableInfo = {
   itemId: string | null;
   /** Why the element offers no content to edit, when that can be said. */
   contentUnavailable: ContentUnavailableReason | null;
+  /** Provenance for the selected element, when the compiler supplied it. */
+  bindingState?: ContentBindingState | null;
 };
 
-type ResolvedElement = Omit<SelectableInfo, "itemId" | "contentUnavailable">;
+type ResolvedElement = Omit<
+  SelectableInfo,
+  "itemId" | "contentUnavailable" | "bindingState"
+>;
 
 export const getComponentDisplayName = (type: string): string => {
   switch (type.toLowerCase()) {
@@ -926,10 +933,12 @@ export const resolveSelectable = (
 ): SelectableInfo | null => {
   const item = resolveSelectableElement(target);
   if (!item) return null;
+  const bindingState = previewContentBindingState(item.element);
   return {
     ...item,
     itemId: previewRowItemId(item.element),
     contentUnavailable: previewContentUnavailableReason(item.element),
+    ...(bindingState ? { bindingState } : {}),
   };
 };
 
@@ -999,7 +1008,23 @@ export function resolvePageStandIn(
   if (!isThemeComponentSourcePath(component?.dataset.morphSourceFile)) {
     return null;
   }
-  return { ...item, sectionId: routePath };
+  return { ...item, sectionId: routePath };}
+
+function previewContentBindingState(
+  element: HTMLElement,
+): ContentBindingState | null {
+  const stateElement = element.closest<HTMLElement>(
+    "[data-morph-binding-state]",
+  );
+  if (!stateElement) return null;
+  if (
+    closestPreviewSectionRoot(stateElement) !==
+    closestPreviewSectionRoot(element)
+  ) {
+    return null;
+  }
+  const state = stateElement.dataset.morphBindingState;
+  return isContentBindingState(state) ? state : null;
 }
 
 const resolveSelectableElement = (

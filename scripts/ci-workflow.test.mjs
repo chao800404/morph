@@ -55,6 +55,12 @@ test("the existing aggregate waits for all validation jobs and is always evaluat
     jobs,
   );
   assert.match(block, /^ {4}if: always\(\)$/m);
+  assert.match(block, /- name: Checkout\n\s+uses: actions\/checkout@v4\n/);
+  assert.ok(
+    block.indexOf("- name: Checkout") <
+      block.indexOf("- name: Require all validation jobs to succeed"),
+    "the aggregate must expose the same checkout evidence as its children",
+  );
   assert.doesNotMatch(block, /continue-on-error:/);
   assert.deepEqual(CHECK_DEPENDENCIES[VALIDATE_CHECK], VALIDATION_CHECKS);
   for (const [index, result] of [

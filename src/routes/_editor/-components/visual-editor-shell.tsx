@@ -8510,6 +8510,7 @@ export function VisualEditorShell({
         fieldPath,
         itemId: message.itemId ?? null,
         contentUnavailable: message.contentUnavailable ?? null,
+        bindingState: message.bindingState ?? null,
         descendantFields,
         className,
         isSection: selectionIsSection,

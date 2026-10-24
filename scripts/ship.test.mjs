@@ -36,6 +36,7 @@ import {
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
 import {
   EXPECTED_CI_CHECKS,
+  START_PREVIEW_SHARD_CHECKS,
   VALIDATION_CHECKS,
 } from "./ci-required-checks.mjs";
 
@@ -72,6 +73,7 @@ const baseGreen = () => [
   other("SUCCESS"),
   ...VALIDATION_CHECKS.map(success),
   success(FULL_START),
+  ...START_PREVIEW_SHARD_CHECKS.map(success),
 ];
 const without = (checks, name) => checks.filter((check) => check.name !== name);
 const replaced = (checks, name, patch) =>
@@ -84,6 +86,7 @@ describe("the expected set of checks", () => {
       "Typecheck, test, build",
       ...VALIDATION_CHECKS,
       FULL_START,
+      ...START_PREVIEW_SHARD_CHECKS,
       ...shardChecks().map((check) => check.name),
       ACCEPTANCE,
     ]);
@@ -104,10 +107,24 @@ describe("the expected set of checks", () => {
     assert.deepEqual(missing, ["Typecheck, test, build"]);
   });
 
-  it("does not merge without the full Start job", () => {
+  it("waits for the full Start aggregate after both shards succeeded", () => {
     const { verdict: v, missing } = decide(without(allGreen(), FULL_START));
-    assert.equal(v, "refuse");
+    assert.equal(v, "wait");
     assert.deepEqual(missing, [FULL_START]);
+  });
+
+  it("refuses a missing or non-success Start shard even if the aggregate is green", () => {
+    for (const name of START_PREVIEW_SHARD_CHECKS) {
+      const missing = decide(without(allGreen(), name));
+      assert.equal(missing.verdict, "refuse", name);
+      assert.deepEqual(missing.missing, [name]);
+      for (const conclusion of ["FAILURE", "CANCELLED", "TIMED_OUT", "SKIPPED"])
+        assert.equal(
+          verdict(replaced(allGreen(), name, { conclusion })),
+          "refuse",
+          `${name}: ${conclusion}`,
+        );
+    }
   });
 
   it("requires every validation child even when the aggregate reports success", () => {
@@ -422,7 +439,10 @@ describe("the polling loop's next step", () => {
     );
     assert.equal(failed.action, "fail");
     assert.match(failed.message, /^CHECK_NOT_GREEN:/);
-    const missing = step(without(allGreen(), FULL_START), before);
+    const missing = step(
+      without(allGreen(), START_PREVIEW_SHARD_CHECKS[0]),
+      before,
+    );
     assert.equal(missing.action, "fail");
     assert.match(missing.message, /^EXPECTED_CHECK_MISSING:/);
   });

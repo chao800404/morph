@@ -39,6 +39,51 @@ describe("preview section-root selection", () => {
     expect(selected?.type).toBe("section");
   });
 
+  it("reports a binding state from the selected value within its section", () => {
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = `
+      <h1 data-morph-loc="src/Hero.tsx:4:3"
+        data-storefront-field="title" data-morph-binding-state="derived">
+        Greeting
+      </h1>
+    `;
+    document.body.appendChild(section);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBe("derived");
+  });
+
+  it("does not inherit a binding state from a different preview section", () => {
+    const outer = document.createElement("div");
+    outer.dataset.morphBindingState = "untraced";
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = '<h1 data-morph-loc="src/Hero.tsx:4:3">Title</h1>';
+    outer.appendChild(section);
+    document.body.appendChild(outer);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBeUndefined();
+  });
+
+  it("ignores unknown binding states rather than forwarding them", () => {
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = `
+      <h1 data-morph-loc="src/Hero.tsx:4:3" data-morph-binding-state="editable">
+        Title
+      </h1>
+    `;
+    document.body.appendChild(section);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBeUndefined();
+  });
+
   it("resolves the platform route marker as a selectable page root", () => {
     const previewRoot = document.createElement("div");
     previewRoot.dataset.storefrontPreviewRoot = "true";

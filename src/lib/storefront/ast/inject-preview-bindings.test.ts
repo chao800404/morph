@@ -1,13 +1,43 @@
 // @vitest-environment node
 import ts from "typescript";
+import { parse as parseBabel } from "@babel/parser";
 import { describe, expect, it } from "vitest";
 import { injectPreviewBindings } from "./inject-preview-bindings";
 import * as starterV3 from "../starter-theme-v3-files";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
+import {
+  BAS_CASES,
+  BAS_HERO_PATH,
+  BAS_HERO_SOURCE,
+  basRouteSource,
+} from "@/lib/test-utils/binding-acceptance-cases";
+import { B1_EXTRA_CASES } from "@/lib/test-utils/binding-acceptance-b1-cases";
+import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
+import { componentPropElements } from "./theme-content-provenance";
+
+const injectTestFiles = (
+  files: Array<{ path: string; content: string }>,
+) => {
+  const hasRoute = files.some((file) => file.path.startsWith("src/routes/"));
+  if (!hasRoute) return injectPreviewBindings(files);
+
+  const suppliedPaths = new Set(files.map((file) => file.path));
+  const platformFiles = livePreviewPlatformFiles().filter(
+    (file) =>
+      file.path === "src/morph/content.ts" && !suppliedPaths.has(file.path),
+  );
+  const routeComponents = ["Hero", "Promo", "CategoryShowcase"]
+    .map((name) => ({
+      path: `src/components/${name}.tsx`,
+      content: `export default function ${name}() { return null; }`,
+    }))
+    .filter((file) => !suppliedPaths.has(file.path));
+  return injectPreviewBindings([...files, ...platformFiles, ...routeComponents]);
+};
 
 const run = (content: string, path = "src/components/Hero.tsx") =>
-  injectPreviewBindings([{ path, content }]).files[0]!.content;
+  injectTestFiles([{ path, content }]).files[0]!.content;
 
 const DECLARES = `export const contentFields = {
   heading: { type: "text", label: "Heading" },
@@ -20,6 +50,249 @@ const DECLARES = `export const contentFields = {
 `;
 
 describe("writing editor identity into a Theme for a real React preview", () => {
+  it("keeps section and field markers when a recovered route uses its remaining component", () => {
+    const routeFile = "src/routes/error-recovery.tsx";
+    const componentFile = "src/components/KeptCard.tsx";
+    const files = [
+      ...livePreviewPlatformFiles(),
+      {
+        path: componentFile,
+        content: `export const contentFields = {
+  title: { type: "text", label: "Card title" },
+} as const;
+type KeptCardProps = { title?: string };
+export default function KeptCard({ title = "Kept default" }: KeptCardProps) {
+  return <section><h2>{title}</h2></section>;
+}`,
+      },
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import KeptCard from "../components/KeptCard";
+export const Route = createFileRoute("/error-recovery")({ component: Page });
+function Page() {
+  return <main><KeptCard {...content("error-recovery")} /></main>;
+}`,
+      },
+    ];
+
+    const result = injectPreviewBindings(files);
+    const routeOutput = result.files.find((file) => file.path === routeFile)!.content;
+    const componentOutput = result.files.find(
+      (file) => file.path === componentFile,
+    )!.content;
+
+    expect(result.sections[routeFile]).toContain("error-recovery");
+    expect(routeOutput).toContain(
+      '<div data-storefront-section-id="error-recovery" style={{ display: "contents" }}>',
+    );
+    expect(componentOutput).toContain('data-storefront-field="title"');
+  });
+
+  it("threads proven per-field props from a route into the component's DOM fields", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c2")!;
+    const route = basRouteSource(testCase, "content");
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: testCase.routeFile, content: route },
+    ];
+
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    const componentBinding = componentPropElements(
+      BAS_HERO_SOURCE,
+      "default",
+    );
+    expect(componentBinding.threadable).toBe(true);
+    expect(componentBinding.elements.map((element) => element.prop)).toEqual([
+      "title",
+      "desc",
+    ]);
+    expect(routeOutput).toContain(
+      '__morphRow={{ fields: { "title": "title", "desc": "desc" }, bindingStates: { "title": "cms-field", "desc": "cms-field" } }}',
+    );
+    expect(routeOutput).toContain('data-storefront-section-id="hero"');
+    expect(componentOutput).toContain('__morphRowContext.fields["title"] ?? ""');
+    expect(componentOutput).toContain('__morphRowContext.fields["desc"] ?? ""');
+    // The same component may also be rendered as a list row elsewhere in the
+    // workspace. Its generated path is therefore conditional on receiving an
+    // actual row path; the section thread alone must not manufacture one.
+    expect(componentOutput).toContain(
+      'data-storefront-field-path={__morphRowContext?.fields["title"] && __morphRowContext.path ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
+    );
+  });
+
+  it("emits the protocol's untraced state when a prop passes through author code", () => {
+    const routeFile = "src/routes/b1-untraced-state.tsx";
+    const files = [
+      {
+        path: routeFile,
+        content: `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/b1-untraced-state")({ component: Home });
+function opaque(value: string) { return value; }
+function Home() {
+  const hero = content("hero");
+  return <BasHero title={opaque(hero.title)} desc={hero.desc} />;
+}`,
+      },
+      {
+        path: BAS_HERO_PATH,
+        content: `${BAS_HERO_SOURCE}`,
+      },
+    ];
+
+    const output = injectTestFiles(files).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain(
+      'bindingStates: { "title": "untraced", "desc": "cms-field" }',
+    );
+    expect(routeOutput).not.toContain('"title": "unknown"');
+  });
+
+  it("evaluates a spread once and labels fields only when the spread owns them", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c4a")!;
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: testCase.routeFile,
+        content: basRouteSource(testCase, "content"),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+
+    expect(routeOutput).toContain('__morphB1Spread0 = (content("hero"))');
+    expect(routeOutput).toContain('Object.prototype.hasOwnProperty.call(__morphB1Spread0, "title")');
+    expect(routeOutput).toContain('__morphB1Spread0["title"] !== undefined');
+    expect(routeOutput).toContain('"title": (__morphB1Spread0 != null');
+    expect(routeOutput).toContain(
+      '"title": (__morphB1Spread0 != null && Object.prototype.hasOwnProperty.call(__morphB1Spread0, "title")',
+    );
+    expect(routeOutput).toContain('? "cms-field" : "not-cms"');
+    expect(routeOutput.indexOf('{...(__morphB1Spread0 = (content("hero")))}'))
+      .toBeLessThan(routeOutput.indexOf("__morphRow={{ fields:"));
+    expect(
+      ts.transpileModule(routeOutput, {
+        compilerOptions: { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+        reportDiagnostics: true,
+      }).diagnostics,
+    ).toEqual([]);
+  });
+
+  it("does not change an awaited JSX prop's scope to track a conditional spread", () => {
+    const routeFile = "src/routes/awaited-spread.tsx";
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/awaited-spread")({ component: Home });
+async function Home() {
+  const hero = content("hero");
+  return <main><BasHero title="Code literal" {...hero} desc={await Promise.resolve("async desc")} /></main>;
+}`;
+    const output = injectPreviewBindings([
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: routeFile, content: source },
+    ]).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain('desc={await Promise.resolve("async desc")}');
+    expect(routeOutput).toContain('"title": "untraced"');
+    expect(routeOutput).not.toContain("__morphB1Spread0");
+    expect(() =>
+      parseBabel(routeOutput, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("keeps spread tracking when await belongs to a nested async prop callback", () => {
+    const routeFile = "src/routes/nested-async-spread.tsx";
+    const source = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/nested-async-spread")({ component: Home });
+function Home() {
+  const hero = content("hero");
+  return <main><BasHero {...hero} desc={async () => await Promise.resolve("async desc")} /></main>;
+}`;
+    const output = injectPreviewBindings([
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      { path: routeFile, content: source },
+    ]).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+
+    expect(routeOutput).toContain("__morphB1Spread0");
+    expect(() =>
+      parseBabel(routeOutput, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("keeps the literal fallback unclaimed when the later section spread lacks the prop", () => {
+    const testCase = B1_EXTRA_CASES.find((entry) => entry.id === "p4a")!;
+    const routePath = "/bas-p4a-inspector";
+    const routeFile = "src/routes/bas-p4a-inspector.tsx";
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: routeFile,
+        content: basRouteSource(testCase, "content", { routePath }),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    expect(routeOutput).toContain('title="Code literal P4a"');
+    expect(routeOutput).toContain('__morphRow={{ fields:');
+    expect(routeOutput).toContain('"title": (__morphB1Spread0 != null');
+    expect(routeOutput).toContain('? "title" : ""');
+    expect(routeOutput).toContain('? "cms-field" : "not-cms"');
+    expect(componentOutput).toContain('__morphRowContext.fields["title"] ?? ""');
+    expect(componentOutput).toContain(
+      'data-morph-binding-state={__morphRowContext?.bindingStates?.["title"] ?? undefined}',
+    );
+    expect(
+      ts.transpileModule(routeOutput, {
+        compilerOptions: { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+        reportDiagnostics: true,
+      }).diagnostics,
+    ).toEqual([]);
+  });
+
+  it("marks a derived prop as display-only metadata, not as a stored field claim", () => {
+    const testCase = BAS_CASES.find((entry) => entry.id === "c6b")!;
+    const files = [
+      ...livePreviewPlatformFiles(),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      {
+        path: testCase.routeFile,
+        content: basRouteSource(testCase, "content"),
+      },
+    ];
+    const output = injectPreviewBindings(files).files;
+    const routeOutput = output.find((file) => file.path === testCase.routeFile)!.content;
+    const componentOutput = output.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+    expect(routeOutput).toContain('"title": "derived"');
+    expect(routeOutput).not.toContain('"title": "cms-field"');
+    expect(componentOutput).toContain("data-morph-binding-state=");
+  });
+
   it("names the field an element shows, from the expression it renders", () => {
     const out = run(`${DECLARES}
 export default function Hero({ heading }) {
@@ -277,7 +550,11 @@ export default function Hero({ items = [] }) {
 
     it("leaves a section alone, which is wrapped as a section already", () => {
       const out = run(
-        `export default function Page({ content }) {
+        `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Page });
+function Page() {
   return <main><Hero {...content("starter-hero")} /></main>;
 }
 `,
@@ -290,7 +567,11 @@ export default function Hero({ items = [] }) {
     it("wraps a section bound through a page variable the same way", () => {
       const out = run(
         `import { morph } from "../morph/content";
-export default async function Page() {
+import { createFileRoute } from "@tanstack/react-router";
+import Hero from "../components/Hero";
+import Promo from "../components/Promo";
+export const Route = createFileRoute("/home")({ component: Page });
+async function Page() {
   const home = await morph.pages.get("/home");
   return <main><Hero {...home["starter-hero"]} /><Promo {...home.promo} /></main>;
 }
@@ -463,7 +744,7 @@ export default function HomeRoute() {
 `;
 
   const runRoute = (source = ROUTE) =>
-    injectPreviewBindings([{ path: "src/routes/index.tsx", content: source }]);
+    injectTestFiles([{ path: "src/routes/index.tsx", content: source }]);
 
   it("wraps each section in something the page cannot see", () => {
     const out = runRoute().files[0]!.content;
@@ -691,6 +972,7 @@ describe("wrappers written back to back", () => {
   it("closes one section before the next one opens", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export default function Page() {
   return <main><Promo {...content("promo-a")} /><Promo {...content("promo-b")} /></main>;
 }
@@ -746,6 +1028,7 @@ export default function Hero({ heading, tagline }) {
   it("closes a section before the content wrapper beside it opens", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export const contentFields = { heading: { type: "text" } } as const;
 export default function Page({ heading }) {
   return <main><Promo {...content("promo")} /><ThemeLink>{heading}</ThemeLink></main>;
@@ -777,6 +1060,7 @@ export default function Page({ heading }) {
   it("nests a section inside the row wrapper around the same element", async () => {
     const out = run(
       `import { content } from "../morph/content";
+import Promo from "../components/Promo";
 export const contentFields = {
   items: { type: "array", fields: { title: { type: "text" } } },
 } as const;
@@ -1090,7 +1374,7 @@ export default function List({ items = [] }) {
       'data-storefront-field={__morphRowContext ? (__morphRowContext.fields["title"] ?? "") : "title"}',
     );
     expect(card).toContain(
-      'data-storefront-field-path={__morphRowContext?.fields["title"] ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
+      'data-storefront-field-path={__morphRowContext?.fields["title"] && __morphRowContext.path ? `${__morphRowContext.path}.${__morphRowContext.fields["title"]}` : undefined}',
     );
     // What the component returns is the row itself.
     expect(card).toMatch(

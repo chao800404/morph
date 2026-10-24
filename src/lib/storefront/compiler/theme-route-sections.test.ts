@@ -769,6 +769,10 @@ describe("routes that have not adopted slots", () => {
 describe("reorder validation", () => {
   const files = [
     {
+      path: "src/morph/content.ts",
+      content: "export function content() {}",
+    },
+    {
       path: "morph.theme.json",
       content: JSON.stringify({ components: {}, sections: {} }),
     },

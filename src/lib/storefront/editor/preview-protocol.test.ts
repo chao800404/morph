@@ -432,6 +432,19 @@ describe("preview protocol", () => {
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       selectionRevision: 4,
     });
+    for (const bindingState of [
+      "cms-field",
+      "not-cms",
+      "untraced",
+      "derived",
+    ] as const) {
+      expect(
+        parsePreviewToEditorMessage({ ...selection, bindingState }),
+      ).toMatchObject({ bindingState });
+    }
+    expect(
+      parsePreviewToEditorMessage({ ...selection, bindingState: "writeable" }),
+    ).toBeNull();
     // Rendered text is not a field's value: a Theme's content() may change
     // it on the way to the page. The editor is not told it, so nothing can
     // take it for the stored value.
