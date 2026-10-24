@@ -281,7 +281,7 @@ test("aggregate reads every Start shard's latest attempt and rejects missing or 
     put(2, 1, reportFor(2));
     assert.deepEqual(
       verifyStartShardReports(directory).map((result) => result.passed),
-      [2, 1],
+      [2, 2],
     );
     const bad = reportFor(2);
     bad.suites[2] = spec(startPreviewFilesForShard(2)[0], "failed", ["failed"]);
