@@ -9,6 +9,7 @@ import {
 import {
   createThemeSourceAstReader,
 } from "./theme-source-ast";
+import { analyzeSourceDefaultFields } from "../editor/source-default-control";
 import { inferBoundPropName } from "./theme-field-binding";
 import {
   contentFieldsSidecarPath,
@@ -850,16 +851,22 @@ function threadedFieldAttributes(
   local: string,
   field: string,
   withPath: boolean,
+  codeDefault = false,
 ): string {
   const key = JSON.stringify(field);
+  const fieldFallback = codeDefault ? key : '""';
+  const state = codeDefault
+    ? `${local}?.bindingStates?.[${key}] ?? (${local} && ${local}.fields?.[${key}] === undefined ? "code-default" : undefined)`
+    : `${local}?.bindingStates?.[${key}] ?? undefined`;
   return (
-    ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? "") : ${key}}` +
-    ` ${BINDING_STATE_ATTRIBUTE}={${local}?.bindingStates?.[${key}] ?? undefined}` +
+    ` ${FIELD_ATTRIBUTE}={${local} ? (${local}.fields[${key}] ?? ${fieldFallback}) : ${key}}` +
+    ` ${BINDING_STATE_ATTRIBUTE}={${state}}` +
     (withPath
       ? ` ${FIELD_PATH_ATTRIBUTE}={${local}?.fields[${key}] && ${local}.path ? \`\${${local}.path}.\${${local}.fields[${key}]}\` : undefined}`
       : "")
   );
 }
+
 
 /**
  * The content slot a component is rendered for, read at the call site.
@@ -1082,7 +1089,27 @@ export function injectPreviewBindings(
   const filePaths = new Set(contentByPath.keys());
   const sourceAstReader = createThemeSourceAstReader(files);
   const parsedAstFor = sourceAstReader.ast;
-
+  /**
+   * Per component, every declared field proven at once. The proof shares the
+   * injector's bounded AST reader, so it does not parse the workspace again
+   * per field; a file over the limit parses to null and stays unproven.
+   */
+  const sourceDefaultVerdicts = new Map<
+    string,
+    Record<string, { status: string }>
+  >();
+  const sourceDefaultsFor = (path: string, fieldKeys: readonly string[]) => {
+    const cached = sourceDefaultVerdicts.get(path);
+    if (cached) return cached;
+    const verdicts = analyzeSourceDefaultFields({
+      files,
+      componentSourcePath: path,
+      fieldKeys,
+      parseForPath: (filePath, content) => sourceAstReader.ast(filePath, content),
+    });
+    sourceDefaultVerdicts.set(path, verdicts);
+    return verdicts;
+  };
   const sidecarOf = (path: string) => {
     const sidecarPath = contentFieldsSidecarPath(path);
     return sidecarPath ? contentByPath.get(sidecarPath) : undefined;
@@ -2079,12 +2106,21 @@ export function injectPreviewBindings(
           // outer row's content, and the editor refuses it there.
 
           if (field && allowed && !hasAttribute(opening, FIELD_ATTRIBUTE)) {
+            // `default` is the proof that no call site passes this prop and
+            // the declaration has one rewritable default; a passed prop or a
+            // spread comes back as `code` here and is not marked.
+            const codeDefault =
+              thread !== null &&
+              declared !== null &&
+              sourceDefaultsFor(file.path, [...declared.top])[field]?.status ===
+                "default";
             parts.push(
               thread
                 ? threadedFieldAttributes(
                     thread.local,
                     field,
                     !hasAttribute(opening, FIELD_PATH_ATTRIBUTE),
+                    codeDefault,
                   )
                 : !arrayPath && unthreadableAt(node.start)
                   ? ` ${FIELD_ATTRIBUTE}=""`

@@ -3,6 +3,7 @@ import {
   collectPreviewEditableNodes,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
+  selectionForEditor,
 } from "./preview-dom";
 
 afterEach(() => {
@@ -292,5 +293,46 @@ describe("an authored id as an identity", () => {
     const titles = nodes.filter((node) => node.htmlId === "title");
     expect(titles).toHaveLength(2);
     expect(titles.every((node) => node.id.startsWith("list:item:"))).toBe(true);
+  });
+});
+
+describe("a proven code default and an editor without the capability", () => {
+  const fieldItem = () => {
+    const route = document.createElement("main");
+    route.dataset.morphComponent = "HomeRoute";
+    route.dataset.morphSourceFile = "src/routes/index.tsx";
+    route.dataset.morphLoc = "src/routes/index.tsx:16:5";
+    const section = document.createElement("div");
+    section.dataset.storefrontSectionId = "hero";
+    section.style.display = "contents";
+    const heading = document.createElement("h1");
+    heading.dataset.storefrontField = "title";
+    heading.dataset.morphBindingState = "code-default";
+    heading.dataset.morphLoc = "src/components/Hero.tsx:8:7";
+    section.appendChild(heading);
+    route.appendChild(section);
+    document.body.appendChild(route);
+    return { section, field: resolveSelectable(heading)! };
+  };
+
+  it("reports the section itself, with no field, path or descendant fields", () => {
+    const { section, field } = fieldItem();
+    expect(field.bindingState).toBe("code-default");
+    const report = selectionForEditor(field, false);
+    expect(report).not.toBe(field);
+    expect(report.element).toBe(section);
+    expect(report.section).toBe(section);
+    expect(report.sectionId).toBe("hero");
+    expect(report.fieldKey).toBeNull();
+    expect(report.fieldPath).toBeNull();
+    expect(report.field).toBeNull();
+    expect(report.descendantFields).toEqual([]);
+    expect(report.bindingState).toBeUndefined();
+    expect(report.elementKey).toBeNull();
+  });
+
+  it("keeps the field when the editor announced the capability", () => {
+    const { field } = fieldItem();
+    expect(selectionForEditor(field, true)).toBe(field);
   });
 });

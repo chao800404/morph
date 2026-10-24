@@ -248,7 +248,20 @@ import type {
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
-  patchComponentDefaultProp,
+  codeComponentSourcePath,
+  sourceDefaultRefusalReader,
+} from "@/lib/storefront/editor/source-default-control";
+import {
+  patchStringLiteralAt,
+  resolveSourceDefaultNode,
+} from "@/lib/storefront/editor/source-default-node";
+import type { CodeDefaultWriteProof } from "@/lib/validations/storefront-theme-file";
+import {
+  acceptsPageStandIn,
+  isDocumentWriteTarget,
+  isPageStandInId,
+} from "@/lib/storefront/editor/page-stand-in";
+import {
   patchElementClassNameResult,
   removeJsxElement,
   swapSiblingMorphNodes,
@@ -319,6 +332,7 @@ import {
 } from "@/lib/storefront/editor/preview-content-sync";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
+  EDITOR_CAPABILITIES,
   parsePreviewSectionProps,
   parsePreviewServedInstance,
   type PreviewCapability,
@@ -500,6 +514,13 @@ function borrowableTemplate<
  */
 export const INLINE_TEXT_REFUSED_MESSAGE =
   "This text can't be edited safely in place. Use the content fields on the right.";
+/**
+ * Said instead when the right-hand field is not offered either: the text is a
+ * component default the page overrides, or may override, in code
+ * (`source-default-control.ts`).
+ */
+export const INLINE_TEXT_CODE_CONTROLLED_MESSAGE =
+  "This text is controlled by code, so it can't be edited here or in the content fields. Edit it in Code.";
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
@@ -4234,6 +4255,36 @@ export function VisualEditorShell({
     }) => void
   >(() => {});
   /**
+   * What to say when the canvas would not open text for typing. It points to
+   * the right-hand field only where the panel offers one: a Document field, or
+   * a component default the canvas really shows. Asked as the panel asks.
+   */
+  const inlineTextRefusedMessageRef = useRef<
+    (sectionId: string, fieldPath: string) => string
+  >(() => INLINE_TEXT_REFUSED_MESSAGE);
+  useEffect(() => {
+    inlineTextRefusedMessageRef.current = (sectionId, fieldPath) => {
+      const selection =
+        editableSelection?.sectionId === sectionId ? editableSelection : null;
+      const stored = resolveEditorTemplate(
+        routeBackedContext,
+        search,
+      )?.document.sections.some((section) => section.id === sectionId);
+      if (stored && selection?.bindingState !== "code-default") {
+        return selection?.bindingState && selection.bindingState !== "cms-field"
+          ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+          : INLINE_TEXT_REFUSED_MESSAGE;
+      }
+      const refused = sourceDefaultRefusalReader(
+        effectiveThemeFiles,
+        codeComponentSourcePath(selection, effectiveThemeFiles),
+      )(fieldPath.split(".")[0] ?? fieldPath);
+      return refused
+        ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+        : INLINE_TEXT_REFUSED_MESSAGE;
+    };
+  }, [editableSelection, effectiveThemeFiles, routeBackedContext, search]);
+  /**
    * The last value an inline canvas edit wrote, for the Inspector.
    *
    * The Inspector shows stored values; this is one, written before the save
@@ -5158,6 +5209,10 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
+      codeDefaultSave?: {
+        operation: "code-default";
+        codeDefault: CodeDefaultWriteProof;
+      },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5275,6 +5330,12 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
+                        ...(codeDefaultSave
+                          ? {
+                              operation: codeDefaultSave.operation,
+                              codeDefault: codeDefaultSave.codeDefault,
+                            }
+                          : {}),
                       },
                     }),
               );
@@ -5464,6 +5525,8 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
+          operation?: "code-default";
+          codeDefault?: CodeDefaultWriteProof;
         },
       ) => Promise<unknown>)
     | null
@@ -5479,6 +5542,8 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
+        operation?: "code-default";
+        codeDefault?: CodeDefaultWriteProof;
       },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
@@ -5531,6 +5596,12 @@ export function VisualEditorShell({
         content,
         nextRevision,
         options?.confirmed ?? false,
+        options?.operation === "code-default" && options.codeDefault
+          ? {
+              operation: "code-default",
+              codeDefault: options.codeDefault,
+            }
+          : undefined,
       );
       if (
         result.status === "superseded" ||
@@ -5543,6 +5614,10 @@ export function VisualEditorShell({
       // Only a landed write is reversible, and only one that actually changed
       // something: recording a no-op would spend an undo press doing nothing.
       if (before !== null && before !== content) {
+        const codeDefaultOption =
+          options?.operation === "code-default" && options.codeDefault
+            ? options.codeDefault
+            : undefined;
         history.record({
           label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
           scope: themeFileHistoryScope(filePath),
@@ -5550,11 +5625,27 @@ export function VisualEditorShell({
             handleUnifiedSaveFileRef.current?.(filePath, before, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: {
+                      ...codeDefaultOption,
+                      expectedCurrentDefault: codeDefaultOption.value,
+                      value: codeDefaultOption.expectedCurrentDefault,
+                    },
+                  }
+                : {}),
             }),
           redo: () =>
             handleUnifiedSaveFileRef.current?.(filePath, content, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: codeDefaultOption,
+                  }
+                : {}),
             }),
         });
       }
@@ -7261,25 +7352,82 @@ export function VisualEditorShell({
   const handleCodeComponentPropsChange = useCallback(
     (filePath: string, nextProps: Record<string, unknown>) => {
       if (refuseSectionTemplateWrite(filePath)) return;
-      const workspaceFile = useThemeWorkspaceStore
+      const workspaceFilesMap = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
-        filePath
-      ];
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const workspaceFile = workspaceFilesMap[filePath];
       const currentSource =
         workspaceFile?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) return;
 
+      const entries = Object.entries(nextProps);
+      if (entries.length === 0) return;
+
+      const currentFiles = themeFiles.map((file) => ({
+        path: file.path,
+        content: workspaceFilesMap[file.path]?.localContent ?? file.content,
+      }));
+
       let nextSource = currentSource;
-      for (const [fieldKey, value] of Object.entries(nextProps)) {
-        if (typeof value !== "string") continue;
-        nextSource = patchComponentDefaultProp(nextSource, fieldKey, value);
+      let codeDefaultProof: CodeDefaultWriteProof | undefined;
+      for (const [fieldKey, value] of entries) {
+        if (typeof value !== "string") {
+          toast.error(
+            "Cannot edit this code default: only static string literal defaults can be edited here.",
+          );
+          return;
+        }
+        const resolved = resolveSourceDefaultNode({
+          files: currentFiles,
+          componentSourcePath: filePath,
+          fieldKey,
+        });
+        if (resolved.status !== "default") {
+          toast.error(
+            "Cannot edit this code default: the component's default value is not a static string literal.",
+          );
+          return;
+        }
+        if (resolved.value === value) {
+          continue;
+        }
+        if (codeDefaultProof) {
+          toast.error(
+            "Cannot edit multiple code defaults in a single operation.",
+          );
+          return;
+        }
+        const patched = patchStringLiteralAt(
+          currentSource,
+          resolved.target,
+          value,
+        );
+        if (!patched || patched === currentSource) {
+          toast.error(
+            "Cannot edit this code default: failed to patch the component's string literal default.",
+          );
+          return;
+        }
+        nextSource = patched;
+        const componentName =
+          resolved.component.localName ??
+          resolved.component.exportNames[0] ??
+          undefined;
+        codeDefaultProof = {
+          componentPath: filePath,
+          ...(componentName ? { componentName } : {}),
+          fieldKey,
+          expectedCurrentDefault: resolved.value,
+          value,
+        };
       }
-      if (nextSource === currentSource) return;
+      if (!codeDefaultProof || nextSource === currentSource) return;
 
       void handleUnifiedSaveFile(filePath, nextSource, {
         preserveCanvasPosition: true,
+        operation: "code-default",
+        codeDefault: codeDefaultProof,
       });
     },
     [
@@ -8103,9 +8251,13 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-inline-text-refused") {
-        toast.info(INLINE_TEXT_REFUSED_MESSAGE, {
-          id: "inline-text-refused",
-        });
+        toast.info(
+          inlineTextRefusedMessageRef.current(
+            message.sectionId,
+            message.fieldPath,
+          ),
+          { id: "inline-text-refused" },
+        );
         return;
       }
 
@@ -8167,6 +8319,20 @@ export function VisualEditorShell({
           capabilities: new Set(message.capabilities ?? []),
           documentId,
         };
+        // Tell this document what the editor can read back, only when this
+        // ready carries a document id and the bridge said it reads the token.
+        // The id names the round, not a permission: the bridge ignores any
+        // announcement for another document.
+        if (
+          documentId &&
+          (message.capabilities ?? []).includes("code-default-selection")
+        ) {
+          postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+            type: "morph:storefront-preview-editor-capabilities",
+            capabilities: [...EDITOR_CAPABILITIES],
+            previewDocument: documentId,
+          });
+        }
         setLiveTypingUnavailable(null);
         instanceContentReplayRef.current?.frameReady(
           previewKey,
@@ -8354,6 +8520,30 @@ export function VisualEditorShell({
           });
         }
         return;
+      }
+
+      // A page stand-in (a route path, not a section) is taken only from the
+      // confirmed current document, after it answered the editor's latest
+      // route request in this round, and only for the route asked for.
+      if (isPageStandInId(message.sectionId)) {
+        const frameDocument = previewDocumentOf(event);
+        const routeRequest = lastRouteRequestRef.current;
+        if (
+          !acceptsPageStandIn({
+            sectionId: message.sectionId,
+            requestedRoutePath: currentSearchRoutePathRef.current,
+            fromConfirmedDocument:
+              frameDocument?.kind === "message" && frameDocument.verified,
+            routeRequestAnswered:
+              routeRequest !== null &&
+              routeRequest.key === previewKey &&
+              routeRequest.round === previewReadyRoundRef.current &&
+              routeRequest.id === routeRequestIdRef.current &&
+              routeRequest.answered,
+          })
+        ) {
+          return;
+        }
       }
 
       const outcome = previewSelection.acceptReport(message);
@@ -8704,6 +8894,12 @@ export function VisualEditorShell({
     async (sectionId: string): Promise<EditorEditableNodeDeleteResult> => {
       reportAuthenticatedUserActivity();
 
+      if (isPageStandInId(sectionId)) {
+        return {
+          success: false,
+          message: "The page itself is not a section of this page.",
+        };
+      }
       if (!activeThemeRoute) {
         return {
           success: false,
@@ -9580,7 +9776,12 @@ export function VisualEditorShell({
         message,
       });
 
-      const templateId = templateIdForSection(request.sectionId);
+      const templateId = isDocumentWriteTarget(
+        request.sectionId,
+        templateIdForSection,
+      )
+        ? templateIdForSection(request.sectionId)
+        : null;
       if (!templateId) {
         return failed("This section has no document to store the text in.");
       }
@@ -9832,6 +10033,9 @@ export function VisualEditorShell({
       historyGeneration?: number,
     ): Promise<{ success: boolean; message?: string }> => {
       reportAuthenticatedUserActivity();
+      if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
+        return { success: false, message: "Nothing to reset here." };
+      }
       const templateId = templateIdForSection(sectionId);
       if (!templateId || fieldKeys.length === 0) {
         return { success: false, message: "Nothing to reset here." };
@@ -9970,6 +10174,9 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // A page stand-in is not a section: nothing to write, and nothing to
+      // show the canvas either.
+      if (isPageStandInId(sectionId)) return;
       // A history record keeps its original version, even after reselection.
       // Throw before changing the panel/preview so the history stays retryable.
       if (
@@ -10146,6 +10353,9 @@ export function VisualEditorShell({
           descendantFieldCount: selection.descendantFields?.length ?? 1,
           isSection: selection.isSection,
         }) ||
+        (selection.bindingState !== undefined &&
+          selection.bindingState !== null &&
+          selection.bindingState !== "cms-field") ||
         selection.sectionId !== message.sectionId ||
         selection.fieldKey !== message.fieldKey ||
         selection.fieldPath !== message.fieldPath ||
@@ -10279,6 +10489,7 @@ export function VisualEditorShell({
       draggedFieldPath: string,
       targetFieldPath: string,
     ) => {
+      if (isPageStandInId(sectionId)) return;
       invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
       // The section as this page shows it: a slot its source proves is one
@@ -10481,6 +10692,8 @@ export function VisualEditorShell({
 
   const handleSectionToggleEnabled = useCallback(
     async (sectionId: string, enabled: boolean, historyGeneration?: number) => {
+      // A page stand-in is not a section: there is nothing to hide or show.
+      if (isPageStandInId(sectionId)) return;
       const generation = historyGeneration ?? freshContentSelectionGeneration();
       if (
         generation === null ||
@@ -10748,6 +10961,9 @@ export function VisualEditorShell({
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
+      if (isPageStandInId(sectionId)) {
+        throw new Error("No template owns this section.");
+      }
       // The binding, not the active template: on a page whose document is not
       // created yet that is a placeholder, and the queue creates it first.
       const boundTemplateId = sectionModel.bindings.get(sectionId)?.templateId;
@@ -10844,6 +11060,9 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
+      if (isPageStandInId(draggedSectionId) || isPageStandInId(targetSectionId)) {
+        return;
+      }
       // This page's own sections in the order it shows them, slots its source
       // proves included. A shell section is the layout's, never this page's
       // to move.
