@@ -1,9 +1,10 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import Database from "better-sqlite3";
 import {
   EDITOR_PATH,
   clickExposedElement,
@@ -85,8 +86,33 @@ const routeFor = (testCase: BasCase, mode: Mode) => ({
   routeFile: `src/routes/bas-${testCase.id}-${mode}.tsx`,
 });
 
+function findLocalD1Sqlite(stateDir: string): string | null {
+  const d1Dir = join(stateDir, "v3/d1/miniflare-D1DatabaseObject");
+  if (!existsSync(d1Dir)) return null;
+  const match = readdirSync(d1Dir).find(
+    (name) => name.endsWith(".sqlite") && name !== "metadata.sqlite",
+  );
+  return match ? join(d1Dir, match) : null;
+}
+
 /** One D1 statement against the runner-owned database, its rows as JSON. */
 async function d1(sql: string): Promise<Array<Record<string, unknown>>> {
+  const stateDir = process.env.MORPH_E2E_STATE_DIR;
+  const sqlitePath = stateDir ? findLocalD1Sqlite(stateDir) : null;
+  if (sqlitePath) {
+    const db = new Database(sqlitePath, { timeout: 10_000 });
+    try {
+      const trimmed = sql.trimStart();
+      if (/^SELECT\b/i.test(trimmed)) {
+        return db.prepare(sql).all() as Array<Record<string, unknown>>;
+      }
+      db.prepare(sql).run();
+      return [];
+    } finally {
+      db.close();
+    }
+  }
+
   const { stdout } = await promisify(execFile)(
     "npx",
     [
