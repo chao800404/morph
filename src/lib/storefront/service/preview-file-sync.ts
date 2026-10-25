@@ -57,10 +57,13 @@ export async function syncPreviewFiles(args: {
   readSaved(paths: string[]): Promise<{
     files: ReadonlyMap<string, SavedThemeFile>;
     generation: number | null;
+    /** Full same-generation source graph used only to resolve cross-file bindings. */
+    sourceFiles: readonly PreviewFileWrite[];
   }>;
   /** The passes the workspace was laid out with (bindings, hoisting). */
   prepare(
     files: readonly PreviewFileWrite[],
+    sourceFiles: readonly PreviewFileWrite[],
   ): readonly { path: string; content: unknown }[];
   isGenerated(path: string): boolean;
   write(
@@ -77,7 +80,7 @@ export async function syncPreviewFiles(args: {
   // All or nothing. A sync written in part would leave the preview showing
   // neither this tab's edit nor the newer save, and the tab would be told its
   // edit had arrived.
-  const { files: saved, generation } = await args.readSaved(
+  const { files: saved, generation, sourceFiles } = await args.readSaved(
     args.files.map((file) => file.path),
   );
   const stalePaths = stalePreviewSyncPaths(args.files, saved);
@@ -94,6 +97,7 @@ export async function syncPreviewFiles(args: {
   const writable: FencedPreviewFileWrite[] = [];
   for (const file of args.prepare(
     args.files.map(({ path, content }) => ({ path, content })),
+    sourceFiles,
   )) {
     // Left as the transport generated it. Reported apart from "unchanged":
     // one says the workspace already holds what the editor sent, the other

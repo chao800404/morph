@@ -29,8 +29,11 @@ export const EDITOR_SHARDS = [
     "object-position.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "selection-field-frame-navigated.spec.ts",
+    "code-controlled-field.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "preview-document-reload.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "spread-override-binding.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
@@ -83,6 +86,10 @@ export const EDITOR_SHARDS = [
     "auth-failure.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "code-editor-local-monaco.spec.ts",
+    // Added after the duration measurement above; B1's client-only Design
+    // acceptance runs here as well as in the dedicated full Start job.
+    "binding-acceptance-c.spec.ts",
+    "binding-acceptance-p.spec.ts",
   ],
 ];
 

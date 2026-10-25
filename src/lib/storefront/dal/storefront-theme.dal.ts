@@ -31,6 +31,12 @@ import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  analyzeB1Route,
+  findB1WriteProvenanceFailure,
+  type B1Claim,
+} from "@/lib/storefront/ast/theme-content-provenance";
+import { normalizeThemeSourcePath } from "@/lib/storefront/ast/theme-content-binding";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   isPublishAlreadyLive,
@@ -1354,11 +1360,15 @@ export const storefrontThemeDal = {
     );
     if (!targetSection) return null;
 
+    const themeSourceFiles = await listThemeSourceFiles(
+      data.storefrontId,
+      data.themeId,
+    );
     const sourceComponent = resolveSectionSourceComponent({
       templateType: template.type,
       templateRoutePath: template.routePath ?? null,
       sectionId: data.sectionId,
-      files: await listThemeSourceFiles(data.storefrontId, data.themeId),
+      files: themeSourceFiles,
       routePath: data.routePath,
     });
     if (sourceComponent.kind === "unconfirmed") {
@@ -1370,6 +1380,64 @@ export const storefrontThemeDal = {
       sourceComponent.kind === "confirmed"
         ? sourceComponent.componentRef
         : (targetSection.componentRef ?? null);
+
+    // In a route-backed Theme, derive the write mapping again from the exact
+    // source snapshot used to resolve this section. Canvas metadata is only a
+    // locator: it cannot authorize or redirect a Document write.
+    const b1ProofRequired =
+      template.type !== "layout" &&
+      sourceComponent.kind === "confirmed" &&
+      sourceComponent.callSitePath.startsWith("src/routes/");
+    let b1Claims: ReadonlyMap<
+      string,
+      Extract<B1Claim, { kind: "claim" }> | null
+    > = new Map();
+    if (b1ProofRequired) {
+      const sourceAnalysis = analyzeB1Route(
+        themeSourceFiles.filter(
+          (file): file is typeof file & { content: string } =>
+            typeof file.content === "string",
+        ),
+        sourceComponent.callSitePath,
+      );
+      const normalizedComponentPath = normalizeThemeSourcePath(
+        sourceComponent.componentSourcePath,
+      );
+      const matchingInstances = sourceAnalysis.instances.filter(
+        (instance) =>
+          instance.section === data.sectionId &&
+          instance.componentPath !== null &&
+          normalizeThemeSourcePath(instance.componentPath) ===
+            normalizedComponentPath,
+      );
+      // A confirmed route-backed section must also have one exact B1 source
+      // instance. Missing, duplicate or diagnostically ambiguous provenance
+      // leaves an empty proof map, so every capability-allowed write fails
+      // closed below; it never falls back to a name-based/legacy guess.
+      if (matchingInstances.length === 1 && sourceAnalysis.diagnostics.length === 0) {
+        const instance = matchingInstances[0]!;
+        const claimsByStoredField = new Map<
+          string,
+          Extract<B1Claim, { kind: "claim" }> | null
+        >();
+        for (const claim of Object.values(instance.claims)) {
+          if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
+            continue;
+          }
+          const previous = claimsByStoredField.get(claim.field);
+          if (previous === undefined) {
+            claimsByStoredField.set(claim.field, claim);
+          } else if (
+            previous === null ||
+            JSON.stringify(previous.conditional) !==
+              JSON.stringify(claim.conditional)
+          ) {
+            claimsByStoredField.set(claim.field, null);
+          }
+        }
+        b1Claims = claimsByStoredField;
+      }
+    }
 
     const manifestState = await env.DATABASE.prepare(
       `
@@ -1442,6 +1510,28 @@ export const storefrontThemeDal = {
       null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
+    if (b1ProofRequired) {
+      const b1Failure = findB1WriteProvenanceFailure({
+        sectionId: data.sectionId,
+        allowedFields: sectionContentFieldKeys(
+          targetSection.type,
+          resolvedComponentRef,
+          themeCapabilities,
+        ),
+        requestedFields: [
+        ...Object.keys(restProps),
+        ...(data.resetProps ?? []),
+        ],
+        claimsByStoredField: b1Claims,
+        storedProps:
+          (targetSection.props as Record<string, unknown> | null) ?? null,
+      });
+      if (b1Failure) {
+        throw new Error(
+          `${INVALID_CONTENT_FIELD_ERROR}:${b1Failure.field}:${b1Failure.reason}`,
+        );
+      }
+    }
     // Asset references are resolved against the library before anything is
     // stored: the shape validation upstream only checks that the id parses,
     // not that it names an asset of the right kind, and it takes the URL on

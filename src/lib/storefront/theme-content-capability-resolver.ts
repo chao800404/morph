@@ -4,6 +4,7 @@ import {
   readComponentContentFields,
 } from "./ast/theme-content-fields-declaration";
 import { inferThemeContentFields } from "./ast/infer-theme-content-fields";
+import type { ParsedThemeAst } from "./ast/theme-source-ast";
 import {
   isArrayContentField,
   isScalarContentField,
@@ -84,13 +85,20 @@ function resolveRowComponentPath(
  * alias keeps the folder convention from forcing authors to duplicate field
  * declarations in adapter files.
  */
-function readReExportedContentFieldsSpecifier(source: string): string | null {
+function readReExportedContentFieldsSpecifier(
+  source: string,
+  parsedAst?: ParsedThemeAst | null,
+): string | null {
   if (!source.includes("contentFields")) return null;
   try {
-    const ast = parse(source, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
+    const ast =
+      parsedAst === undefined
+        ? parse(source, {
+            sourceType: "module",
+            plugins: ["jsx", "typescript"],
+          })
+        : parsedAst;
+    if (!ast) return null;
     for (const statement of ast.program.body as any[]) {
       if (
         statement.type !== "ExportNamedDeclaration" ||
@@ -337,11 +345,13 @@ function expandReExportedContentFields({
   manifestResult,
   manifestRefsBySource,
   colocated,
+  parsedAstFor,
 }: {
   byPath: ReadonlyMap<string, string | null | undefined>;
   manifestResult: ThemeContentCapabilityParseResult;
   manifestRefsBySource: ReadonlyMap<string, string>;
   colocated: Map<string, ThemeComponentContentCapability>;
+  parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null;
 }): void {
   const filePaths = new Set(byPath.keys());
   const entries = [...byPath.entries()];
@@ -352,7 +362,10 @@ function expandReExportedContentFields({
     let changed = false;
     for (const [path, source] of entries) {
       if (typeof source !== "string") continue;
-      const specifier = readReExportedContentFieldsSpecifier(source);
+      const specifier = readReExportedContentFieldsSpecifier(
+        source,
+        parsedAstFor?.(path, source),
+      );
       if (!specifier) continue;
       const targetPath = resolveLocalModulePathFromFiles(
         path,
@@ -438,7 +451,10 @@ export function rowComponentCandidatePaths(
  */
 export function resolveThemeContentCapabilitiesFromFiles(
   themeFiles: ReadonlyArray<{ path: string; content?: string | null }>,
-  options: { includeManifestFallback?: boolean } = {},
+  options: {
+    includeManifestFallback?: boolean;
+    parsedAstFor?: (path: string, content: string) => ParsedThemeAst | null;
+  } = {},
 ): ThemeContentCapabilityResolution {
   const byPath = new Map(
     themeFiles.map((file) => [file.path.replace(/\\/g, "/"), file.content]),
@@ -485,15 +501,23 @@ export function resolveThemeContentCapabilitiesFromFiles(
       continue;
     }
     const sidecarPath = contentFieldsSidecarPath(path);
+    const parsedSourceAst = options.parsedAstFor?.(path, source);
+    const sidecarContent =
+      sidecarPath && byPath.has(sidecarPath)
+        ? (byPath.get(sidecarPath) ?? null)
+        : undefined;
+    const parsedSidecarAst =
+      options.parsedAstFor && typeof sidecarContent === "string" && sidecarPath
+        ? options.parsedAstFor(sidecarPath, sidecarContent)
+        : undefined;
     const parsed = readComponentContentFields({
       path,
       source,
+      ...(options.parsedAstFor ? { parsedSourceAst } : {}),
+      ...(options.parsedAstFor ? { parsedSidecarAst } : {}),
       // `null` for a sibling that exists but was not loaded: refused, not
       // treated as absent, or the component's own declaration would answer.
-      sidecar:
-        sidecarPath && byPath.has(sidecarPath)
-          ? (byPath.get(sidecarPath) ?? null)
-          : undefined,
+      sidecar: sidecarContent,
     });
     for (const diagnostic of parsed.diagnostics) {
       diagnostics.push(`${path}: ${diagnostic}`);
@@ -512,7 +536,10 @@ export function resolveThemeContentCapabilitiesFromFiles(
       // second contentFields declaration. The inference is intentionally
       // limited to this convention and only exposes static primitive props;
       // explicit contentFields remains authoritative for richer shapes.
-      const inferred = inferThemeContentFields(source);
+      const inferred = inferThemeContentFields(
+        source,
+        options.parsedAstFor ? parsedSourceAst : undefined,
+      );
       if (Object.keys(inferred.fields).length > 0) {
         sourceStatuses.set(path, "inferred");
         declared.set(path, inferred.fields);
@@ -536,6 +563,7 @@ export function resolveThemeContentCapabilitiesFromFiles(
     manifestResult,
     manifestRefsBySource,
     colocated,
+    parsedAstFor: options.parsedAstFor,
   });
 
   for (const path of scannedSourcePaths) {
