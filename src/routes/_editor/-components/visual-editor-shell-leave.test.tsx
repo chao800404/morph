@@ -14,7 +14,12 @@ import {
   VisualEditorShell,
   type EditorNavigationGuard,
 } from "./visual-editor-shell";
-import { createLiveFrame } from "@/lib/test-utils/preview-frame-handshake";
+import {
+  createLiveFrame,
+  frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
+} from "@/lib/test-utils/preview-frame-handshake";
 
 /**
  * Leaving, or switching pages, before a content edit's debounce has fired.
@@ -208,7 +213,7 @@ function fromPreview(data: Record<string, unknown>) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { ...data, previewSession: PREVIEW_SESSION },
+        data: frameEnvelope({ ...data, previewSession: PREVIEW_SESSION }),
         origin: PREVIEW_ORIGIN,
         source: frame?.contentWindow ?? null,
       }),
@@ -1072,6 +1077,9 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
   });
 
   it("sends the route again for another page, another document, or a new frame", async () => {
+    // A current bridge: each document names itself and answers the editor's
+    // pings (C5 option A), so a reload in the frame is a confirmed new document.
+    modelCurrentBridge();
     const twoDocuments = {
       ...context,
       templates: [
@@ -1092,6 +1100,7 @@ describe("an inline edit open when the Theme's data is fetched again", () => {
     expect(routeSyncs()[2]).toMatchObject({ templateId: "template-2", routePath: null });
 
     // The frame was rebuilt and said so: it has no route until it is told.
+    reloadFrameDocument();
     fromPreview({ type: "morph:storefront-preview-ready" });
     await act(async () => {});
     expect(routeSyncs()).toHaveLength(4);

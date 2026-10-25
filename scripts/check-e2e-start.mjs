@@ -12,7 +12,7 @@
  * is one of the listed by-design skips.
  */
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { jobBlock } from "./ci-workflow.mjs";
@@ -20,9 +20,10 @@ import {
   START_PREVIEW_EXCLUDED,
   START_PREVIEW_EXPECTED_SKIPS,
   START_PREVIEW_JOB_NAME,
-  START_PREVIEW_REPORT_PATH,
+  START_PREVIEW_SHARDS,
+  START_PREVIEW_SHARD_COUNT,
   START_PREVIEW_SPECS,
-  startPreviewCommand,
+  startPreviewFilesForShard,
 } from "./editor-e2e-start.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -40,6 +41,10 @@ export function verifyStartPlan(
   specs = START_PREVIEW_SPECS,
   excluded = START_PREVIEW_EXCLUDED,
 ) {
+  assert.ok(
+    START_PREVIEW_SHARDS.every((shard) => shard.length > 0),
+    "Empty Start shard",
+  );
   assert.ok(specs.length > 0, "The full Start job must run at least one spec");
   assert.equal(
     new Set(specs).size,
@@ -84,8 +89,17 @@ export function verifyStartWorkflow(workflow) {
   const job = jobBlock(workflow, "editor-e2e-full-start");
   const lines = job.split("\n").map((line) => line.trim());
   assert.ok(
-    lines.includes(`name: ${START_PREVIEW_JOB_NAME}`),
-    `The job must be named "${START_PREVIEW_JOB_NAME}"`,
+    lines.includes(
+      "name: Editor E2E full Start shard ${{ matrix.shard }}/" +
+        START_PREVIEW_SHARD_COUNT,
+    ),
+    "The Start shard check names must match the required-check plan",
+  );
+  const matrix = /^\s+shard: \[([^\]]+)\]$/m.exec(job);
+  assert.deepEqual(
+    matrix?.[1].split(",").map((part) => Number(part.trim())),
+    Array.from({ length: START_PREVIEW_SHARD_COUNT }, (_, index) => index + 1),
+    "The Start matrix must run every planned shard exactly once",
   );
   assert.ok(
     lines.includes("MORPH_THEME_PREVIEW_RUNTIME=start"),
@@ -96,22 +110,46 @@ export function verifyStartWorkflow(workflow) {
     "The job must set MORPH_E2E_PREVIEW_RUNTIME=start for the specs, or every Start test skips",
   );
   assert.ok(
-    lines.includes(`MORPH_E2E_REPORT_PATH: ${START_PREVIEW_REPORT_PATH}`),
-    `The job must write its report to ${START_PREVIEW_REPORT_PATH}`,
-  );
-  assert.ok(
-    lines.includes(`run: ${startPreviewCommand()}`),
-    `The job must run exactly: ${startPreviewCommand()}`,
+    lines.includes(
+      "MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json",
+    ),
+    "The job must write a separate report for each Start shard",
   );
   assert.ok(
     lines.includes(
-      `run: node scripts/check-e2e-start.mjs ${START_PREVIEW_REPORT_PATH}`,
+      "run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
+    ),
+    "The job must run the exact file plan for its shard",
+  );
+  assert.ok(
+    lines.includes(
+      "run: node scripts/check-e2e-start.mjs test-results/full-start-${{ matrix.shard }}.json ${{ matrix.shard }}",
     ),
     "The job must check its report, or a skipped Start test passes",
   );
   assert.ok(
-    !/--shard/.test(job),
-    "The full Start job runs whole files, not a shard",
+    lines.includes(
+      "name: editor-e2e-full-start-${{ matrix.shard }}-attempt-${{ github.run_attempt }}",
+    ),
+    "Each Start shard attempt must upload its own report",
+  );
+  const acceptance = jobBlock(workflow, "editor-e2e-full-start-acceptance");
+  for (const required of [
+    `name: ${START_PREVIEW_JOB_NAME}`,
+    "needs: editor-e2e-full-start",
+    "if: always()",
+    "SHARD_RESULT: ${{ needs.editor-e2e-full-start.result }}",
+    'run: test "$SHARD_RESULT" = success',
+    "pattern: editor-e2e-full-start-*-attempt-*",
+    "run: node scripts/check-e2e-start.mjs start-shard-artifacts",
+  ])
+    assert.ok(
+      acceptance.split("\n").some((line) => line.trim() === required),
+      `Missing Start acceptance wiring: ${required}`,
+    );
+  assert.ok(
+    !/--shard=/.test(job),
+    "Full Start work is allocated by whole files, not Playwright test sharding",
   );
 }
 
@@ -219,6 +257,47 @@ export function verifyStartReport(
   return { passed, skipped: expectedSkips.length };
 }
 
+/** Latest attempt for each whole-file Start shard. Refuse missing or duplicate reports. */
+export function latestStartReports(
+  directory,
+  count = START_PREVIEW_SHARD_COUNT,
+) {
+  const latest = new Map();
+  for (const artifact of readdirSync(directory)) {
+    const match = /^editor-e2e-full-start-(\d+)-attempt-(\d+)$/.exec(artifact);
+    if (!match) continue;
+    const shard = Number(match[1]);
+    const attempt = Number(match[2]);
+    assert.ok(shard >= 1 && shard <= count, `Unexpected Start shard ${shard}`);
+    const report = path.join(directory, artifact, `full-start-${shard}.json`);
+    assert.ok(
+      statSync(path.join(directory, artifact)).isDirectory(),
+      `${artifact} is not a directory`,
+    );
+    const previous = latest.get(shard);
+    if (!previous || attempt > previous.attempt)
+      latest.set(shard, { attempt, report });
+  }
+  return Array.from({ length: count }, (_, index) => {
+    const report = latest.get(index + 1)?.report;
+    assert.ok(report, `Missing report for Start shard ${index + 1}`);
+    return report;
+  });
+}
+
+export function verifyStartShardReports(directory) {
+  const reports = latestStartReports(directory);
+  return reports.map((file, index) =>
+    verifyStartReport(
+      JSON.parse(readFileSync(file, "utf8")),
+      startPreviewFilesForShard(index + 1),
+      START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
+        startPreviewFilesForShard(index + 1).includes(skip.file),
+      ),
+    ),
+  );
+}
+
 function e2eSpecSources() {
   /** @type {Record<string, string>} */
   const sources = {};
@@ -235,8 +314,19 @@ if (
 ) {
   const reportPath = process.argv[2];
   if (reportPath) {
+    if (statSync(reportPath).isDirectory()) {
+      const summaries = verifyStartShardReports(reportPath);
+      console.log(
+        `Full Start shards verified: ${summaries.map((summary) => `${summary.passed} passed/${summary.skipped} design skips`).join(", ")}`,
+      );
+      process.exit(0);
+    }
+    const shard = Number(process.argv[3]);
+    const files = startPreviewFilesForShard(shard);
     const { passed, skipped } = verifyStartReport(
       JSON.parse(readFileSync(reportPath, "utf8")),
+      files,
+      START_PREVIEW_EXPECTED_SKIPS.filter((skip) => files.includes(skip.file)),
     );
     console.log(
       `Full Start report verified: ${passed} passed, ${skipped} skipped by design, none skipped otherwise`,

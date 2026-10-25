@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { expect, test } from "@playwright/test";
+import {
+  unboundSectionsFixture,
+  UNBOUND_ROUTE,
+  UNBOUND_TITLE,
+} from "./helpers/unbound-sections";
 
 import {
   clickExposedElement,
@@ -44,6 +49,53 @@ test.describe("isolated Build Preview", () => {
   // A build compiles the whole workspace in a container, and the preview
   // then starts a second one: minutes, not seconds.
   test.setTimeout(12 * 60_000);
+
+  test("seals unbound hero and hidden slots after an unrelated content edit", async ({
+    page,
+  }) => {
+    const fixture = await unboundSectionsFixture(page);
+    await fixture.editOtherSection();
+    await page.goto(fixture.editorPath, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await enableSelection(page);
+    const build = page.locator("button[data-editor-build-action]");
+    await expect(build).toBeEnabled({ timeout: 30_000 });
+    await build.click();
+    await expect(build).toHaveAttribute("data-build-pending", "true", {
+      timeout: 30_000,
+    });
+    await expect(build).toHaveAttribute("data-build-pending", "false", {
+      timeout: 9 * 60_000,
+    });
+    const frameElement = page.locator('iframe[data-build-preview="isolated"]');
+    await expect(frameElement).toBeVisible({ timeout: 60_000 });
+    const host = new URL((await frameElement.getAttribute("src"))!).hostname;
+    expect(host).toMatch(/^bp-[0-9a-f]{40}\./);
+    const frame = () => page.frame({ url: (url) => url.hostname === host });
+    await expect.poll(frame, { timeout: 120_000 }).toBeTruthy();
+    const content = await frame()!.evaluate(async (path) => {
+      const response = await fetch(
+        `/_morph/content?path=${encodeURIComponent(path)}`,
+        { cache: "no-store" },
+      );
+      return { status: response.status, body: await response.json() };
+    }, UNBOUND_ROUTE);
+    expect(content.status).toBe(200);
+    expect(content.body).toMatchObject({
+      slots: { hero: { title: UNBOUND_TITLE, desc: "Stored description" } },
+      hiddenSlots: ["hidden"],
+    });
+    const rendered = await frame()!.evaluate(async (path) => {
+      const response = await fetch(path, { cache: "no-store" });
+      return { status: response.status, html: await response.text() };
+    }, UNBOUND_ROUTE);
+    expect(rendered.status).toBe(200);
+    expect(rendered.html).toContain(UNBOUND_TITLE);
+    expect(rendered.html).toContain('data-hidden-slots="hidden"');
+    expect((await fixture.readStored()).sections.slice(1)).toHaveLength(3);
+  });
 
   test("runs the build's own Worker on a host of its own, with the build's content", async ({
     page,

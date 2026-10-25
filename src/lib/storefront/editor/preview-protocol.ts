@@ -1,6 +1,8 @@
 import {
+  isContentBindingState,
   isContentUnavailableReason,
   isSelectionKind,
+  type ContentBindingState,
   type ContentUnavailableReason,
   type EditableDescendantField,
   type SelectionKind,
@@ -221,6 +223,21 @@ export type PreviewEditableNode = Readonly<{
 export type EditorToPreviewMessage =
   | {
       /**
+       * What this editor can read back, sent after every ready. The bridge
+       * keeps it for that document only and reports `code-default` fields
+       * after it; an older editor never sends it and gets the section.
+       */
+      type: "morph:storefront-preview-editor-capabilities";
+      capabilities: EditorCapability[];
+      /**
+       * The ready this answers, as its envelope named it. The bridge accepts
+       * the message only for its own document; an id missing, malformed or
+       * naming an older document is ignored. Round identity, not authority.
+       */
+      previewDocument: string;
+    }
+  | {
+      /**
        * Liveness probe for a preview that was ready once but may have lost its
        * sandbox port. The response is deliberately a separate message rather
        * than reusing `ready`, so readiness remains tied to document startup.
@@ -381,6 +398,8 @@ export type PreviewSelectionMessage = {
   itemId?: string | null;
   /** Why the element offers no content to edit, when the preview can say. */
   contentUnavailable?: ContentUnavailableReason | null;
+  /** Provenance for the selected value; descriptive only, never write authority. */
+  bindingState?: ContentBindingState | null;
   /** Monotonically increasing editor intent, used to reject stale replies. */
   selectionRevision?: number;
   descendantFields: readonly EditableDescendantField[];
@@ -413,8 +432,20 @@ export type PreviewSelectionMessage = {
  *   `update-selection-field` post names, and applies the post only to that
  *   section while it is the one selected.
  */
-export const PREVIEW_CAPABILITIES = ["selection-field-section"] as const;
+export const PREVIEW_CAPABILITIES = [
+  "selection-field-section",
+  "code-default-selection",
+] as const;
 export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
+
+/**
+ * What this editor can read back from a preview page. An editor names these
+ * after every ready; a bridge that does not hear `code-default-selection`
+ * reports a proven component default as the section it sits in, never as an
+ * editable field.
+ */
+export const EDITOR_CAPABILITIES = ["code-default-selection"] as const;
+export type EditorCapability = (typeof EDITOR_CAPABILITIES)[number];
 const MAX_PREVIEW_CAPABILITIES = 16;
 
 /**
@@ -1078,6 +1109,19 @@ export function parseEditorToPreviewMessage(
   if (!isRecord(value) || typeof value.type !== "string") return null;
 
   switch (value.type) {
+    case "morph:storefront-preview-editor-capabilities": {
+      if (!isPreviewDocumentId(value.previewDocument)) return null;
+      const capabilities = Array.isArray(value.capabilities)
+        ? EDITOR_CAPABILITIES.filter((known) =>
+            (value.capabilities as unknown[]).includes(known),
+          )
+        : [];
+      return {
+        type: value.type,
+        capabilities,
+        previewDocument: value.previewDocument,
+      };
+    }
     case "morph:storefront-preview-ping":
       return isSafeRevision(value.heartbeatId)
         ? { type: value.type, heartbeatId: value.heartbeatId }
@@ -1468,6 +1512,9 @@ export function parsePreviewToEditorMessage(
         (value.contentUnavailable !== undefined &&
           value.contentUnavailable !== null &&
           !isContentUnavailableReason(value.contentUnavailable)) ||
+        (value.bindingState !== undefined &&
+          value.bindingState !== null &&
+          !isContentBindingState(value.bindingState)) ||
         (value.selectionRevision !== undefined &&
           !isSafeRevision(value.selectionRevision)) ||
         descendantFields === null ||
@@ -1507,6 +1554,9 @@ export function parsePreviewToEditorMessage(
         fieldPath: value.fieldPath,
         itemId: value.itemId ?? null,
         contentUnavailable: value.contentUnavailable ?? null,
+        ...(value.bindingState === undefined
+          ? {}
+          : { bindingState: value.bindingState }),
         ...(value.selectionRevision === undefined
           ? {}
           : { selectionRevision: value.selectionRevision }),
@@ -1664,6 +1714,19 @@ function hasExpectedPreviewSession(
   );
 }
 
+/** The capabilities an announcement grants for this document, if any. */
+export function acceptedEditorCapabilities(
+  message: EditorToPreviewMessage | null,
+  documentIdentity: string,
+): EditorCapability[] {
+  if (message?.type !== "morph:storefront-preview-editor-capabilities") {
+    return [];
+  }
+  return message.previewDocument === documentIdentity
+    ? message.capabilities
+    : [];
+}
+
 export function parseEditorToPreviewEvent(
   event: MessageEvent<unknown>,
   security: PreviewMessageEventSecurity,
@@ -1706,10 +1769,31 @@ function readDocumentRect(
   return { top: value.top as number, height: value.height as number };
 }
 
-export function parsePreviewToEditorEvent(
+/**
+ * A frame→editor message with the document it came from, as its envelope
+ * names it (`postPreviewToEditorMessage`).
+ *
+ * `previewDocument` is null when the envelope names none — a page on a bridge
+ * older than the id, or the diagnostic script, which runs outside the module
+ * graph — and when what it names is not an id (`malformedDocument`). Null is
+ * unverified: it never equals an id.
+ */
+export type PreviewToEditorEnvelope = Readonly<{
+  message: PreviewToEditorMessage;
+  previewDocument: string | null;
+  malformedDocument: boolean;
+}>;
+
+/**
+ * Parses a frame→editor event with the same origin, source, session and
+ * schema checks as `parsePreviewToEditorEvent`, and reads the document id
+ * from its envelope, once, here. Per-message parsers never see it, so none of
+ * them can drop it: the message itself is unchanged.
+ */
+export function parsePreviewToEditorEnvelope(
   event: MessageEvent<unknown>,
   security: PreviewMessageEventSecurity,
-): PreviewToEditorMessage | null {
+): PreviewToEditorEnvelope | null {
   if (
     event.origin !== security.expectedOrigin ||
     event.source !== security.expectedSource ||
@@ -1717,7 +1801,24 @@ export function parsePreviewToEditorEvent(
   ) {
     return null;
   }
-  return parsePreviewToEditorMessage(event.data);
+  const message = parsePreviewToEditorMessage(event.data);
+  if (!message) return null;
+  const named = "previewDocument" in event.data;
+  const previewDocument = isPreviewDocumentId(event.data.previewDocument)
+    ? event.data.previewDocument
+    : null;
+  return {
+    message,
+    previewDocument,
+    malformedDocument: named && previewDocument === null,
+  };
+}
+
+export function parsePreviewToEditorEvent(
+  event: MessageEvent<unknown>,
+  security: PreviewMessageEventSecurity,
+): PreviewToEditorMessage | null {
+  return parsePreviewToEditorEnvelope(event, security)?.message ?? null;
 }
 
 export function readPreviewRuntimeChannel(
@@ -1809,6 +1910,49 @@ export function postEditorToPreviewMessage(
   );
 }
 
+/** This document's id, once minted. */
+let documentIdentity: string | null = null;
+
+/**
+ * The id of the preview document this module runs in: one per document,
+ * minted on first use.
+ *
+ * Module-level, so it lives exactly as long as the module: the Theme bridge,
+ * its content module and its height reporter import one copy of this module
+ * per page, and the built-in route imports it directly, so an effect that
+ * runs again (or a StrictMode remount) in the same document keeps it, and a
+ * reloaded page has a new one. The editor uses it to tell a ready from a new
+ * document apart from the same document announcing itself again, and to drop
+ * a message a replaced document sent late (C5).
+ *
+ * Not a secret and not a capability: the channel's origin, source and
+ * session checks are unchanged. `crypto.getRandomValues`, not `randomUUID`,
+ * which needs a secure context a preview served over plain HTTP on a LAN
+ * address is not.
+ */
+export function documentPreviewIdentity(): string {
+  if (documentIdentity === null) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    documentIdentity = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
+  return documentIdentity;
+}
+
+const PREVIEW_DOCUMENT_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/** Whether `value` is a document id as `documentPreviewIdentity` mints one. */
+export function isPreviewDocumentId(value: unknown): value is string {
+  return typeof value === "string" && PREVIEW_DOCUMENT_ID_PATTERN.test(value);
+}
+
+/**
+ * Every frame→editor message goes through here, so every one carries this
+ * document's id on its envelope, after the message's own fields: a message
+ * cannot name another document.
+ */
 export function postPreviewToEditorMessage(
   message: PreviewToEditorMessage,
   channel = documentPreviewRuntimeChannel(),
@@ -1821,7 +1965,11 @@ export function postPreviewToEditorMessage(
     return;
   }
   window.parent.postMessage(
-    { ...message, previewSession: channel.previewSession },
+    {
+      ...message,
+      previewSession: channel.previewSession,
+      previewDocument: documentPreviewIdentity(),
+    },
     channel.targetOrigin,
   );
 }

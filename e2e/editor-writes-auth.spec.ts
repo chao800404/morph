@@ -12,6 +12,7 @@ import {
   openHeroInCode,
   sharedEditor,
   signedInEditor,
+  isServerFn,
   signOut,
   signIn,
   email,
@@ -135,9 +136,27 @@ test.describe("unsaved work when the signed-in account changes", () => {
       );
 
       // Signed in, still not allowed: checking again keeps it paused.
+      // The text is already present before checking. Wait for this check's
+      // Theme read to be refused, then for its UI to settle, before granting
+      // access; otherwise the in-flight check can observe the restored role.
+      const deniedCheck = page
+        .waitForRequest((request) =>
+          isServerFn(request.url(), "getStorefrontThemeEditor"),
+        )
+        .then((request) => request.response());
       await pausedNotice(page)
         .getByRole("button", { name: "Check again" })
         .click();
+      const deniedResponse = await deniedCheck;
+      expect(deniedResponse).not.toBeNull();
+      expect(await deniedResponse!.text()).toContain("ACCESS_DENIED");
+      await expect(pausedNotice(page)).toHaveAttribute(
+        "data-editor-writes-paused",
+        "none",
+      );
+      await expect(
+        pausedNotice(page).getByRole("button", { name: "Check again" }),
+      ).toBeEnabled();
       await expect(pausedNotice(page)).toContainText(
         "Your account cannot change this Theme",
       );

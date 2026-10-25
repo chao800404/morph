@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { EDITOR_PATH, openEditor } from "./helpers";
+import { readMonacoModel, setMonacoModelValue } from "./helpers/monaco-models";
 
 test.skip(!EDITOR_PATH, "Requires the disposable editor store.");
 
@@ -33,26 +34,11 @@ test("Code creates and edits public text as validated bytes, then reopens the sa
   await name.press("Enter");
   expect((await (await created).json()).success).toBe(true);
   await expect
-    .poll(() =>
-      page.evaluate((target) => {
-        const model = (window as any).monaco?.editor
-          .getModels()
-          .find((model: any) => model.uri.path.endsWith(`/${target}`));
-        return model?.getValue();
-      }, path),
-    )
+    .poll(() => readMonacoModel(page, `/${path}`))
     .toBe("{}\n");
   const content = '{"title":"中文","items":[1,2]}\n';
   const saved = writeResponse();
-  await page.evaluate(
-    ({ path, content }) => {
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(`/${path}`))
-        .setValue(content);
-    },
-    { path, content },
-  );
+  await setMonacoModelValue(page, `/${path}`, content);
   await page.keyboard.press("Control+s");
   const response = await saved;
   expect(response.status()).toBe(200);
@@ -85,17 +71,6 @@ test("Code creates and edits public text as validated bytes, then reopens the sa
     .getByText("e2e-code-data.json", { exact: true })
     .click({ timeout: 15_000 });
   await expect
-    .poll(
-      () =>
-        page.evaluate(
-          (target) =>
-            (window as any).monaco?.editor
-              .getModels()
-              .find((model: any) => model.uri.path.endsWith(`/${target}`))
-              ?.getValue(),
-          path,
-        ),
-      { timeout: 30_000 },
-    )
+    .poll(() => readMonacoModel(page, `/${path}`), { timeout: 30_000 })
     .toBe(content);
 });
