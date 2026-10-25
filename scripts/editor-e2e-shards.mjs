@@ -34,6 +34,8 @@ export const EDITOR_SHARDS = [
     "preview-document-reload.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "spread-override-binding.spec.ts",
+    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
+    "binding-acceptance-p.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
@@ -50,6 +52,8 @@ export const EDITOR_SHARDS = [
     "public-root-url.spec.ts",
     "public-text-code.spec.ts",
     "catalog.spec.ts",
+    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
+    "binding-acceptance-c.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
@@ -86,10 +90,6 @@ export const EDITOR_SHARDS = [
     "auth-failure.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "code-editor-local-monaco.spec.ts",
-    // Added after the duration measurement above; B1's client-only Design
-    // acceptance runs here as well as in the dedicated full Start job.
-    "binding-acceptance-c.spec.ts",
-    "binding-acceptance-p.spec.ts",
   ],
 ];
 
