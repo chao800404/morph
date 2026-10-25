@@ -185,6 +185,7 @@ import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffer
 import {
   createSentCodeWrites,
   draftAfterConfirmedWrite,
+  draftAfterLostWriteSettled,
   syncBufferToServer,
 } from "@/lib/storefront/editor/code-save-confirmation";
 import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
@@ -1432,8 +1433,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       // consumers without that boundary still need the full restart hook.
       if (!onSaveFile || isThemePublicPath(saved.path)) onRestartPreview?.();
     },
-    onSettled: (_saved, _error, variables) => {
-      sentWritesRef.current.answered(variables);
+    onSettled: (_saved, error, variables) => {
+      const file = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        variables.path
+      ];
+      // No answer came, and the store holds it as unconfirmed: whether it
+      // landed is found out later, and that finding confirms only this write.
+      if (error && file?.unconfirmedContent === variables.content) {
+        sentWritesRef.current.lost(variables);
+      } else {
+        sentWritesRef.current.answered(variables);
+      }
     },
     onError: (err, variables) => {
       if (isEditorWritePaused(err)) {
@@ -2997,10 +3009,29 @@ const EditorCodeWorkspaceContent = forwardRef<
     );
 
     return useThemeWorkspaceStore.subscribe(() => {
-      const next = useThemeWorkspaceStore
-        .getState()
-        .getDirtyFiles(workspaceScope);
-      syncCombinedDirtyPaths(next);
+      const state = useThemeWorkspaceStore.getState();
+      const workspaceFiles = state.getWorkspaceFiles(
+        workspaceScope.storefrontId,
+        workspaceScope.themeId,
+      );
+      // A lost write's outcome became known (a reload or `confirmLostSave`).
+      // Decided here, as the store changes and for every file, before the
+      // editor renders on the new baseline — as `onSuccess` does for an
+      // answered write.
+      for (const write of sentWritesRef.current.settleLost(
+        (lost) =>
+          workspaceFiles[lost.path]?.unconfirmedContent === lost.content,
+      )) {
+        const draft = draftAfterLostWriteSettled({
+          lost: write.content,
+          serverContent: workspaceFiles[write.path]?.serverContent,
+          draft: draftContentsRef.current[write.path],
+        });
+        if (draft !== "untouched") {
+          draftDirtyRef.current[write.path] = draft === "dirty";
+        }
+      }
+      syncCombinedDirtyPaths(state.getDirtyFiles(workspaceScope));
     });
   }, [syncCombinedDirtyPaths, workspaceScope]);
 
