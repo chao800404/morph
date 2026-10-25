@@ -3,6 +3,7 @@ import {
   collectPreviewEditableNodes,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
+  selectionForEditor,
 } from "./preview-dom";
 
 afterEach(() => {
@@ -37,6 +38,51 @@ describe("preview section-root selection", () => {
     expect(selected?.section).toBe(section);
     expect(selected?.sectionId).toBe("starter-introduction");
     expect(selected?.type).toBe("section");
+  });
+
+  it("reports a binding state from the selected value within its section", () => {
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = `
+      <h1 data-morph-loc="src/Hero.tsx:4:3"
+        data-storefront-field="title" data-morph-binding-state="derived">
+        Greeting
+      </h1>
+    `;
+    document.body.appendChild(section);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBe("derived");
+  });
+
+  it("does not inherit a binding state from a different preview section", () => {
+    const outer = document.createElement("div");
+    outer.dataset.morphBindingState = "untraced";
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = '<h1 data-morph-loc="src/Hero.tsx:4:3">Title</h1>';
+    outer.appendChild(section);
+    document.body.appendChild(outer);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBeUndefined();
+  });
+
+  it("ignores unknown binding states rather than forwarding them", () => {
+    const section = document.createElement("section");
+    section.dataset.storefrontSectionId = "hero";
+    section.innerHTML = `
+      <h1 data-morph-loc="src/Hero.tsx:4:3" data-morph-binding-state="editable">
+        Title
+      </h1>
+    `;
+    document.body.appendChild(section);
+
+    const selected = resolveSelectable(section.querySelector("h1"));
+
+    expect(selected?.bindingState).toBeUndefined();
   });
 
   it("resolves the platform route marker as a selectable page root", () => {
@@ -247,5 +293,46 @@ describe("an authored id as an identity", () => {
     const titles = nodes.filter((node) => node.htmlId === "title");
     expect(titles).toHaveLength(2);
     expect(titles.every((node) => node.id.startsWith("list:item:"))).toBe(true);
+  });
+});
+
+describe("a proven code default and an editor without the capability", () => {
+  const fieldItem = () => {
+    const route = document.createElement("main");
+    route.dataset.morphComponent = "HomeRoute";
+    route.dataset.morphSourceFile = "src/routes/index.tsx";
+    route.dataset.morphLoc = "src/routes/index.tsx:16:5";
+    const section = document.createElement("div");
+    section.dataset.storefrontSectionId = "hero";
+    section.style.display = "contents";
+    const heading = document.createElement("h1");
+    heading.dataset.storefrontField = "title";
+    heading.dataset.morphBindingState = "code-default";
+    heading.dataset.morphLoc = "src/components/Hero.tsx:8:7";
+    section.appendChild(heading);
+    route.appendChild(section);
+    document.body.appendChild(route);
+    return { section, field: resolveSelectable(heading)! };
+  };
+
+  it("reports the section itself, with no field, path or descendant fields", () => {
+    const { section, field } = fieldItem();
+    expect(field.bindingState).toBe("code-default");
+    const report = selectionForEditor(field, false);
+    expect(report).not.toBe(field);
+    expect(report.element).toBe(section);
+    expect(report.section).toBe(section);
+    expect(report.sectionId).toBe("hero");
+    expect(report.fieldKey).toBeNull();
+    expect(report.fieldPath).toBeNull();
+    expect(report.field).toBeNull();
+    expect(report.descendantFields).toEqual([]);
+    expect(report.bindingState).toBeUndefined();
+    expect(report.elementKey).toBeNull();
+  });
+
+  it("keeps the field when the editor announced the capability", () => {
+    const { field } = fieldItem();
+    expect(selectionForEditor(field, true)).toBe(field);
   });
 });

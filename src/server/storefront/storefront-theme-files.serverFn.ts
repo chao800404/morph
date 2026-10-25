@@ -56,6 +56,7 @@ import { commerceAdminMiddleware } from "../middleware/auth.middleware";
 import { isEditablePublicTextPath, projectPublicTextFile } from "@/lib/storefront/editor/public-text-file";
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
+import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
 
 function rejectLegacyManifestDeletion() {
   return fail(
@@ -610,6 +611,130 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
     }
     if (isThemeAuthoringRefusedPath(data.path)) {
       return rejectAuthoringRefusedPath(data.path);
+    }
+    if (data.operation === "code-default" || data.codeDefault !== undefined) {
+      if (
+        data.operation !== "code-default" ||
+        !data.codeDefault ||
+        data.expectMissing ||
+        !data.expectedFileId ||
+        data.expectedVersion === undefined ||
+        (data.codeDefault.componentPath !== undefined &&
+          data.codeDefault.componentPath !== data.path)
+      ) {
+        return fail(
+          "Code-default writes require operation 'code-default' paired with a complete codeDefault proof on an existing component file.",
+          { error: "SOURCE_DEFAULT_PROOF_REQUIRED" },
+        );
+      }
+      try {
+        const [files, currentGen] = await Promise.all([
+          themeSourceStore.listFiles(data.storefrontId, data.themeId),
+          themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+        ]);
+        if (currentGen === null) {
+          return fail("Theme not found or does not belong to storefront.", {
+            error: "THEME_NOT_FOUND",
+          });
+        }
+        if (currentGen !== data.expectedSourceGeneration) {
+          return fail(
+            `Remote source changes detected (current generation: ${currentGen}): the theme working source was updated by another operation.`,
+            { error: "SOURCE_GENERATION_CONFLICT" },
+          );
+        }
+        const currentFile = files.find((file) => file.path === data.path);
+        if (
+          !currentFile ||
+          currentFile.id !== data.expectedFileId ||
+          currentFile.version !== data.expectedVersion
+        ) {
+          return fail(
+            "Version conflict detected: file was modified by another operation.",
+            { error: "FILE_VERSION_CONFLICT" },
+          );
+        }
+        const genAfterRead = await themeSourceStore.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        );
+        if (genAfterRead !== data.expectedSourceGeneration) {
+          return fail(
+            `Remote source changes detected (current generation: ${genAfterRead ?? "unknown"}): the theme working source was updated by another operation.`,
+            { error: "SOURCE_GENERATION_CONFLICT" },
+          );
+        }
+
+        const proof = proveAndPatchSourceDefault({
+          files,
+          componentSourcePath: data.path,
+          componentName: data.codeDefault.componentName,
+          fieldKey: data.codeDefault.fieldKey,
+          expectedCurrentDefault: data.codeDefault.expectedCurrentDefault,
+          value: data.codeDefault.value,
+        });
+        if (proof.status === "refused") {
+          return fail(proof.message, { error: proof.error });
+        }
+        if (proof.noop) {
+          return ok(
+            "Theme file saved",
+            Object.assign(
+              { ...currentFile },
+              { sourceGeneration: currentGen, noop: true as const },
+            ),
+          );
+        }
+
+        const saved = await themeSourceStore.saveFile(
+          data.storefrontId,
+          data.themeId,
+          data.path,
+          proof.nextContent,
+          data.mimeType ?? currentFile.mimeType,
+          {
+            expectedFileId: data.expectedFileId,
+            expectedVersion: data.expectedVersion,
+            expectMissing: false,
+            expectedSourceGeneration: data.expectedSourceGeneration,
+            createRevision: data.createRevision,
+            revisionMessage:
+              data.revisionMessage ??
+              `Update ${data.codeDefault.fieldKey} default in ${data.path}`,
+            createdBy: context.user?.id,
+          },
+        );
+        return ok("Theme file saved", saved);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+        ) {
+          const latestGen = await themeSourceStore.getSourceGeneration(
+            data.storefrontId,
+            data.themeId,
+          );
+          return fail(
+            `Remote source changes detected (current generation: ${latestGen ?? "unknown"}): the theme working source was updated by another operation.`,
+            { error: "SOURCE_GENERATION_CONFLICT" },
+          );
+        }
+        if (
+          error instanceof Error &&
+          error.message.includes("CONFLICT_VERSION_MISMATCH")
+        ) {
+          return fail(
+            "Version conflict detected: file was modified by another operation.",
+            { error: "FILE_VERSION_CONFLICT" },
+          );
+        }
+        return failure(
+          "Save theme file code-default error",
+          error,
+          "SAVE_FAILED",
+          "Failed to save theme file default",
+        );
+      }
     }
     try {
       const saved = await themeSourceStore.saveFile(

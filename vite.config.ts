@@ -12,6 +12,7 @@ import {
   isDevPreviewHost,
 } from "./src/server/dev-preview-passthrough";
 import { e2eWorkerConfig } from "./src/server/e2e-container-isolation";
+import { browserOnlyServerGuard } from "./src/lib/build/browser-only-server-guard";
 
 /**
  * Workaround for upstream TanStack Start bug (TanStack/router#6609):
@@ -233,6 +234,7 @@ const config = defineConfig({
     }),
     viteReact(),
     morphServerOutput(),
+    browserOnlyServerGuard(),
   ],
   environments: {
     // Source maps for the server chunks, which `morphServerOutput` prints
@@ -299,6 +301,40 @@ const config = defineConfig({
   },
   optimizeDeps: {
     exclude: ["vinxi/http"],
+    include: [
+      /**
+       * Optimized at dev-server start, not when first met.
+       *
+       * No client module imports `buffer`. TanStack Start's dev-styles walk
+       * (`findModuleDeps` in @tanstack/start-plugin-core) resolves every import
+       * URL in the module graph of a route it server-renders, in the client
+       * environment too, and some routes' graphs carry a bare `buffer` import
+       * (first met on /dashboard/assets/create). Resolved there for the first
+       * time, Vite registers it as a new dependency, re-optimizes and fully
+       * reloads every open page. In the E2E suite that reload landed during
+       * media-svg's upload and lost the navigation after it (#285, shard 6).
+       * Listing it here optimizes it with everything else at start.
+       */
+      "buffer",
+      /**
+       * Code mode's bundled Monaco (editor-code-monaco-runtime.ts), named so
+       * the dev server optimizes it at start. It is reached only through a
+       * dynamic import on entering Code mode; discovered then instead, the new
+       * dependencies would make Vite reload the editor page mid-session.
+       */
+      "@monaco-editor/react",
+      "monaco-editor/esm/vs/editor/edcore.main.js",
+      "monaco-editor/esm/vs/editor/editor.api.js",
+      "monaco-editor/esm/vs/language/css/monaco.contribution.js",
+      "monaco-editor/esm/vs/language/html/monaco.contribution.js",
+      "monaco-editor/esm/vs/language/json/monaco.contribution.js",
+      "monaco-editor/esm/vs/language/typescript/monaco.contribution.js",
+      "monaco-editor/esm/vs/basic-languages/css/css.contribution.js",
+      "monaco-editor/esm/vs/basic-languages/html/html.contribution.js",
+      "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js",
+      "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js",
+      "monaco-editor/esm/vs/basic-languages/xml/xml.contribution.js",
+    ],
   },
 });
 

@@ -25,7 +25,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,6 +213,29 @@ let machineLock = null;
 
 function log(message) {
   console.log(`[e2e] ${message}`);
+}
+
+function parseLateDependencyReoptimization(line) {
+  // The startup message is intentionally not one of these two event forms.
+  const optimized = /new dependencies optimized:\s*(.*?)\s*$/i.exec(line);
+  const reloading = /optimized dependencies changed\.\s*reloading/i.test(line);
+  if (!optimized && !reloading) return null;
+
+  const environment = /\((client|ssr)\)/i.exec(line)?.[1]?.toLowerCase() ?? null;
+  const dependencies = optimized
+    ? optimized[1]
+        .split(",")
+        .map((dependency) => dependency.trim())
+        .filter(Boolean)
+    : null;
+
+  return {
+    environment,
+    dependencies,
+    kind: optimized
+      ? "dependencies-optimized"
+      : "optimized-dependencies-reloading",
+  };
 }
 
 /**
@@ -925,6 +948,9 @@ async function main() {
     log(`this run's containers are named ${containerPrefix}*`);
   }
 
+  const lateDependencyReoptimizations = [];
+  let suiteStarted = false;
+
   log(`starting the dev server on ${DEV_PORT}`);
   start(
     "dev server",
@@ -940,6 +966,21 @@ async function main() {
         : {}),
     },
     (line) => {
+      if (suiteStarted) {
+        const event = parseLateDependencyReoptimization(line);
+        if (event) {
+          const recorded = {
+            timestamp: new Date().toISOString(),
+            ...event,
+            // The CLI selection names the requested suite, not the active test:
+            // Playwright may run setup and transport specs first. This runner
+            // has no reliable live-test signal, so do not guess.
+            spec: "unknown",
+          };
+          lateDependencyReoptimizations.push(recorded);
+          log(`late-reoptimize ${JSON.stringify(recorded)}`);
+        }
+      }
       if (!line.includes("storefront.theme.build.timings")) return;
       // The line is JSON inside whatever the dev server wraps around it, so the
       // object is taken from the first brace rather than by parsing the line.
@@ -962,6 +1003,9 @@ async function main() {
   const report = process.env.MORPH_E2E_REPORT_PATH
     ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
     : path.join(stateDir, "playwright-report.json");
+  // Playwright owns its JSON schema and contents. Keep these runner diagnostics
+  // in a sibling artifact instead of modifying Playwright's report in place.
+  const lateReoptimizationReport = `${report}.late-dependency-reoptimizations.json`;
   await mkdir(path.dirname(report), { recursive: true });
   const reporting = extra.some((argument) => argument.startsWith("--reporter"))
     ? []
@@ -969,19 +1013,43 @@ async function main() {
   log(`running playwright${extra.length ? ` (${extra.join(" ")})` : ""}`);
   const suite = ["playwright", "test", "--project=editor"];
   suite.push(...reporting, ...selection);
-  await runWhileServing("playwright", "npx", suite, {
-    // Asserted as a precondition, so a run that silently fell back to the
-    // container transport fails instead of passing for the wrong reason.
-    E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
-    MORPH_E2E_STATE_DIR: stateDir,
-    PLAYWRIGHT_JSON_OUTPUT_NAME: report,
-    MORPH_E2E_HANDOFF: path.join(stateDir, HANDOFF_FILE),
-    // Without this the port guard's own escape hatch does not work: the script
-    // would move the dev server to `MORPH_E2E_PORT` and leave the suite calling
-    // the default origin, which is whatever is already listening on 3000 — the
-    // developer's own server, which is the thing the guard exists to avoid.
-    E2E_BASE_URL: DEV_ORIGIN,
-  });
+  // This existing log is the runner's boundary: dependency messages from Vite
+  // before Playwright is launched are startup work and are not late events.
+  suiteStarted = true;
+  try {
+    await runWhileServing("playwright", "npx", suite, {
+      // Asserted as a precondition, so a run that silently fell back to the
+      // container transport fails instead of passing for the wrong reason.
+      E2E_EXPECT_PREVIEW_TRANSPORT: TRANSPORT,
+      MORPH_E2E_STATE_DIR: stateDir,
+      PLAYWRIGHT_JSON_OUTPUT_NAME: report,
+      MORPH_E2E_HANDOFF: path.join(stateDir, HANDOFF_FILE),
+      // Without this the port guard's own escape hatch does not work: the script
+      // would move the dev server to `MORPH_E2E_PORT` and leave the suite calling
+      // the default origin, which is whatever is already listening on 3000 — the
+      // developer's own server, which is the thing the guard exists to avoid.
+      E2E_BASE_URL: DEV_ORIGIN,
+    });
+  } finally {
+    suiteStarted = false;
+    try {
+      await writeFile(
+        lateReoptimizationReport,
+        `${JSON.stringify(
+          { lateDependencyReoptimizations },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      // Recording is observational. A diagnostics artifact failure must not
+      // change the Playwright result or this runner's exit status.
+      console.error(
+        `[e2e] could not write late dependency report: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+  }
 
   await verifyPublishedRelease();
 

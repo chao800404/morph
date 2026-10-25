@@ -54,12 +54,12 @@ import {
 } from "@/lib/storefront/editor/selection-style-preview";
 import {
   applyPreviewSectionProps,
-  PREVIEW_CAPABILITIES,
   parseEditorToPreviewWindowEvent,
   postPreviewToEditorMessage,
   type PreviewSectionProps,
   type PreviewSelectionRestoreTarget,
 } from "@/lib/storefront/editor/preview-protocol";
+import { CLIENT_ONLY_PREVIEW_CAPABILITIES } from "@/lib/storefront/editor/preview-capabilities";
 import {
   isCompatibleReorderTarget,
   reorderCommitFor,
@@ -2114,7 +2114,7 @@ export function useStorefrontPreviewSelectionBridge(enabled: boolean) {
     // tool into a listener gap and left the toolbar and canvas out of sync.
     postPreviewToEditorMessage({
       type: "morph:storefront-preview-ready",
-      capabilities: [...PREVIEW_CAPABILITIES],
+      capabilities: [...CLIENT_ONLY_PREVIEW_CAPABILITIES],
     });
     /**
      * Clears the drag-time inline styles one frame after the source styles land.

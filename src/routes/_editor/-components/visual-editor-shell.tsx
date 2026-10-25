@@ -35,6 +35,13 @@ import {
   type SnapshotSection,
 } from "@/lib/storefront/editor/content-write-snapshot";
 import { scheduleDeferredWrite } from "@/lib/storefront/editor/deferred-write";
+import {
+  initialDeferralState,
+  stepDeferral,
+  type DeferralEvent,
+  type PreviewUpdateEntry,
+  type RebuildSource,
+} from "@/lib/storefront/editor/preview-update-queue";
 import { createDebouncedWrites } from "@/lib/storefront/editor/debounced-writes";
 import {
   createEditorLeaveGuard,
@@ -241,7 +248,20 @@ import type {
 
 import { reportAuthenticatedUserActivity } from "@/lib/auth/idle-activity";
 import {
-  patchComponentDefaultProp,
+  codeComponentSourcePath,
+  sourceDefaultRefusalReader,
+} from "@/lib/storefront/editor/source-default-control";
+import {
+  patchStringLiteralAt,
+  resolveSourceDefaultNode,
+} from "@/lib/storefront/editor/source-default-node";
+import type { CodeDefaultWriteProof } from "@/lib/validations/storefront-theme-file";
+import {
+  acceptsPageStandIn,
+  isDocumentWriteTarget,
+  isPageStandInId,
+} from "@/lib/storefront/editor/page-stand-in";
+import {
   patchElementClassNameResult,
   removeJsxElement,
   swapSiblingMorphNodes,
@@ -312,6 +332,7 @@ import {
 } from "@/lib/storefront/editor/preview-content-sync";
 import { getStorefrontPreviewCatalog } from "@/server/storefront/storefront-catalog.serverFn";
 import {
+  EDITOR_CAPABILITIES,
   parsePreviewSectionProps,
   parsePreviewServedInstance,
   type PreviewCapability,
@@ -493,6 +514,13 @@ function borrowableTemplate<
  */
 export const INLINE_TEXT_REFUSED_MESSAGE =
   "This text can't be edited safely in place. Use the content fields on the right.";
+/**
+ * Said instead when the right-hand field is not offered either: the text is a
+ * component default the page overrides, or may override, in code
+ * (`source-default-control.ts`).
+ */
+export const INLINE_TEXT_CODE_CONTROLLED_MESSAGE =
+  "This text is controlled by code, so it can't be edited here or in the content fields. Edit it in Code.";
 /** Said when an inline edit arrives after the stored value moved under it. */
 export const INLINE_TEXT_NOT_SAVED_MESSAGE =
   "Your text was not saved: the field changed while you were typing. Use the content fields on the right.";
@@ -523,6 +551,15 @@ export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
  */
 export const LIVE_TYPING_UNAVAILABLE_MESSAGE =
   "Live preview typing unavailable — reload the preview to restore";
+/**
+ * Shown near the preview when a frame on a bridge older than document
+ * identity said it is ready again on the same frame: the editor cannot
+ * confirm which document that is, so it takes nothing from it — no edit is
+ * ended, no replay touched — and asks the author to reload instead. Never an
+ * automatic reload.
+ */
+export const PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE =
+  "Preview reloaded itself on an older bridge — reload the preview";
 /**
  * Said, without interrupting, when the preview's dev server was replaced
  * while text is being typed on the canvas: the canvas is kept until the text
@@ -2640,10 +2677,60 @@ export function VisualEditorShell({
   /** The finish this editor asked for and has not seen answered; one at most. */
   const inlineFinishRequestRef = useRef<InlineFinishRequest | null>(null);
   const inlineFinishSequenceRef = useRef(0);
+  /**
+   * C5: canvas posts held while an inline edit is open
+   * (`preview-update-queue.ts`). A content post that re-renders the section
+   * being typed in can take the edited element away, so `update-section-props`
+   * and `update-selection-field` posts are held, as composed, and sent in
+   * their order when the edit ends, each through its own poster then. Only
+   * the messages wait: what is saved, pending or accepted is not touched.
+   */
+  const canvasDeferralRef = useRef(initialDeferralState(previewKey));
+  /** Sends one post the deferral released; assigned below, beside the posters. */
+  const sendReleasedCanvasPostRef = useRef<(entry: PreviewUpdateEntry) => void>(
+    () => {},
+  );
+  /** Where a committed section is rebuilt from at flush; assigned below. */
+  const canvasRebuildSourceRef = useRef<RebuildSource>({
+    storedCopy: () => undefined,
+    pendingProps: () => undefined,
+  });
+  /** The page on screen: a held post is sent only to the page it was made for. */
+  const canvasScopeRef = useRef("");
+  canvasScopeRef.current = `${activeTemplate?.id ?? ""}\u0000${search.routePath ?? "/"}`;
+  const stepCanvasDeferral = useCallback((event: DeferralEvent) => {
+    const step = stepDeferral(canvasDeferralRef.current, event, {
+      compact: true,
+      rebuildFrom: canvasRebuildSourceRef.current,
+      inScope: (scope) => scope === canvasScopeRef.current,
+    });
+    canvasDeferralRef.current = step.state;
+    for (const entry of step.output.posts) {
+      sendReleasedCanvasPostRef.current(entry);
+    }
+    return step.output;
+  }, []);
+  /** Holds `entry` when an inline edit is open; false when it is to be posted now. */
+  const holdCanvasPost = useCallback(
+    (entry: PreviewUpdateEntry) => {
+      if (!canvasDeferralRef.current.open) return false;
+      stepCanvasDeferral({ type: "post", entry });
+      return true;
+    },
+    [stepCanvasDeferral],
+  );
   const reportInlineEdit = useCallback((editing: boolean, finished = true) => {
     inlineEditOpenRef.current = editing;
     setInlineEditOpen(editing);
-    if (editing) return;
+    if (editing) {
+      stepCanvasDeferral({ type: "editing", editing: true });
+      return;
+    }
+    // What the edit held goes to the canvas first, in order, before anything
+    // below can replace the frame; an edit that was lost discards it.
+    stepCanvasDeferral(
+      finished ? { type: "editing", editing: false } : { type: "lost" },
+    );
     // The edit is over: a commit arriving now answers nothing.
     inlineFinishRequestRef.current = null;
     for (const ended of inlineEditEndedRef.current) ended(finished);
@@ -2653,13 +2740,16 @@ export function VisualEditorShell({
     // So can a frame reload held for the same reason. Any commit of the edit
     // arrived before this (the page sends it first) and is already pending.
     previewInstanceWatchRef.current?.editEnded();
-  }, []);
+  }, [stepCanvasDeferral]);
   // A new preview document has no edit open, whatever the last one said.
   // An edit that was open went with the old one, unfinished: a frame
   // replaced while the author is finishing it must not read as finished.
+  // What it held is discarded with it, and so is a replay armed for the
+  // frame before.
   useEffect(() => {
+    stepCanvasDeferral({ type: "key-change", previewKey });
     reportInlineEdit(false, false);
-  }, [previewKey, reportInlineEdit]);
+  }, [previewKey, reportInlineEdit, stepCanvasDeferral]);
   const previewKeyRef = useRef(previewKey);
   previewKeyRef.current = previewKey;
   /**
@@ -2679,15 +2769,16 @@ export function VisualEditorShell({
   /**
    * What the frame said about itself on its latest ready, for that frame and
    * round only: what it can do (`PREVIEW_CAPABILITIES`), and `documentId`,
-   * reserved for the frame's document identity (C5) and not read yet. No
-   * record for the frame and round on screen, or a capability it did not
-   * name, is unsupported: absent never matches.
+   * the document that ready came from (C5, `classifyPreviewDocument`); null
+   * for a ready that named none, which is unverified. No record for the
+   * frame and round on screen, or a capability it did not name, is
+   * unsupported: absent never matches.
    */
   const previewFrameRecordRef = useRef<{
     previewKey: string;
     readyRound: number;
     capabilities: ReadonlySet<PreviewCapability>;
-    documentId: null;
+    documentId: string | null;
   } | null>(null);
   /** Whether the frame on screen said, in this round, that it can `capability`. */
   const frameCan = useCallback((capability: PreviewCapability) => {
@@ -3997,10 +4088,32 @@ export function VisualEditorShell({
     key: string;
     watchdog: PreviewFrameLoadWatchdog;
   } | null>(null);
+  /**
+   * The frame on screen, while it is one on an older bridge that said it is
+   * ready again: what it now shows cannot be confirmed, so nothing was taken
+   * from it, and the author is asked to reload. Null otherwise.
+   */
+  const [olderBridgeReloaded, setOlderBridgeReloaded] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    setOlderBridgeReloaded(null);
+  }, [previewKey]);
+  // Takes a frame message only from the document the frame shows (C5): a
+  // ready only once the active document confirmed it (option A).
+  // `previewDocumentOf` says, for a ready, which document it is.
   const {
     parseMessage: parseLivePreviewMessage,
     postMessage: postEditorToPreviewMessage,
-  } = useLivePreviewMessageBridge(livePreviewChannel, previewIframeRef);
+    previewDocumentOf,
+  } = useLivePreviewMessageBridge(
+    livePreviewChannel,
+    previewIframeRef,
+    () => previewKeyRef.current,
+    {
+      onUnconfirmableReady: () => setOlderBridgeReloaded(previewKeyRef.current),
+    },
+  );
 
   /**
    * The selection round trip's own state, kept out of this component: which
@@ -4142,6 +4255,36 @@ export function VisualEditorShell({
     }) => void
   >(() => {});
   /**
+   * What to say when the canvas would not open text for typing. It points to
+   * the right-hand field only where the panel offers one: a Document field, or
+   * a component default the canvas really shows. Asked as the panel asks.
+   */
+  const inlineTextRefusedMessageRef = useRef<
+    (sectionId: string, fieldPath: string) => string
+  >(() => INLINE_TEXT_REFUSED_MESSAGE);
+  useEffect(() => {
+    inlineTextRefusedMessageRef.current = (sectionId, fieldPath) => {
+      const selection =
+        editableSelection?.sectionId === sectionId ? editableSelection : null;
+      const stored = resolveEditorTemplate(
+        routeBackedContext,
+        search,
+      )?.document.sections.some((section) => section.id === sectionId);
+      if (stored && selection?.bindingState !== "code-default") {
+        return selection?.bindingState && selection.bindingState !== "cms-field"
+          ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+          : INLINE_TEXT_REFUSED_MESSAGE;
+      }
+      const refused = sourceDefaultRefusalReader(
+        effectiveThemeFiles,
+        codeComponentSourcePath(selection, effectiveThemeFiles),
+      )(fieldPath.split(".")[0] ?? fieldPath);
+      return refused
+        ? INLINE_TEXT_CODE_CONTROLLED_MESSAGE
+        : INLINE_TEXT_REFUSED_MESSAGE;
+    };
+  }, [editableSelection, effectiveThemeFiles, routeBackedContext, search]);
+  /**
    * The last value an inline canvas edit wrote, for the Inspector.
    *
    * The Inspector shows stored values; this is one, written before the save
@@ -4214,12 +4357,17 @@ export function VisualEditorShell({
       fieldKey: string,
       fieldPath: string | null,
       value: string,
+      /** C5: sent now because the inline edit it was held for ended; not input. */
+      released = false,
     ) => {
-      setFieldDraft(true);
-      leaveGuard.noteInput();
+      if (!released) {
+        setFieldDraft(true);
+        leaveGuard.noteInput();
+      }
       // The canvas is told as the author types only when every one of these
-      // holds; otherwise the field still saves as it would, and the canvas
-      // shows the value once it is saved.
+      // holds, as it is typed and again when a held post is sent; otherwise
+      // the field still saves as it would, and the canvas shows the value
+      // once it is saved.
       // 1. The Inspector types into the section selected — never another
       //    one, and never in its place.
       if (sectionId !== activeSelection?.sectionId) return;
@@ -4240,6 +4388,21 @@ export function VisualEditorShell({
         }
         return;
       }
+      // 5. Not while an inline edit is open on the canvas (C5): held, and
+      //    sent through here again, checked again, when it ends.
+      if (
+        !released &&
+        holdCanvasPost({
+          kind: "field",
+          sectionId,
+          fieldKey,
+          fieldPath,
+          value,
+          scope: canvasScopeRef.current,
+        })
+      ) {
+        return;
+      }
       postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
         type: "morph:storefront-preview-update-selection-field",
         sectionId,
@@ -4249,8 +4412,16 @@ export function VisualEditorShell({
       });
       schedulePreviewRemeasureRef.current();
     },
-    [activeSelection?.sectionId, frameCan, leaveGuard, previewSectionIsHidden],
+    [
+      activeSelection?.sectionId,
+      frameCan,
+      holdCanvasPost,
+      leaveGuard,
+      previewSectionIsHidden,
+    ],
   );
+  const previewSelectionFieldRef = useRef(previewSelectionField);
+  previewSelectionFieldRef.current = previewSelectionField;
   // Assigned below, where the canvas geometry it needs is in scope.
   const schedulePreviewRemeasureRef = useRef<() => void>(() => {});
 
@@ -5038,6 +5209,10 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
+      codeDefaultSave?: {
+        operation: "code-default";
+        codeDefault: CodeDefaultWriteProof;
+      },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5155,6 +5330,12 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
+                        ...(codeDefaultSave
+                          ? {
+                              operation: codeDefaultSave.operation,
+                              codeDefault: codeDefaultSave.codeDefault,
+                            }
+                          : {}),
                       },
                     }),
               );
@@ -5344,6 +5525,8 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
+          operation?: "code-default";
+          codeDefault?: CodeDefaultWriteProof;
         },
       ) => Promise<unknown>)
     | null
@@ -5359,6 +5542,8 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
+        operation?: "code-default";
+        codeDefault?: CodeDefaultWriteProof;
       },
     ) => {
       // Recorded here rather than at each call site: reordering siblings,
@@ -5411,6 +5596,12 @@ export function VisualEditorShell({
         content,
         nextRevision,
         options?.confirmed ?? false,
+        options?.operation === "code-default" && options.codeDefault
+          ? {
+              operation: "code-default",
+              codeDefault: options.codeDefault,
+            }
+          : undefined,
       );
       if (
         result.status === "superseded" ||
@@ -5423,6 +5614,10 @@ export function VisualEditorShell({
       // Only a landed write is reversible, and only one that actually changed
       // something: recording a no-op would spend an undo press doing nothing.
       if (before !== null && before !== content) {
+        const codeDefaultOption =
+          options?.operation === "code-default" && options.codeDefault
+            ? options.codeDefault
+            : undefined;
         history.record({
           label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
           scope: themeFileHistoryScope(filePath),
@@ -5430,11 +5625,27 @@ export function VisualEditorShell({
             handleUnifiedSaveFileRef.current?.(filePath, before, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: {
+                      ...codeDefaultOption,
+                      expectedCurrentDefault: codeDefaultOption.value,
+                      value: codeDefaultOption.expectedCurrentDefault,
+                    },
+                  }
+                : {}),
             }),
           redo: () =>
             handleUnifiedSaveFileRef.current?.(filePath, content, {
               fromHistory: true,
               renderDocument: true,
+              ...(codeDefaultOption
+                ? {
+                    operation: "code-default" as const,
+                    codeDefault: codeDefaultOption,
+                  }
+                : {}),
             }),
         });
       }
@@ -7141,25 +7352,82 @@ export function VisualEditorShell({
   const handleCodeComponentPropsChange = useCallback(
     (filePath: string, nextProps: Record<string, unknown>) => {
       if (refuseSectionTemplateWrite(filePath)) return;
-      const workspaceFile = useThemeWorkspaceStore
+      const workspaceFilesMap = useThemeWorkspaceStore
         .getState()
-        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
-        filePath
-      ];
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
+      const workspaceFile = workspaceFilesMap[filePath];
       const currentSource =
         workspaceFile?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) return;
 
+      const entries = Object.entries(nextProps);
+      if (entries.length === 0) return;
+
+      const currentFiles = themeFiles.map((file) => ({
+        path: file.path,
+        content: workspaceFilesMap[file.path]?.localContent ?? file.content,
+      }));
+
       let nextSource = currentSource;
-      for (const [fieldKey, value] of Object.entries(nextProps)) {
-        if (typeof value !== "string") continue;
-        nextSource = patchComponentDefaultProp(nextSource, fieldKey, value);
+      let codeDefaultProof: CodeDefaultWriteProof | undefined;
+      for (const [fieldKey, value] of entries) {
+        if (typeof value !== "string") {
+          toast.error(
+            "Cannot edit this code default: only static string literal defaults can be edited here.",
+          );
+          return;
+        }
+        const resolved = resolveSourceDefaultNode({
+          files: currentFiles,
+          componentSourcePath: filePath,
+          fieldKey,
+        });
+        if (resolved.status !== "default") {
+          toast.error(
+            "Cannot edit this code default: the component's default value is not a static string literal.",
+          );
+          return;
+        }
+        if (resolved.value === value) {
+          continue;
+        }
+        if (codeDefaultProof) {
+          toast.error(
+            "Cannot edit multiple code defaults in a single operation.",
+          );
+          return;
+        }
+        const patched = patchStringLiteralAt(
+          currentSource,
+          resolved.target,
+          value,
+        );
+        if (!patched || patched === currentSource) {
+          toast.error(
+            "Cannot edit this code default: failed to patch the component's string literal default.",
+          );
+          return;
+        }
+        nextSource = patched;
+        const componentName =
+          resolved.component.localName ??
+          resolved.component.exportNames[0] ??
+          undefined;
+        codeDefaultProof = {
+          componentPath: filePath,
+          ...(componentName ? { componentName } : {}),
+          fieldKey,
+          expectedCurrentDefault: resolved.value,
+          value,
+        };
       }
-      if (nextSource === currentSource) return;
+      if (!codeDefaultProof || nextSource === currentSource) return;
 
       void handleUnifiedSaveFile(filePath, nextSource, {
         preserveCanvasPosition: true,
+        operation: "code-default",
+        codeDefault: codeDefaultProof,
       });
     },
     [
@@ -7983,9 +8251,13 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-inline-text-refused") {
-        toast.info(INLINE_TEXT_REFUSED_MESSAGE, {
-          id: "inline-text-refused",
-        });
+        toast.info(
+          inlineTextRefusedMessageRef.current(
+            message.sectionId,
+            message.fieldPath,
+          ),
+          { id: "inline-text-refused" },
+        );
         return;
       }
 
@@ -8011,6 +8283,32 @@ export function VisualEditorShell({
       }
 
       if (message.type === "morph:storefront-preview-ready") {
+        // Only a ready from a new document reaches here, and only once the
+        // document active in the frame confirmed it (option A): the same
+        // document announcing itself again, one replaced, one the active
+        // document did not answer for, was not taken
+        // (`classifyPreviewDocument`). `documentId` is null for a frame on
+        // an older bridge, whose first ready on this frame is the only one
+        // taken.
+        const frameDocument = previewDocumentOf(event);
+        const documentId =
+          frameDocument?.kind === "ready" ? frameDocument.documentId : null;
+        // C5: the new document has no edit open, whatever the last one said.
+        // What an open edit held is discarded, not sent, and the existing
+        // content replay is armed for this frame before the round moves, so
+        // the new document is sent what the editor holds once it confirms
+        // its route (`createInstanceContentReplay`).
+        const deferral = stepCanvasDeferral({
+          type: "ready",
+          verified: documentId !== null,
+        });
+        if (deferral.armReplay) {
+          instanceContentReplayRef.current?.frameReloaded(
+            previewKey,
+            previewReadyRoundRef.current,
+            replayRoutePathRef.current,
+          );
+        }
         dispatchPreviewLifecycle({ type: "frame-ready", key: previewKey });
         previewReadyRoundRef.current += 1;
         // This round's record replaces the last one: a capability counts only
@@ -8019,8 +8317,22 @@ export function VisualEditorShell({
           previewKey,
           readyRound: previewReadyRoundRef.current,
           capabilities: new Set(message.capabilities ?? []),
-          documentId: null,
+          documentId,
         };
+        // Tell this document what the editor can read back, only when this
+        // ready carries a document id and the bridge said it reads the token.
+        // The id names the round, not a permission: the bridge ignores any
+        // announcement for another document.
+        if (
+          documentId &&
+          (message.capabilities ?? []).includes("code-default-selection")
+        ) {
+          postEditorToPreviewMessage(previewIframeRef.current?.contentWindow, {
+            type: "morph:storefront-preview-editor-capabilities",
+            capabilities: [...EDITOR_CAPABILITIES],
+            previewDocument: documentId,
+          });
+        }
         setLiveTypingUnavailable(null);
         instanceContentReplayRef.current?.frameReady(
           previewKey,
@@ -8030,6 +8342,20 @@ export function VisualEditorShell({
           previewKey,
           message.servedInstance ?? null,
         );
+        // E1: an unfinished edit never reads as finished. After the watch has
+        // taken the new frame, so a reload it held for the edit goes with
+        // the document it was held for.
+        if (deferral.editEnded || inlineEditOpenRef.current) {
+          reportInlineEdit(false, false);
+        }
+        // An id-less ready while that replay is still unsettled: it is
+        // dropped there with a log line only, so the author is told.
+        if (deferral.notice === "replay-unconfirmed") {
+          toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
+            id: "preview-reload-content-unread",
+            duration: 10_000,
+          });
+        }
         // A frame that arrives late answers the only question that notice
         // asked. Cleared by message, so a slower sandbox than the timeout
         // allows for corrects itself instead of needing a retry.
@@ -8196,6 +8522,30 @@ export function VisualEditorShell({
         return;
       }
 
+      // A page stand-in (a route path, not a section) is taken only from the
+      // confirmed current document, after it answered the editor's latest
+      // route request in this round, and only for the route asked for.
+      if (isPageStandInId(message.sectionId)) {
+        const frameDocument = previewDocumentOf(event);
+        const routeRequest = lastRouteRequestRef.current;
+        if (
+          !acceptsPageStandIn({
+            sectionId: message.sectionId,
+            requestedRoutePath: currentSearchRoutePathRef.current,
+            fromConfirmedDocument:
+              frameDocument?.kind === "message" && frameDocument.verified,
+            routeRequestAnswered:
+              routeRequest !== null &&
+              routeRequest.key === previewKey &&
+              routeRequest.round === previewReadyRoundRef.current &&
+              routeRequest.id === routeRequestIdRef.current &&
+              routeRequest.answered,
+          })
+        ) {
+          return;
+        }
+      }
+
       const outcome = previewSelection.acceptReport(message);
       if (!outcome.accepted) return;
       if (
@@ -8280,6 +8630,7 @@ export function VisualEditorShell({
         fieldPath,
         itemId: message.itemId ?? null,
         contentUnavailable: message.contentUnavailable ?? null,
+        bindingState: message.bindingState ?? null,
         descendantFields,
         className,
         isSection: selectionIsSection,
@@ -8316,10 +8667,12 @@ export function VisualEditorShell({
     isSelectionMode,
     onSearchChange,
     postEditorToPreviewMessage,
+    previewDocumentOf,
     previewKey,
     previewSelection,
     search.section,
     search.viewport,
+    stepCanvasDeferral,
   ]);
 
   // Keyed by the id, not the template: every fetch of the Theme hands over a
@@ -8541,6 +8894,12 @@ export function VisualEditorShell({
     async (sectionId: string): Promise<EditorEditableNodeDeleteResult> => {
       reportAuthenticatedUserActivity();
 
+      if (isPageStandInId(sectionId)) {
+        return {
+          success: false,
+          message: "The page itself is not a section of this page.",
+        };
+      }
       if (!activeThemeRoute) {
         return {
           success: false,
@@ -9078,7 +9437,28 @@ export function VisualEditorShell({
       resolvedProps: PreviewSectionProps | undefined,
       enabled: boolean | undefined,
       resetKeys?: string[],
+      /**
+       * A signed repost's own check (its section revision, its replay's
+       * frame): asked again when a post held for an inline edit is sent.
+       */
+      stillCurrent?: () => boolean,
     ) => {
+      // While an inline edit is open the post is held as composed (C5), and
+      // comes back through here when the edit ends: everything below is
+      // decided then, the hidden check included.
+      if (
+        holdCanvasPost({
+          kind: "section",
+          sectionId,
+          ...(resolvedProps ? { props: resolvedProps } : {}),
+          ...(enabled === undefined ? {} : { enabled }),
+          ...(resetKeys?.length ? { resetKeys: [...resetKeys] } : {}),
+          ...(stillCurrent ? { stillCurrent } : {}),
+          scope: canvasScopeRef.current,
+        })
+      ) {
+        return;
+      }
       // Decided as it is posted, from what the editor holds now: a section
       // held as hidden is told it is hidden and nothing else, whatever this
       // post was composed from. Only the message is changed; what is saved,
@@ -9098,7 +9478,7 @@ export function VisualEditorShell({
       // otherwise leave the space it used to occupy behind.
       schedulePreviewRemeasureRef.current();
     },
-    [previewSectionIsHidden],
+    [holdCanvasPost, previewSectionIsHidden],
   );
   const syncPreviewSectionProps = useCallback(
     (
@@ -9132,7 +9512,17 @@ export function VisualEditorShell({
         if (stillCurrent && !stillCurrent()) return;
         const signed = previewMediaCache.resolve(props);
         if (signed.missing.length < first.missing.length) {
-          postPreviewSectionProps(sectionId, signed.content, undefined, resetKeys);
+          // Held for an open inline edit, the same checks are asked again
+          // when it is sent (M3).
+          postPreviewSectionProps(
+            sectionId,
+            signed.content,
+            undefined,
+            resetKeys,
+            () =>
+              revisions.get(sectionId) === revision &&
+              (!stillCurrent || stillCurrent()),
+          );
         }
       });
     },
@@ -9178,11 +9568,52 @@ export function VisualEditorShell({
           sectionId,
           previewMediaCache.resolve(props).content,
           undefined,
+          undefined,
+          () =>
+            revisions.get(sectionId) === replacement.revision &&
+            (!replacement.stillCurrent || replacement.stillCurrent()),
         );
       });
     },
     [previewMediaCache, postPreviewSectionProps],
   );
+  // C5: a post an inline edit held, sent once the edit ended, through the
+  // poster it was held by — so the hidden check, the selection-field gates and
+  // the transport checks are asked now, not when it was held. A committed
+  // section's post rebuilt from stored+pending holds stored values, which go
+  // through the edit path's own media resolution like any edit's.
+  sendReleasedCanvasPostRef.current = (entry) => {
+    if (entry.kind === "field") {
+      previewSelectionFieldRef.current(
+        entry.sectionId,
+        entry.fieldKey,
+        entry.fieldPath,
+        entry.value,
+        true,
+      );
+      return;
+    }
+    const resetKeys = entry.resetKeys ? [...entry.resetKeys] : undefined;
+    if (entry.rebuilt) {
+      const props = entry.props
+        ? parsePreviewSectionProps(entry.props)
+        : undefined;
+      if (props === null) {
+        console.info(
+          `[preview] held content for ${entry.sectionId} is not JSON; not sent`,
+        );
+        return;
+      }
+      syncPreviewSectionProps(entry.sectionId, props, entry.enabled, resetKeys);
+      return;
+    }
+    postPreviewSectionProps(
+      entry.sectionId,
+      entry.props as PreviewSectionProps | undefined,
+      entry.enabled,
+      resetKeys,
+    );
+  };
   /**
    * Tells the preview a section's visibility as the editor holds it now: a
    * hidden section as `{ enabled: false }`, a shown one with the accepted copy
@@ -9244,6 +9675,8 @@ export function VisualEditorShell({
           : null;
       },
       replay: (_frame, isCurrent) => {
+        // Replayed: a replay armed for a lost inline edit is settled (C5).
+        stepCanvasDeferral({ type: "replay-settled" });
         const sourceGeneration = currentContentSourceGeneration();
         for (const [sectionId, binding] of sectionModelRef.current.bindings) {
           const templateId = binding.templateId;
@@ -9272,6 +9705,7 @@ export function VisualEditorShell({
         }
       },
       onReadFailed: () => {
+        stepCanvasDeferral({ type: "replay-settled" });
         toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
           id: "preview-reload-content-unread",
           duration: 10_000,
@@ -9279,6 +9713,7 @@ export function VisualEditorShell({
       },
       // Not on a route it confirmed: the same notice, for the same outcome.
       onUnconfirmed: () => {
+        stepCanvasDeferral({ type: "replay-settled" });
         toast.warning(PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE, {
           id: "preview-reload-content-unread",
           duration: 10_000,
@@ -9299,6 +9734,7 @@ export function VisualEditorShell({
     context.theme.id,
     currentContentSourceGeneration,
     queryClient,
+    stepCanvasDeferral,
     syncPreviewSectionProps,
   ]);
 
@@ -9340,7 +9776,12 @@ export function VisualEditorShell({
         message,
       });
 
-      const templateId = templateIdForSection(request.sectionId);
+      const templateId = isDocumentWriteTarget(
+        request.sectionId,
+        templateIdForSection,
+      )
+        ? templateIdForSection(request.sectionId)
+        : null;
       if (!templateId) {
         return failed("This section has no document to store the text in.");
       }
@@ -9592,6 +10033,9 @@ export function VisualEditorShell({
       historyGeneration?: number,
     ): Promise<{ success: boolean; message?: string }> => {
       reportAuthenticatedUserActivity();
+      if (!isDocumentWriteTarget(sectionId, templateIdForSection)) {
+        return { success: false, message: "Nothing to reset here." };
+      }
       const templateId = templateIdForSection(sectionId);
       if (!templateId || fieldKeys.length === 0) {
         return { success: false, message: "Nothing to reset here." };
@@ -9730,6 +10174,9 @@ export function VisualEditorShell({
       nextProps: Record<string, unknown>,
       options?: InspectorPropsChangeOptions,
     ) => {
+      // A page stand-in is not a section: nothing to write, and nothing to
+      // show the canvas either.
+      if (isPageStandInId(sectionId)) return;
       // A history record keeps its original version, even after reselection.
       // Throw before changing the panel/preview so the history stays retryable.
       if (
@@ -9863,6 +10310,30 @@ export function VisualEditorShell({
   );
 
   contentChangeRef.current = handleSectionPropsChange;
+  // C5: what a section an inline commit landed on is rebuilt from when the
+  // held posts are sent — the newest copy this editor has accepted, decided
+  // by `newestAcceptedCopy` exactly as the commit handler below reads it,
+  // with the section's pending input on top. Read only; asked once per
+  // section, when the edit ends.
+  canvasRebuildSourceRef.current = {
+    storedCopy: (sectionId) => {
+      if (!activeTemplate) return undefined;
+      const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
+      const newest = newestAcceptedCopy({
+        templateId: routeTemplateIdsRef.current.get(templateId) ?? templateId,
+        snapshots: contentSnapshotsRef.current,
+        contextTemplates: context.templates,
+      });
+      return newest.from === "snapshot"
+        ? snapshotSectionProps(newest.snapshot, sectionId)
+        : sectionPropsSnapshot(sectionId);
+    },
+    pendingProps: (sectionId) => {
+      if (!activeTemplate) return undefined;
+      const templateId = templateIdForSection(sectionId) ?? activeTemplate.id;
+      return pendingPropsMapRef.current.get(`${templateId}:${sectionId}`)?.props;
+    },
+  };
   useEffect(() => {
     inlineTextCommitHandlerRef.current = (message) => {
       const selection = activeSelection;
@@ -9882,6 +10353,9 @@ export function VisualEditorShell({
           descendantFieldCount: selection.descendantFields?.length ?? 1,
           isSection: selection.isSection,
         }) ||
+        (selection.bindingState !== undefined &&
+          selection.bindingState !== null &&
+          selection.bindingState !== "cms-field") ||
         selection.sectionId !== message.sectionId ||
         selection.fieldKey !== message.fieldKey ||
         selection.fieldPath !== message.fieldPath ||
@@ -9966,6 +10440,13 @@ export function VisualEditorShell({
       );
       if (requestedFinish) inlineFinishRequestRef.current = null;
       requestedFinishCommitRef.current = requestedFinish;
+      // C5: while the edit is open, the echo below is held, and this section
+      // is rebuilt from what the editor holds when the edit ends.
+      stepCanvasDeferral({
+        type: "commit",
+        sectionId: message.sectionId,
+        scope: canvasScopeRef.current,
+      });
       try {
         handleSectionPropsChange(
           message.sectionId,
@@ -9986,6 +10467,7 @@ export function VisualEditorShell({
     handleSectionPropsChange,
     isSelectionMode,
     sectionPropsSnapshot,
+    stepCanvasDeferral,
     templateIdForSection,
   ]);
 
@@ -10007,11 +10489,18 @@ export function VisualEditorShell({
       draggedFieldPath: string,
       targetFieldPath: string,
     ) => {
+      if (isPageStandInId(sectionId)) return;
       invalidateSectionHistory(sectionId);
       if (!activeTemplate) return;
-      const section = activeTemplate.document.sections.find(
-        (candidate) => candidate.id === sectionId,
-      );
+      // The section as this page shows it: a slot its source proves is one
+      // even before anything is stored for it. Read only — the stored copy
+      // below (`sectionPropsSnapshot`) stays what the write is based on.
+      const section =
+        sectionModel.bindings.get(sectionId)?.owner === "page"
+          ? sectionModel.document.sections.find(
+              (candidate) => candidate.id === sectionId,
+            )
+          : undefined;
       if (!section) {
         toast.error("Cannot reorder: the selected section is unavailable.");
         return;
@@ -10167,6 +10656,7 @@ export function VisualEditorShell({
       enqueueTemplateMutation,
       syncPreviewSectionProps,
       routePathForTemplate,
+      sectionModel,
       templateIdForSection,
       updatePropsMutation,
       selectedFieldBaseline,
@@ -10202,6 +10692,8 @@ export function VisualEditorShell({
 
   const handleSectionToggleEnabled = useCallback(
     async (sectionId: string, enabled: boolean, historyGeneration?: number) => {
+      // A page stand-in is not a section: there is nothing to hide or show.
+      if (isPageStandInId(sectionId)) return;
       const generation = historyGeneration ?? freshContentSelectionGeneration();
       if (
         generation === null ||
@@ -10469,6 +10961,9 @@ export function VisualEditorShell({
 
   const handleRenameSection = useCallback(
     async (sectionId: string, name: string | null) => {
+      if (isPageStandInId(sectionId)) {
+        throw new Error("No template owns this section.");
+      }
       // The binding, not the active template: on a page whose document is not
       // created yet that is a placeholder, and the queue creates it first.
       const boundTemplateId = sectionModel.bindings.get(sectionId)?.templateId;
@@ -10565,12 +11060,34 @@ export function VisualEditorShell({
 
   const handleSwapPreviewSections = useCallback(
     async (draggedSectionId: string, targetSectionId: string) => {
-      const sectionIds = (activeTemplate?.document.sections ?? []).map(
-        (section) => section.id,
-      );
+      if (isPageStandInId(draggedSectionId) || isPageStandInId(targetSectionId)) {
+        return;
+      }
+      // This page's own sections in the order it shows them, slots its source
+      // proves included. A shell section is the layout's, never this page's
+      // to move.
+      const sectionIds = sectionModel.document.sections
+        .filter(
+          (section) => sectionModel.bindings.get(section.id)?.owner === "page",
+        )
+        .map((section) => section.id);
       const from = sectionIds.indexOf(draggedSectionId);
       const to = sectionIds.indexOf(targetSectionId);
       if (from < 0 || to < 0 || from === to) return;
+      // Stored content the source does not show has no position in that
+      // order. The whole reorder is refused rather than leaving it somewhere
+      // nobody chose; nothing is written.
+      const shown = new Set(sectionIds);
+      const stored =
+        activeTemplate && activeTemplate.id === pageTemplateId
+          ? activeTemplate.document.sections
+          : [];
+      if (stored.some((section) => !shown.has(section.id))) {
+        toast.error(
+          "Failed to reorder sections: this page stores content its source does not show, so nothing was moved.",
+        );
+        return;
+      }
       const next = [...sectionIds];
       next[from] = targetSectionId;
       next[to] = draggedSectionId;
@@ -10582,7 +11099,7 @@ export function VisualEditorShell({
         );
       }
     },
-    [activeTemplate, handleReorderSections],
+    [activeTemplate, handleReorderSections, pageTemplateId, sectionModel],
   );
 
   useEffect(() => {
@@ -12761,6 +13278,18 @@ export function VisualEditorShell({
               startKey={previewServer.dataUpdatedAt}
               onOpenFile={handleJumpToCode}
             />
+
+            {olderBridgeReloaded !== null &&
+            olderBridgeReloaded === previewKey ? (
+              // Quiet and in place: nothing was taken from the frame, and
+              // only a reload the author asks for brings it back in step.
+              <div
+                role="status"
+                className="pointer-events-none absolute right-3 top-12 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {PREVIEW_OLDER_BRIDGE_RELOADED_MESSAGE}
+              </div>
+            ) : null}
 
             {liveTypingUnavailable !== null ? (
               // Quiet and in place, not a toast per keystroke: the field

@@ -250,9 +250,15 @@ export function createInlineTextEditor({
     ) {
       return false;
     }
-    // Rendered text that is not the stored value cannot be typed over: what
-    // was typed would be saved in its place (see the predicate).
+    // Rendered text that is not a proven CMS field or not the stored value
+    // cannot be typed over: code defaults and code-controlled values are edited
+    // in the Inspector or Code mode, never committed into the Document.
+    const bindingState =
+      item.element
+        .closest("[data-morph-binding-state]")
+        ?.getAttribute("data-morph-binding-state") ?? null;
     if (
+      (bindingState !== null && bindingState !== "cms-field") ||
       !inlineTextMatchesStoredValue(
         editableElementText(item.element),
         storedValue?.(item),

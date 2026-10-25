@@ -100,7 +100,9 @@ function createDocumentComponentResolver(args: {
               section.componentRef ?? `${section.type}.default`,
             ),
     used: false,
-  }));
+  })).filter((candidate) =>
+    isValidThemeContentSlotId(candidate.section.id),
+  );
 
   return ({ sourcePath }) => {
     const normalized = normalizeSourcePath(sourcePath);

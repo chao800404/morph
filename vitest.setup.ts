@@ -1,5 +1,5 @@
 import { cleanup, configure } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 
 /**
  * How long `waitFor` and `findBy*` may wait.
@@ -141,6 +141,31 @@ if (
     writable: true,
   });
 }
+
+/**
+ * Code mode's Monaco, ready at once, as the `@monaco-editor/react` a test
+ * provides.
+ *
+ * The workspace loads the bundled Monaco runtime (`editor-code-monaco-runtime`)
+ * with a dynamic import, and that runtime starts the real editor core and its
+ * workers, none of which jsdom can run. Every suite that renders the workspace
+ * already stands in for the editor by mocking `@monaco-editor/react`; this
+ * hands that stand-in to the workspace synchronously, as it was handed out
+ * before the runtime was loaded on demand. The loader's own states (loading,
+ * error, Retry) are tested in `editor-code-monaco-loader.test.ts` and
+ * `editor-code-workspace-monaco-load.test.tsx`, which replace this mock.
+ */
+vi.mock("./src/routes/_editor/-components/editor-code-monaco-loader", async () => {
+  const { default: Editor } = await import("@monaco-editor/react");
+  const state = {
+    status: "ready" as const,
+    runtime: { Editor, monaco: undefined, createMonacoWorker: undefined },
+  };
+  return {
+    EDITOR_CODE_MONACO_TIMEOUT_MS: 20_000,
+    useEditorCodeMonaco: () => ({ state, retry: () => {} }),
+  };
+});
 
 /**
  * Unmount between tests.

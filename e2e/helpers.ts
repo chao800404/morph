@@ -1,5 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { startRequestTimeline } from "./request-timeline";
+import {
+  hasMonacoModel,
+  readMonacoModel,
+  setMonacoModelValue,
+} from "./helpers/monaco-models";
 
 /**
  * The editor path under test.
@@ -402,36 +407,11 @@ export async function saveEditedSource(
   edit: (source: string) => string,
 ) {
   await expect
-    .poll(
-      () =>
-        page.evaluate(
-          (target) =>
-            Boolean(
-              (window as any).monaco?.editor
-                .getModels()
-                .some((model: any) => model.uri.path.endsWith(target)),
-            ),
-          path,
-        ),
-      { timeout: 30_000 },
-    )
+    .poll(() => hasMonacoModel(page, path), { timeout: 30_000 })
     .toBe(true);
-  const source = await page.evaluate(
-    (target) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .getValue() as string,
-    path,
-  );
-  await page.evaluate(
-    ({ target, next }) =>
-      (window as any).monaco.editor
-        .getModels()
-        .find((model: any) => model.uri.path.endsWith(target))
-        .setValue(next),
-    { target: path, next: edit(source) },
-  );
+  const source = await readMonacoModel(page, path);
+  if (source === undefined) throw new Error(`No Monaco model for ${path}`);
+  await setMonacoModelValue(page, path, edit(source));
   // The save itself. A request merely carrying the path can be the preview's
   // own file sync, which goes out first while the save waits on its
   // formatter; and a refused save is answered with 200 too, so the body is

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { EDITOR_PATH, openEditor } from "./helpers";
+import { readMonacoModel } from "./helpers/monaco-models";
 import {
   removeThemeFiles,
   themeScopeFromEditorPath,
@@ -61,16 +62,7 @@ export const Route = createFileRoute('/e2e-mixed')({ component: () => <main>Mixe
       page.getByRole("button", { name: "New file", exact: true }),
     ).toBeVisible();
     await expect
-      .poll(() =>
-        page.evaluate(() =>
-          (window as any).monaco?.editor
-            .getModels()
-            .find((model: any) =>
-              model.uri.path.endsWith("/src/routes/e2e-endpoint.ts"),
-            )
-            ?.getValue(),
-        ),
-      )
+      .poll(() => readMonacoModel(page, "/src/routes/e2e-endpoint.ts"))
       .toBe(files[0].content);
     expect(new URL(page.url()).searchParams.get("routePath")).toBe(routeBefore);
   } finally {

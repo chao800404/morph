@@ -92,7 +92,11 @@ import {
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+// Types only: the editor component and Monaco itself come from the bundled
+// runtime, loaded on demand (editor-code-monaco-loader.ts).
+import type { Monaco, OnMount } from "@monaco-editor/react";
+import { useEditorCodeMonaco } from "./editor-code-monaco-loader";
+import { EditorCodeMonacoStatus } from "./editor-code-monaco-status";
 import { PointerActivationConstraints } from "@dnd-kit/dom";
 import {
   DragDropProvider,
@@ -178,6 +182,12 @@ import { THEME_CONTENT_MODULE_PATH } from "@/lib/storefront/theme-content-slots"
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "@/lib/storefront/starter-theme-v3-files";
 import { prepareThemeFileRename } from "@/lib/storefront/editor/rename-theme-file";
 import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffers";
+import {
+  createSentCodeWrites,
+  draftAfterConfirmedWrite,
+  draftAfterLostWriteSettled,
+  syncBufferToServer,
+} from "@/lib/storefront/editor/code-save-confirmation";
 import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
 import {
   EditorCodeCommandCenter,
@@ -549,6 +559,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   // `monaco-editor` just to name them.
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
+  // Starts loading the bundled Monaco when the workspace mounts. Until it is
+  // ready the editor pane shows its state; drafts stay where they are.
+  const { state: monacoLoad, retry: retryMonacoLoad } = useEditorCodeMonaco();
+  const MonacoEditor =
+    monacoLoad.status === "ready" ? monacoLoad.runtime.Editor : null;
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
   const routeCompletionProviderRef = useRef<{ dispose: () => void } | null>(
     null,
@@ -714,6 +729,8 @@ const EditorCodeWorkspaceContent = forwardRef<
   const draftContentsRef = useRef<Record<string, string>>({});
   const draftDirtyRef = useRef<Record<string, boolean>>({});
   const draftRevisionRef = useRef<Record<string, number>>({});
+  /** Saves sent and not yet answered; see `code-save-confirmation`. */
+  const sentWritesRef = useRef(createSentCodeWrites());
   const autoSaveTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
@@ -1294,37 +1311,55 @@ const EditorCodeWorkspaceContent = forwardRef<
 
   useEffect(() => {
     const model = editorRef.current?.getModel?.();
-    if (
-      !model ||
-      activeFileDirty ||
-      draftDirtyRef.current[activeFilePath] ||
-      activeServerContent === null
-    ) {
+    if (!model || activeServerContent === null) return;
+    const sync = syncBufferToServer({
+      serverContent: activeServerContent,
+      buffer: model.getValue(),
+      draftDirty: activeFileDirty || Boolean(draftDirtyRef.current[activeFilePath]),
+      // The editor shell records a save's answer before the save call returns
+      // here, so this can run before `saveMutation.onSuccess` has had a say.
+      ownWriteAwaitingAnswer: sentWritesRef.current.awaitsAnswer(
+        activeFilePath,
+        activeServerContent,
+      ),
+    });
+    if (sync === "keep-later-edits") {
+      // The new baseline is the author's own write; what the buffer shows
+      // now is what they did after sending it, unsaved against that baseline.
+      draftDirtyRef.current[activeFilePath] = true;
+      syncCombinedDirtyPaths(
+        useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
+      );
       return;
     }
-    if (model.getValue() === activeServerContent) return;
+    if (sync !== "replace") return;
 
-    // Remote reloads and successful saves update the model only at the
-    // source boundary. Never replace an in-progress transient draft.
+    // Remote reloads update the model only at the source boundary. Never
+    // replace an in-progress transient draft.
     suppressModelChangeRef.current = true;
     model.setValue(activeServerContent);
     suppressModelChangeRef.current = false;
     draftContentsRef.current[activeFilePath] = activeServerContent;
     draftDirtyRef.current[activeFilePath] = false;
-  }, [activeFileDirty, activeFilePath, activeServerContent]);
+  }, [
+    activeFileDirty,
+    activeFilePath,
+    activeServerContent,
+    syncCombinedDirtyPaths,
+    workspaceScope,
+  ]);
 
   const saveMutation = useMutation({
-    mutationFn: async ({
-      path,
-      content,
-      confirmed,
-    }: {
+    mutationFn: async (variables: {
       path: string;
       content: string;
       draftRevision: number;
       silent?: boolean;
       confirmed?: boolean;
     }) => {
+      const { path, content, confirmed } = variables;
+      // Answered in `onSettled`, which receives this same object.
+      sentWritesRef.current.sent(variables);
       markWorkspaceSaving(path, workspaceScope);
       if (onSaveFile) return onSaveFile(path, content, { confirmed });
 
@@ -1370,13 +1405,18 @@ const EditorCodeWorkspaceContent = forwardRef<
     },
     onSuccess: (saved, variables) => {
       if (!saved) return;
-      const isLatestDraft =
-        (draftRevisionRef.current[saved.path] ?? 0) ===
-          variables.draftRevision &&
-        draftContentsRef.current[saved.path] === variables.content;
-      if (isLatestDraft) {
+      // This answer confirms the write it belongs to, never an undo, redo
+      // or typing that came after the write was sent. Decided before the
+      // baseline moves, so the sync effect sees the outcome.
+      const draft = draftAfterConfirmedWrite({
+        sent: variables.content,
+        saved: saved.content,
+        draft: draftContentsRef.current[saved.path],
+      });
+      if (draft === "clean") {
         draftDirtyRef.current[saved.path] = false;
-        draftContentsRef.current[saved.path] = variables.content;
+      } else if (draft === "dirty") {
+        draftDirtyRef.current[saved.path] = true;
       }
       markWorkspaceSaved(saved, workspaceScope);
       syncCombinedDirtyPaths(
@@ -1392,6 +1432,20 @@ const EditorCodeWorkspaceContent = forwardRef<
       // makes switching back to Design look like a page reload. Standalone
       // consumers without that boundary still need the full restart hook.
       if (!onSaveFile || isThemePublicPath(saved.path)) onRestartPreview?.();
+    },
+    onSettled: (_saved, error, variables) => {
+      const file = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        variables.path
+      ];
+      // No answer came, and the store holds it as unconfirmed: whether it
+      // landed is found out later, and that finding confirms only this write.
+      if (error && file?.unconfirmedContent === variables.content) {
+        sentWritesRef.current.lost(variables);
+      } else {
+        sentWritesRef.current.answered(variables);
+      }
     },
     onError: (err, variables) => {
       if (isEditorWritePaused(err)) {
@@ -2955,10 +3009,29 @@ const EditorCodeWorkspaceContent = forwardRef<
     );
 
     return useThemeWorkspaceStore.subscribe(() => {
-      const next = useThemeWorkspaceStore
-        .getState()
-        .getDirtyFiles(workspaceScope);
-      syncCombinedDirtyPaths(next);
+      const state = useThemeWorkspaceStore.getState();
+      const workspaceFiles = state.getWorkspaceFiles(
+        workspaceScope.storefrontId,
+        workspaceScope.themeId,
+      );
+      // A lost write's outcome became known (a reload or `confirmLostSave`).
+      // Decided here, as the store changes and for every file, before the
+      // editor renders on the new baseline — as `onSuccess` does for an
+      // answered write.
+      for (const write of sentWritesRef.current.settleLost(
+        (lost) =>
+          workspaceFiles[lost.path]?.unconfirmedContent === lost.content,
+      )) {
+        const draft = draftAfterLostWriteSettled({
+          lost: write.content,
+          serverContent: workspaceFiles[write.path]?.serverContent,
+          draft: draftContentsRef.current[write.path],
+        });
+        if (draft !== "untouched") {
+          draftDirtyRef.current[write.path] = draft === "dirty";
+        }
+      }
+      syncCombinedDirtyPaths(state.getDirtyFiles(workspaceScope));
     });
   }, [syncCombinedDirtyPaths, workspaceScope]);
 
@@ -4642,8 +4715,13 @@ const EditorCodeWorkspaceContent = forwardRef<
 
         {/* Monaco Editor Container */}
         <div className="flex-1 min-h-0 relative">
-          {activeFile ? (
-            <Editor
+          {activeFile && monacoLoad.status !== "ready" ? (
+            <EditorCodeMonacoStatus
+              state={monacoLoad}
+              onRetry={retryMonacoLoad}
+            />
+          ) : activeFile && MonacoEditor ? (
+            <MonacoEditor
               height="100%"
               path={getThemeModelUri(workspaceScope, activeFilePath)}
               language={getLanguage(activeFilePath)}

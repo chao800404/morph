@@ -19,6 +19,7 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import { unboundSectionsFixture, UNBOUND_TITLE } from "./helpers/unbound-sections";
 
 /**
  * Case B of the content binding contract, in the full Start preview: content
@@ -48,6 +49,20 @@ test.skip(
 );
 
 const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
+
+test("explicit props read stored hero before and after another section's edit", async ({ page }) => {
+  test.setTimeout(240_000);
+  const fixture = await unboundSectionsFixture(page);
+  await page.goto(fixture.editorPath, { waitUntil: "domcontentloaded" });
+  await expect(previewFrame(page).getByRole("heading", { name: UNBOUND_TITLE, exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(previewFrame(page).locator("main[data-hidden-slots]")).toHaveAttribute("data-hidden-slots", "hidden");
+  await fixture.editOtherSection();
+  // Reload exercises the real Start server function and loader on the saved
+  // revision, not a value kept alive in the previous browser render.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(previewFrame(page).getByRole("heading", { name: UNBOUND_TITLE, exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(previewFrame(page).getByRole("heading", { name: "Other section edited", exact: true })).toBeVisible();
+});
 let scope: ThemeScope | null = null;
 let editorPath: string | null = null;
 
@@ -915,5 +930,238 @@ export default function MarkedHero({
     });
     await openWriteRoute(page, MARKED_ROUTE, MARKED_TITLE);
     await expect(marked).toHaveText(MARKED_TITLE);
+  });
+});
+
+
+/**
+ * Explicit props in the full Start preview: the route reads its slot from the
+ * loader and hands the values over one by one, `<ExplicitHero title={title}
+ * desc={desc} />`. No Document section is proven (only a sole spread proves
+ * one), and the full Start page has no page root for a stand-in either, so the
+ * bridge resolves no section for the click and posts nothing.
+ *
+ * Measured on b293f3a before the editor-side fix (2026-10-21): the click is not
+ * taken, the Inspector stays on "Select a component", a double click opens no
+ * typing and says nothing, and nothing is written. The client-only preview of
+ * a Theme whose root route owns the document (the current Starter) measured
+ * the same. Only a Theme rendering into the preview's `#root` gets a page
+ * stand-in and was offered the default (code-controlled-field.spec.ts). Here
+ * no default is offered, so nothing misleading is saved; but the field is not
+ * marked as controlled by code either.
+ *
+ * The Document holds the slot's values from when the route still spread it;
+ * the explicit route falls back to its own text if the read returns no slot.
+ *
+ * Since the page stand-in (the bridge names such a field under the route the
+ * editor asked for, and the editor takes it only from the confirmed current
+ * document), the click is taken and the field is marked as controlled by
+ * code. Still nothing is written.
+ */
+test.describe("explicit props in the full Start preview", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const EXPLICIT_ROUTE = "/loader-explicit";
+  const EXPLICIT_TITLE = "Explicit stored title";
+  const EXPLICIT_DESC = "Explicit stored desc";
+  let explicitScope: ThemeScope | null = null;
+  let explicitEditorPath: string | null = null;
+
+  const explicitRoute = (body: string) => ({
+    path: "src/routes/loader-explicit.tsx",
+    content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import ExplicitHero from "../components/ExplicitHero";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${EXPLICIT_ROUTE}"));
+
+export const Route = createFileRoute("${EXPLICIT_ROUTE}")({
+  loader: () => getPage(),
+  component: ExplicitRoute,
+});
+
+function ExplicitRoute() {
+${body}
+}
+`,
+  });
+  const EXPLICIT_HERO = {
+    path: "src/components/ExplicitHero.tsx",
+    content: `export const contentFields = {
+  title: { type: "text", label: "Explicit title" },
+  desc: { type: "text", label: "Explicit desc" },
+} as const;
+
+type ExplicitHeroProps = { title?: string; desc?: string };
+
+export default function ExplicitHero({
+  title = "Explicit default title",
+  desc = "Explicit default desc",
+}: ExplicitHeroProps) {
+  return (
+    <section className="px-6 py-10">
+      <h2 className="text-2xl font-semibold">{title}</h2>
+      <p>{desc}</p>
+    </section>
+  );
+}
+`,
+  };
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    explicitScope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...explicitScope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find(
+      (template) => template.type === "index",
+    );
+    expect(home).toBeDefined();
+    explicitEditorPath = `/store/${explicitScope.storefrontId}/themes/${explicitScope.themeId}/editor?templateId=${home!.id}`;
+    // Spread first, so the server confirms the slot and accepts its values.
+    let saved = await writeThemeFiles(page, explicitScope, [
+      explicitRoute(`  const { hero } = Route.useLoaderData();
+  return <main><ExplicitHero {...hero} /></main>;`),
+      EXPLICIT_HERO,
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...explicitScope, routePath: EXPLICIT_ROUTE },
+    )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    const stored = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...explicitScope,
+        templateId: ensured.data!.id,
+        sectionId: SLOT,
+        props: { title: EXPLICIT_TITLE, desc: EXPLICIT_DESC },
+        expectedDraftGeneration: ensured.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(
+          page,
+          explicitScope,
+        ),
+        routePath: EXPLICIT_ROUTE,
+      },
+    )) as { success: boolean };
+    expect(stored.success, JSON.stringify(stored)).toBe(true);
+    saved = await writeThemeFiles(page, explicitScope, [
+      explicitRoute(`  const { hero } = Route.useLoaderData();
+  const { title, desc } = hero ?? {};
+  return (
+    <main>
+      <ExplicitHero
+        title={title ?? "Explicit page title"}
+        desc={desc ?? "Explicit page desc"}
+      />
+    </main>
+  );`),
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    await page.context().close();
+  });
+
+  test("a click on a field the route passes marks it controlled by code and writes nothing", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "POST") return;
+      for (const name of [
+        "updateStorefrontThemeSectionProps",
+        "saveStorefrontThemeFile",
+        "saveStorefrontThemeFilesBatch",
+      ]) {
+        if (isServerFunctionCall(request.url(), name)) writes.push(name);
+      }
+    });
+    const url = new URL(explicitEditorPath!, "http://placeholder");
+    url.searchParams.set("routePath", EXPLICIT_ROUTE);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    const title = previewFrame(page).locator(
+      '[data-morph-source-file="src/components/ExplicitHero.tsx"] h2',
+    );
+    await expect(title).toBeVisible({ timeout: 90_000 });
+    // What the page shows is the route's value, never the component default.
+    await expect(title).not.toHaveText("Explicit default title");
+    await test.info().attach("explicit-title-text", {
+      body: (await title.textContent()) ?? "",
+      contentType: "text/plain",
+    });
+    // No section and no page root for the click to resolve to.
+    await expect(
+      previewFrame(page).locator("[data-morph-route-path]"),
+    ).toHaveCount(0);
+    await expect(
+      previewFrame(page).locator(`[data-storefront-section-id="${SLOT}"]`),
+    ).toHaveCount(0);
+
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    await title.scrollIntoViewIfNeeded();
+    expect(
+      await clickExposedElement(page, title),
+      "the title was not exposed on the canvas",
+    ).not.toBeNull();
+    await settleSelection(page);
+    await openContentTab(page);
+    // Taken as the page stand-in: selected, and the field it shows is
+    // marked as controlled by code — the route passes it.
+    await expect(title).toHaveAttribute(
+      "data-storefront-editor-selected",
+      "true",
+    );
+    await expect(
+      page
+        .locator('[data-slot="inspector-code-controlled-field"]')
+        .filter({ hasText: "Explicit title" }),
+    ).toContainText(/controlled by code/i);
+    // No default is offered for a value the route passes.
+    expect(
+      await page
+        .locator(
+          "[data-editor-inspector-panel] input, [data-editor-inspector-panel] textarea",
+        )
+        .evaluateAll((elements) =>
+          elements.map((element) => (element as HTMLInputElement).value),
+        ),
+    ).not.toContain("Explicit default title");
+
+    await title.dblclick();
+    // Typing on the canvas is refused, and the editor says why without
+    // pointing to a field it does not offer.
+    await expect(
+      page.locator("[data-sonner-toast]").filter({
+        hasText: /controlled by code/i,
+      }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page.keyboard.type(" typed");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1_500);
+    expect(writes).toEqual([]);
   });
 });

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   prepareInitialStorefrontThemeTemplateDraftInputSchema,
+  promoteStorefrontThemeTextInputSchema,
   publishStorefrontThemeTemplateInputSchema,
+  renameStorefrontThemeSectionInputSchema,
   reorderStorefrontThemeSectionsInputSchema,
   storefrontThemeEditorSearchSchema,
   storefrontThemePreviewSearchSchema,
@@ -579,5 +581,89 @@ describe("save and delete theme file schemas", () => {
         }),
       ).toThrow(/node_modules/);
     }
+  });
+});
+
+describe("a content write naming the page itself", () => {
+  // The editor names the page by its route path when a field sits outside
+  // every section (the page stand-in). That is a status, never a place
+  // content is stored, so every section write naming one is refused here,
+  // before any document is read.
+  const ids = () => ({
+    storefrontId: crypto.randomUUID(),
+    themeId: crypto.randomUUID(),
+    templateId: crypto.randomUUID(),
+  });
+
+  it.each(["/", "/loader-explicit", " /padded"])(
+    "refuses %j as the section of a props write, a reset, a hide, a rename or a text promotion",
+    (sectionId) => {
+      expect(
+        updateStorefrontThemeSectionPropsInputSchema.safeParse({
+          ...ids(),
+          sectionId,
+          props: { title: "Forged" },
+          expectedDraftGeneration: 1,
+          expectedSourceGeneration: 1,
+        }).success,
+      ).toBe(false);
+      expect(
+        updateStorefrontThemeSectionPropsInputSchema.safeParse({
+          ...ids(),
+          sectionId,
+          props: { enabled: false },
+          resetProps: ["title"],
+          expectedDraftGeneration: 1,
+          expectedSourceGeneration: 1,
+        }).success,
+      ).toBe(false);
+      expect(
+        renameStorefrontThemeSectionInputSchema.safeParse({
+          ...ids(),
+          sectionId,
+          name: "Forged",
+          expectedDraftGeneration: 1,
+        }).success,
+      ).toBe(false);
+      expect(
+        promoteStorefrontThemeTextInputSchema.safeParse({
+          ...ids(),
+          sectionId,
+          componentSourcePath: "src/components/Hero.tsx",
+          targetKey: "11:7",
+          fieldName: "title",
+          value: "Forged",
+          expectedSourceGeneration: 1,
+          expectedFileVersion: 1,
+          expectedDraftGeneration: 1,
+        }).success,
+      ).toBe(false);
+      expect(
+        reorderStorefrontThemeSectionsInputSchema.safeParse({
+          ...ids(),
+          sectionIds: ["hero", sectionId],
+          expectedDraftGeneration: 1,
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("still takes a section id", () => {
+    expect(
+      updateStorefrontThemeSectionPropsInputSchema.safeParse({
+        ...ids(),
+        sectionId: "hero",
+        props: { title: "Kept" },
+        expectedDraftGeneration: 1,
+        expectedSourceGeneration: 1,
+      }).success,
+    ).toBe(true);
+    expect(
+      reorderStorefrontThemeSectionsInputSchema.safeParse({
+        ...ids(),
+        sectionIds: ["hero", "promo"],
+        expectedDraftGeneration: 1,
+      }).success,
+    ).toBe(true);
   });
 });
