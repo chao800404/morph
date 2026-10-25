@@ -24,7 +24,10 @@ export function themePreviewBridgeEntrySource(): string {
   postPreviewToEditorMessage,
   documentPreviewRuntimeChannel,
   parseEditorToPreviewWindowEvent,
+  documentPreviewIdentity,
+  acceptedEditorCapabilities,
   PREVIEW_CAPABILITIES,
+  type PreviewCapability,
   PREVIEW_SERVED_INSTANCE_TIMING,
   previewServedInstanceFromEntries,
 } from "./preview/preview-protocol";
@@ -33,8 +36,11 @@ import {
   createSelectionFieldRefusalLog,
   previewSectionSelector,
   selectionFieldRefusal,
+  resolvePageStandIn,
+  findPreviewSelectionRestoreElement,
   resolvePreviewSelectionRestoreElement,
   resolveSelectable,
+  selectionForEditor,
   selectionKindOf,
   selectionMetadata,
   selectionStyleSnapshot,
@@ -66,6 +72,16 @@ import {
 
 // No channel means this page was opened without an editor behind it — someone
 // following the preview URL directly. It renders; it just says nothing.
+/**
+ * What this page's bridge itself implements. Deliberately local rather than
+ * the shared PREVIEW_CAPABILITIES list: a page may only advertise a token
+ * after its own code reads the editor message and applies the rule.
+ */
+const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = [
+  "selection-field-section",
+  "code-default-selection",
+];
+
 const channel = documentPreviewRuntimeChannel();
 // A refused selection-field post is said here, in the page, and nowhere else.
 const logSelectionFieldRefusal = createSelectionFieldRefusalLog();
@@ -115,12 +131,21 @@ let selectedItem = null;
 let hoveredItem = null;
 let lastRestoreTarget = null;
 let selectedSectionId = null;
+/**
+ * The route the editor asked for, once this document has applied it and
+ * answered. The only id a field outside every section is reported under
+ * (\`resolvePageStandIn\`); never read from the page, and cleared while a
+ * new request is on its way.
+ */
+let appliedRoutePath = null;
 
 const selectionStylePreview = createSelectionStylePreview();
 const overlays = channel ? createPreviewSelectionOverlays() : null;
 
 /** The editor's finish request being answered, while finish runs. */
 let answeringFinishRequest = null;
+/** Set only by this document's editor; a new ready clears it. */
+let editorSupportsCodeDefault = false;
 
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
@@ -250,6 +275,7 @@ function answerRouteRequest(routeRequestId, routePath) {
 }
 
 function applyEditorRoute(message) {
+  appliedRoutePath = null;
   // A real Theme owns its router, so the entry Morph generates hands it
   // over. Without one there is nothing to navigate and the page simply
   // stays where it is, which is better than reloading it out from under
@@ -277,7 +303,10 @@ function applyEditorRoute(message) {
         // Only a route the router matched is an answer; a page with a
         // router never says null, which means it has none.
         const routePath = currentRoutePattern();
-        if (routePath) answerRouteRequest(message.routeRequestId, routePath);
+        if (routePath) {
+          appliedRoutePath = message.routePath ?? "/";
+          answerRouteRequest(message.routeRequestId, routePath);
+        }
       });
     // The page it lands on is a different set of elements entirely.
     window.setTimeout(() => {
@@ -303,6 +332,10 @@ function clearSelectionAttributes() {
 
 function sendSelectionReport(item) {
   if (!channel || !item?.sectionId) return;
+  // A bridge that has not heard code-default-selection reports a proven
+  // component default as the section it sits in: the whole report comes from
+  // the section, so no field, path or descendant field leaks through.
+  item = selectionForEditor(item, editorSupportsCodeDefault);
   const styleOf = (element) =>
     element ? selectionStyleSnapshot(window.getComputedStyle(element)) : null;
 
@@ -401,6 +434,44 @@ function restoreSelectedTarget(target) {
   const section = document.querySelector(
     previewSectionSelector(target.sectionId),
   );
+  if (
+    !section &&
+    target.sectionId === appliedRoutePath &&
+    selectedItem?.sectionId === target.sectionId &&
+    selectedItem.element?.isConnected
+  ) {
+    selectedItem.element.setAttribute("data-storefront-editor-selected", "true");
+    syncDragHandle();
+    drawOverlays();
+    return;
+  }
+  if (!section && target.sectionId === appliedRoutePath) {
+    const restoredPageElement = findPreviewSelectionRestoreElement(
+      document.documentElement,
+      target,
+      selectedItem?.element,
+    );
+    const restoredPageItem = restoredPageElement
+      ? resolvePageStandIn(restoredPageElement, {
+          routePath: target.sectionId,
+          owns: overlays?.owns,
+        })
+      : null;
+    if (restoredPageItem) {
+      selectedItem = {
+        ...restoredPageItem,
+        fieldPath: target.fieldPath ?? restoredPageItem.fieldPath,
+        fieldKey: target.fieldKey ?? restoredPageItem.fieldKey,
+      };
+      selectedItem.element.setAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+      syncDragHandle();
+      drawOverlays();
+      return;
+    }
+  }
   if (!section) {
     selectedItem = null;
     syncDragHandle();
@@ -432,6 +503,20 @@ function restoreSelectedTarget(target) {
   drawOverlays();
 }
 
+/**
+ * What a click, a double click or the pointer is on: a section's element, or
+ * else a field a Theme component renders outside every section, named for
+ * the page (\`resolvePageStandIn\`). The editor decides what that may edit.
+ */
+function selectableAt(target) {
+  const item = resolveSelectable(target);
+  if (item?.sectionId) return item;
+  return resolvePageStandIn(target, {
+    routePath: appliedRoutePath,
+    owns: overlays?.owns,
+  });
+}
+
 function domElementMatchesTarget(element, targetKey, sourceLocation) {
   if (element.dataset.morphNode === targetKey) return true;
   if (element.dataset.morphElement === targetKey) return true;
@@ -447,7 +532,7 @@ function domElementMatchesTarget(element, targetKey, sourceLocation) {
  */
 function reportSelection(target) {
   if (!channel) return;
-  const item = resolveSelectable(target);
+  const item = selectableAt(target);
   if (!item?.sectionId) return;
   selectionRevision += 1;
   clearSelectionAttributes();
@@ -679,6 +764,9 @@ function servedInstanceReport() {
 
 function reportReady() {
   if (!channel) return;
+  // A capability belongs to the ready that carried it: a new document starts
+  // without it until its editor names one again.
+  editorSupportsCodeDefault = false;
   const servedInstance = servedInstanceReport();
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
@@ -687,11 +775,11 @@ function reportReady() {
       ? {
           type: "morph:storefront-preview-ready",
           servedInstance,
-          capabilities: [...PREVIEW_CAPABILITIES],
+          capabilities: [...BRIDGE_CAPABILITIES],
         }
       : {
           type: "morph:storefront-preview-ready",
-          capabilities: [...PREVIEW_CAPABILITIES],
+          capabilities: [...BRIDGE_CAPABILITIES],
         },
     channel,
   );
@@ -830,7 +918,7 @@ if (channel) {
     "dblclick",
     (event) => {
       if (!selectionEnabled) return;
-      const item = resolveSelectable(event.target);
+      const item = selectableAt(event.target);
       if (!item?.sectionId) return;
       if (
         inlineEditor.begin(
@@ -874,7 +962,7 @@ if (channel) {
     "pointermove",
     (event) => {
       if (!selectionEnabled) return;
-      const item = resolveSelectable(event.target);
+      const item = selectableAt(event.target);
       // Redraw only when the answer changed: this runs on every pixel of
       // movement, and the geometry it would otherwise recompute is the
       // expensive part.
@@ -1130,6 +1218,12 @@ if (channel) {
     }
     if (message?.type === "morph:storefront-preview-request-structure") {
       reportStructure();
+    }
+    if (message?.type === "morph:storefront-preview-editor-capabilities") {
+      editorSupportsCodeDefault = acceptedEditorCapabilities(
+        message,
+        documentPreviewIdentity(),
+      ).includes("code-default-selection");
     }
     if (message?.type === "morph:storefront-preview-finish-inline-text") {
       // The author chose, in the editor, what happens to the open edit. The

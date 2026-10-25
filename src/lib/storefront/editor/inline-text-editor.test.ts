@@ -155,6 +155,22 @@ describe("editing text in the page", () => {
     expect(onRefused).toHaveBeenCalledExactlyOnceWith(target);
   });
 
+  it("refuses a code-default field even when the Document holds the same text", () => {
+    const { target, heading } = renderedHeading("Default desc");
+    heading.setAttribute("data-morph-binding-state", "code-default");
+    const onRefused = vi.fn();
+    const editor = createInlineTextEditor({
+      onCommit: vi.fn(),
+      onLayoutChanged: vi.fn(),
+      storedValue: () => "Default desc",
+      onRefused,
+    });
+
+    expect(editor.begin(target, { selectionEnabled: true })).toBe(false);
+    expect(editor.editingElement()).toBeNull();
+    expect(onRefused).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
   it("says nothing for something that was never a text field", () => {
     const { target } = renderedHeading("Stored title");
     const onRefused = vi.fn();

@@ -530,7 +530,8 @@ for (const { spelling, runtime } of SPELLINGS) {
               claimsStoredField:
                 selection.sectionId !== null &&
                 storedIds.has(selection.sectionId) &&
-                selection.fieldKey !== null
+                selection.fieldKey !== null &&
+                selection.bindingState !== "code-default"
                   ? `${selection.sectionId}.${selection.fieldPath}`
                   : null,
             };

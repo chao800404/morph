@@ -1503,3 +1503,112 @@ export default function List({ items = [] }) {
     }
   });
 });
+
+describe("rows keep the empty field marker", () => {
+  it("does not name or mark an unproven row field as a code default", () => {
+    const ROW = `export const contentFields = {
+  title: { type: "text" },
+  desc: { type: "text" },
+} as const;
+export default function Row({ title, desc }) {
+  return <><h1>{title}</h1><p>{desc}</p></>;
+}`;
+    const PAGE = `import Row from "../components/Row";
+export const contentFields = {
+  items: { type: "array", fields: { title: { type: "text" } } },
+} as const;
+export default function Page({ items = [] }) {
+  return <ul>{items.map((item) => <Row title={item.title} />)}</ul>;
+}`;
+    const output = injectTestFiles([
+      { path: "src/components/Row.tsx", content: ROW },
+      { path: "src/routes/rows.tsx", content: PAGE },
+    ]).files;
+    const rowOutput = output.find((file) => file.path === "src/components/Row.tsx")!.content;
+    expect(rowOutput).toContain('(__morphRowContext.fields["desc"] ?? "")');
+    expect(rowOutput).toContain('bindingStates?.["desc"] ?? undefined');
+    expect(rowOutput).not.toContain('"code-default"');
+
+    const fieldExpression = rowOutput.match(
+      /data-storefront-field=\{([^}]*fields\["desc"\][^}]*)\}/,
+    )?.[1];
+    const stateExpression = rowOutput.match(
+      /data-morph-binding-state=\{([^}]*)\}/,
+    )?.[1];
+    expect(fieldExpression).toBeDefined();
+    expect(stateExpression).toBeDefined();
+    const read = (expression: string) =>
+      new Function("__morphRowContext", `return (${expression});`);
+
+    // The row context names title (proven for this row) but not desc: the
+    // rendered marker is empty and the state is unset, never code-default.
+    const context = { fields: { title: "title" }, bindingStates: {} };
+    expect(read(fieldExpression!)(context)).toBe("");
+    expect(read(stateExpression!)(context)).toBeUndefined();
+  });
+});
+
+describe("code-default marking", () => {
+  const route = (body: string) => `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import BasHero from "../components/BasHero";
+export const Route = createFileRoute("/cd")({ component: Home });
+function Home() {
+  const hero = content("hero");
+  ${body}
+}`;
+  const inject = (routeBody: string | null) =>
+    injectTestFiles([
+      ...(routeBody === null
+        ? []
+        : [{ path: "src/routes/cd.tsx", content: route(routeBody) }]),
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    ]).files;
+  const componentOf = (
+    files: ReadonlyArray<{ path: string; content: string }>,
+  ) =>
+    files.find((file) => file.path === BAS_HERO_PATH)!.content;
+
+  it("marks a declared default the call site does not pass, and only that field", () => {
+    const output = componentOf(inject('return <BasHero title={hero.title} />;'));
+    expect(output).toContain('"code-default"');
+    expect(output).toContain('fields["desc"] ?? "desc"');
+    expect(output).not.toContain('fields["desc"] ?? "title"');
+  });
+
+  it("does not mark when another instance of the component passes the prop", () => {
+    const passing = route(
+      "return <BasHero title={hero.title} desc={hero.desc} />;",
+    ).replace('"/cd"', '"/cd2"');
+    const files = injectTestFiles([
+      {
+        path: "src/routes/cd.tsx",
+        content: route("return <BasHero title={hero.title} />;"),
+      },
+      { path: "src/routes/cd2.tsx", content: passing },
+      { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    ]).files;
+    expect(componentOf(files)).not.toContain('"code-default"');
+  });
+
+  it("does not mark when the call site spreads the section", () => {
+    const output = componentOf(inject("return <BasHero {...hero} />;"));
+    expect(output).not.toContain('"code-default"');
+  });
+
+  it("does not mark without a section thread, and still names the field", () => {
+    const output = componentOf(inject(null));
+    expect(output).not.toContain('"code-default"');
+    expect(output).toContain('data-storefront-field="desc"');
+  });
+
+  it("does not mark past the 512 KiB reader limit", () => {
+    const oversized = BAS_HERO_SOURCE + "\n" + "//".padEnd(513 * 1024, "x");
+    const files = injectTestFiles([
+      { path: "src/routes/cd.tsx", content: route('return <BasHero title={hero.title} />;') },
+      { path: BAS_HERO_PATH, content: oversized },
+    ]);
+    const output = files.files.find((file) => file.path === BAS_HERO_PATH)!.content;
+    expect(output).not.toContain('"code-default"');
+  });
+});
