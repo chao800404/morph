@@ -35,6 +35,11 @@ function HomeRoute() {
 const files = [
   { path: "src/routes/index.tsx", content: GUARDED_ROUTE },
   {
+    path: "src/morph/content.ts",
+    content: `export function content(_slot: string) { return {}; }
+export function isSectionHidden(_slot: string) { return false; }`,
+  },
+  {
     path: "morph.theme.json",
     content: JSON.stringify({
       components: {

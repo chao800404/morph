@@ -5,6 +5,7 @@ import {
   parseEditorToPreviewEvent,
   parseEditorToPreviewMessage,
   parsePreviewToEditorEnvelope,
+  acceptedEditorCapabilities,
   parsePreviewToEditorEvent,
   parsePreviewToEditorMessage,
   postEditorToPreviewMessage,
@@ -432,6 +433,19 @@ describe("preview protocol", () => {
       descendantFields: [{ fieldKey: "description", fieldPath: "description" }],
       selectionRevision: 4,
     });
+    for (const bindingState of [
+      "cms-field",
+      "not-cms",
+      "untraced",
+      "derived",
+    ] as const) {
+      expect(
+        parsePreviewToEditorMessage({ ...selection, bindingState }),
+      ).toMatchObject({ bindingState });
+    }
+    expect(
+      parsePreviewToEditorMessage({ ...selection, bindingState: "writeable" }),
+    ).toBeNull();
     // Rendered text is not a field's value: a Theme's content() may change
     // it on the way to the page. The editor is not told it, so nothing can
     // take it for the stored value.
@@ -1416,5 +1430,34 @@ describe("the document a frame→editor message comes from (C5, A1)", () => {
         ),
       ).toBeNull();
     });
+  });
+});
+
+describe("the editor capability announcement", () => {
+  const message = (previewDocument: unknown) => ({
+    type: "morph:storefront-preview-editor-capabilities",
+    capabilities: ["code-default-selection"],
+    previewDocument,
+  });
+  const current = "a".repeat(32);
+
+  it("applies only to the document it names", () => {
+    const parsed = parseEditorToPreviewMessage(message(current));
+    expect(parsed).not.toBeNull();
+    expect(acceptedEditorCapabilities(parsed, current)).toEqual([
+      "code-default-selection",
+    ]);
+  });
+
+  it("ignores an announcement for an older document", () => {
+    const parsed = parseEditorToPreviewMessage(message("b".repeat(32)));
+    expect(parsed).not.toBeNull();
+    expect(acceptedEditorCapabilities(parsed, current)).toEqual([]);
+  });
+
+  it("rejects a missing or malformed document id", () => {
+    expect(parseEditorToPreviewMessage(message(undefined))).toBeNull();
+    expect(parseEditorToPreviewMessage(message("not-a-document-id"))).toBeNull();
+    expect(acceptedEditorCapabilities(null, current)).toEqual([]);
   });
 });

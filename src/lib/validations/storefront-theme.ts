@@ -34,10 +34,26 @@ export const updateStorefrontThemeRenderPolicyInputSchema =
     ]),
   });
 
+/**
+ * A section a content write names.
+ *
+ * A route path (`/...`) is how the editor names the page itself when a
+ * field sits outside every section; it is a status, never a place content is
+ * stored, so a write naming one is refused here, before any document is read.
+ */
+export const documentSectionIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((sectionId) => !sectionId.startsWith("/"), {
+    message: "A page is not a content section.",
+  });
+
 export const reorderStorefrontThemeSectionsInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sectionIds: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
+    sectionIds: z.array(documentSectionIdSchema).min(1).max(100),
     expectedDraftGeneration: z.number().int().min(1),
   });
 
@@ -74,7 +90,7 @@ export const renameStorefrontReleaseInputSchema =
 export const updateStorefrontThemeSectionPropsInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sectionId: z.string().trim().min(1).max(100),
+    sectionId: documentSectionIdSchema,
     props: z
       .record(z.string().trim().min(1).max(100), z.unknown())
       .refine((props) => Object.keys(props).length <= 100, {
@@ -106,7 +122,7 @@ export const updateStorefrontThemeSectionPropsInputSchema =
 export const promoteStorefrontThemeTextInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sectionId: z.string().trim().min(1).max(100),
+    sectionId: documentSectionIdSchema,
     routePath: z.string().trim().min(1).max(512).optional(),
     componentSourcePath: safeThemeFilePathSchema,
     targetKey: z.string().trim().min(1).max(200),
@@ -139,7 +155,7 @@ export const ensureStorefrontThemeRouteTemplateInputSchema =
 export const renameStorefrontThemeSectionInputSchema =
   storefrontThemeEditorInputSchema.extend({
     templateId: idSchema("storefront theme template"),
-    sectionId: z.string().trim().min(1).max(100),
+    sectionId: documentSectionIdSchema,
     name: z.string().trim().min(1).max(100).nullable(),
     expectedDraftGeneration: z.number().int().min(1),
   });

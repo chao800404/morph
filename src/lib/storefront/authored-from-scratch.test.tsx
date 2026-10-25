@@ -251,13 +251,13 @@ describe("a component the author wrote, in real React", () => {
   async function renderLive(previewPass?: boolean) {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { html } = await renderLivePreviewRoute({
+      const result = await renderLivePreviewRoute({
         files,
         documents: { index: document_ },
         previewPass,
       });
       expect(errors.mock.calls).toHaveLength(0);
-      return html;
+      return result.html;
     } finally {
       errors.mockRestore();
     }
