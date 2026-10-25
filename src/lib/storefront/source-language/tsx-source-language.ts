@@ -35,6 +35,34 @@ export function prepareSourcesForLivePreview(files: readonly SourceFile[]) {
 }
 
 /**
+ * An incremental Code save still needs the whole saved source graph so the
+ * binding analyser can resolve imports and component declarations. The
+ * edited files override that same-generation snapshot for analysis, but only
+ * those edited paths are returned for writing into the preview workspace.
+ */
+export function prepareChangedSourcesForLivePreview(
+  changedFiles: readonly SourceFile[],
+  sourceFiles: readonly SourceFile[],
+) {
+  const changedPaths = new Set(changedFiles.map((file) => file.path));
+  const analysisFiles = new Map(sourceFiles.map((file) => [file.path, file]));
+  for (const file of changedFiles) analysisFiles.set(file.path, file);
+
+  const prepared = prepareSourcesForLivePreview([...analysisFiles.values()]);
+  const preparedByPath = new Map(
+    prepared.files.map((file) => [file.path, file]),
+  );
+
+  return {
+    ...prepared,
+    files: changedFiles.flatMap((file) => {
+      const output = preparedByPath.get(file.path);
+      return output && changedPaths.has(output.path) ? [output] : [];
+    }),
+  };
+}
+
+/**
  * A build ships none of the editor's attributes. The Theme's stored source
  * keeps them — that is where a hand-written marker is doing its job — but a
  * shopper has no use for them.

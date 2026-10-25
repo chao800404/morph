@@ -2,6 +2,7 @@ import {
   parseColocatedContentFields,
   type ColocatedContentFieldsResult,
 } from "./theme-content-fields-source";
+import type { ParsedThemeAst } from "./theme-source-ast";
 
 /**
  * Where a component's content fields are declared.
@@ -101,8 +102,13 @@ export function readComponentContentFields(input: {
   path: string;
   source: string;
   sidecar?: string | null;
+  parsedSourceAst?: ParsedThemeAst | null;
+  parsedSidecarAst?: ParsedThemeAst | null;
 }): ComponentContentFieldsResult {
-  const inline = parseColocatedContentFields(input.source);
+  const inline = parseColocatedContentFields(
+    input.source,
+    input.parsedSourceAst,
+  );
   const sidecarPath = contentFieldsSidecarPath(input.path);
   if (input.sidecar === undefined || !sidecarPath) {
     return {
@@ -126,7 +132,10 @@ export function readComponentContentFields(input: {
   if (input.sidecar === null) {
     return fail([`${sidecarPath} could not be read.`]);
   }
-  const sidecar = parseColocatedContentFields(input.sidecar);
+  const sidecar = parseColocatedContentFields(
+    input.sidecar,
+    input.parsedSidecarAst,
+  );
   if (sidecar.declaration === "absent") {
     return fail([
       `${sidecarPath} does not declare "export const contentFields = { ... }".`,

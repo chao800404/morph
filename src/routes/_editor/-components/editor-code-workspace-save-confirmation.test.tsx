@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
+import { confirmLostSave } from "@/lib/storefront/editor/editor-write-recovery";
 import {
   EditorCodeWorkspace,
   type EditorCodeWorkspaceHandle,
@@ -612,3 +613,356 @@ describe.each<Mode>(["shell", "workspace"])(
     });
   },
 );
+
+/**
+ * A save whose answer never came, and the author working on after it.
+ *
+ * As in the editor shell: the lost save is recorded as unconfirmed, autosave
+ * holds, and the answer is found out later, either by a reload of the file
+ * list (`hydrateFromQuery`) or by the author's own next save asking the server
+ * first (`confirmLostSave`). Whatever the server is found to hold confirms the
+ * lost write, and nothing the author did after it.
+ */
+type LostWriteCall = {
+  path: string;
+  content: string;
+  /** No answer: the shell records the write as unconfirmed and fails it. */
+  lose: (options: { landed: boolean }) => Promise<void>;
+  /** The shell asks the server whether the earlier lost write landed. */
+  confirmEarlierWrite: () => Promise<"landed" | "not-landed">;
+  succeed: () => Promise<void>;
+  /** The server holds someone else's version: a version conflict. */
+  conflict: () => Promise<void>;
+};
+
+function setupLostWrites(files: StorefrontThemeFileDTO[] = [heroFile]) {
+  const calls: LostWriteCall[] = [];
+  const server = new Map(
+    files.map((file) => [file.path, { content: file.content, version: file.version }]),
+  );
+  /** Writes that reached the server, in order. */
+  const serverWrites: string[] = [];
+  const base = (path: string) => files.find((file) => file.path === path)!;
+  const held = (path: string): StorefrontThemeFileDTO => ({
+    ...base(path),
+    ...server.get(path)!,
+  });
+  const land = (path: string, content: string) => {
+    server.set(path, { content, version: server.get(path)!.version + 1 });
+    serverWrites.push(content);
+    return held(path);
+  };
+
+  const onSaveFile = vi.fn(
+    (path: string, content: string) =>
+      new Promise<StorefrontThemeFileDTO | null>((resolve, reject) => {
+        calls.push({
+          path,
+          content,
+          lose: async ({ landed }) => {
+            if (landed) land(path, content);
+            await act(async () => {
+              const store = useThemeWorkspaceStore.getState();
+              store.markUnconfirmed(path, content, scope);
+              store.markError(path, "Failed to fetch", scope);
+            });
+            await act(async () => {
+              reject(new Error("Failed to fetch"));
+              await vi.advanceTimersByTimeAsync(0);
+            });
+          },
+          confirmEarlierWrite: async () => {
+            const unconfirmed = serverFile(path)?.unconfirmedContent;
+            if (unconfirmed === undefined) throw new Error("nothing to confirm");
+            let outcome: "landed" | "not-landed" = "not-landed";
+            let landedFile: StorefrontThemeFileDTO | undefined;
+            await act(async () => {
+              outcome = await confirmLostSave({
+                unconfirmedContent: unconfirmed,
+                readLatest: async () => held(path),
+                markLanded: (latest) => {
+                  landedFile = latest;
+                  useThemeWorkspaceStore.getState().markSaved(latest, scope);
+                },
+              });
+            });
+            // What would be sent is what the server already holds.
+            if (landedFile?.content === content) {
+              await act(async () => {
+                resolve(landedFile!);
+                await vi.advanceTimersByTimeAsync(0);
+              });
+            }
+            return outcome;
+          },
+          succeed: async () => {
+            const saved = land(path, content);
+            await act(async () => {
+              useThemeWorkspaceStore.getState().markSaved(saved, scope);
+            });
+            await act(async () => {
+              resolve(saved);
+              await vi.advanceTimersByTimeAsync(0);
+            });
+          },
+          conflict: async () => {
+            const latest = held(path);
+            await act(async () => {
+              useThemeWorkspaceStore.getState().markConflict(
+                path,
+                {
+                  kind: "modified",
+                  remoteExists: true,
+                  remoteFileId: latest.id,
+                  remoteVersion: latest.version,
+                  remoteContent: latest.content,
+                },
+                scope,
+              );
+            });
+            await act(async () => {
+              reject(new Error("Version conflict"));
+              await vi.advanceTimersByTimeAsync(0);
+            });
+          },
+        });
+      }),
+  );
+
+  const workspaceRef = createRef<EditorCodeWorkspaceHandle>();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <EditorCodeWorkspace
+        ref={workspaceRef}
+        storefrontId="store-1"
+        themeId="theme-1"
+        files={files}
+        tree={files.map((file) => ({
+          name: file.path.slice(file.path.lastIndexOf("/") + 1),
+          path: file.path,
+          isDirectory: false,
+        }))}
+        onSaveFile={onSaveFile}
+      />
+    </QueryClientProvider>,
+  );
+
+  const editor = () =>
+    screen.getByRole("textbox", { name: "Code editor" }) as HTMLTextAreaElement;
+  return {
+    calls,
+    server,
+    serverWrites,
+    sent: () => calls.map((call) => call.content),
+    edit: (value: string) => fireEvent.change(editor(), { target: { value } }),
+    editor,
+    workspaceRef,
+    replacements: () => monacoState.setValueCalls.length,
+    /** A reload of the file list: the server's copy of every file. */
+    reload: async () => {
+      await act(async () => {
+        useThemeWorkspaceStore
+          .getState()
+          .hydrateFromQuery(
+            "store-1",
+            "theme-1",
+            [heroFile, footerFile].map((file) =>
+              server.has(file.path) ? held(file.path) : file,
+            ),
+          );
+      });
+    },
+    save: async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+      await advance(0);
+    },
+  };
+}
+
+describe("a lost Code save, confirmed later", () => {
+  it("keeps an undo when a reload finds the lost write landed", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    expect(t.sent()).toEqual([`${BASELINE}\n`]);
+    await t.calls[0]!.lose({ landed: true });
+
+    t.edit(BASELINE); // Ctrl+Z back to the baseline
+    await advance(2_000);
+    expect(t.sent()).toHaveLength(1);
+
+    await t.reload();
+    expect(serverFile(HERO)?.unconfirmedContent).toBeUndefined();
+    expect(serverFile(HERO)?.serverContent).toBe(`${BASELINE}\n`);
+    expect(t.editor().value).toBe(BASELINE);
+    expect(t.replacements()).toBe(0);
+    // The server holds the undone text: the undo is the unsaved draft.
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+    // And the lost write is not sent again on its own.
+    await advance(2_000);
+    expect(t.sent()).toHaveLength(1);
+    expect(t.serverWrites).toEqual([`${BASELINE}\n`]);
+  });
+
+  it("keeps later typing when a reload finds the lost write landed", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+
+    t.edit(`${BASELINE}\nmore`);
+    await t.reload();
+    expect(t.editor().value).toBe(`${BASELINE}\nmore`);
+    expect(t.replacements()).toBe(0);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+    await advance(2_000);
+    expect(t.serverWrites).toEqual([`${BASELINE}\n`]);
+
+    // The author's next edit is what goes, never the lost write again.
+    t.edit(`${BASELINE}\nmore!`);
+    await advance(700);
+    expect(t.sent()).toEqual([`${BASELINE}\n`, `${BASELINE}\nmore!`]);
+  });
+
+  it("keeps the undo of a file that is not open when the reload arrives", async () => {
+    const t = setupLostWrites([heroFile, footerFile]);
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+    t.edit(BASELINE);
+
+    fireEvent.click(treeRow("Footer.tsx"));
+    await t.reload();
+    // Leaving now would lose the undo: it must count as unsaved.
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+
+    fireEvent.click(treeRow("Hero.tsx"));
+    expect(t.editor().value).toBe(BASELINE);
+    expect(t.replacements()).toBe(0);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+  });
+
+  it("keeps an undo when the author's own save finds the lost write landed", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+    t.edit(BASELINE);
+
+    await t.save();
+    expect(t.sent()).toEqual([`${BASELINE}\n`, BASELINE]);
+    await expect(t.calls[1]!.confirmEarlierWrite()).resolves.toBe("landed");
+    expect(serverFile(HERO)?.serverContent).toBe(`${BASELINE}\n`);
+    expect(t.editor().value).toBe(BASELINE);
+    expect(t.replacements()).toBe(0);
+
+    await t.calls[1]!.succeed();
+    expect(serverFile(HERO)?.serverContent).toBe(BASELINE);
+    expect(t.editor().value).toBe(BASELINE);
+    expect(t.replacements()).toBe(0);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(false);
+    await advance(2_000);
+    expect(t.serverWrites).toEqual([`${BASELINE}\n`, BASELINE]);
+  });
+
+  it("keeps later typing when the author's own save finds the lost write landed", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+    t.edit(`${BASELINE}\nmore`);
+
+    await t.save();
+    await expect(t.calls[1]!.confirmEarlierWrite()).resolves.toBe("landed");
+    expect(t.editor().value).toBe(`${BASELINE}\nmore`);
+    await t.calls[1]!.succeed();
+    expect(serverFile(HERO)?.serverContent).toBe(`${BASELINE}\nmore`);
+    expect(t.editor().value).toBe(`${BASELINE}\nmore`);
+    expect(t.replacements()).toBe(0);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(false);
+  });
+
+  it("settles a lost write confirmed by a reload when nothing was edited since, and never sends it again", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+
+    await t.reload();
+    expect(t.editor().value).toBe(`${BASELINE}\n`);
+    expect(serverFile(HERO)?.serverContent).toBe(`${BASELINE}\n`);
+    expect(serverFile(HERO)?.dirty).toBe(false);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(false);
+    await advance(2_000);
+    // A mode switch flushes Code drafts: there must be none left to send.
+    let flushed: boolean | undefined;
+    void t.workspaceRef.current!.flushPendingChanges().then((value) => {
+      flushed = value;
+    });
+    await advance(0);
+    expect(flushed).toBe(true);
+    expect(t.sent()).toHaveLength(1);
+    expect(t.serverWrites).toEqual([`${BASELINE}\n`]);
+  });
+
+  it("still settles a lost write confirmed by the author's save, without writing it twice", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: true });
+
+    await t.save();
+    await expect(t.calls[1]!.confirmEarlierWrite()).resolves.toBe("landed");
+    await advance(0);
+    expect(t.editor().value).toBe(`${BASELINE}\n`);
+    expect(serverFile(HERO)?.dirty).toBe(false);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(false);
+    expect(t.serverWrites).toEqual([`${BASELINE}\n`]);
+  });
+
+  it("still holds a lost write that did not land, and sends the author's text only on their save", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: false });
+    expect(serverFile(HERO)?.unconfirmedContent).toBe(`${BASELINE}\n`);
+    expect(serverFile(HERO)?.saveState).toBe("error");
+
+    t.edit(`${BASELINE}\nmore`);
+    await advance(2_000);
+    await t.reload();
+    // The reload does not answer it: the server holds something else.
+    expect(serverFile(HERO)?.unconfirmedContent).toBe(`${BASELINE}\n`);
+    expect(t.editor().value).toBe(`${BASELINE}\nmore`);
+    expect(t.sent()).toHaveLength(1);
+
+    await t.save();
+    await expect(t.calls[1]!.confirmEarlierWrite()).resolves.toBe("not-landed");
+    await t.calls[1]!.succeed();
+    expect(serverFile(HERO)?.serverContent).toBe(`${BASELINE}\nmore`);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(false);
+    expect(t.serverWrites).toEqual([`${BASELINE}\nmore`]);
+  });
+
+  it("still surfaces a version conflict found after a lost write, keeping the author's text", async () => {
+    const t = setupLostWrites();
+    t.edit(`${BASELINE}\n`);
+    await advance(700);
+    await t.calls[0]!.lose({ landed: false });
+    // Someone else saved meanwhile.
+    t.server.set(HERO, { content: "theirs", version: 5 });
+    t.edit(`${BASELINE}\nmine`);
+
+    await t.save();
+    await expect(t.calls[1]!.confirmEarlierWrite()).resolves.toBe("not-landed");
+    await t.calls[1]!.conflict();
+    expect(serverFile(HERO)?.conflict?.remoteContent).toBe("theirs");
+    expect(serverFile(HERO)?.unconfirmedContent).toBeUndefined();
+    expect(t.editor().value).toBe(`${BASELINE}\nmine`);
+    expect(t.replacements()).toBe(0);
+    expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+  });
+});

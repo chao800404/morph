@@ -13,7 +13,12 @@
  * reverted, Monaco's undo stack was wiped, and the server kept the text the
  * author had undone.
  *
- * Kept free of React and Monaco so both rules can be stated as tests.
+ * A save that got no answer at all is confirmed the same way, only later:
+ * when a reload of the file list or `confirmLostSave` finds the server holds
+ * it. Until then it stays tracked (`lost`), so that confirmation, too, covers
+ * that write and nothing typed, undone or redone after it.
+ *
+ * Kept free of React and Monaco so these rules can be stated as tests.
  */
 
 /** A write the Code workspace has sent and not yet heard back about. */
@@ -32,16 +37,45 @@ export type SentCodeWrites = {
   answered: (write: SentCodeWrite) => void;
   /** Whether a write of exactly `content` to `path` is still awaiting its answer. */
   awaitsAnswer: (path: string, content: string) => boolean;
+  /**
+   * The write got no answer at all, and the workspace store now holds it as
+   * unconfirmed (`unconfirmedContent`). Its outcome is found out later — by a
+   * reload of the file list or by `confirmLostSave` before the next save — so
+   * it stays tracked until then.
+   */
+  lost: (write: SentCodeWrite) => void;
+  /**
+   * Removes and returns the lost writes whose outcome is now known: those the
+   * store no longer holds as unconfirmed. Called on every store change, so it
+   * runs as the store changes and before the editor renders on it.
+   */
+  settleLost: (
+    stillUnconfirmed: (write: SentCodeWrite) => boolean,
+  ) => SentCodeWrite[];
 };
 
 export function createSentCodeWrites(): SentCodeWrites {
   const awaiting = new Set<SentCodeWrite>();
+  const lost = new Set<SentCodeWrite>();
   return {
     sent: (write) => {
       awaiting.add(write);
     },
     answered: (write) => {
       awaiting.delete(write);
+    },
+    lost: (write) => {
+      awaiting.delete(write);
+      lost.add(write);
+    },
+    settleLost: (stillUnconfirmed) => {
+      const settled: SentCodeWrite[] = [];
+      for (const write of lost) {
+        if (stillUnconfirmed(write)) continue;
+        lost.delete(write);
+        settled.push(write);
+      }
+      return settled;
     },
     awaitsAnswer: (path, content) => {
       for (const write of awaiting) {
@@ -72,6 +106,27 @@ export function draftAfterConfirmedWrite(args: {
   if (args.draft === undefined) return "untouched";
   if (args.draft === args.sent || args.draft === args.saved) return "clean";
   return "dirty";
+}
+
+/**
+ * The buffer's state once a lost write's outcome is known (see `settleLost`).
+ *
+ * Found to have landed — the server baseline is now its content — it is
+ * confirmed like any answered write, and confirms nothing the author did
+ * after it was sent. Not landed, or saved over since, it says nothing about
+ * the buffer: the save that moved the baseline, or the conflict, decides.
+ */
+export function draftAfterLostWriteSettled(args: {
+  lost: string;
+  serverContent: string | undefined;
+  draft: string | undefined;
+}): "untouched" | "clean" | "dirty" {
+  if (args.serverContent !== args.lost) return "untouched";
+  return draftAfterConfirmedWrite({
+    sent: args.lost,
+    saved: args.serverContent,
+    draft: args.draft,
+  });
 }
 
 /**

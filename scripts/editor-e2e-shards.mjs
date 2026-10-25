@@ -29,8 +29,13 @@ export const EDITOR_SHARDS = [
     "object-position.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "selection-field-frame-navigated.spec.ts",
+    "code-controlled-field.spec.ts",
     // Added after the duration measurement above; not in its projection.
     "preview-document-reload.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "spread-override-binding.spec.ts",
+    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
+    "binding-acceptance-p.spec.ts",
   ],
   [
     "editor-writes-auth.spec.ts",
@@ -47,6 +52,8 @@ export const EDITOR_SHARDS = [
     "public-root-url.spec.ts",
     "public-text-code.spec.ts",
     "catalog.spec.ts",
+    // Rebalanced from run 40158324490 (moved from shard 6 to balance client-only Design acceptance).
+    "binding-acceptance-c.spec.ts",
   ],
   [
     "lost-editor-writes.spec.ts",
@@ -81,6 +88,8 @@ export const EDITOR_SHARDS = [
     "media-svg.spec.ts",
     "section-visibility-layout.spec.ts",
     "auth-failure.spec.ts",
+    // Added after the duration measurement above; not in its projection.
+    "code-editor-local-monaco.spec.ts",
   ],
 ];
 

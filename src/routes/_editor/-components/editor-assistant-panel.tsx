@@ -19,11 +19,12 @@ import {
   SendHorizontal,
   WandSparkles,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { EditorCommentsSidebar } from "./editor-comments-sidebar";
 import { scheduleInspectorPreRender } from "./editor-inspector-pre-render";
 import {
   EditorStyleInspector,
+  InspectorCodeDefaultContext,
   type InspectorInlineTextCommit,
   type InspectorPropsChangeOptions,
 } from "./editor-style-inspector";
@@ -34,6 +35,10 @@ import type {
   TextPromotionRequest,
 } from "@/lib/storefront/editor/text-promotion-request";
 import type { ThemeInstanceStyleTarget } from "@/lib/storefront/editor/theme-instance-style-source";
+import {
+  codeComponentSourcePath,
+  sourceDefaultRefusalReader,
+} from "@/lib/storefront/editor/source-default-control";
 
 type EditorAssistantPanelProps = {
   /**
@@ -275,6 +280,7 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * Document slot to write values into yet.
    */
   const storedSection = selectionSection ?? documentSection;
+  const isCodeDefaultSelection = selection?.bindingState === "code-default";
   const selectedSection: typeof documentSection =
     storedSection ??
     (selection?.sectionId
@@ -286,11 +292,21 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
         } as NonNullable<typeof documentSection>)
       : undefined);
   /**
-   * A stand-in carries no values because none are stored for it. Saying so
-   * lets the Inspector offer only what the source patcher can write, instead
-   * of rendering a list editor over an empty object and discarding the edits.
+   * A stand-in carries no values because none are stored for it, and a field
+   * marked `code-default` renders the component's own source default even when
+   * other props of the same component come from a stored Document section.
+   * Saying `source` lets the Inspector offer and write the component's default
+   * prop literal rather than reading or mutating the Document slot.
    */
-  const contentStore = storedSection ? "document" : "source";
+  const contentStore =
+    storedSection && !isCodeDefaultSelection ? "document" : "source";
+  const inspectorSection = useMemo(
+    () =>
+      selectedSection && contentStore === "source" && storedSection
+        ? { ...selectedSection, props: {} }
+        : selectedSection,
+    [contentStore, selectedSection, storedSection],
+  );
   /**
    * A hidden section opens no content editing (content binding contract §6),
    * whichever entry named it: a canvas selection, its Sections-panel row, or
@@ -299,6 +315,25 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
    * lets a selection go by when a hide is confirmed.
    */
   const contentRefused = storedSection?.enabled === false;
+  /**
+   * Where an edit with no Document section behind it is written: the default
+   * props of the selected component's own source.
+   */
+  const codeComponentPath = useMemo(
+    () => codeComponentSourcePath(selection, themeFiles),
+    [selection, themeFiles],
+  );
+  /**
+   * Why a field's source default is not what the canvas shows, or null when
+   * it is (`source-default-control.ts`). A default the page overrides — or may
+   * override — is not edited from here: saving it would change nothing on
+   * screen. The Inspector shows those fields as controlled by code, and the
+   * write below drops them whatever the Inspector sends.
+   */
+  const sourceDefaultRefusal = useMemo(
+    () => sourceDefaultRefusalReader(themeFiles ?? [], codeComponentPath),
+    [codeComponentPath, themeFiles],
+  );
 
   const [isStylesPreRendered, setIsStylesPreRendered] = useState(false);
   const isInspectorTab = tab === "styles" || tab === "content";
@@ -325,30 +360,29 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
     ) => {
       // Nothing is written into a hidden section from this panel.
       if (contentRefused) return;
-      if (documentSection) {
-        onSectionPropsChange?.(documentSection.id, nextProps, options);
+      if (contentStore === "document" && storedSection) {
+        onSectionPropsChange?.(storedSection.id, nextProps, options);
         return;
       }
 
-      const sourcePath =
-        (selection?.sourceFilePath &&
-        themeFiles?.some((file) => file.path === selection.sourceFilePath)
-          ? selection.sourceFilePath
-          : null) ??
-        (selectedSection?.id &&
-        themeFiles?.some((file) => file.path === selectedSection.id)
-          ? selectedSection.id
-          : null);
-      if (sourcePath) onCodeComponentPropsChange?.(sourcePath, nextProps);
+      if (!codeComponentPath) return;
+      const writable = Object.entries(nextProps).filter(
+        ([fieldKey]) => sourceDefaultRefusal(fieldKey) === null,
+      );
+      if (writable.length === 0) return;
+      onCodeComponentPropsChange?.(
+        codeComponentPath,
+        Object.fromEntries(writable),
+      );
     },
     [
+      codeComponentPath,
       contentRefused,
-      documentSection,
+      contentStore,
       onCodeComponentPropsChange,
       onSectionPropsChange,
-      selectedSection?.id,
-      selection?.sourceFilePath,
-      themeFiles,
+      sourceDefaultRefusal,
+      storedSection,
     ],
   );
   const inspectorContentBasis = useCallback(
@@ -509,36 +543,47 @@ export const EditorAssistantPanel = memo(function EditorAssistantPanel({
           hidden={!isInspectorTab}
           aria-hidden={!isInspectorTab}
         >
-          {selectedSection && !(contentRefused && tab === "content") ? (
-            <EditorStyleInspector
-              sharedLayoutPaths={sharedLayoutPaths}
-              sectionTemplatePaths={sectionTemplatePaths}
-              resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentResetEpoch}`}
-              rowIdTemplateId={activeTemplate?.id}
-              view={tab === "content" ? "content" : "styles"}
-              section={selectedSection}
-              contentStore={contentStore}
-              documentWritesRefused={contentRefused}
-              themeFiles={themeFiles}
-              routeSourcePath={routeSourcePath}
-              onPromoteText={onPromoteText}
-              onCreatePageCopy={onCreatePageCopy}
-              onResetContentFields={onResetContentFields}
-              selection={selection}
-              editableNodes={editableNodes}
-              activeComputedStyleRevision={activeComputedStyleRevision}
-              activeViewport={activeViewport ?? search.viewport}
-              onUpdateThemeFileStyle={onUpdateThemeFileStyle}
-              onPreviewSelectionStyle={onPreviewSelectionStyle}
-              onPreviewSelectionField={onPreviewSelectionField}
-              onRepairThemeLinkBinding={onRepairThemeLinkBinding}
-              onSwitchThemeLinkElement={onSwitchThemeLinkElement}
-              onPropsChange={handleInspectorPropsChange}
-              contentBasis={inspectorContentBasis}
-              inlineTextCommit={inlineTextCommit}
-              onJumpToCode={onJumpToCode}
-              selectionSourceCurrent={selectionSourceCurrent}
-            />
+          {inspectorSection && !(contentRefused && tab === "content") ? (
+            <InspectorCodeDefaultContext.Provider
+              value={
+                tab === "content" && contentStore === "source"
+                  ? codeComponentPath
+                  : null
+              }
+            >
+              <EditorStyleInspector
+                sharedLayoutPaths={sharedLayoutPaths}
+                sectionTemplatePaths={sectionTemplatePaths}
+                resourceKey={`${context.storefront.id}:${context.theme.id}:${activeTemplate?.id ?? ""}:${contentStore}:${contentResetEpoch}`}
+                rowIdTemplateId={activeTemplate?.id}
+                view={tab === "content" ? "content" : "styles"}
+                section={inspectorSection}
+                contentStore={contentStore}
+                sourceDefaultRefusal={
+                  contentStore === "source" ? sourceDefaultRefusal : undefined
+                }
+                documentWritesRefused={contentRefused}
+                themeFiles={themeFiles}
+                routeSourcePath={routeSourcePath}
+                onPromoteText={onPromoteText}
+                onCreatePageCopy={onCreatePageCopy}
+                onResetContentFields={onResetContentFields}
+                selection={selection}
+                editableNodes={editableNodes}
+                activeComputedStyleRevision={activeComputedStyleRevision}
+                activeViewport={activeViewport ?? search.viewport}
+                onUpdateThemeFileStyle={onUpdateThemeFileStyle}
+                onPreviewSelectionStyle={onPreviewSelectionStyle}
+                onPreviewSelectionField={onPreviewSelectionField}
+                onRepairThemeLinkBinding={onRepairThemeLinkBinding}
+                onSwitchThemeLinkElement={onSwitchThemeLinkElement}
+                onPropsChange={handleInspectorPropsChange}
+                contentBasis={inspectorContentBasis}
+                inlineTextCommit={inlineTextCommit}
+                onJumpToCode={onJumpToCode}
+                selectionSourceCurrent={selectionSourceCurrent}
+              />
+            </InspectorCodeDefaultContext.Provider>
           ) : (
             <div className="flex min-h-64 flex-col items-center justify-center px-6 py-10 text-center">
               <div className="flex size-10 items-center justify-center rounded-lg border bg-background shadow-xs">
