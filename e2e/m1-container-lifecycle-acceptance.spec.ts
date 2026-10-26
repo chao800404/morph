@@ -202,32 +202,42 @@ test.describe("M1 container lifecycle acceptance", () => {
   }
 
   test.afterAll(async ({ browser }) => {
-    await harness?.dispose();
-    if (domainId) {
-      const cleanupPage = await signedInPage(browser);
-      try {
-        await cleanupPage.goto("/", { waitUntil: "domcontentloaded" });
-        const cleanupRes = (await serverFn(
-          cleanupPage,
-          DOMAINS,
-          "deleteStorefrontDomains",
-          {
-            ids: [domainId],
-          },
-        )) as { success: boolean; message?: string };
-        expect(cleanupRes.success, cleanupRes.message).toBe(true);
+    try {
+      if (domainId) {
+        const cleanupPage = await signedInPage(browser);
+        try {
+          await cleanupPage.goto("/", { waitUntil: "domcontentloaded" });
+          // Primary domains are guarded from deletion by serverFn business rule.
+          // In this isolated test, the test domain was the first and thus became primary.
+          // Unset is_primary in D1 so deleteStorefrontDomains can execute cleanly.
+          await harness?.writeD1(
+            "UPDATE storefront_domains SET is_primary = 0 WHERE id = ?1",
+            domainId,
+          );
+          const cleanupRes = (await serverFn(
+            cleanupPage,
+            DOMAINS,
+            "deleteStorefrontDomains",
+            {
+              ids: [domainId],
+            },
+          )) as { success: boolean; message?: string };
+          expect(cleanupRes.success, cleanupRes.message).toBe(true);
 
-        const domainRows = (await queryD1(
-          "SELECT id FROM storefront_domains WHERE id = ?1 AND deleted_at IS NULL",
-          domainId,
-        )) as Array<{ id: string }>;
-        expect(
-          domainRows.length,
-          "Cleaned-up domain must not remain in D1",
-        ).toBe(0);
-      } finally {
-        await cleanupPage.context().close();
+          const domainRows = (await queryD1(
+            "SELECT id FROM storefront_domains WHERE id = ?1 AND deleted_at IS NULL",
+            domainId,
+          )) as Array<{ id: string }>;
+          expect(
+            domainRows.length,
+            "Cleaned-up domain must not remain in D1",
+          ).toBe(0);
+        } finally {
+          await cleanupPage.context().close();
+        }
       }
+    } finally {
+      await harness?.dispose();
     }
   });
 
