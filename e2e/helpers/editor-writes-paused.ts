@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import {
   expect,
   test,
@@ -371,8 +374,35 @@ export function restoreHeroAfterFailure() {
   });
 }
 
+function findLocalD1Sqlite(stateDir: string): string | null {
+  const d1Dir = join(stateDir, "v3/d1/miniflare-D1DatabaseObject");
+  if (!existsSync(d1Dir)) return null;
+  const match = readdirSync(d1Dir).find(
+    (name) => name.endsWith(".sqlite") && name !== "metadata.sqlite",
+  );
+  return match ? join(d1Dir, match) : null;
+}
+
 /** The run's own database, as `scripts/seed-e2e.mjs` reaches it. */
 export function runSql(command: string) {
+  const stateDir = process.env.MORPH_E2E_STATE_DIR;
+  if (stateDir) {
+    const sqlitePath = findLocalD1Sqlite(stateDir);
+    if (!sqlitePath) {
+      throw new Error(
+        `runSql could not find D1 SQLite in MORPH_E2E_STATE_DIR: ${stateDir}`,
+      );
+    }
+    console.log(`[runSql] target SQLite database: ${sqlitePath}`);
+    const db = new Database(sqlitePath, { timeout: 10_000 });
+    try {
+      db.exec(command);
+      return;
+    } finally {
+      db.close();
+    }
+  }
+
   const env =
     (process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") === "local-sidecar"
       ? ["--env", "local_preview_e2e"]
@@ -386,8 +416,6 @@ export function runSql(command: string) {
       "DATABASE",
       "--local",
       ...env,
-      "--persist-to",
-      process.env.MORPH_E2E_STATE_DIR!,
       "--command",
       command,
     ],
