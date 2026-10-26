@@ -18,6 +18,7 @@
     "initial-code-publish.spec.ts": 21.8,
     "leave-before-save.spec.ts": 60.1,
     "loader-data-binding.spec.ts": 0,
+    "m1-container-lifecycle-acceptance.spec.ts": 0,
     "local-code-sync.spec.ts": 69.8,
     "lost-editor-writes.spec.ts": 119.3,
     "media-svg.spec.ts": 24,
