@@ -44,7 +44,7 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * - Runs only under cloudflare-sandbox transport and full Start preview runtime.
  * - Skipped runs NEVER count as passed evidence.
  * - Relative generation progression:
- *     draftGeneration: g0 -> g1 (g0+1, edit) -> g2 (g1+2, pub1) -> g3 (g2+1, edit2) -> g4 (g3+2, pub2) -> g4 (rollback)
+ *     draftGeneration: g0 -> g1 (g0+1, edit) -> g2 (g1+2, pub1) -> g3 (g2+1, edit2) -> g4 (g3+1 indep / g3+2 dep, pub2) -> g4 (rollback)
  *     releaseGeneration: rg0 -> rg0+1 (pub1) -> rg0+1 (edit2) -> rg0+2 (pub2) -> rg0+2 (rollback)
  * - Proves Starter version = 29 (STOREFRONT_STARTER_TEMPLATE_VERSION).
  * - Proves contentDependency from actual build output without premature assumptions.
@@ -580,7 +580,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     }
 
     // Raw D1 Diff Assertions for Step 4:
-    // draftGeneration: g3 -> g3 + 2 (alwaysPrepare + publish increments)
+    // draftGeneration: if build was triggered (dependent), g3 + 2; if build was reused (independent), g3 + 1
     // draftHeroHeading: contentB
     // publishedHeroHeading: contentB
     // published_revision_id: advances to draftRevisionB
@@ -588,7 +588,9 @@ test.describe("M1 container lifecycle acceptance", () => {
     // active_release_id: advances to release2
     const snap4 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     const g4 = snap4.template.draftGeneration;
-    expect(g4).toBe(g3 + 2);
+    expect(g4).toBe(
+      identities.contentDependency2 === "dependent" ? g3 + 2 : g3 + 1,
+    );
     expect(snap4.template.draftHeroHeading).toBe(contentB);
     expect(snap4.template.publishedHeroHeading).toBe(contentB);
     expect(snap4.template.publishedRevisionId).toBe(identities.draftRevisionB);
