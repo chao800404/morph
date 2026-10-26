@@ -120,14 +120,23 @@ test.describe("M1 container lifecycle acceptance", () => {
     storefrontId: string,
   ) {
     const [templateRow] = (await queryD1(
-      "SELECT id, document, draft_revision_id, published_revision_id, draft_generation FROM storefront_theme_templates WHERE id = ?1",
+      `SELECT t.id,
+              t.document AS published_document,
+              t.draft_revision_id,
+              t.published_revision_id,
+              t.draft_generation,
+              r.document AS draft_document
+         FROM storefront_theme_templates t
+    LEFT JOIN storefront_theme_template_revisions r ON r.id = t.draft_revision_id
+        WHERE t.id = ?1`,
       templateId,
     )) as Array<{
       id: string;
-      document: string;
+      published_document: string | null;
       draft_revision_id: string | null;
       published_revision_id: string | null;
       draft_generation: number;
+      draft_document: string | null;
     }>;
 
     const [themeRow] = (await queryD1(
@@ -147,9 +156,21 @@ test.describe("M1 container lifecycle acceptance", () => {
       active_release_id: string | null;
     }>;
 
-    const parsedDoc = JSON.parse(templateRow?.document ?? "{}");
-    const hero = parsedDoc.sections?.find((s: any) => s.id === "starter-hero");
-    const heroHeading = (hero?.props?.heading ?? hero?.props?.title ?? null) as string | null;
+    const parseHeroHeading = (docJson: string | null | undefined) => {
+      if (!docJson) return null;
+      try {
+        const doc = JSON.parse(docJson);
+        const hero = doc.sections?.find((s: any) => s.id === "starter-hero");
+        return (hero?.props?.heading ?? hero?.props?.title ?? null) as string | null;
+      } catch {
+        return null;
+      }
+    };
+
+    const draftHeroHeading =
+      parseHeroHeading(templateRow?.draft_document) ??
+      parseHeroHeading(templateRow?.published_document);
+    const publishedHeroHeading = parseHeroHeading(templateRow?.published_document);
 
     return {
       template: {
@@ -157,7 +178,8 @@ test.describe("M1 container lifecycle acceptance", () => {
         draftRevisionId: templateRow?.draft_revision_id,
         publishedRevisionId: templateRow?.published_revision_id,
         draftGeneration: Number(templateRow?.draft_generation),
-        heroHeading,
+        draftHeroHeading,
+        publishedHeroHeading,
       },
       theme: {
         releaseGeneration: Number(themeRow?.release_generation),
@@ -268,7 +290,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     const rg0 = snap0.theme.releaseGeneration;
     const initialPublishedRevId = snap0.template.publishedRevisionId;
     const initialDraftRevId = snap0.template.draftRevisionId;
-    const initialHeroHeading = snap0.template.heroHeading;
+    const initialHeroHeading = snap0.template.publishedHeroHeading;
 
     // =========================================================================
     // 1. Design B1 Canvas Field Click & Inspector Sync -> Draft A Write
@@ -343,15 +365,16 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     // Raw D1 Diff Assertions for Step 1:
     // draftGeneration: g0 -> g0 + 1
-    // heroHeading: contentA
+    // draftHeroHeading: contentA
+    // publishedHeroHeading: initial (isolated)
     // draft_revision_id: newly generated id
     // published_revision_id: unchanged
     // releaseGeneration: unchanged (rg0)
     // active_release_id: unchanged (r0)
     const snap1 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap1.template.draftGeneration).toBe(g0 + 1);
-    expect(snap1.template.heroHeading).toBe(contentA);
-    expect(snap1.template.heroHeading).not.toBe(initialHeroHeading);
+    expect(snap1.template.draftHeroHeading).toBe(contentA);
+    expect(snap1.template.publishedHeroHeading).toBe(initialHeroHeading);
     expect(snap1.template.draftRevisionId).not.toBeNull();
     expect(snap1.template.draftRevisionId).not.toBe(initialDraftRevId);
     expect(snap1.template.publishedRevisionId).toBe(initialPublishedRevId);
@@ -389,11 +412,14 @@ test.describe("M1 container lifecycle acceptance", () => {
     // Raw D1 Diff Assertions for Step 2:
     // draftGeneration: g0 + 1 -> g0 + 2
     // published_revision_id: advances to draftRevisionA
+    // draftHeroHeading: contentA
+    // publishedHeroHeading: contentA
     // releaseGeneration: rg0 -> rg0 + 1
     // active_release_id: advances to release1
     const snap2 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap2.template.draftGeneration).toBe(g0 + 2);
-    expect(snap2.template.heroHeading).toBe(contentA);
+    expect(snap2.template.draftHeroHeading).toBe(contentA);
+    expect(snap2.template.publishedHeroHeading).toBe(contentA);
     expect(snap2.template.publishedRevisionId).toBe(identities.draftRevisionA);
     expect(snap2.theme.releaseGeneration).toBe(rg0 + 1);
     expect(snap2.storefront.activeReleaseId).toBe(release1);
@@ -494,14 +520,16 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     // Raw D1 Diff Assertions for Step 3:
     // draftGeneration: g0 + 2 -> g0 + 3
-    // heroHeading: draftB
+    // draftHeroHeading: draftB
+    // publishedHeroHeading: contentA (still Release 1 published document!)
     // draft_revision_id: new id, not draftRevisionA
     // published_revision_id: unchanged (still draftRevisionA)
     // releaseGeneration: unchanged (rg0 + 1)
     // active_release_id: unchanged (release1)
     const snap3 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap3.template.draftGeneration).toBe(g0 + 3);
-    expect(snap3.template.heroHeading).toBe(draftB);
+    expect(snap3.template.draftHeroHeading).toBe(draftB);
+    expect(snap3.template.publishedHeroHeading).toBe(contentA);
     expect(snap3.template.draftRevisionId).not.toBeNull();
     expect(snap3.template.draftRevisionId).not.toBe(identities.draftRevisionA);
     expect(snap3.template.publishedRevisionId).toBe(identities.draftRevisionA);
@@ -546,13 +574,15 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     // Raw D1 Diff Assertions for Step 4:
     // draftGeneration: g0 + 3 -> g0 + 4
-    // heroHeading: contentB
+    // draftHeroHeading: contentB
+    // publishedHeroHeading: contentB
     // published_revision_id: advances to draftRevisionB
     // releaseGeneration: rg0 + 1 -> rg0 + 2
     // active_release_id: advances to release2
     const snap4 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap4.template.draftGeneration).toBe(g0 + 4);
-    expect(snap4.template.heroHeading).toBe(contentB);
+    expect(snap4.template.draftHeroHeading).toBe(contentB);
+    expect(snap4.template.publishedHeroHeading).toBe(contentB);
     expect(snap4.template.publishedRevisionId).toBe(identities.draftRevisionB);
     expect(snap4.theme.releaseGeneration).toBe(rg0 + 2);
     expect(snap4.storefront.activeReleaseId).toBe(release2);
@@ -609,12 +639,14 @@ test.describe("M1 container lifecycle acceptance", () => {
     // releaseGeneration: remains rg0 + 2 (NOT incremented!)
     // draftGeneration: remains g0 + 4 (NOT rolled back!)
     // draft_revision_id: remains draftRevisionB (NOT rolled back!)
+    // draftHeroHeading: remains contentB (NOT rolled back!)
     // published_revision_id: remains draftRevisionB
     const snap5 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap5.storefront.activeReleaseId).toBe(release1);
     expect(snap5.theme.releaseGeneration).toBe(rg0 + 2);
     expect(snap5.template.draftGeneration).toBe(g0 + 4);
     expect(snap5.template.draftRevisionId).toBe(identities.draftRevisionB);
+    expect(snap5.template.draftHeroHeading).toBe(contentB);
     expect(snap5.template.publishedRevisionId).toBe(identities.draftRevisionB);
 
     const stateAfterRollback = await publishedState();
