@@ -9,6 +9,7 @@ import { queryRunD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 import {
   clickExposedElement,
+  enableSelection,
   openContentTab,
   previewFrame,
   settleSelection,
@@ -170,6 +171,13 @@ test.describe("M1 container lifecycle acceptance", () => {
     };
   }
 
+  async function ensureSelection(page: import("@playwright/test").Page) {
+    const enable = page.getByRole("button", { name: "Enable section selection" });
+    if (await enable.isVisible().catch(() => false)) {
+      await enableSelection(page);
+    }
+  }
+
   test.afterAll(async ({ browser }) => {
     await harness?.dispose();
     if (domainId) {
@@ -265,6 +273,8 @@ test.describe("M1 container lifecycle acceptance", () => {
     // =========================================================================
     // 1. Design B1 Canvas Field Click & Inspector Sync -> Draft A Write
     // =========================================================================
+    await ensureSelection(page);
+
     const heroSectionA = previewFrame(page).locator(
       '[data-storefront-section-id="starter-hero"]',
     );
@@ -297,6 +307,14 @@ test.describe("M1 container lifecycle acceptance", () => {
       .locator('[data-slot="inspector-content-field"]')
       .filter({ hasText: /heading|title/i })
       .first();
+    if (!(await inspectorFieldA.isVisible().catch(() => false))) {
+      const heroButton = page.getByRole("button", { name: "hero", exact: true });
+      if (await heroButton.isVisible().catch(() => false)) {
+        await heroButton.click();
+        await settleSelection(page);
+        await openContentTab(page);
+      }
+    }
     await expect(
       inspectorFieldA,
       "Inspector heading/title field must be visible",
@@ -424,6 +442,8 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     // Perform second B1 canvas click and Inspector edit -> Draft B
     await openEditor(page);
+    await ensureSelection(page);
+
     const heroSectionB = previewFrame(page).locator(
       '[data-storefront-section-id="starter-hero"]',
     );
@@ -450,6 +470,14 @@ test.describe("M1 container lifecycle acceptance", () => {
       .locator('[data-slot="inspector-content-field"]')
       .filter({ hasText: /heading|title/i })
       .first();
+    if (!(await inspectorFieldB.isVisible().catch(() => false))) {
+      const heroButton = page.getByRole("button", { name: "hero", exact: true });
+      if (await heroButton.isVisible().catch(() => false)) {
+        await heroButton.click();
+        await settleSelection(page);
+        await openContentTab(page);
+      }
+    }
     await expect(inspectorFieldB).toBeVisible({ timeout: 30_000 });
 
     const inputB = inspectorFieldB.locator("input, textarea").first();
