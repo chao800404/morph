@@ -1,18 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   verifyStartPlan,
   verifyStartReport,
   verifyStartWorkflow,
+  verifyStartShardReports,
 } from "./check-e2e-start.mjs";
 import {
   START_PREVIEW_EXPECTED_SKIPS,
+  START_PREVIEW_SHARDS,
   START_PREVIEW_SPECS,
-  startPreviewCommand,
+  startPreviewFilesForShard,
 } from "./editor-e2e-start.mjs";
 
 const GATE = "process.env.MORPH_E2E_PREVIEW_RUNTIME";
+
+test("the B1 binding acceptance suite is part of full Start verification", () => {
+  assert.ok(START_PREVIEW_SPECS.includes("binding-acceptance-c.spec.ts"));
+  assert.ok(START_PREVIEW_SPECS.includes("binding-acceptance-p.spec.ts"));
+});
 
 // The plan: every spec reading the gate is run or excluded with a reason.
 const sources = {
@@ -90,21 +100,38 @@ test("a job running other files, or not checking its report, fails", () => {
     () =>
       verifyStartWorkflow(
         workflow.replace(
-          `run: ${startPreviewCommand()}`,
+          "run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}",
           "run: pnpm test:e2e:local-preview -- e2e/loader-data-binding.spec.ts",
         ),
       ),
-    /must run exactly/,
+    /exact file plan/,
   );
   assert.throws(
     () =>
       verifyStartWorkflow(
         workflow.replace(
-          "run: node scripts/check-e2e-start.mjs test-results/full-start.json",
+          "run: node scripts/check-e2e-start.mjs test-results/full-start-${{ matrix.shard }}.json ${{ matrix.shard }}",
           "run: true",
         ),
       ),
     /check its report/,
+  );
+});
+test("Start shards allocate every file once and keep a separate aggregate gate", () => {
+  assert.deepEqual(START_PREVIEW_SHARDS.flat(), START_PREVIEW_SPECS);
+  assert.equal(new Set(START_PREVIEW_SPECS).size, START_PREVIEW_SPECS.length);
+  assert.ok(START_PREVIEW_SHARDS.every((shard) => shard.length > 0));
+  assert.deepEqual(startPreviewFilesForShard(2), START_PREVIEW_SHARDS[1]);
+  assert.throws(() => startPreviewFilesForShard(4), /START_SHARD_INVALID/);
+  assert.throws(
+    () =>
+      verifyStartWorkflow(
+        workflow.replace(
+          "needs: editor-e2e-full-start",
+          "needs: editor-e2e-local-preview",
+        ),
+      ),
+    /Missing Start acceptance wiring/,
   );
 });
 test("the Start settings in a shard job do not count for the full Start job", () => {
@@ -214,4 +241,62 @@ test("a skipped or missing precondition fails", () => {
   const missing = passingReport();
   missing.suites.shift();
   assert.throws(() => verifyStartReport(missing), /setup precondition/);
+});
+
+test("aggregate reads every Start shard's latest attempt and rejects missing or failed coverage", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "morph-start-shards-"));
+  const reportFor = (shard) => ({
+    suites: [
+      spec("auth.setup.ts", "authenticate", ["passed"], "setup"),
+      spec(
+        "preview-transport.spec.ts",
+        "transport",
+        ["passed"],
+        "preview-transport",
+      ),
+      ...startPreviewFilesForShard(shard).map((file) =>
+        spec(file, `${file} runs`, ["passed"]),
+      ),
+      ...START_PREVIEW_EXPECTED_SKIPS.filter((skip) =>
+        startPreviewFilesForShard(shard).includes(skip.file),
+      ).map(({ file, title }) => spec(file, title, ["skipped"])),
+    ],
+  });
+  const put = (shard, attempt, report) => {
+    const folder = path.join(
+      directory,
+      `editor-e2e-full-start-${shard}-attempt-${attempt}`,
+    );
+    mkdirSync(folder);
+    writeFileSync(
+      path.join(folder, `full-start-${shard}.json`),
+      JSON.stringify(report),
+    );
+  };
+  try {
+    put(1, 1, reportFor(1));
+    assert.throws(
+      () => verifyStartShardReports(directory),
+      /Missing report for Start shard 2/,
+    );
+    put(2, 1, reportFor(2));
+    assert.throws(
+      () => verifyStartShardReports(directory),
+      /Missing report for Start shard 3/,
+    );
+    put(3, 1, reportFor(3));
+    assert.deepEqual(
+      verifyStartShardReports(directory).map((result) => result.passed),
+      [3, 2, 1],
+    );
+    const bad = reportFor(2);
+    bad.suites[2] = spec(startPreviewFilesForShard(2)[0], "failed", ["failed"]);
+    put(2, 2, bad);
+    assert.throws(
+      () => verifyStartShardReports(directory),
+      /START_TEST_NOT_PASSED/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

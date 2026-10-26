@@ -34,7 +34,11 @@ import {
   REQUIRED_CHECK,
 } from "./ship.mjs";
 import { EDITOR_SHARD_COUNT } from "./editor-e2e-shards.mjs";
-import { EXPECTED_CI_CHECKS } from "./ci-required-checks.mjs";
+import {
+  EXPECTED_CI_CHECKS,
+  START_PREVIEW_SHARD_CHECKS,
+  VALIDATION_CHECKS,
+} from "./ci-required-checks.mjs";
 
 const guard = (conclusion, status = "COMPLETED") => ({
   name: "Architecture guards",
@@ -63,11 +67,13 @@ const success = (name) => ({
 });
 // Every check a complete CI run reports, all green.
 const allGreen = () => EXPECTED_CI_CHECKS.map(success);
-// The non-E2E checks a run reports, green: guard, validate and full Start.
+// All checks outside the client-preview shard matrix and its acceptance job.
 const baseGreen = () => [
   guard("SUCCESS"),
   other("SUCCESS"),
+  ...VALIDATION_CHECKS.map(success),
   success(FULL_START),
+  ...START_PREVIEW_SHARD_CHECKS.map(success),
 ];
 const without = (checks, name) => checks.filter((check) => check.name !== name);
 const replaced = (checks, name, patch) =>
@@ -78,7 +84,9 @@ describe("the expected set of checks", () => {
     assert.deepEqual(EXPECTED_CI_CHECKS, [
       "Architecture guards",
       "Typecheck, test, build",
+      ...VALIDATION_CHECKS,
       FULL_START,
+      ...START_PREVIEW_SHARD_CHECKS,
       ...shardChecks().map((check) => check.name),
       ACCEPTANCE,
     ]);
@@ -88,21 +96,55 @@ describe("the expected set of checks", () => {
     assert.equal(verdict(allGreen()), "merge");
   });
 
-  it("does not merge without Typecheck, test, build", () => {
+  it("waits for the validation aggregate after its children succeed", () => {
     const {
       verdict: v,
       reason,
       missing,
     } = decide(without(allGreen(), "Typecheck, test, build"));
-    assert.equal(v, "refuse");
-    assert.equal(reason, "EXPECTED_CHECK_MISSING");
+    assert.equal(v, "wait");
+    assert.equal(reason, undefined);
     assert.deepEqual(missing, ["Typecheck, test, build"]);
   });
 
-  it("does not merge without the full Start job", () => {
+  it("waits for the full Start aggregate after both shards succeeded", () => {
     const { verdict: v, missing } = decide(without(allGreen(), FULL_START));
-    assert.equal(v, "refuse");
+    assert.equal(v, "wait");
     assert.deepEqual(missing, [FULL_START]);
+  });
+
+  it("refuses a missing or non-success Start shard even if the aggregate is green", () => {
+    for (const name of START_PREVIEW_SHARD_CHECKS) {
+      const missing = decide(without(allGreen(), name));
+      assert.equal(missing.verdict, "refuse", name);
+      assert.deepEqual(missing.missing, [name]);
+      for (const conclusion of ["FAILURE", "CANCELLED", "TIMED_OUT", "SKIPPED"])
+        assert.equal(
+          verdict(replaced(allGreen(), name, { conclusion })),
+          "refuse",
+          `${name}: ${conclusion}`,
+        );
+    }
+  });
+
+  it("requires every validation child even when the aggregate reports success", () => {
+    for (const name of VALIDATION_CHECKS) {
+      const missing = decide(without(allGreen(), name));
+      assert.equal(missing.verdict, "refuse", name);
+      assert.deepEqual(missing.missing, [name]);
+      for (const conclusion of [
+        "FAILURE",
+        "CANCELLED",
+        "TIMED_OUT",
+        "SKIPPED",
+      ]) {
+        assert.equal(
+          verdict(replaced(allGreen(), name, { conclusion })),
+          "refuse",
+          `${name}: ${conclusion}`,
+        );
+      }
+    }
   });
 
   it("does not merge when no shard check was reported at all", () => {
@@ -118,13 +160,13 @@ describe("the expected set of checks", () => {
   });
 
   it("refuses a renamed job: the new name does not stand in for the old", () => {
-    const renamed = replaced(allGreen(), "Typecheck, test, build", {
-      name: "Typecheck and test",
+    const renamed = replaced(allGreen(), "Validation build", {
+      name: "Renamed build",
     });
     const result = decide(renamed);
     assert.equal(result.verdict, "refuse");
     assert.equal(result.reason, "EXPECTED_CHECK_MISSING");
-    assert.deepEqual(result.missing, ["Typecheck, test, build"]);
+    assert.deepEqual(result.missing, ["Validation build"]);
   });
 
   it("refuses a rollup with the old three-shard names", () => {
@@ -397,7 +439,10 @@ describe("the polling loop's next step", () => {
     );
     assert.equal(failed.action, "fail");
     assert.match(failed.message, /^CHECK_NOT_GREEN:/);
-    const missing = step(without(allGreen(), FULL_START), before);
+    const missing = step(
+      without(allGreen(), START_PREVIEW_SHARD_CHECKS[0]),
+      before,
+    );
     assert.equal(missing.action, "fail");
     assert.match(missing.message, /^EXPECTED_CHECK_MISSING:/);
   });
@@ -626,9 +671,7 @@ describe("a commit with more than one workflow run", () => {
     conclusion,
   });
   const run = (id, acceptanceCheck) => [
-    inRun(id, guard("SUCCESS")),
-    inRun(id, other("SUCCESS")),
-    inRun(id, success(FULL_START)),
+    ...baseGreen().map((check) => inRun(id, check)),
     ...shardChecks().map((check) => inRun(id, check)),
     inRun(id, acceptanceCheck),
   ];

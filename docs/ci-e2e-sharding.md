@@ -134,7 +134,48 @@ the missing checks named. Skipped or neutral is not success. There is no
 required-only shortcut: `MORPH_SHIP_REQUIRED_ONLY` was removed, and ship stops
 before pushing if it is set. Branch protection is unchanged.
 
-Typecheck, Vitest and Build remain in their existing job for this first stage.
+## Full Start preview whole-file shards (2026-10-23, three shards 2026-10-24)
+
+The full Start preview is separate from the six client-only shards. CI run
+39934613168 reached the 30-minute job limit with this suite still running;
+a local full Start run with B1's acceptance spec took 39.2 minutes, of which
+the acceptance file took 21.8 minutes.
+
+Run 40064325081 (head 356566c, main dd90d87) measured the two-shard plan:
+shard 1/2 took 15m20s and shard 2/2 took 28m02s, 1m58s under the 30-minute
+ceiling, with `binding-acceptance.spec.ts` executing 24/24 in shard 2. That is
+too close to the ceiling, so B1's acceptance suite is split into two physical
+files by case family: `binding-acceptance-c.spec.ts` (c1, c2, c3, c4a, c5,
+c6a) and `binding-acceptance-p.spec.ts` (p1-p6), each running the same
+Inspector and inline walks. The case list and expected targets are unchanged;
+a `--list` comparison before and after the split shows the same 24 test titles,
+12 per file.
+
+`START_PREVIEW_SHARDS` now allocates whole files to three independent jobs:
+
+1. `loader-data-binding.spec.ts`, `native-compat-preview.spec.ts`
+   (15m20s measured for this pair);
+2. `spread-override-binding.spec.ts`, `binding-acceptance-c.spec.ts`;
+3. `binding-acceptance-p.spec.ts`.
+
+Each job uses one Playwright worker, zero retries, and its own disposable
+database and sidecar. The job timeout and every test assertion are unchanged.
+The shard 2 and 3 projections come from the measured 24/24 run and the split;
+the first CI run on the three-shard plan records their actual durations, and
+the plan may be rebalanced from that report.
+
+The original `Editor E2E full Start preview` check remains as an aggregate.
+It requires all three matrix jobs to succeed and rechecks their latest-attempt
+JSON reports, including setup and preview transport, the complete file plan,
+and the three documented design skips. `pnpm ship` waits for all three shard
+checks and the aggregate. A missing, failed, cancelled, or skipped shard cannot
+be accepted as a passing full Start run.
+
+The client-only plan lists both acceptance files in shard 6, so the executed
+test set is unchanged. Their split durations were not measured before the
+split; the next rebalance should use that run's reports.
+
+Typecheck, Vitest, and Build are split into parallel validation jobs by #293.
 Wall-clock savings and runner-minute costs must be measured on the new CI;
 more runners are not a guarantee of a proportional speedup.
 

@@ -92,7 +92,11 @@ import {
   saveStorefrontThemeFile,
   saveStorefrontThemeFilesBatch,
 } from "@/server/storefront/storefront-theme-files.serverFn";
-import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+// Types only: the editor component and Monaco itself come from the bundled
+// runtime, loaded on demand (editor-code-monaco-loader.ts).
+import type { Monaco, OnMount } from "@monaco-editor/react";
+import { useEditorCodeMonaco } from "./editor-code-monaco-loader";
+import { EditorCodeMonacoStatus } from "./editor-code-monaco-status";
 import { PointerActivationConstraints } from "@dnd-kit/dom";
 import {
   DragDropProvider,
@@ -181,6 +185,7 @@ import { planRollbackBufferReset } from "@/lib/storefront/editor/rollback-buffer
 import {
   createSentCodeWrites,
   draftAfterConfirmedWrite,
+  draftAfterLostWriteSettled,
   syncBufferToServer,
 } from "@/lib/storefront/editor/code-save-confirmation";
 import { planThemeFileCopies } from "@/lib/storefront/editor/theme-file-copy";
@@ -554,6 +559,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   // `monaco-editor` just to name them.
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
+  // Starts loading the bundled Monaco when the workspace mounts. Until it is
+  // ready the editor pane shows its state; drafts stay where they are.
+  const { state: monacoLoad, retry: retryMonacoLoad } = useEditorCodeMonaco();
+  const MonacoEditor =
+    monacoLoad.status === "ready" ? monacoLoad.runtime.Editor : null;
   const completionProviderRef = useRef<{ dispose: () => void } | null>(null);
   const routeCompletionProviderRef = useRef<{ dispose: () => void } | null>(
     null,
@@ -1423,8 +1433,19 @@ const EditorCodeWorkspaceContent = forwardRef<
       // consumers without that boundary still need the full restart hook.
       if (!onSaveFile || isThemePublicPath(saved.path)) onRestartPreview?.();
     },
-    onSettled: (_saved, _error, variables) => {
-      sentWritesRef.current.answered(variables);
+    onSettled: (_saved, error, variables) => {
+      const file = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        variables.path
+      ];
+      // No answer came, and the store holds it as unconfirmed: whether it
+      // landed is found out later, and that finding confirms only this write.
+      if (error && file?.unconfirmedContent === variables.content) {
+        sentWritesRef.current.lost(variables);
+      } else {
+        sentWritesRef.current.answered(variables);
+      }
     },
     onError: (err, variables) => {
       if (isEditorWritePaused(err)) {
@@ -2988,10 +3009,29 @@ const EditorCodeWorkspaceContent = forwardRef<
     );
 
     return useThemeWorkspaceStore.subscribe(() => {
-      const next = useThemeWorkspaceStore
-        .getState()
-        .getDirtyFiles(workspaceScope);
-      syncCombinedDirtyPaths(next);
+      const state = useThemeWorkspaceStore.getState();
+      const workspaceFiles = state.getWorkspaceFiles(
+        workspaceScope.storefrontId,
+        workspaceScope.themeId,
+      );
+      // A lost write's outcome became known (a reload or `confirmLostSave`).
+      // Decided here, as the store changes and for every file, before the
+      // editor renders on the new baseline — as `onSuccess` does for an
+      // answered write.
+      for (const write of sentWritesRef.current.settleLost(
+        (lost) =>
+          workspaceFiles[lost.path]?.unconfirmedContent === lost.content,
+      )) {
+        const draft = draftAfterLostWriteSettled({
+          lost: write.content,
+          serverContent: workspaceFiles[write.path]?.serverContent,
+          draft: draftContentsRef.current[write.path],
+        });
+        if (draft !== "untouched") {
+          draftDirtyRef.current[write.path] = draft === "dirty";
+        }
+      }
+      syncCombinedDirtyPaths(state.getDirtyFiles(workspaceScope));
     });
   }, [syncCombinedDirtyPaths, workspaceScope]);
 
@@ -4675,8 +4715,13 @@ const EditorCodeWorkspaceContent = forwardRef<
 
         {/* Monaco Editor Container */}
         <div className="flex-1 min-h-0 relative">
-          {activeFile ? (
-            <Editor
+          {activeFile && monacoLoad.status !== "ready" ? (
+            <EditorCodeMonacoStatus
+              state={monacoLoad}
+              onRetry={retryMonacoLoad}
+            />
+          ) : activeFile && MonacoEditor ? (
+            <MonacoEditor
               height="100%"
               path={getThemeModelUri(workspaceScope, activeFilePath)}
               language={getLanguage(activeFilePath)}

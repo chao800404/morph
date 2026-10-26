@@ -5,6 +5,7 @@ import type {
   StorefrontThemeStatus,
 } from "@/db/storefront.schema";
 import type { ThemePreviewRuntime } from "@/lib/storefront/theme-preview-runtime";
+import type { ThemeRouteSectionResult } from "../compiler/theme-route-sections";
 
 export interface StorefrontThemeEditorDTO {
   previewChannel?: {
@@ -58,6 +59,8 @@ export interface StorefrontThemeEditorDTO {
      */
     routePath?: string | null;
     document: StorefrontPageDocument;
+    /** Source-derived view only; never a replacement for the stored document. */
+    routeStructure?: ThemeRouteSectionResult | null;
     draftRevisionId: string | null;
     publishedRevisionId: string | null;
     draftGeneration: number;

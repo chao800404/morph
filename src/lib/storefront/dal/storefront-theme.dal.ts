@@ -31,6 +31,12 @@ import type { z } from "zod";
 import { normalizeDocumentRowIds } from "@/lib/storefront/editor/normalize-row-ids";
 import { sameContent } from "@/lib/storefront/editor/pending-content-write";
 import { resolveThemeContentCapabilities } from "@/lib/storefront/theme-content-capability-resolver";
+import {
+  analyzeB1Route,
+  findB1WriteProvenanceFailure,
+  type B1Claim,
+} from "@/lib/storefront/ast/theme-content-provenance";
+import { normalizeThemeSourcePath } from "@/lib/storefront/ast/theme-content-binding";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   isPublishAlreadyLive,
@@ -39,8 +45,9 @@ import {
 import {
   deriveThemeLayoutSections,
   deriveThemeRouteSections,
-  mergeDocumentWithRouteSections,
+  type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
+import { templateSectionWriteBase } from "../content/template-section-write-base";
 import {
   contentTargetForRoutePath,
   routeTemplatePathForRequest,
@@ -114,29 +121,20 @@ function findBoundTemplateRoute(
   );
 }
 
-function deriveTemplateDocumentFromRoutes(args: {
+function deriveTemplateRouteStructure(args: {
   type: string;
   /** Set for a document one route owns; that route, not a guess by type. */
   routePath?: string | null;
-  document: import("@/db/storefront.schema").StorefrontPageDocument;
   files: readonly { path: string; content: string }[];
-}) {
+}): ThemeRouteSectionResult | null {
+  if (args.type === "layout") return deriveThemeLayoutSections(args.files);
   const registry = buildThemeRouteRegistry(args.files);
-  if (!registry.valid) return args.document;
+  if (!registry.valid) return null;
   const route = args.routePath
     ? findBoundTemplateRoute(registry, args.routePath)
     : findDefaultTemplateRoute(registry, args.type);
-  if (!route) return args.document;
-  const derived = deriveThemeRouteSections(args.files, route.sourcePath);
-  if (
-    derived.diagnostics.length > 0 ||
-    (derived.sections.length === 0 && !derived.hasContentImport)
-  ) {
-    return args.document;
-  }
-  return mergeDocumentWithRouteSections(args.document, derived.sections, {
-    routeOwnsStructure: derived.hasContentImport,
-  });
+  if (!route) return null;
+  return deriveThemeRouteSections(args.files, route.sourcePath);
 }
 
 type SectionSourceComponent =
@@ -884,17 +882,20 @@ export const storefrontThemeDal = {
           // without having to remember to ask. The repair reaches the database
           // when the author's first real edit is saved, in the same batch and
           // for the same generation as the edit itself.
+          // Binding analysis is a view of source, not a content allowlist.
+          // Preview reads and every content writer share this stored base;
+          // filtering here would persist the projection on the next edit.
           document: normalizeDocumentRowIds(
-            deriveTemplateDocumentFromRoutes({
-              type: template.type,
-              routePath: template.routePath,
-              document: storefrontPageDocumentSchema.parse(
-                typeof document === "string" ? JSON.parse(document) : document,
-              ),
-              files: themeSourceFiles,
-            }),
+            storefrontPageDocumentSchema.parse(
+              typeof document === "string" ? JSON.parse(document) : document,
+            ),
             template.id,
           ).value,
+          routeStructure: deriveTemplateRouteStructure({
+            type: template.type,
+            routePath: template.routePath,
+            files: themeSourceFiles,
+          }),
           draftRevisionId: template.draftRevisionId,
           publishedRevisionId: template.publishedRevisionId,
           draftGeneration: template.draftGeneration ?? 1,
@@ -1051,7 +1052,24 @@ export const storefrontThemeDal = {
     );
     if (!template) return null;
 
-    const currentIds = template.document.sections.map((section) => section.id);
+    // The editor cannot choose a position for content it cannot bind. Refuse
+    // the whole reorder, without writing, rather than moving or losing it.
+    const structure = template.routeStructure;
+    const routeOwnsOrder =
+      structure && (structure.hasContentImport || structure.sections.length > 0);
+    if (structure?.diagnostics.length) return null;
+    if (routeOwnsOrder) {
+      const boundIds = new Set(
+        structure.sections.map((section) => section.slotId),
+      );
+      if (template.document.sections.some((section) => !boundIds.has(section.id))) {
+        return null;
+      }
+    }
+
+    const currentIds = routeOwnsOrder
+      ? structure.sections.map((section) => section.slotId)
+      : template.document.sections.map((section) => section.id);
     if (
       currentIds.length !== data.sectionIds.length ||
       new Set(currentIds).size !== new Set(data.sectionIds).size ||
@@ -1074,7 +1092,12 @@ export const storefrontThemeDal = {
     );
     const document = storefrontPageDocumentSchema.parse({
       ...template.document,
-      sections: data.sectionIds.map((id) => sectionById.get(id)),
+      // Unedited route slots are still virtual. Ordering them must not
+      // fabricate content; only rearrange the stored slots that remain.
+      sections: data.sectionIds.flatMap((id) => {
+        const section = sectionById.get(id);
+        return section ? [section] : [];
+      }),
     });
 
     return writeTemplateDocument({
@@ -1121,7 +1144,8 @@ export const storefrontThemeDal = {
       (item) => item.id === data.templateId,
     );
     if (!template) return null;
-    if (!template.document.sections.some((s) => s.id === data.sectionId)) {
+    const baseDocument = templateSectionWriteBase(template, data.sectionId);
+    if (!baseDocument.sections.some((s) => s.id === data.sectionId)) {
       return null;
     }
 
@@ -1137,8 +1161,8 @@ export const storefrontThemeDal = {
 
     const trimmed = data.name?.trim() ?? "";
     const document = storefrontPageDocumentSchema.parse({
-      ...template.document,
-      sections: template.document.sections.map((section) => {
+      ...baseDocument,
+      sections: baseDocument.sections.map((section) => {
         if (section.id !== data.sectionId) return section;
         const { name: _previous, ...rest } = section;
         return trimmed ? { ...rest, name: trimmed } : rest;
@@ -1330,16 +1354,21 @@ export const storefrontThemeDal = {
       throw new Error(SELECTION_SOURCE_CONFLICT);
     }
 
-    const targetSection = template.document.sections.find(
+    const baseDocument = templateSectionWriteBase(template, data.sectionId);
+    const targetSection = baseDocument.sections.find(
       (section) => section.id === data.sectionId,
     );
     if (!targetSection) return null;
 
+    const themeSourceFiles = await listThemeSourceFiles(
+      data.storefrontId,
+      data.themeId,
+    );
     const sourceComponent = resolveSectionSourceComponent({
       templateType: template.type,
       templateRoutePath: template.routePath ?? null,
       sectionId: data.sectionId,
-      files: await listThemeSourceFiles(data.storefrontId, data.themeId),
+      files: themeSourceFiles,
       routePath: data.routePath,
     });
     if (sourceComponent.kind === "unconfirmed") {
@@ -1351,6 +1380,64 @@ export const storefrontThemeDal = {
       sourceComponent.kind === "confirmed"
         ? sourceComponent.componentRef
         : (targetSection.componentRef ?? null);
+
+    // In a route-backed Theme, derive the write mapping again from the exact
+    // source snapshot used to resolve this section. Canvas metadata is only a
+    // locator: it cannot authorize or redirect a Document write.
+    const b1ProofRequired =
+      template.type !== "layout" &&
+      sourceComponent.kind === "confirmed" &&
+      sourceComponent.callSitePath.startsWith("src/routes/");
+    let b1Claims: ReadonlyMap<
+      string,
+      Extract<B1Claim, { kind: "claim" }> | null
+    > = new Map();
+    if (b1ProofRequired) {
+      const sourceAnalysis = analyzeB1Route(
+        themeSourceFiles.filter(
+          (file): file is typeof file & { content: string } =>
+            typeof file.content === "string",
+        ),
+        sourceComponent.callSitePath,
+      );
+      const normalizedComponentPath = normalizeThemeSourcePath(
+        sourceComponent.componentSourcePath,
+      );
+      const matchingInstances = sourceAnalysis.instances.filter(
+        (instance) =>
+          instance.section === data.sectionId &&
+          instance.componentPath !== null &&
+          normalizeThemeSourcePath(instance.componentPath) ===
+            normalizedComponentPath,
+      );
+      // A confirmed route-backed section must also have one exact B1 source
+      // instance. Missing, duplicate or diagnostically ambiguous provenance
+      // leaves an empty proof map, so every capability-allowed write fails
+      // closed below; it never falls back to a name-based/legacy guess.
+      if (matchingInstances.length === 1 && sourceAnalysis.diagnostics.length === 0) {
+        const instance = matchingInstances[0]!;
+        const claimsByStoredField = new Map<
+          string,
+          Extract<B1Claim, { kind: "claim" }> | null
+        >();
+        for (const claim of Object.values(instance.claims)) {
+          if (claim.kind !== "claim" || claim.slot !== data.sectionId) {
+            continue;
+          }
+          const previous = claimsByStoredField.get(claim.field);
+          if (previous === undefined) {
+            claimsByStoredField.set(claim.field, claim);
+          } else if (
+            previous === null ||
+            JSON.stringify(previous.conditional) !==
+              JSON.stringify(claim.conditional)
+          ) {
+            claimsByStoredField.set(claim.field, null);
+          }
+        }
+        b1Claims = claimsByStoredField;
+      }
+    }
 
     const manifestState = await env.DATABASE.prepare(
       `
@@ -1423,6 +1510,28 @@ export const storefrontThemeDal = {
       null;
 
     const { enabled: propEnabled, ...restProps } = data.props;
+    if (b1ProofRequired) {
+      const b1Failure = findB1WriteProvenanceFailure({
+        sectionId: data.sectionId,
+        allowedFields: sectionContentFieldKeys(
+          targetSection.type,
+          resolvedComponentRef,
+          themeCapabilities,
+        ),
+        requestedFields: [
+        ...Object.keys(restProps),
+        ...(data.resetProps ?? []),
+        ],
+        claimsByStoredField: b1Claims,
+        storedProps:
+          (targetSection.props as Record<string, unknown> | null) ?? null,
+      });
+      if (b1Failure) {
+        throw new Error(
+          `${INVALID_CONTENT_FIELD_ERROR}:${b1Failure.field}:${b1Failure.reason}`,
+        );
+      }
+    }
     // Asset references are resolved against the library before anything is
     // stored: the shape validation upstream only checks that the id parses,
     // not that it names an asset of the right kind, and it takes the URL on
@@ -1504,8 +1613,8 @@ export const storefrontThemeDal = {
     );
 
     const document = storefrontPageDocumentSchema.parse({
-      ...template.document,
-      sections: template.document.sections.map((section) =>
+      ...baseDocument,
+      sections: baseDocument.sections.map((section) =>
         section.id === data.sectionId
           ? {
               ...section,

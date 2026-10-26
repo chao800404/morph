@@ -258,7 +258,7 @@ describe("the bridge says on ready that it reads the section a selection-field p
       "postPreviewToEditorMessage",
       "reportStructure",
       "window",
-      "PREVIEW_CAPABILITIES",
+      "BRIDGE_CAPABILITIES",
       `${reportReady}; reportReady();`,
     )(
       { targetOrigin: "http://localhost:3000", previewSession: "s" },
@@ -271,7 +271,7 @@ describe("the bridge says on ready that it reads the section a selection-field p
     expect(posted).toEqual([
       {
         type: "morph:storefront-preview-ready",
-        capabilities: ["selection-field-section"],
+        capabilities: [...PREVIEW_CAPABILITIES],
       },
     ]);
   });

@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { TailwindClassTokenInput } from "./tailwind-class-token-input";
 import {
   getFieldPathValue,
+  type ContentBindingState,
   setFieldPathValue,
   type ContentUnavailableReason,
   type EditorSelectionDescriptor,
@@ -59,6 +60,10 @@ import {
 } from "@/lib/storefront/ast/tailwind-token-engine";
 import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
+  deriveThemeDocumentLayoutPath,
+  readSlotPropsSetInCode,
+} from "@/lib/storefront/compiler/theme-route-sections";
+import {
   isThemeLinkFieldBound,
   resolveLinkFieldKeysForRenderedField,
   patchThemeLinkBinding,
@@ -81,6 +86,10 @@ import {
   type ObjectPositionUnavailableReason,
 } from "@/lib/storefront/ast/object-position-binding";
 import { analyzeTextPromotion } from "@/lib/storefront/editor/text-promotion";
+import {
+  describeSourceDefaultRefusal,
+  type SourceDefaultRefusal,
+} from "@/lib/storefront/editor/source-default-control";
 import { sourceLocationKey } from "@/lib/storefront/ast/source-location-key";
 import { EditorCodeTextNotice } from "./editor-code-text-notice";
 import type {
@@ -106,9 +115,11 @@ import {
   Type,
 } from "lucide-react";
 import {
+  createContext,
   Fragment,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -276,6 +287,12 @@ type EditorStyleInspectorProps = {
    * list or a link there renders controls whose every keystroke is discarded.
    */
   contentStore?: "document" | "source";
+  /**
+   * With `contentStore` `source`: why rewriting a field's default would not
+   * change what the canvas shows, or null when it would. A field refused here
+   * is shown as controlled by code, with no control to edit it.
+   */
+  sourceDefaultRefusal?: (fieldKey: string) => SourceDefaultRefusal | null;
   themeFiles?: StorefrontThemeFileDTO[];
   /** The route being edited, to find the page that renders the section. */
   routeSourcePath?: string | null;
@@ -406,6 +423,20 @@ const CONTENT_BLOCKED_MESSAGES: Record<
     "This element's data-storefront-field names one field, but it shows another, so the editor will not guess which one an edit belongs to. The page previews and builds as written; edit this text in Code, or remove the attribute so the editor follows what the element shows.",
   "marker-unproven":
     "This element's data-storefront-field names a field, but the editor cannot trace what the element shows back to it (for example, the value passes through a local first). The page previews and builds as written; edit this text in Code for now.",
+};
+
+const CONTENT_BINDING_STATE_MESSAGES: Record<
+  Exclude<ContentBindingState, "cms-field">,
+  string
+> = {
+  "code-default":
+    "This is the component's code default. Design edits it in the component source, not as page content.",
+  "not-cms":
+    "This value is set in Theme code, not stored as CMS content. Design will not save it as page content.",
+  untraced:
+    "This value's source has not been traced. Design cannot safely associate it with a CMS field, so content editing is disabled.",
+  derived:
+    "This value can resolve to CMS data or Theme code depending on a spread or code transformation. Design cannot safely map the rendered value to one editable field, so direct visual editing is disabled.",
 };
 
 const STRING_IMAGE_FIELD_HINT =
@@ -815,6 +846,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   resourceKey = "",
   section,
   contentStore = "document",
+  sourceDefaultRefusal,
   themeFiles,
   routeSourcePath = null,
   onPromoteText,
@@ -946,8 +978,35 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     setTimeout(syncShownEpochs, 0);
   };
   /** Every content change, with the copy the focused input was made on. */
+  /**
+   * Fields of this section the page's code sets at the call site, after the
+   * section's content spread (`readSlotPropsSetInCode`):
+   * `<Hero {...content("hero")} title={other.title} />` shows `other.title`,
+   * whatever `hero.title` holds. A stored edit to such a field would change
+   * nothing on the page, so the panel offers no control for it and says the
+   * code sets it, and no write to it leaves here. `"any"` when a later spread
+   * may set any of them.
+   */
+  const propsSetInCode = useMemo(() => {
+    if (contentStore !== "document" || !themeFiles) return null;
+    const layoutPath = deriveThemeDocumentLayoutPath(themeFiles);
+    const paths = [routeSourcePath, layoutPath].filter(
+      (path): path is string => typeof path === "string" && path.length > 0,
+    );
+    return paths.length > 0
+      ? readSlotPropsSetInCode(themeFiles, paths, section.id)
+      : null;
+  }, [contentStore, routeSourcePath, section.id, themeFiles]);
+  const isSetInCode = useCallback(
+    (fieldKey: string) =>
+      propsSetInCode === "any" || (propsSetInCode?.has(fieldKey) ?? false),
+    [propsSetInCode],
+  );
   const onPropsChange = useCallback(
     (next: Record<string, unknown>, options?: InspectorPropsChangeOptions) => {
+      // Every write names the field it is for; one the code sets is not sent.
+      const root = options?.inputFieldPath?.split(".")[0];
+      if (propsSetInCode === "any" || (root && isSetInCode(root))) return;
       const basis = earlierBasis(
         options?.basisDraftGeneration,
         contentFocusRef.current?.basis,
@@ -959,7 +1018,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           : { ...options, basisDraftGeneration: basis },
       );
     },
-    [emitPropsChange],
+    [emitPropsChange, isSetInCode, propsSetInCode],
   );
   // The selected row, confirmed by its `id` against the rows as they are now:
   // its index may have moved since the click, and a write to the index as
@@ -981,6 +1040,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   const contentBlockedReason:
     ContentUnavailableReason | SelectedRowRefusal | null =
     selectedRowRefused ?? selection?.contentUnavailable ?? null;
+  const contentBindingState = selection?.bindingState ?? null;
+  const contentBindingBlocksWrite =
+    contentBindingState !== null &&
+    contentBindingState !== "cms-field" &&
+    contentBindingState !== "code-default";
   /**
    * The list a row selected without an id belongs to.
    *
@@ -998,7 +1062,8 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       : null;
   /** Whether nothing may be written: blocked, with no list offered instead. */
   const contentWritesBlocked = Boolean(
-    contentBlockedReason && !unconfirmedRowListKey,
+    (contentBlockedReason && !unconfirmedRowListKey) ||
+      contentBindingBlocksWrite,
   );
   const contentBlockedRef = useRef(contentWritesBlocked);
   contentBlockedRef.current = contentWritesBlocked;
@@ -1105,6 +1170,11 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         if (binding.sectionId !== null && binding.sectionId !== section.id) {
           return [];
         }
+        if (
+          isSetInCode((binding.fieldPath ?? binding.fieldKey).split(".")[0]!)
+        ) {
+          return [];
+        }
         const rebased = rebaseSelectedRowPath(
           binding.fieldPath,
           binding.itemId ?? selection?.itemId,
@@ -1115,7 +1185,13 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
           ? [binding]
           : [{ ...binding, fieldPath: rebased.fieldPath ?? binding.fieldPath }];
       }),
-    [props, section.id, selection?.descendantFields, selection?.itemId],
+    [
+      isSetInCode,
+      props,
+      section.id,
+      selection?.descendantFields,
+      selection?.itemId,
+    ],
   );
   // Memoized because a `useMemo` downstream lists this among its dependencies,
   // and a Set rebuilt on every render is a new value every time — which made
@@ -1124,13 +1200,24 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     () => new Set(descendantFields.map((binding) => binding.fieldKey)),
     [descendantFields],
   );
+  /**
+   * Why a field is controlled by code, or null. Only a component with no
+   * Document section is asked: its values are its source defaults, and a
+   * default the page overrides is not what the canvas shows.
+   */
+  const codeControlledReason = (
+    fieldKey: string,
+  ): SourceDefaultRefusal | null =>
+    contentStore === "source"
+      ? (sourceDefaultRefusal?.(fieldKey) ?? null)
+      : null;
   const showField = (...keys: string[]) =>
-    !isSelectedNode ||
-    keys.includes(selectedField ?? "") ||
-    keys.some((key) => descendantFieldKeys.has(key)) ||
-    (activeFieldPath
-      ? keys.includes(activeFieldPath.split(".").pop() ?? "")
-      : false);
+    !keys.some((key) => codeControlledReason(key) !== null) &&    (!isSelectedNode ||
+      keys.includes(selectedField ?? "") ||
+      keys.some((key) => descendantFieldKeys.has(key)) ||
+      (activeFieldPath
+        ? keys.includes(activeFieldPath.split(".").pop() ?? "")
+        : false));
   const fieldValue = (key: string): unknown =>
     activeFieldPath && activeFieldPath.endsWith("." + key)
       ? getFieldPathValue(props, activeFieldPath)
@@ -1308,7 +1395,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
     const file = themeFiles?.find((f) => f.path === contentSourcePath);
     return file?.content ? parseComponentSource(file.content, file.path) : null;
   }, [componentPath, contentSourcePath, parsedMeta, themeFiles]);
-  const resolvedContentFields = useMemo<
+  const declaredOrDefaultContentFields = useMemo<
     Record<string, ThemeContentFieldDefinition>
   >(() => {
     const declared = themeContentCapability?.fields ?? {};
@@ -1331,6 +1418,18 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
       ]),
     ) as Record<string, ThemeContentFieldDefinition>;
   }, [contentMeta?.defaultProps, themeContentCapability?.fields]);
+  const contentFieldsSetInCode = Object.entries(
+    declaredOrDefaultContentFields,
+  ).filter(([fieldKey]) => isSetInCode(fieldKey));
+  const resolvedContentFields = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(declaredOrDefaultContentFields).filter(
+          ([fieldKey]) => !isSetInCode(fieldKey),
+        ),
+      ) as Record<string, ThemeContentFieldDefinition>,
+    [declaredOrDefaultContentFields, isSetInCode],
+  );
   /**
    * Whether a field can be saved where this section's content is stored.
    *
@@ -1507,6 +1606,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         ([fieldKey, definition]) =>
           !SPECIALIZED_CONTENT_FIELD_KEYS.has(fieldKey) &&
           isWritableContentField(definition) &&
+          codeControlledReason(fieldKey) === null &&
           (!isSelectedNode ||
             selectedField === fieldKey ||
             selectedArrayRow?.fieldKey === fieldKey ||
@@ -1525,6 +1625,40 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
   );
   const declaredContentFieldLabel = (fieldKey: string, fallback: string) =>
     resolvedContentFields[fieldKey]?.label ?? fallback;
+  /**
+   * The fields this selection reaches that are controlled by code, each with
+   * its reason: drawn in place of the control they would otherwise have, so
+   * the author sees why the field is not editable here instead of a box that
+   * saves a default the page never shows.
+   */
+  const codeControlledFields = (() => {
+    if (contentStore !== "source" || !sourceDefaultRefusal) return [];
+    const candidates = new Set<string>(Object.keys(resolvedContentFields));
+    if (selectedField) candidates.add(selectedField);
+    for (const binding of descendantFields) candidates.add(binding.fieldKey);
+    return [...candidates].flatMap((fieldKey) => {
+      const reason = codeControlledReason(fieldKey);
+      if (!reason) return [];
+      const reached =
+        !isSelectedNode ||
+        selectedField === fieldKey ||
+        activeElementKey === fieldKey ||
+        descendantFieldKeys.has(fieldKey) ||
+        descendantRootFieldKeys.has(fieldKey);
+      const definition = resolvedContentFields[fieldKey];
+      // Lists and links are already listed as edited in code, for their type.
+      if (!reached || (definition && !isWritableContentField(definition))) {
+        return [];
+      }
+      return [
+        {
+          fieldKey,
+          label: definition?.label ?? fieldKey.replace(/[-_]/g, " "),
+          reason,
+        },
+      ];
+    });
+  })();
   const declaredContentFieldMaxLength = (fieldKey: string) => {
     const definition = resolvedContentFields[fieldKey];
     return definition &&
@@ -2912,6 +3046,27 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         </div>
       ) : null}
 
+      {view === "content" &&
+      !contentWritesBlocked &&
+      codeControlledFields.length > 0 ? (
+        <div className="space-y-2">
+          {codeControlledFields.map(({ fieldKey, label, reason }) => (
+            <div
+              key={fieldKey}
+              data-slot="inspector-code-controlled-field"
+              data-field-key={fieldKey}
+              data-reason={reason}
+              className="rounded-xl border border-dashed p-3"
+            >
+              <p className="text-xs font-medium capitalize">{label}</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                Controlled by code. {describeSourceDefaultRefusal(reason)}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {view === "content" && contentBlockedReason ? (
         <div
           data-slot="inspector-content-unavailable"
@@ -2919,6 +3074,22 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         >
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             {CONTENT_BLOCKED_MESSAGES[contentBlockedReason]}
+          </p>
+        </div>
+      ) : null}
+
+      {view === "content" &&
+      contentBindingState !== null &&
+      contentBindingState !== "cms-field" &&
+      contentBindingState !== "code-default" ? (
+        <div
+          data-testid="inspector-content-binding-state"
+          data-binding-state={contentBindingState}
+          className="rounded-xl border border-dashed p-3"
+          role="status"
+        >
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {CONTENT_BINDING_STATE_MESSAGES[contentBindingState]}
           </p>
         </div>
       ) : null}
@@ -2935,9 +3106,32 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
         />
       ) : null}
 
+      {view === "content" && contentFieldsSetInCode.length > 0 ? (
+        <div
+          data-slot="inspector-code-set-fields"
+          className="rounded-xl border border-dashed p-3"
+        >
+          <p className="text-xs font-medium">Set in code on this page</p>
+          <ul className="mt-1 list-disc pl-4 text-xs text-muted-foreground">
+            {contentFieldsSetInCode.map(([fieldKey, definition]) => (
+              <li key={fieldKey}>
+                {definition.label ?? fieldKey.replace(/[-_]/g, " ")}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {propsSetInCode === "any"
+              ? "This page's code spreads other values after this section's content, and those can replace any of its fields, so the page may not show what is stored. "
+              : "This page's code passes its own value for these fields after this section's content, so the page shows the code's value, not the stored one. "}
+            Edit them in Code; the other fields here are stored as usual.
+          </p>
+        </div>
+      ) : null}
+
       {view === "content" &&
       !contentWritesBlocked &&
       !hasEditableContent &&
+      contentFieldsSetInCode.length === 0 &&
       !textPromotion ? (
         <div className="rounded-xl border border-dashed p-4 text-center">
           <p className="text-xs text-muted-foreground">
@@ -4034,6 +4228,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                 selectedField &&
                 !isDeclaredContentField(selectedField) &&
                 !SPECIALIZED_CONTENT_FIELD_KEYS.has(selectedField) &&
+                codeControlledReason(selectedField) === null &&
                 (typeof fieldValue(selectedField) === "object" &&
                 fieldValue(selectedField) !== null ? (
                   Object.entries(
@@ -4096,6 +4291,7 @@ export const EditorStyleInspector = memo(function EditorStyleInspector({
                   .filter(
                     (binding) =>
                       !SPECIALIZED_CONTENT_FIELD_KEYS.has(binding.fieldKey) &&
+                      codeControlledReason(binding.fieldKey) === null &&
                       // Not one the declared list has already drawn. Selecting
                       // a container reports its fields as descendants while
                       // the declaration renders the same names, so an author
@@ -5297,6 +5493,15 @@ const inspectorFieldHintClassName = "text-[11px] text-muted-foreground";
 const inspectorContentCardClassName =
   "w-full min-w-0 space-y-2 rounded-lg border p-1.5 transition-all";
 
+/**
+ * The component file whose code defaults the content fields edit, when they
+ * edit defaults rather than this page's content: a component with no
+ * Document section behind it, under the page stand-in or elsewhere. Every
+ * field then says so, so a default is never mistaken for this page's own
+ * CMS value. Provided by the panel that decides where the edit is written.
+ */
+export const InspectorCodeDefaultContext = createContext<string | null>(null);
+
 /** One surface for a simple text/number/boolean content field. */
 const inspectorContentFieldClassName =
   "w-full min-w-0 space-y-1 rounded-lg border p-1.5 shadow-xs transition-all duration-150";
@@ -5645,7 +5850,8 @@ function InspectorField({
   onReset?: () => void;
   children: React.ReactNode;
 }) {
-  const labelElement = (
+  const codeDefaultFile = useContext(InspectorCodeDefaultContext);
+  const labelText = (
     <label
       className={cn(
         inspectorFieldLabelClassName,
@@ -5656,9 +5862,26 @@ function InspectorField({
       {label}
     </label>
   );
+  // A code default edits the component for every place that renders it
+  // without a value of its own; it is not this page's content.
+  const labelElement = codeDefaultFile ? (
+    <div className="flex flex-wrap items-center justify-between gap-1">
+      {labelText}
+      <span
+        data-slot="inspector-code-default-badge"
+        title={`Saved into ${codeDefaultFile}. Every place that renders this component without a value of its own shows it. It is not this page's content.`}
+        className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      >
+        Component code default
+      </span>
+    </div>
+  ) : (
+    labelText
+  );
   return (
     <div
       data-slot="inspector-content-field"
+      data-content-store={codeDefaultFile ? "source-default" : "document"}
       className={cn(
         inspectorContentFieldClassName,
         isFocused
