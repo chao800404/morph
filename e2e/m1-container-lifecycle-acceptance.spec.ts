@@ -7,7 +7,12 @@ import { expect, test } from "@playwright/test";
 
 import { queryRunD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
-import { clickExposedElement, openContentTab, previewFrame } from "./helpers";
+import {
+  clickExposedElement,
+  openContentTab,
+  previewFrame,
+  settleSelection,
+} from "./helpers";
 import {
   DOMAINS,
   RELEASES,
@@ -15,7 +20,9 @@ import {
   latestRelease,
   openEditor,
   publishShowingRelease,
+  savedField,
   serverFn,
+  signedInPage,
   storefrontFetcher,
   storefrontHarness,
 } from "./native-acceptance";
@@ -30,7 +37,7 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * 3. Domain provisioning, 8799 Storefront verification & Draft B edit -> Public draft isolation
  * 4. Sandbox native Build & Publish -> Release 2
  * 5. OCC CAS re-activation of Release 1 (active pointer rollback, no theme generation bump)
- * 6. Storefront reload & sealed content/asset verification
+ * 6. Storefront reload & sealed content/mandatory asset verification
  *
  * Requirements:
  * - Runs only under cloudflare-sandbox transport and full Start preview runtime.
@@ -41,6 +48,8 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * - Proves Starter version = 29 (STOREFRONT_STARTER_TEMPLATE_VERSION).
  * - Proves contentDependency from actual build output without premature assumptions.
  * - Connects public domain before draft isolation assertions.
+ * - Mandatory static asset HTTP 200 assertion.
+ * - Domain cleanup in afterAll uses authenticated session (signedInPage).
  */
 
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
@@ -104,15 +113,75 @@ test.describe("M1 container lifecycle acceptance", () => {
     }
   }
 
+  async function queryLifecycleSnapshot(
+    templateId: string,
+    themeId: string,
+    storefrontId: string,
+  ) {
+    const [templateRow] = (await queryD1(
+      "SELECT id, document, draft_revision_id, published_revision_id, draft_generation FROM storefront_theme_templates WHERE id = ?1",
+      templateId,
+    )) as Array<{
+      id: string;
+      document: string;
+      draft_revision_id: string | null;
+      published_revision_id: string | null;
+      draft_generation: number;
+    }>;
+
+    const [themeRow] = (await queryD1(
+      "SELECT release_generation, source_generation, published_source_revision_id, metadata FROM storefront_themes WHERE id = ?1",
+      themeId,
+    )) as Array<{
+      release_generation: number;
+      source_generation: number;
+      published_source_revision_id: string | null;
+      metadata: string;
+    }>;
+
+    const [sfRow] = (await queryD1(
+      "SELECT active_release_id FROM storefronts WHERE id = ?1",
+      storefrontId,
+    )) as Array<{
+      active_release_id: string | null;
+    }>;
+
+    const parsedDoc = JSON.parse(templateRow?.document ?? "{}");
+    const hero = parsedDoc.sections?.find((s: any) => s.id === "starter-hero");
+    const heroHeading = (hero?.props?.heading ?? hero?.props?.title ?? null) as string | null;
+
+    return {
+      template: {
+        id: templateRow?.id,
+        draftRevisionId: templateRow?.draft_revision_id,
+        publishedRevisionId: templateRow?.published_revision_id,
+        draftGeneration: Number(templateRow?.draft_generation),
+        heroHeading,
+      },
+      theme: {
+        releaseGeneration: Number(themeRow?.release_generation),
+        sourceGeneration: Number(themeRow?.source_generation),
+        publishedSourceRevisionId: themeRow?.published_source_revision_id,
+        metadata: JSON.parse(themeRow?.metadata ?? "{}"),
+      },
+      storefront: {
+        activeReleaseId: sfRow?.active_release_id ?? null,
+      },
+    };
+  }
+
   test.afterAll(async ({ browser }) => {
     await harness?.dispose();
     if (domainId) {
-      const page = await browser.newPage();
-      await page.goto("/", { waitUntil: "domcontentloaded" });
-      await serverFn(page, DOMAINS, "deleteStorefrontDomains", {
-        ids: [domainId],
-      });
-      await page.close();
+      const cleanupPage = await signedInPage(browser);
+      try {
+        await cleanupPage.goto("/", { waitUntil: "domcontentloaded" });
+        await serverFn(cleanupPage, DOMAINS, "deleteStorefrontDomains", {
+          ids: [domainId],
+        });
+      } finally {
+        await cleanupPage.context().close();
+      }
     }
   });
 
@@ -156,87 +225,122 @@ test.describe("M1 container lifecycle acceptance", () => {
     const relCount0 = initialPublished.releases;
     const r0 = initialPublished.active;
 
+    const [indexTemplateRow] = (await queryD1(
+      "SELECT id FROM storefront_theme_templates WHERE theme_id = ?1 AND type = 'index' AND deleted_at IS NULL",
+      scope!.themeId,
+    )) as Array<{ id: string }>;
+    expect(
+      indexTemplateRow?.id,
+      "Home template of type index must exist in D1",
+    ).toBeDefined();
+
     await openEditor(page);
     const ctx0 = await editorContext(page, scope!);
-    const home0 = ctx0.templates.find((t) => t.id && t.document);
-    expect(home0, "Home template must exist in editor context").toBeDefined();
+    const home0 = ctx0.templates.find(
+      (t) => t.id === indexTemplateRow.id && t.document,
+    );
+    expect(
+      home0,
+      "Home template of type index must exist in editor context",
+    ).toBeDefined();
     if (!home0) throw new Error("Home template missing");
 
     identities.templateId = home0.id;
 
-    // Verify Starter Template Version is 29 on the tested head
-    const [themeRow] = await queryD1(
-      "SELECT metadata, release_generation, source_generation, published_source_revision_id FROM storefront_themes WHERE id = ?1",
-      scope!.themeId,
-    );
-    const themeMetadata = JSON.parse(
-      (themeRow as { metadata?: string })?.metadata ?? "{}",
-    );
+    // Snapshot 0: Verify Starter Template Version is 29 on the tested head
+    const snap0 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(
-      themeMetadata.starterTemplateVersion,
+      snap0.theme.metadata.starterTemplateVersion,
       "Tested head must record Starter Template Version 29",
     ).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
-    identities.sourceRevisionId =
-      (themeRow as { published_source_revision_id?: string })
-        ?.published_source_revision_id ?? "";
+    identities.sourceRevisionId = snap0.theme.publishedSourceRevisionId ?? "";
 
-    const [homeRow0] = await queryD1(
-      "SELECT draft_generation, published_revision_id, draft_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    const g0 = Number((homeRow0 as any).draft_generation);
-    const rg0 = ctx0.theme.releaseGeneration;
-    const initialPublishedRevId = (homeRow0 as any).published_revision_id;
+    const g0 = snap0.template.draftGeneration;
+    const rg0 = snap0.theme.releaseGeneration;
+    const initialPublishedRevId = snap0.template.publishedRevisionId;
+    const initialDraftRevId = snap0.template.draftRevisionId;
+    const initialHeroHeading = snap0.template.heroHeading;
 
     // =========================================================================
     // 1. Design B1 Canvas Field Click & Inspector Sync -> Draft A Write
     // =========================================================================
-    const exposedA = previewFrame(page)
-      .locator('[data-storefront-field="title"], h1[data-storefront-field]')
-      .first();
-    await expect(exposedA).toBeVisible({ timeout: 45_000 });
+    const heroSectionA = previewFrame(page).locator(
+      '[data-storefront-section-id="starter-hero"]',
+    );
+    await expect(
+      heroSectionA,
+      "Starter hero section must exist on canvas",
+    ).toBeVisible({ timeout: 45_000 });
 
-    const clickedA = await clickExposedElement(page, exposedA);
+    const heroTitleA = heroSectionA
+      .locator(
+        '[data-storefront-field="heading"], [data-storefront-field="title"], h1',
+      )
+      .first();
+    await expect(
+      heroTitleA,
+      "Hero title/heading element must exist on canvas",
+    ).toBeVisible({ timeout: 30_000 });
+
+    await heroTitleA.scrollIntoViewIfNeeded();
+    const clickedA = await clickExposedElement(page, heroTitleA);
     expect(
       clickedA,
-      "Canvas exposed element with data-storefront-field was clicked",
+      "Canvas exposed hero title element was clicked",
     ).not.toBeNull();
 
+    await settleSelection(page);
     await openContentTab(page);
-    const inputA = page
-      .locator('[data-slot="inspector-content-field"] input')
-      .first();
-    await expect(inputA).toBeVisible({ timeout: 30_000 });
 
-    const canvasTextBefore = (await exposedA.textContent())?.trim();
-    const inspectorValBefore = await inputA.inputValue();
-    if (canvasTextBefore) {
-      expect(inspectorValBefore).toBe(canvasTextBefore);
+    const inspectorFieldA = page
+      .locator('[data-slot="inspector-content-field"]')
+      .filter({ hasText: /heading|title/i })
+      .first();
+    await expect(
+      inspectorFieldA,
+      "Inspector heading/title field must be visible",
+    ).toBeVisible({ timeout: 30_000 });
+
+    const inputA = inspectorFieldA.locator("input, textarea").first();
+    await expect(
+      inputA,
+      "Inspector input for heading/title must be visible",
+    ).toBeVisible({ timeout: 30_000 });
+
+    const canvasTextBeforeA = (await heroTitleA.textContent())?.trim();
+    const inspectorValBeforeA = await inputA.inputValue();
+    if (canvasTextBeforeA) {
+      expect(inspectorValBeforeA).toBe(canvasTextBeforeA);
     }
 
     await inputA.fill(contentA);
     await inputA.press("Tab");
 
+    await savedField(page, scope!, contentA);
+
     await expect(
-      previewFrame(page).getByText(contentA, { exact: false }).first(),
+      heroSectionA.getByText(contentA, { exact: false }).first(),
     ).toBeVisible({ timeout: 30_000 });
 
-    // Assert relative generation advancement after draft edit: g0 -> g0 + 1
-    const [homeRow1] = await queryD1(
-      "SELECT draft_generation, draft_revision_id, published_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    expect(Number((homeRow1 as any).draft_generation)).toBe(g0 + 1);
+    // Raw D1 Diff Assertions for Step 1:
+    // draftGeneration: g0 -> g0 + 1
+    // heroHeading: contentA
+    // draft_revision_id: newly generated id
+    // published_revision_id: unchanged
+    // releaseGeneration: unchanged (rg0)
+    // active_release_id: unchanged (r0)
+    const snap1 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snap1.template.draftGeneration).toBe(g0 + 1);
+    expect(snap1.template.heroHeading).toBe(contentA);
+    expect(snap1.template.heroHeading).not.toBe(initialHeroHeading);
+    expect(snap1.template.draftRevisionId).not.toBeNull();
+    expect(snap1.template.draftRevisionId).not.toBe(initialDraftRevId);
+    expect(snap1.template.publishedRevisionId).toBe(initialPublishedRevId);
+    expect(snap1.theme.releaseGeneration).toBe(rg0);
+    expect(snap1.storefront.activeReleaseId).toBe(r0);
 
-    const ctx1 = await editorContext(page, scope!);
-    expect(ctx1.theme.releaseGeneration).toBe(rg0);
-
-    identities.draftRevisionA = (homeRow1 as any).draft_revision_id;
-    expect(identities.draftRevisionA).not.toBeNull();
-    expect((homeRow1 as any).published_revision_id).toBe(
-      initialPublishedRevId,
-    );
+    identities.draftRevisionA = snap1.template.draftRevisionId;
 
     // =========================================================================
     // 2. Container Native Build & Publish -> Release 1
@@ -264,18 +368,17 @@ test.describe("M1 container lifecycle acceptance", () => {
       expect(relBuild1.releaseContent).toBe(relBuild1.buildContent);
     }
 
-    // Publish advances both draftGeneration (g0+1 -> g0+2) and releaseGeneration (rg0 -> rg0+1)
-    const [homeRow2] = await queryD1(
-      "SELECT draft_generation, published_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    expect(Number((homeRow2 as any).draft_generation)).toBe(g0 + 2);
-    expect((homeRow2 as any).published_revision_id).toBe(
-      identities.draftRevisionA,
-    );
-
-    const ctx2 = await editorContext(page, scope!);
-    expect(ctx2.theme.releaseGeneration).toBe(rg0 + 1);
+    // Raw D1 Diff Assertions for Step 2:
+    // draftGeneration: g0 + 1 -> g0 + 2
+    // published_revision_id: advances to draftRevisionA
+    // releaseGeneration: rg0 -> rg0 + 1
+    // active_release_id: advances to release1
+    const snap2 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snap2.template.draftGeneration).toBe(g0 + 2);
+    expect(snap2.template.heroHeading).toBe(contentA);
+    expect(snap2.template.publishedRevisionId).toBe(identities.draftRevisionA);
+    expect(snap2.theme.releaseGeneration).toBe(rg0 + 1);
+    expect(snap2.storefront.activeReleaseId).toBe(release1);
 
     const stateAfterPub1 = await publishedState();
     expect(stateAfterPub1.active).toBe(release1);
@@ -306,49 +409,78 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(contentRes1.status).toBe(200);
     expect(contentRes1.body).toContain(contentA);
 
+    // Mandatory static asset HTTP 200 assertion
     const assetMatches1 = /(?:href|src)="(\/assets\/[^"]+)"/.exec(res1.body);
-    const asset1 = assetMatches1 ? assetMatches1[1] : null;
-    if (asset1) {
-      const assetRes1 = await storefront(asset1);
-      expect(assetRes1.status).toBe(200);
-    }
+    expect(
+      assetMatches1,
+      "Public storefront HTML must link built static asset",
+    ).not.toBeNull();
+    const asset1 = assetMatches1![1];
+    const assetRes1 = await storefront(asset1);
+    expect(
+      assetRes1.status,
+      `Static asset ${asset1} must return HTTP 200`,
+    ).toBe(200);
 
     // Perform second B1 canvas click and Inspector edit -> Draft B
     await openEditor(page);
-    const exposedB = previewFrame(page)
-      .locator('[data-storefront-field="title"], h1[data-storefront-field]')
-      .first();
-    await expect(exposedB).toBeVisible({ timeout: 45_000 });
-    const clickedB = await clickExposedElement(page, exposedB);
-    expect(clickedB).not.toBeNull();
+    const heroSectionB = previewFrame(page).locator(
+      '[data-storefront-section-id="starter-hero"]',
+    );
+    await expect(heroSectionB).toBeVisible({ timeout: 45_000 });
 
-    await openContentTab(page);
-    const inputB = page
-      .locator('[data-slot="inspector-content-field"] input')
+    const heroTitleB = heroSectionB
+      .locator(
+        '[data-storefront-field="heading"], [data-storefront-field="title"], h1',
+      )
       .first();
+    await expect(heroTitleB).toBeVisible({ timeout: 30_000 });
+
+    await heroTitleB.scrollIntoViewIfNeeded();
+    const clickedB = await clickExposedElement(page, heroTitleB);
+    expect(
+      clickedB,
+      "Canvas hero title element was clicked for Draft B",
+    ).not.toBeNull();
+
+    await settleSelection(page);
+    await openContentTab(page);
+
+    const inspectorFieldB = page
+      .locator('[data-slot="inspector-content-field"]')
+      .filter({ hasText: /heading|title/i })
+      .first();
+    await expect(inspectorFieldB).toBeVisible({ timeout: 30_000 });
+
+    const inputB = inspectorFieldB.locator("input, textarea").first();
     await expect(inputB).toBeVisible({ timeout: 30_000 });
+
     await inputB.fill(draftB);
     await inputB.press("Tab");
 
+    await savedField(page, scope!, draftB);
+
     await expect(
-      previewFrame(page).getByText(draftB, { exact: false }).first(),
+      heroSectionB.getByText(draftB, { exact: false }).first(),
     ).toBeVisible({ timeout: 30_000 });
 
-    // Draft edit advances draftGeneration: g0+2 -> g0+3
-    const [homeRow3] = await queryD1(
-      "SELECT draft_generation, draft_revision_id, published_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    expect(Number((homeRow3 as any).draft_generation)).toBe(g0 + 3);
+    // Raw D1 Diff Assertions for Step 3:
+    // draftGeneration: g0 + 2 -> g0 + 3
+    // heroHeading: draftB
+    // draft_revision_id: new id, not draftRevisionA
+    // published_revision_id: unchanged (still draftRevisionA)
+    // releaseGeneration: unchanged (rg0 + 1)
+    // active_release_id: unchanged (release1)
+    const snap3 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snap3.template.draftGeneration).toBe(g0 + 3);
+    expect(snap3.template.heroHeading).toBe(draftB);
+    expect(snap3.template.draftRevisionId).not.toBeNull();
+    expect(snap3.template.draftRevisionId).not.toBe(identities.draftRevisionA);
+    expect(snap3.template.publishedRevisionId).toBe(identities.draftRevisionA);
+    expect(snap3.theme.releaseGeneration).toBe(rg0 + 1);
+    expect(snap3.storefront.activeReleaseId).toBe(release1);
 
-    identities.draftRevisionB = (homeRow3 as any).draft_revision_id;
-    expect(identities.draftRevisionB).not.toBe(identities.draftRevisionA);
-    expect((homeRow3 as any).published_revision_id).toBe(
-      identities.draftRevisionA,
-    );
-
-    const ctx3 = await editorContext(page, scope!);
-    expect(ctx3.theme.releaseGeneration).toBe(rg0 + 1);
+    identities.draftRevisionB = snap3.template.draftRevisionId;
 
     // Public Draft Isolation Assertion: storefront still serves Content-A, NEVER Draft-B
     const res2 = await storefront(ROUTE);
@@ -384,18 +516,18 @@ test.describe("M1 container lifecycle acceptance", () => {
       expect(relBuild2.releaseContent).toBe(relBuild2.buildContent);
     }
 
-    // Publish advances draftGeneration (g0+3 -> g0+4) and releaseGeneration (rg0+1 -> rg0+2)
-    const [homeRow4] = await queryD1(
-      "SELECT draft_generation, published_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    expect(Number((homeRow4 as any).draft_generation)).toBe(g0 + 4);
-    expect((homeRow4 as any).published_revision_id).toBe(
-      identities.draftRevisionB,
-    );
-
-    const ctx4 = await editorContext(page, scope!);
-    expect(ctx4.theme.releaseGeneration).toBe(rg0 + 2);
+    // Raw D1 Diff Assertions for Step 4:
+    // draftGeneration: g0 + 3 -> g0 + 4
+    // heroHeading: contentB
+    // published_revision_id: advances to draftRevisionB
+    // releaseGeneration: rg0 + 1 -> rg0 + 2
+    // active_release_id: advances to release2
+    const snap4 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snap4.template.draftGeneration).toBe(g0 + 4);
+    expect(snap4.template.heroHeading).toBe(contentB);
+    expect(snap4.template.publishedRevisionId).toBe(identities.draftRevisionB);
+    expect(snap4.theme.releaseGeneration).toBe(rg0 + 2);
+    expect(snap4.storefront.activeReleaseId).toBe(release2);
 
     const stateAfterPub2 = await publishedState();
     expect(stateAfterPub2.active).toBe(release2);
@@ -444,22 +576,22 @@ test.describe("M1 container lifecycle acceptance", () => {
     )) as { success: boolean; message?: string };
     expect(activateRes.success, activateRes.message).toBe(true);
 
-    // Active pointer moves back to release1
+    // Raw D1 Diff Assertions for Step 5:
+    // active_release_id: moves back to release1
+    // releaseGeneration: remains rg0 + 2 (NOT incremented!)
+    // draftGeneration: remains g0 + 4 (NOT rolled back!)
+    // draft_revision_id: remains draftRevisionB (NOT rolled back!)
+    // published_revision_id: remains draftRevisionB
+    const snap5 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snap5.storefront.activeReleaseId).toBe(release1);
+    expect(snap5.theme.releaseGeneration).toBe(rg0 + 2);
+    expect(snap5.template.draftGeneration).toBe(g0 + 4);
+    expect(snap5.template.draftRevisionId).toBe(identities.draftRevisionB);
+    expect(snap5.template.publishedRevisionId).toBe(identities.draftRevisionB);
+
     const stateAfterRollback = await publishedState();
     expect(stateAfterRollback.active).toBe(release1);
     expect(stateAfterRollback.releases).toBe(relCount0 + 2);
-
-    // Confirm Theme releaseGeneration does NOT increase on activation (remains rg0 + 2)
-    const ctx5 = await editorContext(page, scope!);
-    expect(ctx5.theme.releaseGeneration).toBe(rg0 + 2);
-
-    // Template draft remains draftRevisionB and draftGeneration remains g0 + 4 (not rolled back)
-    const [homeRow5] = await queryD1(
-      "SELECT draft_generation, draft_revision_id FROM storefront_theme_templates WHERE id = ?1",
-      home0.id,
-    );
-    expect(Number((homeRow5 as any).draft_generation)).toBe(g0 + 4);
-    expect((homeRow5 as any).draft_revision_id).toBe(identities.draftRevisionB);
 
     // =========================================================================
     // 6. Public Storefront Reload & Rollback Verification
@@ -480,11 +612,17 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(contentRes4.body).toContain(contentA);
     expect(contentRes4.body).not.toContain(contentB);
 
+    // Mandatory static asset HTTP 200 assertion on restored storefront
     const assetMatches4 = /(?:href|src)="(\/assets\/[^"]+)"/.exec(res4.body);
-    const asset4 = assetMatches4 ? assetMatches4[1] : null;
-    if (asset4) {
-      const assetRes4 = await storefront(asset4);
-      expect(assetRes4.status).toBe(200);
-    }
+    expect(
+      assetMatches4,
+      "Restored storefront HTML must link built static asset",
+    ).not.toBeNull();
+    const asset4 = assetMatches4![1];
+    const assetRes4 = await storefront(asset4);
+    expect(
+      assetRes4.status,
+      `Restored static asset ${asset4} must return HTTP 200`,
+    ).toBe(200);
   });
 });
