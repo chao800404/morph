@@ -33,11 +33,11 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * M1 Fixed-Version Container Lifecycle Acceptance
  *
  * Scope:
- * 1. Design B1 canvas field click & Inspector sync -> Draft A write
+ * 1. Design B1 canvas field click & Inspector sync -> Draft A write -> Pre-publish public draft isolation
  * 2. Cloudflare Sandbox native Build & Publish -> Release 1
- * 3. Domain provisioning, 8799 Storefront verification & Draft B edit -> Public draft isolation
+ * 3. 8799 Storefront verification & Draft B edit -> Public draft isolation
  * 4. Sandbox native Build & Publish -> Release 2
- * 5. OCC CAS re-activation of Release 1 (active pointer rollback, no theme generation bump)
+ * 5. OCC CAS re-activation of Release 1 (active pointer rollback, template published_revision_id remains B)
  * 6. Storefront reload & sealed content/mandatory asset verification
  *
  * Requirements:
@@ -78,7 +78,8 @@ const ROUTE = "/";
 type AcceptanceIdentities = {
   themeId: string;
   templateId: string;
-  sourceRevisionId: string;
+  initialSourceRevisionId: string | null;
+  sourceRevisionId: string | null;
   draftRevisionA: string | null;
   build1: string | null;
   pub1: string | null;
@@ -206,9 +207,24 @@ test.describe("M1 container lifecycle acceptance", () => {
       const cleanupPage = await signedInPage(browser);
       try {
         await cleanupPage.goto("/", { waitUntil: "domcontentloaded" });
-        await serverFn(cleanupPage, DOMAINS, "deleteStorefrontDomains", {
-          ids: [domainId],
-        });
+        const cleanupRes = (await serverFn(
+          cleanupPage,
+          DOMAINS,
+          "deleteStorefrontDomains",
+          {
+            ids: [domainId],
+          },
+        )) as { success: boolean; message?: string };
+        expect(cleanupRes.success, cleanupRes.message).toBe(true);
+
+        const domainRows = (await queryD1(
+          "SELECT id FROM storefront_domains WHERE id = ?1 AND deleted_at IS NULL",
+          domainId,
+        )) as Array<{ id: string }>;
+        expect(
+          domainRows.length,
+          "Cleaned-up domain must not remain in D1",
+        ).toBe(0);
       } finally {
         await cleanupPage.context().close();
       }
@@ -227,7 +243,8 @@ test.describe("M1 container lifecycle acceptance", () => {
     const identities: AcceptanceIdentities = {
       themeId: scope!.themeId,
       templateId: "",
-      sourceRevisionId: "",
+      initialSourceRevisionId: null,
+      sourceRevisionId: null,
       draftRevisionA: null,
       build1: null,
       pub1: null,
@@ -284,7 +301,11 @@ test.describe("M1 container lifecycle acceptance", () => {
       "Tested head must record Starter Template Version 29",
     ).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
-    identities.sourceRevisionId = snap0.theme.publishedSourceRevisionId ?? "";
+    identities.initialSourceRevisionId = snap0.theme.publishedSourceRevisionId;
+    expect(
+      identities.initialSourceRevisionId,
+      "Before first publish, theme published_source_revision_id must be null in D1",
+    ).toBeNull();
 
     const g0 = snap0.template.draftGeneration;
     const rg0 = snap0.theme.releaseGeneration;
@@ -384,6 +405,25 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     identities.draftRevisionA = snap1.template.draftRevisionId;
 
+    // Connect storefront domain before Release 1 publish to verify pre-publish draft isolation
+    const domain = (await serverFn(page, DOMAINS, "createStorefrontDomain", {
+      storefrontId: scope!.storefrontId,
+      hostname: HOST,
+    })) as { success: boolean; message?: string; data?: { id: string } };
+    expect(domain.success, domain.message).toBe(true);
+    domainId = domain.data!.id;
+
+    // Public Draft Isolation Assertion BEFORE Release 1:
+    // The public domain is connected, but Release 1 has NOT yet been published.
+    // The storefront router must refuse unreleased traffic (HTTP 404) and strictly MUST NOT leak Draft A.
+    const resPre = await storefront(ROUTE);
+    expect(resPre.status).toBe(404);
+    expect(resPre.body).not.toContain(contentA);
+
+    const contentResPre = await storefront("/_morph/content?path=%2F");
+    expect(contentResPre.status).toBe(404);
+    expect(contentResPre.body).not.toContain(contentA);
+
     // =========================================================================
     // 2. Container Native Build & Publish -> Release 1
     // =========================================================================
@@ -426,21 +466,22 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(snap2.theme.releaseGeneration).toBe(rg0 + 1);
     expect(snap2.storefront.activeReleaseId).toBe(release1);
 
+    // Record and assert publishedSourceRevisionId after Release 1 publish
+    expect(snap2.theme.publishedSourceRevisionId).toBeTruthy();
+    identities.sourceRevisionId = snap2.theme.publishedSourceRevisionId;
+    const [rel1Row] = (await queryD1(
+      "SELECT source_revision_id FROM storefront_releases WHERE id = ?1",
+      release1,
+    )) as Array<{ source_revision_id: string }>;
+    expect(rel1Row?.source_revision_id).toBe(identities.sourceRevisionId);
+
     const stateAfterPub1 = await publishedState();
     expect(stateAfterPub1.active).toBe(release1);
     expect(stateAfterPub1.releases).toBe(relCount0 + 1);
 
     // =========================================================================
-    // 3. Domain Provisioning, Storefront Verification & Draft B Edit
+    // 3. Storefront Verification & Draft B Edit
     // =========================================================================
-    // Connect storefront domain before draft isolation assertion
-    const domain = (await serverFn(page, DOMAINS, "createStorefrontDomain", {
-      storefrontId: scope!.storefrontId,
-      hostname: HOST,
-    })) as { success: boolean; message?: string; data?: { id: string } };
-    expect(domain.success, domain.message).toBe(true);
-    domainId = domain.data!.id;
-
     // Start 8799 Theme Worker for Release 1
     const pub1Info = await serveActiveRelease(contentA, release1, origin);
     expect(pub1Info.releaseId).toBe(release1);
@@ -645,12 +686,16 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(activateRes.success, activateRes.message).toBe(true);
 
     // Raw D1 Diff Assertions for Step 5:
-    // active_release_id: moves back to release1
+    // active_release_id: moves back to release1 (active release pointer rollback)
     // releaseGeneration: remains rg0 + 2 (NOT incremented!)
+    // Note: When Release 2 was published, Revision B became the template's published_revision_id in D1.
+    // The rollback only moves the active release pointer back to Release 1 without touching template rows.
+    // Therefore, published_revision_id remains draftRevisionB (B is already published at template revision level),
+    // while the storefront sales channel runtime is pinned back to Release 1.
     // draftGeneration: remains g4 (NOT rolled back!)
     // draft_revision_id: remains draftRevisionB (NOT rolled back!)
     // draftHeroHeading: remains contentB (NOT rolled back!)
-    // published_revision_id: remains draftRevisionB
+    // published_revision_id: remains draftRevisionB (template-level published revision is unchanged)
     const snap5 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap5.storefront.activeReleaseId).toBe(release1);
     expect(snap5.theme.releaseGeneration).toBe(rg0 + 2);
