@@ -694,5 +694,7 @@ test.describe("M1 container lifecycle acceptance", () => {
       assetRes4.status,
       `Restored static asset ${asset4} must return HTTP 200`,
     ).toBe(200);
+
+    console.log("[M1_ACCEPTANCE_IDENTITIES]", JSON.stringify(identities, null, 2));
   });
 });
