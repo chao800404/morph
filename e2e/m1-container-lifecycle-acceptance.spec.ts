@@ -44,7 +44,7 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * - Runs only under cloudflare-sandbox transport and full Start preview runtime.
  * - Skipped runs NEVER count as passed evidence.
  * - Relative generation progression:
- *     draftGeneration: g0 -> g0+1 (edit) -> g0+2 (pub1) -> g0+3 (edit2) -> g0+4 (pub2) -> g0+4 (rollback)
+ *     draftGeneration: g0 -> g1 (g0+1, edit) -> g2 (g1+2, pub1) -> g3 (g2+1, edit2) -> g4 (g3+2, pub2) -> g4 (rollback)
  *     releaseGeneration: rg0 -> rg0+1 (pub1) -> rg0+1 (edit2) -> rg0+2 (pub2) -> rg0+2 (rollback)
  * - Proves Starter version = 29 (STOREFRONT_STARTER_TEMPLATE_VERSION).
  * - Proves contentDependency from actual build output without premature assumptions.
@@ -372,7 +372,8 @@ test.describe("M1 container lifecycle acceptance", () => {
     // releaseGeneration: unchanged (rg0)
     // active_release_id: unchanged (r0)
     const snap1 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
-    expect(snap1.template.draftGeneration).toBe(g0 + 1);
+    const g1 = snap1.template.draftGeneration;
+    expect(g1).toBe(g0 + 1);
     expect(snap1.template.draftHeroHeading).toBe(contentA);
     expect(snap1.template.publishedHeroHeading).toBe(initialHeroHeading);
     expect(snap1.template.draftRevisionId).not.toBeNull();
@@ -410,14 +411,15 @@ test.describe("M1 container lifecycle acceptance", () => {
     }
 
     // Raw D1 Diff Assertions for Step 2:
-    // draftGeneration: g0 + 1 -> g0 + 2
+    // draftGeneration: g1 -> g1 + 2 (alwaysPrepare + publish increments)
     // published_revision_id: advances to draftRevisionA
     // draftHeroHeading: contentA
     // publishedHeroHeading: contentA
     // releaseGeneration: rg0 -> rg0 + 1
     // active_release_id: advances to release1
     const snap2 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
-    expect(snap2.template.draftGeneration).toBe(g0 + 2);
+    const g2 = snap2.template.draftGeneration;
+    expect(g2).toBe(g1 + 2);
     expect(snap2.template.draftHeroHeading).toBe(contentA);
     expect(snap2.template.publishedHeroHeading).toBe(contentA);
     expect(snap2.template.publishedRevisionId).toBe(identities.draftRevisionA);
@@ -519,7 +521,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     ).toBeVisible({ timeout: 30_000 });
 
     // Raw D1 Diff Assertions for Step 3:
-    // draftGeneration: g0 + 2 -> g0 + 3
+    // draftGeneration: g2 -> g2 + 1
     // draftHeroHeading: draftB
     // publishedHeroHeading: contentA (still Release 1 published document!)
     // draft_revision_id: new id, not draftRevisionA
@@ -527,7 +529,8 @@ test.describe("M1 container lifecycle acceptance", () => {
     // releaseGeneration: unchanged (rg0 + 1)
     // active_release_id: unchanged (release1)
     const snap3 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
-    expect(snap3.template.draftGeneration).toBe(g0 + 3);
+    const g3 = snap3.template.draftGeneration;
+    expect(g3).toBe(g2 + 1);
     expect(snap3.template.draftHeroHeading).toBe(draftB);
     expect(snap3.template.publishedHeroHeading).toBe(contentA);
     expect(snap3.template.draftRevisionId).not.toBeNull();
@@ -573,14 +576,15 @@ test.describe("M1 container lifecycle acceptance", () => {
     }
 
     // Raw D1 Diff Assertions for Step 4:
-    // draftGeneration: g0 + 3 -> g0 + 4
+    // draftGeneration: g3 -> g3 + 2 (alwaysPrepare + publish increments)
     // draftHeroHeading: contentB
     // publishedHeroHeading: contentB
     // published_revision_id: advances to draftRevisionB
     // releaseGeneration: rg0 + 1 -> rg0 + 2
     // active_release_id: advances to release2
     const snap4 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
-    expect(snap4.template.draftGeneration).toBe(g0 + 4);
+    const g4 = snap4.template.draftGeneration;
+    expect(g4).toBe(g3 + 2);
     expect(snap4.template.draftHeroHeading).toBe(contentB);
     expect(snap4.template.publishedHeroHeading).toBe(contentB);
     expect(snap4.template.publishedRevisionId).toBe(identities.draftRevisionB);
@@ -637,14 +641,14 @@ test.describe("M1 container lifecycle acceptance", () => {
     // Raw D1 Diff Assertions for Step 5:
     // active_release_id: moves back to release1
     // releaseGeneration: remains rg0 + 2 (NOT incremented!)
-    // draftGeneration: remains g0 + 4 (NOT rolled back!)
+    // draftGeneration: remains g4 (NOT rolled back!)
     // draft_revision_id: remains draftRevisionB (NOT rolled back!)
     // draftHeroHeading: remains contentB (NOT rolled back!)
     // published_revision_id: remains draftRevisionB
     const snap5 = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
     expect(snap5.storefront.activeReleaseId).toBe(release1);
     expect(snap5.theme.releaseGeneration).toBe(rg0 + 2);
-    expect(snap5.template.draftGeneration).toBe(g0 + 4);
+    expect(snap5.template.draftGeneration).toBe(g4);
     expect(snap5.template.draftRevisionId).toBe(identities.draftRevisionB);
     expect(snap5.template.draftHeroHeading).toBe(contentB);
     expect(snap5.template.publishedRevisionId).toBe(identities.draftRevisionB);
