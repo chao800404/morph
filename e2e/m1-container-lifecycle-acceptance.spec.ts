@@ -207,11 +207,11 @@ test.describe("M1 container lifecycle acceptance", () => {
         const cleanupPage = await signedInPage(browser);
         try {
           await cleanupPage.goto("/", { waitUntil: "domcontentloaded" });
-          // Primary domains are guarded from deletion by serverFn business rule.
-          // In this isolated test, the test domain was the first and thus became primary.
-          // Unset is_primary in D1 so deleteStorefrontDomains can execute cleanly.
+          // Local test stand-in domain has no remote Cloudflare Custom Domain to detach,
+          // and serverFn deleteStorefrontDomains guards against deleting primary domains.
+          // Prepare the domain row so deleteStorefrontDomains executes cleanly through the serverFn.
           await harness?.writeD1(
-            "UPDATE storefront_domains SET is_primary = 0 WHERE id = ?1",
+            "UPDATE storefront_domains SET is_primary = 0, cloudflare_domain_id = NULL WHERE id = ?1",
             domainId,
           );
           const cleanupRes = (await serverFn(
