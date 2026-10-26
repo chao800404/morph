@@ -49,8 +49,11 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * - Proves Starter version = 29 (STOREFRONT_STARTER_TEMPLATE_VERSION).
  * - Proves contentDependency from actual build output without premature assumptions.
  * - Connects public domain before draft isolation assertions.
- * - Mandatory static asset HTTP 200 assertion.
- * - Domain cleanup in afterAll uses authenticated session (signedInPage).
+ * - Inspected asset scope: strictly verifies the static asset (/assets/...) linked in the home page HTML returns HTTP 200 (does not claim uninspected global asset coverage).
+ * - Teardown of ephemeral test environment: cleans up test domain and verifies zero residual rows in D1.
+ * - Non-goals / Unverified boundaries:
+ *     - Second build execution in container (Build 2) is UNVERIFIED (theme build was reused under content-independence).
+ *     - Automated deployment pipeline is UNVERIFIED (8799 harness is an operator-managed local stand-in).
  */
 
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
@@ -506,7 +509,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(contentRes1.status).toBe(200);
     expect(contentRes1.body).toContain(contentA);
 
-    // Mandatory static asset HTTP 200 assertion
+    // Inspected asset scope: strictly asserts the built static asset (/assets/...) linked in the rendered home page HTML returns HTTP 200
     const assetMatches1 = /(?:href|src)="(\/assets\/[^"]+)"/.exec(res1.body);
     expect(
       assetMatches1,
@@ -516,7 +519,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     const assetRes1 = await storefront(asset1);
     expect(
       assetRes1.status,
-      `Static asset ${asset1} must return HTTP 200`,
+      `Inspected home page static asset ${asset1} must return HTTP 200`,
     ).toBe(200);
 
     // Perform second B1 canvas click and Inspector edit -> Draft B
@@ -669,7 +672,9 @@ test.describe("M1 container lifecycle acceptance", () => {
     // =========================================================================
     // 5. OCC CAS Re-activation of Release 1 (Active Pointer Rollback)
     // =========================================================================
-    // Test OCC conflict rejection
+    // Test OCC conflict rejection:
+    // When the active release is Release 2, attempt activation with a valid but obsolete expectedActiveReleaseId (Release 1).
+    // The server function must reject with error code RELEASE_ACTIVATION_CONFLICT.
     const conflictRes = (await serverFn(
       page,
       RELEASES,
@@ -677,10 +682,26 @@ test.describe("M1 container lifecycle acceptance", () => {
       {
         storefrontId: scope!.storefrontId,
         releaseId: release1,
-        expectedActiveReleaseId: "wrong-active-release-id",
+        expectedActiveReleaseId: release1,
       },
-    )) as { success: boolean; message?: string };
+    )) as { success: boolean; message?: string; error?: string };
     expect(conflictRes.success).toBe(false);
+    expect(conflictRes.error).toBe("RELEASE_ACTIVATION_CONFLICT");
+
+    // Immediately verify raw D1 state after conflict rejection and BEFORE legitimate rollback:
+    // Assert active release, template revisions, generations, and release count are completely untouched.
+    const snapConflict = await queryLifecycleSnapshot(home0.id, scope!.themeId, scope!.storefrontId);
+    expect(snapConflict.storefront.activeReleaseId).toBe(release2);
+    expect(snapConflict.theme.releaseGeneration).toBe(rg0 + 2);
+    expect(snapConflict.template.draftGeneration).toBe(g4);
+    expect(snapConflict.template.draftRevisionId).toBe(identities.draftRevisionB);
+    expect(snapConflict.template.draftHeroHeading).toBe(contentB);
+    expect(snapConflict.template.publishedRevisionId).toBe(identities.draftRevisionB);
+    expect(snapConflict.template.publishedHeroHeading).toBe(contentB);
+
+    const stateConflict = await publishedState();
+    expect(stateConflict.active).toBe(release2);
+    expect(stateConflict.releases).toBe(relCount0 + 2);
 
     // Legitimate OCC CAS activation of Release 1
     const activateRes = (await serverFn(
@@ -737,7 +758,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(contentRes4.body).toContain(contentA);
     expect(contentRes4.body).not.toContain(contentB);
 
-    // Mandatory static asset HTTP 200 assertion on restored storefront
+    // Inspected asset scope: strictly asserts the restored built static asset (/assets/...) linked in the restored home page HTML returns HTTP 200
     const assetMatches4 = /(?:href|src)="(\/assets\/[^"]+)"/.exec(res4.body);
     expect(
       assetMatches4,
@@ -747,7 +768,7 @@ test.describe("M1 container lifecycle acceptance", () => {
     const assetRes4 = await storefront(asset4);
     expect(
       assetRes4.status,
-      `Restored static asset ${asset4} must return HTTP 200`,
+      `Restored home page static asset ${asset4} must return HTTP 200`,
     ).toBe(200);
 
     console.log("[M1_ACCEPTANCE_IDENTITIES]", JSON.stringify(identities, null, 2));
