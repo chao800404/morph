@@ -567,12 +567,16 @@ test.describe("M1 container lifecycle acceptance", () => {
     identities.pub2 = relBuild2.releaseContent;
     identities.contentDependency2 = relBuild2.dependency;
 
-    expect(identities.build2).not.toBe(identities.build1);
+    expect(identities.pub2).toBeTruthy();
+    expect(identities.pub2).not.toBe(identities.pub1);
     expect(["dependent", "independent"]).toContain(
       identities.contentDependency2,
     );
     if (identities.contentDependency2 === "dependent") {
+      expect(identities.build2).not.toBe(identities.build1);
       expect(relBuild2.releaseContent).toBe(relBuild2.buildContent);
+    } else {
+      expect(identities.build2).toBe(identities.build1);
     }
 
     // Raw D1 Diff Assertions for Step 4:
