@@ -10,13 +10,43 @@ import { env } from "cloudflare:workers";
 export const Route = createFileRoute("/_backend/api/auth/$")({
   server: {
     handlers: {
-      GET: ({ request }) => {
-        const auth = createAuth(env, request.url);
-        return auth.handler(request);
+      GET: async ({ request }) => {
+        const url = new URL(request.url);
+        const t0 = Date.now();
+        console.log(`[auth-route] GET ${url.pathname} start`);
+        try {
+          const auth = createAuth(env, request.url);
+          const res = await auth.handler(request);
+          console.log(
+            `[auth-route] GET ${url.pathname} status ${res.status} in ${Date.now() - t0}ms`,
+          );
+          return res;
+        } catch (error) {
+          console.error(
+            `[auth-route] GET ${url.pathname} error in ${Date.now() - t0}ms:`,
+            error,
+          );
+          throw error;
+        }
       },
-      POST: ({ request }) => {
-        const auth = createAuth(env, request.url);
-        return auth.handler(request);
+      POST: async ({ request }) => {
+        const url = new URL(request.url);
+        const t0 = Date.now();
+        console.log(`[auth-route] POST ${url.pathname} start`);
+        try {
+          const auth = createAuth(env, request.url);
+          const res = await auth.handler(request);
+          console.log(
+            `[auth-route] POST ${url.pathname} status ${res.status} in ${Date.now() - t0}ms`,
+          );
+          return res;
+        } catch (error) {
+          console.error(
+            `[auth-route] POST ${url.pathname} error in ${Date.now() - t0}ms:`,
+            error,
+          );
+          throw error;
+        }
       },
     },
   },
