@@ -11,7 +11,10 @@
  *
  * It reports; it does not recover. Three things are sent to the editor:
  *
- * - a module script whose graph failed (the script element's `error` event);
+ * - a module script whose graph failed (the script element's `error` event),
+ *   or a module the page imported itself and could not load, which no script
+ *   element reports: the Start runtime's content module and bridge say so
+ *   with THEME_PREVIEW_MODULE_FAILED_EVENT;
  * - once the page has loaded, every resource that answered with an error
  *   status as Resource Timing recorded it;
  * - progress while the page loads: which milestones it has reached and how
@@ -58,6 +61,14 @@ export const THEME_PREVIEW_BRIDGE_STARTED_EVENT =
   "morph:storefront-preview-bridge-started";
 export const THEME_PREVIEW_BRIDGE_READY_EVENT =
   "morph:storefront-preview-bridge-ready";
+/**
+ * A module the page loaded with `import()` failed, so its graph never ran. The
+ * Start runtime loads the content module and the bridge that way, after
+ * hydration, and a dynamic import has no script element to fire `error`; the
+ * event's `detail.path` names the module, as a script's `src` would.
+ */
+export const THEME_PREVIEW_MODULE_FAILED_EVENT =
+  "morph:storefront-preview-module-failed";
 
 /** Most failure reports one page may send, so a broken page cannot flood the editor. */
 const MAX_MESSAGES = 10;
@@ -239,6 +250,13 @@ export function themePreviewDiagnosticScriptSource(): string {
     },
     true,
   );
+  window.addEventListener("${THEME_PREVIEW_MODULE_FAILED_EVENT}", function (event) {
+    var path = event && event.detail && event.detail.path;
+    if (typeof path !== "string" || !path) return;
+    failedScripts.push(trim(path));
+    send("script-failed");
+    showCompileError();
+  });
   window.addEventListener("DOMContentLoaded", function () {
     progress("dom");
   });

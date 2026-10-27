@@ -5,13 +5,15 @@ import {
   previewHttpHmrPluginSource,
   THEME_PREVIEW_HMR_FAILED_EVENT,
 } from "./theme-preview-dev-server";
+import { previewLoadWasInterrupted } from "../service/preview-runtime-interruption";
 import {
   THEME_PREVIEW_BRIDGE_READY_EVENT,
   THEME_PREVIEW_BRIDGE_STARTED_EVENT,
+  THEME_PREVIEW_MODULE_FAILED_EVENT,
   themePreviewDiagnosticScriptSource,
 } from "./theme-preview-diagnostic-script";
 
-type Listener = (event: { target?: unknown }) => void;
+type Listener = (event: { target?: unknown; detail?: unknown }) => void;
 
 function runInPage(options: {
   search?: string;
@@ -130,6 +132,48 @@ describe("the preview page's first script", () => {
     // Neither the host nor the query leaves the page.
     expect(JSON.stringify(message)).not.toContain("secret");
     expect(JSON.stringify(message)).not.toContain("?t=");
+  });
+
+  it("reports a module the page imported itself, so an interruption that broke it is told at once", () => {
+    // The Start runtime loads its bridge with import(): no script element
+    // fails, so the runtime names the module instead.
+    const page = runInPage({
+      entries: [
+        {
+          name: "https://5173-sbx-secret.preview.example.com/src/morph/preview-bridge.ts?v=1",
+          responseStatus: 503,
+        },
+      ],
+    });
+    page.listeners.get(THEME_PREVIEW_MODULE_FAILED_EVENT)!({
+      detail: { path: "/src/morph/preview-bridge.ts" },
+    });
+
+    expect(page.failuresPosted()).toHaveLength(1);
+    const report = parsePreviewToEditorMessage(page.failuresPosted()[0].message);
+    expect(report).toEqual({
+      type: "morph:storefront-preview-diagnostic",
+      kind: "script-failed",
+      failures: [{ path: "/src/morph/preview-bridge.ts", status: 503 }],
+      failedScripts: ["/src/morph/preview-bridge.ts"],
+      elapsedMs: 0,
+    });
+    // Both halves the editor needs to reconnect now.
+    expect(
+      previewLoadWasInterrupted(
+        report as Parameters<typeof previewLoadWasInterrupted>[0],
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores a module failure that names no module", () => {
+    const page = runInPage({});
+    const listener = page.listeners.get(THEME_PREVIEW_MODULE_FAILED_EVENT)!;
+    listener({});
+    listener({ detail: {} });
+    listener({ detail: { path: 42 } });
+    listener({ detail: { path: "" } });
+    expect(page.failuresPosted()).toHaveLength(0);
   });
 
   it("sends a summary after load only when something failed", () => {

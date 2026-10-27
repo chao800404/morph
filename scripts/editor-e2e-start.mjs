@@ -25,7 +25,7 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 /** Whole-file shards (3 full Start jobs). */
 export const START_PREVIEW_SHARDS = [
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "code-controlled-field.spec.ts"],
-  ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts"],
+  ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
   ["binding-acceptance-p.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
