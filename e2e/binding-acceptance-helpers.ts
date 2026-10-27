@@ -22,7 +22,7 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
-import { B1_INTEGRATION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
+import { B1_INTEGRATION_CASES, NEW_SECTION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
   BAS_HERO_LABELS,
   BAS_HERO_PATH,
@@ -235,11 +235,14 @@ export async function ensureFixture(browser: Browser) {
     // Seed: every section spread once, the shape the product binds. Each
     // case and mode has a route and Document of its own, so what one walk
     // writes (or deletes) never becomes the next walk's starting point.
-    const walks = B1_INTEGRATION_CASES.flatMap((testCase) =>
+    const walks = [...B1_INTEGRATION_CASES, ...NEW_SECTION_CASES].flatMap((testCase) =>
       MODES.map((mode) => ({ testCase, ...routeFor(testCase, mode) })),
     );
     const seedFiles = [
       { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+      ...NEW_SECTION_CASES.flatMap((testCase) => testCase.component
+        ? [{ path: testCase.component.path, content: testCase.component.source }]
+        : []),
       ...walks.map(({ testCase, routePath, routeFile }) => ({
         path: routeFile,
         content: basRouteSource(testCase, SPELLING, { routePath, seed: true }),
@@ -279,13 +282,13 @@ const caseRoot = (page: Page, testCase: BasCase) =>
 const elementLocator = (page: Page, testCase: BasCase, element: BasElement) =>
   caseRoot(page, testCase).locator(element.tag).nth(element.nth);
 
-const inspectorFieldBox = (page: Page, field: "title" | "desc") =>
+const inspectorFieldBox = (page: Page, testCase: BasCase, field: "title" | "desc") =>
   page
     .locator('[data-slot="inspector-content-field"]')
-    .filter({ hasText: BAS_HERO_LABELS[field] });
+    .filter({ hasText: testCase.component?.labels[field] ?? BAS_HERO_LABELS[field] });
 
-const inspectorInput = (page: Page, field: "title" | "desc") =>
-  inspectorFieldBox(page, field).locator("input, textarea").first();
+const inspectorInput = (page: Page, testCase: BasCase, field: "title" | "desc") =>
+  inspectorFieldBox(page, testCase, field).locator("input, textarea").first();
 
 async function openCase(page: Page, testCase: BasCase) {
   const url = new URL(fixture!.editorPath, "http://placeholder");
@@ -422,26 +425,26 @@ async function expectLocatedField(
     field: target.field,
     selected: "true",
   });
-  await expect(inspectorInput(page, target.field)).toBeVisible({ timeout: 10_000 });
-  await expect(inspectorInput(page, target.field)).toHaveValue(
+  await expect(inspectorInput(page, testCase, target.field)).toBeVisible({ timeout: 10_000 });
+  await expect(inspectorInput(page, testCase, target.field)).toHaveValue(
     stored[target.section]![target.field]!,
   );
-  await expect(inspectorFieldBox(page, target.field)).toHaveClass(/ring-primary\/30/);
+  await expect(inspectorFieldBox(page, testCase, target.field)).toHaveClass(/ring-primary\/30/);
 }
 
 /** S2 for composed text: its raw fields are offered with their stored values. */
 async function expectLocatedRawFields(
   page: Page,
-  _testCase: BasCase,
+  testCase: BasCase,
   element: BasElement,
   stored: StoredSections,
 ) {
   const target = element.target as Extract<BasElement["target"], { kind: "composed" }>;
   for (const field of target.rawFields) {
-    await expect(inspectorInput(page, field), `raw field ${field}`).toBeVisible({
+    await expect(inspectorInput(page, testCase, field), `raw field ${field}`).toBeVisible({
       timeout: 10_000,
     });
-    await expect(inspectorInput(page, field)).toHaveValue(stored[target.section]![field]!);
+    await expect(inspectorInput(page, testCase, field)).toHaveValue(stored[target.section]![field]!);
   }
 }
 
@@ -474,7 +477,7 @@ async function expectShownAsCode(
   );
   await expect(page.locator('[data-testid="inspector-content-binding-state"]'))
     .toHaveAttribute("data-binding-state", expectedState, { timeout: 10_000 });
-  await expect(inspectorInput(page, literalProp(element))).toHaveCount(0);
+  await expect(inspectorInput(page, testCase, literalProp(element))).toHaveCount(0);
 }
 
 const LOCATE = {
@@ -628,7 +631,7 @@ async function inspectorEdit(
   // A literal has no field to edit. Should the panel offer the prop it sits
   // on anyway, that field is edited: were the boundary ever to give, this is
   // the edit that would land. Afterwards nothing may have been written.
-  const wrongly = inspectorInput(page, literalProp(element));
+  const wrongly = inspectorInput(page, testCase, literalProp(element));
   walk.observed.S3literalPropOffered = inspector
     ? null
     : await wrongly.isVisible().catch(() => false);
@@ -637,7 +640,7 @@ async function inspectorEdit(
     await input.press("Tab").catch(() => undefined);
   }
   for (const target of inspector ? [inspector] : []) {
-    const input = inspectorInput(page, target.field);
+    const input = inspectorInput(page, testCase, target.field);
     await expect(input, `the Inspector offers ${target.field}`).toBeVisible({
       timeout: 10_000,
     });
