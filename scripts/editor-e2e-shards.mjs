@@ -73,6 +73,7 @@ export const EDITOR_SHARDS = [
     "authored-content.spec.ts",
     "build-preview-isolated.spec.ts",
     "loader-data-binding.spec.ts",
+    "m1-container-lifecycle-acceptance.spec.ts",
     "native-compat-published.spec.ts",
     "native-content-dependency.spec.ts",
     "native-publish-acceptance.spec.ts",

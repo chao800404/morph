@@ -34,6 +34,9 @@ export const VALIDATION_CHECKS = [
 export const E2E_ACCEPTANCE_CHECK =
   "Editor end-to-end (local preview transport)";
 
+export const CONTAINER_ACCEPTANCE_CHECK =
+  "Editor E2E container lifecycle acceptance";
+
 /** @param {number} shard @param {number} [count] */
 export const editorShardCheckName = (shard, count = EDITOR_SHARD_COUNT) =>
   `Editor E2E shard ${shard}/${count}`;
@@ -59,6 +62,7 @@ export const EXPECTED_CI_CHECKS = [
   ...START_PREVIEW_SHARD_CHECKS,
   ...EDITOR_SHARD_CHECKS,
   E2E_ACCEPTANCE_CHECK,
+  CONTAINER_ACCEPTANCE_CHECK,
 ];
 
 /**

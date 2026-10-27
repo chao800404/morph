@@ -50,36 +50,44 @@ const THEME_WORKER_PORT = 8799;
 export type Fetched = { status: number; body: string };
 export type Fetcher = (path: string) => Promise<Fetched>;
 
-/** A storefront request: to 127.0.0.1, naming the hostname in Host. */
+/** A storefront request: to 127.0.0.1 (falling back to ::1 if IPv6 loopback only), naming the hostname in Host. */
 function storefrontRequest(origin: string, path: string): Promise<Response> {
   const url = new URL(path, origin);
-  return new Promise((resolve, reject) => {
-    const outgoing = httpRequest(
-      {
-        host: "127.0.0.1",
-        port: url.port,
-        path: url.pathname + url.search,
-        headers: { host: url.host },
-      },
-      (incoming) => {
-        const chunks: Buffer[] = [];
-        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
-        incoming.on("end", () => {
-          const headers = new Headers();
-          for (const [name, value] of Object.entries(incoming.headers)) {
-            for (const item of [value ?? []].flat()) headers.append(name, item);
-          }
-          resolve(
-            new Response(Buffer.concat(chunks), {
-              status: incoming.statusCode ?? 0,
-              headers,
-            }),
-          );
-        });
-      },
-    );
-    outgoing.on("error", reject);
-    outgoing.end();
+  const send = (host: string) =>
+    new Promise<Response>((resolve, reject) => {
+      const outgoing = httpRequest(
+        {
+          host,
+          port: url.port,
+          path: url.pathname + url.search,
+          headers: { host: url.host },
+        },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.on("end", () => {
+            const headers = new Headers();
+            for (const [name, value] of Object.entries(incoming.headers)) {
+              for (const item of [value ?? []].flat()) headers.append(name, item);
+            }
+            resolve(
+              new Response(Buffer.concat(chunks), {
+                status: incoming.statusCode ?? 0,
+                headers,
+              }),
+            );
+          });
+        },
+      );
+      outgoing.on("error", reject);
+      outgoing.end();
+    });
+
+  return send("127.0.0.1").catch((err: NodeJS.ErrnoException) => {
+    if (err?.code === "ECONNREFUSED") {
+      return send("::1");
+    }
+    throw err;
   });
 }
 
