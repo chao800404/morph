@@ -619,3 +619,137 @@ jobs:
 
       - name: Verify complete full Start reports
         run: node scripts/check-e2e-start.mjs start-shard-artifacts
+
+  # M1 container lifecycle acceptance: runs in a real Cloudflare Sandbox
+  # environment (Docker container) under the full Start runtime.
+  # Executes e2e/m1-container-lifecycle-acceptance.spec.ts and verifies
+  # that the target test passed with zero skip and zero retry.
+  editor-e2e-container:
+    name: Editor E2E container lifecycle acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Playwright
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
+          for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
+            status=0
+            # Install Chromium and its OS dependencies with an attempt-scoped process group, unique log redirection, and bounded kill-after.
+            # Avoid direct pipe to tee which holds stdout open if child apt processes linger.
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
+              echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
+              exit "$status"
+            fi
+            echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
+            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log writers.
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                if is_attempt_descendant "$lock_pid"; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
+                fi
+              done
+            done
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
+            done
+            rm -f "$install_log"
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
+
+      - name: Write the run's environment
+        run: |
+          cat > .env.e2e <<EOF
+          E2E_EMAIL=editor-e2e@morph.invalid
+          E2E_PASSWORD=$(openssl rand -hex 24)
+          E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+          EOF
+
+      - name: Run M1 container lifecycle acceptance
+        env:
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
+          MORPH_E2E_TRANSPORT: cloudflare-sandbox
+          MORPH_E2E_PREVIEW_RUNTIME: start
+          MORPH_THEME_PREVIEW_RUNTIME: start
+          MORPH_E2E_REPORT_PATH: test-results/container-acceptance.json
+        run: node scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
+
+      - name: Require M1 container acceptance test to have passed with zero skip and zero retry
+        run: node scripts/check-container-acceptance.mjs test-results/container-acceptance.json
+
+      - name: Upload results and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-e2e-container-attempt-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: error
