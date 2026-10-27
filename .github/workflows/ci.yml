@@ -675,6 +675,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The same apt source as the shards'.
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
       - name: Install Chromium for Playwright
         timeout-minutes: 15
         run: |
