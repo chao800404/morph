@@ -40,7 +40,8 @@ jobs:
           key=/usr/share/keyrings/ubuntu-archive-keyring.gpg
           mk() { # name, then one-line sources
             local d=/tmp/probe-$1; shift
-            sudo mkdir -p "$d/lists/partial" "$d/archives/partial"
+            sudo mkdir -p "$d/lists/partial" "$d/archives/partial" "$d/log"
+            sudo chown "$USER" "$d/log"
             if [ "$1" = default ]; then
               echo "" | sudo tee "$d/opts" > /dev/null
             else
@@ -57,17 +58,18 @@ jobs:
           [ $(( ${{ matrix.n }} % 3 )) -eq 2 ] && order="azure default archive"
           for s in $order; do
             d=/tmp/probe-$s
-            common="$(cat $d/opts) -o Dir::State::Lists=$d/lists -o Dir::Cache::Archives=$d/archives -o Debug::NoLocking=1 -o Acquire::http::Timeout=30 -o Acquire::Retries=0"
+            common="$(cat $d/opts) -o Dir::State::Lists=$d/lists -o Dir::Cache::Archives=$d/archives -o Debug::NoLocking=1 -o APT::Sandbox::User=root -o Acquire::http::Timeout=30 -o Acquire::Retries=0"
             t0=$(date +%s.%N)
-            us=0; sudo timeout 90 apt-get $common -q update > $d/update.log 2>&1 || us=$?
+            us=0; sudo timeout 90 apt-get $common -q update > $d/log/update.log 2>&1 || us=$?
             t1=$(date +%s.%N)
-            ds=0; sudo timeout 150 apt-get $common -q -y --download-only --no-install-recommends install --reinstall $pkgs > $d/dl.log 2>&1 || ds=$?
+            ds=0; sudo timeout 150 apt-get $common -q -y --download-only --no-install-recommends install --reinstall $pkgs > $d/log/dl.log 2>&1 || ds=$?
             t2=$(date +%s.%N)
             bytes=$(sudo find $d/archives -maxdepth 1 -name '*.deb' -printf '%s\n' | awk '{s+=$1} END{print s+0}')
             debs=$(sudo find $d/archives -maxdepth 1 -name '*.deb' | wc -l)
-            sigok=$(grep -c 'NO_PUBKEY\|not signed\|BADSIG' $d/update.log || true)
+            sigok=$(grep -c 'NO_PUBKEY\|not signed\|BADSIG' $d/log/update.log || true)
             echo "PROBE src=$s update_exit=$us update_s=$(awk "BEGIN{print $t1-$t0}") dl_exit=$ds dl_s=$(awk "BEGIN{print $t2-$t1}") debs=$debs bytes=$bytes sigerr=$sigok"
-            grep -hE '^(Err|W:|E:)' $d/update.log $d/dl.log | head -5 | sed "s/^/PROBE-ERR src=$s /"
+            tail -3 $d/log/dl.log | sed "s/^/PROBE-TAIL src=$s /"
+            grep -hE '^(Err|W:|E:)' $d/log/update.log $d/log/dl.log | head -5 | sed "s/^/PROBE-ERR src=$s /"
           done
           echo "== versions chosen (archive vs azure vs default)"
           for s in default archive azure; do echo "PROBE vers src=$s $(sudo ls /tmp/probe-$s/archives/*.deb 2>/dev/null | xargs -n1 basename | sort | md5sum | cut -c1-12)"; done
