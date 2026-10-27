@@ -47,6 +47,12 @@ import { configDefaults, defineConfig } from "vitest/config";
  */
 const MAX_PARALLELISM = os.availableParallelism?.() ?? os.cpus().length;
 const MAX_TEST_WORKERS = Math.max(1, Math.min(4, MAX_PARALLELISM - 1));
+// Said in CI, where a run's duration is read against the machine it ran on
+// (scripts/print-test-runner.mjs prints the rest).
+if (process.env.CI)
+  console.log(
+    `[test-runner] vitest maxWorkers: ${MAX_TEST_WORKERS} of available parallelism ${MAX_PARALLELISM}`,
+  );
 
 /**
  * The one file that costs more than everything it competes with.

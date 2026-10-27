@@ -93,6 +93,24 @@ jobs:
       - name: Install the Astro toolchain
         run: pnpm toolchain:astro
 
+      # Vitest starts the files it has timings for longest first, and files it
+      # has none for largest first. Every run here starts from a fresh install,
+      # so until now every run was ordered by size, which is how a 142 s file
+      # came to start last in its group. This keeps Vitest's own timings file
+      # from one successful run to the next. Only the order changes: with no
+      # timings restored, or stale ones, every file still runs.
+      - name: Restore Vitest's file timings
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.vite/vitest
+          key: vitest-file-timings-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: vitest-file-timings-${{ runner.os }}-
+
+      # The same suite has taken 606 to 1166 s in this job, every phase
+      # scaling together, and the log did not say what it ran on.
+      - name: Record the runner
+        run: node scripts/print-test-runner.mjs
+
       - name: Test
         run: pnpm test
 
