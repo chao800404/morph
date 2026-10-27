@@ -266,6 +266,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The runner reads its Ubuntu sources through /etc/apt/apt-mirrors.txt,
+      # azure.archive.ubuntu.com first. From 10-22, about one Chromium install
+      # in eight sat on that mirror for four to fifteen minutes, and on 10-27
+      # one stalled shard failed each of #300 and #302. Probing runners
+      # (branch diag/apt-source-probe) put every stalled download on two Azure
+      # mirror addresses, while https://archive.ubuntu.com fetched the same
+      # package files, checksum for checksum, every time. So only the order of
+      # mirrors changes: suites, components and the Signed-By keyring stay the
+      # runner's own, and the install below keeps its timeouts and retries.
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
+
       # Twice in one night (PR #144) this step sat on an Ubuntu mirror until
       # the job's 30 minutes ran out, before a single test had run. apt then
       # times out each connection instead of waiting forever, and an attempt
@@ -470,6 +488,16 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The same apt source as the shards'.
+      - name: Use the primary Ubuntu archive for apt
+        run: |
+          grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {
+            echo "::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this step would change nothing."
+            exit 1
+          }
+          printf '%s\tpriority:%s\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \
+            | sudo tee /etc/apt/apt-mirrors.txt
 
       # The same installation, with the same retry rule, as the shards'.
       - name: Install Chromium for Playwright
