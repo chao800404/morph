@@ -292,12 +292,33 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate only this installation attempt's process group and descendants, leaving unrelated processes untouched.
+            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log holders.
             sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
-            for p in $(pgrep -P "$install_pid" 2>/dev/null || true); do
-              sudo -n kill -9 "$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                is_attempt_descendant=0
+                if [ -d "/proc/$lock_pid" ]; then
+                  if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
+                    is_attempt_descendant=1
+                  elif sudo -n ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
+                    is_attempt_descendant=1
+                  elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
+                    is_attempt_descendant=1
+                  fi
+                fi
+                if [ "$is_attempt_descendant" -eq 1 ]; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                fi
+              done
             done
-            sudo dpkg --configure -a || true
+            for log_pid in $(sudo -n fuser install.log 2>/dev/null || fuser install.log 2>/dev/null || true); do
+              sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+            done
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
             sleep $((attempt * 15))
           done
           echo "::error::Chromium install failed after 3 attempts (last exit $status)."
@@ -443,12 +464,33 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate only this installation attempt's process group and descendants, leaving unrelated processes untouched.
+            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log holders.
             sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
-            for p in $(pgrep -P "$install_pid" 2>/dev/null || true); do
-              sudo -n kill -9 "$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
+            for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+              [ -f "$lock_file" ] || continue
+              for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
+                is_attempt_descendant=0
+                if [ -d "/proc/$lock_pid" ]; then
+                  if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
+                    is_attempt_descendant=1
+                  elif sudo -n ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
+                    is_attempt_descendant=1
+                  elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
+                    is_attempt_descendant=1
+                  fi
+                fi
+                if [ "$is_attempt_descendant" -eq 1 ]; then
+                  echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
+                  sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                fi
+              done
             done
-            sudo dpkg --configure -a || true
+            for log_pid in $(sudo -n fuser install.log 2>/dev/null || fuser install.log 2>/dev/null || true); do
+              sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+            done
+            if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
+              echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
+            fi
             sleep $((attempt * 15))
           done
           echo "::error::Chromium install failed after 3 attempts (last exit $status)."

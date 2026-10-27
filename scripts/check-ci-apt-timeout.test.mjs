@@ -97,9 +97,10 @@ describe("CI apt installation timeout and process termination", () => {
     );
   });
 
-  it("proves process group termination kills descendants while preserving unrelated process holding lock file", () => {
+  it("proves attempt recovery terminates setsid lock-holding descendants while preserving unrelated process holding lock file", () => {
     const logFile = join(dir, "group-isolation.log");
     const unrelatedLock = join(dir, "unrelated.lock");
+    const unrelatedLog = join(dir, "unrelated.log");
     const targetLock = join(dir, "target.lock");
     const script = `
 # 1. Start an unrelated background process holding an unrelated temporary lock file
@@ -107,26 +108,52 @@ setsid bash -c '
   exec 9>"${unrelatedLock}"
   flock 9
   sleep 15
-' &
+' > "${unrelatedLog}" 2>&1 &
 unrelated_pid=$!
 sleep 0.2
 
-# 2. Run target inside a new process group via setsid, with child holding a target lock
+# 2. Run target where descendant opens a new session via setsid holding target lock
 setsid timeout --kill-after=1s 1 bash -c '
-  exec 8>"${targetLock}"
-  flock 8
-  sleep 10 &
+  setsid bash -c "
+    exec 8>\\"${targetLock}\\"
+    flock 8
+    sleep 10
+  " &
   child=$!
   echo CHILD=$child
   wait
 ' > "${logFile}" 2>&1 &
 install_pid=$!
 
-# 3. Wait for timeout to complete
+# 3. Wait for timeout to complete and install_pid to exit
 wait $install_pid || status=$?
 
-# 4. Enforce group termination on only this attempt's process group with --
+# 4. Enforce attempt-scoped recovery logic matching CI:
+# A. Terminate attempt process group
 kill -9 -- -$install_pid 2>/dev/null || true
+
+# B. Identify and terminate lock-holding descendants holding targetLock
+for lock_file in "${targetLock}"; do
+  [ -f "$lock_file" ] || continue
+  for lock_pid in $(fuser "$lock_file" 2>/dev/null || true); do
+    is_attempt_descendant=0
+    if [ -d "/proc/$lock_pid" ]; then
+      if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
+        is_attempt_descendant=1
+      elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "$(basename "${logFile}")"; then
+        is_attempt_descendant=1
+      fi
+    fi
+    if [ "$is_attempt_descendant" -eq 1 ]; then
+      kill -9 "$lock_pid" 2>/dev/null || true
+    fi
+  done
+done
+
+# C. Terminate any remaining process holding this attempt log
+for log_pid in $(fuser "${logFile}" 2>/dev/null || true); do
+  kill -9 "$log_pid" 2>/dev/null || true
+done
 
 # 5. Extract descendant child PID
 child_pid=$(grep -o "CHILD=[0-9]*" "${logFile}" | cut -d= -f2)
