@@ -289,3 +289,65 @@ export const B1_INTEGRATION_CASES: readonly BasCase[] = [
   ...BAS_CASES.filter((testCase) => B1_CASE_IDS.has(testCase.id)),
   ...B1_EXTRA_CASES,
 ];
+
+/** Independent section fixture: new component, handwritten targets, same-text instances. */
+export const NEW_SECTION_CASES: readonly BasCase[] = [
+  {
+    id: "n1",
+    verifies: "a newly authored offer section binds aliased props to the correct instance",
+    routePath: "/bas-n1",
+    routeFile: "src/routes/bas-n1.tsx",
+    component: {
+      name: "BasOfferSection",
+      path: "src/components/BasOfferSection.tsx",
+      labels: { title: "Offer heading", desc: "Offer details" },
+      source: `export const contentFields = {
+  title: { type: "text", label: "Offer heading" },
+  desc: { type: "text", label: "Offer details" },
+} as const;
+
+type OfferProps = { title?: string; desc?: string };
+
+export default function BasOfferSection({ title = "New offer", desc = "Offer details" }: OfferProps) {
+  return (
+    <section className="rounded-lg border p-6">
+      <h1>{title}</h1>
+      <p>{desc}</p>
+    </section>
+  );
+}
+`,
+    },
+    slots: ["offerA", "offerB"],
+    seed: {
+      offerA: { title: SALE, desc: "First offer details" },
+      offerB: { title: SALE, desc: "Second offer details" },
+    },
+    body: {
+      loader: `  const { title: firstHeading, desc: firstDetails } = offerA;
+  const { title: secondHeading, desc: secondDetails } = offerB;
+  return (
+    <main data-bas-case="n1">
+      <BasOfferSection title={firstHeading} desc={firstDetails} />
+      <BasOfferSection title={secondHeading} desc={secondDetails} />
+    </main>
+  );`,
+      content: `${contentLocals(["offerA", "offerB"])}
+  const { title: firstHeading, desc: firstDetails } = offerA;
+  const { title: secondHeading, desc: secondDetails } = offerB;
+  return (
+    <main data-bas-case="n1">
+      <BasOfferSection title={firstHeading} desc={firstDetails} />
+      <BasOfferSection title={secondHeading} desc={secondDetails} />
+    </main>
+  );`,
+    },
+    elements: [
+      { tag: "h1", nth: 0, text: (s) => v(s, "offerA", "title"), target: { kind: "field", section: "offerA", field: "title" } },
+      { tag: "p", nth: 0, text: (s) => v(s, "offerA", "desc"), target: { kind: "field", section: "offerA", field: "desc" } },
+      { tag: "h1", nth: 1, text: (s) => v(s, "offerB", "title"), target: { kind: "field", section: "offerB", field: "title" } },
+      { tag: "p", nth: 1, text: (s) => v(s, "offerB", "desc"), target: { kind: "field", section: "offerB", field: "desc" } },
+    ],
+    edit: { element: 2, inspector: { section: "offerB", field: "title" }, inlineWrites: true },
+  },
+];

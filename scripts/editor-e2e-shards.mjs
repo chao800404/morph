@@ -81,6 +81,7 @@ export const EDITOR_SHARDS = [
     "publish-layout-edit.spec.ts",
     "publish.spec.ts",
     "source-asset-publish.spec.ts",
+    "preview-start-bridge-interruption.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",

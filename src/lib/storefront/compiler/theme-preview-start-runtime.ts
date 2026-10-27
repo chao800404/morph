@@ -1,5 +1,8 @@
 import { themePreviewContentModuleSource } from "./theme-preview-content";
-import { themePreviewDiagnosticScriptSource } from "./theme-preview-diagnostic-script";
+import {
+  THEME_PREVIEW_MODULE_FAILED_EVENT,
+  themePreviewDiagnosticScriptSource,
+} from "./theme-preview-diagnostic-script";
 import { THEME_PREVIEW_BRIDGE_PATH } from "./theme-preview-bridge-entry";
 import {
   START_PREVIEW_ADDRESS_PROBE_PATH,
@@ -319,9 +322,22 @@ Object.defineProperty(window, "__morphPreviewRouter", {
   },
 });
 
+// An import that fails stops this page before the bridge can tell the editor.
+// No script element reports a failed import(), so name the module to the
+// page's first script, which tells the editor now rather than after its load
+// watchdog's silence. The failure itself is rethrown, unchanged.
+function reportFailedImport(path) {
+  return (error) => {
+    window.dispatchEvent(
+      new CustomEvent("${THEME_PREVIEW_MODULE_FAILED_EVENT}", { detail: { path } }),
+    );
+    throw error;
+  };
+}
+
 await whenHydrated();
-await contentModule;
-await import("/${THEME_PREVIEW_BRIDGE_PATH}");
+await contentModule.catch(reportFailedImport("/${THEME_PREVIEW_CONTENT_MODULE_PATH}"));
+await import("/${THEME_PREVIEW_BRIDGE_PATH}").catch(reportFailedImport("/${THEME_PREVIEW_BRIDGE_PATH}"));
 window.removeEventListener("message", receiveEarlyContent);
 if (contentChangedBeforeBridge && window.__morphPreviewRouter) {
   await window.__morphPreviewRouter.invalidate({ sync: true });

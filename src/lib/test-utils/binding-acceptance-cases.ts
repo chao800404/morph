@@ -104,6 +104,13 @@ export type BasEdit = Readonly<{
 
 export type BasCase = Readonly<{
   id: string;
+  /** A separately authored component for acceptance outside the original Hero fixture. */
+  component?: Readonly<{
+    name: string;
+    path: string;
+    source: string;
+    labels: Readonly<Record<"title" | "desc", string>>;
+  }>;
   /** What the case verifies (the user's table). */
   verifies: string;
   routePath: string;
@@ -491,6 +498,7 @@ export function basRouteSource(
   spelling: BasSpelling,
   options: Readonly<{ routePath?: string; seed?: boolean }> = {},
 ): string {
+  const componentName = testCase.component?.name ?? "BasHero";
   const routePath = options.routePath ?? testCase.routePath;
   const body = options.seed
     ? seedBody(testCase, spelling)
@@ -498,7 +506,7 @@ export function basRouteSource(
   if (spelling === "content") {
     return `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
-import BasHero from "../components/BasHero";
+import ${componentName} from "../components/${componentName}";
 
 export const Route = createFileRoute("${routePath}")({
   component: BasRoute,
@@ -512,7 +520,7 @@ ${body}
   return `import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { morph } from "../morph/content";
-import BasHero from "../components/BasHero";
+import ${componentName} from "../components/${componentName}";
 
 const getPage = createServerFn().handler(() => morph.pages.get("${routePath}"));
 
@@ -535,11 +543,12 @@ ${body}
  * it. Writing Theme source never writes stored content.
  */
 function seedBody(testCase: BasCase, spelling: BasSpelling): string {
+  const componentName = testCase.component?.name ?? "BasHero";
   const heroes = testCase.slots
     .map((slot) =>
       spelling === "content"
-        ? `      <BasHero {...content("${slot}")} />`
-        : `      <BasHero {...${slot}} />`,
+        ? `      <${componentName} {...content("${slot}")} />`
+        : `      <${componentName} {...${slot}} />`,
     )
     .join("\n");
   return `  return (

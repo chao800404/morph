@@ -126,6 +126,61 @@ describe("a Start Live Preview workspace (prototype)", () => {
     expect(invalidate).toHaveBeenCalledWith({ sync: true });
     expect(listeners.size).toBe(0);
   });
+  it.each([
+    ["the bridge", "loadBridge", "/src/morph/preview-bridge.ts"],
+    ["the content module", "contentPromise", "/src/morph/preview-content.ts"],
+  ])(
+    "names %s to the page's first script when its import fails, and still fails",
+    async (_label, failing, path) => {
+      const dispatched: unknown[] = [];
+      class FakeCustomEvent {
+        constructor(
+          readonly type: string,
+          readonly init: { detail: unknown },
+        ) {}
+      }
+      const refused = new Error("interrupted");
+      const loadBridge = vi.fn(async () => {
+        if (failing === "loadBridge") throw refused;
+      });
+      const contentPromise =
+        failing === "contentPromise"
+          ? Promise.reject(refused)
+          : Promise.resolve({ updatePreviewContent: () => {} });
+      contentPromise.catch(() => {});
+      const source = themePreviewStartClientSource()
+        .replace(/^import .*;\n/, "")
+        .replace('import("/src/morph/preview-content.ts")', "contentPromise")
+        .replace('import("/src/morph/preview-bridge.ts")', "loadBridge()");
+      const execution = runInNewContext(`(async () => { ${source} })()`, {
+        window: {
+          __TSR_ROUTER__: {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: (event: unknown) => dispatched.push(event),
+        },
+        CustomEvent: FakeCustomEvent,
+        document: { readyState: "complete" },
+        performance: { now: () => 0 },
+        setTimeout: (callback: () => void) => callback(),
+        requestAnimationFrame: (callback: () => void) => callback(),
+        documentPreviewRuntimeChannel: () => ({}),
+        parseEditorToPreviewWindowEvent: () => null,
+        contentPromise,
+        loadBridge,
+      }) as Promise<void>;
+
+      await expect(execution).rejects.toBe(refused);
+      expect(dispatched).toEqual([
+        new FakeCustomEvent("morph:storefront-preview-module-failed", {
+          detail: { path },
+        }),
+      ]);
+      expect(loadBridge).toHaveBeenCalledTimes(
+        failing === "loadBridge" ? 1 : 0,
+      );
+    },
+  );
   it.each(["@tanstack/react-start/server-entry", "./src/server.ts"])(
     "answers health without invoking the %s entry or a Theme loader",
     async (serverEntry) => {
