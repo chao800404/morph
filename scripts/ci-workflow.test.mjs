@@ -27,7 +27,7 @@ test("validation runs independently with the complete original commands", () => 
       "pnpm check:e2e-assertions",
       "pnpm check:sql-timestamps",
     ],
-    ["pnpm toolchain:astro", "pnpm test"],
+    ["pnpm toolchain:astro", "node scripts/print-test-runner.mjs", "pnpm test"],
     ["pnpm build"],
   ];
   for (const [index, key] of jobs.entries()) {
@@ -150,4 +150,31 @@ test("every job that installs Chromium first puts the primary Ubuntu archive ahe
     assert.doesNotMatch(step, /azure/);
     assert.doesNotMatch(step, /continue-on-error/);
   }
+});
+
+test("the test job keeps Vitest's file timings without making them a condition of the run", () => {
+  const block = withoutComments(jobBlock(workflow, "validate-test"));
+  const step = block.slice(
+    block.indexOf("- name: Restore Vitest's file timings"),
+    block.indexOf("- name: Record the runner"),
+  );
+  assert.match(step, /uses: actions\/cache@v4\n/);
+  // Vitest's cache directory for the root config (VitestCache.resolveCacheDir).
+  assert.match(step, /path: node_modules\/\.vite\/vitest\n/);
+  // A new key per attempt, so each successful run saves its own timings, and
+  // a prefix to restore the latest one from.
+  assert.match(
+    step,
+    /key: vitest-file-timings-\$\{\{ runner\.os \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/,
+  );
+  assert.match(
+    step,
+    /restore-keys: vitest-file-timings-\$\{\{ runner\.os \}\}-\n/,
+  );
+  // Restored before the run reads it.
+  assert.ok(
+    block.indexOf("- name: Restore Vitest's file timings") <
+      block.indexOf("- name: Test"),
+  );
+  assert.doesNotMatch(step, /fail-on-cache-miss|lookup-only/);
 });
