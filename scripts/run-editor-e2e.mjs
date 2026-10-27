@@ -955,7 +955,7 @@ async function main() {
   start(
     "dev server",
     "npx",
-    ["vite", "dev", "--port", String(DEV_PORT)],
+    ["vite", "dev", "--port", String(DEV_PORT), "--host", "127.0.0.1"],
     {
       // Unset, not empty: an empty `CLOUDFLARE_ENV` is still a named environment
       // as far as the plugin is concerned.
