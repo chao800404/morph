@@ -732,6 +732,11 @@ jobs:
           E2E_PASSWORD=$(openssl rand -hex 24)
           E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
           EOF
+          cat > .dev.vars <<EOF
+          MORPH_THEME_PREVIEW_RUNTIME=start
+          MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+          MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          EOF
 
       - name: Run M1 container lifecycle acceptance
         env:
