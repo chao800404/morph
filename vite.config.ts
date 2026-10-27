@@ -109,6 +109,75 @@ function morphDevPreviewPassthrough(): Plugin {
 }
 
 /**
+ * Diagnostic tracking for HTTP socket lifecycle and auth endpoint requests.
+ * Correlates client-side requests with server-side TCP sockets, idle timeouts,
+ * and connection reuse in dev mode.
+ */
+function morphAuthSocketDiagnostics(): Plugin {
+  return {
+    name: "morph:auth-socket-diagnostics",
+    apply: "serve",
+    configureServer(server) {
+      if (process.env.MORPH_E2E_AUTH_DIAGNOSTICS !== "1") return;
+
+      let nextSocketId = 1;
+      const socketMap = new WeakMap<object, number>();
+
+      server.httpServer?.on("connection", (socket) => {
+        const id = nextSocketId++;
+        socketMap.set(socket, id);
+        const remote = `${socket.remoteAddress}:${socket.remotePort}`;
+        const openedAt = Date.now();
+        socket.on("close", (hadError: boolean) => {
+          const lifetime = Date.now() - openedAt;
+          console.log(
+            `[auth-socket] #${id} (${remote}) closed after ${lifetime}ms, hadError=${hadError}`,
+          );
+        });
+        socket.on("error", (err: Error) => {
+          const code = (err as NodeJS.ErrnoException).code ?? "UNKNOWN";
+          console.log(
+            `[auth-socket] #${id} (${remote}) socket error: code=${code} name=${err.name}`,
+          );
+        });
+        socket.on("timeout", () => {
+          console.log(`[auth-socket] #${id} (${remote}) socket timeout`);
+        });
+      });
+
+      server.middlewares.use((req, res, next) => {
+        const rawUrl = req.url ?? "";
+        const pathname = rawUrl.split("?")[0] ?? "";
+        if (pathname.includes("/api/auth/")) {
+          const socketId = req.socket ? socketMap.get(req.socket) ?? "?" : "?";
+          const remote = req.socket
+            ? `${req.socket.remoteAddress}:${req.socket.remotePort}`
+            : "unknown";
+          const connHeader = req.headers.connection ?? "default";
+          const t0 = Date.now();
+          console.log(
+            `[auth-http-entry] ${req.method} ${pathname} socket=#${socketId} remote=${remote} conn=${connHeader}`,
+          );
+          res.on("finish", () => {
+            console.log(
+              `[auth-http-exit] ${req.method} ${pathname} status=${res.statusCode} socket=#${socketId} in ${Date.now() - t0}ms`,
+            );
+          });
+          res.on("close", () => {
+            if (!res.writableEnded) {
+              console.log(
+                `[auth-http-abort] ${req.method} ${pathname} connection closed before end socket=#${socketId} after ${Date.now() - t0}ms`,
+              );
+            }
+          });
+        }
+        next();
+      });
+    },
+  };
+}
+
+/**
  * Prints Morph's server chunks ASCII-only and without whitespace or comments.
  * Server build only: the client build is untouched.
  *
@@ -195,6 +264,7 @@ function morphServerOutput(): Plugin {
 const config = defineConfig({
   plugins: [
     morphDevPreviewPassthrough(),
+    morphAuthSocketDiagnostics(),
     tanstackServerFnValidateFix(),
     // Skipped for an end-to-end run: its event bus binds a fixed port (42069),
     // so a run started beside a developer's own `pnpm dev` dies before serving
