@@ -7,7 +7,12 @@ import {
   VALIDATE_CHECK,
   VALIDATION_CHECKS,
 } from "./ci-required-checks.mjs";
-import { jobBlock, jobCheckNames, withoutComments } from "./ci-workflow.mjs";
+import {
+  jobBlock,
+  jobCheckNames,
+  jobKeys,
+  withoutComments,
+} from "./ci-workflow.mjs";
 
 const workflow = readFileSync(
   new URL("../.github/workflows/ci.yml", import.meta.url),
@@ -110,4 +115,39 @@ test("architecture CI executes these workflow gate tests", () => {
     withoutComments(jobBlock(workflow, "architecture-guards")),
     /^\s+node --test scripts\/ci-workflow\.test\.mjs$/m,
   );
+});
+
+test("every job that installs Chromium first puts the primary Ubuntu archive ahead of the Azure mirror", () => {
+  const installers = jobKeys(workflow).filter((key) =>
+    withoutComments(jobBlock(workflow, key)).includes(
+      "- name: Install Chromium for Playwright",
+    ),
+  );
+  assert.ok(installers.length >= 2, "both E2E matrices install Chromium");
+  for (const key of installers) {
+    const block = withoutComments(jobBlock(workflow, key));
+    const source = block.indexOf(
+      "- name: Use the primary Ubuntu archive for apt",
+    );
+    assert.ok(source >= 0, `${key} must set the apt source`);
+    assert.ok(
+      source < block.indexOf("- name: Install Chromium for Playwright"),
+      `${key} must set the apt source before installing`,
+    );
+    const step = block.slice(source, block.indexOf("\n      - name:", source));
+    assert.ok(
+      step.includes(
+        "grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {",
+      ),
+      `${key} must refuse a runner whose sources skip the mirror list`,
+    );
+    assert.ok(
+      step.includes(
+        "printf '%s\\tpriority:%s\\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2",
+      ),
+      `${key} must list the primary archive first`,
+    );
+    assert.doesNotMatch(step, /azure/);
+    assert.doesNotMatch(step, /continue-on-error/);
+  }
 });
