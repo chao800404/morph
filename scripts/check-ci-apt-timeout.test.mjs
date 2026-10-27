@@ -14,6 +14,8 @@
  * 2. Proves that file redirection without piping to `tee` plus `--kill-after` enforces
  *    strict timeout termination and releases the process immediately.
  * 3. Proves that SIGKILL is delivered to stubborn processes that ignore SIGTERM.
+ * 4. Proves process group isolation: terminating the installation process group ensures
+ *    descendants exit while completely preserving unrelated processes.
  */
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
@@ -92,6 +94,56 @@ describe("CI apt installation timeout and process termination", () => {
     assert.ok(
       status === 124 || status === 137,
       `Expected exit status 124 or 137, got ${status}`,
+    );
+  });
+
+  it("proves process group termination kills descendants while preserving unrelated processes", () => {
+    const logFile = join(dir, "group-isolation.log");
+    const script = `
+# 1. Start an unrelated background process
+sleep 15 &
+unrelated_pid=$!
+
+# 2. Run the command inside a new process group via setsid
+setsid timeout --kill-after=1s 1 bash -c 'sleep 10 & child=$!; echo CHILD=$child; wait' > "${logFile}" 2>&1 &
+install_pid=$!
+
+# 3. Wait for timeout to complete
+wait $install_pid || status=$?
+
+# 4. Enforce group termination on only this attempt's process group
+kill -9 -$install_pid 2>/dev/null || true
+
+# 5. Extract descendant child PID
+child_pid=$(grep -o "CHILD=[0-9]*" "${logFile}" | cut -d= -f2)
+
+child_alive=0
+if [ -n "$child_pid" ] && ps -p $child_pid > /dev/null 2>&1; then
+  child_alive=1
+fi
+
+unrelated_alive=0
+if ps -p $unrelated_pid > /dev/null 2>&1; then
+  unrelated_alive=1
+fi
+
+# Clean up unrelated process
+kill -9 $unrelated_pid 2>/dev/null || true
+
+echo "CHILD_ALIVE=$child_alive"
+echo "UNRELATED_ALIVE=$unrelated_alive"
+`;
+    const output = execSync(script, {
+      shell: "/bin/bash",
+      encoding: "utf8",
+    });
+    assert.ok(
+      output.includes("CHILD_ALIVE=0"),
+      `Expected descendant child to be terminated: ${output}`,
+    );
+    assert.ok(
+      output.includes("UNRELATED_ALIVE=1"),
+      `Expected unrelated process to survive: ${output}`,
     );
   });
 });

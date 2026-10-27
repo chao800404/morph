@@ -282,7 +282,9 @@ jobs:
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
           for attempt in 1 2 3; do
             status=0
-            timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 || status=$?
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
             cat install.log
             [ "$status" -eq 0 ] && exit 0
             if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" install.log; then
@@ -290,13 +292,13 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # A timed-out attempt can leave apt running and holding its lock.
-            sudo pkill -9 -f 'apt-get|playwright' || true
+            # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
+            sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done
-          echo "::error::Chromium install failed after 3 attempts."
-          exit 1
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
 
       # Nothing here is a secret. The database is created empty for this run
       # and deleted after it, the account exists only inside it, and the ids
@@ -324,6 +326,7 @@ jobs:
       # a precondition rather than trusting it.
       - name: Editor end-to-end
         env:
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_REPORT_PATH: test-results/shard-${{ matrix.shard }}.json
         run: pnpm test:e2e:local-preview -- --shard=${{ matrix.shard }}/6
 
@@ -427,7 +430,9 @@ jobs:
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
           for attempt in 1 2 3; do
             status=0
-            timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 || status=$?
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
+            install_pid=$!
+            wait "$install_pid" || status=$?
             cat install.log
             [ "$status" -eq 0 ] && exit 0
             if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" install.log; then
@@ -435,13 +440,13 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # A timed-out attempt can leave apt running and holding its lock.
-            sudo pkill -9 -f 'apt-get|playwright' || true
+            # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
+            sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done
-          echo "::error::Chromium install failed after 3 attempts."
-          exit 1
+          echo "::error::Chromium install failed after 3 attempts (last exit $status)."
+          exit "$status"
 
       # The shards' environment (see "Write the run's environment" above),
       # plus the Worker variable that selects the full Start preview.
@@ -460,6 +465,7 @@ jobs:
 
       - name: Editor end-to-end, full Start preview
         env:
+          MORPH_E2E_AUTH_DIAGNOSTICS: "1"
           MORPH_E2E_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/full-start-${{ matrix.shard }}.json
         run: node scripts/run-start-preview-shard.mjs ${{ matrix.shard }}

@@ -118,6 +118,8 @@ function morphAuthSocketDiagnostics(): Plugin {
     name: "morph:auth-socket-diagnostics",
     apply: "serve",
     configureServer(server) {
+      if (process.env.MORPH_E2E_AUTH_DIAGNOSTICS !== "1") return;
+
       let nextSocketId = 1;
       const socketMap = new WeakMap<object, number>();
 
@@ -133,8 +135,9 @@ function morphAuthSocketDiagnostics(): Plugin {
           );
         });
         socket.on("error", (err: Error) => {
+          const code = (err as NodeJS.ErrnoException).code ?? "UNKNOWN";
           console.log(
-            `[auth-socket] #${id} (${remote}) socket error: ${err.message}`,
+            `[auth-socket] #${id} (${remote}) socket error: code=${code} name=${err.name}`,
           );
         });
         socket.on("timeout", () => {
@@ -143,8 +146,9 @@ function morphAuthSocketDiagnostics(): Plugin {
       });
 
       server.middlewares.use((req, res, next) => {
-        const url = req.url ?? "";
-        if (url.includes("/api/auth/")) {
+        const rawUrl = req.url ?? "";
+        const pathname = rawUrl.split("?")[0] ?? "";
+        if (pathname.includes("/api/auth/")) {
           const socketId = req.socket ? socketMap.get(req.socket) ?? "?" : "?";
           const remote = req.socket
             ? `${req.socket.remoteAddress}:${req.socket.remotePort}`
@@ -152,17 +156,17 @@ function morphAuthSocketDiagnostics(): Plugin {
           const connHeader = req.headers.connection ?? "default";
           const t0 = Date.now();
           console.log(
-            `[auth-http-entry] ${req.method} ${url} socket=#${socketId} remote=${remote} conn=${connHeader}`,
+            `[auth-http-entry] ${req.method} ${pathname} socket=#${socketId} remote=${remote} conn=${connHeader}`,
           );
           res.on("finish", () => {
             console.log(
-              `[auth-http-exit] ${req.method} ${url} status=${res.statusCode} socket=#${socketId} in ${Date.now() - t0}ms`,
+              `[auth-http-exit] ${req.method} ${pathname} status=${res.statusCode} socket=#${socketId} in ${Date.now() - t0}ms`,
             );
           });
           res.on("close", () => {
             if (!res.writableEnded) {
               console.log(
-                `[auth-http-abort] ${req.method} ${url} connection closed before end socket=#${socketId} after ${Date.now() - t0}ms`,
+                `[auth-http-abort] ${req.method} ${pathname} connection closed before end socket=#${socketId} after ${Date.now() - t0}ms`,
               );
             }
           });

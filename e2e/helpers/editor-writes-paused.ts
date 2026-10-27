@@ -41,26 +41,34 @@ export const password = () => process.env.E2E_PASSWORD!;
 
 export const STORAGE_STATE = "e2e/.auth/user.json";
 
+const DIAGNOSTICS = process.env.MORPH_E2E_AUTH_DIAGNOSTICS === "1";
+
 export async function signIn(context: BrowserContext, address: string) {
   const origin = new URL(test.info().project.use.baseURL!).origin;
   for (let attempt = 0; ; attempt += 1) {
     const t0 = Date.now();
-    console.log(
-      `[auth-client] signIn attempt ${attempt} -> POST /api/auth/sign-in/email at ${new Date(t0).toISOString()}`,
-    );
+    if (DIAGNOSTICS) {
+      console.log(
+        `[auth-client] signIn attempt ${attempt} -> POST /api/auth/sign-in/email at ${new Date(t0).toISOString()}`,
+      );
+    }
     let response;
     try {
       response = await context.request.post("/api/auth/sign-in/email", {
         data: { email: address, password: password() },
         headers: { origin },
       });
-      console.log(
-        `[auth-client] signIn attempt ${attempt} response ${response.status()} in ${Date.now() - t0}ms`,
-      );
+      if (DIAGNOSTICS) {
+        console.log(
+          `[auth-client] signIn attempt ${attempt} response ${response.status()} in ${Date.now() - t0}ms`,
+        );
+      }
     } catch (error: any) {
-      console.error(
-        `[auth-client] signIn attempt ${attempt} error in ${Date.now() - t0}ms: code=${error?.code} name=${error?.name} message=${error?.message}`,
-      );
+      if (DIAGNOSTICS) {
+        console.error(
+          `[auth-client] signIn attempt ${attempt} error in ${Date.now() - t0}ms: code=${error?.code} name=${error?.name}`,
+        );
+      }
       throw error;
     }
     // Rate limited: wait for the window rather than fail on it.
@@ -76,22 +84,28 @@ export async function signIn(context: BrowserContext, address: string) {
 export async function signOut(context: BrowserContext) {
   const origin = new URL(test.info().project.use.baseURL!).origin;
   const t0 = Date.now();
-  console.log(
-    `[auth-client] signOut -> POST /api/auth/sign-out at ${new Date(t0).toISOString()}`,
-  );
+  if (DIAGNOSTICS) {
+    console.log(
+      `[auth-client] signOut -> POST /api/auth/sign-out at ${new Date(t0).toISOString()}`,
+    );
+  }
   try {
     const response = await context.request.post("/api/auth/sign-out", {
       data: {},
       headers: { origin },
     });
-    console.log(
-      `[auth-client] signOut response ${response.status()} in ${Date.now() - t0}ms`,
-    );
+    if (DIAGNOSTICS) {
+      console.log(
+        `[auth-client] signOut response ${response.status()} in ${Date.now() - t0}ms`,
+      );
+    }
     expect(response.ok(), "sign-out").toBe(true);
   } catch (error: any) {
-    console.error(
-      `[auth-client] signOut error in ${Date.now() - t0}ms: code=${error?.code} message=${error?.message}`,
-    );
+    if (DIAGNOSTICS) {
+      console.error(
+        `[auth-client] signOut error in ${Date.now() - t0}ms: code=${error?.code} name=${error?.name}`,
+      );
+    }
     throw error;
   }
 }
