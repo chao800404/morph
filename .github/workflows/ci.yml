@@ -281,41 +281,68 @@ jobs:
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
           for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
             status=0
-            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
+            # Install Chromium and its OS dependencies with an attempt-scoped process group, unique log redirection, and bounded kill-after.
+            # Avoid direct pipe to tee which holds stdout open if child apt processes linger.
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
             install_pid=$!
             wait "$install_pid" || status=$?
-            cat install.log
-            [ "$status" -eq 0 ] && exit 0
-            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" install.log; then
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
               echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log holders.
+            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log writers.
             sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
             for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
               [ -f "$lock_file" ] || continue
               for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
-                is_attempt_descendant=0
-                if [ -d "/proc/$lock_pid" ]; then
-                  if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
-                    is_attempt_descendant=1
-                  elif sudo -n ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
-                    is_attempt_descendant=1
-                  elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
-                    is_attempt_descendant=1
-                  fi
-                fi
-                if [ "$is_attempt_descendant" -eq 1 ]; then
+                if is_attempt_descendant "$lock_pid"; then
                   echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
                   sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
                 fi
               done
             done
-            for log_pid in $(sudo -n fuser install.log 2>/dev/null || fuser install.log 2>/dev/null || true); do
-              sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
             done
+            rm -f "$install_log"
             if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
               echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
             fi
@@ -453,41 +480,68 @@ jobs:
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
           transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
           for attempt in 1 2 3; do
+            install_log=$(mktemp "/tmp/playwright-install-${attempt}-XXXXXX.log")
+            log_dev_ino=$(stat -L -c "%d:%i" "$install_log" 2>/dev/null || true)
             status=0
-            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
+            # Install Chromium and its OS dependencies with an attempt-scoped process group, unique log redirection, and bounded kill-after.
+            # Avoid direct pipe to tee which holds stdout open if child apt processes linger.
+            setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > "$install_log" 2>&1 &
             install_pid=$!
             wait "$install_pid" || status=$?
-            cat install.log
-            [ "$status" -eq 0 ] && exit 0
-            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" install.log; then
+            cat "$install_log"
+            if [ "$status" -eq 0 ]; then
+              rm -f "$install_log"
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && ! grep -Eq "$transient" "$install_log"; then
               echo "::error::Chromium install failed with a non-network error (exit $status); not retrying."
+              rm -f "$install_log"
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log holders.
+            # Terminate this installation attempt's process group, lock-holding descendants, and lingering log writers.
             sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            is_attempt_descendant() {
+              local p=$1
+              [ -d "/proc/$p" ] || return 1
+              local pgid
+              pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+              if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+                return 0
+              fi
+              [ -n "$log_dev_ino" ] || return 1
+              for fd_name in $(sudo -n ls "/proc/$p/fd" 2>/dev/null || ls "/proc/$p/fd" 2>/dev/null || true); do
+                local fd_dev_ino
+                fd_dev_ino=$(sudo -n stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+                if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+                  local flags
+                  flags=$(sudo -n awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+                  if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+                    return 0
+                  fi
+                fi
+              done
+              return 1
+            }
             for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
               [ -f "$lock_file" ] || continue
               for lock_pid in $(sudo -n fuser "$lock_file" 2>/dev/null || fuser "$lock_file" 2>/dev/null || true); do
-                is_attempt_descendant=0
-                if [ -d "/proc/$lock_pid" ]; then
-                  if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
-                    is_attempt_descendant=1
-                  elif sudo -n ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
-                    is_attempt_descendant=1
-                  elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "install.log"; then
-                    is_attempt_descendant=1
-                  fi
-                fi
-                if [ "$is_attempt_descendant" -eq 1 ]; then
+                if is_attempt_descendant "$lock_pid"; then
                   echo "::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file"
                   sudo -n kill -9 "$lock_pid" 2>/dev/null || kill -9 "$lock_pid" 2>/dev/null || true
+                else
+                  echo "::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination."
                 fi
               done
             done
-            for log_pid in $(sudo -n fuser install.log 2>/dev/null || fuser install.log 2>/dev/null || true); do
-              sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+            for log_pid in $(sudo -n fuser "$install_log" 2>/dev/null || fuser "$install_log" 2>/dev/null || true); do
+              if is_attempt_descendant "$log_pid"; then
+                sudo -n kill -9 "$log_pid" 2>/dev/null || kill -9 "$log_pid" 2>/dev/null || true
+              else
+                echo "::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination."
+              fi
             done
+            rm -f "$install_log"
             if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then
               echo "::warning::dpkg --configure -a recovery failed: $dpkg_output"
             fi

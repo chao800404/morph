@@ -97,66 +97,104 @@ describe("CI apt installation timeout and process termination", () => {
     );
   });
 
-  it("proves attempt recovery terminates setsid lock-holding descendants while preserving unrelated process holding lock file", () => {
-    const logFile = join(dir, "group-isolation.log");
-    const unrelatedLock = join(dir, "unrelated.lock");
-    const unrelatedLog = join(dir, "unrelated.log");
-    const targetLock = join(dir, "target.lock");
+  it("proves attempt recovery terminates setsid lock-holding descendants via unique log dev/ino and write fd, while preserving unrelated writers and readers", () => {
+    const otherDir = join(dir, "other");
     const script = `
-# 1. Start an unrelated background process holding an unrelated temporary lock file
-setsid bash -c '
-  exec 9>"${unrelatedLock}"
+set -e
+other_dir="${otherDir}"
+mkdir -p "$other_dir"
+
+target_lock="${join(dir, "target.lock")}"
+unrelated_lock="${join(dir, "unrelated.lock")}"
+
+# Attempt unique log and exact dev/ino identity
+install_log=$(mktemp "${join(dir, "install-XXXXXX.log")}")
+log_dev_ino=$(stat -L -c "%d:%i" "$install_log")
+
+# Counterexample 1: Unrelated process holding unrelated_lock and writing to same-named log in another directory
+other_log="$other_dir/$(basename "$install_log")"
+touch "$other_log"
+setsid bash -c "
+  exec 9>'$unrelated_lock'
   flock 9
+  exec 1>>'$other_log'
   sleep 15
-' > "${unrelatedLog}" 2>&1 &
-unrelated_pid=$!
+" > /dev/null 2>&1 &
+unrelated_writer_pid=$!
+
+# Counterexample 2: Unrelated process reading this attempt unique log in read-only mode
+setsid bash -c "
+  sleep 15 < '$install_log'
+" > /dev/null 2>&1 &
+unrelated_reader_pid=$!
+
 sleep 0.2
 
-# 2. Run target where descendant opens a new session via setsid holding target lock
-setsid timeout --kill-after=1s 1 bash -c '
-  setsid bash -c "
-    exec 8>\\"${targetLock}\\"
+# Target attempt: descendant runs in a new session via setsid, holding target_lock and writing to install_log
+setsid timeout --kill-after=1s 1 bash -c "
+  setsid bash -c '
+    exec 8>\"$target_lock\"
     flock 8
     sleep 10
-  " &
-  child=$!
-  echo CHILD=$child
+  ' &
+  child=\\$!
+  echo CHILD=\\$child
   wait
-' > "${logFile}" 2>&1 &
+" > "$install_log" 2>&1 &
 install_pid=$!
 
-# 3. Wait for timeout to complete and install_pid to exit
-wait $install_pid || status=$?
+# Wait for timeout to expire and install_pid to exit
+wait $install_pid || true
 
-# 4. Enforce attempt-scoped recovery logic matching CI:
-# A. Terminate attempt process group
-kill -9 -- -$install_pid 2>/dev/null || true
-
-# B. Identify and terminate lock-holding descendants holding targetLock
-for lock_file in "${targetLock}"; do
-  [ -f "$lock_file" ] || continue
-  for lock_pid in $(fuser "$lock_file" 2>/dev/null || true); do
-    is_attempt_descendant=0
-    if [ -d "/proc/$lock_pid" ]; then
-      if [ "$(cat "/proc/$lock_pid/stat" 2>/dev/null | awk '{print $5}')" = "$install_pid" ]; then
-        is_attempt_descendant=1
-      elif ls -l "/proc/$lock_pid/fd" 2>/dev/null | grep -q "$(basename "${logFile}")"; then
-        is_attempt_descendant=1
+is_attempt_descendant() {
+  local p=$1
+  [ -d "/proc/$p" ] || return 1
+  local pgid
+  pgid=$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null || true)
+  if [ -n "$pgid" ] && [ "$pgid" = "$install_pid" ]; then
+    return 0
+  fi
+  [ -n "$log_dev_ino" ] || return 1
+  for fd_name in $(ls "/proc/$p/fd" 2>/dev/null || true); do
+    local fd_dev_ino
+    fd_dev_ino=$(stat -L -c "%d:%i" "/proc/$p/fd/$fd_name" 2>/dev/null || true)
+    if [ -n "$fd_dev_ino" ] && [ "$fd_dev_ino" = "$log_dev_ino" ]; then
+      local flags
+      flags=$(awk '/flags:/ {print $2}' "/proc/$p/fdinfo/$fd_name" 2>/dev/null || true)
+      if [ -n "$flags" ] && [ $(( flags & 3 )) -ne 0 ]; then
+        return 0
       fi
     fi
-    if [ "$is_attempt_descendant" -eq 1 ]; then
+  done
+  return 1
+}
+
+# 1. Terminate attempt process group
+kill -9 -- -$install_pid 2>/dev/null || true
+
+# 2. Check lock-holding processes
+for lock_file in "$target_lock"; do
+  [ -f "$lock_file" ] || continue
+  for lock_pid in $(fuser "$lock_file" 2>/dev/null || true); do
+    if is_attempt_descendant "$lock_pid"; then
       kill -9 "$lock_pid" 2>/dev/null || true
+    else
+      echo "DIAGNOSTIC: unconfirmed lock holder $lock_pid, skipping termination"
     fi
   done
 done
 
-# C. Terminate any remaining process holding this attempt log
-for log_pid in $(fuser "${logFile}" 2>/dev/null || true); do
-  kill -9 "$log_pid" 2>/dev/null || true
+# 3. Check processes holding install_log
+for log_pid in $(fuser "$install_log" 2>/dev/null || true); do
+  if is_attempt_descendant "$log_pid"; then
+    kill -9 "$log_pid" 2>/dev/null || true
+  else
+    echo "DIAGNOSTIC: reader or unconfirmed process $log_pid holding log, skipping termination"
+  fi
 done
 
-# 5. Extract descendant child PID
-child_pid=$(grep -o "CHILD=[0-9]*" "${logFile}" | cut -d= -f2)
+# 4. Extract descendant child PID
+child_pid=$(grep -o "CHILD=[0-9]*" "$install_log" 2>/dev/null | cut -d= -f2 || true)
 
 child_alive=0
 if [ -n "$child_pid" ] && ps -p $child_pid > /dev/null 2>&1; then
@@ -164,26 +202,34 @@ if [ -n "$child_pid" ] && ps -p $child_pid > /dev/null 2>&1; then
 fi
 
 target_lock_released=0
-if flock -n "${targetLock}" true 2>/dev/null; then
+if flock -n "$target_lock" true 2>/dev/null; then
   target_lock_released=1
 fi
 
-unrelated_alive=0
-if ps -p $unrelated_pid > /dev/null 2>&1; then
-  unrelated_alive=1
+unrelated_writer_alive=0
+if ps -p $unrelated_writer_pid > /dev/null 2>&1; then
+  unrelated_writer_alive=1
+fi
+
+unrelated_reader_alive=0
+if ps -p $unrelated_reader_pid > /dev/null 2>&1; then
+  unrelated_reader_alive=1
 fi
 
 unrelated_lock_held=0
-if ! flock -n "${unrelatedLock}" true 2>/dev/null; then
+if ! flock -n "$unrelated_lock" true 2>/dev/null; then
   unrelated_lock_held=1
 fi
 
-# Clean up unrelated process group
-kill -9 -- -$unrelated_pid 2>/dev/null || true
+# Clean up counterexample processes
+kill -9 -- -$unrelated_writer_pid 2>/dev/null || true
+kill -9 -- -$unrelated_reader_pid 2>/dev/null || true
+rm -f "$install_log" "$other_log"
 
 echo "CHILD_ALIVE=$child_alive"
 echo "TARGET_LOCK_RELEASED=$target_lock_released"
-echo "UNRELATED_ALIVE=$unrelated_alive"
+echo "UNRELATED_WRITER_ALIVE=$unrelated_writer_alive"
+echo "UNRELATED_READER_ALIVE=$unrelated_reader_alive"
 echo "UNRELATED_LOCK_HELD=$unrelated_lock_held"
 `;
     const output = execSync(script, {
@@ -199,8 +245,16 @@ echo "UNRELATED_LOCK_HELD=$unrelated_lock_held"
       `Expected target lock to be released: ${output}`,
     );
     assert.ok(
-      output.includes("UNRELATED_ALIVE=1"),
-      `Expected unrelated process to survive: ${output}`,
+      output.includes("UNRELATED_WRITER_ALIVE=1"),
+      `Expected unrelated writer in another directory to survive: ${output}`,
+    );
+    assert.ok(
+      output.includes("UNRELATED_READER_ALIVE=1"),
+      `Expected unrelated reader of attempt log to survive: ${output}`,
+    );
+    assert.ok(
+      output.includes("DIAGNOSTIC: reader or unconfirmed process"),
+      `Expected diagnostic to be retained for reader: ${output}`,
     );
     assert.ok(
       output.includes("UNRELATED_LOCK_HELD=1"),
