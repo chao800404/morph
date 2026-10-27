@@ -97,22 +97,36 @@ describe("CI apt installation timeout and process termination", () => {
     );
   });
 
-  it("proves process group termination kills descendants while preserving unrelated processes", () => {
+  it("proves process group termination kills descendants while preserving unrelated process holding lock file", () => {
     const logFile = join(dir, "group-isolation.log");
+    const unrelatedLock = join(dir, "unrelated.lock");
+    const targetLock = join(dir, "target.lock");
     const script = `
-# 1. Start an unrelated background process
-sleep 15 &
+# 1. Start an unrelated background process holding an unrelated temporary lock file
+setsid bash -c '
+  exec 9>"${unrelatedLock}"
+  flock 9
+  sleep 15
+' &
 unrelated_pid=$!
+sleep 0.2
 
-# 2. Run the command inside a new process group via setsid
-setsid timeout --kill-after=1s 1 bash -c 'sleep 10 & child=$!; echo CHILD=$child; wait' > "${logFile}" 2>&1 &
+# 2. Run target inside a new process group via setsid, with child holding a target lock
+setsid timeout --kill-after=1s 1 bash -c '
+  exec 8>"${targetLock}"
+  flock 8
+  sleep 10 &
+  child=$!
+  echo CHILD=$child
+  wait
+' > "${logFile}" 2>&1 &
 install_pid=$!
 
 # 3. Wait for timeout to complete
 wait $install_pid || status=$?
 
-# 4. Enforce group termination on only this attempt's process group
-kill -9 -$install_pid 2>/dev/null || true
+# 4. Enforce group termination on only this attempt's process group with --
+kill -9 -- -$install_pid 2>/dev/null || true
 
 # 5. Extract descendant child PID
 child_pid=$(grep -o "CHILD=[0-9]*" "${logFile}" | cut -d= -f2)
@@ -122,16 +136,28 @@ if [ -n "$child_pid" ] && ps -p $child_pid > /dev/null 2>&1; then
   child_alive=1
 fi
 
+target_lock_released=0
+if flock -n "${targetLock}" true 2>/dev/null; then
+  target_lock_released=1
+fi
+
 unrelated_alive=0
 if ps -p $unrelated_pid > /dev/null 2>&1; then
   unrelated_alive=1
 fi
 
-# Clean up unrelated process
-kill -9 $unrelated_pid 2>/dev/null || true
+unrelated_lock_held=0
+if ! flock -n "${unrelatedLock}" true 2>/dev/null; then
+  unrelated_lock_held=1
+fi
+
+# Clean up unrelated process group
+kill -9 -- -$unrelated_pid 2>/dev/null || true
 
 echo "CHILD_ALIVE=$child_alive"
+echo "TARGET_LOCK_RELEASED=$target_lock_released"
 echo "UNRELATED_ALIVE=$unrelated_alive"
+echo "UNRELATED_LOCK_HELD=$unrelated_lock_held"
 `;
     const output = execSync(script, {
       shell: "/bin/bash",
@@ -142,8 +168,16 @@ echo "UNRELATED_ALIVE=$unrelated_alive"
       `Expected descendant child to be terminated: ${output}`,
     );
     assert.ok(
+      output.includes("TARGET_LOCK_RELEASED=1"),
+      `Expected target lock to be released: ${output}`,
+    );
+    assert.ok(
       output.includes("UNRELATED_ALIVE=1"),
       `Expected unrelated process to survive: ${output}`,
+    );
+    assert.ok(
+      output.includes("UNRELATED_LOCK_HELD=1"),
+      `Expected unrelated process lock to remain held: ${output}`,
     );
   });
 });

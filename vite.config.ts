@@ -120,11 +120,6 @@ function morphAuthSocketDiagnostics(): Plugin {
     configureServer(server) {
       if (process.env.MORPH_E2E_AUTH_DIAGNOSTICS !== "1") return;
 
-      if (server.httpServer && "keepAliveTimeout" in server.httpServer) {
-        server.httpServer.keepAliveTimeout = 65_000;
-        server.httpServer.headersTimeout = 66_000;
-      }
-
       let nextSocketId = 1;
       const socketMap = new WeakMap<object, number>();
 

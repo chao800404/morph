@@ -292,9 +292,11 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
-            sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
-            sudo fuser -k -9 /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null || true
+            # Terminate only this installation attempt's process group and descendants, leaving unrelated processes untouched.
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            for p in $(pgrep -P "$install_pid" 2>/dev/null || true); do
+              sudo -n kill -9 "$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
+            done
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done
@@ -441,9 +443,11 @@ jobs:
               exit "$status"
             fi
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
-            # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
-            sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
-            sudo fuser -k -9 /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null || true
+            # Terminate only this installation attempt's process group and descendants, leaving unrelated processes untouched.
+            sudo -n kill -9 -- -"$install_pid" 2>/dev/null || kill -9 -- -"$install_pid" 2>/dev/null || true
+            for p in $(pgrep -P "$install_pid" 2>/dev/null || true); do
+              sudo -n kill -9 "$p" 2>/dev/null || kill -9 "$p" 2>/dev/null || true
+            done
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done
