@@ -56,9 +56,9 @@ export const Route = createFileRoute("${HOME_ROUTE}")({
 
 function NavMatrixHome() {
   return (
-    <main className="p-8">
-      <h1 data-e2e="nav-matrix-home-title">Nav Matrix Home</h1>
-      <p data-e2e="nav-matrix-home-desc">Home content for navigation matrix.</p>
+    <main className="p-8 max-w-xl mx-auto text-center">
+      <h1 data-e2e="nav-matrix-home-title" className="text-2xl font-bold mb-4">Nav Matrix Home</h1>
+      <p data-e2e="nav-matrix-home-desc" className="mb-4">Home content for navigation matrix.</p>
       <Link to="${DETAIL_ROUTE}" data-e2e="nav-matrix-link-to-detail" className="text-blue-600 underline">
         Go to Detail
       </Link>
@@ -77,9 +77,9 @@ export const Route = createFileRoute("${DETAIL_ROUTE}")({
 
 function NavMatrixDetail() {
   return (
-    <main className="p-8">
-      <h1 data-e2e="nav-matrix-detail-title">Nav Matrix Detail</h1>
-      <p data-e2e="nav-matrix-detail-desc">Detail content for navigation matrix.</p>
+    <main className="p-8 max-w-xl mx-auto text-center">
+      <h1 data-e2e="nav-matrix-detail-title" className="text-2xl font-bold mb-4">Nav Matrix Detail</h1>
+      <p data-e2e="nav-matrix-detail-desc" className="mb-4">Detail content for navigation matrix.</p>
       <Link to="${HOME_ROUTE}" data-e2e="nav-matrix-link-to-home" className="text-blue-600 underline">
         Back to Home
       </Link>
@@ -100,6 +100,19 @@ async function openEditorAtRoute(page: Page, routePath: string) {
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
     timeout: 45_000,
   });
+  const disableSelection = page.getByRole("button", {
+    name: "Disable section selection",
+  });
+  if (await disableSelection.isVisible().catch(() => false)) {
+    await disableSelection.click();
+  }
+  const canvasRegion = page.getByRole("region", {
+    name: /Storefront preview canvas/,
+  });
+  if (await canvasRegion.isVisible().catch(() => false)) {
+    await canvasRegion.focus();
+    await page.keyboard.press("0");
+  }
 }
 
 test.describe("Navigation Matrix: Preview and Storefront", () => {
@@ -159,6 +172,12 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       // Assert transition back to home route
       const linkToHome = frame.locator('[data-e2e="nav-matrix-link-to-home"]');
       await expect(linkToHome).toBeVisible({ timeout: 30_000 });
+      const disableSelection = page.getByRole("button", {
+        name: "Disable section selection",
+      });
+      if (await disableSelection.isVisible().catch(() => false)) {
+        await disableSelection.click();
+      }
       await linkToHome.click();
 
       const homeTitle = frame.locator('[data-e2e="nav-matrix-home-title"]');
@@ -183,13 +202,35 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(detailTitle).toBeVisible({ timeout: 30_000 });
       await expect(homeTitle).toHaveCount(0);
 
-      // History back
-      await frame.locator("body").evaluate(() => window.history.back());
+      // History back (supports both full Start browser history and client-only memory history)
+      await frame.locator("body").evaluate(() => {
+        const router = (
+          window as unknown as {
+            __morphPreviewRouter?: { history?: { back(): void } };
+          }
+        ).__morphPreviewRouter;
+        if (router?.history?.back) {
+          router.history.back();
+        } else {
+          window.history.back();
+        }
+      });
       await expect(homeTitle).toBeVisible({ timeout: 30_000 });
       await expect(detailTitle).toHaveCount(0);
 
-      // History forward
-      await frame.locator("body").evaluate(() => window.history.forward());
+      // History forward (supports both full Start browser history and client-only memory history)
+      await frame.locator("body").evaluate(() => {
+        const router = (
+          window as unknown as {
+            __morphPreviewRouter?: { history?: { forward(): void } };
+          }
+        ).__morphPreviewRouter;
+        if (router?.history?.forward) {
+          router.history.forward();
+        } else {
+          window.history.forward();
+        }
+      });
       await expect(detailTitle).toBeVisible({ timeout: 30_000 });
       await expect(homeTitle).toHaveCount(0);
     });
