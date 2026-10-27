@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
     steps:
       - name: Runner apt configuration
         run: |
@@ -50,9 +50,8 @@ jobs:
             fi
           }
           mk default default
-          mk archive "deb [signed-by=$key] http://archive.ubuntu.com/ubuntu noble noble-updates main universe" \
-                     "deb [signed-by=$key] http://security.ubuntu.com/ubuntu noble-security main universe"
-          mk azure   "deb [signed-by=$key] http://azure.archive.ubuntu.com/ubuntu noble noble-updates noble-security main universe"
+          mk archive "deb [signed-by=$key] https://archive.ubuntu.com/ubuntu noble main universe"                      "deb [signed-by=$key] https://archive.ubuntu.com/ubuntu noble-updates main universe"                      "deb [signed-by=$key] https://security.ubuntu.com/ubuntu noble-security main universe"
+          mk azure   "deb [signed-by=$key] http://azure.archive.ubuntu.com/ubuntu noble main universe"                      "deb [signed-by=$key] http://azure.archive.ubuntu.com/ubuntu noble-updates main universe"                      "deb [signed-by=$key] http://azure.archive.ubuntu.com/ubuntu noble-security main universe"
           order="default archive azure"
           [ $(( ${{ matrix.n }} % 3 )) -eq 1 ] && order="archive azure default"
           [ $(( ${{ matrix.n }} % 3 )) -eq 2 ] && order="azure default archive"
@@ -68,8 +67,9 @@ jobs:
             debs=$(sudo find $d/archives -maxdepth 1 -name '*.deb' | wc -l)
             sigok=$(grep -c 'NO_PUBKEY\|not signed\|BADSIG' $d/log/update.log || true)
             echo "PROBE src=$s update_exit=$us update_s=$(awk "BEGIN{print $t1-$t0}") dl_exit=$ds dl_s=$(awk "BEGIN{print $t2-$t1}") debs=$debs bytes=$bytes sigerr=$sigok"
-            tail -3 $d/log/dl.log | sed "s/^/PROBE-TAIL src=$s /"
+            grep -E "^(Get|Fetched)" $d/log/dl.log | tail -3 | sed "s/^/PROBE-TAIL src=$s /"
             grep -hE '^(Err|W:|E:)' $d/log/update.log $d/log/dl.log | head -5 | sed "s/^/PROBE-ERR src=$s /"
           done
           echo "== versions chosen (archive vs azure vs default)"
-          for s in default archive azure; do echo "PROBE vers src=$s $(sudo ls /tmp/probe-$s/archives/*.deb 2>/dev/null | xargs -n1 basename | sort | md5sum | cut -c1-12)"; done
+          for s in default archive azure; do echo "PROBE vers src=$s $(sudo ls /tmp/probe-$s/archives/*.deb 2>/dev/null | xargs -n1 basename | sort | md5sum | cut -c1-12) $(cd /tmp/probe-$s/archives && sudo sha256sum *.deb 2>/dev/null | sort -k2 | sha256sum | cut -c1-12)"; done
+          for s in default archive azure; do sudo ls /tmp/probe-$s/archives/*.deb 2>/dev/null | xargs -n1 basename | sed "s/^/PROBE deb src=$s /"; done
