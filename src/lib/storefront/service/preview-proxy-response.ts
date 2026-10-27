@@ -48,6 +48,10 @@ export async function proxyPreviewModuleRequest(
         /\.(?:[cm]?[jt]sx?|css)$/.test(path)));
   for (let attempt = 0; ; attempt++) {
     const response = await proxy(request);
+    // DIAG(302): diagnostic branch only, never merged. Path only, no query.
+    console.log(
+      `[preview-diag] attempt ${JSON.stringify({ at: new Date().toISOString(), method: request.method, path, moduleRead, attempt, status: response?.status ?? null })}`,
+    );
     if (!moduleRead || response?.status !== 500) return response;
     // Only inspect a bounded text body. The SDK uses a short plain-text
     // response, but the container can also return arbitrary 500 bodies.
@@ -85,6 +89,11 @@ export async function proxyPreviewModuleRequest(
         clearTimeout(timer);
         void reader.cancel().catch(() => {});
       });
+    // DIAG(302)
+    if (matches)
+      console.log(
+        `[preview-diag] routing-error ${JSON.stringify({ at: new Date().toISOString(), path, attempt, next: attempt === 2 ? "interrupted-503" : "retry" })}`,
+      );
     if (!matches) return response;
     void response.body?.cancel().catch(() => {});
     if (attempt === 2) return previewRuntimeInterruptedResponse();

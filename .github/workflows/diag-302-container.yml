@@ -1,0 +1,102 @@
+# DIAG(302): diagnostic branch only, never merged. The job is a copy of
+# editor-e2e-container from #302 head de596f6, run three times.
+name: diag 302 sandbox interruption
+'on':
+  push:
+    branches:
+    - diag/302-sandbox-interruption
+permissions:
+  contents: read
+jobs:
+  diag-container:
+    name: diag 302 container ${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10.34.5
+        run_install: false
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+    - name: Use the primary Ubuntu archive for apt
+      run: "grep -qx 'URIs: mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources || {\n  echo \"::error::The runner's Ubuntu sources no longer read /etc/apt/apt-mirrors.txt; this\
+        \ step would change nothing.\"\n  exit 1\n}\nprintf '%s\\tpriority:%s\\n' https://archive.ubuntu.com/ubuntu/ 1 https://security.ubuntu.com/ubuntu/ 2 \\\n  | sudo tee /etc/apt/apt-mirrors.txt\n"
+    - name: Install Chromium for Playwright
+      timeout-minutes: 15
+      run: "set -o pipefail\nprintf '%s\\n' 'Acquire::Retries \"3\";' 'Acquire::http::Timeout \"30\";' 'Acquire::https::Timeout \"30\";' \\\n  | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null\n\
+        transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to\
+        \ acquire the dpkg frontend lock'\nfor attempt in 1 2 3; do\n  install_log=$(mktemp \"/tmp/playwright-install-${attempt}-XXXXXX.log\")\n  log_dev_ino=$(stat -L -c \"%d:%i\" \"$install_log\" 2>/dev/null\
+        \ || true)\n  status=0\n  # Install Chromium and its OS dependencies with an attempt-scoped process group, unique log redirection, and bounded kill-after.\n  # Avoid direct pipe to tee which holds\
+        \ stdout open if child apt processes linger.\n  setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > \"$install_log\" 2>&1 &\n  install_pid=$!\n  wait \"$install_pid\"\
+        \ || status=$?\n  cat \"$install_log\"\n  if [ \"$status\" -eq 0 ]; then\n    rm -f \"$install_log\"\n    exit 0\n  fi\n  if [ \"$status\" -ne 124 ] && [ \"$status\" -ne 137 ] && ! grep -Eq \"$transient\"\
+        \ \"$install_log\"; then\n    echo \"::error::Chromium install failed with a non-network error (exit $status); not retrying.\"\n    rm -f \"$install_log\"\n    exit \"$status\"\n  fi\n  echo \"\
+        ::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status).\"\n  # Terminate this installation attempt's process group, lock-holding descendants, and lingering\
+        \ log writers.\n  sudo -n kill -9 -- -\"$install_pid\" 2>/dev/null || kill -9 -- -\"$install_pid\" 2>/dev/null || true\n  is_attempt_descendant() {\n    local p=$1\n    [ -d \"/proc/$p\" ] || return\
+        \ 1\n    local pgid\n    pgid=$(awk '{print $5}' \"/proc/$p/stat\" 2>/dev/null || true)\n    if [ -n \"$pgid\" ] && [ \"$pgid\" = \"$install_pid\" ]; then\n      return 0\n    fi\n    [ -n \"$log_dev_ino\"\
+        \ ] || return 1\n    for fd_name in $(sudo -n ls \"/proc/$p/fd\" 2>/dev/null || ls \"/proc/$p/fd\" 2>/dev/null || true); do\n      local fd_dev_ino\n      fd_dev_ino=$(sudo -n stat -L -c \"%d:%i\"\
+        \ \"/proc/$p/fd/$fd_name\" 2>/dev/null || stat -L -c \"%d:%i\" \"/proc/$p/fd/$fd_name\" 2>/dev/null || true)\n      if [ -n \"$fd_dev_ino\" ] && [ \"$fd_dev_ino\" = \"$log_dev_ino\" ]; then\n  \
+        \      local flags\n        flags=$(sudo -n awk '/flags:/ {print $2}' \"/proc/$p/fdinfo/$fd_name\" 2>/dev/null || awk '/flags:/ {print $2}' \"/proc/$p/fdinfo/$fd_name\" 2>/dev/null || true)\n  \
+        \      if [ -n \"$flags\" ] && [ $(( flags & 3 )) -ne 0 ]; then\n          return 0\n        fi\n      fi\n    done\n    return 1\n  }\n  for lock_file in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock\
+        \ /var/lib/apt/lists/lock; do\n    [ -f \"$lock_file\" ] || continue\n    for lock_pid in $(sudo -n fuser \"$lock_file\" 2>/dev/null || fuser \"$lock_file\" 2>/dev/null || true); do\n      if is_attempt_descendant\
+        \ \"$lock_pid\"; then\n        echo \"::warning::Terminating lock-holding attempt descendant $lock_pid holding $lock_file\"\n        sudo -n kill -9 \"$lock_pid\" 2>/dev/null || kill -9 \"$lock_pid\"\
+        \ 2>/dev/null || true\n      else\n        echo \"::warning::Unconfirmed lock holder $lock_pid on $lock_file (not verified attempt writer); skipping termination.\"\n      fi\n    done\n  done\n\
+        \  for log_pid in $(sudo -n fuser \"$install_log\" 2>/dev/null || fuser \"$install_log\" 2>/dev/null || true); do\n    if is_attempt_descendant \"$log_pid\"; then\n      sudo -n kill -9 \"$log_pid\"\
+        \ 2>/dev/null || kill -9 \"$log_pid\" 2>/dev/null || true\n    else\n      echo \"::warning::Unconfirmed or read-only process $log_pid holding log; skipping termination.\"\n    fi\n  done\n  rm\
+        \ -f \"$install_log\"\n  if ! dpkg_output=$(sudo -n timeout --kill-after=5s 30 dpkg --configure -a 2>&1); then\n    echo \"::warning::dpkg --configure -a recovery failed: $dpkg_output\"\n  fi\n\
+        \  sleep $((attempt * 15))\ndone\necho \"::error::Chromium install failed after 3 attempts (last exit $status).\"\nexit \"$status\"\n"
+    - name: Write the run's environment
+      run: 'cat > .env.e2e <<EOF
+
+        E2E_EMAIL=editor-e2e@morph.invalid
+
+        E2E_PASSWORD=$(openssl rand -hex 24)
+
+        E2E_EDITOR_PATH=/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor?templateId=00000000-0000-4000-8000-000000000004
+
+        EOF
+
+        cat > .dev.vars <<EOF
+
+        MORPH_THEME_PREVIEW_RUNTIME=start
+
+        MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
+
+        MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+
+        EOF
+
+        '
+    - name: Run M1 container lifecycle acceptance
+      env:
+        MORPH_E2E_AUTH_DIAGNOSTICS: '1'
+        MORPH_E2E_TRANSPORT: cloudflare-sandbox
+        MORPH_E2E_PREVIEW_RUNTIME: start
+        MORPH_THEME_PREVIEW_RUNTIME: start
+        MORPH_E2E_REPORT_PATH: test-results/container-acceptance.json
+      run: node scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
+    - name: Require M1 container acceptance test to have passed with zero skip and zero retry
+      run: node scripts/check-container-acceptance.mjs test-results/container-acceptance.json
+    - name: Upload results and failure traces
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: diag-302-container-${{ matrix.n }}-attempt-${{ github.run_attempt }}
+        path: test-results/
+        retention-days: 7
+        if-no-files-found: error
+    strategy:
+      fail-fast: false
+      matrix:
+        n:
+        - 1
+        - 2
+        - 3

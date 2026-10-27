@@ -272,6 +272,10 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
       (moduleRequest) =>
         proxyToSandbox(moduleRequest, previewProxyEnv(bindings) as never),
     );
+    // DIAG(302): diagnostic branch only, never merged. Path only, no query.
+    console.log(
+      `[preview-diag] final ${JSON.stringify({ at: new Date().toISOString(), method: request.method, path: new URL(request.url).pathname, status: response?.status ?? null, ms: Date.now() - startedAt })}`,
+    );
     if (response) {
       const durationMs = Date.now() - startedAt;
       const { observePreviewProxyResponse, previewResponseObservation } =
@@ -299,7 +303,11 @@ async function proxyPreviewRequest(request: Request): Promise<Response | null> {
       return finishPreviewResponse(response);
     }
     return response;
-  } catch {
+  } catch (error) {
+    // DIAG(302)
+    console.log(
+      `[preview-diag] threw ${JSON.stringify({ at: new Date().toISOString(), method: request.method, path: new URL(request.url).pathname, error: error instanceof Error ? error.name : typeof error })}`,
+    );
     return null;
   }
 }

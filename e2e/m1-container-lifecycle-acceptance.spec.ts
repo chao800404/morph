@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -95,7 +95,33 @@ type AcceptanceIdentities = {
   contentDependency2: "dependent" | "independent" | null;
 };
 
+// DIAG(302): diagnostic branch only, never merged. Observes; asserts nothing.
+const diagEvents: Array<Record<string, unknown>> = [];
+function diagRecord(kind: string, data: Record<string, unknown>) {
+  const event = { at: new Date().toISOString(), kind, ...data };
+  diagEvents.push(event);
+  console.log(`[diag-302] ${JSON.stringify(event)}`);
+}
+function diagUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return {
+      host: parsed.hostname.includes(".preview.") ? "preview" : parsed.hostname,
+      path: parsed.pathname,
+    };
+  } catch {
+    return { host: "?", path: "?" };
+  }
+}
+
 test.describe("M1 container lifecycle acceptance", () => {
+  test.afterEach(() => {
+    mkdirSync("test-results", { recursive: true });
+    writeFileSync(
+      "test-results/diag-302-events.json",
+      JSON.stringify(diagEvents, null, 2),
+    );
+  });
   test.describe.configure({ mode: "serial" });
   test.setTimeout(45 * 60_000);
   test.use({ actionTimeout: 60_000 });
@@ -247,6 +273,57 @@ test.describe("M1 container lifecycle acceptance", () => {
   test("Design B1 -> Build/Publish Release 1 -> Storefront draft isolation -> Release 2 -> Rollback Release 1 -> Reload", async ({
     page,
   }) => {
+    // DIAG(302): observers only.
+    await page.addInitScript(() => {
+      const seen = new WeakMap<Element, string>();
+      const report = () => {
+        for (const el of document.querySelectorAll(
+          '[role="alert"],[role="status"],[aria-live],[data-sonner-toast]',
+        )) {
+          const text = (el.textContent ?? "").trim().slice(0, 300);
+          if (text && seen.get(el) !== text) {
+            seen.set(el, text);
+            console.log(`[diag-notice] ${text}`);
+          }
+        }
+      };
+      new MutationObserver(report).observe(document, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    });
+    page.on("console", (message) => {
+      const text = message.text();
+      if (
+        /\[preview-probe\]|\[diag-notice\]|preview/i.test(text) ||
+        message.type() === "error" ||
+        message.type() === "warning"
+      )
+        diagRecord("console", { type: message.type(), text: text.slice(0, 400) });
+    });
+    page.on("framenavigated", (frame) =>
+      diagRecord(
+        frame === page.mainFrame() ? "page-navigated" : "frame-navigated",
+        diagUrl(frame.url()),
+      ),
+    );
+    page.on("response", (response) => {
+      if (response.status() >= 400)
+        diagRecord("response", {
+          status: response.status(),
+          method: response.request().method(),
+          ...diagUrl(response.url()),
+        });
+    });
+    page.on("requestfailed", (request) =>
+      diagRecord("request-failed", {
+        method: request.method(),
+        failure: request.failure()?.errorText ?? null,
+        ...diagUrl(request.url()),
+      }),
+    );
+
     // Assert full Start runtime explicitly
     expect(
       PREVIEW_RUNTIME,
@@ -524,6 +601,25 @@ test.describe("M1 container lifecycle acceptance", () => {
 
     // Perform second B1 canvas click and Inspector edit -> Draft B
     await openEditor(page);
+    // DIAG(302): draft state right after the editor reopened.
+    {
+      const diagSnap = await queryLifecycleSnapshot(
+        home0.id,
+        scope!.themeId,
+        scope!.storefrontId,
+      );
+      const diagHero = await previewFrame(page)
+        .locator('[data-storefront-section-id="starter-hero"]')
+        .first()
+        .textContent({ timeout: 5_000 })
+        .catch((error: unknown) => `unavailable: ${String(error).slice(0, 120)}`);
+      diagRecord("draft-after-reopen", {
+        draftHeroHeading: diagSnap.template.draftHeroHeading,
+        publishedHeroHeading: diagSnap.template.publishedHeroHeading,
+        draftRevisionId: diagSnap.template.draftRevisionId,
+        heroTextHasContentA: diagHero?.includes(contentA) ?? null,
+      });
+    }
     await ensureSelection(page);
 
     const heroSectionB = previewFrame(page).locator(
