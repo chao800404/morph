@@ -279,7 +279,7 @@ jobs:
           set -o pipefail
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
-          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
           for attempt in 1 2 3; do
             status=0
             setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
@@ -294,6 +294,7 @@ jobs:
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
             # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
             sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
+            sudo fuser -k -9 /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null || true
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done
@@ -427,7 +428,7 @@ jobs:
           set -o pipefail
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-network-timeouts > /dev/null
-          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up'
+          transient='Temporary failure resolving|Could not connect|Connection timed out|Failed to fetch|Unable to connect|Could not resolve|ETIMEDOUT|ECONNRESET|socket hang up|Could not get lock|Unable to acquire the dpkg frontend lock'
           for attempt in 1 2 3; do
             status=0
             setsid timeout --kill-after=15s 240 pnpm exec playwright install --with-deps chromium > install.log 2>&1 &
@@ -442,6 +443,7 @@ jobs:
             echo "::warning::Chromium install attempt $attempt failed with a network error or timed out (exit $status)."
             # Terminate only this installation attempt's process group, leaving unrelated processes untouched.
             sudo -n kill -9 -"$install_pid" 2>/dev/null || kill -9 -"$install_pid" 2>/dev/null || true
+            sudo fuser -k -9 /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null || true
             sudo dpkg --configure -a || true
             sleep $((attempt * 15))
           done

@@ -56,7 +56,7 @@ export async function signIn(context: BrowserContext, address: string) {
     try {
       response = await context.request.post("/api/auth/sign-in/email", {
         data: { email: address, password: password() },
-        headers: { origin },
+        headers: { origin, connection: "close" },
       });
       if (DIAGNOSTICS) {
         console.log(
@@ -92,7 +92,7 @@ export async function signOut(context: BrowserContext) {
   try {
     const response = await context.request.post("/api/auth/sign-out", {
       data: {},
-      headers: { origin },
+      headers: { origin, connection: "close" },
     });
     if (DIAGNOSTICS) {
       console.log(
