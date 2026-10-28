@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX,
   LocalPreviewSidecarClient,
+  sanitizeTransportMessage,
 } from "./local-preview-sidecar-client";
 import { startLocalPreviewSidecar } from "./local-preview-sidecar";
 import {
@@ -223,6 +224,58 @@ describe("the sidecar's own record of its requests", () => {
     expect(events.some((e) => e.event === "response")).toBe(false);
   });
 
+  it("writes nothing of a request's query, headers or body", async () => {
+    const MARK = "SENSITIVEMARK";
+    const { sidecar, lines } = await observedSidecar();
+    const send = (path: string, requestId: string) =>
+      new Promise<number>((resolve, reject) => {
+        const request = http.request(
+          `${sidecar.origin}${path}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: `better-auth.session_token=${MARK}1`,
+              authorization: `Bearer ${MARK}2`,
+              [LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER]: TOKEN,
+              [LOCAL_PREVIEW_SIDECAR_REQUEST_ID_HEADER]: requestId,
+            },
+          },
+          (response) => {
+            response.resume();
+            response.on("end", () => resolve(response.statusCode ?? 0));
+          },
+        );
+        request.on("error", reject);
+        request.end(
+          JSON.stringify({
+            previewId: `${MARK}3`,
+            previewHostname: "127.0.0.1",
+            content: `<h1>${MARK}4 draft</h1>`,
+          }),
+        );
+      });
+
+    expect(
+      await send(
+        `${localPreviewSidecarPath("isServing")}?q=${MARK}5`,
+        `${MARK}6 x`,
+      ),
+    ).toBe(200);
+    expect(await send(`/${MARK}7/unknown`, "ok-id")).toBe(404);
+
+    const all = lines.join("\n");
+    expect(all).not.toContain(MARK);
+    expect(all).not.toContain(TOKEN);
+    const requests = parse(lines, LOCAL_PREVIEW_SIDECAR_OBSERVE_PREFIX).filter(
+      (event) => event.event === "request",
+    );
+    expect(requests).toMatchObject([
+      { operation: "isServing", requestId: null },
+      { operation: "unknown", requestId: "ok-id" },
+    ]);
+  });
+
   it("keeps only something shaped like an id", () => {
     expect(readSidecarRequestId("0f8e-ab12")).toBe("0f8e-ab12");
     expect(readSidecarRequestId(["a1", "b2"])).toBe("a1");
@@ -276,6 +329,57 @@ describe("the Worker's record of a request that failed", () => {
     });
     expect(failure?.elapsedMs).toEqual(expect.any(Number));
     expect(logged.join("\n")).not.toContain(TOKEN);
+  });
+
+  it("keeps no URL, path, quoted text, token or opaque string a transport message carries", async () => {
+    const MARK = "SENSITIVEMARK";
+    const thrown = new TypeError(
+      [
+        `request to http://127.0.0.1:5199/start?token=${TOKEN}&q=${MARK}1 failed`,
+        `while reading /home/a0921/workspaces/${MARK}2/src/pages/index.tsx`,
+        `and C:\\Users\\someone\\${MARK}3\\draft.tsx`,
+        `body "export default () => <h1>${MARK}4 draft</h1>"`,
+        `cookie 'better-auth.session_token=${MARK}5'`,
+        `raw ${TOKEN}`,
+        `opaque eyJhbGciOiJIUzI1NiJ9${MARK}6abcdefghijkl`,
+      ].join("\n"),
+    );
+    thrown.name = `TypeError ${MARK}7`;
+    const { client, logged } = recordingClient(
+      "http://127.0.0.1:5199",
+      (async () => {
+        throw thrown;
+      }) as typeof fetch,
+    );
+
+    const started = await client.start(startInput);
+    // What the caller gets is not this record's business: it is unchanged.
+    expect(started.ok).toBe(false);
+    if (!started.ok) expect(started.errorMessage).toContain(`${MARK}2`);
+
+    const all = logged.join("\n");
+    expect(logged).toHaveLength(1);
+    expect(all).not.toContain(MARK);
+    expect(all).not.toContain(TOKEN);
+    expect(all).not.toContain("http://");
+    expect(all).not.toContain("/home/");
+    expect(all).not.toContain("Users");
+    expect(all).not.toContain("<h1>");
+    const [failure] = parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX);
+    expect(failure).toMatchObject({ errorName: "Error", phase: "request" });
+    expect(failure?.errorMessage).toEqual(expect.stringContaining("[URL]"));
+    expect(failure?.errorMessage).toEqual(expect.stringContaining("[PATH]"));
+    expect(failure?.errorMessage).toEqual(expect.stringContaining("[QUOTED]"));
+  });
+
+  it("leaves the transport's own wording as it is", () => {
+    for (const message of [
+      "Network connection lost.",
+      "fetch failed",
+      "connect ECONNREFUSED 127.0.0.1:5199",
+    ]) {
+      expect(sanitizeTransportMessage(message, TOKEN)).toBe(message);
+    }
   });
 
   it("tells a connection lost while reading a 200 apart from one that never answered", async () => {

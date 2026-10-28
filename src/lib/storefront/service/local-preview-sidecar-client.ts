@@ -90,15 +90,42 @@ function leadingErrorCode(detail: string): string | null {
 }
 
 /**
+ * A transport message with everything that could be more than wording taken
+ * out: the token, URLs, file paths, quoted text, and long opaque strings.
+ *
+ * "Network connection lost." and "fetch failed" pass as they are, and they
+ * are what the record is for. A runtime is free to put a URL, a path or a
+ * piece of a response into its message, so this keeps the shape of the
+ * message and none of those.
+ */
+export function sanitizeTransportMessage(message: string, token: string): string {
+  let out = token.length >= 8 ? message.split(token).join("[TOKEN]") : message;
+  out = out
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>)]*/gi, "[URL]")
+    .replace(/(["'`])(?:(?!\1)[^\r\n])*\1/g, "[QUOTED]")
+    .replace(/(?:[A-Za-z]:)?(?:[\\/][^\s\\/:"'`]+){2,}[\\/]?/g, "[PATH]")
+    .replace(/[A-Za-z0-9_+/=-]{24,}/g, "[REDACTED]")
+    .replace(/[\r\n]+/g, " ");
+  return out.length > 160 ? `${out.slice(0, 160)}…` : out;
+}
+
+/**
  * A thrown error, as far as it is the transport's own wording. A body that
  * would not parse is named and not quoted: the parser's message carries a
  * piece of the body.
  */
-function describeThrown(error: unknown): { name: string; message: string | null } {
+function describeThrown(
+  error: unknown,
+  token: string,
+): { name: string; message: string | null } {
   if (!(error instanceof Error)) return { name: typeof error, message: null };
   return {
-    name: error.name,
-    message: error.name === "SyntaxError" ? null : error.message.slice(0, 200),
+    // A class name, or nothing: a name is as free to hold text as a message.
+    name: /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(error.name) ? error.name : "Error",
+    message:
+      error.name === "SyntaxError"
+        ? null
+        : sanitizeTransportMessage(error.message, token),
   };
 }
 
@@ -142,7 +169,9 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
     }
     try {
       const thrown =
-        failure.error === undefined ? null : describeThrown(failure.error);
+        failure.error === undefined
+          ? null
+          : describeThrown(failure.error, this.token);
       this.log(
         `${LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX} ${JSON.stringify({
           event: "request-failed",
