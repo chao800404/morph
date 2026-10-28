@@ -369,6 +369,7 @@ import {
 import { parseThemeSourceLocation } from "@/lib/storefront/compiler/theme-source-location-plugin";
 import {
   choosePageSectionSlotId,
+  reservedSectionSlotIds,
   planPageSectionCopy,
   listSectionTemplateSourcePaths,
   planPageSectionRemoval,
@@ -3619,6 +3620,14 @@ export function VisualEditorShell({
     () => context.templates.find((template) => template.type === "layout"),
     [context.templates],
   );
+  /**
+   * Every section this page's Document stores, whether its source shows it
+   * or not. A new section must not take one of their ids.
+   */
+  const storedPageSections =
+    activeTemplate && activeTemplate.id === pageTemplateId
+      ? activeTemplate.document.sections
+      : EMPTY_ROUTE_DOCUMENT.sections;
   /**
    * The route a content write to this template was made on.
    *
@@ -11180,9 +11189,10 @@ export function VisualEditorShell({
       // The slot is chosen first because it names the folder the copy lands in.
       const slotId = choosePageSectionSlotId({
         baseSlotId: option.sectionType || "section",
-        usedSlotIds: new Set(
-          activeRouteSections.map((section) => section.slotId),
-        ),
+        usedSlotIds: reservedSectionSlotIds({
+          routeSlotIds: activeRouteSections.map((section) => section.slotId),
+          storedSectionIds: storedPageSections.map((section) => section.id),
+        }),
         routeSourcePath: activeThemeRoute.sourcePath,
         existingPaths: effectiveThemeFiles.map((file) => file.path),
       });
@@ -11308,6 +11318,7 @@ export function VisualEditorShell({
       onSearchChange,
       postPreviewThemeFiles,
       queryClient,
+      storedPageSections,
       updateWorkspaceLocal,
       workspaceScope,
     ],
@@ -11339,11 +11350,16 @@ export function VisualEditorShell({
       if (!routeFile)
         throw new Error("The active route source is unavailable.");
 
-      const usedSlots = new Set(
-        (isLayoutCandidate ? layoutSections : activeRouteSections).map(
-          (section) => section.slotId,
-        ),
-      );
+      const usedSlots = reservedSectionSlotIds({
+        routeSlotIds: (isLayoutCandidate
+          ? layoutSections
+          : activeRouteSections
+        ).map((section) => section.slotId),
+        storedSectionIds: (isLayoutCandidate
+          ? (layoutTemplate?.document.sections ?? [])
+          : storedPageSections
+        ).map((section) => section.id),
+      });
       const baseSlot = candidate.sectionType || "section";
       let slotId = baseSlot;
       let suffix = 2;
@@ -11385,6 +11401,7 @@ export function VisualEditorShell({
       layoutStructure.unboundSections,
       layoutTemplate,
       onSearchChange,
+      storedPageSections,
     ],
   );
 

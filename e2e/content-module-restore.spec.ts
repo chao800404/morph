@@ -400,3 +400,363 @@ test.describe("binding a section that spreads props of its own", () => {
     );
   });
 });
+/**
+ * A new section never takes an id the page's Document still holds.
+ *
+ * When a section leaves the route, its stored content stays in the
+ * Document: invisible, unbound, and kept on purpose. A section added or
+ * bound later used to pick its id by looking at the route alone, so it could
+ * take that id, and the old content came back on a section that is not the
+ * one it was written for. Both entry points are checked: binding an unbound
+ * candidate, and adding a section from the library.
+ */
+test.describe("a new section never takes an id the Document still holds", () => {
+  type StoredSection = { id: string; props?: Record<string, unknown> };
+  type StoredTemplate = {
+    id: string;
+    routePath: string | null;
+    type: string;
+    draftGeneration: number;
+    document: { sections: StoredSection[] };
+  };
+
+  /** The stored template and Document of one route. */
+  async function routeTemplate(
+    page: Page,
+    scope: ThemeScope,
+    routePath: string,
+  ) {
+    return page.evaluate(
+      async ({ scope, routePath, filesModule }) => {
+        const themesModule =
+          "/src/server/storefront/storefront-themes.serverFn.ts";
+        const themes = await import(/* @vite-ignore */ themesModule);
+        const files = await import(/* @vite-ignore */ filesModule);
+        const editor = await themes.getStorefrontThemeEditor({ data: scope });
+        if (!editor.success) throw new Error(editor.message);
+        const listed = await files.listStorefrontThemeFiles({ data: scope });
+        if (!listed.success) throw new Error(listed.message);
+        const template = editor.data.templates.find(
+          (candidate: { routePath: string | null; type: string }) =>
+            candidate.routePath === routePath ||
+            (routePath === "/" && candidate.type === "index"),
+        );
+        if (!template) throw new Error(`no template for ${routePath}`);
+        return {
+          sourceGeneration: listed.data.sourceGeneration as number,
+          template: {
+            id: template.id,
+            routePath: template.routePath ?? null,
+            type: template.type,
+            draftGeneration: template.draftGeneration,
+            document: template.document,
+          } as StoredTemplate,
+        };
+      },
+      { scope, routePath, filesModule: SERVER_FN_MODULE },
+    );
+  }
+
+  /** Stores `value` in `field` of section `sectionId`, as the Inspector would. */
+  async function storeProp(
+    page: Page,
+    scope: ThemeScope,
+    routePath: string,
+    sectionId: string,
+    field: string,
+    value: string,
+  ) {
+    const { sourceGeneration, template } = await routeTemplate(
+      page,
+      scope,
+      routePath,
+    );
+    const result = await page.evaluate(
+      async ({
+        scope,
+        template,
+        sectionId,
+        field,
+        value,
+        generation,
+        routePath,
+      }) => {
+        const module = "/src/server/storefront/storefront-themes.serverFn.ts";
+        const fns = await import(/* @vite-ignore */ module);
+        return fns.updateStorefrontThemeSectionProps({
+          data: {
+            ...scope,
+            templateId: template.id,
+            sectionId,
+            props: { [field]: value },
+            expectedDraftGeneration: template.draftGeneration,
+            expectedSourceGeneration: generation,
+            routePath,
+          },
+        });
+      },
+      {
+        scope,
+        template: {
+          id: template.id,
+          draftGeneration: template.draftGeneration,
+        },
+        sectionId,
+        field,
+        value,
+        generation: sourceGeneration,
+        routePath,
+      },
+    );
+    expect(result.success, JSON.stringify(result)).toBe(true);
+  }
+
+  const storedProp = async (
+    page: Page,
+    scope: ThemeScope,
+    routePath: string,
+    sectionId: string,
+    field: string,
+  ) =>
+    (
+      await routeTemplate(page, scope, routePath)
+    ).template.document.sections.find((section) => section.id === sectionId)
+      ?.props?.[field];
+
+  const firstField = (source: string) =>
+    /contentFields\s*=\s*\{\s*["']?(\w+)/.exec(source)?.[1] ?? null;
+
+  test("binding: the bound section gets a new id, and the kept content stays where it was", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const ROUTE_FILE = "src/routes/index.tsx";
+    const slotOf = (route: string) =>
+      /<E2eSlot \{\.\.\.content\("([^"]+)"\)\} \/>/.exec(route)?.[1] ?? null;
+    await openEditor(page);
+    const { scope, editorPath } = await createOwnTheme(page);
+    const initial = await listFiles(page, scope);
+    const sectionFile = initial.files.find((file) =>
+      /^src\/components\/sections\/[A-Za-z]\w*\.tsx$/.test(file.path),
+    );
+    expect(sectionFile, "the Starter has a library section").toBeTruthy();
+    const field = firstField(sectionFile!.content);
+    expect(field, "the library section declares a field").toBeTruthy();
+    const from = `../components/sections/${sectionFile!.path.slice("src/components/sections/".length, -".tsx".length)}`;
+    const home = byPath(initial).get(ROUTE_FILE)!;
+    const unbound = `import E2eSlot from "${from}";\n${home.content.replace(
+      /\n(\s*)<\/main>/,
+      "\n$1  <E2eSlot />\n$1</main>",
+    )}`;
+    expect(
+      await writeThemeFiles(page, scope, [
+        { path: ROUTE_FILE, content: unbound },
+      ]),
+    ).toMatchObject({ success: true });
+
+    // First binding, and content stored for it.
+    await openEditor(page, editorPath);
+    await page
+      .getByRole("button", { name: "Bind E2eSlot", exact: true })
+      .click();
+    let first: string | null = null;
+    await expect
+      .poll(
+        async () =>
+          (first = slotOf(
+            byPath(await listFiles(page, scope)).get(ROUTE_FILE)!.content,
+          )),
+        { timeout: 30_000 },
+      )
+      .not.toBeNull();
+    const OLD = `old-content-${randomUUID().slice(0, 8)}`;
+    await storeProp(page, scope, "/", first!, field!, OLD);
+
+    // The section leaves the route, as an author removing it in Code would;
+    // its content stays in the Document.
+    expect(
+      await writeThemeFiles(page, scope, [
+        { path: ROUTE_FILE, content: unbound },
+      ]),
+    ).toMatchObject({ success: true });
+    expect(
+      await storedProp(page, scope, "/", first!, field!),
+      "the Document keeps the content",
+    ).toBe(OLD);
+
+    // Bound again: a new section, so a new id.
+    await openEditor(page, editorPath);
+    await page
+      .getByRole("button", { name: "Bind E2eSlot", exact: true })
+      .click();
+    let second: string | null = null;
+    await expect
+      .poll(
+        async () =>
+          (second = slotOf(
+            byPath(await listFiles(page, scope)).get(ROUTE_FILE)!.content,
+          )),
+        { timeout: 30_000 },
+      )
+      .not.toBeNull();
+    test.info().annotations.push({
+      type: "bind ids",
+      description: JSON.stringify({ first, second }),
+    });
+    expect(second, "the new binding took the id the Document holds").not.toBe(
+      first,
+    );
+    // Kept, not deleted, and not shown on the new section.
+    expect(await storedProp(page, scope, "/", first!, field!)).toBe(OLD);
+    await expect(previewFrame(page).getByText(OLD)).toHaveCount(0);
+  });
+
+  test("adding: the added section gets a new id, and the kept content stays where it was", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const ROUTE_PATH = "/e2e-slot-add";
+    const ROUTE_FILE = "src/routes/e2e-slot-add.tsx";
+    // A route that returns a plain container, which is what an add needs.
+    const EMPTY_ROUTE = `import { createFileRoute } from "@tanstack/react-router";
+
+export const Route = createFileRoute("${ROUTE_PATH}")({
+  component: E2eSlotAddRoute,
+});
+
+function E2eSlotAddRoute() {
+  return <main></main>;
+}
+`;
+    await openEditor(page);
+    const { scope } = await createOwnTheme(page);
+    expect(
+      await writeThemeFiles(page, scope, [
+        { path: ROUTE_FILE, content: EMPTY_ROUTE },
+      ]),
+    ).toMatchObject({ success: true });
+    const ensured = await page.evaluate(
+      async ({ scope, routePath }) => {
+        const module = "/src/server/storefront/storefront-themes.serverFn.ts";
+        const fns = await import(/* @vite-ignore */ module);
+        return fns.ensureStorefrontThemeRouteTemplate({
+          data: { ...scope, routePath },
+        });
+      },
+      { scope, routePath: ROUTE_PATH },
+    );
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    const routeEditor = `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${ensured.data.id}&routePath=${ROUTE_PATH}`;
+
+    // An empty route reports no section structure, so the editor is ready
+    // once the route's own container is on the canvas.
+    const openRoute = async () => {
+      await page.goto(routeEditor, { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible(
+        { timeout: 45_000 },
+      );
+      await expect(
+        previewFrame(page).locator(
+          `main[data-morph-source-file="${ROUTE_FILE}"]`,
+        ),
+      ).toBeAttached({ timeout: 60_000 });
+    };
+
+    const add = async () => {
+      const addSection = page.getByRole("button", {
+        name: "Add section",
+        exact: true,
+      });
+      await expect(addSection).toBeEnabled({ timeout: 20_000 });
+      await addSection.click();
+      const option = page.getByRole("menuitem").first();
+      await option.click();
+      let id: string | null = null;
+      await expect
+        .poll(() => (id = new URL(page.url()).searchParams.get("section")), {
+          timeout: 30_000,
+        })
+        .not.toBeNull();
+      return id!;
+    };
+
+    await openRoute();
+    const beforeAdd = await listFiles(page, scope);
+    const pathsBefore = new Set(beforeAdd.files.map((file) => file.path));
+    const first = await add();
+    // Its route source and its page copy, as the add wrote them.
+    let added = await listFiles(page, scope);
+    await expect
+      .poll(
+        async () =>
+          byPath((added = await listFiles(page, scope))).get(ROUTE_FILE)!
+            .content,
+        { timeout: 30_000 },
+      )
+      .toContain(`content("${first}")`);
+    const copyFiles = added.files.filter((file) => !pathsBefore.has(file.path));
+    expect(copyFiles.length, "the add created a page copy").toBeGreaterThan(0);
+    const field =
+      copyFiles.map((file) => firstField(file.content)).find(Boolean) ?? null;
+    expect(field, "the added section declares a field").toBeTruthy();
+    const OLD = `old-content-${randomUUID().slice(0, 8)}`;
+    await storeProp(page, scope, ROUTE_PATH, first, field!, OLD);
+
+    // The section leaves the route and its copy goes with it, the way an
+    // author removing it in Code would leave the Theme; its content stays.
+    const removed = await page.evaluate(
+      async ({ module, scope, route, routeFile, deletions }) => {
+        const fns = await import(/* @vite-ignore */ module);
+        const listed = await fns.listStorefrontThemeFiles({ data: scope });
+        const current = listed.data.files.find(
+          (file: { path: string }) => file.path === routeFile,
+        );
+        return fns.saveStorefrontThemeFilesBatch({
+          data: {
+            ...scope,
+            expectedSourceGeneration: listed.data.sourceGeneration,
+            files: [
+              {
+                path: routeFile,
+                content: route,
+                expectedFileId: current.id,
+                expectedVersion: current.version,
+              },
+            ],
+            deletions: listed.data.files
+              .filter((file: { path: string }) => deletions.includes(file.path))
+              .map((file: { path: string; id: string; version: number }) => ({
+                path: file.path,
+                expectedFileId: file.id,
+                expectedVersion: file.version,
+              })),
+          },
+        });
+      },
+      {
+        module: SERVER_FN_MODULE,
+        scope,
+        route: EMPTY_ROUTE,
+        routeFile: ROUTE_FILE,
+        deletions: copyFiles.map((file) => file.path),
+      },
+    );
+    expect(removed.success, JSON.stringify(removed)).toBe(true);
+    expect(
+      await storedProp(page, scope, ROUTE_PATH, first, field!),
+      "the Document keeps the content",
+    ).toBe(OLD);
+
+    await openRoute();
+    const second = await add();
+    test.info().annotations.push({
+      type: "add ids",
+      description: JSON.stringify({ first, second }),
+    });
+    expect(second, "the new section took the id the Document holds").not.toBe(
+      first,
+    );
+    expect(await storedProp(page, scope, ROUTE_PATH, first, field!)).toBe(OLD);
+    await expect(previewFrame(page).getByText(OLD)).toHaveCount(0);
+  });
+});

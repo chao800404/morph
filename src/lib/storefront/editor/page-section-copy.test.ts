@@ -7,6 +7,7 @@ import {
   pageSectionRouteKey,
   planPageSectionCopy,
   planPageSectionRemoval,
+  reservedSectionSlotIds,
 } from "./page-section-copy";
 
 const HERO = `import ThemeLink from "../ThemeLink";
@@ -56,6 +57,33 @@ describe("choosePageSectionSlotId", () => {
         existingPaths: ["src/components/page-sections/index/hero-2/index.tsx"],
       }),
     ).toBe("hero-3");
+  });
+
+  it("skips an id the Document still stores after the route stopped showing it", () => {
+    expect(
+      choosePageSectionSlotId({
+        baseSlotId: "hero",
+        usedSlotIds: reservedSectionSlotIds({
+          routeSlotIds: [],
+          storedSectionIds: ["hero"],
+        }),
+        routeSourcePath: "src/routes/index.tsx",
+        existingPaths: [],
+      }),
+    ).toBe("hero-2");
+  });
+});
+
+describe("reservedSectionSlotIds", () => {
+  it("reserves the route's sections and every stored section", () => {
+    expect(
+      [
+        ...reservedSectionSlotIds({
+          routeSlotIds: ["hero", "banner"],
+          storedSectionIds: ["banner", "promo"],
+        }),
+      ].sort(),
+    ).toEqual(["banner", "hero", "promo"]);
   });
 });
 
