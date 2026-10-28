@@ -535,13 +535,18 @@ function parsePositionedSections(
     diagnostics,
     ast,
     hasContentImport,
+    // Locked when a section instance is itself proven to be spread from the
+    // loader: B1 roots that instance's spread in `Route.useLoaderData()`, and
+    // only once the loader is proven to return this page. Whether the file
+    // has a loader, or the name-based slot check found the slot, does not
+    // decide it: that check records nothing when a slot element carries any
+    // other attribute, and left those routes open to every structure edit.
     structureLocked:
       loaderSlots.size > 0 ||
-      (b1Analysis.loaderOrigin &&
-        b1Analysis.instances.some(
-          (instance) =>
-            instance.section !== null && instance.hasDeclaredCallsiteProps,
-        ))
+      b1Analysis.instances.some(
+        (instance) =>
+          instance.section !== null && instance.sourceRoots.includes("loader"),
+      )
         ? LOADER_STRUCTURE_LOCKED
         : null,
   };
