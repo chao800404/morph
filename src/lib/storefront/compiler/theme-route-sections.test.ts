@@ -315,6 +315,95 @@ function Home() {
     );
   });
 
+  // The binding is written first, right after the tag name, so every spread
+  // already on the element comes after it and wins for whatever keys it
+  // holds. Which keys those are cannot be proven here, so a field the editor
+  // offered could be overridden in the render without anyone being told.
+  describe("a section that already spreads props of its own", () => {
+    const promoFile = {
+      path: "src/components/sections/Promo.tsx",
+      content: "export default function Promo(){return null;}",
+    };
+    const contentModule = {
+      path: "src/morph/content.ts",
+      content: "export function content() {}",
+    };
+    const routeWith = (
+      element: string,
+    ) => `import Promo from "../components/sections/Promo";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  const promo = { title: "From code" };
+  return <main>${element}</main>;
+}`;
+    const filesFor = (source: string) => [
+      { path: "src/routes/index.tsx", content: source },
+      promoFile,
+      contentModule,
+    ];
+
+    it.each([
+      ["a local object", "<Promo {...promo} />"],
+      ["a spread after an explicit prop", '<Promo title="x" {...promo} />'],
+      ["a member expression", "<Promo {...props.promo} />"],
+      ["a call", "<Promo {...readPromo()} />"],
+    ])("is listed as not bindable, with the reason, for %s", (_, element) => {
+      const source = routeWith(element);
+      const candidate = deriveThemeRouteSections(
+        filesFor(source),
+        "src/routes/index.tsx",
+      ).unboundSections[0];
+
+      expect(candidate?.componentName).toBe("Promo");
+      expect(candidate?.canBind).toBe(false);
+      expect(candidate?.diagnostic).toContain("spreads props of its own");
+    });
+
+    it("refuses a bind requested with a stale bindable candidate, and leaves the source as it was", () => {
+      const source = routeWith("<Promo {...promo} />");
+      const listed = deriveThemeRouteSections(
+        filesFor(source),
+        "src/routes/index.tsx",
+      ).unboundSections[0]!;
+      // As if the panel still held the candidate from before the spread.
+      const stale = { ...listed, canBind: true, diagnostic: undefined };
+
+      const result = bindThemeRouteSection({
+        source,
+        files: filesFor(source),
+        routeSourcePath: "src/routes/index.tsx",
+        candidate: stale,
+        slotId: "promo",
+      });
+
+      expect(result.changed).toBe(false);
+      expect(result.code).toBe(source);
+      expect(result.diagnostic).toContain("spreads props of its own");
+    });
+
+    it("still binds a section whose only props are explicit", () => {
+      const source = routeWith('<Promo title="x" />');
+      const candidate = deriveThemeRouteSections(
+        filesFor(source),
+        "src/routes/index.tsx",
+      ).unboundSections[0]!;
+      expect(candidate.canBind).toBe(true);
+
+      const result = bindThemeRouteSection({
+        source,
+        files: filesFor(source),
+        routeSourcePath: "src/routes/index.tsx",
+        candidate,
+        slotId: "promo",
+      });
+
+      expect(result.changed).toBe(true);
+      expect(result.code).toContain(
+        '<Promo {...content("promo")} title="x" />',
+      );
+    });
+  });
+
   it("refuses a stale binding candidate instead of patching another JSX node", () => {
     const nativeRoute = `import Promo from "../components/sections/Promo";
 export const Route = createFileRoute("/")({ component: Home });

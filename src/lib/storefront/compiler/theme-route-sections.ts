@@ -256,6 +256,31 @@ function hasContentSpread(
   );
 }
 
+/**
+ * Whether the element spreads anything other than its content binding.
+ *
+ * A binding is written right after the tag name, so such a spread comes after
+ * it and wins for whatever keys it holds. Which keys those are cannot be
+ * proven here, and a field Design offered could then be overridden in the
+ * render without the author being told, so the section is not bound.
+ */
+function hasOtherSpread(
+  node: any,
+  pageVariables: ReadonlySet<string> = NO_PAGE_VARIABLES,
+): boolean {
+  return (node?.openingElement?.attributes ?? []).some(
+    (attribute: any) =>
+      attribute?.type === "JSXSpreadAttribute" &&
+      !hasContentSpread(
+        { openingElement: { attributes: [attribute] } },
+        pageVariables,
+      ),
+  );
+}
+
+const OTHER_SPREAD_DIAGNOSTIC =
+  "This component spreads props of its own, which could override the content fields a binding would add. Bind it in Code mode.";
+
 function isDirectSectionPosition(parent: any): boolean {
   if (parent?.type === "JSXElement" || parent?.type === "JSXFragment") {
     return true;
@@ -473,7 +498,11 @@ function parsePositionedSections(
       return;
     }
     const hasInvalidBinding = hasContentSpread(node, pageVariables);
-    const canBind = !hasInvalidBinding && isDirectSectionPosition(parent);
+    const spreadsOtherProps = hasOtherSpread(node, pageVariables);
+    const canBind =
+      !hasInvalidBinding &&
+      !spreadsOtherProps &&
+      isDirectSectionPosition(parent);
     unboundSections.push({
       componentRef: option.componentRef,
       sectionType: option.sectionType,
@@ -489,12 +518,14 @@ function parsePositionedSections(
             diagnostic:
               "This component already has an invalid content binding and must be repaired in Code mode.",
           }
-        : !isDirectSectionPosition(parent)
-          ? {
-              diagnostic:
-                "This component is rendered inside a conditional or repeated expression and cannot be bound to one section instance.",
-            }
-          : {}),
+        : spreadsOtherProps
+          ? { diagnostic: OTHER_SPREAD_DIAGNOSTIC }
+          : !isDirectSectionPosition(parent)
+            ? {
+                diagnostic:
+                  "This component is rendered inside a conditional or repeated expression and cannot be bound to one section instance.",
+              }
+            : {}),
     });
   });
 
@@ -1699,6 +1730,9 @@ function insertContentSpread(
       changed: false,
       diagnostic: "This section already has a content binding.",
     };
+  }
+  if (hasOtherSpread(target, collectPageVariables(ast))) {
+    return { code: source, changed: false, diagnostic: OTHER_SPREAD_DIAGNOSTIC };
   }
   return {
     code: replaceRange(
