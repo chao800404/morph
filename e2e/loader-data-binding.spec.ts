@@ -1713,7 +1713,16 @@ export const getRetryPage = createServerFn().handler(() =>
 
     // Case 2B: the author presses "Save my changes".
     await page.getByRole("button", { name: "Save my changes" }).click();
-    await page.waitForTimeout(5_000);
+    // Asked again on the newest Theme, the lock refuses it, and says so.
+    const lockedToast = page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: LOCKED_REASON });
+    const lockedReasonShown = await lockedToast
+      .first()
+      .waitFor({ state: "visible", timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false);
+    await page.waitForTimeout(3_000);
     const after = await rawRouteRow(retryScope);
     test.info().annotations.push({
       type: "2B result",
@@ -1728,7 +1737,7 @@ export const getRetryPage = createServerFn().handler(() =>
             entry.body.indexOf('content(\\"banner\\")') <
               entry.body.indexOf('content(\\"hero\\")'),
         })),
-        lockedReasonShown: await page.getByText(LOCKED_REASON).count(),
+        lockedReasonShown,
       }),
     });
     // On the newest Theme this reorder is refused by the structure lock, so
@@ -1737,6 +1746,14 @@ export const getRetryPage = createServerFn().handler(() =>
       storedOrder(after.content),
       "a retried Design reorder wrote a rewrite the newest Theme refuses",
     ).toEqual(["hero", "banner"]);
+    expect(after).toEqual(before);
+    expect(sent.slice(refusedSends), "no save was sent on retry").toEqual([]);
+    expect(lockedReasonShown, "the lock's reason was shown").toBe(true);
+    // Not discarded: still here, unsaved and marked, for the author.
+    await expectConflictNotice(page);
+    expect(
+      (await sectionOrder(page)).filter((row) => row !== "retry-promo"),
+    ).toEqual(["retry-banner", "retry-hero"]);
   });
 
   test("2A: another tab changed the route file itself; the file version holds", async ({

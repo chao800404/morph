@@ -20,6 +20,7 @@ import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   deriveThemeRouteSections,
   reorderThemeRouteSections,
+  themeRouteStructureLock,
 } from "./theme-route-sections";
 
 const ROUTE = "src/routes/index.tsx";
@@ -111,5 +112,10 @@ describe("the structure lock follows the loader's module, not only the route fil
     expect(String((reordered as { diagnostic?: unknown }).diagnostic)).toMatch(
       LOCKED,
     );
+  });
+
+  it("themeRouteStructureLock gives the same answer as the edits, for a caller holding an older rewrite", () => {
+    expect(themeRouteStructureLock(theme(DATA_BEFORE), ROUTE)).toBeNull();
+    expect(themeRouteStructureLock(theme(DATA_AFTER), ROUTE)).toMatch(LOCKED);
   });
 });
