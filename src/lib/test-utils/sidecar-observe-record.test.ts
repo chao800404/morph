@@ -89,7 +89,9 @@ describe("createSidecarRecorder", () => {
     expect(warnings).toHaveLength(2);
   });
 
-  it("records a process killed under it: pid, listening, signal, not stopped by the runner", async () => {
+  // `stoppedByRunner` is whatever the runner passes; that the runner passes
+  // its own `stopping` flag is shown by a real run, not here.
+  it("records a process killed under it: pid, listening time, exit signal", async () => {
     const processFile = path.join(dir, "killed.json");
     const recorder = createSidecarRecorder({
       logFile: path.join(dir, "killed.log"),

@@ -269,48 +269,116 @@ describe("the Worker's record of a request that failed", () => {
       operation: "start",
       previewId: "preview-1",
       outcome: "unreachable",
-      error: "LOCAL_PREVIEW_SIDECAR_UNREACHABLE: Network connection lost.",
+      phase: "request",
+      status: null,
+      errorName: "TypeError",
+      errorMessage: "Network connection lost.",
     });
     expect(failure?.elapsedMs).toEqual(expect.any(Number));
     expect(logged.join("\n")).not.toContain(TOKEN);
   });
 
-  it("logs a refusal with its status", async () => {
+  it("tells a connection lost while reading a 200 apart from one that never answered", async () => {
     const { client, logged } = recordingClient(
       "http://127.0.0.1:5199",
       (async () =>
-        new Response("busy", { status: 503 })) as unknown as typeof fetch,
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new TypeError("Network connection lost."));
+            },
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
     );
-    await expect(
+
+    const started = await client.start(startInput);
+    // The caller's failure is what it always was.
+    expect(started).toMatchObject({
+      ok: false,
+      stage: "preview-sidecar",
+      errorMessage:
+        "LOCAL_PREVIEW_SIDECAR_UNREACHABLE: Network connection lost.",
+    });
+    expect(
+      parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX),
+    ).toMatchObject([
+      { outcome: "unreachable", phase: "response", status: 200 },
+    ]);
+  });
+
+  it("logs a refusal by status and code, without the sidecar's text", async () => {
+    const { client, logged } = recordingClient(
+      "http://127.0.0.1:5199",
+      (async () =>
+        new Response(
+          JSON.stringify({
+            error:
+              'RESERVED_THEME_GENERATED_PATH: "src/secret-draft/page.tsx" under /home/someone/workspaces',
+          }),
+          { status: 500 },
+        )) as unknown as typeof fetch,
+    );
+    const started = await client.start(startInput);
+    // The returned reason still carries the text, exactly as before.
+    expect(started.ok).toBe(false);
+    if (!started.ok) {
+      expect(started.errorMessage).toContain("src/secret-draft/page.tsx");
+    }
+    const [failure] = parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX);
+    expect(failure).toMatchObject({
+      operation: "start",
+      outcome: "http",
+      phase: "response",
+      status: 500,
+      errorCode: "RESERVED_THEME_GENERATED_PATH",
+    });
+    expect(logged.join("\n")).not.toContain("secret-draft");
+    expect(logged.join("\n")).not.toContain("/home/someone");
+  });
+
+  it("logs the first of a run of failing isServing polls, and again after one succeeds", async () => {
+    let answer = 503;
+    const { client, logged } = recordingClient(
+      "http://127.0.0.1:5199",
+      (async () =>
+        answer === 200
+          ? new Response(JSON.stringify({ serving: false }), { status: 200 })
+          : new Response("busy", {
+              status: answer,
+            })) as unknown as typeof fetch,
+    );
+    const poll = () =>
       client.isServing({
         previewId: "preview-1",
         previewHostname: "127.0.0.1",
-      }),
-    ).resolves.toBe(false);
+      });
+
+    await poll();
+    await poll();
+    await poll();
+    expect(parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX)).toHaveLength(
+      1,
+    );
+
+    answer = 200;
+    await poll();
+    answer = 502;
+    await poll();
     expect(
       parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX),
-    ).toMatchObject([{ operation: "isServing", outcome: "http", status: 503 }]);
-  });
+    ).toMatchObject([
+      { operation: "isServing", status: 503 },
+      { operation: "isServing", status: 502 },
+    ]);
 
-  it("against a sidecar that has gone, the Worker logs the id and the sidecar has no line for it", async () => {
-    const { sidecar, lines } = await observedSidecar();
-    const origin = sidecar.origin;
-    await sidecar.close();
-    const { client, sentIds, logged } = recordingClient(origin);
-
-    const started = await client.start(startInput);
-    expect(started.ok).toBe(false);
-
-    const [failure] = parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX);
-    expect(failure).toMatchObject({
-      requestId: sentIds[0],
-      operation: "start",
-      outcome: "unreachable",
-    });
+    // Author actions are never folded together.
+    await client.start(startInput);
+    await client.start(startInput);
     expect(
-      parse(lines, LOCAL_PREVIEW_SIDECAR_OBSERVE_PREFIX).some(
-        (event) => event.requestId === sentIds[0],
+      parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX).filter(
+        (event) => event.operation === "start",
       ),
-    ).toBe(false);
+    ).toHaveLength(2);
   });
 });

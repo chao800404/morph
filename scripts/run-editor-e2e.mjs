@@ -368,6 +368,12 @@ function start(name, command, args, env, onLine) {
         pending = lines.pop() ?? "";
         for (const line of lines) onLine(line, streamName);
       });
+      // A last line without a newline is still a line: a process that dies
+      // mid-write leaves exactly that.
+      stream.on("end", () => {
+        if (pending) onLine(pending, streamName);
+        pending = "";
+      });
     }
   }
   // Resolved when the process is actually gone. `kill` reports that a signal was
@@ -966,10 +972,14 @@ async function main() {
     // uploads them with it, pass or fail.
     const sidecarLog = path.join(stateDir, "sidecar.log");
     const sidecarProcess = path.join(stateDir, "sidecar-process.json");
-    keptAfterTeardown.push(
-      { from: sidecarLog, to: `${report}.sidecar.log` },
-      { from: sidecarProcess, to: `${report}.sidecar-process.json` },
-    );
+    // Only when the report lives outside the state directory: a copy into it
+    // would be removed with it.
+    if (process.env.MORPH_E2E_REPORT_PATH) {
+      keptAfterTeardown.push(
+        { from: sidecarLog, to: `${report}.sidecar.log` },
+        { from: sidecarProcess, to: `${report}.sidecar-process.json` },
+      );
+    }
     const sidecarRecorder = createSidecarRecorder({
       logFile: sidecarLog,
       processFile: sidecarProcess,

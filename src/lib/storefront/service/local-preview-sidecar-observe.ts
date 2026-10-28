@@ -56,13 +56,19 @@ export function observeLocalPreviewSidecar(
   let nextSocketId = 1;
 
   const emit = (event: string, fields: Record<string, unknown>) => {
-    write(
-      `${LOCAL_PREVIEW_SIDECAR_OBSERVE_PREFIX} ${JSON.stringify({
-        event,
-        at: new Date(now()).toISOString(),
-        ...fields,
-      })}`,
-    );
+    // Never into the request it describes: a line that cannot be written is
+    // a lost line, not a failed request.
+    try {
+      write(
+        `${LOCAL_PREVIEW_SIDECAR_OBSERVE_PREFIX} ${JSON.stringify({
+          event,
+          at: new Date(now()).toISOString(),
+          ...fields,
+        })}`,
+      );
+    } catch {
+      /* Dropped. */
+    }
   };
 
   const idleMs = (state: SocketState) =>

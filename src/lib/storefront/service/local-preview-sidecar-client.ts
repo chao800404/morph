@@ -58,16 +58,49 @@ export type LocalPreviewSidecarClientOptions = Readonly<{
 
 export const LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX = "[sidecar-client]";
 
-/** What a failed request leaves behind: no header, no body, no token. */
+/**
+ * What a failed request leaves behind: no header, no body, no token, and none
+ * of the sidecar's free text, which can name Theme files and workspace paths.
+ */
 type SidecarRequestFailure = Readonly<{
   requestId: string;
   operation: string;
   previewId: string | null;
   startedAt: number;
   outcome: "unreachable" | "timeout" | "http";
-  status?: number;
-  error: string;
+  /** `request` until a status arrived; `response` while reading the body. */
+  phase: "request" | "response";
+  status: number | null;
+  /** The sidecar's leading error code, for a refusal. */
+  errorCode?: string | null;
+  /** The thrown error, for a request that got no usable answer. */
+  error?: unknown;
 }>;
+
+/** `LOCAL_PREVIEW_SIDECAR_FOO` out of a refusal body, and nothing after it. */
+function leadingErrorCode(detail: string): string | null {
+  let text = detail;
+  try {
+    const parsed = JSON.parse(detail) as { error?: unknown };
+    if (typeof parsed?.error === "string") text = parsed.error;
+  } catch {
+    /* Not JSON: read the text as it is. */
+  }
+  return /^[A-Z][A-Z0-9_]{2,80}/.exec(text.trim())?.[0] ?? null;
+}
+
+/**
+ * A thrown error, as far as it is the transport's own wording. A body that
+ * would not parse is named and not quoted: the parser's message carries a
+ * piece of the body.
+ */
+function describeThrown(error: unknown): { name: string; message: string | null } {
+  if (!(error instanceof Error)) return { name: typeof error, message: null };
+  return {
+    name: error.name,
+    message: error.name === "SyntaxError" ? null : error.message.slice(0, 200),
+  };
+}
 
 export class LocalPreviewSidecarClient implements ThemePreviewServer {
   private readonly origin: string;
@@ -75,6 +108,8 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly log: (line: string) => void;
+  /** Set while `isServing` keeps failing, so a poll does not log every tick. */
+  private servingFailureLogged = false;
 
   constructor(options: LocalPreviewSidecarClientOptions) {
     this.origin = options.origin.replace(/\/+$/, "");
@@ -98,7 +133,16 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
    * `[sidecar-observe]` lines carry, so the two sides can be put together.
    */
   private recordFailure(failure: SidecarRequestFailure): void {
+    // `isServing` is asked on a timer. The first failure of a run of them is
+    // the evidence; the rest would be one line per tick for a developer who
+    // has simply not started the sidecar.
+    if (failure.operation === "isServing") {
+      if (this.servingFailureLogged) return;
+      this.servingFailureLogged = true;
+    }
     try {
+      const thrown =
+        failure.error === undefined ? null : describeThrown(failure.error);
       this.log(
         `${LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX} ${JSON.stringify({
           event: "request-failed",
@@ -108,8 +152,14 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
           startedAt: new Date(failure.startedAt).toISOString(),
           elapsedMs: Date.now() - failure.startedAt,
           outcome: failure.outcome,
-          ...(failure.status === undefined ? {} : { status: failure.status }),
-          error: failure.error.slice(0, 300),
+          phase: failure.phase,
+          status: failure.status,
+          ...(failure.errorCode === undefined
+            ? {}
+            : { errorCode: failure.errorCode }),
+          ...(thrown
+            ? { errorName: thrown.name, errorMessage: thrown.message }
+            : {}),
         })}`,
       );
     } catch {
@@ -132,6 +182,8 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
         : null;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // Observation only: which part of the exchange a failure happened in.
+    let status: number | null = null;
     try {
       const response = await this.fetchImpl(
         `${this.origin}${localPreviewSidecarPath(operation)}`,
@@ -146,45 +198,53 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
           signal: controller.signal,
         },
       );
+      status = response.status;
       if (!response.ok) {
         // The sidecar's own refusal text is safe to surface: it is platform
         // wording about the request, never Theme source or a filesystem path
         // out of the workspace.
         const detail = await response.text().catch(() => "");
-        const reason = `LOCAL_PREVIEW_SIDECAR_${response.status}: ${
-          detail.slice(0, 400) || response.statusText
-        }`;
         this.recordFailure({
           requestId,
           operation,
           previewId,
           startedAt,
           outcome: "http",
-          status: response.status,
-          error: reason,
+          phase: "response",
+          status,
+          errorCode: leadingErrorCode(detail),
         });
-        return { ok: false, reason };
+        return {
+          ok: false,
+          reason: `LOCAL_PREVIEW_SIDECAR_${response.status}: ${
+            detail.slice(0, 400) || response.statusText
+          }`,
+        };
       }
-      return {
-        ok: true,
-        result: (await response.json()) as LocalPreviewSidecarOperations[K]["response"],
-      };
+      const result =
+        (await response.json()) as LocalPreviewSidecarOperations[K]["response"];
+      if (operation === "isServing") this.servingFailureLogged = false;
+      return { ok: true, result };
     } catch (error) {
       const timedOut = error instanceof Error && error.name === "AbortError";
-      const reason = timedOut
-        ? `LOCAL_PREVIEW_SIDECAR_TIMEOUT: The local preview sidecar did not answer within ${this.timeoutMs}ms.`
-        : `LOCAL_PREVIEW_SIDECAR_UNREACHABLE: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
       this.recordFailure({
         requestId,
         operation,
         previewId,
         startedAt,
         outcome: timedOut ? "timeout" : "unreachable",
-        error: reason,
+        phase: status === null ? "request" : "response",
+        status,
+        error,
       });
-      return { ok: false, reason };
+      return {
+        ok: false,
+        reason: timedOut
+          ? `LOCAL_PREVIEW_SIDECAR_TIMEOUT: The local preview sidecar did not answer within ${this.timeoutMs}ms.`
+          : `LOCAL_PREVIEW_SIDECAR_UNREACHABLE: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+      };
     } finally {
       clearTimeout(timer);
     }
@@ -285,25 +345,25 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
         const detail = (await response
           .json()
           .catch(() => null)) as { error?: string } | null;
-        const reason = `The local preview refused "${file.path}" (${response.status}${
-          detail?.error ? `: ${detail.error}` : ""
-        }).`;
         this.recordFailure({
           requestId,
           operation: "stageBinary",
           previewId,
           startedAt,
           outcome: "http",
+          phase: "response",
           status: response.status,
-          error: reason,
+          errorCode: leadingErrorCode(detail?.error ?? ""),
         });
-        return { ok: false, reason };
+        return {
+          ok: false,
+          reason: `The local preview refused "${file.path}" (${response.status}${
+            detail?.error ? `: ${detail.error}` : ""
+          }).`,
+        };
       }
       return { ok: true };
     } catch (error) {
-      const reason = `Could not send "${file.path}" to the local preview: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
       this.recordFailure({
         requestId,
         operation: "stageBinary",
@@ -313,9 +373,17 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
           error instanceof Error && error.name === "AbortError"
             ? "timeout"
             : "unreachable",
-        error: reason,
+        // `fetch` settles once the status arrives, and nothing is read after.
+        phase: "request",
+        status: null,
+        error,
       });
-      return { ok: false, reason };
+      return {
+        ok: false,
+        reason: `Could not send "${file.path}" to the local preview: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
     } finally {
       clearTimeout(timer);
     }
