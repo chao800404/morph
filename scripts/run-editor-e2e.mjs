@@ -25,7 +25,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { verifyPublishedArtifact } from "./verify-published-artifact.mjs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -559,6 +566,9 @@ function settlesWithin(promise, ms) {
 /** The one teardown, once it has started. See `cleanUp`. */
 let teardown = null;
 
+/** Files the teardown copies out of the state directory before removing it. */
+const keptAfterTeardown = [];
+
 /**
  * Stops everything this run started, once, however the run ends.
  *
@@ -593,6 +603,17 @@ async function runTeardown() {
   // before: the loop above returned before the servers had stopped, so this
   // counted containers the run had in fact released.
   const containersGone = await removeOwnContainers();
+  // After the children are gone, so the sidecar's exit is in its record, and
+  // before the state directory goes with the originals.
+  for (const { from, to } of keptAfterTeardown.splice(0)) {
+    try {
+      await mkdir(path.dirname(to), { recursive: true });
+      await copyFile(from, to);
+      log(`kept ${to}`);
+    } catch (error) {
+      log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
@@ -931,7 +952,7 @@ async function main() {
   // default environment" and drops the flag, which is not something `--env`
   // can express to Wrangler directly.
 
-  // Before the sidecar starts, which records beside it.
+  // Before the sidecar starts: its record is kept beside the report.
   const report = process.env.MORPH_E2E_REPORT_PATH
     ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
     : path.join(stateDir, "playwright-report.json");
@@ -939,10 +960,19 @@ async function main() {
 
   if (USES_SIDECAR) {
     log("starting the preview sidecar");
-    // Beside the report, so CI uploads them with it, pass or fail.
+    // Written in the state directory while the run lasts, because Playwright
+    // empties its output directory when it starts, and that is where the
+    // report usually is. The teardown copies both beside the report, so CI
+    // uploads them with it, pass or fail.
+    const sidecarLog = path.join(stateDir, "sidecar.log");
+    const sidecarProcess = path.join(stateDir, "sidecar-process.json");
+    keptAfterTeardown.push(
+      { from: sidecarLog, to: `${report}.sidecar.log` },
+      { from: sidecarProcess, to: `${report}.sidecar-process.json` },
+    );
     const sidecarRecorder = createSidecarRecorder({
-      logFile: `${report}.sidecar.log`,
-      processFile: `${report}.sidecar-process.json`,
+      logFile: sidecarLog,
+      processFile: sidecarProcess,
       secrets: [
         parseEnvFile(await readFile(SIDECAR_ENV_FILE, "utf8"))
           .MORPH_LOCAL_THEME_PREVIEW_TOKEN,
