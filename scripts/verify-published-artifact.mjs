@@ -17,8 +17,10 @@
  * inventing a race this run does not need.
  */
 import { createHash } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import Database from "better-sqlite3";
 
 const HANDOFF_SCHEMA_VERSION = 2;
 
@@ -227,6 +229,30 @@ export async function queryRunD1({ persistTo, workDir }, sql, ...params) {
   } finally {
     await platform.dispose();
     await rm(configPath, { force: true });
+  }
+}
+
+/** Read the lifecycle run's own D1 without starting a second workerd. */
+export function queryLifecycleD1(persistTo, sql, ...params) {
+  if (!persistTo) throw new Error("Lifecycle D1 state directory is required");
+  const directory = path.join(persistTo, "v3/d1/miniflare-D1DatabaseObject");
+  const files = readdirSync(directory).filter(
+    (name) => name.endsWith(".sqlite") && name !== "metadata.sqlite",
+  );
+  if (files.length !== 1) {
+    throw new Error(
+      `Expected one lifecycle D1 database, found ${files.length}`,
+    );
+  }
+  const db = new Database(path.join(directory, files[0]), {
+    readonly: true,
+    fileMustExist: true,
+    timeout: 10_000,
+  });
+  try {
+    return db.prepare(sql).all(...params);
+  } finally {
+    db.close();
   }
 }
 
