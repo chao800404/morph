@@ -295,13 +295,10 @@ const WRITE_FUNCTIONS = [
 /** What a refused bind must leave exactly as it was. */
 async function storedState(page: Page, scope: ThemeScope) {
   const listing = await listFiles(page, scope);
-  const stored = await page.evaluate(async (scope) => {
-    const themes = await import(
-      /* @vite-ignore */ "/src/server/storefront/storefront-themes.serverFn.ts"
-    );
-    const files = await import(
-      /* @vite-ignore */ "/src/server/storefront/storefront-theme-files.serverFn.ts"
-    );
+  const stored = await page.evaluate(async ({ scope, filesModule }) => {
+    const themesModule = "/src/server/storefront/storefront-themes.serverFn.ts";
+    const themes = await import(/* @vite-ignore */ themesModule);
+    const files = await import(/* @vite-ignore */ filesModule);
     const editor = await themes.getStorefrontThemeEditor({ data: scope });
     if (!editor.success) throw new Error(editor.message);
     const revisions = await files.listStorefrontThemeRevisions({
@@ -319,7 +316,7 @@ async function storedState(page: Page, scope: ThemeScope) {
       ),
       revisions: revisions.data,
     };
-  }, scope);
+  }, { scope, filesModule: SERVER_FN_MODULE });
   return {
     sourceGeneration: listing.sourceGeneration,
     files: listing.files,
