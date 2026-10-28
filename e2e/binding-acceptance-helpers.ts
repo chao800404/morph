@@ -680,9 +680,30 @@ async function inlineEdit(
   walk: Walk,
 ) {
   const { value, change } = context;
+  const LOCATE_TIMEOUT_MS = 10_000;
+  const fieldLabel =
+    element.target.kind === "field"
+      ? `${element.target.section}.${element.target.field}`
+      : element.target.kind === "composed"
+        ? `${element.target.section}.[${element.target.rawFields.join(",")}]`
+        : element.target.kind;
+  const elementLabel = `${element.tag} (nth=${element.nth})`;
+
   const target = elementLocator(page, testCase, element);
-  const box = await target.boundingBox();
-  expect(box, "no box for the element").not.toBeNull();
+  let box: { x: number; y: number; width: number; height: number } | null = null;
+  try {
+    await target.scrollIntoViewIfNeeded({ timeout: LOCATE_TIMEOUT_MS });
+    box = await target.boundingBox({ timeout: LOCATE_TIMEOUT_MS });
+  } catch (cause) {
+    throw new Error(
+      `Failed to locate canvas element for inline editing in case "${testCase.id}", element ${elementLabel}, field "${fieldLabel}" within ${LOCATE_TIMEOUT_MS}ms: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+  }
+  expect(
+    box,
+    `no box for element in case "${testCase.id}", element ${elementLabel}, field "${fieldLabel}" within ${LOCATE_TIMEOUT_MS}ms`,
+  ).not.toBeNull();
   await page.mouse.dblclick(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.waitForTimeout(800);
   walk.observed.S3editable = await target.getAttribute("contenteditable").catch(() => null);
