@@ -142,6 +142,7 @@ import {
   removeThemeRouteSection,
   replaceThemeRouteSectionComponent,
   reorderThemeRouteSections,
+  themeRouteStructureLock,
   type ThemeRouteSectionOption,
   type ThemeUnboundRouteSection,
 } from "@/lib/storefront/compiler/theme-route-sections";
@@ -4084,6 +4085,14 @@ export function VisualEditorShell({
   // Ordering and supersession live in `theme-file-save-queue`, where both rules
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
+  /**
+   * The route text each Design structure edit wrote, by path. A file whose
+   * unsaved content is still exactly that text holds a rewrite computed on
+   * an older Theme, and is checked against the newest one before it is sent
+   * again (`saveSourceConflicts`). Content the author changed since, in Code,
+   * no longer matches and is theirs to save.
+   */
+  const designStructureEditsRef = useRef(new Map<string, string>());
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const previewHeartbeatRef = useRef<{
     key: string;
@@ -5553,8 +5562,17 @@ export function VisualEditorShell({
         confirmed?: boolean;
         operation?: "code-default";
         codeDefault?: CodeDefaultWriteProof;
+        /**
+         * A Design section structure edit (reorder, remove, bind) computed
+         * on this tab's files. Recorded so that saving it again later, after
+         * the Theme moved on, asks the structure lock again first.
+         */
+        structureEdit?: boolean;
       },
     ) => {
+      if (options?.structureEdit) {
+        designStructureEditsRef.current.set(filePath, content);
+      }
       // Recorded here rather than at each call site: reordering siblings,
       // reordering sections, adding one and saving in Code mode all write a
       // whole file through this one path, and each would otherwise need its own
@@ -6433,9 +6451,42 @@ export function VisualEditorShell({
       // save path directly.
       await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
       const files = readFiles();
+      // The newest stored Theme, asked for now: a Design structure edit was
+      // checked against the files this tab had, and the lock can change
+      // without its route file changing.
+      let newest: readonly StorefrontThemeFileDTO[] | null = null;
       for (const path of sourceConflictPaths(files)) {
         const content = files[path]?.localContent;
         if (content === undefined) continue;
+        if (designStructureEditsRef.current.get(path) === content) {
+          newest ??= (
+            await queryClient.fetchQuery({
+              ...storefrontThemeFileQueries.tree(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              ),
+              staleTime: 0,
+            })
+          ).files;
+          // The route as stored, among every other file as this tab would
+          // now save it: is a structure edit on it still allowed?
+          const locked = themeRouteStructureLock(
+            newest.map((file) => ({
+              ...file,
+              content:
+                file.path === path
+                  ? file.content
+                  : (files[file.path]?.localContent ?? file.content),
+            })),
+            path,
+          );
+          if (locked) {
+            // Not sent, not discarded: the edit stays here, unsaved and
+            // marked, and the author decides, in Code if they want it.
+            toast.error(`Your section change was not saved. ${locked}`);
+            continue;
+          }
+        }
         await handleUnifiedSaveFile(path, content, {
           fromHistory: true,
           confirmed: true,
@@ -6448,7 +6499,7 @@ export function VisualEditorShell({
     } finally {
       setIsSavingSourceConflicts(false);
     }
-  }, [handleUnifiedSaveFile, workspaceScope]);
+  }, [handleUnifiedSaveFile, queryClient, workspaceScope]);
 
   /**
    * Writes paused on who is signed in, and what getting them going again
@@ -9290,7 +9341,7 @@ export function VisualEditorShell({
           const saved = await handleUnifiedSaveFile(
             activeThemeRoute.sourcePath,
             result.code,
-            { preserveCanvasPosition: true },
+            { preserveCanvasPosition: true, structureEdit: true },
           );
           if (saved === null) {
             return {
@@ -11048,6 +11099,7 @@ export function VisualEditorShell({
       const saved = await handleUnifiedSaveFile(
         activeThemeRoute.sourcePath,
         result.code,
+        { structureEdit: true },
       );
       if (saved === null) {
         throw new Error(
@@ -11324,6 +11376,7 @@ export function VisualEditorShell({
       const saved = await handleUnifiedSaveFile(
         candidate.routeSourcePath,
         result.code,
+        { structureEdit: true },
       );
       if (saved === null) {
         throw new Error(
