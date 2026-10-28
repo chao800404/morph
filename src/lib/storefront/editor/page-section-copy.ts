@@ -119,6 +119,21 @@ function hasFilesUnder(root: string, paths: Iterable<string>): boolean {
 }
 
 /**
+ * Slot ids a new section on a route must not take.
+ *
+ * The route's own sections, and every section its content owner's Document
+ * still stores. A stored section the source no longer shows is kept content,
+ * not a free id: stored props are matched to sections by slot id, so a new
+ * section that reused one would come back showing the old content.
+ */
+export function reservedSectionSlotIds(args: {
+  routeSlotIds: Iterable<string>;
+  storedSectionIds: Iterable<string>;
+}): Set<string> {
+  return new Set([...args.routeSlotIds, ...args.storedSectionIds]);
+}
+
+/**
  * The first slot id that is free both in the route and on disk.
  *
  * A folder left behind by something other than this editor — a hand-made
