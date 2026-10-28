@@ -426,6 +426,28 @@ function findLocalD1Sqlite(stateDir: string): string | null {
   return match ? join(d1Dir, match) : null;
 }
 
+/**
+ * Rows from the run's own database, read from its SQLite file the way
+ * `runSql` writes it: with a busy timeout, so a read that lands while the dev
+ * server holds the write lock waits for it instead of failing with
+ * SQLITE_BUSY, as `wrangler d1 execute` did (main push run 40756777131).
+ */
+export function queryLocalD1<Row>(sql: string): Row[] {
+  const stateDir = process.env.MORPH_E2E_STATE_DIR;
+  const sqlitePath = stateDir ? findLocalD1Sqlite(stateDir) : null;
+  if (!sqlitePath) {
+    throw new Error(
+      `queryLocalD1 could not find D1 SQLite in MORPH_E2E_STATE_DIR: ${stateDir}`,
+    );
+  }
+  const db = new Database(sqlitePath, { readonly: true, timeout: 10_000 });
+  try {
+    return db.prepare(sql).all() as Row[];
+  } finally {
+    db.close();
+  }
+}
+
 /** The run's own database, as `scripts/seed-e2e.mjs` reaches it. */
 export function runSql(command: string) {
   const stateDir = process.env.MORPH_E2E_STATE_DIR;
