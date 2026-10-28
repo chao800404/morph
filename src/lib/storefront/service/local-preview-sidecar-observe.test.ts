@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX,
   LocalPreviewSidecarClient,
-  sanitizeTransportMessage,
+  safeTransportMessage,
 } from "./local-preview-sidecar-client";
 import { startLocalPreviewSidecar } from "./local-preview-sidecar";
 import {
@@ -331,55 +331,117 @@ describe("the Worker's record of a request that failed", () => {
     expect(logged.join("\n")).not.toContain(TOKEN);
   });
 
-  it("keeps no URL, path, quoted text, token or opaque string a transport message carries", async () => {
+  // Messages a runtime could produce, each carrying a marker where a URL, a
+  // path, a response fragment or a credential would be. Includes the shapes
+  // that got past the earlier pattern-based filter.
+  const SHORT_TOKEN = "abcd1234efgh";
+  const UNSAFE_MESSAGES = (MARK: string) => [
+    `request to http://127.0.0.1:5199/start?token=${TOKEN}&q=${MARK}1 failed`,
+    `while reading /home/a0921/workspaces/${MARK}2/src/pages/index.tsx`,
+    `and C:\\Users\\someone\\${MARK}3\\draft.tsx`,
+    `body "export default () => <h1>${MARK}4 draft</h1>"`,
+    `cookie 'better-auth.session_token=${MARK}5'`,
+    `raw ${TOKEN}`,
+    `127.0.0.1:5199/start?token=${SHORT_TOKEN}&draft=${MARK}6`,
+    `src/${MARK}7-draft.tsx`,
+    `%2Fhome%2F${MARK}8%2Fdraft`,
+    `<body>${MARK}9 Draft Title</body>`,
+    `unclosed "quote ${MARK}10 and the rest`,
+    `{"error":"\\"${MARK}11\\""}`,
+    `Network connection lost. ${MARK}12`,
+    `fetch failed\n${MARK}13`,
+    `connect ECONNREFUSED 127.0.0.1:5199 ${MARK}14`,
+    `${"x".repeat(50_000)}${MARK}15`,
+  ];
+
+  it("records no transport message that is not a known wording, only its length", async () => {
     const MARK = "SENSITIVEMARK";
-    const thrown = new TypeError(
-      [
-        `request to http://127.0.0.1:5199/start?token=${TOKEN}&q=${MARK}1 failed`,
-        `while reading /home/a0921/workspaces/${MARK}2/src/pages/index.tsx`,
-        `and C:\\Users\\someone\\${MARK}3\\draft.tsx`,
-        `body "export default () => <h1>${MARK}4 draft</h1>"`,
-        `cookie 'better-auth.session_token=${MARK}5'`,
-        `raw ${TOKEN}`,
-        `opaque eyJhbGciOiJIUzI1NiJ9${MARK}6abcdefghijkl`,
-      ].join("\n"),
-    );
-    thrown.name = `TypeError ${MARK}7`;
-    const { client, logged } = recordingClient(
-      "http://127.0.0.1:5199",
-      (async () => {
-        throw thrown;
-      }) as typeof fetch,
-    );
-
-    const started = await client.start(startInput);
-    // What the caller gets is not this record's business: it is unchanged.
-    expect(started.ok).toBe(false);
-    if (!started.ok) expect(started.errorMessage).toContain(`${MARK}2`);
-
-    const all = logged.join("\n");
-    expect(logged).toHaveLength(1);
-    expect(all).not.toContain(MARK);
-    expect(all).not.toContain(TOKEN);
-    expect(all).not.toContain("http://");
-    expect(all).not.toContain("/home/");
-    expect(all).not.toContain("Users");
-    expect(all).not.toContain("<h1>");
-    const [failure] = parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX);
-    expect(failure).toMatchObject({ errorName: "Error", phase: "request" });
-    expect(failure?.errorMessage).toEqual(expect.stringContaining("[URL]"));
-    expect(failure?.errorMessage).toEqual(expect.stringContaining("[PATH]"));
-    expect(failure?.errorMessage).toEqual(expect.stringContaining("[QUOTED]"));
+    for (const message of UNSAFE_MESSAGES(MARK)) {
+      const thrown = new TypeError(message);
+      thrown.name = `TypeError ${MARK}name`;
+      const { client, logged } = recordingClient(
+        "http://127.0.0.1:5199",
+        (async () => {
+          throw thrown;
+        }) as typeof fetch,
+      );
+      const started = await client.start(startInput);
+      // What the caller gets is not this record's business: it is unchanged.
+      expect(started).toMatchObject({
+        ok: false,
+        errorMessage: `LOCAL_PREVIEW_SIDECAR_UNREACHABLE: ${message}`,
+      });
+      const all = logged.join("\n");
+      expect(logged, message.slice(0, 60)).toHaveLength(1);
+      expect(all, message.slice(0, 60)).not.toContain(MARK);
+      expect(all).not.toContain(TOKEN);
+      expect(all).not.toContain(SHORT_TOKEN);
+      const [failure] = parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX);
+      expect(failure).toMatchObject({
+        errorName: "Error",
+        errorMessage: null,
+        errorMessageLength: message.length,
+      });
+    }
   });
 
-  it("leaves the transport's own wording as it is", () => {
+  it("keeps the transport's own wording as it is, and the error's code", async () => {
     for (const message of [
       "Network connection lost.",
       "fetch failed",
+      "socket hang up",
+      "other side closed",
+      "This operation was aborted",
+      "internal error; reference = 0123abcdxyz",
       "connect ECONNREFUSED 127.0.0.1:5199",
+      "read ECONNRESET",
+      "connect ECONNREFUSED ::1:5199",
     ]) {
-      expect(sanitizeTransportMessage(message, TOKEN)).toBe(message);
+      expect(safeTransportMessage(message)).toBe(message);
     }
+    const cause = Object.assign(new Error("other side closed"), {
+      code: "UND_ERR_SOCKET",
+    });
+    const { client, logged } = recordingClient(
+      "http://127.0.0.1:5199",
+      (async () => {
+        throw new TypeError("fetch failed", { cause });
+      }) as typeof fetch,
+    );
+    await client.start(startInput);
+    expect(
+      parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX),
+    ).toMatchObject([
+      {
+        errorName: "TypeError",
+        errorCode: "UND_ERR_SOCKET",
+        errorMessage: "fetch failed",
+      },
+    ]);
+  });
+
+  it("names a body that would not parse, and does not quote the parser", async () => {
+    const MARK = "SENSITIVEMARK";
+    const { client, logged } = recordingClient(
+      "http://127.0.0.1:5199",
+      (async () =>
+        new Response(`{"draft":"${MARK}" broken`, {
+          status: 200,
+        })) as unknown as typeof fetch,
+    );
+    const started = await client.start(startInput);
+    expect(started.ok).toBe(false);
+    expect(logged.join("\n")).not.toContain(MARK);
+    expect(
+      parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX),
+    ).toMatchObject([
+      {
+        phase: "response",
+        status: 200,
+        errorName: "SyntaxError",
+        errorMessage: null,
+      },
+    ]);
   });
 
   it("tells a connection lost while reading a 200 apart from one that never answered", async () => {
@@ -441,48 +503,24 @@ describe("the Worker's record of a request that failed", () => {
     expect(logged.join("\n")).not.toContain("/home/someone");
   });
 
-  it("logs the first of a run of failing isServing polls, and again after one succeeds", async () => {
-    let answer = 503;
+  it("logs every failing isServing poll: a client lives for one call", async () => {
     const { client, logged } = recordingClient(
       "http://127.0.0.1:5199",
       (async () =>
-        answer === 200
-          ? new Response(JSON.stringify({ serving: false }), { status: 200 })
-          : new Response("busy", {
-              status: answer,
-            })) as unknown as typeof fetch,
+        new Response("busy", { status: 503 })) as unknown as typeof fetch,
     );
     const poll = () =>
       client.isServing({
         previewId: "preview-1",
         previewHostname: "127.0.0.1",
       });
-
     await poll();
-    await poll();
-    await poll();
-    expect(parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX)).toHaveLength(
-      1,
-    );
-
-    answer = 200;
-    await poll();
-    answer = 502;
     await poll();
     expect(
       parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX),
     ).toMatchObject([
       { operation: "isServing", status: 503 },
-      { operation: "isServing", status: 502 },
+      { operation: "isServing", status: 503 },
     ]);
-
-    // Author actions are never folded together.
-    await client.start(startInput);
-    await client.start(startInput);
-    expect(
-      parse(logged, LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX).filter(
-        (event) => event.operation === "start",
-      ),
-    ).toHaveLength(2);
   });
 });

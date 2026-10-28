@@ -86,46 +86,72 @@ function leadingErrorCode(detail: string): string | null {
   } catch {
     /* Not JSON: read the text as it is. */
   }
-  return /^[A-Z][A-Z0-9_]{2,80}/.exec(text.trim())?.[0] ?? null;
+  return /^[A-Z][A-Z0-9_]{2,80}(?![A-Za-z0-9_])/.exec(text.trim())?.[0] ?? null;
 }
 
 /**
- * A transport message with everything that could be more than wording taken
- * out: the token, URLs, file paths, quoted text, and long opaque strings.
+ * The transport messages a failure record may repeat, as they are.
  *
- * "Network connection lost." and "fetch failed" pass as they are, and they
- * are what the record is for. A runtime is free to put a URL, a path or a
- * piece of a response into its message, so this keeps the shape of the
- * message and none of those.
+ * A list of known wordings rather than a filter: a runtime is free to put a
+ * URL, a path or a piece of a response into a message, and no pattern that
+ * strips those can be shown to catch every spelling of them. Anything else
+ * is recorded by its length only.
  */
-export function sanitizeTransportMessage(message: string, token: string): string {
-  let out = token.length >= 8 ? message.split(token).join("[TOKEN]") : message;
-  out = out
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>)]*/gi, "[URL]")
-    .replace(/(["'`])(?:(?!\1)[^\r\n])*\1/g, "[QUOTED]")
-    .replace(/(?:[A-Za-z]:)?(?:[\\/][^\s\\/:"'`]+){2,}[\\/]?/g, "[PATH]")
-    .replace(/[A-Za-z0-9_+/=-]{24,}/g, "[REDACTED]")
-    .replace(/[\r\n]+/g, " ");
-  return out.length > 160 ? `${out.slice(0, 160)}…` : out;
+const SAFE_TRANSPORT_MESSAGES: readonly RegExp[] = [
+  /^Network connection lost\.?$/,
+  /^fetch failed$/,
+  /^socket hang up$/,
+  /^other side closed$/,
+  /^terminated$/,
+  /^(?:The|This) operation was aborted\.?$/,
+  /^internal error; reference = [a-z0-9]{1,40}$/,
+  /^(?:connect |read |write )?E[A-Z]{2,20} (?:\d{1,3}(?:\.\d{1,3}){3}|::1|\[::1\]):\d{1,5}$/,
+  /^(?:connect |read |write )?E[A-Z]{2,20}$/,
+];
+
+/** The message if it is one of the known wordings, else null. */
+export function safeTransportMessage(message: string): string | null {
+  // Bounded before any pattern runs, so a long message costs nothing.
+  if (message.length > 120) return null;
+  return SAFE_TRANSPORT_MESSAGES.some((pattern) => pattern.test(message))
+    ? message
+    : null;
+}
+
+/** An error `code` such as `ECONNRESET`, from the error or its `cause`. */
+function errorCodeOf(error: Error): string | null {
+  for (const candidate of [
+    (error as { code?: unknown }).code,
+    (error.cause as { code?: unknown } | undefined)?.code,
+  ]) {
+    if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 /**
- * A thrown error, as far as it is the transport's own wording. A body that
- * would not parse is named and not quoted: the parser's message carries a
- * piece of the body.
+ * A thrown error, as far as it is the transport's own wording: its class
+ * name, its code, and its message only when that is a known wording. A body
+ * that would not parse never qualifies: the parser's message quotes it.
  */
-function describeThrown(
-  error: unknown,
-  token: string,
-): { name: string; message: string | null } {
-  if (!(error instanceof Error)) return { name: typeof error, message: null };
+function describeThrown(error: unknown): {
+  name: string;
+  code: string | null;
+  message: string | null;
+  messageLength: number | null;
+} {
+  if (!(error instanceof Error)) {
+    return { name: typeof error, code: null, message: null, messageLength: null };
+  }
+  const message = error.name === "SyntaxError" ? null : safeTransportMessage(error.message);
   return {
     // A class name, or nothing: a name is as free to hold text as a message.
     name: /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(error.name) ? error.name : "Error",
-    message:
-      error.name === "SyntaxError"
-        ? null
-        : sanitizeTransportMessage(error.message, token),
+    code: errorCodeOf(error),
+    message,
+    messageLength: message === null ? error.message.length : null,
   };
 }
 
@@ -135,8 +161,6 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly log: (line: string) => void;
-  /** Set while `isServing` keeps failing, so a poll does not log every tick. */
-  private servingFailureLogged = false;
 
   constructor(options: LocalPreviewSidecarClientOptions) {
     this.origin = options.origin.replace(/\/+$/, "");
@@ -160,18 +184,12 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
    * `[sidecar-observe]` lines carry, so the two sides can be put together.
    */
   private recordFailure(failure: SidecarRequestFailure): void {
-    // `isServing` is asked on a timer. The first failure of a run of them is
-    // the evidence; the rest would be one line per tick for a developer who
-    // has simply not started the sidecar.
-    if (failure.operation === "isServing") {
-      if (this.servingFailureLogged) return;
-      this.servingFailureLogged = true;
-    }
+    // Every failure, `isServing` polls included. A client lives for one
+    // server-function call, so there is no run of polls here to fold into
+    // one line; a developer without a running sidecar sees a line per poll.
     try {
       const thrown =
-        failure.error === undefined
-          ? null
-          : describeThrown(failure.error, this.token);
+        failure.error === undefined ? null : describeThrown(failure.error);
       this.log(
         `${LOCAL_PREVIEW_SIDECAR_CLIENT_LOG_PREFIX} ${JSON.stringify({
           event: "request-failed",
@@ -187,7 +205,14 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
             ? {}
             : { errorCode: failure.errorCode }),
           ...(thrown
-            ? { errorName: thrown.name, errorMessage: thrown.message }
+            ? {
+                errorName: thrown.name,
+                errorCode: thrown.code,
+                errorMessage: thrown.message,
+                ...(thrown.messageLength === null
+                  ? {}
+                  : { errorMessageLength: thrown.messageLength }),
+              }
             : {}),
         })}`,
       );
@@ -252,7 +277,6 @@ export class LocalPreviewSidecarClient implements ThemePreviewServer {
       }
       const result =
         (await response.json()) as LocalPreviewSidecarOperations[K]["response"];
-      if (operation === "isServing") this.servingFailureLogged = false;
       return { ok: true, result };
     } catch (error) {
       const timedOut = error instanceof Error && error.name === "AbortError";
