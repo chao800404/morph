@@ -831,6 +831,16 @@ export type StarterThemeWorkspaceUpgradePlan = {
   deletions: StarterThemeWorkspaceUpgradeDeletion[];
 };
 
+export type StarterThemeWorkspaceUpgradeOptions = {
+  /**
+   * Whether the plan may edit a file the author changed. Only the marker
+   * cleanup does, in place. Code mode's one-click bootstrap keeps doing it; an
+   * upgrade the author reviews sets this to false and lists those files as
+   * kept instead.
+   */
+  editAuthoredFiles?: boolean;
+};
+
 /**
  * Builds the one-click bootstrap plan used by Code Mode.
  *
@@ -1295,6 +1305,13 @@ function starterUpgradeApplies(framework: StarterWorkspaceFramework): boolean {
   return framework.isStartBySource;
 }
 
+/** Whether the Starter upgrade has anything to say to these files at all. */
+export function starterUpgradeAppliesTo(
+  existingFiles: readonly ExistingStarterThemeFile[],
+): boolean {
+  return starterUpgradeApplies(readStarterWorkspaceFramework(existingFiles));
+}
+
 /**
  * Produces an additive, OCC-ready upgrade for an existing v2 starter
  * workspace. Authored files are preserved. Legacy shell components are
@@ -1308,11 +1325,16 @@ function starterUpgradeApplies(framework: StarterWorkspaceFramework): boolean {
  */
 export function createStarterThemeWorkspaceUpgrade(
   existingFiles: ExistingStarterThemeFile[],
+  options: StarterThemeWorkspaceUpgradeOptions = {},
 ): StarterThemeWorkspaceUpgradeFile[] {
   const deferred: { homeRoute: StarterThemeWorkspaceUpgradeFile | null } = {
     homeRoute: null,
   };
-  const upgrades = planStarterThemeWorkspaceWrites(existingFiles, deferred);
+  const upgrades = planStarterThemeWorkspaceWrites(
+    existingFiles,
+    deferred,
+    options,
+  );
   const homeRoute = deferred.homeRoute;
   if (!homeRoute) return upgrades;
   const afterPlan = new Map(
@@ -1331,6 +1353,7 @@ export function createStarterThemeWorkspaceUpgrade(
 function planStarterThemeWorkspaceWrites(
   existingFiles: ExistingStarterThemeFile[],
   deferred: { homeRoute: StarterThemeWorkspaceUpgradeFile | null },
+  options: StarterThemeWorkspaceUpgradeOptions,
 ): StarterThemeWorkspaceUpgradeFile[] {
   const existingByPath = new Map(
     existingFiles.map((file) => [file.path, file]),
@@ -1775,8 +1798,12 @@ function planStarterThemeWorkspaceWrites(
   // instead, and only where the compiler is shown to produce the same bindings
   // without them. Before the manifest, because a workspace whose manifest is
   // missing or unreadable still has source an author has to read.
+  // An upgrade the author reviews keeps every file they changed, so there the
+  // markers stay: the compiler reads them as it always has.
   const markerPlanned = new Set(upgrades.map((upgrade) => upgrade.path));
-  for (const file of existingFiles) {
+  for (const file of options.editAuthoredFiles === false
+    ? []
+    : existingFiles) {
     if (markerPlanned.has(file.path)) continue;
     const stripped = stripDerivableMarkers(file);
     if (!stripped) continue;
@@ -1884,13 +1911,14 @@ function planStarterThemeWorkspaceWrites(
  */
 export function createStarterThemeWorkspaceUpgradePlan(
   existingFiles: ExistingStarterThemeFile[],
+  options: StarterThemeWorkspaceUpgradeOptions = {},
 ): StarterThemeWorkspaceUpgradePlan {
   // Before the deletions and the home adoption too, which are planned here
   // rather than in the upgrade: a workspace of another framework gets nothing.
-  if (!starterUpgradeApplies(readStarterWorkspaceFramework(existingFiles))) {
+  if (!starterUpgradeAppliesTo(existingFiles)) {
     return { files: [], deletions: [] };
   }
-  const files = createStarterThemeWorkspaceUpgrade(existingFiles);
+  const files = createStarterThemeWorkspaceUpgrade(existingFiles, options);
   const existingLegacyPage = existingFiles.find(
     (file) => file.path === "src/pages/index.tsx",
   );

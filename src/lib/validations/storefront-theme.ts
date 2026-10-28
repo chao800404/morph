@@ -12,6 +12,17 @@ export const storefrontThemeEditorInputSchema = z.object({
   themeId: idSchema("storefront theme"),
 });
 
+export const reviewStorefrontStarterUpgradeInputSchema =
+  storefrontThemeEditorInputSchema;
+
+/** The review the author confirmed: its source generation and plan digest. */
+export const applyStorefrontStarterUpgradeInputSchema = z.object({
+  storefrontId: idSchema("storefront"),
+  themeId: idSchema("storefront theme"),
+  expectedSourceGeneration: z.number().int().min(1),
+  planDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
 /** Draft-only. Does not publish, build, or activate a rendering mode. */
 export const updateStorefrontThemeRenderPolicyInputSchema =
   storefrontThemeEditorInputSchema.extend({

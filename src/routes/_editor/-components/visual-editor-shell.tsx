@@ -473,6 +473,7 @@ import {
 } from "./editor-unconfirmed-saves-notice";
 import { EditorLeaveDialog } from "./editor-leave-dialog";
 import { EditorWritesPausedNotice } from "./editor-writes-paused-notice";
+import { EditorStarterUpgradeNotice } from "./editor-starter-upgrade-notice";
 import {
   EditorLockedPanel,
   EditorThemeReadNotice,
@@ -3260,6 +3261,9 @@ export function VisualEditorShell({
       themeId: context.theme.id,
     }),
     [context.storefront.id, context.theme.id],
+  );
+  const unsavedWorkspaceFileCount = useThemeWorkspaceStore(
+    (state) => state.getDirtyFiles(workspaceScope).length,
   );
 
   // Package requests must be tied to the exact source snapshot that was
@@ -12803,6 +12807,31 @@ export function VisualEditorShell({
             paths={pendingSourceConflicts}
             saving={isSavingSourceConflicts}
             onSave={() => void saveSourceConflicts()}
+          />
+          <EditorStarterUpgradeNotice
+            status={context.starterUpgrade}
+            storefrontId={workspaceScope.storefrontId}
+            themeId={workspaceScope.themeId}
+            unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
+            onApplied={async () => {
+              await Promise.all([
+                queryClient.invalidateQueries({
+                  queryKey: storefrontThemeFileQueries.tree(
+                    workspaceScope.storefrontId,
+                    workspaceScope.themeId,
+                  ).queryKey,
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: storefrontThemeQueries.detail(
+                    workspaceScope.storefrontId,
+                    workspaceScope.themeId,
+                  ).queryKey,
+                }),
+              ]);
+              // The Starter's files changed under the route tree: restart
+              // through the lifecycle owner, as adding a section does.
+              dispatchPreviewLifecycle({ type: "manual-recovery" });
+            }}
           />
         </div>
       </div>

@@ -98,7 +98,17 @@ vi.mock("./storefront-theme-file.dal", () => ({
   },
 }));
 vi.mock("../storage/theme-storage.server", () => ({
-  themeSourceStore: { saveFilesBatch: workspace.saveFilesBatch },
+  themeSourceStore: {
+    saveFilesBatch: workspace.saveFilesBatch,
+    listFiles: vi.fn(
+      async (_storefrontId: string, themeId: string) =>
+        workspace.files.get(themeId)?.map((file) => ({ ...file })) ?? [],
+    ),
+    getSourceGeneration: vi.fn(
+      async (_storefrontId: string, themeId: string) =>
+        workspace.generation.get(themeId) ?? null,
+    ),
+  },
 }));
 
 import {
@@ -264,6 +274,26 @@ function openEditor() {
   });
 }
 
+/**
+ * The author reviews the upgrade and applies exactly that review. True when
+ * it was applied; the record write is the same one either way.
+ */
+async function applyReviewed() {
+  const reviewed = await storefrontDal.reviewStarterUpgrade({
+    storefrontId: STOREFRONT_ID,
+    themeId: THEME_ID,
+  });
+  if (!reviewed) throw new Error("no review");
+  const applied = await storefrontDal.applyReviewedStarterUpgrade({
+    storefrontId: STOREFRONT_ID,
+    themeId: THEME_ID,
+    createdBy: "user-a",
+    expectedSourceGeneration: reviewed.sourceGeneration,
+    planDigest: reviewed.review.digest,
+  });
+  return applied.status === "applied";
+}
+
 beforeEach(() => {
   sqlite = new Database(":memory:");
   sqlite.exec(`
@@ -384,7 +414,7 @@ describe("the Starter upgrade record write", () => {
       singleKeyWriter("legacyManifestArchive", { version: 1 });
     };
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -404,10 +434,10 @@ describe("the Starter upgrade record write", () => {
       // The first run has read revision 0 and is about to write; the second
       // runs to completion in that window.
       hooks.beforeRecordWrite = null;
-      await expect(openEditor()).resolves.toBe(true);
+      await expect(applyReviewed()).resolves.toBe(true);
     };
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -429,7 +459,7 @@ describe("the Starter upgrade record write", () => {
       competingRecordWrite(LEGACY_VERSION);
     };
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -447,7 +477,7 @@ describe("the Starter upgrade record write", () => {
       competingRecordWrite(CURRENT + 5);
     };
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT + 5,
@@ -485,7 +515,7 @@ describe("the Starter upgrade record write", () => {
       competingRecordWrite(CURRENT);
     };
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     // The upgrade read revision 3; the stored record is at 5. Its write
     // matched nothing, and the record is exactly the other writer's.
@@ -502,7 +532,7 @@ describe("the Starter upgrade record write", () => {
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -517,7 +547,7 @@ describe("the Starter upgrade record write", () => {
     workspace.files.set(THEME_ID, upgradedWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await storefrontDal.ensureDefault("channel-a");
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -552,7 +582,7 @@ describe("when every record write loses its revision condition", () => {
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    const error = await openEditor().then(
+    const error = await applyReviewed().then(
       () => null,
       (reason: unknown) => reason,
     );
@@ -585,12 +615,12 @@ describe("when every record write loses its revision condition", () => {
     );
   });
 
-  it("is not reported as success by store initialization", async () => {
+  it("is not reported as success by an applied upgrade", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, upgradedWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(storefrontDal.ensureDefault("channel-a")).rejects.toThrow(
+    await expect(applyReviewed()).rejects.toThrow(
       StarterUpgradeIncompleteError,
     );
     expect(storedRow().metadata.starterTemplateVersion).toBe(LEGACY_VERSION);
@@ -631,29 +661,29 @@ describe("a restart between the file save and the record write", () => {
     };
   }
 
-  it("re-plans on the next load, writes no file twice and then records the version", async () => {
+  it("re-plans on the next review, writes no file twice and then records the version", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
     crashOnFirstRecordWrite();
 
-    await expect(openEditor()).rejects.toThrow("process stopped");
+    await expect(applyReviewed()).rejects.toThrow("process stopped");
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: LEGACY_VERSION,
     });
 
-    // Next load: still on the old version, so the plan runs again against
+    // Next review: still on the old version, so the plan is made again from
     // the already-upgraded files and finds nothing to write.
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
       starterUpgradeRecordRevision: 1,
     });
 
-    // And the load after that is a no-op.
-    await expect(openEditor()).resolves.toBe(false);
+    // And applying again writes nothing: no file, no record.
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(hooks.recordWriteAttempts).toBe(2);
   });
@@ -664,16 +694,16 @@ describe("a restart between the file save and the record write", () => {
     workspace.generation.set(THEME_ID, 5);
     crashOnFirstRecordWrite();
 
-    await expect(openEditor()).rejects.toThrow("process stopped");
+    await expect(applyReviewed()).rejects.toThrow("process stopped");
     // Before the next load, another writer brings the version to current.
     competingRecordWrite(CURRENT);
     const afterOtherWriter = storedRow();
 
-    await expect(openEditor()).resolves.toBe(false);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     // This is the known limit, asserted so it cannot be mistaken for a
     // guarantee: the next load sees a current version and does not run the
-    // upgrade, so the stopped run's own record is never written by anything.
+    // record write, so the stopped run's own record is never written by anything.
     // There is no recovery mechanism for it. Today the record holds only the
     // version, which the other writer set; anything the record later carries
     // per run would be lost here. The same holds whenever a run ends in
@@ -697,42 +727,36 @@ describe("a restart between the file save and the record write", () => {
 // hand): JSON `null` text, an array, a string, a number, malformed JSON text,
 // and a revision that is a string, a fraction, negative or a boolean.
 describe("legitimately unset metadata", () => {
-  it("records the version for a SQL NULL column on store initialization", async () => {
+  it("records the version for a SQL NULL column when the author applies the upgrade", async () => {
     seedTheme(null);
     workspace.files.set(THEME_ID, upgradedWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
-      undefined,
-    );
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
       starterUpgradeRecordRevision: 1,
     });
   });
 
-  it("records the version for `{}` on store initialization", async () => {
+  it("records the version for `{}` when the author applies the upgrade", async () => {
     seedTheme({});
     workspace.files.set(THEME_ID, upgradedWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
-      undefined,
-    );
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
       starterUpgradeRecordRevision: 1,
     });
   });
 
-  it("records the version and keeps other keys when only the version key is missing", async () => {
+  it("records the version and keeps other keys when only the version key is missing once the author applies the upgrade", async () => {
     seedTheme({ unrelated: "kept" });
     workspace.files.set(THEME_ID, upgradedWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
-      undefined,
-    );
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
       starterUpgradeRecordRevision: 1,
@@ -768,7 +792,7 @@ describe("legitimately unset metadata", () => {
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
       starterUpgradeRecordRevision: 1,
@@ -793,7 +817,7 @@ describe("metadata the record cannot be written into", () => {
       workspace.generation.set(THEME_ID, 5);
       const before = storedRawRow();
 
-      const error = await rejection(storefrontDal.ensureDefault("channel-a"));
+      const error = await rejection(applyReviewed());
 
       expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
       expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
@@ -805,16 +829,14 @@ describe("metadata the record cannot be written into", () => {
       expect(storedRawRow()).toEqual(before);
       expect(hooks.recordWriteAttempts).toBe(1);
 
-      // Loading keeps failing, with the data untouched, until it is fixed by
+      // Applying keeps failing, with the data untouched, until it is fixed by
       // hand; nothing clears or rewrites it.
-      await expect(storefrontDal.ensureDefault("channel-a")).rejects.toThrow(
+      await expect(applyReviewed()).rejects.toThrow(
         StarterUpgradeIncompleteError,
       );
       expect(storedRawRow()).toEqual(before);
       setRawMetadata("{}");
-      await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
-        undefined,
-      );
+      await expect(applyReviewed()).resolves.toBe(true);
     },
   );
 
@@ -827,7 +849,7 @@ describe("metadata the record cannot be written into", () => {
       setRawMetadata("[]");
     };
 
-    const error = await rejection(openEditor());
+    const error = await rejection(applyReviewed());
 
     expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
       status: "partial",
@@ -847,6 +869,7 @@ describe("metadata the record cannot be written into", () => {
     workspace.generation.set(THEME_ID, 5);
 
     await expect(openEditor()).rejects.toThrow(SyntaxError);
+    await expect(applyReviewed()).rejects.toThrow(SyntaxError);
     await expect(storefrontDal.ensureDefault("channel-a")).rejects.toThrow(
       SyntaxError,
     );
@@ -873,7 +896,7 @@ describe("metadata the record cannot be written into", () => {
       return result;
     });
 
-    await expect(openEditor()).rejects.toThrow(SyntaxError);
+    await expect(applyReviewed()).rejects.toThrow(SyntaxError);
 
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
     expect(storedRawRow().metadata).toBe("{not json");
@@ -893,7 +916,7 @@ describe("metadata the record cannot be written into", () => {
       setRawMetadata("{not json");
     };
 
-    const error = await rejection(openEditor());
+    const error = await rejection(applyReviewed());
 
     expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
     expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
@@ -926,7 +949,7 @@ describe("a record revision the upgrade cannot read", () => {
       workspace.generation.set(THEME_ID, 5);
       const before = storedRawRow();
 
-      const error = await rejection(openEditor());
+      const error = await rejection(applyReviewed());
 
       expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
       expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
@@ -945,7 +968,7 @@ describe("a record revision the upgrade cannot read", () => {
       );
 
       // Loading keeps failing until the value is fixed by hand.
-      await expect(openEditor()).rejects.toThrow(StarterUpgradeIncompleteError);
+      await expect(applyReviewed()).rejects.toThrow(StarterUpgradeIncompleteError);
       expect(storedRawRow()).toEqual(before);
     },
   );
@@ -970,7 +993,7 @@ describe("a record revision the upgrade cannot read", () => {
         afterOtherWriter = storedRawRow();
       };
 
-      const error = await rejection(openEditor());
+      const error = await rejection(applyReviewed());
 
       expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
       expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
@@ -993,7 +1016,7 @@ describe("a record revision the upgrade cannot read", () => {
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedRow().metadata).toEqual({
       starterTemplateVersion: CURRENT,
@@ -1013,7 +1036,7 @@ describe("a record revision the upgrade cannot read", () => {
       afterOtherWriter = storedRawRow();
     };
 
-    const error = await rejection(openEditor());
+    const error = await rejection(applyReviewed());
 
     expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
       status: "partial",
@@ -1042,7 +1065,7 @@ describe("a Theme row that disappears before the record write", () => {
       sqlite.prepare("DELETE FROM storefront_themes WHERE id = ?").run(THEME_ID);
     };
 
-    const error = await rejection(openEditor());
+    const error = await rejection(applyReviewed());
 
     expect(error).toBeInstanceOf(StarterUpgradeIncompleteError);
     expect((error as StarterUpgradeIncompleteError).outcome).toEqual({
@@ -1208,7 +1231,7 @@ describe("the Starter home document rule", () => {
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
   });
 
-  it("does not refill an emptied home on the editor's upgrade path either", async () => {
+  it("does not refill an emptied home when the author applies the upgrade either", async () => {
     seedTheme({ starterTemplateVersion: LEGACY_VERSION });
     workspace.files.set(THEME_ID, legacyWorkspace());
     workspace.generation.set(THEME_ID, 5);
@@ -1220,7 +1243,7 @@ describe("the Starter home document rule", () => {
     });
     const before = storedHome();
 
-    await expect(openEditor()).resolves.toBe(true);
+    await expect(applyReviewed()).resolves.toBe(true);
 
     expect(storedHome()).toEqual(before);
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
@@ -1327,5 +1350,167 @@ describe("a Starter version that is not a number", () => {
 
     expect(console.error).not.toHaveBeenCalled();
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+});
+
+describe("opening the editor and store initialization on a Theme that has files", () => {
+  function storedTemplates() {
+    return sqlite
+      .prepare(
+        "SELECT id, document, draft_generation, updated_at FROM storefront_theme_templates ORDER BY id",
+      )
+      .all();
+  }
+
+  it.each([
+    ["an older version", { starterTemplateVersion: LEGACY_VERSION }],
+    ["no version", {}],
+    ["a SQL NULL column", null],
+    ["a version that is not a number", { starterTemplateVersion: "28" }],
+  ])(
+    "writes no file, Document or version for %s",
+    async (_label, metadata) => {
+      seedTheme(metadata);
+      workspace.files.set(THEME_ID, legacyWorkspace());
+      workspace.generation.set(THEME_ID, 5);
+      const before = { row: storedRawRow(), templates: storedTemplates() };
+      const filesBefore = workspace.files.get(THEME_ID);
+
+      await expect(openEditor()).resolves.toBe(false);
+      await expect(storefrontDal.ensureDefault("channel-a")).resolves.toBe(
+        undefined,
+      );
+
+      expect(storedRawRow()).toEqual(before.row);
+      expect(storedTemplates()).toEqual(before.templates);
+      expect(workspace.files.get(THEME_ID)).toBe(filesBefore);
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+      expect(workspace.initStarterTheme).not.toHaveBeenCalled();
+      expect(hooks.recordWriteAttempts).toBe(0);
+    },
+  );
+
+  it("leaves a version that says nothing pending, not the latest", async () => {
+    seedTheme({});
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    await storefrontDal.ensureDefault("channel-a");
+
+    await expect(
+      storefrontDal.readStarterUpgradeStatus({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+      }),
+    ).resolves.toEqual({
+      versionState: "pending",
+      storedVersion: null,
+      currentVersion: CURRENT,
+    });
+  });
+});
+
+describe("applying a reviewed Starter upgrade", () => {
+  async function review() {
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    if (!reviewed) throw new Error("no review");
+    return reviewed;
+  }
+
+  function apply(expectedSourceGeneration: number, planDigest: string) {
+    return storefrontDal.applyReviewedStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+      createdBy: "user-a",
+      expectedSourceGeneration,
+      planDigest,
+    });
+  }
+
+  it("lists the change, writes nothing while reviewing, and applies only what was reviewed", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const before = storedRawRow();
+
+    const reviewed = await review();
+
+    expect(reviewed.versionState).toBe("available");
+    expect(reviewed.review.changes.map((change) => change.path)).toEqual([
+      "src/morph/content.ts",
+    ]);
+    expect(storedRawRow()).toEqual(before);
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+
+    await expect(apply(5, reviewed.review.digest)).resolves.toEqual({
+      status: "applied",
+      filesSaved: true,
+      sourceGeneration: 6,
+    });
+    expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+    expect(workspace.saveFilesBatch).toHaveBeenCalledWith(
+      STOREFRONT_ID,
+      THEME_ID,
+      reviewed.review.plan.files,
+      expect.objectContaining({
+        expectedSourceGeneration: 5,
+        createRevision: true,
+        createdBy: "user-a",
+      }),
+    );
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+  });
+
+  it("writes nothing when the workspace moved on since the review", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const reviewed = await review();
+    workspace.generation.set(THEME_ID, 6);
+    const before = storedRawRow();
+
+    await expect(apply(5, reviewed.review.digest)).resolves.toEqual({
+      status: "stale",
+      sourceGeneration: 6,
+    });
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(storedRawRow()).toEqual(before);
+  });
+
+  it("writes nothing when the plan is not the one reviewed", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const before = storedRawRow();
+
+    await expect(apply(5, "0".repeat(64))).resolves.toEqual({
+      status: "stale",
+      sourceGeneration: 5,
+    });
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(storedRawRow()).toEqual(before);
+  });
+
+  it("records a pending version only once the author applies the review", async () => {
+    seedTheme({});
+    workspace.files.set(THEME_ID, upgradedWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+
+    const reviewed = await review();
+    expect(reviewed.versionState).toBe("pending");
+    expect(reviewed.review.changes).toEqual([]);
+    expect(storedRow().metadata).toEqual({});
+
+    await expect(apply(5, reviewed.review.digest)).resolves.toMatchObject({
+      status: "applied",
+      filesSaved: false,
+    });
+    expect(storedRow().metadata).toEqual({
+      starterTemplateVersion: CURRENT,
+      starterUpgradeRecordRevision: 1,
+    });
   });
 });

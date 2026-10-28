@@ -26,18 +26,24 @@ import {
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
- * The Starter upgrade to version 28 on the workspace the editor provisions,
- * loaded the way an author loads it: by opening the editor.
+ * The Starter upgrade on the workspace the editor provisions, the way an
+ * author meets it: opening the editor changes nothing and says an upgrade is
+ * available; the author reviews it and applies it, or does not.
  *
  *   A. a new Starter: Live Preview shows a value typed in Design, and a route
  *      calling morph.pages.get reads it;
- *   D. the same workspace marked 27: the upgrade runs and changes no file;
- *   B. the pre-pages content module, untouched, on 27: only content.ts is
- *      replaced, a second load changes nothing, and the Theme is on the
- *      current Starter version;
+ *   D. the same workspace marked as an older Starter: opening writes no file
+ *      and no version; the review lists no change, and applying it only
+ *      records the version;
+ *   B. the pre-pages content module, untouched, on an older Starter: opening
+ *      changes nothing; the review lists content.ts with its text before and
+ *      after; applying replaces only it, and a second load changes nothing;
  *   E. a toolchain pin an earlier Starter wrote: the build refuses it, and
- *      builds once the upgrade brings it forward (containers only);
- *   C. the pre-pages module as the author edited it, on 27: nothing changes.
+ *      builds once the reviewed upgrade brings it forward (containers only);
+ *   C. the pre-pages module as the author edited it, on an older Starter: the
+ *      review keeps it and says why; cancelling writes nothing;
+ *   P. a Theme that records no Starter version: shown as pending, never as
+ *      the latest, and opening writes nothing.
  *
  * Markers are random, so no component default can produce them. With the
  * container transport each case also builds and checks the isolated Build
@@ -157,7 +163,51 @@ async function save(page: Page, files: Array<{ path: string; content: string }>)
   expect(saved.success, JSON.stringify(saved)).toBe(true);
 }
 
-/** Opening the editor is what runs the Starter upgrade. */
+/** The Starter version below the current one, which the cases start from. */
+const OLDER = STOREFRONT_STARTER_TEMPLATE_VERSION - 1;
+
+function clearStarterVersion() {
+  d1(
+    `UPDATE storefront_themes SET metadata = json_remove(COALESCE(metadata, '{}'), '$.starterTemplateVersion') WHERE id = '${scope!.themeId}'`,
+  );
+}
+
+const upgradeNotice = (page: Page) =>
+  page.locator("[data-editor-starter-upgrade]");
+
+/** The author opens the review from the notice. */
+async function openReview(page: Page) {
+  await upgradeNotice(page)
+    .getByRole("button", { name: "Review upgrade" })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review the Starter upgrade",
+  });
+  await expect(dialog).toBeVisible({ timeout: 30_000 });
+  return dialog;
+}
+
+/** Applies what the dialog shows, and waits for the apply to answer. */
+async function applyReview(
+  page: Page,
+  dialog: Awaited<ReturnType<typeof openReview>>,
+  label: RegExp,
+) {
+  const applied = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "applyStorefrontStarterUpgrade"),
+    { timeout: 60_000 },
+  );
+  await dialog.getByRole("button", { name: label }).click();
+  const response = await applied;
+  expect(response.ok()).toBe(true);
+  // A refused apply still answers 200; the refusal is in the body.
+  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+}
+
+/** Opening the editor. Since the reviewed upgrade, it upgrades nothing. */
 async function openEditor(page: Page, routePath?: string) {
   const url = new URL(EDITOR_PATH!, "http://placeholder");
   if (routePath) url.searchParams.set("routePath", routePath);
@@ -280,7 +330,7 @@ async function expectBuildPreview(page: Page, marker: string, withProbe: boolean
   expect(probed === null || !probed.html.includes("PAGES_GET_FAILED")).toBe(true);
 }
 
-test.describe("Starter upgrade to version 28", () => {
+test.describe("Starter upgrade, reviewed by the author", () => {
   test.describe.configure({ mode: "serial" });
   test.setTimeout(CONTAINERS ? 25 * 60_000 : 6 * 60_000);
 
@@ -307,8 +357,8 @@ test.describe("Starter upgrade to version 28", () => {
 
   test.afterAll(async ({ browser }) => {
     const page = await signedInPage(browser);
-    // On the current version first, so loading the editor upgrades nothing.
-    setStarterVersion(28);
+    // Back on the current version, as the specs after this one expect.
+    setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
     await openEditor(page);
     const removed = await removeThemeFiles(page, scope!, [
       PROBE_ROUTE,
@@ -337,18 +387,33 @@ test.describe("Starter upgrade to version 28", () => {
     if (CONTAINERS) await expectBuildPreview(page, marker, true);
   });
 
-  test("D. the workspace marked 27: the upgrade runs and changes no file", async ({
+  test("D. the workspace marked older: opening writes nothing; applying the empty review records the version", async ({
     page,
   }) => {
     await openEditor(page);
     const before = await workspace(page);
-    setStarterVersion(27);
+    setStarterVersion(OLDER);
     await openEditor(page);
     expect(await workspace(page)).toEqual(before);
+    expect(starterVersion()).toBe(OLDER);
+    await expect(upgradeNotice(page)).toHaveAttribute(
+      "data-editor-starter-upgrade",
+      "available",
+    );
+
+    const dialog = await openReview(page);
+    await expect(
+      dialog.getByRole("heading", { name: "Changes (0)" }),
+    ).toBeVisible();
+    await applyReview(page, dialog, /^Record version$/);
+    expect(await workspace(page)).toEqual(before);
     expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
+
+    await openEditor(page);
+    await expect(upgradeNotice(page)).toHaveCount(0);
   });
 
-  test("B. the untouched pre-pages module on 27: only content.ts is replaced, once", async ({
+  test("B. the untouched pre-pages module on an older Starter: reviewed, then only content.ts is replaced, once", async ({
     page,
   }) => {
     await openEditor(page);
@@ -358,10 +423,27 @@ test.describe("Starter upgrade to version 28", () => {
         content: LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
       },
     ]);
-    setStarterVersion(27);
+    setStarterVersion(OLDER);
     const before = await workspace(page);
 
+    // Opening writes nothing.
     await openEditor(page);
+    expect(await workspace(page)).toEqual(before);
+    expect(starterVersion()).toBe(OLDER);
+
+    // The review shows the one change, with its text before and after.
+    const dialog = await openReview(page);
+    await expect(
+      dialog.getByRole("heading", { name: "Changes (1)" }),
+    ).toBeVisible();
+    const diff = dialog.getByLabel(`Changes to ${CONTENT_MODULE}`);
+    await expect(diff).toBeVisible();
+    await expect(diff).toContainText("+ ");
+    await expect(diff).toContainText("- ");
+    // Still nothing written while the author reads it.
+    expect(await workspace(page)).toEqual(before);
+
+    await applyReview(page, dialog, /^Apply upgrade$/);
     const after = await workspace(page);
     expect(after[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
     expect({ ...after, [CONTENT_MODULE]: "" }).toEqual({
@@ -387,7 +469,7 @@ test.describe("Starter upgrade to version 28", () => {
     if (CONTAINERS) await expectBuildPreview(page, marker, true);
   });
 
-  test("E. a toolchain pin an earlier Starter wrote: refused by the build, built once upgraded", async ({
+  test("E. a toolchain pin an earlier Starter wrote: refused by the build, built once the reviewed upgrade is applied", async ({
     page,
   }) => {
     test.skip(!CONTAINERS, "Builds run in containers.");
@@ -397,8 +479,8 @@ test.describe("Starter upgrade to version 28", () => {
     pkg.devDependencies["@cloudflare/vite-plugin"] = "1.50.0";
     await save(page, [{ path: PACKAGE, content: JSON.stringify(pkg, null, 2) }]);
 
-    // On the current version nothing upgrades it, as for such a Theme today.
-    setStarterVersion(28);
+    // On the current version nothing offers to upgrade it.
+    setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
     await openEditor(page);
     await build(page);
     const refused = latestBuild();
@@ -406,8 +488,9 @@ test.describe("Starter upgrade to version 28", () => {
     expect(refused?.error_message ?? "").toContain("INVALID_START_PACKAGE");
     expect(refused?.error_message ?? "").toContain("@cloudflare/vite-plugin");
 
-    setStarterVersion(27);
+    setStarterVersion(OLDER);
     await openEditor(page);
+    await applyReview(page, await openReview(page), /^Apply upgrade$/);
     expect(
       JSON.parse((await workspace(page))[PACKAGE]!).devDependencies[
         "@cloudflare/vite-plugin"
@@ -420,7 +503,7 @@ test.describe("Starter upgrade to version 28", () => {
     expect(latestBuild()?.status).toBe("succeeded");
   });
 
-  test("C. the pre-pages module as the author edited it, on 27: nothing changes", async ({
+  test("C. the pre-pages module as the author edited it, on an older Starter: kept, said why, nothing written", async ({
     page,
   }) => {
     await openEditor(page);
@@ -428,15 +511,49 @@ test.describe("Starter upgrade to version 28", () => {
     const removed = await removeThemeFiles(page, scope!, [PROBE_ROUTE]);
     expect(removed.success, JSON.stringify(removed)).toBe(true);
     await save(page, [{ path: CONTENT_MODULE, content: EDITED_PRE_PAGES_MODULE }]);
-    setStarterVersion(27);
+    setStarterVersion(OLDER);
     const before = await workspace(page);
 
     await openEditor(page);
     expect(await workspace(page)).toEqual(before);
 
+    const dialog = await openReview(page);
+    const kept = dialog.locator('[data-kept-reason="changed"]', {
+      hasText: CONTENT_MODULE,
+    });
+    await expect(kept).toBeVisible();
+    await expect(kept).toContainText("formatting-only changes");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
+    expect(await workspace(page)).toEqual(before);
+    expect(starterVersion()).toBe(OLDER);
+
     const marker = `morph-c-${randomUUID()}`;
     await typeHeroMarker(page, marker);
     // As in A and B: Live Preview only, unless containers run.
     if (CONTAINERS) await expectBuildPreview(page, marker, false);
+  });
+
+  test("P. a Theme that records no Starter version: pending, never the latest, and nothing written", async ({
+    page,
+  }) => {
+    await openEditor(page);
+    const before = await workspace(page);
+    clearStarterVersion();
+
+    await openEditor(page);
+    await expect(upgradeNotice(page)).toHaveAttribute(
+      "data-editor-starter-upgrade",
+      "pending",
+    );
+    await expect(upgradeNotice(page)).toContainText(
+      "does not record which Starter it came from",
+    );
+    expect(await workspace(page)).toEqual(before);
+    expect(
+      d1(
+        `SELECT json_type(metadata, '$.starterTemplateVersion') AS type FROM storefront_themes WHERE id = '${scope!.themeId}'`,
+      )[0]?.type ?? null,
+    ).toBeNull();
   });
 });

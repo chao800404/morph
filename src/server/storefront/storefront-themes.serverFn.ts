@@ -23,6 +23,8 @@ import {
   ensureStorefrontThemeRouteTemplateInputSchema,
   promoteStorefrontThemeTextInputSchema,
   updateStorefrontThemeRenderPolicyInputSchema,
+  reviewStorefrontStarterUpgradeInputSchema,
+  applyStorefrontStarterUpgradeInputSchema,
 } from "@/lib/validations/storefront-theme";
 import { promoteTextToField } from "@/lib/storefront/service/text-promotion-write";
 import { createServerFn } from "@tanstack/react-start";
@@ -121,13 +123,17 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         themeId: data.themeId,
         createdBy: authContext.user.id,
       });
-      const context = await storefrontThemeDal.findEditorContext(
-        data.storefrontId,
-        data.themeId,
-      );
+      const [context, starterUpgrade] = await Promise.all([
+        storefrontThemeDal.findEditorContext(data.storefrontId, data.themeId),
+        storefrontDal.readStarterUpgradeStatus({
+          storefrontId: data.storefrontId,
+          themeId: data.themeId,
+        }),
+      ]);
       return context
         ? ok("Storefront theme editor fetched", {
             ...context,
+            starterUpgrade,
             panelWidths,
             panelTab,
             // What a Theme recording no runtime is previewed with, read as
@@ -148,6 +154,82 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         error,
         "GET_FAILED",
         "Failed to fetch storefront theme editor",
+      );
+    }
+  });
+
+/**
+ * What a Starter upgrade would do to this Theme: every file it would write,
+ * with its text before and after, and every Starter file it leaves as it is,
+ * with why. Writes nothing.
+ */
+export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(reviewStorefrontStarterUpgradeInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input }) => {
+    if (!input.success) return input;
+    const data = input.data;
+    try {
+      const result = await storefrontDal.reviewStarterUpgrade(data);
+      if (!result) {
+        return fail("Storefront theme not found", { error: "NOT_FOUND" });
+      }
+      const { review, ...status } = result;
+      return ok("Starter upgrade reviewed", {
+        ...status,
+        applies: review.applies,
+        digest: review.digest,
+        changes: review.changes,
+        kept: review.kept,
+      });
+    } catch (error) {
+      return failure(
+        "Review starter upgrade error",
+        error,
+        "STARTER_UPGRADE_REVIEW_FAILED",
+        "Failed to review the Starter upgrade",
+      );
+    }
+  });
+
+/**
+ * Applies the Starter upgrade the author reviewed. Refused, with nothing
+ * written, when the workspace or the plan is no longer the one reviewed.
+ */
+export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
+  .validator((data: unknown) =>
+    parseInput(applyStorefrontStarterUpgradeInputSchema, data),
+  )
+  .middleware([commerceAdminMiddleware])
+  .handler(async ({ data: input, context: authContext }) => {
+    if (!input.success) return input;
+    const data = input.data;
+    try {
+      const result = await storefrontDal.applyReviewedStarterUpgrade({
+        ...data,
+        createdBy: authContext.user.id,
+      });
+      if (result.status === "stale") {
+        return fail(
+          "The Theme changed since this upgrade was reviewed, so nothing was applied. Review it again.",
+          { error: "STARTER_UPGRADE_STALE" },
+        );
+      }
+      if (result.status === "not-applicable") {
+        return fail(
+          "The Starter upgrade does not apply to this Theme's framework, so nothing was applied.",
+          { error: "STARTER_UPGRADE_NOT_APPLICABLE" },
+        );
+      }
+      return ok("Starter upgrade applied", result);
+    } catch (error) {
+      return failure(
+        "Apply starter upgrade error",
+        error,
+        "STARTER_UPGRADE_FAILED",
+        "Failed to apply the Starter upgrade",
       );
     }
   });
