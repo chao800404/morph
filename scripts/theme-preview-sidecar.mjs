@@ -60,6 +60,12 @@ try {
     approvedDependencies: cmsConfig?.theme?.dependencies
       ? Object.keys(cmsConfig.theme.dependencies)
       : undefined,
+    // The e2e runner turns this on, so a lost request leaves a record of
+    // whether it arrived. Off by default: `isServing` is polled on a timer.
+    observe:
+      process.env.MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE === "1"
+        ? (line) => console.log(line)
+        : undefined,
   });
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

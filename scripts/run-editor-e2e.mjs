@@ -31,6 +31,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import { createSidecarRecorder } from "./sidecar-observe-record.mjs";
 import {
   DEFAULT_LOCK_FILE,
   createMachineLock,
@@ -345,7 +346,10 @@ function start(name, command, args, env, onLine) {
   // this group before letting the next run in.
   machineLock?.track(child.pid);
   if (onLine) {
-    for (const stream of [child.stdout, child.stderr]) {
+    for (const [streamName, stream] of [
+      ["stdout", child.stdout],
+      ["stderr", child.stderr],
+    ]) {
       let pending = "";
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
@@ -355,7 +359,7 @@ function start(name, command, args, env, onLine) {
         // The last element is whatever arrived without a newline yet; holding it
         // back is what keeps a JSON line from being parsed in halves.
         pending = lines.pop() ?? "";
-        for (const line of lines) onLine(line);
+        for (const line of lines) onLine(line, streamName);
       });
     }
   }
@@ -927,12 +931,43 @@ async function main() {
   // default environment" and drops the flag, which is not something `--env`
   // can express to Wrangler directly.
 
+  // Before the sidecar starts, which records beside it.
+  const report = process.env.MORPH_E2E_REPORT_PATH
+    ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
+    : path.join(stateDir, "playwright-report.json");
+  await mkdir(path.dirname(report), { recursive: true });
+
   if (USES_SIDECAR) {
     log("starting the preview sidecar");
-    start("sidecar", "node", [
-      `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
-      "scripts/theme-preview-sidecar.mjs",
-    ]);
+    // Beside the report, so CI uploads them with it, pass or fail.
+    const sidecarRecorder = createSidecarRecorder({
+      logFile: `${report}.sidecar.log`,
+      processFile: `${report}.sidecar-process.json`,
+      secrets: [
+        parseEnvFile(await readFile(SIDECAR_ENV_FILE, "utf8"))
+          .MORPH_LOCAL_THEME_PREVIEW_TOKEN,
+        process.env.E2E_PASSWORD,
+      ],
+    });
+    const sidecar = start(
+      "sidecar",
+      "node",
+      [
+        `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
+        "scripts/theme-preview-sidecar.mjs",
+      ],
+      { MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1" },
+      (line, stream) => sidecarRecorder.line(line, stream),
+    );
+    sidecarRecorder.started(sidecar.pid);
+    sidecar.on("exit", (code, signal) => {
+      sidecarRecorder.exited(code, signal, sidecar.stopping);
+      log(
+        `sidecar pid ${sidecar.pid} exited (code ${code}, signal ${signal}${
+          sidecar.stopping ? ", stopped by this runner" : ", not stopped by this runner"
+        })`,
+      );
+    });
   } else {
     // Nothing to start: the Worker reaches a container through its own binding,
     // and Docker has to be running for that binding to resolve.
@@ -1000,13 +1035,9 @@ async function main() {
   // and Playwright reads it as end-of-options — so `-- e2e/editor.spec.ts -g x`
   // silently ran the whole suite instead of one test, with the filter accepted
   // and ignored. Both spellings work now.
-  const report = process.env.MORPH_E2E_REPORT_PATH
-    ? path.resolve(process.env.MORPH_E2E_REPORT_PATH)
-    : path.join(stateDir, "playwright-report.json");
   // Playwright owns its JSON schema and contents. Keep these runner diagnostics
   // in a sibling artifact instead of modifying Playwright's report in place.
   const lateReoptimizationReport = `${report}.late-dependency-reoptimizations.json`;
-  await mkdir(path.dirname(report), { recursive: true });
   const reporting = extra.some((argument) => argument.startsWith("--reporter"))
     ? []
     : ["--reporter=line,json"];
