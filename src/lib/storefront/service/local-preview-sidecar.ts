@@ -32,6 +32,7 @@ import {
   type BuildPreviewStartWire,
 } from "./build-preview/build-preview-wire";
 import { LocalBuildPreviewExecutor } from "./build-preview/local-build-preview-executor";
+import { observeLocalPreviewSidecar } from "./local-preview-sidecar-observe";
 
 /**
  * The Node process a locally-run Live Preview is served from.
@@ -78,6 +79,11 @@ export type LocalPreviewSidecarOptions = Readonly<{
   approvedDependencies?: readonly string[];
   /** Environment the production refusal is judged on. */
   env?: Record<string, unknown>;
+  /**
+   * Where connection and request observations go, one line each. Off when
+   * absent. See `local-preview-sidecar-observe.ts` for what a line holds.
+   */
+  observe?: (line: string) => void;
 }>;
 
 export type LocalPreviewSidecar = Readonly<{
@@ -380,6 +386,7 @@ export async function startLocalPreviewSidecar(
     const operation = (
       Object.keys(LOCAL_PREVIEW_SIDECAR_PATHS) as LocalPreviewSidecarOperation[]
     ).find((candidate) => LOCAL_PREVIEW_SIDECAR_PATHS[candidate] === pathname);
+    observer?.request(operation ?? null, request, response);
     if (!operation) {
       respond(response, 404, { error: "LOCAL_PREVIEW_SIDECAR_NOT_FOUND" });
       return;
@@ -393,6 +400,9 @@ export async function startLocalPreviewSidecar(
       });
     });
   });
+  const observer = options.observe
+    ? observeLocalPreviewSidecar(server, options.observe)
+    : null;
 
   await new Promise<void>((resolve, reject) => {
     const onError = (error: unknown) => reject(error);
@@ -404,6 +414,7 @@ export async function startLocalPreviewSidecar(
       resolve();
     });
   });
+  observer?.listening();
 
   return {
     origin: `http://127.0.0.1:${origin.port}`,
