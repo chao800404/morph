@@ -1,5 +1,5 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
-import { EDITOR_PATH, previewFrame } from "./helpers";
+import { EDITOR_PATH, isServerFunctionCall, previewFrame } from "./helpers";
 import {
   DOMAINS,
   publishShowingRelease,
@@ -47,6 +47,9 @@ test.skip(
   !EDITOR_PATH || !process.env.MORPH_E2E_STATE_DIR,
   "Needs the runner-owned throwaway store.",
 );
+
+const EXPECTED_RUNTIME: "start" | "client" =
+  process.env.MORPH_E2E_PREVIEW_RUNTIME === "start" ? "start" : "client";
 
 const scope: ThemeScope | null = EDITOR_PATH
   ? themeScopeFromEditorPath(EDITOR_PATH)
@@ -200,32 +203,166 @@ async function resetCanvasView(page: Page) {
   }
 }
 
-/** Open the editor explicitly pointing to a specific routePath */
-async function openEditorAtRoute(page: Page, routePath: string) {
+/**
+ * Open the editor explicitly pointing to a specific routePath.
+ * Captures any server start response during editor load.
+ */
+async function openEditorAtRoute(
+  page: Page,
+  routePath: string,
+): Promise<{ serverReportedRuntime: "start" | "client" | null }> {
   const url = new URL(EDITOR_PATH!, "http://placeholder");
   url.searchParams.set("routePath", routePath);
-  await page.goto(`${url.pathname}${url.search}`, {
-    waitUntil: "domcontentloaded",
-  });
-  await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
-    timeout: 45_000,
-  });
-  await exitSectionSelectionMode(page);
-  await resetCanvasView(page);
+
+  let serverReportedRuntime: "start" | "client" | null = null;
+  const onResponse = async (response: any) => {
+    if (
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "startThemePreviewServer")
+    ) {
+      const text = await response.text().catch(() => "");
+      if (
+        text.includes('previewRuntime:"start"') ||
+        text.includes('"previewRuntime":"start"')
+      ) {
+        serverReportedRuntime = "start";
+      } else if (
+        text.includes('previewRuntime:"client"') ||
+        text.includes('"previewRuntime":"client"')
+      ) {
+        serverReportedRuntime = "client";
+      }
+    }
+  };
+  page.on("response", onResponse);
+
+  try {
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await exitSectionSelectionMode(page);
+    await resetCanvasView(page);
+  } finally {
+    page.off("response", onResponse);
+  }
+
+  return { serverReportedRuntime };
 }
 
 /**
- * Verifies observable runtime identity from the live UI and rendered frame.
- * Does not rely on test-injected environment variables.
+ * Verifies observable runtime identity from the live UI, the rendered frame,
+ * and the start response reported by the server.
+ *
+ * Requirements:
+ *  1. The toolbar label must strictly equal the run's expected runtime ("Full Start" vs "Client-only").
+ *     Accepting either value is disallowed.
+ *  2. Page signal: The preview frame DOM must attach the module corresponding to the active runtime
+ *     (`__morph_preview_client.ts` for Start, `__entry.tsx` for Client-only) and strictly omit the other.
+ *  3. In addition, Start hydration exposes `window.__TSR_ROUTER__` which matches `__morphPreviewRouter`,
+ *     whereas Client-only creates a standalone router with memory history.
  */
 async function assertRuntimeIdentity(page: Page, frame: FrameLocator) {
-  const runtimeButton = page.getByRole("button", { name: /^Live Preview runtime:/ });
+  const runtimeButton = page.getByRole("button", {
+    name: /^Live Preview runtime:/,
+  });
   await expect(runtimeButton).toBeVisible({ timeout: 15_000 });
   const toolbarLabel = await runtimeButton.getAttribute("aria-label");
-  const isStartRuntime = toolbarLabel?.includes("Full Start") ?? false;
+  const expectedToolbarLabel =
+    EXPECTED_RUNTIME === "start"
+      ? "Live Preview runtime: Full Start"
+      : "Live Preview runtime: Client-only";
+
+  expect(
+    toolbarLabel,
+    `Toolbar label must strictly reflect expected preview runtime (${EXPECTED_RUNTIME})`,
+  ).toBe(expectedToolbarLabel);
+
   await expect(frame.locator("body")).toBeAttached({ timeout: 45_000 });
-  console.log(`[Observable Runtime Identity] Toolbar: "${toolbarLabel}", isStartRuntime: ${isStartRuntime}`);
-  return { toolbarLabel, isStartRuntime };
+
+  if (EXPECTED_RUNTIME === "start") {
+    // Start preview injects __morph_preview_client.ts into HTML head and never loads __entry.tsx
+    await expect(
+      frame.locator('script[src*="__morph_preview_client.ts"]'),
+      "Full Start preview frame must serve and attach __morph_preview_client.ts",
+    ).toBeAttached({ timeout: 15_000 });
+    await expect(
+      frame.locator('script[src*="__entry.tsx"]'),
+      "Full Start preview frame must not attach client-only __entry.tsx",
+    ).toHaveCount(0);
+
+    // Wait for Start hydration to attach __TSR_ROUTER__
+    await expect
+      .poll(
+        async () => {
+          return frame.locator("body").evaluate(() => {
+            const w = window as any;
+            return Boolean(w.__TSR_ROUTER__);
+          });
+        },
+        { timeout: 30_000, message: "Wait for __TSR_ROUTER__ hydration" },
+      )
+      .toBe(true);
+
+    const frameSignal = await frame.locator("body").evaluate(() => {
+      const w = window as any;
+      return {
+        hasTsrRouter: Boolean(w.__TSR_ROUTER__),
+        routerMatchesTsr: Boolean(
+          w.__morphPreviewRouter && w.__morphPreviewRouter === w.__TSR_ROUTER__,
+        ),
+      };
+    });
+    expect(
+      frameSignal.hasTsrRouter,
+      "Full Start preview must have __TSR_ROUTER__ attached",
+    ).toBe(true);
+    expect(
+      frameSignal.routerMatchesTsr,
+      "Full Start __morphPreviewRouter must resolve to __TSR_ROUTER__",
+    ).toBe(true);
+  } else {
+    // Client-only preview loads __entry.tsx and never injects __morph_preview_client.ts
+    await expect(
+      frame.locator('script[src*="__entry.tsx"]'),
+      "Client-only preview frame must serve and attach __entry.tsx",
+    ).toBeAttached({ timeout: 15_000 });
+    await expect(
+      frame.locator('script[src*="__morph_preview_client.ts"]'),
+      "Client-only preview frame must not attach __morph_preview_client.ts",
+    ).toHaveCount(0);
+
+    // Wait for Client-only preview bootstrap to attach __morphPreviewRouter
+    await expect
+      .poll(
+        async () => {
+          return frame.locator("body").evaluate(() => {
+            const w = window as any;
+            return Boolean(w.__morphPreviewRouter);
+          });
+        },
+        { timeout: 30_000, message: "Wait for __morphPreviewRouter attachment" },
+      )
+      .toBe(true);
+
+    const frameSignal = await frame.locator("body").evaluate(() => {
+      const w = window as any;
+      return {
+        hasMorphRouter: Boolean(w.__morphPreviewRouter),
+      };
+    });
+    expect(
+      frameSignal.hasMorphRouter,
+      "Client-only preview must have __morphPreviewRouter attached",
+    ).toBe(true);
+  }
+
+  console.log(
+    `[Observable Runtime Identity] Verified: runtime=${EXPECTED_RUNTIME}, toolbar="${toolbarLabel}"`,
+  );
+  return { toolbarLabel, isStartRuntime: EXPECTED_RUNTIME === "start" };
 }
 
 test.describe("Navigation Matrix: Preview and Storefront", () => {
@@ -281,12 +418,19 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
   test.describe("Preview navigation matrix", () => {
     test("1. Initial Load: preview renders draft home content with draft marker", async ({ page }) => {
       test.setTimeout(120_000);
-      await openEditorAtRoute(page, HOME_ROUTE);
+      const { serverReportedRuntime } = await openEditorAtRoute(page, HOME_ROUTE);
       const frame = previewFrame(page);
 
+      // Verify server start response if captured during initial editor launch
+      if (serverReportedRuntime) {
+        expect(
+          serverReportedRuntime,
+          `Server start response must report expected preview runtime (${EXPECTED_RUNTIME})`,
+        ).toBe(EXPECTED_RUNTIME);
+      }
+
       // Verify observable runtime identity from live UI & frame
-      const { toolbarLabel } = await assertRuntimeIdentity(page, frame);
-      expect(toolbarLabel).toMatch(/^Live Preview runtime: (Full Start|Client-only)$/);
+      await assertRuntimeIdentity(page, frame);
 
       const homeTitle = frame.locator('[data-e2e="nav-matrix-home-title"]');
       const homeDesc = frame.locator('[data-e2e="nav-matrix-home-desc"]');
@@ -346,47 +490,87 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(homeTitle).toHaveCount(0);
       await expect(frame.locator('[data-e2e="nav-matrix-draft-marker"]')).toHaveText(DRAFT_MARKER_TEXT);
 
-      // History back: record exact execution path (__morphPreviewRouter.history vs window.history)
-      const backMechanism = await frame.locator("body").evaluate(() => {
-        const router = (
-          window as unknown as {
-            __morphPreviewRouter?: { history?: { back(): void } };
+      // Expected history mechanism per runtime:
+      //  - Full Start preview operates with TanStack Start browser history (window.history).
+      //  - Client-only preview operates with createMemoryHistory, requiring __morphPreviewRouter.history.
+      const expectedHistoryMechanism =
+        EXPECTED_RUNTIME === "start"
+          ? "window.history"
+          : "__morphPreviewRouter.history";
+
+      // History back: execute exact mechanism per runtime without silent fallback
+      const backMechanism = await frame.locator("body").evaluate((_el, runtime) => {
+        if (runtime === "client") {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: { history?: { back(): void } };
+            }
+          ).__morphPreviewRouter;
+          if (!router?.history?.back) {
+            throw new Error("Missing __morphPreviewRouter.history.back in client-only preview");
           }
-        ).__morphPreviewRouter;
-        if (router?.history?.back) {
           router.history.back();
           return "__morphPreviewRouter.history";
+        } else {
+          window.history.back();
+          return "window.history";
         }
-        window.history.back();
-        return "window.history";
-      });
-      console.log(`[Preview History Navigation] Back invoked via: ${backMechanism}`);
-      expect(backMechanism).toMatch(/^(__morphPreviewRouter\.history|window\.history)$/);
+      }, EXPECTED_RUNTIME);
+
+      console.log(`[Preview History Navigation] Back invoked via: ${backMechanism} (expected: ${expectedHistoryMechanism})`);
+      expect(backMechanism).toBe(expectedHistoryMechanism);
 
       await expect(homeTitle).toBeVisible({ timeout: 30_000 });
       await expect(detailTitle).toHaveCount(0);
       await expect(frame.locator('[data-e2e="nav-matrix-draft-marker"]')).toHaveText(DRAFT_MARKER_TEXT);
 
-      // History forward: record exact execution path
-      const forwardMechanism = await frame.locator("body").evaluate(() => {
-        const router = (
-          window as unknown as {
-            __morphPreviewRouter?: { history?: { forward(): void } };
+      // Verify location state after back
+      if (EXPECTED_RUNTIME === "start") {
+        const framePathname = await frame.locator("body").evaluate(() => window.location.pathname);
+        expect(framePathname).toBe(HOME_ROUTE);
+      } else {
+        const routerPathname = await frame.locator("body").evaluate(() => {
+          return (window as any).__morphPreviewRouter?.state?.location?.pathname;
+        });
+        expect(routerPathname).toBe(HOME_ROUTE);
+      }
+
+      // History forward: execute exact mechanism per runtime without silent fallback
+      const forwardMechanism = await frame.locator("body").evaluate((_el, runtime) => {
+        if (runtime === "client") {
+          const router = (
+            window as unknown as {
+              __morphPreviewRouter?: { history?: { forward(): void } };
+            }
+          ).__morphPreviewRouter;
+          if (!router?.history?.forward) {
+            throw new Error("Missing __morphPreviewRouter.history.forward in client-only preview");
           }
-        ).__morphPreviewRouter;
-        if (router?.history?.forward) {
           router.history.forward();
           return "__morphPreviewRouter.history";
+        } else {
+          window.history.forward();
+          return "window.history";
         }
-        window.history.forward();
-        return "window.history";
-      });
-      console.log(`[Preview History Navigation] Forward invoked via: ${forwardMechanism}`);
-      expect(forwardMechanism).toMatch(/^(__morphPreviewRouter\.history|window\.history)$/);
+      }, EXPECTED_RUNTIME);
+
+      console.log(`[Preview History Navigation] Forward invoked via: ${forwardMechanism} (expected: ${expectedHistoryMechanism})`);
+      expect(forwardMechanism).toBe(expectedHistoryMechanism);
 
       await expect(detailTitle).toBeVisible({ timeout: 30_000 });
       await expect(homeTitle).toHaveCount(0);
       await expect(frame.locator('[data-e2e="nav-matrix-draft-marker"]')).toHaveText(DRAFT_MARKER_TEXT);
+
+      // Verify location state after forward
+      if (EXPECTED_RUNTIME === "start") {
+        const framePathname = await frame.locator("body").evaluate(() => window.location.pathname);
+        expect(framePathname).toBe(DETAIL_ROUTE);
+      } else {
+        const routerPathname = await frame.locator("body").evaluate(() => {
+          return (window as any).__morphPreviewRouter?.state?.location?.pathname;
+        });
+        expect(routerPathname).toBe(DETAIL_ROUTE);
+      }
     });
 
     test("4. Iframe Reload: iframe reload re-renders current detail route without top-level editor navigation", async ({ page }) => {
@@ -402,16 +586,14 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(detailTitle).toHaveText("Nav Matrix Detail");
 
       // Reload only the inner iframe.
-      // Expected to survive:
+      // Expected behavior strictly governed by EXPECTED_RUNTIME:
       //  - Full Start: Start uses browser history in frame, preserving DETAIL_ROUTE.
       //  - Client-only: Memory history in frame resets to editor seed HOME_ROUTE.
       //  - Both: Draft marker survives and top-level editor remains intact.
       await frame.locator("body").evaluate(() => location.reload());
 
       const frameAfterReload = previewFrame(page);
-      const isStart = (await page.getByRole("button", { name: /^Live Preview runtime:/ }).getAttribute("aria-label"))?.includes("Full Start") ?? false;
-
-      if (isStart) {
+      if (EXPECTED_RUNTIME === "start") {
         const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
         await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
         await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
@@ -439,7 +621,7 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await expect(detailTitle).toHaveText("Nav Matrix Detail");
 
       // Reload the top-level editor window.
-      // Expected to survive:
+      // Expected behavior strictly governed by EXPECTED_RUNTIME:
       //  - Full Start: Frame navigation synced routePath=DETAIL_ROUTE to editor URL, restoring DETAIL_ROUTE.
       //  - Client-only: Editor URL remained at seed HOME_ROUTE, restoring HOME_ROUTE.
       //  - Both: Top editor reloads cleanly, draft state is preserved intact, and canvas resets.
@@ -449,9 +631,7 @@ test.describe("Navigation Matrix: Preview and Storefront", () => {
       await resetCanvasView(page);
 
       const frameAfterReload = previewFrame(page);
-      const isStart = (await page.getByRole("button", { name: /^Live Preview runtime:/ }).getAttribute("aria-label"))?.includes("Full Start") ?? false;
-
-      if (isStart) {
+      if (EXPECTED_RUNTIME === "start") {
         const detailAfterReload = frameAfterReload.locator('[data-e2e="nav-matrix-detail-title"]');
         await expect(detailAfterReload).toBeVisible({ timeout: 45_000 });
         await expect(detailAfterReload).toHaveText("Nav Matrix Detail");
