@@ -553,6 +553,21 @@ function parsePositionedSections(
 }
 
 /**
+ * Why Design may not change this route's structure on these files, or null.
+ *
+ * The same refusal every structure edit applies before rewriting (see
+ * `structureLocked`), for a caller that holds a rewrite made earlier and has
+ * to ask again against a newer Theme: the lock can change while the route
+ * file does not, when the module its loader reads changes.
+ */
+export function themeRouteStructureLock(
+  files: readonly ThemeSourceFile[],
+  routeSourcePath: string,
+): string | null {
+  return parsePositionedSections(files, routeSourcePath).structureLocked;
+}
+
+/**
  * Derives section identity and order from the route's rendered JSX. The
  * Document is deliberately absent: it supplies values, never structure.
  */
