@@ -111,7 +111,13 @@ export function buildPreviewTokenFromHost(
   return TOKEN_PATTERN.test(token) ? token : null;
 }
 
-function mayPreview(user: BuildPreviewCapabilityRecord["user"]): boolean {
+/**
+ * Who may see a preview: a present, unbanned admin. Live Preview access
+ * (`preview-access.ts`) asks the same question of its holder on every request.
+ */
+export function mayPreview(
+  user: BuildPreviewCapabilityRecord["user"],
+): boolean {
   return Boolean(user && !user.banned && hasAnyRole(user.role, ["admin"]));
 }
 

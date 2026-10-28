@@ -1165,3 +1165,245 @@ export default function ExplicitHero({
     expect(writes).toEqual([]);
   });
 });
+
+/**
+ * The structure lock on a loader route, from the Sections panel through the
+ * save path. Each slot element carries `className`, the shape the name-based
+ * slot check used to miss: B1 still proves both sections are spread from the
+ * loader, so structure edits must be refused. A refused edit sends no write
+ * and leaves the source, the Document, both generations and the revision
+ * list as they were.
+ *
+ * This is a safe refusal, not structure editing on loader routes.
+ */
+test.describe("the loader structure lock from the Sections panel", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const LOCK_ROUTE = "/loader-lock";
+  const LOCK_TITLE = "Loader lock stored title";
+  const LOCKED_REASON =
+    "This page reads its content through its route loader. Add, move or remove its sections in Code; their content can still be edited here.";
+  const FILES_MODULE =
+    "/src/server/storefront/storefront-theme-files.serverFn.ts";
+  const WRITE_FUNCTIONS = [
+    "saveStorefrontThemeFile",
+    "saveStorefrontThemeFilesBatch",
+    "updateStorefrontThemeSectionProps",
+    "reorderStorefrontThemeSections",
+    "renameStorefrontThemeSection",
+    "createStorefrontThemeRevision",
+  ];
+  const lockComponent = (name: string) => `export const contentFields = {
+  title: { type: "text", label: "${name} title" },
+} as const;
+
+export default function ${name}({ title = "${name} default", className }: { title?: string; className?: string }) {
+  return (
+    <section className={className}>
+      <h2>{title}</h2>
+    </section>
+  );
+}
+`;
+  const LOCK_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import LockHero from "../components/sections/LockHero";
+import LockPromo from "../components/sections/LockPromo";
+import LockBanner from "../components/sections/LockBanner";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${LOCK_ROUTE}"));
+
+export const Route = createFileRoute("${LOCK_ROUTE}")({
+  loader: () => getPage(),
+  component: LoaderLockRoute,
+});
+
+function LoaderLockRoute() {
+  const { hero, promo } = Route.useLoaderData();
+  return (
+    <main>
+      <LockHero {...hero} className="px-6" />
+      <LockPromo {...promo} className="px-6" />
+      <LockBanner />
+    </main>
+  );
+}
+`;
+  const LOCK_FILES = [
+    {
+      path: "src/components/sections/LockHero.tsx",
+      content: lockComponent("LockHero"),
+    },
+    {
+      path: "src/components/sections/LockPromo.tsx",
+      content: lockComponent("LockPromo"),
+    },
+    {
+      path: "src/components/sections/LockBanner.tsx",
+      content: lockComponent("LockBanner"),
+    },
+    { path: "src/routes/loader-lock.tsx", content: LOCK_ROUTE_SOURCE },
+  ];
+
+  let lockScope: ThemeScope | null = null;
+  let lockEditorPath: string | null = null;
+
+  /** Everything a refused structure edit must leave as it was. */
+  async function lockState(page: Page) {
+    return page.evaluate(
+      async ({ scope, filesModule, routePath }) => {
+        const themesModule =
+          "/src/server/storefront/storefront-themes.serverFn.ts";
+        const themes = await import(/* @vite-ignore */ themesModule);
+        const files = await import(/* @vite-ignore */ filesModule);
+        const listed = await files.listStorefrontThemeFiles({ data: scope });
+        if (!listed.success) throw new Error(listed.message);
+        const editor = await themes.getStorefrontThemeEditor({ data: scope });
+        if (!editor.success) throw new Error(editor.message);
+        const revisions = await files.listStorefrontThemeRevisions({
+          data: { ...scope, limit: 50, offset: 0 },
+        });
+        if (!revisions.success) throw new Error(revisions.message);
+        const template = editor.data.templates.find(
+          (candidate: { routePath: string | null }) =>
+            candidate.routePath === routePath,
+        );
+        return {
+          sourceGeneration: listed.data.sourceGeneration,
+          files: listed.data.files.map(
+            (file: {
+              path: string;
+              id: string;
+              version: number;
+              content: string;
+            }) => ({
+              path: file.path,
+              id: file.id,
+              version: file.version,
+              content: file.content,
+            }),
+          ),
+          template: template
+            ? {
+                id: template.id,
+                version: template.version,
+                draftGeneration: template.draftGeneration,
+                draftRevisionId: template.draftRevisionId ?? null,
+                document: template.document,
+              }
+            : null,
+          revisions: revisions.data,
+        };
+      },
+      { scope: lockScope!, filesModule: FILES_MODULE, routePath: LOCK_ROUTE },
+    );
+  }
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    lockScope = await createThrowawayTheme();
+    const initialized = (await serverFn(
+      page,
+      THEMES,
+      "getStorefrontThemeEditor",
+      { ...lockScope },
+    )) as { success: boolean };
+    expect(initialized.success, JSON.stringify(initialized)).toBe(true);
+    const saved = await writeThemeFiles(page, lockScope, LOCK_FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...lockScope, routePath: LOCK_ROUTE },
+    )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    // A stored value, so the Document holds content the check can compare.
+    const stored = (await serverFn(
+      page,
+      THEMES,
+      "updateStorefrontThemeSectionProps",
+      {
+        ...lockScope,
+        templateId: ensured.data!.id,
+        sectionId: "hero",
+        props: { title: LOCK_TITLE },
+        expectedDraftGeneration: ensured.data!.draftGeneration,
+        expectedSourceGeneration: await themeSourceGeneration(page, lockScope),
+        routePath: LOCK_ROUTE,
+      },
+    )) as { success: boolean };
+    expect(stored.success, JSON.stringify(stored)).toBe(true);
+    lockEditorPath = `/store/${lockScope.storefrontId}/themes/${lockScope.themeId}/editor?templateId=${ensured.data!.id}&routePath=${LOCK_ROUTE}`;
+    await page.context().close();
+  });
+
+  test("refuses Bind and Delete from the panel with the reason, and sends and changes nothing", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    await page.goto(lockEditorPath!, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(
+      previewFrame(page).getByRole("heading", {
+        name: LOCK_TITLE,
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 90_000 });
+    // The baseline: nothing held, nothing sent and unanswered.
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "data-save-state",
+      "saved",
+      { timeout: 30_000 },
+    );
+    const before = await lockState(page);
+    expect(
+      before.template?.document.sections.map(
+        (section: { id: string }) => section.id,
+      ),
+    ).toContain("hero");
+
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (WRITE_FUNCTIONS.some((name) => isServerFunctionCall(url, name))) {
+        writes.push(url);
+      }
+    });
+    const reasons = page.getByText(LOCKED_REASON, { exact: true });
+
+    // Bind: the panel still offers LockBanner, a library section, as a
+    // candidate; binding it would write `{...content("x")}` into the loader
+    // route.
+    const bind = page.getByRole("button", {
+      name: "Bind LockBanner",
+      exact: true,
+    });
+    await expect(bind).toBeEnabled({ timeout: 30_000 });
+    await bind.click();
+    await expect(reasons).toHaveCount(1, { timeout: 30_000 });
+
+    // Delete a loader section from its row, named after its component.
+    await page
+      .getByRole("button", { name: /^lock-promo( section)?$/ })
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(reasons).toHaveCount(2, { timeout: 30_000 });
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+
+    expect(writes).toEqual([]);
+    const after = await lockState(page);
+    expect(after).toEqual(before);
+    expect(
+      after.files.find(
+        (file: { path: string }) => file.path === "src/routes/loader-lock.tsx",
+      )?.content,
+    ).toBe(LOCK_ROUTE_SOURCE);
+  });
+});
