@@ -11,6 +11,10 @@ import type {
   StorefrontDTO,
   StorefrontPreferencesDTO,
 } from "../dto/storefront.dto";
+import type {
+  StarterUpgradeStatusDTO,
+  StarterVersionState,
+} from "../dto/storefront-theme.dto";
 import { storefrontPreferencesSchema } from "@/lib/validations/storefront";
 import {
   createDefaultStorefrontHomeDocument,
@@ -19,9 +23,13 @@ import {
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
-import { createStarterThemeWorkspaceUpgradePlan } from "../starter-theme-files";
+import {
+  reviewStarterThemeUpgrade,
+  type StarterUpgradeReview,
+} from "../starter-theme-upgrade-review";
 import { themeSourceStore } from "../storage/theme-storage.server";
 import { defaultPreviewRuntimeForNewTheme } from "../theme-preview-runtime";
+import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
 
 export const DEFAULT_STOREFRONT_ID = "00000000-0000-4000-8000-000000000002";
 export const DEFAULT_STOREFRONT_THEME_ID =
@@ -100,10 +108,19 @@ async function resetStarterHomeDocument(
     .run();
 }
 
+/**
+ * Creates the templates a Theme is missing and, when `record` is set, runs
+ * the home rule and records the Starter version.
+ *
+ * `record` is set only where something was really done: a workspace that was
+ * just initialised from the current Starter, or an upgrade its author
+ * reviewed and applied. Anywhere else the stored version stays as it is, so
+ * an unknown version is never written over as the latest.
+ */
 async function ensureStarterHomeDocument(
   db: StorefrontDb,
   themeId: string,
-  options: { filesSaved: boolean; storefrontId: string },
+  options: { filesSaved: boolean; storefrontId: string; record: boolean },
 ): Promise<StarterUpgradeRecordOutcome> {
   const [theme] = await db
     .select({ metadata: storefrontThemes.metadata })
@@ -198,6 +215,8 @@ async function ensureStarterHomeDocument(
     });
   }
 
+  if (!options.record) return { status: "skipped", reason: "not-confirmed" };
+
   if (
     isStarterVersionAtLeast(
       metadata.starterTemplateVersion,
@@ -212,7 +231,7 @@ async function ensureStarterHomeDocument(
 
   const ids = { storefrontId: options.storefrontId, themeId };
   if (isNonNumberStarterVersion(metadata.starterTemplateVersion)) {
-    // Kept as before: the version below is recorded over it. Logged because
+    // Recorded over only on an init or an applied review. Logged because
     // nothing known writes one, so it means the row was edited by hand or a
     // new writer appeared. Ids and a fixed reason only, never the metadata.
     console.error(
@@ -274,7 +293,7 @@ async function ensureStarterHomeDocument(
 export type StarterUpgradeRecordOutcome =
   | { status: "recorded"; version: number; revision: number; attempts: number }
   | { status: "already-current"; storedVersion: number }
-  | { status: "skipped"; reason: "theme-missing" }
+  | { status: "skipped"; reason: "theme-missing" | "not-confirmed" }
   | StarterUpgradePartialOutcome;
 
 export type StarterUpgradePartialOutcome = {
@@ -514,69 +533,43 @@ function assertStarterUpgradeRecorded(
   }
 }
 
+/**
+ * Initialises an empty workspace from the current Starter. A workspace that
+ * has files is never written here: upgrading one is the author's decision,
+ * taken through `reviewStarterUpgrade` and `applyReviewedStarterUpgrade`.
+ */
 async function ensureStarterThemeWorkspace(
   storefrontId: string,
   themeId: string,
-  upgradeExistingStarter: boolean,
   createdBy?: string,
 ): Promise<{ filesSaved: boolean }> {
   const existingFiles = await storefrontThemeFileDal.listFiles(
     storefrontId,
     themeId,
   );
-  if (existingFiles.length === 0) {
-    if (createdBy) {
-      await storefrontThemeFileDal.initStarterTheme(
-        storefrontId,
-        themeId,
-        createdBy,
-      );
-    } else {
-      await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
-    }
-    return { filesSaved: true };
-  }
-  if (!upgradeExistingStarter) return { filesSaved: false };
-
-  const upgradePlan = createStarterThemeWorkspaceUpgradePlan(existingFiles);
-  if (upgradePlan.files.length === 0 && upgradePlan.deletions.length === 0) {
-    return { filesSaved: false };
-  }
-  const sourceGeneration = await storefrontThemeFileDal.getSourceGeneration(
-    storefrontId,
-    themeId,
-  );
-  if (sourceGeneration === null) {
-    throw new Error("Starter Theme source generation is unavailable.");
-  }
-  // Through the source store, as every other workspace save goes: it decides
-  // the revision and records the manifest that names binary files' bytes, and
-  // updates the source index. Written straight to the DAL, the revision had no
-  // manifest, which the DAL refuses for a workspace holding any binary file
-  // (an uploaded image is enough), so the upgrade failed on every editor load
-  // and the editor could not open.
-  await themeSourceStore.saveFilesBatch(
-    storefrontId,
-    themeId,
-    upgradePlan.files,
-    {
-      expectedSourceGeneration: sourceGeneration,
-      deletions: upgradePlan.deletions,
-      createRevision: true,
-      revisionMessage: "Upgrade Starter Theme route workspace",
+  if (existingFiles.length > 0) return { filesSaved: false };
+  if (createdBy) {
+    await storefrontThemeFileDal.initStarterTheme(
+      storefrontId,
+      themeId,
       createdBy,
-    },
-  );
+    );
+  } else {
+    await storefrontThemeFileDal.initStarterTheme(storefrontId, themeId);
+  }
   return { filesSaved: true };
 }
 
-async function shouldUpgradeStarterWorkspace(
+async function readStoredStarterVersion(
   db: StorefrontDb,
   storefrontId: string,
   themeId: string,
-): Promise<boolean> {
+): Promise<{ found: boolean; version: unknown; framework: string | null }> {
   const [theme] = await db
-    .select({ metadata: storefrontThemes.metadata })
+    .select({
+      metadata: storefrontThemes.metadata,
+      framework: storefrontThemes.framework,
+    })
     .from(storefrontThemes)
     .where(
       and(
@@ -586,14 +579,46 @@ async function shouldUpgradeStarterWorkspace(
       ),
     )
     .limit(1);
-  const version = theme?.metadata?.starterTemplateVersion;
-  return (
-    typeof version === "number" &&
-    Number.isInteger(version) &&
-    version > 0 &&
-    version < STOREFRONT_STARTER_TEMPLATE_VERSION
-  );
+  return {
+    found: Boolean(theme),
+    version: theme?.metadata?.starterTemplateVersion,
+    framework: theme?.framework ?? null,
+  };
 }
+
+/**
+ * Where a Theme stands against the current Starter, from its stored version.
+ *
+ * `pending` is a version that is missing, NULL or not a positive whole
+ * number: nothing says which Starter the files came from, so it is shown as
+ * waiting for the author, never as the latest.
+ */
+export function starterVersionState(version: unknown): StarterVersionState {
+  if (
+    typeof version !== "number" ||
+    !Number.isInteger(version) ||
+    version < 1
+  ) {
+    return "pending";
+  }
+  return version >= STOREFRONT_STARTER_TEMPLATE_VERSION
+    ? "current"
+    : "available";
+}
+
+export type StarterUpgradeReviewResult = {
+  sourceGeneration: number;
+  versionState: StarterVersionState;
+  storedVersion: number | null;
+  currentVersion: number;
+  review: StarterUpgradeReview;
+};
+
+export type StarterUpgradeApplyResult =
+  | { status: "applied"; filesSaved: boolean; sourceGeneration: number }
+  | { status: "not-applicable" }
+  /** The workspace or the plan changed since the author reviewed it. */
+  | { status: "stale"; sourceGeneration: number | null };
 
 /**
  * Creates the minimum editable website graph for a storefront channel.
@@ -602,33 +627,179 @@ async function shouldUpgradeStarterWorkspace(
  * reads. Existing themes and authored documents are never overwritten.
  */
 export const storefrontDal = {
+  /**
+   * Run when the editor opens. Initialises an empty workspace of a Theme that
+   * records an older Starter version, as it always has; that is creating the
+   * Theme's files, not upgrading them. A Theme that has files is left exactly
+   * as stored: no file, Document or version is written.
+   */
   async ensureStoredStarterPreview(data: {
     storefrontId: string;
     themeId: string;
     createdBy: string;
   }): Promise<boolean> {
     const db = await getDb();
-    const shouldUpgrade = await shouldUpgradeStarterWorkspace(
+    const stored = await readStoredStarterVersion(
       db,
       data.storefrontId,
       data.themeId,
     );
-    if (!shouldUpgrade) return false;
-
-    // A refused file save throws here, before any metadata write.
+    if (!stored.found || starterVersionState(stored.version) !== "available") {
+      return false;
+    }
     const workspace = await ensureStarterThemeWorkspace(
       data.storefrontId,
       data.themeId,
-      true,
       data.createdBy,
     );
+    if (!workspace.filesSaved) return false;
     assertStarterUpgradeRecorded(
       await ensureStarterHomeDocument(db, data.themeId, {
         ...workspace,
         storefrontId: data.storefrontId,
+        record: true,
       }),
     );
     return true;
+  },
+  /** What a Starter upgrade would do to this Theme. Writes nothing. */
+  async reviewStarterUpgrade(data: {
+    storefrontId: string;
+    themeId: string;
+  }): Promise<StarterUpgradeReviewResult | null> {
+    const db = await getDb();
+    const stored = await readStoredStarterVersion(
+      db,
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!stored.found) return null;
+    const [files, sourceGeneration] = await Promise.all([
+      themeSourceStore.listFiles(data.storefrontId, data.themeId),
+      themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+    ]);
+    if (sourceGeneration === null) return null;
+    return {
+      sourceGeneration,
+      versionState: starterVersionState(stored.version),
+      storedVersion: typeof stored.version === "number" ? stored.version : null,
+      currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+      review: reviewStarterThemeUpgrade(files),
+    };
+  },
+  /** The stored version only, for the editor's notice. Writes nothing. */
+  async readStarterUpgradeStatus(data: {
+    storefrontId: string;
+    themeId: string;
+  }): Promise<StarterUpgradeStatusDTO | null> {
+    const db = await getDb();
+    const stored = await readStoredStarterVersion(
+      db,
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!stored.found) return null;
+    // The Starter is a TanStack Start Theme; a site that records another
+    // framework (NULL reads as Start) is offered nothing.
+    if (
+      stored.framework !== null &&
+      stored.framework !== UNRECORDED_THEME_FRAMEWORK
+    ) {
+      return null;
+    }
+    return {
+      versionState: starterVersionState(stored.version),
+      storedVersion: typeof stored.version === "number" ? stored.version : null,
+      currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+    };
+  },
+  /**
+   * Applies the upgrade its author reviewed, and only that one.
+   *
+   * The plan is made again from the stored files. If the source generation or
+   * the plan's digest is not the one the author saw, nothing is written. The
+   * files are saved as one batch through the source store, under the
+   * generation and each file's version, with a revision. Only then does the
+   * home rule run and the version get recorded.
+   */
+  async applyReviewedStarterUpgrade(data: {
+    storefrontId: string;
+    themeId: string;
+    createdBy: string;
+    expectedSourceGeneration: number;
+    planDigest: string;
+  }): Promise<StarterUpgradeApplyResult> {
+    const db = await getDb();
+    const stored = await readStoredStarterVersion(
+      db,
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!stored.found)
+      throw new Error("Theme not found or does not belong to storefront");
+    const sourceGeneration = await themeSourceStore.getSourceGeneration(
+      data.storefrontId,
+      data.themeId,
+    );
+    if (sourceGeneration !== data.expectedSourceGeneration) {
+      return { status: "stale", sourceGeneration };
+    }
+    const files = await themeSourceStore.listFiles(
+      data.storefrontId,
+      data.themeId,
+    );
+    const review = reviewStarterThemeUpgrade(files);
+    if (!review.applies) return { status: "not-applicable" };
+    if (review.digest !== data.planDigest) {
+      return { status: "stale", sourceGeneration };
+    }
+
+    let savedGeneration = sourceGeneration;
+    const filesSaved =
+      review.plan.files.length > 0 || review.plan.deletions.length > 0;
+    if (filesSaved) {
+      // Through the source store, as every other workspace save goes: it
+      // decides the revision and records the manifest that names binary
+      // files' bytes, and updates the source index.
+      try {
+        const saved = await themeSourceStore.saveFilesBatch(
+          data.storefrontId,
+          data.themeId,
+          review.plan.files,
+          {
+            expectedSourceGeneration: data.expectedSourceGeneration,
+            deletions: review.plan.deletions,
+            createRevision: true,
+            revisionMessage: "Upgrade Starter Theme (reviewed)",
+            createdBy: data.createdBy,
+          },
+        );
+        savedGeneration = saved.sourceGeneration ?? sourceGeneration + 1;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH") ||
+            error.message.includes("CONFLICT_VERSION_MISMATCH"))
+        ) {
+          return {
+            status: "stale",
+            sourceGeneration: await themeSourceStore.getSourceGeneration(
+              data.storefrontId,
+              data.themeId,
+            ),
+          };
+        }
+        throw error;
+      }
+    }
+    assertStarterUpgradeRecorded(
+      await ensureStarterHomeDocument(db, data.themeId, {
+        filesSaved,
+        storefrontId: data.storefrontId,
+        record: true,
+      }),
+    );
+    return { status: "applied", filesSaved, sourceGeneration: savedGeneration };
   },
   async findActive(id?: string): Promise<StorefrontDTO | null> {
     const db = await getDb();
@@ -701,20 +872,17 @@ export const storefrontDal = {
       .limit(1);
 
     if (existing?.activeThemeId) {
-      const upgradeExistingStarter = await shouldUpgradeStarterWorkspace(
-        db,
-        existing.id,
-        existing.activeThemeId,
-      );
+      // An existing Theme's files are its author's; only an empty workspace is
+      // initialised, and only then is the version recorded.
       const workspace = await ensureStarterThemeWorkspace(
         existing.id,
         existing.activeThemeId,
-        upgradeExistingStarter,
       );
       assertStarterUpgradeRecorded(
         await ensureStarterHomeDocument(db, existing.activeThemeId, {
           ...workspace,
           storefrontId: existing.id,
+          record: workspace.filesSaved,
         }),
       );
       return;
@@ -808,15 +976,12 @@ export const storefrontDal = {
       .set({ activeThemeId: themeId, updatedAt: now })
       .where(eq(storefronts.id, storefrontId));
 
-    const workspace = await ensureStarterThemeWorkspace(
-      storefrontId,
-      themeId,
-      false,
-    );
+    const workspace = await ensureStarterThemeWorkspace(storefrontId, themeId);
     assertStarterUpgradeRecorded(
       await ensureStarterHomeDocument(db, themeId, {
         ...workspace,
         storefrontId,
+        record: workspace.filesSaved,
       }),
     );
   },

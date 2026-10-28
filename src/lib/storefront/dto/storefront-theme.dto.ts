@@ -7,11 +7,26 @@ import type {
 import type { ThemePreviewRuntime } from "@/lib/storefront/theme-preview-runtime";
 import type { ThemeRouteSectionResult } from "../compiler/theme-route-sections";
 
+/**
+ * Where a Theme stands against the current Starter, from its stored version.
+ * `pending`: the version is missing or not a positive whole number, so
+ * nothing says which Starter the files came from. Never shown as the latest.
+ */
+export type StarterVersionState = "current" | "available" | "pending";
+
+export type StarterUpgradeStatusDTO = {
+  versionState: StarterVersionState;
+  storedVersion: number | null;
+  currentVersion: number;
+};
+
 export interface StorefrontThemeEditorDTO {
   previewChannel?: {
     editorOrigin: string;
     sessionId: string;
   };
+  /** Read when the editor opens; opening it upgrades nothing. */
+  starterUpgrade?: StarterUpgradeStatusDTO | null;
   storefront: {
     id: string;
     name: string;

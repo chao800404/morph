@@ -9,6 +9,7 @@ import {
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../starter-theme-v3-files";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
+import { reviewStarterThemeUpgrade } from "../starter-theme-upgrade-review";
 
 const mocks = vi.hoisted(() => ({
   getDb: vi.fn(),
@@ -37,10 +38,31 @@ vi.mock("./storefront-theme-file.dal", () => ({
   },
 }));
 vi.mock("../storage/theme-storage.server", () => ({
-  themeSourceStore: { saveFilesBatch: mocks.saveFilesBatch },
+  themeSourceStore: {
+    saveFilesBatch: mocks.saveFilesBatch,
+    listFiles: mocks.listFiles,
+    getSourceGeneration: mocks.getSourceGeneration,
+  },
 }));
 
 import { storefrontDal } from "./storefront.dal";
+
+/**
+ * The author applies the review of exactly these files. The digest is the
+ * review's own, so this is the plan the author was shown.
+ */
+function applyReviewed(
+  files: Parameters<typeof reviewStarterThemeUpgrade>[0],
+  expectedSourceGeneration: number,
+) {
+  return storefrontDal.applyReviewedStarterUpgrade({
+    storefrontId: "storefront-a",
+    themeId: "theme-a",
+    createdBy: "user-a",
+    expectedSourceGeneration,
+    planDigest: reviewStarterThemeUpgrade(files).digest,
+  });
+}
 
 /** Rows every `db.insert(...).values(...)` in one test was given. */
 function insertedRows(db: { insert: unknown }): unknown[] {
@@ -55,13 +77,6 @@ function insertedRows(db: { insert: unknown }): unknown[] {
 function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
   const results = [
     [{ id: "storefront-a", activeThemeId: "theme-a" }],
-    [
-      {
-        metadata: {
-          starterTemplateVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
-        },
-      },
-    ],
     [
       {
         metadata: {
@@ -215,25 +230,21 @@ describe("the Live Preview runtime a Starter Theme records", () => {
   it("never records one while upgrading an existing Theme's Starter", async () => {
     const db = createLegacyStarterDb(27);
     mocks.getDb.mockResolvedValue(db);
-    mocks.listFiles.mockResolvedValue(
-      starterThemeWorkspaceFiles().map((file, index) => ({
-        id: `file-${index}`,
-        path: file.path,
-        content:
-          file.path === "src/morph/content.ts"
-            ? LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE
-            : file.content,
-        version: 3,
-      })),
-    );
+    const files = starterThemeWorkspaceFiles().map((file, index) => ({
+      id: `file-${index}`,
+      path: file.path,
+      content:
+        file.path === "src/morph/content.ts"
+          ? LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE
+          : file.content,
+      version: 3,
+    }));
+    mocks.listFiles.mockResolvedValue(files);
 
-    await expect(
-      storefrontDal.ensureStoredStarterPreview({
-        storefrontId: "storefront-a",
-        themeId: "theme-a",
-        createdBy: "user-a",
-      }),
-    ).resolves.toBe(true);
+    await expect(applyReviewed(files, 4)).resolves.toMatchObject({
+      status: "applied",
+      filesSaved: true,
+    });
 
     // The upgrade did write: the files, then the Theme's Starter version —
     // since #260 as a json_set on metadata handed to D1 directly.
@@ -326,9 +337,9 @@ describe("storefrontDal starter workspace provisioning", () => {
     expect(mocks.initStarterTheme).not.toHaveBeenCalled();
   });
 
-  it("atomically upgrades the Starter route workspace and removes its obsolete page", async () => {
+  it("atomically upgrades the Starter route workspace and removes its obsolete page, once its author applies it", async () => {
     mocks.getDb.mockResolvedValue(createLegacyStarterDb());
-    mocks.listFiles.mockResolvedValue([
+    const files = [
       {
         id: "index-file",
         path: "src/pages/index.tsx",
@@ -345,16 +356,13 @@ describe("storefrontDal starter workspace provisioning", () => {
         }),
         version: 3,
       },
-    ]);
+    ];
+    mocks.listFiles.mockResolvedValue(files);
     mocks.getSourceGeneration.mockResolvedValue(12);
 
-    await expect(
-      storefrontDal.ensureStoredStarterPreview({
-        storefrontId: "storefront-a",
-        themeId: "theme-a",
-        createdBy: "user-a",
-      }),
-    ).resolves.toBe(true);
+    await expect(applyReviewed(files, 12)).resolves.toMatchObject({
+      status: "applied",
+    });
 
     expect(mocks.saveFilesBatch).toHaveBeenCalledWith(
       "storefront-a",
@@ -396,10 +404,12 @@ describe("storefrontDal starter workspace provisioning", () => {
         | { path: string; content?: string; expectedFileId?: string }[]
         | undefined;
 
-    it("writes exactly the untouched content module on editor load", async () => {
-      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
-      const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
-      mocks.listFiles.mockResolvedValue(files);
+    it("writes nothing on editor load", async () => {
+      const db = createLegacyStarterDb(27);
+      mocks.getDb.mockResolvedValue(db);
+      mocks.listFiles.mockResolvedValue(
+        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
+      );
 
       await expect(
         storefrontDal.ensureStoredStarterPreview({
@@ -407,7 +417,22 @@ describe("storefrontDal starter workspace provisioning", () => {
           themeId: "theme-a",
           createdBy: "user-a",
         }),
-      ).resolves.toBe(true);
+      ).resolves.toBe(false);
+
+      expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
+      expect(mocks.initStarterTheme).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(mocks.prepare).not.toHaveBeenCalled();
+    });
+
+    it("writes exactly the untouched content module when its author applies the upgrade", async () => {
+      mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
+      const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
+      mocks.listFiles.mockResolvedValue(files);
+
+      await expect(applyReviewed(files, 4)).resolves.toMatchObject({
+        status: "applied",
+      });
 
       expect(saved()).toEqual([
         expect.objectContaining({
@@ -427,15 +452,10 @@ describe("storefrontDal starter workspace provisioning", () => {
       // load for every Theme with an uploaded image. The source store builds
       // the manifest.
       mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
-      mocks.listFiles.mockResolvedValue(
-        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
-      );
+      const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
+      mocks.listFiles.mockResolvedValue(files);
 
-      await storefrontDal.ensureStoredStarterPreview({
-        storefrontId: "storefront-a",
-        themeId: "theme-a",
-        createdBy: "user-a",
-      });
+      await applyReviewed(files, 4);
 
       expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
       expect(mocks.saveFilesBatch.mock.calls[0]?.[3]).toMatchObject({
@@ -447,15 +467,12 @@ describe("storefrontDal starter workspace provisioning", () => {
 
     it("writes nothing when the content module was edited", async () => {
       mocks.getDb.mockResolvedValue(createLegacyStarterDb(27));
-      mocks.listFiles.mockResolvedValue(
-        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine"),
+      const files = workspace(
+        LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE + "\n// mine",
       );
+      mocks.listFiles.mockResolvedValue(files);
 
-      await storefrontDal.ensureStoredStarterPreview({
-        storefrontId: "storefront-a",
-        themeId: "theme-a",
-        createdBy: "user-a",
-      });
+      await applyReviewed(files, 4);
 
       expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
     });
@@ -481,23 +498,19 @@ describe("storefrontDal starter workspace provisioning", () => {
       expect(mocks.prepare).not.toHaveBeenCalled();
     });
 
-    it("keeps the Theme on 27 when the write is refused, so the next load plans again", async () => {
+    it("keeps the Theme on 27 when the write is refused, and says the review is stale", async () => {
       const db = createLegacyStarterDb(27);
       mocks.getDb.mockResolvedValue(db);
-      mocks.listFiles.mockResolvedValue(
-        workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
-      );
+      const files = workspace(LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE);
+      mocks.listFiles.mockResolvedValue(files);
       mocks.saveFilesBatch.mockRejectedValueOnce(
         new Error("CONFLICT_VERSION_MISMATCH"),
       );
 
-      await expect(
-        storefrontDal.ensureStoredStarterPreview({
-          storefrontId: "storefront-a",
-          themeId: "theme-a",
-          createdBy: "user-a",
-        }),
-      ).rejects.toThrow("CONFLICT_VERSION_MISMATCH");
+      await expect(applyReviewed(files, 4)).resolves.toEqual({
+        status: "stale",
+        sourceGeneration: 4,
+      });
       // The version is written only after the files; it was not.
       expect(db.update).not.toHaveBeenCalled();
       expect(mocks.prepare).not.toHaveBeenCalled();
