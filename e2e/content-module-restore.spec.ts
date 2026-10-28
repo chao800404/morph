@@ -14,7 +14,10 @@ import { themeScopeFromEditorPath, writeThemeFiles, type ThemeScope } from "./na
  *   command, which creates the Starter module and touches nothing else;
  * - while it exists the command is disabled and the author's module stays;
  * - when Design cannot confirm the `content()` it writes, Add section and
- *   Bind say why and change neither the source nor its generation.
+ *   Bind say why and change neither the source nor its generation;
+ * - a section that already spreads props of its own is not bound, since the
+ *   spread could override the fields the binding adds, and nothing is
+ *   written; a plain section beside it still binds.
  *
  * Each test inserts its own Theme row in the runner's throwaway database, the
  * way initial-code-publish.spec.ts does, so deleting the module can never
@@ -275,6 +278,125 @@ test.describe("the author's content module", () => {
     expect(byPath(after).get("src/routes/index.tsx")?.content).toBe(unboundRoute);
     expect(after.files.map((file) => file.path).sort()).toEqual(
       before.files.map((file) => file.path).sort(),
+    );
+  });
+});
+
+/** Every write a bind could reach, directly or through a save. */
+const WRITE_FUNCTIONS = [
+  "saveStorefrontThemeFile",
+  "saveStorefrontThemeFilesBatch",
+  "updateStorefrontThemeSectionProps",
+  "reorderStorefrontThemeSections",
+  "renameStorefrontThemeSection",
+  "createStorefrontThemeRevision",
+];
+
+/** What a refused bind must leave exactly as it was. */
+async function storedState(page: Page, scope: ThemeScope) {
+  const listing = await listFiles(page, scope);
+  const stored = await page.evaluate(async ({ scope, filesModule }) => {
+    const themesModule = "/src/server/storefront/storefront-themes.serverFn.ts";
+    const themes = await import(/* @vite-ignore */ themesModule);
+    const files = await import(/* @vite-ignore */ filesModule);
+    const editor = await themes.getStorefrontThemeEditor({ data: scope });
+    if (!editor.success) throw new Error(editor.message);
+    const revisions = await files.listStorefrontThemeRevisions({
+      data: { ...scope, limit: 50, offset: 0 },
+    });
+    if (!revisions.success) throw new Error(revisions.message);
+    return {
+      templates: editor.data.templates.map(
+        (template: Record<string, unknown>) => ({
+          id: template.id,
+          draftGeneration: template.draftGeneration,
+          version: template.version,
+          document: template.document,
+        }),
+      ),
+      revisions: revisions.data,
+    };
+  }, { scope, filesModule: SERVER_FN_MODULE });
+  return {
+    sourceGeneration: listing.sourceGeneration,
+    files: listing.files,
+    ...stored,
+  };
+}
+
+test.describe("binding a section that spreads props of its own", () => {
+  test("is refused with the reason and writes nothing, while a plain section next to it still binds", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await openEditor(page);
+    const { scope, editorPath } = await createOwnTheme(page);
+
+    const initial = await listFiles(page, scope);
+    const section = initial.files
+      .map((file) => file.path)
+      .find((path) => /^src\/components\/sections\/[A-Za-z]\w*\.tsx$/.test(path));
+    expect(section, "the Starter has a library section").toBeTruthy();
+    const from = `../components/sections/${section!.slice("src/components/sections/".length, -".tsx".length)}`;
+    const home = byPath(initial).get("src/routes/index.tsx")!;
+    // Two unbound uses of one library section: one spreads an object of its
+    // own, which a binding written before it could be overridden by; the
+    // other has no props at all and is the control.
+    const route = `import E2eSpread from "${from}";\nimport E2ePlain from "${from}";\n${home.content.replace(
+      /\n(\s*)<\/main>/,
+      '\n$1  <E2eSpread {...{ title: "From code" }} />\n$1  <E2ePlain />\n$1</main>',
+    )}`;
+    expect(route).toContain("<E2eSpread {...");
+    expect(route).toContain("<E2ePlain />");
+    expect(
+      await writeThemeFiles(page, scope, [
+        { path: "src/routes/index.tsx", content: route },
+      ]),
+    ).toMatchObject({ success: true });
+    const before = await storedState(page, scope);
+
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      const url = request.url();
+      if (WRITE_FUNCTIONS.some((name) => isServerFunctionCall(url, name))) {
+        writes.push(url);
+      }
+    });
+
+    await openEditor(page, editorPath);
+    const reason =
+      "This component spreads props of its own, which could override the content fields a binding would add. Bind it in Code mode.";
+    const candidates = page.locator('[aria-label="Unbound section candidates"]');
+    const spreadRow = candidates.getByRole("button", { name: /^E2eSpread/ });
+    await expect(spreadRow).toBeVisible({ timeout: 30_000 });
+    await expect(spreadRow).toBeDisabled();
+    await expect(spreadRow).toHaveAttribute("title", reason);
+    await expect(spreadRow).toContainText("Unsupported");
+    await expect(
+      page.getByRole("button", { name: "Bind E2eSpread", exact: true }),
+    ).toHaveCount(0);
+    // A disabled control still gets the pointer here; nothing may follow it.
+    await spreadRow.click({ force: true });
+
+    const after = await storedState(page, scope);
+    expect(writes).toEqual([]);
+    expect(after).toEqual(before);
+    expect(byPath(after).get("src/routes/index.tsx")?.content).toBe(route);
+
+    // The control: the plain section is bound through the same panel and save.
+    await page.getByRole("button", { name: "Bind E2ePlain", exact: true }).click();
+    await expect
+      .poll(
+        async () =>
+          byPath(await listFiles(page, scope)).get("src/routes/index.tsx")
+            ?.content,
+        { timeout: 30_000 },
+      )
+      .toMatch(/<E2ePlain \{\.\.\.content\("[^"]+"\)\} \/>/);
+    const bound = await listFiles(page, scope);
+    expect(bound.sourceGeneration).toBeGreaterThan(before.sourceGeneration);
+    expect(byPath(bound).get("src/routes/index.tsx")?.content).toContain(
+      '<E2eSpread {...{ title: "From code" }} />',
     );
   });
 });
