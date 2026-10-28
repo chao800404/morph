@@ -242,6 +242,11 @@ export async function verifyPreviewAccessGrant(input: {
   token: string;
   previewHost: string;
   now?: Date;
+  /**
+   * Read once for the checks and again for activation, which happens later;
+   * a fixed `now` serves both. For tests that let time pass in between.
+   */
+  clock?: () => Date;
 }): Promise<
   | Readonly<{ ok: true; grant: VerifiedPreviewAccessGrant }>
   | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
@@ -249,12 +254,13 @@ export async function verifyPreviewAccessGrant(input: {
   if (!SECRET_PATTERN.test(input.token)) {
     return { ok: false, reason: "GRANT_UNKNOWN" };
   }
+  const clock = input.clock ?? (() => input.now ?? new Date());
   const record = await input.dal.findGrantByTokenHash(
     await hashPreviewAccessSecret(input.token),
   );
   if (!record) return { ok: false, reason: "GRANT_UNKNOWN" };
   if (record.revokedAt) return { ok: false, reason: "GRANT_REVOKED" };
-  const nowMs = (input.now ?? new Date()).getTime();
+  const nowMs = clock().getTime();
   if (!(nowMs < Date.parse(record.expiresAt))) {
     return { ok: false, reason: "GRANT_EXPIRED" };
   }
@@ -264,15 +270,16 @@ export async function verifyPreviewAccessGrant(input: {
   const refusal = authorityRefusal(record, record.userId, nowMs);
   if (refusal) return { ok: false, reason: refusal };
   if (!record.activatedAt) {
+    const activationMs = clock().getTime();
     const activatableAfter = new Date(
-      nowMs - PREVIEW_ACCESS_ACTIVATION_WINDOW_MS,
+      activationMs - PREVIEW_ACCESS_ACTIVATION_WINDOW_MS,
     ).toISOString();
-    // Past the window, or revoked since the read above: the statement
-    // matches nothing and the request is refused.
+    // Past the window, expired or revoked since the read above: the
+    // statement matches nothing and the request is refused.
     const activated = await input.dal.activateGrant({
       id: record.id,
       activatableAfter,
-      now: new Date(nowMs).toISOString(),
+      now: new Date(activationMs).toISOString(),
     });
     if (!activated) return { ok: false, reason: "GRANT_NOT_ACTIVATED" };
   }

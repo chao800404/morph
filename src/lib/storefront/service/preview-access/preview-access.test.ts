@@ -537,6 +537,30 @@ describe("preview access grant activation", () => {
     expect(row(grant.id).activated_at).toBe(later(2000).toISOString());
   });
 
+  it("refuses a first use whose grant expired after it was read, before it was activated", async () => {
+    sqlite
+      .prepare(
+        "INSERT INTO sessions VALUES ('session-brief', 't-br', 'admin-1', ?)",
+      )
+      .run(NOW.getTime() + 61_000);
+    const { token, grant } = await redeemed({ sessionId: "session-brief" });
+    expect(grant.expiresAt).toBe(later(61_000).toISOString());
+
+    // Read and checked at 60 s, still valid; activated at 62 s, expired. Both
+    // inside the activation window.
+    const readings = [later(60_000), later(62_000)];
+    expect(
+      await verifyPreviewAccessGrant({
+        dal,
+        token,
+        previewHost: HOST,
+        clock: () => readings.shift()!,
+      }),
+    ).toEqual({ ok: false, reason: "GRANT_NOT_ACTIVATED" });
+    expect(readings).toEqual([]);
+    expect(row(grant.id).activated_at).toBeNull();
+  });
+
   it("refuses a first use whose grant was revoked after it was read", async () => {
     const { token, grant } = await redeemed();
     const original = dal.findGrantByTokenHash;

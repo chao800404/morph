@@ -290,9 +290,10 @@ export const storefrontPreviewAccessDal = {
 
   /**
    * Records a grant's first use, in one statement, and says whether the grant
-   * is now activated. It matches only a grant that is not revoked and either
-   * is already activated or is still inside its activation window
-   * (`created_at > activatableAfter`). `activated_at` keeps the first value
+   * is now activated. It matches only a grant that is not revoked, has not
+   * expired at `now`, and either is already activated or is still inside its
+   * activation window (`created_at > activatableAfter`). The statement checks
+   * all of these itself; what the caller read before is not relied on. `activated_at` keeps the first value
    * written, so of two concurrent first uses both succeed and one time is
    * kept. Nothing else changes: in particular not `expires_at`.
    */
@@ -312,6 +313,7 @@ export const storefrontPreviewAccessDal = {
           eq(storefrontPreviewAccessGrants.id, data.id),
           isNull(storefrontPreviewAccessGrants.revokedAt),
           isNull(storefrontPreviewAccessGrants.deletedAt),
+          gt(storefrontPreviewAccessGrants.expiresAt, data.now),
           or(
             isNotNull(storefrontPreviewAccessGrants.activatedAt),
             gt(storefrontPreviewAccessGrants.createdAt, data.activatableAfter),
