@@ -1,11 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { expect, test } from "@playwright/test";
 
-import { queryRunD1 } from "../scripts/verify-published-artifact.mjs";
+import { queryLifecycleD1 } from "../scripts/verify-published-artifact.mjs";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 import {
   clickExposedElement,
@@ -106,16 +103,7 @@ test.describe("M1 container lifecycle acceptance", () => {
   let domainId: string | null = null;
 
   async function queryD1(sql: string, ...params: unknown[]) {
-    const dir = mkdtempSync(join(tmpdir(), "m1-query-"));
-    try {
-      return await queryRunD1(
-        { persistTo: STATE_DIR!, workDir: dir },
-        sql,
-        ...params,
-      );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    return queryLifecycleD1(STATE_DIR!, sql, ...params);
   }
 
   async function queryLifecycleSnapshot(
