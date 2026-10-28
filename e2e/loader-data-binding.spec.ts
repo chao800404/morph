@@ -1407,3 +1407,391 @@ function LoaderLockRoute() {
     ).toBe(LOCK_ROUTE_SOURCE);
   });
 });
+
+/**
+ * A Design structure edit that meets a conflict, and what happens when it is
+ * tried again (`handoff/2026-10-28/conflict-refusal-repro-plan.md`).
+ *
+ * Three cases are kept apart:
+ *
+ * 1. The author's unsaved edit is kept after a refusal: intended behaviour.
+ * 2. Trying the Design edit again: is the rewrite, and the lock and B1 proof
+ *    behind it, the one computed against the outdated source?
+ *    - 2A: another tab changed the same route file, so the file version OCC
+ *      is the line that has to hold.
+ *    - 2B: the route file's version is unchanged; another tab changed only
+ *      the module the route's loader reads, which turns this route into a
+ *      loader route (see theme-route-structure-dependency-lock.test.ts). On
+ *      the newest Theme the same reorder is refused by the structure lock.
+ * 3. The author explicitly overwriting the route in Code: a separate path,
+ *    which must not be blocked.
+ *
+ * Each case reads the newest stored source, the save request actually sent,
+ * the raw D1 row, the Sections panel and the preview.
+ */
+test.describe("a Design structure edit that meets a conflict", () => {
+  // Each case builds its own Theme, so one failing does not skip the rest.
+  const RETRY_ROUTE = "/conflict-retry";
+  const RETRY_ROUTE_FILE = "src/routes/conflict-retry.tsx";
+  const RETRY_DATA_FILE = "src/server/conflict-retry.ts";
+  const LOCKED_REASON = /reads its content through its route loader/;
+  const SAVE_FUNCTIONS = [
+    "saveStorefrontThemeFile",
+    "saveStorefrontThemeFilesBatch",
+  ];
+  const retryComponent = (name: string) => `export const contentFields = {
+  title: { type: "text", label: "${name} title" },
+} as const;
+
+export default function ${name}({ title = "${name} default" }: { title?: string }) {
+  return (
+    <section>
+      <h2>{title}</h2>
+    </section>
+  );
+}
+`;
+  const RETRY_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import RetryHero from "../components/sections/RetryHero";
+import RetryBanner from "../components/sections/RetryBanner";
+import RetryPromo from "../components/sections/RetryPromo";
+import { getRetryPage } from "../server/conflict-retry";
+
+export const Route = createFileRoute("${RETRY_ROUTE}")({
+  loader: () => getRetryPage(),
+  component: ConflictRetryRoute,
+});
+
+function ConflictRetryRoute() {
+  const page = Route.useLoaderData();
+  return (
+    <main>
+      <RetryHero {...content("hero")} />
+      <RetryBanner {...content("banner")} />
+      <RetryPromo {...page.promo} />
+    </main>
+  );
+}
+`;
+  /** The loader's module before: not this page's content. */
+  const DATA_PLAIN = `import { createServerFn } from "@tanstack/react-start";
+
+export const getRetryPage = createServerFn().handler(() => ({
+  promo: { title: "Static promo" },
+}));
+`;
+  /** After another tab's save: this page's content, as B1 proves it. */
+  const DATA_PAGE = `import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+
+export const getRetryPage = createServerFn().handler(() =>
+  morph.pages.get("${RETRY_ROUTE}"),
+);
+`;
+  const RETRY_FILES = [
+    {
+      path: "src/components/sections/RetryHero.tsx",
+      content: retryComponent("RetryHero"),
+    },
+    {
+      path: "src/components/sections/RetryBanner.tsx",
+      content: retryComponent("RetryBanner"),
+    },
+    {
+      path: "src/components/sections/RetryPromo.tsx",
+      content: retryComponent("RetryPromo"),
+    },
+    { path: RETRY_DATA_FILE, content: DATA_PLAIN },
+    { path: RETRY_ROUTE_FILE, content: RETRY_ROUTE_SOURCE },
+  ];
+
+  /** The route file's row as D1 holds it, read past every server function. */
+  async function rawRouteRow(scope: ThemeScope) {
+    const { stdout } = await promisify(execFile)("npx", [
+      "wrangler",
+      "d1",
+      "execute",
+      "DATABASE",
+      "--local",
+      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
+      "local-sidecar"
+        ? ["--env", "local_preview_e2e"]
+        : []),
+      "--persist-to",
+      process.env.MORPH_E2E_STATE_DIR!,
+      "--json",
+      "--command",
+      `SELECT content, version FROM storefront_theme_files
+       WHERE theme_id = '${scope.themeId}' AND path = '${RETRY_ROUTE_FILE}'
+         AND deleted_at IS NULL;`,
+    ]);
+    const parsed = JSON.parse(stdout) as Array<{
+      results: Array<{ content: string; version: number }>;
+    }>;
+    const rows = parsed[0]?.results ?? [];
+    expect(rows, "exactly one live route row").toHaveLength(1);
+    return rows[0]!;
+  }
+
+  /** Writes one file from a separate signed-in tab, as another author would. */
+  async function saveFromAnotherTab(
+    browser: Browser,
+    scope: ThemeScope,
+    path: string,
+    content: string,
+  ) {
+    const other = await signedInPage(browser);
+    try {
+      await other.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      const saved = await writeThemeFiles(other, scope, [{ path, content }]);
+      expect(saved.success, JSON.stringify(saved)).toBe(true);
+      return await themeSourceGeneration(other, scope);
+    } finally {
+      await other.context().close();
+    }
+  }
+
+  const sectionRows = (page: Page) =>
+    page.locator(
+      '[data-sidebar="menu-item"] button:has([data-editor-tree-icon="section"])',
+    );
+  const sortableSectionRows = (page: Page) =>
+    page.locator(
+      '[data-editor-tree-sortable="true"] button:has([data-editor-tree-icon="section"])',
+    );
+  const sectionOrder = async (page: Page) =>
+    (await sectionRows(page).allInnerTexts())
+      .map((text) => text.split("\n")[0]?.trim() ?? "")
+      .filter((text) => text.length > 0);
+
+  /** One pointer drag of the first section row onto the second. */
+  async function dragFirstOntoSecond(page: Page) {
+    await expect(sortableSectionRows(page).nth(0)).toHaveAttribute(
+      "aria-roledescription",
+      "draggable",
+      { timeout: 15_000 },
+    );
+    const before = await sectionOrder(page);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const from = await sortableSectionRows(page).nth(0).boundingBox();
+      const to = await sortableSectionRows(page).nth(1).boundingBox();
+      if (!from || !to) throw new Error("section rows are not laid out");
+      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(
+        from.x + from.width / 2,
+        from.y + from.height / 2 + 10,
+        { steps: 5 },
+      );
+      const started = await sortableSectionRows(page)
+        .nth(0)
+        .getAttribute("aria-grabbed")
+        .then((value) => value === "true")
+        .catch(() => false);
+      if (!started) {
+        await page.mouse.up();
+        await page.waitForTimeout(500);
+        continue;
+      }
+      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2 + 4, {
+        steps: 12,
+      });
+      await page.mouse.up();
+      const landed = await expect
+        .poll(() => sectionOrder(page), { timeout: 8_000 })
+        .not.toEqual(before)
+        .then(() => true)
+        .catch(() => false);
+      if (landed) return;
+    }
+    throw new Error("the drag never changed the section order");
+  }
+
+  /** The route's sections, in order, as the stored source writes them. */
+  const storedOrder = (source: string) =>
+    [...source.matchAll(/content\("([a-z]+)"\)/g)].map((match) => match[1]);
+
+  /** Either conflict notice: the Theme's, or the route file's own. */
+  async function expectConflictNotice(page: Page) {
+    const theme = page.getByText(
+      "Remote source changes detected in this theme",
+    );
+    const file = page.getByText(/^Server conflict \(v\d+\)/);
+    await expect
+      .poll(async () => (await theme.isVisible()) || (await file.isVisible()), {
+        timeout: 30_000,
+        message: "a conflict notice",
+      })
+      .toBe(true);
+  }
+
+  type Sent = { name: string; body: string };
+
+  async function openRetryEditor(page: Page, path: string) {
+    const sent: Sent[] = [];
+    page.on("request", (request) => {
+      const name = SAVE_FUNCTIONS.find((candidate) =>
+        isServerFunctionCall(request.url(), candidate),
+      );
+      if (name) sent.push({ name, body: request.postData() ?? "" });
+    });
+    await page.goto(path, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.locator("[data-editor-save-status]")).toHaveAttribute(
+      "data-save-state",
+      "saved",
+      { timeout: 30_000 },
+    );
+    await expect
+      .poll(() => sectionOrder(page), { timeout: 60_000 })
+      .toEqual(expect.arrayContaining(["retry-hero", "retry-banner"]));
+    return sent;
+  }
+
+  async function freshRetryTheme(browser: Browser) {
+    const page = await signedInPage(browser);
+    try {
+      await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+      const retryScope = await createThrowawayTheme();
+      const initialized = (await serverFn(
+        page,
+        THEMES,
+        "getStorefrontThemeEditor",
+        { ...retryScope },
+      )) as { success: boolean };
+      expect(initialized.success, JSON.stringify(initialized)).toBe(true);
+      const saved = await writeThemeFiles(page, retryScope, RETRY_FILES);
+      expect(saved.success, JSON.stringify(saved)).toBe(true);
+      const ensured = (await serverFn(
+        page,
+        THEMES,
+        "ensureStorefrontThemeRouteTemplate",
+        { ...retryScope, routePath: RETRY_ROUTE },
+      )) as { success: boolean; data?: { id: string } };
+      expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+      return {
+        scope: retryScope,
+        path: `/store/${retryScope.storefrontId}/themes/${retryScope.themeId}/editor?templateId=${ensured.data!.id}&routePath=${RETRY_ROUTE}`,
+      };
+    } finally {
+      await page.context().close();
+    }
+  }
+
+  test("2B: only the loader's module changed elsewhere; retrying the reorder must not write a rewrite the newest Theme refuses", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { scope: retryScope, path } = await freshRetryTheme(browser);
+    const sent = await openRetryEditor(page, path);
+    const before = await rawRouteRow(retryScope);
+    expect(storedOrder(before.content)).toEqual(["hero", "banner"]);
+
+    // Another tab changes only the loader's module. The route file is
+    // untouched, and on the newest Theme the route is a loader route.
+    await saveFromAnotherTab(browser, retryScope, RETRY_DATA_FILE, DATA_PAGE);
+    expect(await rawRouteRow(retryScope)).toEqual(before);
+
+    // This tab has not looked again, and reorders.
+    await dragFirstOntoSecond(page);
+
+    // Case 1: refused, and the author's edit is kept, unsaved.
+    await expectConflictNotice(page);
+    // The panel names rows after their components.
+    expect(
+      (await sectionOrder(page)).filter((row) => row !== "retry-promo"),
+    ).toEqual(["retry-banner", "retry-hero"]);
+    expect(await rawRouteRow(retryScope), "nothing landed on refusal").toEqual(
+      before,
+    );
+    const refusedSends = sent.length;
+    expect(refusedSends, "the reorder was sent once").toBeGreaterThan(0);
+
+    // Case 2B: the author presses "Save my changes".
+    await page.getByRole("button", { name: "Save my changes" }).click();
+    await page.waitForTimeout(5_000);
+    const after = await rawRouteRow(retryScope);
+    test.info().annotations.push({
+      type: "2B result",
+      description: JSON.stringify({
+        storedOrderAfter: storedOrder(after.content),
+        versionBefore: before.version,
+        versionAfter: after.version,
+        sentAfterRetry: sent.slice(refusedSends).map((entry) => ({
+          name: entry.name,
+          reorderedInBody:
+            entry.body.indexOf('content(\\"banner\\")') >= 0 &&
+            entry.body.indexOf('content(\\"banner\\")') <
+              entry.body.indexOf('content(\\"hero\\")'),
+        })),
+        lockedReasonShown: await page.getByText(LOCKED_REASON).count(),
+      }),
+    });
+    // On the newest Theme this reorder is refused by the structure lock, so
+    // the stored route must still be in its original order.
+    expect(
+      storedOrder(after.content),
+      "a retried Design reorder wrote a rewrite the newest Theme refuses",
+    ).toEqual(["hero", "banner"]);
+  });
+
+  test("2A: another tab changed the route file itself; the file version holds", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { scope: retryScope, path } = await freshRetryTheme(browser);
+    const sent = await openRetryEditor(page, path);
+    const theirs = `${RETRY_ROUTE_SOURCE}\n// saved from another tab\n`;
+    await saveFromAnotherTab(browser, retryScope, RETRY_ROUTE_FILE, theirs);
+    const stored = await rawRouteRow(retryScope);
+    expect(stored.content).toBe(theirs);
+
+    await dragFirstOntoSecond(page);
+    await expectConflictNotice(page);
+    const refusedSends = sent.length;
+    const retry = page.getByRole("button", { name: "Save my changes" });
+    if (await retry.isVisible().catch(() => false)) await retry.click();
+    await page.waitForTimeout(5_000);
+    test.info().annotations.push({
+      type: "2A result",
+      description: JSON.stringify({
+        sendsAfterRetry: sent.length - refusedSends,
+        retryOffered: await retry.isVisible().catch(() => false),
+      }),
+    });
+    // Whatever the tab sends, it is against the version it last saw, so the
+    // other tab's save stays.
+    expect(await rawRouteRow(retryScope)).toEqual(stored);
+  });
+
+  test("3: the author overwriting the route in Code is not blocked", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+    const { scope: retryScope, path } = await freshRetryTheme(browser);
+    await saveFromAnotherTab(browser, retryScope, RETRY_DATA_FILE, DATA_PAGE);
+    await openRetryEditor(page, path);
+    const current = await rawRouteRow(retryScope);
+    // Design refuses this route's structure now; the author writes it in
+    // Code, which is their explicit choice.
+    const mine = current.content.replace(
+      '      <RetryHero {...content("hero")} />\n      <RetryBanner {...content("banner")} />',
+      '      <RetryBanner {...content("banner")} />\n      <RetryHero {...content("hero")} />',
+    );
+    expect(mine).not.toBe(current.content);
+    const saved = await writeThemeFiles(page, retryScope, [
+      { path: RETRY_ROUTE_FILE, content: mine },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    expect(storedOrder((await rawRouteRow(retryScope)).content)).toEqual([
+      "banner",
+      "hero",
+    ]);
+  });
+});
