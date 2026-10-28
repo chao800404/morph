@@ -1208,9 +1208,9 @@ export default function ${name}({ title = "${name} default", className }: { titl
   const LOCK_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { morph } from "../morph/content";
-import LockHero from "../components/LockHero";
-import LockPromo from "../components/LockPromo";
-import LockBanner from "../components/LockBanner";
+import LockHero from "../components/sections/LockHero";
+import LockPromo from "../components/sections/LockPromo";
+import LockBanner from "../components/sections/LockBanner";
 
 const getPage = createServerFn().handler(() => morph.pages.get("${LOCK_ROUTE}"));
 
@@ -1231,13 +1231,16 @@ function LoaderLockRoute() {
 }
 `;
   const LOCK_FILES = [
-    { path: "src/components/LockHero.tsx", content: lockComponent("LockHero") },
     {
-      path: "src/components/LockPromo.tsx",
+      path: "src/components/sections/LockHero.tsx",
+      content: lockComponent("LockHero"),
+    },
+    {
+      path: "src/components/sections/LockPromo.tsx",
       content: lockComponent("LockPromo"),
     },
     {
-      path: "src/components/LockBanner.tsx",
+      path: "src/components/sections/LockBanner.tsx",
       content: lockComponent("LockBanner"),
     },
     { path: "src/routes/loader-lock.tsx", content: LOCK_ROUTE_SOURCE },
@@ -1373,8 +1376,9 @@ function LoaderLockRoute() {
     });
     const reasons = page.getByText(LOCKED_REASON, { exact: true });
 
-    // Bind: the panel still offers LockBanner as a candidate; binding it would
-    // write `{...content("x")}` into the loader route.
+    // Bind: the panel still offers LockBanner, a library section, as a
+    // candidate; binding it would write `{...content("x")}` into the loader
+    // route.
     const bind = page.getByRole("button", {
       name: "Bind LockBanner",
       exact: true,
@@ -1383,9 +1387,9 @@ function LoaderLockRoute() {
     await bind.click();
     await expect(reasons).toHaveCount(1, { timeout: 30_000 });
 
-    // Delete a loader section from its row.
+    // Delete a loader section from its row, named after its component.
     await page
-      .getByRole("button", { name: "promo", exact: true })
+      .getByRole("button", { name: /^lock-promo( section)?$/ })
       .click({ button: "right" });
     await page.getByRole("menuitem", { name: "Delete" }).click();
     const dialog = page.getByRole("alertdialog");
