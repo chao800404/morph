@@ -738,12 +738,15 @@ export type StorefrontPreviewAccessKind = "iframe" | "tab";
  * §4). The code is bound to the hash of a binder cookie that only the browser
  * which began the exchange holds, so a code obtained anywhere else cannot be
  * redeemed. Only hashes are stored; a code lives about a minute and is consumed
- * once.
+ * once. Each code belongs to one authorization flow (`flow_id`, an identifier
+ * the editor generates per attempt, not a secret): a redeem must name its own
+ * flow, and a flow has at most one code.
  */
 export const storefrontPreviewAccessExchanges = sqliteTable(
   "storefront_preview_access_exchanges",
   {
     id: text("id").primaryKey(),
+    flowId: text("flow_id").notNull(),
     codeHash: text("code_hash").notNull(),
     binderHash: text("binder_hash").notNull(),
     kind: text("kind").$type<StorefrontPreviewAccessKind>().notNull(),
@@ -765,6 +768,9 @@ export const storefrontPreviewAccessExchanges = sqliteTable(
     uniqueIndex("storefront_preview_access_exchanges_code_idx").on(
       table.codeHash,
     ),
+    uniqueIndex("storefront_preview_access_exchanges_flow_idx").on(
+      table.flowId,
+    ),
   ],
 );
 
@@ -773,12 +779,14 @@ export const storefrontPreviewAccessExchanges = sqliteTable(
  * to one preview host, from one browsing context. Every preview request is
  * checked against it, its session, its user and its Theme again, so signing
  * out, a ban, a role change or a removed Theme refuses the next request. Only
- * the token's SHA-256 is stored.
+ * the token's SHA-256 is stored. A grant comes from exactly one flow's code,
+ * and a flow yields at most one grant.
  */
 export const storefrontPreviewAccessGrants = sqliteTable(
   "storefront_preview_access_grants",
   {
     id: text("id").primaryKey(),
+    flowId: text("flow_id").notNull(),
     tokenHash: text("token_hash").notNull(),
     kind: text("kind").$type<StorefrontPreviewAccessKind>().notNull(),
     sessionId: text("session_id").notNull(),
@@ -799,6 +807,7 @@ export const storefrontPreviewAccessGrants = sqliteTable(
     uniqueIndex("storefront_preview_access_grants_token_idx").on(
       table.tokenHash,
     ),
+    uniqueIndex("storefront_preview_access_grants_flow_idx").on(table.flowId),
     index("storefront_preview_access_grants_session_idx").on(table.sessionId),
     index("storefront_preview_access_grants_user_idx").on(table.userId),
   ],

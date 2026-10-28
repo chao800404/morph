@@ -11,6 +11,7 @@ import { and, eq, gt, isNull, sql } from "drizzle-orm";
 /** What a consumed exchange code was issued for. */
 export type PreviewAccessExchangeRecord = Readonly<{
   id: string;
+  flowId: string;
   kind: StorefrontPreviewAccessKind;
   sessionId: string;
   userId: string;
@@ -30,6 +31,7 @@ export type PreviewAccessAuthorityRecord = Readonly<{
 
 export type PreviewAccessGrantRecord = Readonly<{
   id: string;
+  flowId: string;
   kind: StorefrontPreviewAccessKind;
   sessionId: string;
   userId: string;
@@ -44,6 +46,7 @@ export type PreviewAccessGrantRecord = Readonly<{
 
 const exchangeColumns = {
   id: storefrontPreviewAccessExchanges.id,
+  flowId: storefrontPreviewAccessExchanges.flowId,
   kind: storefrontPreviewAccessExchanges.kind,
   sessionId: storefrontPreviewAccessExchanges.sessionId,
   userId: storefrontPreviewAccessExchanges.userId,
@@ -54,8 +57,13 @@ const exchangeColumns = {
 };
 
 export const storefrontPreviewAccessDal = {
+  /**
+   * Stores one flow's code. A flow has at most one: issuing again for a flow
+   * that already has a code stores nothing and returns false.
+   */
   async issueExchange(data: {
     id: string;
+    flowId: string;
     codeHash: string;
     binderHash: string;
     kind: StorefrontPreviewAccessKind;
@@ -67,33 +75,40 @@ export const storefrontPreviewAccessDal = {
     previewHost: string;
     expiresAt: string;
     now: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const db = await getDb();
-    await db.insert(storefrontPreviewAccessExchanges).values({
-      id: data.id,
-      codeHash: data.codeHash,
-      binderHash: data.binderHash,
-      kind: data.kind,
-      sessionId: data.sessionId,
-      userId: data.userId,
-      storefrontId: data.storefrontId,
-      themeId: data.themeId,
-      previewId: data.previewId,
-      previewHost: data.previewHost,
-      expiresAt: data.expiresAt,
-      createdAt: data.now,
-      updatedAt: data.now,
-    });
+    const inserted = await db
+      .insert(storefrontPreviewAccessExchanges)
+      .values({
+        id: data.id,
+        flowId: data.flowId,
+        codeHash: data.codeHash,
+        binderHash: data.binderHash,
+        kind: data.kind,
+        sessionId: data.sessionId,
+        userId: data.userId,
+        storefrontId: data.storefrontId,
+        themeId: data.themeId,
+        previewId: data.previewId,
+        previewHost: data.previewHost,
+        expiresAt: data.expiresAt,
+        createdAt: data.now,
+        updatedAt: data.now,
+      })
+      .onConflictDoNothing({ target: storefrontPreviewAccessExchanges.flowId })
+      .returning({ id: storefrontPreviewAccessExchanges.id });
+    return inserted.length === 1;
   },
 
   /**
    * Consumes one code in a single statement, or nothing. It matches only when
-   * every condition holds at once: the code, the binder the redeeming browser
-   * presented, the host and context it is redeemed on, not yet consumed, not
+   * every condition holds at once: the code, the flow the redeem names, the
+   * binder the redeeming browser presented, the host and context it is redeemed on, not yet consumed, not
    * expired, and its session still signed in. A wrong binder therefore
    * consumes nothing, and of two concurrent redeems exactly one gets the row.
    */
   async consumeExchange(data: {
+    flowId: string;
     codeHash: string;
     binderHash: string;
     previewHost: string;
@@ -108,6 +123,7 @@ export const storefrontPreviewAccessDal = {
       .where(
         and(
           eq(storefrontPreviewAccessExchanges.codeHash, data.codeHash),
+          eq(storefrontPreviewAccessExchanges.flowId, data.flowId),
           eq(storefrontPreviewAccessExchanges.binderHash, data.binderHash),
           eq(storefrontPreviewAccessExchanges.previewHost, data.previewHost),
           eq(storefrontPreviewAccessExchanges.kind, data.kind),
@@ -166,6 +182,7 @@ export const storefrontPreviewAccessDal = {
 
   async insertGrant(data: {
     id: string;
+    flowId: string;
     tokenHash: string;
     kind: StorefrontPreviewAccessKind;
     sessionId: string;
@@ -180,6 +197,7 @@ export const storefrontPreviewAccessDal = {
     const db = await getDb();
     await db.insert(storefrontPreviewAccessGrants).values({
       id: data.id,
+      flowId: data.flowId,
       tokenHash: data.tokenHash,
       kind: data.kind,
       sessionId: data.sessionId,
@@ -243,6 +261,7 @@ export const storefrontPreviewAccessDal = {
     const { grant, session, user } = row;
     return {
       id: grant.id,
+      flowId: grant.flowId,
       kind: grant.kind,
       sessionId: grant.sessionId,
       userId: grant.userId,

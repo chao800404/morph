@@ -1,5 +1,6 @@
 CREATE TABLE `storefront_preview_access_exchanges` (
 	`id` text PRIMARY KEY NOT NULL,
+	`flow_id` text NOT NULL,
 	`code_hash` text NOT NULL,
 	`binder_hash` text NOT NULL,
 	`kind` text NOT NULL,
@@ -19,8 +20,10 @@ CREATE TABLE `storefront_preview_access_exchanges` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `storefront_preview_access_exchanges_code_idx` ON `storefront_preview_access_exchanges` (`code_hash`);--> statement-breakpoint
+CREATE UNIQUE INDEX `storefront_preview_access_exchanges_flow_idx` ON `storefront_preview_access_exchanges` (`flow_id`);--> statement-breakpoint
 CREATE TABLE `storefront_preview_access_grants` (
 	`id` text PRIMARY KEY NOT NULL,
+	`flow_id` text NOT NULL,
 	`token_hash` text NOT NULL,
 	`kind` text NOT NULL,
 	`session_id` text NOT NULL,
@@ -39,5 +42,6 @@ CREATE TABLE `storefront_preview_access_grants` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `storefront_preview_access_grants_token_idx` ON `storefront_preview_access_grants` (`token_hash`);--> statement-breakpoint
+CREATE UNIQUE INDEX `storefront_preview_access_grants_flow_idx` ON `storefront_preview_access_grants` (`flow_id`);--> statement-breakpoint
 CREATE INDEX `storefront_preview_access_grants_session_idx` ON `storefront_preview_access_grants` (`session_id`);--> statement-breakpoint
 CREATE INDEX `storefront_preview_access_grants_user_idx` ON `storefront_preview_access_grants` (`user_id`);

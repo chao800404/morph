@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "8c21f52a-f5a3-4f23-bdc3-2905964683e7",
+  "id": "6130d556-676c-4547-a682-fcecfd913261",
   "prevId": "1842a6cb-3bf9-49a7-8d45-d2498284f6ec",
   "tables": {
     "asset_folders": {
@@ -3288,6 +3288,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "flow_id": {
+          "name": "flow_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "code_hash": {
           "name": "code_hash",
           "type": "text",
@@ -3394,6 +3401,13 @@
             "code_hash"
           ],
           "isUnique": true
+        },
+        "storefront_preview_access_exchanges_flow_idx": {
+          "name": "storefront_preview_access_exchanges_flow_idx",
+          "columns": [
+            "flow_id"
+          ],
+          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -3435,6 +3449,13 @@
           "name": "id",
           "type": "text",
           "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "flow_id": {
+          "name": "flow_id",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
@@ -3535,6 +3556,13 @@
           "name": "storefront_preview_access_grants_token_idx",
           "columns": [
             "token_hash"
+          ],
+          "isUnique": true
+        },
+        "storefront_preview_access_grants_flow_idx": {
+          "name": "storefront_preview_access_grants_flow_idx",
+          "columns": [
+            "flow_id"
           ],
           "isUnique": true
         },
