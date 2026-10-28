@@ -6,7 +6,7 @@ import {
   storefrontThemes,
 } from "@/db/storefront.schema";
 import type { StorefrontPreviewAccessKind } from "@/db/storefront.schema";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 
 /** What a consumed exchange code was issued for. */
 export type PreviewAccessExchangeRecord = Readonly<{
@@ -40,6 +40,8 @@ export type PreviewAccessGrantRecord = Readonly<{
   previewId: string;
   previewHost: string;
   expiresAt: string;
+  createdAt: string;
+  activatedAt: string | null;
   revokedAt: string | null;
 }> &
   PreviewAccessAuthorityRecord;
@@ -270,6 +272,8 @@ export const storefrontPreviewAccessDal = {
       previewId: grant.previewId,
       previewHost: grant.previewHost,
       expiresAt: grant.expiresAt,
+      createdAt: grant.createdAt,
+      activatedAt: grant.activatedAt,
       revokedAt: grant.revokedAt,
       session: session?.id
         ? {
@@ -282,6 +286,40 @@ export const storefrontPreviewAccessDal = {
         : null,
       themeLive: Boolean(row.themeId),
     };
+  },
+
+  /**
+   * Records a grant's first use, in one statement, and says whether the grant
+   * is now activated. It matches only a grant that is not revoked and either
+   * is already activated or is still inside its activation window
+   * (`created_at > activatableAfter`). `activated_at` keeps the first value
+   * written, so of two concurrent first uses both succeed and one time is
+   * kept. Nothing else changes: in particular not `expires_at`.
+   */
+  async activateGrant(data: {
+    id: string;
+    activatableAfter: string;
+    now: string;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db
+      .update(storefrontPreviewAccessGrants)
+      .set({
+        activatedAt: sql`coalesce(${storefrontPreviewAccessGrants.activatedAt}, ${data.now})`,
+      })
+      .where(
+        and(
+          eq(storefrontPreviewAccessGrants.id, data.id),
+          isNull(storefrontPreviewAccessGrants.revokedAt),
+          isNull(storefrontPreviewAccessGrants.deletedAt),
+          or(
+            isNotNull(storefrontPreviewAccessGrants.activatedAt),
+            gt(storefrontPreviewAccessGrants.createdAt, data.activatableAfter),
+          ),
+        ),
+      )
+      .returning({ id: storefrontPreviewAccessGrants.id });
+    return rows.length === 1;
   },
 
   /**

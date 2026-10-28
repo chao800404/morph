@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6130d556-676c-4547-a682-fcecfd913261",
+  "id": "078bd3d2-cd73-49d2-9332-217cd415d939",
   "prevId": "1842a6cb-3bf9-49a7-8d45-d2498284f6ec",
   "tables": {
     "asset_folders": {
@@ -3520,6 +3520,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "activated_at": {
+          "name": "activated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "revoked_at": {

@@ -7,6 +7,7 @@ import { getDb } from "@/db";
 import * as schema from "@/db/schema";
 import { storefrontPreviewAccessDal as dal } from "../../dal/storefront-preview-access.dal";
 import {
+  PREVIEW_ACCESS_ACTIVATION_WINDOW_MS,
   PREVIEW_ACCESS_EXCHANGE_TTL_MS,
   createPreviewAccessSecret,
   PREVIEW_ACCESS_GRANT_MAX_MS,
@@ -408,6 +409,179 @@ describe("preview access flows", () => {
 
     expect((await verify(working, later(3000))).ok).toBe(true);
     expect((await verify(retried, later(3000))).ok).toBe(true);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT count(*) AS n FROM storefront_preview_access_grants WHERE revoked_at IS NOT NULL",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+});
+
+describe("preview access grant activation", () => {
+  const WINDOW = PREVIEW_ACCESS_ACTIVATION_WINDOW_MS;
+  /** Grants in these tests are created by redeem at later(1000). */
+  const CREATED = 1000;
+
+  async function redeemed(overrides: Parameters<typeof issue>[0] = {}) {
+    const issued = await issue(overrides);
+    const result = await redeem(issued);
+    if (!result.ok) throw new Error(result.reason);
+    return result;
+  }
+
+  const row = (id: string) =>
+    sqlite
+      .prepare(
+        "SELECT activated_at, expires_at, revoked_at FROM storefront_preview_access_grants WHERE id = ?",
+      )
+      .get(id) as {
+      activated_at: string | null;
+      expires_at: string;
+      revoked_at: string | null;
+    };
+
+  it("is not activated by issuing or redeeming, only by the first request that verifies", async () => {
+    const { token, grant } = await redeemed();
+    expect(row(grant.id).activated_at).toBeNull();
+
+    expect((await verify(token, later(2000))).ok).toBe(true);
+    expect(row(grant.id).activated_at).toBe(later(2000).toISOString());
+  });
+
+  it("keeps its first activation time and its expiry however often it is used", async () => {
+    const { token, grant } = await redeemed();
+    await verify(token, later(2000));
+    const first = row(grant.id);
+
+    for (const at of [60_000, 10 * 60_000, 6 * 60 * 60_000]) {
+      expect((await verify(token, later(at))).ok).toBe(true);
+    }
+    expect(row(grant.id)).toEqual(first);
+    expect(await verify(token, new Date(first.expires_at))).toEqual({
+      ok: false,
+      reason: "GRANT_EXPIRED",
+    });
+  });
+
+  it("activates just inside its window, is refused at and after it, and stays refused", async () => {
+    const inside = await redeemed();
+    const atEdge = await redeemed();
+
+    expect((await verify(inside.token, later(CREATED + WINDOW - 1))).ok).toBe(
+      true,
+    );
+    expect(await verify(atEdge.token, later(CREATED + WINDOW))).toEqual({
+      ok: false,
+      reason: "GRANT_NOT_ACTIVATED",
+    });
+    expect(await verify(atEdge.token, later(CREATED + 2 * WINDOW))).toEqual({
+      ok: false,
+      reason: "GRANT_NOT_ACTIVATED",
+    });
+    expect(row(atEdge.grant.id).activated_at).toBeNull();
+    expect((await verify(inside.token, later(CREATED + 2 * WINDOW))).ok).toBe(
+      true,
+    );
+  });
+
+  it("is not activated by a request that is refused", async () => {
+    const { token, grant } = await redeemed();
+    expect(
+      await verify(token, later(2000), "pv-preview-b.preview.example.test"),
+    ).toEqual({ ok: false, reason: "HOST_MISMATCH" });
+    sqlite.prepare("UPDATE users SET banned = 1 WHERE id = 'admin-1'").run();
+    expect(await verify(token, later(3000))).toEqual({
+      ok: false,
+      reason: "USER_NOT_AUTHORIZED",
+    });
+    sqlite.prepare("UPDATE users SET banned = 0 WHERE id = 'admin-1'").run();
+    expect(row(grant.id).activated_at).toBeNull();
+
+    expect(await verify(token, later(CREATED + WINDOW))).toEqual({
+      ok: false,
+      reason: "GRANT_NOT_ACTIVATED",
+    });
+  });
+
+  it("lets two concurrent first uses both through and keeps one activation time", async () => {
+    const { token, grant } = await redeemed();
+    const results = await Promise.all([
+      verify(token, later(2000)),
+      verify(token, later(3000)),
+    ]);
+    expect(results.map((result) => result.ok)).toEqual([true, true]);
+    expect([later(2000).toISOString(), later(3000).toISOString()]).toContain(
+      row(grant.id).activated_at,
+    );
+  });
+
+  it("records activation once: a second activation keeps the first time", async () => {
+    const { grant } = await redeemed();
+    const activatableAfter = later(2000 - WINDOW).toISOString();
+    expect(
+      await dal.activateGrant({
+        id: grant.id,
+        activatableAfter,
+        now: later(2000).toISOString(),
+      }),
+    ).toBe(true);
+    expect(
+      await dal.activateGrant({
+        id: grant.id,
+        activatableAfter,
+        now: later(5000).toISOString(),
+      }),
+    ).toBe(true);
+    expect(row(grant.id).activated_at).toBe(later(2000).toISOString());
+  });
+
+  it("refuses a first use whose grant was revoked after it was read", async () => {
+    const { token, grant } = await redeemed();
+    const original = dal.findGrantByTokenHash;
+    const read = vi
+      .spyOn(dal, "findGrantByTokenHash")
+      .mockImplementationOnce(async (hash) => {
+        const record = await original(hash);
+        sqlite
+          .prepare(
+            "UPDATE storefront_preview_access_grants SET revoked_at = ? WHERE id = ?",
+          )
+          .run(later(1500).toISOString(), grant.id);
+        return record;
+      });
+    expect(await verify(token, later(2000))).toEqual({
+      ok: false,
+      reason: "GRANT_NOT_ACTIVATED",
+    });
+    read.mockRestore();
+    expect(row(grant.id).activated_at).toBeNull();
+  });
+
+  it("leaves a tab's grant in use alone while another tab's lost grant lapses and that tab recovers", async () => {
+    const working = await redeemed();
+    await verify(working.token, later(2000));
+    const before = row(working.grant.id);
+
+    // Another tab's 303 is lost: its grant is never used.
+    const lostFlow = await issue({
+      binderHash: await binderHash(OTHER_BINDER),
+    });
+    const lost = await redeem(lostFlow, { binder: OTHER_BINDER });
+    if (!lost.ok) throw new Error(lost.reason);
+    // That tab starts one new flow, and its new grant is used.
+    const recovered = await redeemed();
+    expect((await verify(recovered.token, later(3000))).ok).toBe(true);
+
+    const after = later(CREATED + 2 * WINDOW);
+    expect((await verify(working.token, after)).ok).toBe(true);
+    expect((await verify(recovered.token, after)).ok).toBe(true);
+    expect(await verify(lost.token, after)).toEqual({
+      ok: false,
+      reason: "GRANT_NOT_ACTIVATED",
+    });
+    expect(row(working.grant.id)).toEqual(before);
     expect(
       sqlite
         .prepare(

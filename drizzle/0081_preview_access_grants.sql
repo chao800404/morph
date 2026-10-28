@@ -33,6 +33,7 @@ CREATE TABLE `storefront_preview_access_grants` (
 	`preview_id` text NOT NULL,
 	`preview_host` text NOT NULL,
 	`expires_at` text NOT NULL,
+	`activated_at` text,
 	`revoked_at` text,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,

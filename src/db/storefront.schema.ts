@@ -780,7 +780,10 @@ export const storefrontPreviewAccessExchanges = sqliteTable(
  * checked against it, its session, its user and its Theme again, so signing
  * out, a ban, a role change or a removed Theme refuses the next request. Only
  * the token's SHA-256 is stored. A grant comes from exactly one flow's code,
- * and a flow yields at most one grant.
+ * and a flow yields at most one grant. `activated_at` is set once, by the
+ * first preview request that verifies with it; a grant never activated within
+ * a short window after it was created is refused from then on, so a grant
+ * whose cookie never arrived ends by itself without touching any other grant.
  */
 export const storefrontPreviewAccessGrants = sqliteTable(
   "storefront_preview_access_grants",
@@ -800,6 +803,7 @@ export const storefrontPreviewAccessGrants = sqliteTable(
     previewId: text("preview_id").notNull(),
     previewHost: text("preview_host").notNull(),
     expiresAt: text("expires_at").notNull(),
+    activatedAt: text("activated_at"),
     revokedAt: text("revoked_at"),
     ...timestamps,
   },
