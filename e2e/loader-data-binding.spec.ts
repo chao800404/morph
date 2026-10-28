@@ -18,6 +18,7 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
+import { queryLocalD1 } from "./helpers/editor-writes-paused";
 import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
 import { unboundSectionsFixture, UNBOUND_TITLE } from "./helpers/unbound-sections";
 
@@ -1508,28 +1509,11 @@ export const getRetryPage = createServerFn().handler(() =>
 
   /** The route file's row as D1 holds it, read past every server function. */
   async function rawRouteRow(scope: ThemeScope) {
-    const { stdout } = await promisify(execFile)("npx", [
-      "wrangler",
-      "d1",
-      "execute",
-      "DATABASE",
-      "--local",
-      ...((process.env.MORPH_E2E_TRANSPORT ?? "local-sidecar") ===
-      "local-sidecar"
-        ? ["--env", "local_preview_e2e"]
-        : []),
-      "--persist-to",
-      process.env.MORPH_E2E_STATE_DIR!,
-      "--json",
-      "--command",
+    const rows = queryLocalD1<{ content: string; version: number }>(
       `SELECT content, version FROM storefront_theme_files
        WHERE theme_id = '${scope.themeId}' AND path = '${RETRY_ROUTE_FILE}'
          AND deleted_at IS NULL;`,
-    ]);
-    const parsed = JSON.parse(stdout) as Array<{
-      results: Array<{ content: string; version: number }>;
-    }>;
-    const rows = parsed[0]?.results ?? [];
+    );
     expect(rows, "exactly one live route row").toHaveLength(1);
     return rows[0]!;
   }
