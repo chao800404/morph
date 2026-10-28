@@ -68,7 +68,7 @@ describe("lifecycle run D1 reads", () => {
     await holdExclusive(filename, 1_500);
     const started = Date.now();
     expect(
-      queryLifecycleD1(root, "SELECT value FROM probe WHERE value = ?", "ok"),
+      queryLifecycleD1(root, "SELECT value FROM probe WHERE value = ?1", "ok"),
     ).toEqual([{ value: "ok" }]);
     expect(Date.now() - started).toBeGreaterThan(500);
   });
@@ -90,5 +90,17 @@ describe("lifecycle run D1 reads", () => {
     expect(() => queryLifecycleD1(root, "SELECT value FROM probe")).toThrow(
       /found 2/,
     );
+  });
+
+  it("binds numbered parameters in D1 order even when referenced out of order", () => {
+    const { root } = database();
+    expect(
+      queryLifecycleD1(
+        root,
+        "SELECT ?2 AS second, ?1 AS first, ?1 AS repeated",
+        "one",
+        "two",
+      ),
+    ).toEqual([{ second: "two", first: "one", repeated: "one" }]);
   });
 });

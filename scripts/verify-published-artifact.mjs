@@ -250,7 +250,14 @@ export function queryLifecycleD1(persistTo, sql, ...params) {
     timeout: 10_000,
   });
   try {
-    return db.prepare(sql).all(...params);
+    const statement = db.prepare(sql);
+    if (params.length === 0) return statement.all();
+    // The lifecycle queries use D1's numbered placeholders (?1, ?2, ...).
+    // better-sqlite3 treats those as named bindings, not positional ones.
+    const bindings = Object.fromEntries(
+      params.map((value, index) => [String(index + 1), value]),
+    );
+    return statement.all(bindings);
   } finally {
     db.close();
   }
