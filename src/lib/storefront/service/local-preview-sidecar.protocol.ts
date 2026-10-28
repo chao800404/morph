@@ -85,6 +85,13 @@ export const LOCAL_PREVIEW_SIDECAR_MAX_BINARY_BYTES = 5 * 1024 * 1024;
 export const LOCAL_PREVIEW_SIDECAR_TOKEN_HEADER = "x-morph-local-preview-token";
 
 /**
+ * One id per Worker request, so a failure the Worker logs can be matched to
+ * what the sidecar saw of it, or to the fact that it saw nothing.
+ */
+export const LOCAL_PREVIEW_SIDECAR_REQUEST_ID_HEADER =
+  "x-morph-sidecar-request-id";
+
+/**
  * The largest body the sidecar will read.
  *
  * A whole Theme travels in a `start`, and the editor's own file-application
