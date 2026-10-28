@@ -21,6 +21,60 @@ import {
   MARKER,
 } from "./helpers/editor-writes-paused";
 
+async function expectConflictNotice(page: Page, timeout = 30_000) {
+  const theme = page.getByText("Remote source changes detected in this theme");
+  const file = page.getByText(/^Server conflict \(v\d+\)/);
+  const message =
+    "Expected Remote source changes detected in this theme or Server conflict (vN)";
+
+  // The notices can appear together: a union locator would fail strict mode.
+  await expect
+    .poll(async () => (await theme.isVisible()) || (await file.isVisible()), {
+      timeout,
+      message,
+    })
+    .toBe(true);
+  const themeVisible = await theme.isVisible();
+  const fileVisible = await file.isVisible();
+  const visibleNotices = [
+    {
+      locator: theme,
+      visible: themeVisible,
+      text: "Remote source changes detected in this theme",
+    },
+    { locator: file, visible: fileVisible, text: /^Server conflict \(v\d+\)/ },
+  ].filter((notice) => notice.visible);
+  expect(visibleNotices.length, message).toBeGreaterThan(0);
+  for (const notice of visibleNotices) {
+    await expect(notice.locator).toHaveText(notice.text);
+  }
+}
+
+test.describe("conflict notice assertion", () => {
+  for (const [name, theme, file] of [
+    ["theme only", true, false],
+    ["file only", false, true],
+    ["both", true, true],
+    ["neither", false, false],
+  ] as const) {
+    test(name, async ({ page }) => {
+      await page.setContent(`
+        ${theme ? '<div role="status"><p class="font-medium text-foreground">Remote source changes detected in this theme</p></div>' : ""}
+        ${file ? '<div><span class="font-semibold">Conflict:</span><span>Server conflict (v4). Reload remote or explicitly overwrite.</span></div>' : ""}
+      `);
+      if (theme || file) {
+        await expectConflictNotice(page, 1_000);
+      } else {
+        const missing = expectConflictNotice(page, 1_000);
+        await expect(missing).rejects.toThrow(
+          "Remote source changes detected in this theme",
+        );
+        await expect(missing).rejects.toThrow("Server conflict");
+      }
+    });
+  }
+});
+
 test.describe("unsaved work when the signed-in account changes", () => {
   test.skip(!EDITOR_PATH, "Set E2E_EDITOR_PATH to open the editor.");
   restoreHeroAfterFailure();
@@ -323,11 +377,7 @@ test.describe("unsaved work when the signed-in account changes", () => {
       // The file's notice is two spans, "Conflict:" and "Server conflict
       // (vN)…", with no space between them in the document, so it is matched
       // by the second span alone.
-      await expect(
-        page
-          .getByText("Remote source changes detected in this theme")
-          .or(page.getByText(/^Server conflict \(v\d+\)/)),
-      ).toBeVisible({ timeout: 30_000 });
+      await expectConflictNotice(page);
       const kept = await readSource(page, hero);
       expect(kept).toContain(`${MARKER} mine`);
       expect(kept).not.toContain(`${MARKER} theirs`);
