@@ -15,6 +15,12 @@ export declare function queryRunD1(
   ...params: unknown[]
 ): Promise<Record<string, unknown>[]>;
 
+export declare function queryLifecycleD1(
+  persistTo: string,
+  sql: string,
+  ...params: unknown[]
+): Record<string, unknown>[];
+
 export declare function writeRunD1(
   options: { persistTo: string; workDir: string },
   sql: string,
