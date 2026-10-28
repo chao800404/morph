@@ -729,6 +729,81 @@ export const storefrontBuildPreviewCapabilities = sqliteTable(
   ],
 );
 
+/** Which browsing context a Live Preview credential was issued to. */
+export type StorefrontPreviewAccessKind = "iframe" | "tab";
+
+/**
+ * A one-time code that turns the editor's signed-in session into a Live
+ * Preview credential for one browser (handoff/2026-10-28/preview-access-design.md
+ * §4). The code is bound to the hash of a binder cookie that only the browser
+ * which began the exchange holds, so a code obtained anywhere else cannot be
+ * redeemed. Only hashes are stored; a code lives about a minute and is consumed
+ * once.
+ */
+export const storefrontPreviewAccessExchanges = sqliteTable(
+  "storefront_preview_access_exchanges",
+  {
+    id: text("id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    binderHash: text("binder_hash").notNull(),
+    kind: text("kind").$type<StorefrontPreviewAccessKind>().notNull(),
+    sessionId: text("session_id").notNull(),
+    userId: text("user_id").notNull(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    previewId: text("preview_id").notNull(),
+    previewHost: text("preview_host").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    consumedAt: text("consumed_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_preview_access_exchanges_code_idx").on(
+      table.codeHash,
+    ),
+  ],
+);
+
+/**
+ * The credential behind a Live Preview cookie: one signed-in session's access
+ * to one preview host, from one browsing context. Every preview request is
+ * checked against it, its session, its user and its Theme again, so signing
+ * out, a ban, a role change or a removed Theme refuses the next request. Only
+ * the token's SHA-256 is stored.
+ */
+export const storefrontPreviewAccessGrants = sqliteTable(
+  "storefront_preview_access_grants",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    kind: text("kind").$type<StorefrontPreviewAccessKind>().notNull(),
+    sessionId: text("session_id").notNull(),
+    userId: text("user_id").notNull(),
+    storefrontId: text("storefront_id")
+      .notNull()
+      .references(() => storefronts.id, { onDelete: "cascade" }),
+    themeId: text("theme_id")
+      .notNull()
+      .references(() => storefrontThemes.id, { onDelete: "cascade" }),
+    previewId: text("preview_id").notNull(),
+    previewHost: text("preview_host").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    revokedAt: text("revoked_at"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("storefront_preview_access_grants_token_idx").on(
+      table.tokenHash,
+    ),
+    index("storefront_preview_access_grants_session_idx").on(table.sessionId),
+    index("storefront_preview_access_grants_user_idx").on(table.userId),
+  ],
+);
+
 /**
  * Access to one Theme's source from a developer's own machine, held by one
  * user: what `morph-sync` presents to read and write the workspace it keeps
