@@ -570,4 +570,107 @@ test.describe("Starter upgrade, reviewed by the author", () => {
       )[0]?.type ?? null,
     ).toBeNull();
   });
+
+  test("Q. a Theme of unknown origin, upgraded in part: still pending, and the next review offers only what is left", async ({
+    page,
+  }) => {
+    // Its own setup and clean-up: the content-fields/link group removed, the
+    // content module an older Starter's, and no version recorded.
+    const GROUP = ["src/morph/content-fields.ts", "src/morph/link.tsx"];
+    await openEditor(page);
+    const original = await workspace(page);
+    for (const path of [...GROUP, CONTENT_MODULE]) {
+      expect(original[path], path).toBeDefined();
+    }
+    try {
+      const removed = await removeThemeFiles(page, scope!, GROUP);
+      expect(removed.success, JSON.stringify(removed)).toBe(true);
+      await save(page, [
+        {
+          path: CONTENT_MODULE,
+          content: LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+        },
+      ]);
+      clearStarterVersion();
+
+      await openEditor(page);
+      await expect(upgradeNotice(page)).toHaveAttribute(
+        "data-editor-starter-upgrade",
+        "pending",
+      );
+      let dialog = await openReview(page);
+      let starter = dialog.getByRole("region", { name: "Starter upgrade" });
+      await expect(
+        starter.getByRole("button", { name: CONTENT_MODULE }),
+      ).toBeVisible();
+      for (const path of GROUP) {
+        await expect(starter.getByRole("button", { name: path })).toHaveCount(
+          0,
+        );
+        await expect(
+          starter.locator('[data-kept-reason="origin-unknown"]', {
+            hasText: path,
+          }),
+        ).toHaveCount(1);
+      }
+      await expect(starter).toContainText(
+        "cannot tell whether you removed it",
+      );
+      await applyReview(page, dialog, /^Apply selected$/);
+
+      // Applied in part: the version is still unrecorded, the notice stays
+      // and says so, and the group was not added.
+      await expect(upgradeNotice(page)).toHaveAttribute(
+        "data-editor-starter-upgrade",
+        "pending",
+        { timeout: 30_000 },
+      );
+      await expect(upgradeNotice(page)).toContainText(
+        "still does not record which Starter it came from",
+      );
+      expect(
+        d1(
+          `SELECT json_type(metadata, '$.starterTemplateVersion') AS type FROM storefront_themes WHERE id = '${scope!.themeId}'`,
+        )[0]?.type ?? null,
+      ).toBeNull();
+      const applied = await workspace(page);
+      expect(applied[CONTENT_MODULE]).not.toBe(
+        LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+      );
+      for (const path of GROUP) expect(applied[path], path).toBeUndefined();
+
+      // Opened again: still pending, and the review no longer offers the
+      // content module, but still says why the group is not added.
+      await openEditor(page);
+      await expect(upgradeNotice(page)).toHaveAttribute(
+        "data-editor-starter-upgrade",
+        "pending",
+      );
+      dialog = await openReview(page);
+      starter = dialog.getByRole("region", { name: "Starter upgrade" });
+      await expect(
+        starter.getByRole("button", { name: CONTENT_MODULE }),
+      ).toHaveCount(0);
+      await expect(starter).toContainText(
+        "cannot tell whether you removed it",
+      );
+      for (const path of GROUP) {
+        await expect(
+          starter.locator('[data-kept-reason="origin-unknown"]', {
+            hasText: path,
+          }),
+        ).toHaveCount(1);
+      }
+      expect(await workspace(page)).toEqual(applied);
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+    } finally {
+      await openEditor(page);
+      await save(page, [
+        ...GROUP.map((path) => ({ path, content: original[path]! })),
+        { path: CONTENT_MODULE, content: original[CONTENT_MODULE]! },
+      ]);
+      setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    }
+  });
 });

@@ -224,11 +224,13 @@ export function EditorStarterUpgradeNotice({
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
-    onSuccess: async () => {
+    onSuccess: async (applied) => {
       setOpen(false);
       setReview(null);
       setMessage(
-        "Applied. The preview is reloading; publish when you are ready.",
+        applied.starter && !applied.versionRecorded
+          ? "Applied what could be applied. This Theme still does not record which Starter it came from, so the files Morph could not place stay as they are and this notice stays. The preview is reloading; publish when you are ready."
+          : "Applied. The preview is reloading; publish when you are ready.",
       );
       await onApplied();
     },

@@ -634,8 +634,15 @@ export type StarterUpgradeApplyResult =
       status: "applied";
       filesSaved: boolean;
       sourceGeneration: number;
-      /** Whether the Starter part was applied, and so its version recorded. */
+      /** Whether the Starter part was applied. */
       starter: boolean;
+      /**
+       * Whether applying it recorded the current Starter version. Not when the
+       * Theme records none and the review could not tell where some of its
+       * files came from (`origin-unknown`): applying the rest leaves it as
+       * unknown as it was, so it stays pending and is offered again.
+       */
+      versionRecorded: boolean;
       catalog: boolean;
     }
   | { status: "not-applicable" }
@@ -887,7 +894,13 @@ export const storefrontDal = {
         throw error;
       }
     }
-    if (starter) {
+    // A partial upgrade of a Theme whose origin is unknown is not a known
+    // origin, nor a complete upgrade: no version, and no home rule, which
+    // belongs to the home route this upgrade then holds back.
+    const versionRecorded =
+      starter !== null &&
+      !starter.kept.some((item) => item.reason === "origin-unknown");
+    if (versionRecorded) {
       assertStarterUpgradeRecorded(
         await ensureStarterHomeDocument(db, data.themeId, {
           filesSaved,
@@ -901,6 +914,7 @@ export const storefrontDal = {
       filesSaved,
       sourceGeneration: savedGeneration,
       starter: starter !== null,
+      versionRecorded,
       catalog: catalog !== null,
     };
   },

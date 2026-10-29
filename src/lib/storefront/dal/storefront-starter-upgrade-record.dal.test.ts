@@ -1468,6 +1468,7 @@ describe("applying a reviewed Starter upgrade", () => {
       filesSaved: true,
       sourceGeneration: 6,
       starter: true,
+      versionRecorded: true,
       catalog: false,
     });
     expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
@@ -1569,6 +1570,144 @@ describe("a Starter file the author removed", () => {
     expect((files as { path: string }[]).map((file) => file.path)).not.toContain(
       "src/morph/link.tsx",
     );
+  });
+});
+
+describe("a Theme of unknown origin, upgraded only in part", () => {
+  const GROUP = ["src/morph/content-fields.ts", "src/morph/link.tsx"];
+
+  function storedTemplates() {
+    return sqlite
+      .prepare(
+        "SELECT id, document, draft_generation, updated_at FROM storefront_theme_templates ORDER BY id",
+      )
+      .all();
+  }
+
+  async function review() {
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    if (!reviewed) throw new Error("no review");
+    return reviewed;
+  }
+
+  function status() {
+    return storefrontDal.readStarterUpgradeStatus({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+  }
+
+  it("stays pending after the apply, and the next review offers only what is left", async () => {
+    // No version, and none of the content-fields/link group: whether the
+    // Theme never had it or its author removed it cannot be told.
+    seedTheme({});
+    workspace.files.set(
+      THEME_ID,
+      legacyWorkspace().filter((file) => !GROUP.includes(file.path)),
+    );
+    workspace.generation.set(THEME_ID, 5);
+    const before = { row: storedRawRow(), templates: storedTemplates() };
+
+    await expect(status()).resolves.toMatchObject({
+      versionState: "pending",
+      storedVersion: null,
+    });
+    const first = await review();
+    for (const path of GROUP) {
+      expect(first.review.kept).toContainEqual({
+        path,
+        reason: "origin-unknown",
+      });
+    }
+    const firstPaths = first.review.changes.map((change) => change.path);
+    expect(firstPaths).toContain("src/morph/content.ts");
+    for (const path of GROUP) expect(firstPaths).not.toContain(path);
+
+    await expect(
+      storefrontDal.applyReviewedStarterUpgrade({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+        createdBy: "user-a",
+        expectedSourceGeneration: 5,
+        starterDigest: first.review.digest,
+      }),
+    ).resolves.toMatchObject({
+      status: "applied",
+      starter: true,
+      versionRecorded: false,
+    });
+    expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+    const [, , written] = workspace.saveFilesBatch.mock.calls[0]!;
+    const writtenFiles = written as { path: string; content: string }[];
+    for (const path of GROUP) {
+      expect(writtenFiles.map((file) => file.path)).not.toContain(path);
+    }
+    // Not turned into a known origin, nor a complete upgrade: no version,
+    // no record write, and no home rule.
+    expect(storedRawRow()).toEqual(before.row);
+    expect(storedTemplates()).toEqual(before.templates);
+    expect(hooks.recordWriteAttempts).toBe(0);
+
+    // The store saved what was applied; the editor is opened again.
+    const saved = new Map(writtenFiles.map((file) => [file.path, file]));
+    workspace.files.set(
+      THEME_ID,
+      workspace.files.get(THEME_ID)!.map((file) =>
+        saved.has(file.path)
+          ? {
+              ...file,
+              content: saved.get(file.path)!.content,
+              version: file.version + 1,
+            }
+          : file,
+      ),
+    );
+    workspace.generation.set(THEME_ID, 6);
+    await expect(openEditor()).resolves.toBe(false);
+    await expect(status()).resolves.toMatchObject({
+      versionState: "pending",
+      storedVersion: null,
+    });
+
+    // The next review: what was applied is not offered again, and what
+    // could not be placed is still said, not quietly added.
+    const second = await review();
+    const secondPaths = second.review.changes.map((change) => change.path);
+    for (const path of writtenFiles.map((file) => file.path)) {
+      expect(secondPaths).not.toContain(path);
+    }
+    for (const path of GROUP) {
+      expect(secondPaths).not.toContain(path);
+      expect(second.review.kept).toContainEqual({
+        path,
+        reason: "origin-unknown",
+      });
+    }
+    expect(storedRawRow()).toEqual(before.row);
+  });
+
+  it("records the version once nothing is of unknown origin", async () => {
+    seedTheme({});
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const reviewed = await review();
+    expect(
+      reviewed.review.kept.filter((item) => item.reason === "origin-unknown"),
+    ).toEqual([]);
+
+    await expect(
+      storefrontDal.applyReviewedStarterUpgrade({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+        createdBy: "user-a",
+        expectedSourceGeneration: 5,
+        starterDigest: reviewed.review.digest,
+      }),
+    ).resolves.toMatchObject({ status: "applied", versionRecorded: true });
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
   });
 });
 
