@@ -61,13 +61,15 @@ import { storefrontDal } from "./storefront.dal";
 function applyReviewed(
   files: Parameters<typeof reviewStarterThemeUpgrade>[0],
   expectedSourceGeneration: number,
+  // The version the test's database records, as the DAL reads it.
+  storedVersion = 27,
 ) {
   return storefrontDal.applyReviewedStarterUpgrade({
     storefrontId: "storefront-a",
     themeId: "theme-a",
     createdBy: "user-a",
     expectedSourceGeneration,
-    starterDigest: reviewStarterThemeUpgrade(files).digest,
+    starterDigest: reviewStarterThemeUpgrade(files, { storedVersion }).digest,
   });
 }
 
@@ -367,7 +369,7 @@ describe("storefrontDal starter workspace provisioning", () => {
     mocks.listFiles.mockResolvedValue(files);
     mocks.getSourceGeneration.mockResolvedValue(12);
 
-    await expect(applyReviewed(files, 12)).resolves.toMatchObject({
+    await expect(applyReviewed(files, 12, 2)).resolves.toMatchObject({
       status: "applied",
     });
 
