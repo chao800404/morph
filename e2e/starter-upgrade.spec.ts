@@ -48,7 +48,9 @@ import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/defau
  *   R. a Theme created before the Starter had its account and order-transfer
  *      pages: the review offers them unselected and holds back the Header
  *      that links to /account; applying without them adds neither and keeps
- *      the Header; selecting them adds both and updates the Header.
+ *      the Header, and no notice asks again; the Command Palette reopens the
+ *      review, which still offers them, and selecting them adds both and
+ *      updates the Header.
  *
  * Markers are random, so no component default can produce them. With the
  * container transport each case also builds and checks the isolated Build
@@ -735,11 +737,34 @@ test.describe("Starter upgrade, reviewed by the author", () => {
       expect(after[HEADER]).toBe(legacyHeader);
       expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
-      // Selected: both are added, and the Header updated with them.
-      setStarterVersion(26);
+      // Reopened: on the current Starter no notice asks again, but the
+      // Command Palette opens the same review, which still offers them and
+      // does not say they were removed.
       await openEditor(page);
-      dialog = await openReview(page);
+      await expect(upgradeNotice(page)).toHaveCount(0);
+      await page.getByRole("button", { name: "Code", exact: true }).click();
+      await page.getByTitle("Command Palette (Ctrl+Shift+P)").click();
+      await page
+        .getByRole("option", { name: /Theme: Review Starter Upgrade/ })
+        .click();
+      dialog = page.getByRole("dialog", { name: "Review the Starter upgrade" });
+      await expect(dialog).toBeVisible({ timeout: 30_000 });
       starter = dialog.getByRole("region", { name: "Starter upgrade" });
+      for (const path of PAGES) {
+        await expect(
+          starter.locator('[data-kept-reason="new-in-starter"]', {
+            hasText: path,
+          }),
+        ).toHaveCount(1);
+        await expect(
+          starter.locator('[data-kept-reason="missing"]', { hasText: path }),
+        ).toHaveCount(0);
+      }
+      await expect(
+        dialog.getByRole("button", { name: /^Apply selected$/ }),
+      ).toBeDisabled();
+
+      // Selected: both are added, and the Header updated with them.
       await starter
         .getByRole("checkbox", { name: "Add the Starter's new pages" })
         .click();

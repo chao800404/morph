@@ -2030,7 +2030,7 @@ describe("the Starter's new pages on a Theme created without them", () => {
     );
   });
 
-  it("offers them unselected; applying the review creates neither and keeps the Header", async () => {
+  it("offers them unselected; applying the review creates neither and keeps the Header; reopened, it still offers them and selecting adds them", async () => {
     const reviewed = await review();
     expect(reviewed.versionState).toBe("available");
     expect(reviewed.review.optional?.paths).toEqual(PAGES);
@@ -2061,13 +2061,57 @@ describe("the Starter's new pages on a Theme created without them", () => {
     expect(files().some((file) => file.content.includes('"/account"'))).toBe(
       false,
     );
-    // Declining is the author's decision: the version is recorded as it
-    // always was, and the next review offers them no more.
+    // Not selecting them is "not this time": the version is recorded as it
+    // always was, so no notice asks again on the next open.
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    await expect(
+      storefrontDal.readStarterUpgradeStatus({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+      }),
+    ).resolves.toEqual({
+      versionState: "current",
+      storedVersion: CURRENT,
+      currentVersion: CURRENT,
+      catalogPending: null,
+    });
+
+    // Reopened (from the Command Palette), the review still offers them, in
+    // the same words, and selecting them adds them and the held-back Header.
     const again = await review();
     expect(again.versionState).toBe("current");
-    expect(again.review.optional).toBeNull();
     expect(again.review.changes).toEqual([]);
+    expect(again.review.optional?.paths).toEqual(PAGES);
+    for (const path of PAGES) {
+      expect(again.review.kept).toContainEqual({
+        path,
+        reason: "new-in-starter",
+      });
+      expect(again.review.kept).not.toContainEqual({ path, reason: "missing" });
+    }
+    expect(again.review.kept).toContainEqual({
+      path: HEADER,
+      reason: "needs-route",
+    });
+
+    await expect(
+      apply(again.sourceGeneration, again.review.optional!.digest),
+    ).resolves.toMatchObject({
+      status: "applied",
+      filesSaved: true,
+      starter: true,
+      versionRecorded: true,
+    });
+    const current = new Map(
+      starterThemeWorkspaceFiles().map((file) => [file.path, file.content]),
+    );
+    for (const path of [...PAGES, HEADER]) {
+      expect(contentOf(path), path).toBe(current.get(path));
+    }
+    expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    const settled = await review();
+    expect(settled.review.optional).toBeNull();
+    expect(settled.review.changes).toEqual([]);
   });
 
   it("applying the review with them selected creates both and updates the Header, in one save", async () => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpCircle, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,10 @@ type Review = {
   starter: Part<StarterUpgradeKeptReason> & {
     /** The review with the Starter's new pages selected, under its digest. */
     optional:
-      | (Omit<Part<StarterUpgradeKeptReason>, "applies"> & { paths: string[] })
+      | (Omit<Part<StarterUpgradeKeptReason>, "applies"> & {
+          paths: string[];
+          pages: { path: string; route: string; purpose: string }[];
+        })
       | null;
   };
   catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
@@ -156,6 +159,11 @@ function KeptList<Reason extends string>({
  * parts to apply; applying sends the review's generation and each chosen
  * part's digest, so what is written is what was shown, and a Theme that moved
  * on since is refused with nothing written.
+ *
+ * The notice itself shows only while an upgrade or the catalog is waiting.
+ * The same review also opens from the Command Palette (`reviewRequest`), so
+ * a Theme on the current Starter can still add the Starter's new pages it
+ * did not select before, without a notice reminding it on every open.
  */
 export function EditorStarterUpgradeNotice({
   status,
@@ -163,6 +171,7 @@ export function EditorStarterUpgradeNotice({
   themeId,
   unsavedCount,
   onApplied,
+  reviewRequest = 0,
   className,
 }: {
   status: StarterUpgradeStatusDTO | null | undefined;
@@ -171,6 +180,11 @@ export function EditorStarterUpgradeNotice({
   /** Applying waits until nothing in this tab is unsaved. */
   unsavedCount: number;
   onApplied: () => void | Promise<void>;
+  /**
+   * Opens the review when it changes: the Command Palette's way in, which
+   * does not depend on the notice being shown.
+   */
+  reviewRequest?: number;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -254,11 +268,20 @@ export function EditorStarterUpgradeNotice({
     },
   });
 
+  const handledRequest = useRef(reviewRequest);
+  const startReview = reviewMutation.mutate;
+  useEffect(() => {
+    if (reviewRequest === handledRequest.current) return;
+    handledRequest.current = reviewRequest;
+    startReview();
+  }, [reviewRequest, startReview]);
+
   const waiting =
     !!status &&
     (status.versionState !== "current" || status.catalogPending !== null);
-  if (!status || !waiting) {
-    return message ? (
+  const quiet =
+    !status || !waiting ? (
+      message ? (
       <div
         role="status"
         className={cn(
@@ -273,25 +296,30 @@ export function EditorStarterUpgradeNotice({
           Dismiss
         </Button>
       </div>
+      ) : null
     ) : null;
-  }
 
   // The Starter part is offered while its version is not current, even with
   // no file to change: applying it records the version. The catalog part is
   // offered when it has files to write, and shown when it keeps any.
-  const starterShown =
+  // On the current Starter with nothing to change, the part is shown only to
+  // offer the Starter's new pages, and applies only once they are selected.
+  const starterHasWork =
     !!review &&
     (review.versionState !== "current" || review.starter.changes.length > 0);
+  const starterShown =
+    !!review && (starterHasWork || !!review.starter.optional);
   const starterOffered = starterShown && review!.starter.applies;
   const catalogShown =
     !!review &&
     review.catalog.applies &&
     (review.catalog.changes.length > 0 || review.catalog.kept.length > 0);
   const catalogOffered = catalogShown && review!.catalog.changes.length > 0;
-  const applyStarter = starterOffered && chosen.starter;
   const applyCatalog = catalogOffered && chosen.catalog;
   const pagesOffered = starterOffered && !!review!.starter.optional;
-  const addPages = pagesOffered && applyStarter && chosen.pages;
+  const addPages = pagesOffered && chosen.starter && chosen.pages;
+  const applyStarter =
+    starterOffered && chosen.starter && (starterHasWork || addPages);
   // What the Starter part writes and keeps: with the new pages once the
   // author selects them, which is a plan of its own with its own digest.
   const starterPart = review
@@ -312,6 +340,7 @@ export function EditorStarterUpgradeNotice({
 
   return (
     <>
+      {status && waiting ? (
       <div
         role="status"
         className={cn(
@@ -340,6 +369,9 @@ export function EditorStarterUpgradeNotice({
           Review upgrade
         </Button>
       </div>
+      ) : (
+        quiet
+      )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
@@ -359,7 +391,7 @@ export function EditorStarterUpgradeNotice({
                     <label className="flex items-center gap-2 font-medium">
                       <Checkbox
                         aria-label="Apply the Starter upgrade"
-                        checked={applyStarter}
+                        checked={starterOffered && chosen.starter}
                         disabled={!starterOffered}
                         onCheckedChange={(value) =>
                           setChosen((prev) => ({
@@ -386,7 +418,7 @@ export function EditorStarterUpgradeNotice({
                               <Checkbox
                                 aria-label="Add the Starter's new pages"
                                 checked={addPages}
-                                disabled={!pagesOffered || !applyStarter}
+                                disabled={!pagesOffered || !chosen.starter}
                                 onCheckedChange={(value) =>
                                   setChosen((prev) => ({
                                     ...prev,
@@ -398,12 +430,18 @@ export function EditorStarterUpgradeNotice({
                             </label>
                             <p className="text-muted-foreground">
                               The Starter now has these pages and this Theme
-                              does not. They are added only if you select this.
+                              does not. They are added only if you select this;
+                              if you do not, they stay offered here.
                             </p>
-                            <ul className="font-mono">
-                              {review.starter.optional.paths.map((path) => (
-                                <li key={path} className="truncate">
-                                  {path}
+                            <ul className="space-y-1">
+                              {review.starter.optional.pages.map((page) => (
+                                <li key={page.path} data-starter-optional-page={page.path}>
+                                  <div className="truncate font-mono">
+                                    {page.path}
+                                  </div>
+                                  <div className="text-muted-foreground">
+                                    {page.purpose}
+                                  </div>
                                 </li>
                               ))}
                             </ul>
@@ -414,8 +452,14 @@ export function EditorStarterUpgradeNotice({
                         </h3>
                         {starterPart.changes.length === 0 ? (
                           <p className="text-muted-foreground">
-                            No file needs changing. Applying records Starter{" "}
-                            {review.currentVersion} for this Theme.
+                            {review.versionState === "current" ? (
+                              "No file needs changing, and this Theme is on the current Starter."
+                            ) : (
+                              <>
+                                No file needs changing. Applying records
+                                Starter {review.currentVersion} for this Theme.
+                              </>
+                            )}
                           </p>
                         ) : (
                           <ChangeList

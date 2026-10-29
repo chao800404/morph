@@ -375,6 +375,23 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
 
 - **新增任何升級規則都必須同時提升這個版本常數**，否則既有 Theme 永遠不會再跑升級，
   規則等於沒有生效。
+- **Starter 檔案缺少時預設視為作者刪除，不補回**（`starter-theme-upgrade-review.ts` 的
+  `withoutRemovedFiles`；`src/morph/content.ts` 另見 §4.4，規則不變）。**例外：Starter 的選加頁面**
+  （`STARTER_OPTIONAL_ROUTES`：`src/routes/account.tsx` 客戶帳戶頁、`src/routes/order-transfer.tsx`
+  訂單轉移確認頁，Core 寄出的確認連結指向它）。f010e91 加入這兩頁時沒有提升版本，97e9474（26）、
+  52e760b 與 2c49fe5（27）建立的 source-first Theme 從來沒有它們，版本與檔案都分不出「從未有過」
+  與「作者刪除」。因此：
+  - 只依檔案判定：Start 的 source-first workspace、兩頁都不存在、升級本身的計畫不會建立它們，
+    就在既有審查中列出（`new-in-starter`），**預設不選、不自動建立、不寫成作者刪除**。記錄的版本
+    不參與判定（記到 29 之後照樣列出）；只有其中一頁存在時，另一頁才視為作者刪除（`missing`）。
+  - 作者勾選才建立：勾選後是另一份計畫與 digest（`review.optional`），套用時送那份 digest，走同一條
+    `applyReviewedStarterUpgrade`、同樣的 OCC 與 digest 檢查，不另開寫入路徑。
+  - 不勾選只代表「這次不加」：版本照常記錄，提醒不再出現；之後可從 Code 模式 Command Palette 的
+    「Theme: Review Starter Upgrade」開同一個審查再加入。不得為此加上反覆出現的提醒。
+  - 計畫中新內容會加上指向這兩頁連結的檔案（例如 Header 的 `/account`），頁面在套用後不存在時保留
+    原樣（`needs-route`），不讓升級產生指向不存在頁面的連結。
+  - 這條規則**沒有提升版本常數**：受影響的 Theme 記錄在 26／27，本來就看得到升級提醒；已在 29 的
+    Theme 透過上述 Command Palette 入口取得。提升版本只會讓所有 Theme 重新出現提醒。
 - 平台擁有的 toolchain 版本（React、TanStack、Vite、Tailwind 等）必須**修正**，不是
   只在缺少時補上。build 契約以精確相等驗證，一個「存在但版本錯誤」的相依會讓 workspace
   永久無法 build，而純增量的升級救不回來。客戶自行加入的套件版本則必須保留。

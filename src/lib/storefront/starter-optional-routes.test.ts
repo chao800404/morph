@@ -11,9 +11,9 @@
  * when the author selects them; until then nothing the upgrade writes links
  * to them.
  *
- * The workspace is the one 97e9474 created, byte for byte
- * (`__fixtures__/starter-history/v26-97e9474.json`, its `sha256` is of
- * `JSON.stringify(files)`).
+ * The workspaces are the ones 97e9474, 52e760b and 2c49fe5 created, byte for
+ * byte (`__fixtures__/starter-history/v26-97e9474.json`, `v27-52e760b.json`,
+ * `v27-2c49fe5.json`; each `sha256` is of `JSON.stringify(files)`).
  */
 import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -30,7 +30,6 @@ import {
 import {
   reviewStarterThemeUpgrade,
   STARTER_OPTIONAL_ROUTES,
-  STARTER_OPTIONAL_ROUTES_SHIPPED_FROM,
 } from "./starter-theme-upgrade-review";
 import { deriveThemeSourceContract } from "./theme-source-contract";
 
@@ -46,7 +45,28 @@ type File = { id: string; path: string; content: string; version: number };
 const FIXTURE_DIR = join(__dirname, "__fixtures__", "starter-history");
 const readFixture = (name: string) =>
   JSON.parse(readFileSync(join(FIXTURE_DIR, name), "utf8")) as Fixture;
-const BEFORE_PAGES = readFixture("v26-97e9474.json");
+
+/** Every Starter commit whose new Themes lacked the pages, and its fixture. */
+const WINDOW = [
+  {
+    name: "v26-97e9474.json",
+    commit: "97e94740da99626ec96415d8d8c9aa655432b8da",
+    version: 26,
+    files: 23,
+  },
+  {
+    name: "v27-52e760b.json",
+    commit: "52e760bcc813228728f4afa768c1ab3f20682038",
+    version: 27,
+    files: 29,
+  },
+  {
+    name: "v27-2c49fe5.json",
+    commit: "2c49fe531a0c7d53a824ebe56690dee3ccab41b8",
+    version: 27,
+    files: 23,
+  },
+] as const;
 
 const toFiles = (files: ReadonlyArray<{ path: string; content: string }>) =>
   files.map((file, index) => ({
@@ -55,7 +75,6 @@ const toFiles = (files: ReadonlyArray<{ path: string; content: string }>) =>
     content: file.content,
     version: 1,
   }));
-const beforePages = (): File[] => toFiles(BEFORE_PAGES.files);
 
 const CURRENT = STOREFRONT_STARTER_TEMPLATE_VERSION;
 const ACCOUNT = "src/routes/account.tsx";
@@ -141,32 +160,34 @@ function expectBuildContract(files: File[]) {
   expect(contract.complete).toBe(true);
 }
 
-describe("the 97e9474 workspace fixture", () => {
+describe.each(WINDOW)("the $name workspace fixture", (entry) => {
+  const fixture = readFixture(entry.name);
+
   it("is the workspace that commit created, and names its source", () => {
-    expect(BEFORE_PAGES.starterVersion).toBe(26);
-    expect(BEFORE_PAGES.sourceCommit).toBe(
-      "97e94740da99626ec96415d8d8c9aa655432b8da",
-    );
-    expect(BEFORE_PAGES.sourcePath).toContain(
+    expect(fixture.starterVersion).toBe(entry.version);
+    expect(fixture.sourceCommit).toBe(entry.commit);
+    expect(fixture.sourcePath).toContain(
       "src/lib/storefront/starter-theme-files.ts",
     );
     expect(
       crypto
         .createHash("sha256")
-        .update(JSON.stringify(BEFORE_PAGES.files))
+        .update(JSON.stringify(fixture.files))
         .digest("hex"),
-    ).toBe(BEFORE_PAGES.sha256);
-    expect(BEFORE_PAGES.files).toHaveLength(23);
+    ).toBe(fixture.sha256);
+    expect(fixture.files).toHaveLength(entry.files);
   });
 
   it("is source-first, without the pages, and links to neither", () => {
-    const paths = BEFORE_PAGES.files.map((file) => file.path);
+    const paths = fixture.files.map((file) => file.path);
     expect(paths).not.toContain("morph.theme.json");
     expect(paths).not.toContain("src/pages/index.tsx");
     for (const path of PAGES) expect(paths).not.toContain(path);
-    expect(linksToPages(beforePages())).toEqual(new Map());
+    expect(linksToPages(toFiles(fixture.files))).toEqual(new Map());
   });
+});
 
+describe("the pages and the version window", () => {
   it("the pages are the ones today's Starter has, and only its Header links to them", () => {
     for (const { path } of STARTER_OPTIONAL_ROUTES) {
       expect(today.has(path), path).toBe(true);
@@ -176,23 +197,43 @@ describe("the 97e9474 workspace fixture", () => {
     );
   });
 
-  it("the v26 and v27 window is why the version cannot tell: v28 is the first fixture with the pages", () => {
+  it("the version cannot tell: 26 and 27 each span Themes with and without them", () => {
     const has = (name: string) =>
       readFixture(name).files.some((file) => file.path === ACCOUNT);
+    // 3007c63 (26, manifest-era) and the three source-first commits lack
+    // them; v28 has them. f010e91, still 27, added them (not a fixture).
     expect(has("v26.json")).toBe(false);
+    for (const { name } of WINDOW) expect(has(name), name).toBe(false);
     expect(has("v28.json")).toBe(true);
-    expect(STARTER_OPTIONAL_ROUTES_SHIPPED_FROM).toBe(28);
+  });
+
+  it("says what each page is for", () => {
+    expect(
+      STARTER_OPTIONAL_ROUTES.map(({ path, route }) => [path, route]),
+    ).toEqual([
+      [ACCOUNT, "/account"],
+      [ORDER_TRANSFER, "/order-transfer"],
+    ]);
+    expect(STARTER_OPTIONAL_ROUTES[0]!.purpose).toMatch(/^Customer account page/);
+    expect(STARTER_OPTIONAL_ROUTES[1]!.purpose).toMatch(
+      /^Order transfer confirmation page/,
+    );
   });
 });
 
-describe("a Theme created without the Starter's account and order-transfer pages", () => {
-  describe.each([26, 27, null])("recorded at %s", (storedVersion) => {
+describe.each(WINDOW)("a Theme created without the pages ($name)", (entry) => {
+  const fixture = readFixture(entry.name);
+  const beforePages = (): File[] => toFiles(fixture.files);
+  const BEFORE_PAGES = fixture;
+
+  describe.each([entry.version, null])("recorded at %s", (storedVersion) => {
     const review = () =>
       reviewStarterThemeUpgrade(beforePages(), { storedVersion });
 
     it("offers the pages, unselected: the plan does not create them", () => {
       const reviewed = review();
       expect(reviewed.optional?.paths).toEqual(PAGES);
+      expect(reviewed.optional?.pages).toEqual(STARTER_OPTIONAL_ROUTES);
       for (const path of PAGES) {
         expect(reviewed.plan.files.map((file) => file.path)).not.toContain(
           path,
@@ -284,7 +325,7 @@ describe("a Theme created without the Starter's account and order-transfer pages
 
   it("once added and recorded, a review offers and holds nothing about them", () => {
     const reviewed = reviewStarterThemeUpgrade(beforePages(), {
-      storedVersion: 26,
+      storedVersion: entry.version,
     });
     const after = applyPlan(beforePages(), reviewed.optional!.plan);
     const again = reviewStarterThemeUpgrade(after, { storedVersion: CURRENT });
@@ -295,36 +336,48 @@ describe("a Theme created without the Starter's account and order-transfer pages
     }
   });
 
-  it("once declined and recorded, they are not offered again, and the Header stays held back", () => {
-    // Declining is the author's decision: the version is recorded as current,
-    // and from then on the absence reads as any other missing Starter file.
-    const reviewed = reviewStarterThemeUpgrade(beforePages(), {
-      storedVersion: 26,
-    });
-    const after = applyPlan(beforePages(), reviewed.plan);
-    const again = reviewStarterThemeUpgrade(after, { storedVersion: CURRENT });
-    expect(again.optional).toBeNull();
-    expect(again.changes).toEqual([]);
-    expect(again.kept).toEqual(
-      expect.arrayContaining([
-        { path: ACCOUNT, reason: "missing" },
-        { path: ORDER_TRANSFER, reason: "missing" },
-        { path: HEADER, reason: "needs-route" },
-      ]),
-    );
-  });
+  // Not selecting them is "not this time": the version is recorded as
+  // current, and the next review, opened from the Command Palette since no
+  // notice shows, offers them again, in the same words.
+  it.each([entry.version, null])(
+    "declined at %s, then recorded: the next review still offers them, and selecting them adds them and the Header",
+    (storedVersion) => {
+      const first = reviewStarterThemeUpgrade(beforePages(), { storedVersion });
+      const declined = applyPlan(beforePages(), first.plan);
+      const again = reviewStarterThemeUpgrade(declined, {
+        storedVersion: CURRENT,
+      });
+      expect(again.changes).toEqual([]);
+      expect(again.optional?.paths).toEqual(PAGES);
+      for (const path of PAGES) {
+        expect(again.kept).toContainEqual({ path, reason: "new-in-starter" });
+        expect(again.kept).not.toContainEqual({ path, reason: "missing" });
+      }
+      expect(again.kept).toContainEqual({ path: HEADER, reason: "needs-route" });
 
-  it("declined while the version stays unrecorded, they are offered again", () => {
-    const reviewed = reviewStarterThemeUpgrade(beforePages(), {
-      storedVersion: null,
-    });
-    const after = applyPlan(beforePages(), reviewed.plan);
-    const again = reviewStarterThemeUpgrade(after, { storedVersion: null });
-    expect(again.optional?.paths).toEqual(PAGES);
-  });
+      const added = applyPlan(declined, again.optional!.plan);
+      for (const path of [...PAGES, HEADER]) {
+        expect(added.find((file) => file.path === path)?.content, path).toBe(
+          today.get(path),
+        );
+      }
+      expect(
+        again.optional!.changes.map((c) => `${c.operation} ${c.path}`).sort(),
+      ).toEqual(
+        [`update ${HEADER}`, ...PAGES.map((path) => `create ${path}`)].sort(),
+      );
+      expect(danglingPageLinks(added)).toEqual([]);
+      expectBuildContract(added);
+      const settled = reviewStarterThemeUpgrade(added, {
+        storedVersion: CURRENT,
+      });
+      expect(settled.optional).toBeNull();
+      expect(settled.changes).toEqual([]);
+    },
+  );
 });
 
-describe("Themes whose state says they had the pages", () => {
+describe("Themes that may have had the pages", () => {
   const sourceFirstToday = (edit: (files: File[]) => File[]) =>
     edit(toFiles(starterThemeWorkspaceFiles()));
   const without =
@@ -332,17 +385,20 @@ describe("Themes whose state says they had the pages", () => {
     (files: File[]) =>
       files.filter((file) => !paths.includes(file.path));
 
-  it.each([28, CURRENT])(
-    "recorded at %i and without both: not offered, listed as missing",
+  // The files cannot tell a Theme whose author removed both from one that
+  // never had them, whatever version it records: both are offered, never
+  // added unasked, and never said to be removed.
+  it.each([27, 28, CURRENT, null])(
+    "recorded at %s and without both: offered, not created, not called missing",
     (storedVersion) => {
       const reviewed = reviewStarterThemeUpgrade(
         sourceFirstToday(without(...PAGES)),
         { storedVersion },
       );
-      expect(reviewed.optional).toBeNull();
+      expect(reviewed.optional?.paths).toEqual(PAGES);
       expect(reviewed.changes).toEqual([]);
       for (const path of PAGES) {
-        expect(reviewed.kept).toContainEqual({ path, reason: "missing" });
+        expect(reviewed.kept).toContainEqual({ path, reason: "new-in-starter" });
       }
     },
   );

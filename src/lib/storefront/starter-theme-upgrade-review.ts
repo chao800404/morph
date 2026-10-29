@@ -76,6 +76,16 @@ export type StarterUpgradePlanReview = {
 export type StarterUpgradeOptionalAdd = StarterUpgradePlanReview & {
   /** The pages it adds, each `new-in-starter` in the review without it. */
   paths: string[];
+  /** Each page it adds, with the path it serves and what it is for. */
+  pages: StarterOptionalRoute[];
+};
+
+/** A Starter page that is only ever added when the author selects it. */
+export type StarterOptionalRoute = {
+  path: string;
+  route: string;
+  /** What the page is for, as the review tells the author. */
+  purpose: string;
 };
 
 export type StarterUpgradeReview = StarterUpgradePlanReview & {
@@ -201,24 +211,25 @@ function shippedIn(path: string, version: number): boolean {
  * source-first Themes created without them (52e760b, 2c49fe5) and with them
  * (f010e91 on), and version 26 spans 97e9474, created without them. So
  * neither the recorded version nor the files can tell a Theme that never had
- * them from one whose author removed them. A source-first Theme without them
- * is offered them, unselected; only the author's selection adds them.
+ * them from one whose author removed them, and a version recorded by a later
+ * upgrade says nothing about them either. A source-first Theme without them
+ * is offered them, unselected, at every review; only the author's selection
+ * adds them, and not selecting them is never read as having removed them.
  */
-export const STARTER_OPTIONAL_ROUTES: ReadonlyArray<{
-  path: string;
-  route: string;
-}> = [
-  { path: "src/routes/account.tsx", route: "/account" },
-  { path: "src/routes/order-transfer.tsx", route: "/order-transfer" },
+export const STARTER_OPTIONAL_ROUTES: ReadonlyArray<StarterOptionalRoute> = [
+  {
+    path: "src/routes/account.tsx",
+    route: "/account",
+    purpose:
+      "Customer account page (/account): the signed-in customer's details, addresses and orders. The Starter's Header links to it.",
+  },
+  {
+    path: "src/routes/order-transfer.tsx",
+    route: "/order-transfer",
+    purpose:
+      "Order transfer confirmation page (/order-transfer): where a customer accepts or declines an order transfer. The confirmation links Morph sends point to it.",
+  },
 ];
-
-/**
- * The first version every Theme started with them (the v28 fixture has them,
- * v26 and v27 Themes may not). A Theme recorded at this version or later
- * that lacks them had them, so it is not offered them again: they are
- * `missing`, as any removed Starter file is.
- */
-export const STARTER_OPTIONAL_ROUTES_SHIPPED_FROM = 28;
 
 /**
  * Whether a source file names `route` as a link target: a string literal that
@@ -388,23 +399,16 @@ function withoutRemovedFiles(
  * The Starter's new pages this Theme is offered: those it does not have, on
  * a source-first workspace whose upgrade would not add them by itself.
  *
- * Not offered when the Theme has one of them (it had the pair, so the other
- * was removed), nor when its recorded version is one every Theme started
- * with them (`STARTER_OPTIONAL_ROUTES_SHIPPED_FROM`): there, as for any
- * Starter file, its absence is the author's removal.
+ * Decided from the files alone. The recorded version does not enter into it:
+ * 26 and 27 span Themes with and without them, and a Theme that declined
+ * them still records the current version afterwards. Not offered when the
+ * Theme has one of them: it had the pair, so the other was removed.
  */
 function offeredStarterRoutes(
   existing: ReadonlyMap<string, ExistingFile>,
   plan: StarterThemeWorkspaceUpgradePlan,
-  storedVersion: number | null,
 ): string[] {
   if (existing.has("src/pages/index.tsx")) return [];
-  if (
-    storedVersion !== null &&
-    storedVersion >= STARTER_OPTIONAL_ROUTES_SHIPPED_FROM
-  ) {
-    return [];
-  }
   if (STARTER_OPTIONAL_ROUTES.some(({ path }) => existing.has(path))) return [];
   const planned = new Set(plan.files.map((file) => file.path));
   const today = new Set(starterThemeWorkspaceFiles().map((file) => file.path));
@@ -494,7 +498,7 @@ export function reviewStarterThemeUpgrade(
   const upgrade = createStarterThemeWorkspaceUpgradePlan(existingFiles, {
     editAuthoredFiles: false,
   });
-  const offered = offeredStarterRoutes(existing, upgrade, options.storedVersion);
+  const offered = offeredStarterRoutes(existing, upgrade);
   const variant = (add: readonly string[]) => {
     const { plan, kept } = withoutRemovedFiles(
       upgrade,
@@ -509,6 +513,14 @@ export function reviewStarterThemeUpgrade(
     applies: true,
     ...variant([]),
     optional:
-      offered.length === 0 ? null : { ...variant(offered), paths: offered },
+      offered.length === 0
+        ? null
+        : {
+            ...variant(offered),
+            paths: offered,
+            pages: STARTER_OPTIONAL_ROUTES.filter(({ path }) =>
+              offered.includes(path),
+            ),
+          },
   };
 }

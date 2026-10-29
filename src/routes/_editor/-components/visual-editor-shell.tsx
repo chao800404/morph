@@ -3148,6 +3148,13 @@ export function VisualEditorShell({
   const [monacoDirtyFiles, setMonacoDirtyFiles] = useState<string[]>([]);
   const [isFlushingCodeChanges, setIsFlushingCodeChanges] = useState(false);
   const editorCodeWorkspaceRef = useRef<EditorCodeWorkspaceHandle>(null);
+  // The Command Palette opens the same Starter upgrade review as the notice,
+  // also when no notice is shown.
+  const [starterReviewRequest, setStarterReviewRequest] = useState(0);
+  const requestStarterReview = useCallback(
+    () => setStarterReviewRequest((current) => current + 1),
+    [],
+  );
 
   const themeFilesQuery = useQuery({
     ...storefrontThemeFileQueries.tree(context.storefront.id, context.theme.id),
@@ -12827,6 +12834,7 @@ export function VisualEditorShell({
           />
           <EditorStarterUpgradeNotice
             status={context.starterUpgrade}
+            reviewRequest={starterReviewRequest}
             storefrontId={workspaceScope.storefrontId}
             themeId={workspaceScope.themeId}
             unsavedCount={unsavedWorkspaceFileCount + pendingSourceConflicts.length}
@@ -13017,6 +13025,7 @@ export function VisualEditorShell({
             jumpLocation={jumpLocation}
             onResolveConflict={handleResolveConflict}
             onRestartPreview={retryLivePreview}
+            onReviewStarterUpgrade={requestStarterReview}
             onThemeFilesMoved={handleThemeFilesMoved}
             onDirtyFilesChange={setMonacoDirtyFiles}
             // Typing in Code while a navigation waits on a save cancels it,

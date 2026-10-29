@@ -186,6 +186,7 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
           optional: review.optional
             ? {
                 paths: review.optional.paths,
+                pages: review.optional.pages,
                 digest: review.optional.digest,
                 changes: review.optional.changes,
                 kept: review.optional.kept,

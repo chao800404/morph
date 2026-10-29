@@ -336,6 +336,19 @@ describe("EditorStarterUpgradeNotice", () => {
       ],
       optional: {
         paths: [ACCOUNT, ORDER_TRANSFER],
+        pages: [
+          {
+            path: ACCOUNT,
+            route: "/account",
+            purpose: "Customer account page (/account): for the test.",
+          },
+          {
+            path: ORDER_TRANSFER,
+            route: "/order-transfer",
+            purpose:
+              "Order transfer confirmation page (/order-transfer): for the test.",
+          },
+        ],
         digest: PAGES_DIGEST,
         changes: [
           ...STARTER_PART.changes,
@@ -462,6 +475,87 @@ describe("EditorStarterUpgradeNotice", () => {
         }),
       );
       expect((pagesBox(dialog) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("lists both pages with what each is for", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      const offer = dialog.querySelector("[data-starter-optional-pages]")!;
+      for (const [path, purpose] of [
+        [ACCOUNT, "Customer account page (/account)"],
+        [ORDER_TRANSFER, "Order transfer confirmation page (/order-transfer)"],
+      ]) {
+        const row = offer.querySelector(`[data-starter-optional-page="${path}"]`);
+        expect(row?.textContent).toContain(path);
+        expect(row?.textContent).toContain(purpose);
+      }
+    });
+
+    it("on the current Starter: no notice, the review opens on request, and applies only the selected pages", async () => {
+      const CURRENT_STATUS = {
+        versionState: "current" as const,
+        storedVersion: 29,
+        currentVersion: 29,
+        catalogPending: null,
+      };
+      fns.review.mockResolvedValue({
+        success: true,
+        data: reviewOf({
+          versionState: "current",
+          storedVersion: 29,
+          starter: { ...WITH_PAGES_OFFERED, changes: [] },
+        }),
+      });
+      const onApplied = vi.fn();
+      const client = new QueryClient({
+        defaultOptions: { mutations: { retry: false } },
+      });
+      const view = (reviewRequest: number) => (
+        <QueryClientProvider client={client}>
+          <EditorStarterUpgradeNotice
+            status={CURRENT_STATUS}
+            storefrontId="storefront-a"
+            themeId="theme-a"
+            unsavedCount={0}
+            onApplied={onApplied}
+            reviewRequest={reviewRequest}
+          />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(0));
+      // Nothing reminds the author.
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Review upgrade" })).toBeNull();
+      expect(fns.review).not.toHaveBeenCalled();
+
+      rerender(view(1));
+      const dialog = await screen.findByRole("dialog", {
+        name: "Review the Starter upgrade",
+      });
+      expect(fns.review).toHaveBeenCalledTimes(1);
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      expect(
+        starter.querySelectorAll('[data-kept-reason="new-in-starter"]'),
+      ).toHaveLength(2);
+      const applyButton = () =>
+        screen.getByRole("button", { name: "Apply selected" }) as HTMLButtonElement;
+      // Nothing to apply until the pages are selected.
+      expect(applyButton().disabled).toBe(true);
+
+      fireEvent.click(pagesBox(dialog));
+      expect(applyButton().disabled).toBe(false);
+      fireEvent.click(applyButton());
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: PAGES_DIGEST,
+        },
+      });
     });
   });
 });
