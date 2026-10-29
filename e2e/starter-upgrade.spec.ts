@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { expect, test, type Frame, type Page } from "@playwright/test";
+import { expect, test, type Frame, type Page, type Request } from "@playwright/test";
+import { defaultSerovalPlugins } from "@tanstack/router-core";
+import { fromCrossJSON } from "seroval";
 
 import {
   EDITOR_PATH,
@@ -268,23 +270,44 @@ async function typeHeroMarker(page: Page, marker: string) {
   // test that navigates on either leaves before the save is sent, and the
   // marker never reaches the server (CI run 37964261465). So it waits for
   // the save carrying the marker, and reads the draft back.
+  let saveRequest: Request | null = null;
   const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
-      (response.request().postData() ?? "").includes(marker),
+    (response) => {
+      const hit =
+        response.request().method() === "POST" &&
+        isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
+        (response.request().postData() ?? "").includes(marker);
+      if (hit) saveRequest = response.request();
+      return hit;
+    },
     { timeout: 30_000 },
   );
   // Under the full Start preview the server reads its own content snapshot,
   // which only the sync after this save updates (preview-content-sync.ts).
   // Leaving before it answers can leave that server on the older snapshot,
   // and a later document request would not carry the marker. So it also
-  // waits for that sync to answer that it applied.
+  // waits for that sync: this Theme's, sent after this save was answered
+  // (both times from the browser's own clock), and answering that the
+  // preview reads it.
   const synced = START_PREVIEW
     ? page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" &&
-          isServerFunctionCall(response.url(), "syncThemePreviewContent"),
+        (response) => {
+          const request = response.request();
+          if (
+            request.method() !== "POST" ||
+            !isServerFunctionCall(response.url(), "syncThemePreviewContent") ||
+            !saveRequest
+          ) {
+            return false;
+          }
+          const body = request.postData() ?? "";
+          const save = saveRequest.timing();
+          return (
+            body.includes(scope!.storefrontId) &&
+            body.includes(scope!.themeId) &&
+            request.timing().startTime >= save.startTime + save.responseStart
+          );
+        },
         { timeout: 30_000 },
       )
     : null;
@@ -301,7 +324,20 @@ async function typeHeroMarker(page: Page, marker: string) {
   if (synced) {
     const answer = await synced;
     expect(answer.ok()).toBe(true);
-    expect(await answer.text()).not.toMatch(/"success":\s*false/);
+    // Start encodes a server function's answer with seroval, as
+    // `{ result, error, context }` (start-server-core's
+    // server-functions-handler); decoded with Start's own plugins, so an
+    // unreadable answer fails here, loudly.
+    const decoded = fromCrossJSON(await answer.json(), {
+      refs: new Map(),
+      plugins: defaultSerovalPlugins,
+    }) as { result?: { success?: unknown; data?: { ticket?: unknown } } };
+    expect(decoded.result?.success).toBe(true);
+    const ticket = decoded.result?.data?.ticket;
+    expect(
+      typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0,
+      `the sync names the ticket the preview reads: ${JSON.stringify(decoded)}`,
+    ).toBe(true);
   }
 }
 
