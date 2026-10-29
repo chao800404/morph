@@ -67,9 +67,12 @@ function noticeLine(status: StarterUpgradeStatusDTO): string {
       : status.versionState === "available"
         ? `This Theme is on Starter ${status.storedVersion}; Starter ${status.currentVersion} is available.`
         : null;
-  const catalog = status.catalogPending
-    ? "Product catalog pages can be installed or updated for this Theme."
-    : null;
+  const catalog =
+    status.catalogPending === "install"
+      ? "This Theme can add a product list page (/products) and a product detail page (/products/<slug>) for this store's products. These pages are not created until you review and apply them."
+      : status.catalogPending === "update"
+        ? "Product catalog pages Morph added earlier have updates. They stay as they are until you review and apply them."
+        : null;
   return [starter, catalog].filter(Boolean).join(" ");
 }
 
@@ -233,7 +236,8 @@ export function EditorStarterUpgradeNotice({
   });
 
   const waiting =
-    !!status && (status.versionState !== "current" || status.catalogPending);
+    !!status &&
+    (status.versionState !== "current" || status.catalogPending !== null);
   if (!status || !waiting) {
     return message ? (
       <div
@@ -287,7 +291,7 @@ export function EditorStarterUpgradeNotice({
         data-editor-starter-upgrade={
           status.versionState === "current" ? "catalog" : status.versionState
         }
-        data-catalog-pending={status.catalogPending ? "true" : "false"}
+        data-catalog-pending={status.catalogPending ?? "none"}
       >
         <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
         <span className="min-w-0 flex-1">
@@ -388,7 +392,7 @@ export function EditorStarterUpgradeNotice({
                     </label>
                     <p className="text-muted-foreground">
                       {review.catalog.kind === "install"
-                        ? "Adds product list and product pages for this store's products. Product data is not changed."
+                        ? "Adds a product list page (/products) and a product detail page (/products/<slug>) for this store's products. They are not created until you apply this part. Product data is not changed."
                         : review.catalog.kind === "update"
                           ? "Updates catalog files Morph wrote earlier. Product data is not changed."
                           : "Nothing to install or update."}{" "}

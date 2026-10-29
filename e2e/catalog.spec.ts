@@ -69,9 +69,15 @@ async function installCatalogByReview(page: Page) {
   }
 
   const notice = page.locator("[data-editor-starter-upgrade]");
-  await expect(notice).toHaveAttribute("data-catalog-pending", "true", {
+  await expect(notice).toHaveAttribute("data-catalog-pending", "install", {
     timeout: 30000,
   });
+  await expect(notice).toContainText(
+    "a product list page (/products) and a product detail page (/products/<slug>)",
+  );
+  await expect(notice).toContainText(
+    "These pages are not created until you review and apply them.",
+  );
   await notice.getByRole("button", { name: "Review upgrade" }).click();
   const dialog = page.getByRole("dialog", {
     name: "Review the Starter upgrade",

@@ -128,6 +128,28 @@ describe("the catalog review", () => {
     });
   });
 
+  it("does not add back catalog files the author removed, and lists them as kept", () => {
+    const removed = [
+      "src/components/ProductDetail.tsx",
+      "src/routes/products.$slug.tsx",
+    ];
+    const review = reviewThemeCatalog(
+      withIds([
+        ...STARTER_THEME_FILES,
+        ...STARTER_THEME_CATALOG_FILES.filter(
+          (file) => !removed.includes(file.path),
+        ),
+      ]),
+      { hasProducts: true },
+    );
+    expect(review.kind).toBeNull();
+    expect(review.changes).toEqual([]);
+    expect(review.plan.files).toEqual([]);
+    expect(review.kept).toEqual(
+      removed.map((path) => ({ path, reason: "missing" })),
+    );
+  });
+
   it("has nothing to do once every catalog file is current", () => {
     const review = reviewThemeCatalog(
       withIds([...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES]),

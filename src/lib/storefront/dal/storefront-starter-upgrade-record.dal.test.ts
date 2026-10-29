@@ -13,7 +13,10 @@ import {
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../starter-theme-v3-files";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
-import { STARTER_THEME_CATALOG_FILES } from "../starter-theme-catalog-files";
+import {
+  STARTER_THEME_CATALOG_FILES,
+  STARTER_THEME_CATALOG_UPGRADES,
+} from "../starter-theme-catalog-files";
 import { createSalesChannelWriteService } from "@/lib/sales-channel/service/sales-channel-write.service";
 import type { salesChannelDal } from "@/lib/sales-channel/dal/sales-channel.dal";
 
@@ -1420,7 +1423,7 @@ describe("opening the editor and store initialization on a Theme that has files"
       versionState: "pending",
       storedVersion: null,
       currentVersion: CURRENT,
-      catalogPending: false,
+      catalogPending: null,
     });
   });
 });
@@ -1579,7 +1582,7 @@ describe("the product catalog part of a review", () => {
       versionState: "current",
       storedVersion: CURRENT,
       currentVersion: CURRENT,
-      catalogPending: true,
+      catalogPending: "install",
     });
     expect(storedRawRow()).toEqual(before.row);
     expect(storedTemplates()).toEqual(before.templates);
@@ -1660,6 +1663,82 @@ describe("the product catalog part of a review", () => {
       apply({ catalogDigest: reviewed.catalog.digest }),
     ).resolves.toEqual({ status: "not-applicable" });
     expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+  });
+
+  describe("catalog files the author removed", () => {
+    const UPGRADE = STARTER_THEME_CATALOG_UPGRADES[0]!;
+    const REMOVED = ["src/components/ProductDetail.tsx", "src/routes/products.$slug.tsx"];
+
+    /** The catalog as installed, then with the author's removals. */
+    function catalogWorkspace(options: { legacy: boolean }): WorkspaceFile[] {
+      const catalog = STARTER_THEME_CATALOG_FILES.filter(
+        (file) => !REMOVED.includes(file.path),
+      ).map((file, index) => ({
+        id: `catalog-${index}`,
+        path: file.path,
+        content:
+          options.legacy && file.path === UPGRADE.path
+            ? UPGRADE.legacyContent
+            : file.content,
+        version: 2,
+      }));
+      return [...upgradedWorkspace(), ...catalog];
+    }
+
+    it("are not offered back: nothing is pending, and the review lists them as kept", async () => {
+      expect(REMOVED).not.toContain(UPGRADE.path);
+      channel.hasProducts = true;
+      seedTheme({ starterTemplateVersion: CURRENT });
+      workspace.files.set(THEME_ID, catalogWorkspace({ legacy: false }));
+      workspace.generation.set(THEME_ID, 5);
+
+      await expect(
+        storefrontDal.readStarterUpgradeStatus({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+        }),
+      ).resolves.toMatchObject({ catalogPending: null });
+      const reviewed = await review();
+      expect(reviewed.catalog.changes).toEqual([]);
+      expect(reviewed.catalog.plan.files).toEqual([]);
+      for (const path of REMOVED) {
+        expect(reviewed.catalog.kept).toContainEqual({ path, reason: "missing" });
+      }
+      await expect(
+        apply({ catalogDigest: reviewed.catalog.digest }),
+      ).resolves.toEqual({ status: "not-applicable" });
+      expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    });
+
+    it("stay removed when the rest of the catalog is updated", async () => {
+      channel.hasProducts = true;
+      seedTheme({ starterTemplateVersion: CURRENT });
+      workspace.files.set(THEME_ID, catalogWorkspace({ legacy: true }));
+      workspace.generation.set(THEME_ID, 5);
+
+      await expect(
+        storefrontDal.readStarterUpgradeStatus({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+        }),
+      ).resolves.toMatchObject({ catalogPending: "update" });
+      const reviewed = await review();
+      expect(reviewed.catalog.changes.map((change) => change.path)).toEqual([
+        UPGRADE.path,
+      ]);
+      for (const path of REMOVED) {
+        expect(reviewed.catalog.kept).toContainEqual({ path, reason: "missing" });
+      }
+
+      await expect(
+        apply({ catalogDigest: reviewed.catalog.digest }),
+      ).resolves.toMatchObject({ status: "applied", catalog: true });
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      const [, , files] = workspace.saveFilesBatch.mock.calls[0]!;
+      expect((files as { path: string }[]).map((file) => file.path)).toEqual([
+        UPGRADE.path,
+      ]);
+    });
   });
 
   it("applies both parts in one batch and one revision, and records the Starter version", async () => {

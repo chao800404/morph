@@ -742,12 +742,12 @@ export const storefrontDal = {
       themeSourceStore.listFiles(data.storefrontId, data.themeId),
       themeChannelHasProducts(data.storefrontId, data.themeId),
     ]);
+    const catalog = reviewThemeCatalog(files, { hasProducts });
     return {
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
-      catalogPending:
-        reviewThemeCatalog(files, { hasProducts }).changes.length > 0,
+      catalogPending: catalog.changes.length > 0 ? catalog.kind : null,
     };
   },
   /**
@@ -809,7 +809,11 @@ export const storefrontDal = {
               data.themeId,
             ),
           });
-    if (catalog && !catalog.applies) return { status: "not-applicable" };
+    // A catalog part with nothing to write is never offered, so a confirmed
+    // one that has none is refused rather than reported as applied.
+    if (catalog && (!catalog.applies || catalog.changes.length === 0)) {
+      return { status: "not-applicable" };
+    }
     if (catalog && catalog.digest !== data.catalogDigest) {
       return { status: "stale", sourceGeneration };
     }

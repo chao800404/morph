@@ -79,7 +79,7 @@ const AVAILABLE = {
   versionState: "available" as const,
   storedVersion: 28,
   currentVersion: 29,
-  catalogPending: false,
+  catalogPending: null,
 };
 
 function renderNotice(
@@ -145,21 +145,41 @@ describe("EditorStarterUpgradeNotice", () => {
     expect(notice.textContent).toContain("Nothing changes until you apply it.");
   });
 
-  it("shows the notice when only the catalog has something waiting", () => {
+  it("shows the notice when only the catalog has something to install, and names the pages it would add", () => {
     renderNotice({
       status: {
         ...AVAILABLE,
         versionState: "current",
         storedVersion: 29,
-        catalogPending: true,
+        catalogPending: "install",
       },
     });
     const notice = screen.getByRole("status");
     expect(notice.getAttribute("data-editor-starter-upgrade")).toBe("catalog");
-    expect(notice.getAttribute("data-catalog-pending")).toBe("true");
+    expect(notice.getAttribute("data-catalog-pending")).toBe("install");
     expect(notice.textContent).toContain(
-      "Product catalog pages can be installed or updated",
+      "a product list page (/products) and a product detail page (/products/<slug>)",
     );
+    expect(notice.textContent).toContain(
+      "These pages are not created until you review and apply them.",
+    );
+  });
+
+  it("says an update leaves the catalog pages as they are until applied", () => {
+    renderNotice({
+      status: {
+        ...AVAILABLE,
+        versionState: "current",
+        storedVersion: 29,
+        catalogPending: "update",
+      },
+    });
+    const notice = screen.getByRole("status");
+    expect(notice.getAttribute("data-catalog-pending")).toBe("update");
+    expect(notice.textContent).toContain(
+      "They stay as they are until you review and apply them.",
+    );
+    expect(notice.textContent).not.toContain("product list page");
   });
 
   it("reviews without writing, shows each change and each kept file, and applies exactly that review", async () => {
@@ -200,7 +220,7 @@ describe("EditorStarterUpgradeNotice", () => {
       data: reviewOf({ catalog: CATALOG_PART }),
     });
     const { onApplied } = renderNotice({
-      status: { ...AVAILABLE, catalogPending: true },
+      status: { ...AVAILABLE, catalogPending: "install" },
     });
     const dialog = await openReview();
     const starter = within(dialog).getByRole("region", {
@@ -214,6 +234,9 @@ describe("EditorStarterUpgradeNotice", () => {
     expect(catalog.textContent).toContain("src/routes/products.index.tsx");
     expect(catalog.textContent).toContain(
       "does not change the Starter version",
+    );
+    expect(catalog.textContent).toContain(
+      "They are not created until you apply this part.",
     );
 
     fireEvent.click(
