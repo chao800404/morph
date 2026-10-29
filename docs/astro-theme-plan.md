@@ -1466,10 +1466,21 @@ A6 分三個 PR：A6a 本機啟動、A6b bridge 的整頁模式與編輯器、A6
 
 依序版本**連續 2 次通過**（1.7、1.8 分鐘）。
 
-**並行同步後的平台中斷：已重現，未定位**（使用者決定先合併，另開調查）：
+**並行同步後的「平台中斷」：原始錯誤已定位，不是平台中斷；修正待決**（2026-10-10，本機真實容器；Cloudflare 未驗）：
 
-- 第 4 步原本讓 C、D 兩個同步並行。2 次執行中，兩個同步都成功，資料檔停在較大的序號；但緊接著的下一個頁面代理請求被平台中斷（`OperationInterruptedError`，「platform was updating the sandbox runtime」），每次正好 1 次。改成依序後，2 次都沒有中斷。
-- SDK 把「isolate 被取代」「連線中斷」「DO 儲存重設」都轉成這個訊息，日誌沒有記下原始錯誤，所以還不知道是哪一種。
+- 第 4 步原本讓 C、D 兩個同步並行。2 次執行中，兩個同步都成功，資料檔停在較大的序號；但緊接著的下一個頁面代理請求失敗，SDK 回 500「Proxy routing error」並記為 `OperationInterruptedError`（「platform was updating the sandbox runtime」）。改成依序後，2 次都沒有失敗。
+- **原始錯誤**：在 `PreviewSandbox` 的 `fetch` 與 Worker 端的 stub 上記下被 SDK 包起來之前的錯誤（暫時的診斷分支，未合併），每一次都是 DO 內 `forwardPreviewRequest` 的 `container.getTcpPort(5173).fetch()` 丟出 `Error: Container port connection closed unexpectedly.`，帶 `retryable: true`。DO 全程只建構一次，沒有被重設。SDK（`@cloudflare/sandbox` 0.12.7）只把「Network connection lost.」當成容器連線問題處理；這個錯誤往上丟到 Worker，`isPlatformTransientError` 以第四條判斷（`retryable === true`，不是 isolate 被取代、連線中斷、DO 儲存重設三者之一）把它認成平台更新，於是訊息是錯的，原始錯誤也沒有被記下。
+- **dev server 沒有問題**：失敗當下在容器內直接對 `127.0.0.1:5173` 送原始 HTTP 請求，頁面完整 200、位址探測 204（序號正確）。
+- **連線層的經過**（在 `astro dev` 預先載入 socket 記錄、並以 50 ms 取樣容器網路命名空間的 socket）：本機的容器埠經由 miniflare 的 sidecar（`proxy-everything`）以一對一 TCP 轉接到 5173，平常只用一條長期 keep-alive 連線。每次內容寫入會讓預覽 Worker 的模組重新載入（Worker 以 `import()` 讀資料檔；log 為 `program reload`），期間請求要等 0.4–1.8 秒。兩個同步的確認探測在這段時間一起等待時，workerd 多開一對連線；之後下一個請求被送進這條重用的連線，Node 收到請求後 0–1 ms 內就從 sidecar 收到 FIN，回應沒有送出（Node 端為 `keepAlive=true`，沒有要求關閉）。兩次記錄執行中失敗 8/8 都是這個型態；成功的頁面讀取 10/10 都走長期那條連線。
+- **量測**（每列為一次執行，同一個預覽中的多次迭代）：
+  - 兩個同步，第二個晚 0／300／500／700／1000 ms 開始，或依序：失敗分別為 3/3、3/3、2/3、0/3、0/3、依序 0/3（執行 A）；拿掉 egress 攔截設定後幾乎相同（執行 B，sidecar 仍在），所以與 `interceptHttps`／`outbound` 無關；探測不帶 `AbortSignal`、讀完回應後仍是 5/12（執行 D），與探測的取消處理無關。失敗的迭代，兩個同步一定回報同一個序號（兩次寫入落在同一次重新載入）。
+  - 只有一個同步，重新載入期間由預覽頁另送 0／1／2 個位址探測：0/5、4/5、5/5（執行 E）；但另一次執行中，重新載入期間兩個探測只 1/3、兩個頁面請求 0/3（執行 F）。
+  - 沒有重新載入、由頁面本身延遲 0.6–1 秒的重疊請求（200 或 204）：0/24（兩次執行）。
+  - 負載高時（另一個 session 的 E2E 同時在跑）一旦失敗，之後依序的迭代也持續失敗（29/30）；約 60–90 秒後恢復。
+- **結論與未知**：在內容同步這個情境裡，失敗都發生在「兩個以上的代理請求一起卡在 Worker 的模組重新載入後面」之後；由頁面本身延遲造成的重疊沒有重現。這是觀察到的條件，**不是已證明的必要條件**。L1.5 容器實驗（`exp/astro-l15-container`，2026-10-10，帶入同一個診斷）在 `.astro` 存檔、頁面重新載入後的模組請求高峰（同時在途約 6 個）中記到 10 筆同一個原始錯誤；astro dev 唯一的 reload 紀錄早了 16 秒，中斷當下**沒有找到**重新載入的證據。這不等於證明了沒有重新載入也會失敗：延遲到下一個請求才發生、不留紀錄的重新載入不能排除。所以「同一個原始錯誤」已確認，「同一個觸發機制」既未證實也未排除。sidecar／workerd 為什麼在轉送後關掉那條重用的連線，沒有定位。
+- **內容同步不再重新載入 Worker 的原型**（`proto/preview-content-hmr`，未合併）：同一套量測、相近負載、各 1 次執行，並行同步的失敗由 8/15 降到 2/15，內容同步造成的 `program reload` 由 34 次降到 0 次，依序兩次同步的中位耗時由 1451 ms 降到 691 ms。這是降低停頓與失敗頻率的觀察，樣本有限，而且仍會失敗，**不是根因修復**。正式環境沒有 `proxy-everything`，是否有同樣的現象**未驗證**。
+- **上游回報**（2026-10-10 送出；2026-10-16 查詢時兩者都是 open，除了 workers-sdk 的自動分類留言外沒有回覆）：[cloudflare/sandbox-sdk#948](https://github.com/cloudflare/sandbox-sdk/issues/948)（原始錯誤被說成平台更新，而且沒有被記下）、[cloudflare/workers-sdk#16194](https://github.com/cloudflare/workers-sdk/issues/16194)（本機 containers 中，重用連線上的第二個請求在轉送後被關閉）。後者附一個獨立的最小重現；依該 issue 記錄的結果，在那個重現裡**依序**的同步也每次失敗，不需要兩個請求同時在途，這與上面「本應用在一般負載下依序不失敗」不同，原因沒有解釋。那些重現結果是 issue 中的紀錄，這次更新文件時沒有重跑。
+- 既有的模組讀取重試（`preview-proxy-response.ts`）把同一個 500 視為「runtime 被中斷」；那些個案是否也是這個原因，**未驗證**。
 - 產品面：A6b-2 的編輯器每個分頁一次只送一個同步；跨分頁同時同步時，頁面請求若被中斷，代理會回中斷狀態，由編輯器重新載入（`preview-runtime-interruption.ts`）。
 - 並行寫入本身的正確性由容器腳本的真實執行測試涵蓋：9 個並行同步，最後一定是最大序號。
 
