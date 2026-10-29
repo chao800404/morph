@@ -1,5 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { EDITOR_PATH, isServerFunctionCall, openEditor } from "./helpers";
+import {
+  EDITOR_PATH,
+  assertServerFnSuccess,
+  isServerFunctionCall,
+  openEditor,
+} from "./helpers";
 import { queryLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath } from "./native-compat";
 import { STARTER_THEME_CATALOG_FILES } from "../src/lib/storefront/starter-theme-catalog-files";
@@ -115,7 +120,7 @@ async function installCatalogByReview(page: Page) {
   const response = await applied;
   expect(response.ok()).toBe(true);
   // A refused apply still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await expect(dialog).toBeHidden({ timeout: 30000 });
 
   // Exactly the catalog's files were added; nothing else changed.
