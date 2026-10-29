@@ -1,0 +1,20 @@
+---
+import Hero from "../components/Hero.astro";
+import { morph } from "../morph/content";
+
+export const prerender = true;
+
+const about = await morph.pages.get("/about");
+const { hero } = about;
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>About</title>
+  </head>
+  <body>
+    <main>
+      <Hero {...hero} />
+    </main>
+  </body>
+</html>
