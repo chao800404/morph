@@ -17,11 +17,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { normalizeRevisionSnapshot } from "./compiler/theme-build-materializer";
 import { validateThemeStartPackageContract } from "./compiler/theme-start-toolchain";
+import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "./default-storefront-document";
 import {
+  createStarterThemeWorkspaceUpgradePlan,
   starterThemeWorkspaceFiles,
   type StarterThemeWorkspaceUpgradePlan,
 } from "./starter-theme-files";
-import { reviewStarterThemeUpgrade } from "./starter-theme-upgrade-review";
+import {
+  reviewStarterThemeUpgrade,
+  STARTER_FILES_SHIPPED,
+} from "./starter-theme-upgrade-review";
 import { deriveThemeSourceContract } from "./theme-source-contract";
 
 type Fixture = {
@@ -107,18 +112,24 @@ function applyPlan(
   return [...next.values()];
 }
 
-/** One upgrade pass: review, then apply the reviewed plan. */
-function upgradeOnce(files: File[]) {
-  const review = reviewStarterThemeUpgrade(files);
+const CURRENT = STOREFRONT_STARTER_TEMPLATE_VERSION;
+
+/**
+ * One upgrade pass: review, then apply the reviewed plan. `version` is the
+ * Starter version the Theme records; a fixture's own, until an applied
+ * upgrade records the current one.
+ */
+function upgradeOnce(files: File[], version: number) {
+  const review = reviewStarterThemeUpgrade(files, { storedVersion: version });
   return { review, files: applyPlan(files, review.plan) };
 }
 
 /** Upgrades until a pass changes nothing; reports how many passes changed. */
-function upgradeToFixedPoint(files: File[], maxPasses = 5) {
+function upgradeToFixedPoint(files: File[], version: number, maxPasses = 5) {
   let current = files;
   const passes: string[][] = [];
   for (let pass = 0; pass < maxPasses; pass += 1) {
-    const step = upgradeOnce(current);
+    const step = upgradeOnce(current, pass === 0 ? version : CURRENT);
     if (step.review.changes.length === 0) return { files: current, passes };
     passes.push(step.review.changes.map((change) => change.path));
     current = step.files;
@@ -275,7 +286,7 @@ describe("upgrading whole Starter workspaces from history", () => {
   describe.each(VERSIONS)("from Starter v%i", (v) => {
     it("applies as a plan that lines up with the workspace it was made for", () => {
       const before = workspace(v);
-      const review = reviewStarterThemeUpgrade(before);
+      const review = reviewStarterThemeUpgrade(before, { storedVersion: v });
       expect(review.applies).toBe(true);
       expect(review.changes.length).toBeGreaterThan(0);
       // applyPlan throws when an expected id, version or free path is wrong.
@@ -284,7 +295,7 @@ describe("upgrading whole Starter workspaces from history", () => {
     });
 
     it("leaves exactly the documented differences from the current Starter", () => {
-      const settled = upgradeToFixedPoint(workspace(v));
+      const settled = upgradeToFixedPoint(workspace(v), v);
       const { extra, differs, missing } = diffAgainstCurrent(settled.files);
       const expected = EXPECTED_AFTER_UPGRADE[v];
       expect({ extra, differs, missing }).toEqual({
@@ -300,8 +311,10 @@ describe("upgrading whole Starter workspaces from history", () => {
     (PASSES_TO_SETTLE[v] === 1 ? it : it.fails)(
       "plans nothing the second time",
       () => {
-        const once = upgradeOnce(workspace(v));
-        const again = reviewStarterThemeUpgrade(once.files);
+        const once = upgradeOnce(workspace(v), v);
+        const again = reviewStarterThemeUpgrade(once.files, {
+          storedVersion: CURRENT,
+        });
         expect(again.plan.files).toEqual([]);
         expect(again.plan.deletions).toEqual([]);
         expect(again.changes).toEqual([]);
@@ -309,14 +322,16 @@ describe("upgrading whole Starter workspaces from history", () => {
     );
 
     it("settles, and a settled workspace plans nothing", () => {
-      const settled = upgradeToFixedPoint(workspace(v));
-      const again = reviewStarterThemeUpgrade(settled.files);
+      const settled = upgradeToFixedPoint(workspace(v), v);
+      const again = reviewStarterThemeUpgrade(settled.files, {
+        storedVersion: CURRENT,
+      });
       expect(again.changes).toEqual([]);
       expect(again.plan).toEqual({ files: [], deletions: [] });
     });
 
     it("produces a workspace the build contract accepts, where the old one may not", () => {
-      const settled = upgradeToFixedPoint(workspace(v));
+      const settled = upgradeToFixedPoint(workspace(v), v);
       const snapshot = (files: File[]) =>
         files.map((file) => ({ path: file.path, content: file.content }));
       const built = normalizeRevisionSnapshot(snapshot(settled.files), "rev");
@@ -343,7 +358,7 @@ describe("upgrading whole Starter workspaces from history", () => {
     });
 
     it("only rewrites package.json for the pins, keeping its JSON equal to the current Starter's", () => {
-      const settled = upgradeToFixedPoint(workspace(v));
+      const settled = upgradeToFixedPoint(workspace(v), v);
       const pkg = settled.files.find((file) => file.path === "package.json")!;
       const current = currentStarter.get("package.json")!;
       expect(JSON.parse(pkg.content)).toEqual(JSON.parse(current));
@@ -355,14 +370,14 @@ describe("upgrading whole Starter workspaces from history", () => {
 
   describe("pinned: workspace files the upgrade does not recognise as Starter copies", () => {
     const stays = (v: number, path: string) => {
-      const settled = upgradeToFixedPoint(workspace(v));
+      const settled = upgradeToFixedPoint(workspace(v), v);
       const original = fixtures.get(v)!.files.find((f) => f.path === path)!;
       const result = settled.files.find((f) => f.path === path)!;
       return {
         unchanged: result.content === original.content,
-        kept: reviewStarterThemeUpgrade(settled.files).kept.find(
-          (k) => k.path === path,
-        )?.reason,
+        kept: reviewStarterThemeUpgrade(settled.files, {
+          storedVersion: CURRENT,
+        }).kept.find((k) => k.path === path)?.reason,
       };
     };
 
@@ -404,7 +419,7 @@ describe("upgrading whole Starter workspaces from history", () => {
       "brings every pristine v15 and v20 Starter file to the current one",
       () => {
         for (const v of [15, 20]) {
-          const settled = upgradeToFixedPoint(workspace(v));
+          const settled = upgradeToFixedPoint(workspace(v), v);
           const result = new Map(settled.files.map((f) => [f.path, f.content]));
           for (const path of [
             "src/components/Header.tsx",
@@ -423,12 +438,12 @@ describe("upgrading whole Starter workspaces from history", () => {
     it.each([15, 20])(
       "v%i: pass two rewrites only morph.theme.json, pass three nothing",
       (v) => {
-        const first = upgradeOnce(workspace(v));
-        const second = upgradeOnce(first.files);
+        const first = upgradeOnce(workspace(v), v);
+        const second = upgradeOnce(first.files, CURRENT);
         expect(
           second.review.changes.map((c) => `${c.operation} ${c.path}`),
         ).toEqual([`update ${MANIFEST}`]);
-        expect(upgradeOnce(second.files).review.changes).toEqual([]);
+        expect(upgradeOnce(second.files, CURRENT).review.changes).toEqual([]);
       },
     );
   });
@@ -466,7 +481,9 @@ describe("upgrading whole Starter workspaces from history", () => {
           const before = workspace(v).map((f) =>
             f.path === file.path ? { ...f, content: edited } : f,
           );
-          const review = reviewStarterThemeUpgrade(before);
+          const review = reviewStarterThemeUpgrade(before, {
+            storedVersion: v,
+          });
           const touched = review.changes.find((c) => c.path === file.path);
           if (touched)
             problems.push(`${file.path}: planned ${touched.operation}`);
@@ -511,12 +528,14 @@ describe("upgrading whole Starter workspaces from history", () => {
         const before = workspace(v).map((f) =>
           f.path === "package.json" ? { ...f, content: edited } : f,
         );
-        const settled = upgradeToFixedPoint(before);
+        const settled = upgradeToFixedPoint(before, v);
         const pkg = settled.files.find((f) => f.path === "package.json")!;
         if (v === 28) {
           // Pins are current: nothing to correct, so the bytes are the author's.
           expect(pkg.content).toBe(edited);
-          expect(reviewStarterThemeUpgrade(before).kept).toContainEqual({
+          expect(
+            reviewStarterThemeUpgrade(before, { storedVersion: v }).kept,
+          ).toContainEqual({
             path: "package.json",
             reason: "changed",
           });
@@ -549,7 +568,7 @@ describe("upgrading whole Starter workspaces from history", () => {
         const before = workspace(v).map((f) =>
           f.path === MANIFEST ? { ...f, content: edited } : f,
         );
-        const settled = upgradeToFixedPoint(before);
+        const settled = upgradeToFixedPoint(before, v);
         const manifest = settled.files.find((f) => f.path === MANIFEST)!;
         expect(JSON.parse(manifest.content).authorNote).toBe("mine");
         // The manifest is merged, not kept byte for byte, on v11, v15 and v20
@@ -561,86 +580,55 @@ describe("upgrading whole Starter workspaces from history", () => {
     );
   });
 
-  describe("files the author removed", () => {
-    /** Removed paths whose removal makes the plan create that same path. */
-    const readded = (v: number) => {
-      const out: string[] = [];
+  describe("files the author removed, with no Starter version recorded", () => {
+    const pending = (files: File[]) =>
+      reviewStarterThemeUpgrade(files, { storedVersion: null });
+
+    it.each(VERSIONS)("v%i: puts nothing back that the author removed", (v) => {
       for (const file of fixtures.get(v)!.files) {
         const without = workspace(v).filter((f) => f.path !== file.path);
-        const review = reviewStarterThemeUpgrade(without);
+        const reviewed = pending(without);
+        expect(
+          reviewed.changes.filter((change) => change.path === file.path),
+          `v${v} without ${file.path}`,
+        ).toEqual([]);
+        if (!reviewed.applies) continue;
         if (
-          review.changes.some(
-            (c) => c.path === file.path && c.operation === "create",
-          )
-        )
-          out.push(file.path);
+          STARTER_FILES_SHIPPED.some((entry) => entry.paths.includes(file.path))
+        ) {
+          // The rest of its group is there, so the Theme had the group.
+          expect(reviewed.kept, `v${v} without ${file.path}`).toContainEqual({
+            path: file.path,
+            reason: "missing",
+          });
+        }
       }
-      return out.sort();
-    };
+    });
 
-    const CORE = [
-      "src/layouts/StorefrontLayout.tsx",
-      "src/morph/content.ts",
-      "src/router.tsx",
-      "src/routes/__root.tsx",
-    ];
-    // Pinned: what the upgrade puts back today. Version 28 is source-first and
-    // does not put back its core files; the others do.
-    const READDED: Record<number, string[]> = {
-      11: [
-        ...CORE,
-        "src/routes/index.tsx",
-        ...FLAT_COMPONENTS.filter((p) => !p.endsWith("/Principles.tsx")),
-      ].filter((p) => !p.endsWith("/Hero.tsx")),
-      15: [
-        ...CORE,
-        "src/routes/index.tsx",
-        ...FLAT_COMPONENTS.filter(
-          (p) => !p.endsWith("/Principles.tsx") && !p.endsWith("/Hero.tsx"),
-        ),
-      ],
-      20: [
-        ...CORE,
-        "src/routes/index.tsx",
-        "src/morph/content-fields.ts",
-        "src/morph/link.tsx",
-        ...FLAT_COMPONENTS.filter(
-          (p) => !p.endsWith("/Principles.tsx") && !p.endsWith("/Hero.tsx"),
-        ),
-      ],
-      26: [
-        ...CORE,
-        "src/routes/index.tsx",
-        "src/morph/content-fields.ts",
-        "src/morph/link.tsx",
-        ...FLAT_COMPONENTS.filter(
-          (p) => !p.endsWith("/Principles.tsx") && !p.endsWith("/Hero.tsx"),
-        ),
-      ],
-      28: [
-        "src/morph/content-fields.ts",
-        "src/morph/link.tsx",
-        ...SECTION_REEXPORTS,
-      ],
-    };
-
-    it.each(VERSIONS)(
-      "v%i: pins which removed files the upgrade puts back",
-      (v) => {
-        // v11 keeps its Hero and Principles flat files out of the plan; the
-        // lists above are written per version for exactly that reason.
-        const expected = READDED[v];
-        expect(readded(v)).toEqual(sorted(expected));
-      },
-    );
-
-    // The claim: a file the author removed is not added back.
-    it.fails.each(VERSIONS)(
-      "v%i: puts nothing back that the author removed",
-      (v) => {
-        expect(readded(v)).toEqual([]);
-      },
-    );
+    it("does not add a group the Theme has none of, and says why", () => {
+      // An untouched v26 workspace has no section files: whether it never had
+      // them or its author removed them all, the files cannot tell.
+      const reviewed = pending(workspace(26));
+      const created = reviewed.changes
+        .filter((change) => change.operation === "create")
+        .map((change) => change.path);
+      for (const path of [...SECTION_REEXPORTS, ...PAGE_SECTIONS]) {
+        expect(created, path).not.toContain(path);
+      }
+      expect(reviewed.kept).toContainEqual({
+        path: SECTION_REEXPORTS[0]!,
+        reason: "origin-unknown",
+      });
+      // Recorded at 26, the same files are known to be new, and are added.
+      const recorded = reviewStarterThemeUpgrade(workspace(26), {
+        storedVersion: 26,
+      });
+      expect(
+        recorded.changes
+          .filter((change) => change.operation === "create")
+          .map((change) => change.path),
+      ).toEqual(expect.arrayContaining(SECTION_REEXPORTS));
+    });
 
     it("never recreates a removed Header, Footer, stylesheet or package.json", () => {
       for (const v of VERSIONS) {
@@ -651,11 +639,134 @@ describe("upgrading whole Starter workspaces from history", () => {
           "package.json",
         ]) {
           const without = workspace(v).filter((f) => f.path !== path);
-          const review = reviewStarterThemeUpgrade(without);
+          for (const storedVersion of [null, v]) {
+            const review = reviewStarterThemeUpgrade(without, {
+              storedVersion,
+            });
+            expect(
+              review.changes.filter((c) => c.path === path),
+              `v${v} (${storedVersion}) ${path}`,
+            ).toEqual([]);
+          }
+        }
+      }
+    });
+  });
+
+  describe("files the author removed, on a Theme that records its Starter version", () => {
+    const review = (files: File[], v: number) =>
+      reviewStarterThemeUpgrade(files, { storedVersion: v });
+
+    /** Relative imports in the workspace that name no file in it. */
+    function danglingImports(files: File[]) {
+      const have = new Set(files.map((file) => file.path));
+      const out = new Set<string>();
+      for (const file of files) {
+        if (!/\.(ts|tsx)$/.test(file.path)) continue;
+        for (const match of file.content.matchAll(
+          /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/g,
+        )) {
+          const parts = file.path.split("/").slice(0, -1);
+          for (const part of match[1]!.split("/")) {
+            if (part === "." || part === "") continue;
+            if (part === "..") parts.pop();
+            else parts.push(part);
+          }
+          const base = parts.join("/");
+          const found = [
+            base,
+            ...[".ts", ".tsx", "/index.ts", "/index.tsx"].map(
+              (ext) => base + ext,
+            ),
+          ].some((path) => have.has(path));
+          if (!found) out.add(`${file.path} -> ${match[1]}`);
+        }
+      }
+      return out;
+    }
+
+    it.each(VERSIONS)(
+      "v%i: an untouched workspace gets the upgrade's own plan",
+      (v) => {
+        expect(review(workspace(v), v).plan).toEqual(
+          createStarterThemeWorkspaceUpgradePlan(workspace(v), {
+            editAuthoredFiles: false,
+          }),
+        );
+      },
+    );
+
+    it.each(VERSIONS)(
+      "v%i: puts nothing back that the author removed, and lists it as missing",
+      (v) => {
+        for (const file of fixtures.get(v)!.files) {
+          const without = workspace(v).filter((f) => f.path !== file.path);
+          const reviewed = review(without, v);
           expect(
-            review.changes.filter((c) => c.path === path),
-            `v${v} ${path}`,
+            reviewed.changes.filter((change) => change.path === file.path),
+            `v${v} without ${file.path}`,
           ).toEqual([]);
+          // Without its router, a workspace is no longer a Start Starter, and
+          // the review offers nothing at all.
+          if (!reviewed.applies) continue;
+          if (
+            STARTER_FILES_SHIPPED.some((entry) =>
+              entry.paths.includes(file.path),
+            )
+          ) {
+            expect(reviewed.kept, `v${v} without ${file.path}`).toContainEqual({
+              path: file.path,
+              reason: "missing",
+            });
+          }
+        }
+      },
+    );
+
+    it.each(VERSIONS)(
+      "v%i: an upgrade with a file removed points no new import at nothing",
+      (v) => {
+        for (const file of fixtures.get(v)!.files) {
+          const without = workspace(v).filter((f) => f.path !== file.path);
+          const before = danglingImports(without);
+          const after = danglingImports(
+            applyPlan(without, review(without, v).plan),
+          );
+          for (const dangling of after) {
+            expect(before, `v${v} without ${file.path}`).toContain(dangling);
+          }
+        }
+      },
+    );
+
+    it("holds back a section entry whose component the author removed", () => {
+      const without = workspace(15).filter(
+        (file) => file.path !== "src/components/Newsletter.tsx",
+      );
+      const reviewed = review(without, 15);
+      const paths = reviewed.changes.map((change) => change.path);
+      expect(paths).not.toContain("src/components/Newsletter.tsx");
+      expect(paths).not.toContain("src/components/sections/Newsletter.tsx");
+      expect(reviewed.kept).toContainEqual({
+        path: "src/components/Newsletter.tsx",
+        reason: "missing",
+      });
+      expect(reviewed.kept).toContainEqual({
+        path: "src/components/sections/Newsletter.tsx",
+        reason: "needs-missing",
+      });
+      // The rest of the upgrade still goes ahead.
+      expect(paths).toContain("src/components/sections/Hero.tsx");
+    });
+
+    it("says which versions shipped each file only as far as the fixtures show", () => {
+      for (const v of VERSIONS) {
+        const have = new Set(fixtures.get(v)!.files.map((file) => file.path));
+        for (const entry of STARTER_FILES_SHIPPED) {
+          const shipped = v >= entry.from && (entry.to ?? v) >= v;
+          for (const path of entry.paths) {
+            expect(have.has(path), `v${v} ${path}`).toBe(shipped);
+          }
         }
       }
     });

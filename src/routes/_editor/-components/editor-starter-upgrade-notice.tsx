@@ -48,6 +48,10 @@ const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   missing: "Not in this Theme, and not added back.",
   "markers-kept":
     "Kept as it is: you changed it. Its data-* markers keep working; remove them by hand if you like.",
+  "needs-missing":
+    "Not upgraded: its new version needs a file you removed from this Theme.",
+  "origin-unknown":
+    "Not added: this Theme does not record which Starter it came from, so Morph cannot tell whether you removed it. Add it yourself if you want it.",
 };
 
 const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {

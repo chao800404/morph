@@ -592,6 +592,13 @@ async function readStoredStarterVersion(
   };
 }
 
+/** The stored Starter version, when it is one; `null` reads as pending. */
+function recordedStarterVersion(version: unknown): number | null {
+  return starterVersionState(version) === "pending"
+    ? null
+    : (version as number);
+}
+
 /**
  * Where a Theme stands against the current Starter, from its stored version.
  *
@@ -711,7 +718,9 @@ export const storefrontDal = {
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
-      review: reviewStarterThemeUpgrade(files),
+      review: reviewStarterThemeUpgrade(files, {
+        storedVersion: recordedStarterVersion(stored.version),
+      }),
       catalog: reviewThemeCatalog(files, { hasProducts }),
     };
   },
@@ -795,7 +804,9 @@ export const storefrontDal = {
     const starter =
       data.starterDigest === undefined
         ? null
-        : reviewStarterThemeUpgrade(files);
+        : reviewStarterThemeUpgrade(files, {
+            storedVersion: recordedStarterVersion(stored.version),
+          });
     if (starter && !starter.applies) return { status: "not-applicable" };
     if (starter && starter.digest !== data.starterDigest) {
       return { status: "stale", sourceGeneration };

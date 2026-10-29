@@ -1535,6 +1535,43 @@ describe("applying a reviewed Starter upgrade", () => {
   });
 });
 
+describe("a Starter file the author removed", () => {
+  it("is not put back on a Theme that records its Starter version", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(
+      THEME_ID,
+      legacyWorkspace().filter((file) => file.path !== "src/morph/link.tsx"),
+    );
+    workspace.generation.set(THEME_ID, 5);
+
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    expect(
+      reviewed!.review.changes.map((change) => change.path),
+    ).not.toContain("src/morph/link.tsx");
+    expect(reviewed!.review.kept).toContainEqual({
+      path: "src/morph/link.tsx",
+      reason: "missing",
+    });
+
+    await expect(
+      storefrontDal.applyReviewedStarterUpgrade({
+        storefrontId: STOREFRONT_ID,
+        themeId: THEME_ID,
+        createdBy: "user-a",
+        expectedSourceGeneration: 5,
+        starterDigest: reviewed!.review.digest,
+      }),
+    ).resolves.toMatchObject({ status: "applied", starter: true });
+    const [, , files] = workspace.saveFilesBatch.mock.calls[0]!;
+    expect((files as { path: string }[]).map((file) => file.path)).not.toContain(
+      "src/morph/link.tsx",
+    );
+  });
+});
+
 describe("the product catalog part of a review", () => {
   const CATALOG_PATHS = STARTER_THEME_CATALOG_FILES.map((file) => file.path).sort();
 
