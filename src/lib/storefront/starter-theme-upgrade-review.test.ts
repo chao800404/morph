@@ -5,6 +5,7 @@ import {
 } from "./starter-theme-files";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_FOOTER_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
 import { reviewStarterThemeUpgrade } from "./starter-theme-upgrade-review";
@@ -187,3 +188,60 @@ function compose(...edits: Array<(files: File[]) => File[]>) {
   return (files: File[]) =>
     edits.reduce((current, edit) => edit(current), files);
 }
+
+describe("what the review says it leaves alone, and why", () => {
+  // One Theme, recorded at no Starter version, with each reason at once.
+  const HEADER = "src/components/Header.tsx";
+  const FOOTER = "src/components/Footer.tsx";
+  const SECTION = "src/components/sections/Hero.tsx";
+  const GROUP = ["src/morph/content-fields.ts", "src/morph/link.tsx"];
+
+  function workspace() {
+    let files = sourceFirst();
+    files = files.map((file) =>
+      file.path === HEADER
+        ? { ...file, content: `${file.content}\n// the author's own line\n` }
+        : file,
+    );
+    // An older Footer the upgrade knows, whose current one needs the group.
+    files = setContent(FOOTER, LEGACY_STARTER_THEME_FOOTER_SOURCE)(files);
+    files = without(SECTION)(files);
+    for (const path of GROUP) files = without(path)(files);
+    return files;
+  }
+
+  it("lists a file the author changed, removed, one whose upgrade needs a missing file, and one of unknown origin", () => {
+    const review = reviewStarterThemeUpgrade(workspace(), {
+      storedVersion: null,
+    });
+    const reason = (path: string) =>
+      review.kept.find((item) => item.path === path)?.reason;
+
+    expect(reason(HEADER)).toBe("changed");
+    // The rest of the section group is there, so this one was removed.
+    expect(reason(SECTION)).toBe("missing");
+    // None of the group is there: whether it ever was cannot be told.
+    for (const path of GROUP) expect(reason(path)).toBe("origin-unknown");
+    // Its upgrade would import the group, so it is held back as it is.
+    expect(reason(FOOTER)).toBe("needs-missing");
+
+    // Every one of them is left exactly as it is.
+    const written = review.plan.files.map((file) => file.path);
+    for (const path of [HEADER, FOOTER, SECTION, ...GROUP]) {
+      expect(written, path).not.toContain(path);
+    }
+    expect(review.plan.deletions).toEqual([]);
+  });
+
+  it("says the same on a Theme that records its version, with removals as missing", () => {
+    const review = reviewStarterThemeUpgrade(workspace(), {
+      storedVersion: 28,
+    });
+    const reason = (path: string) =>
+      review.kept.find((item) => item.path === path)?.reason;
+    expect(reason(HEADER)).toBe("changed");
+    expect(reason(SECTION)).toBe("missing");
+    for (const path of GROUP) expect(reason(path)).toBe("missing");
+    expect(reason(FOOTER)).toBe("needs-missing");
+  });
+});
