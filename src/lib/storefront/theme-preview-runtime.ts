@@ -1,4 +1,8 @@
 import type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
+import {
+  THEME_PREVIEW_RUNTIMES,
+  deploymentThemePreviewRuntime,
+} from "./theme-preview-runtime-default.mjs";
 import { UNRECORDED_THEME_FRAMEWORK } from "./theme-framework/theme-framework.types";
 
 export type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
@@ -12,10 +16,10 @@ export type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
  * the only way a Theme's preview changes. Nothing here switches a Theme on
  * its own.
  */
-export const THEME_PREVIEW_RUNTIMES = [
-  "client",
-  "start",
-] as const satisfies readonly ThemePreviewRuntime[];
+// Defined in `theme-preview-runtime-default.mjs`, which the E2E runner reads
+// too, so the runner's runtime guard and the Worker share one rule.
+export { THEME_PREVIEW_RUNTIMES, deploymentThemePreviewRuntime };
+THEME_PREVIEW_RUNTIMES satisfies readonly ThemePreviewRuntime[];
 
 export function isThemePreviewRuntime(
   value: unknown,
@@ -35,17 +39,6 @@ export function recordedThemePreviewRuntime(
   stored: string | null | undefined,
 ): ThemePreviewRuntime | null {
   return isThemePreviewRuntime(stored) ? stored : null;
-}
-
-/**
- * The deployment's runtime, from `MORPH_THEME_PREVIEW_RUNTIME`, read as it
- * always was: exactly `start` is the full Start preview, anything else the
- * client-only one.
- */
-export function deploymentThemePreviewRuntime(
-  envValue: unknown,
-): ThemePreviewRuntime {
-  return envValue === "start" ? "start" : "client";
 }
 
 export type ThemePreviewRuntimeResolution = Readonly<{

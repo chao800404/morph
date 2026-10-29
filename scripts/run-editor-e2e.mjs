@@ -38,6 +38,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  previewRuntimeRefusal,
+  readSpecPreviewRuntime,
+  readWorkerPreviewRuntime,
+} from "./e2e-preview-runtime-guard.mjs";
 import { createSidecarRecorder } from "./sidecar-observe-record.mjs";
 import {
   DEFAULT_LOCK_FILE,
@@ -891,6 +896,31 @@ async function main() {
       `CLOUDFLARE_CREDENTIALS_PRESENT: ${credentialsFound.join(", ")}. This run publishes, and publishing is atomic — the pointer moves and the release is deployed by whichever deployer the Worker composes. With a credential in scope that is the real one, which uploads to Cloudflare. Remove it from the environment this run loads, or run the suite without the publish slice.`,
     );
   }
+
+  // The Worker and the specs read the Live Preview runtime from two different
+  // settings; a run where they disagree is evidence for neither runtime. The
+  // credentials above are checked across every file that might hold one, which
+  // is the safe reading for a secret; the runtime is read the way Wrangler
+  // actually builds the Worker's bindings, because the question here is what
+  // the Worker will serve. See `e2e-preview-runtime-guard.mjs`.
+  const workerRuntime = await readWorkerPreviewRuntime({
+    cloudflareEnv: WRANGLER_ENV,
+  });
+  const specRuntime = readSpecPreviewRuntime(process.env);
+  const runtimeRefusal = previewRuntimeRefusal(workerRuntime, specRuntime);
+  if (runtimeRefusal) throw new Error(runtimeRefusal);
+  const shellWorkerRuntime = process.env.MORPH_THEME_PREVIEW_RUNTIME;
+  if (
+    shellWorkerRuntime !== undefined &&
+    shellWorkerRuntime !== workerRuntime.value
+  ) {
+    log(
+      `note: MORPH_THEME_PREVIEW_RUNTIME="${shellWorkerRuntime}" in the shell does not reach the Worker: Wrangler passes the shell on only when no .dev.vars file exists and CLOUDFLARE_INCLUDE_PROCESS_ENV is set`,
+    );
+  }
+  log(
+    `preview runtime ${workerRuntime.runtime}: Worker ${workerRuntime.value === undefined ? "default" : `"${workerRuntime.value}"`} (${workerRuntime.source}), specs ${specRuntime.value === undefined ? "default" : `"${specRuntime.value}"`}`,
+  );
 
   // After every check that needs nothing shared, so a run that is refused
   // anyway does not wait for a slot first; before the port check, which would

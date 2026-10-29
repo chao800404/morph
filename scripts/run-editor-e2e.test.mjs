@@ -332,6 +332,18 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
     assert.deepEqual(result.leftBehind, []);
   });
 
+  // The scratch directory has no .dev.vars, so the Worker would serve the
+  // client-only preview; specs told to expect Start must not run against it.
+  // The guard's own cases are in e2e-preview-runtime-guard.test.mjs.
+  it("refuses specs expecting a runtime the Worker will not serve, before starting services", async () => {
+    const result = await runRunner({ MORPH_E2E_PREVIEW_RUNTIME: "start" });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /PREVIEW_RUNTIME_MISMATCH/);
+    assert.ok(!result.stdout.includes("applying migrations"));
+    assert.ok(!result.stdout.includes("starting the dev server"));
+    assert.deepEqual(result.leftBehind, []);
+  });
+
   it(
     "keeps reading the dev server, so the suite's requests are all answered",
     { timeout: 90_000 },
