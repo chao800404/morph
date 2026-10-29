@@ -181,6 +181,16 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
           digest: review.digest,
           changes: review.changes,
           kept: review.kept,
+          // The Starter's new pages, added only if the author selects them:
+          // the review with them selected, under its own digest.
+          optional: review.optional
+            ? {
+                paths: review.optional.paths,
+                digest: review.optional.digest,
+                changes: review.optional.changes,
+                kept: review.optional.kept,
+              }
+            : null,
         },
         catalog: {
           applies: catalog.applies,

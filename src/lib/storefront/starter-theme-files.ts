@@ -1381,8 +1381,12 @@ function planStarterThemeWorkspaceWrites(
     );
 
   // Adding files stays with the manifest-era workspaces it was written for. A
-  // source-first workspace started with every one of these, so one that is
-  // missing was removed by its author.
+  // source-first workspace that is missing one of these is not given it here.
+  // Most started with every one, so a missing one was removed by its author;
+  // but those created between 97e9474 and f010e91 never had the account and
+  // order-transfer pages, and nothing here can tell the two apart. The review
+  // offers those two to the author instead (`STARTER_OPTIONAL_ROUTES` in
+  // starter-theme-upgrade-review.ts); only the author's selection adds them.
   if (canAdoptRouteContract) {
     for (const file of STARTER_THEME_V4_NEW_FILES) {
       if (existingByPath.has(file.path)) continue;

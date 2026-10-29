@@ -321,4 +321,147 @@ describe("EditorStarterUpgradeNotice", () => {
     );
     expect(onApplied).not.toHaveBeenCalled();
   });
+
+  describe("the Starter's new pages", () => {
+    const PAGES_DIGEST = "c".repeat(64);
+    const HEADER = "src/components/Header.tsx";
+    const ACCOUNT = "src/routes/account.tsx";
+    const ORDER_TRANSFER = "src/routes/order-transfer.tsx";
+    const WITH_PAGES_OFFERED = {
+      ...STARTER_PART,
+      kept: [
+        { path: HEADER, reason: "needs-route" },
+        { path: ACCOUNT, reason: "new-in-starter" },
+        { path: ORDER_TRANSFER, reason: "new-in-starter" },
+      ],
+      optional: {
+        paths: [ACCOUNT, ORDER_TRANSFER],
+        digest: PAGES_DIGEST,
+        changes: [
+          ...STARTER_PART.changes,
+          {
+            path: HEADER,
+            operation: "update",
+            before: "old header\n",
+            after: 'link "/account"\n',
+          },
+          {
+            path: ACCOUNT,
+            operation: "create",
+            before: null,
+            after: "account page\n",
+          },
+          {
+            path: ORDER_TRANSFER,
+            operation: "create",
+            before: null,
+            after: "order transfer page\n",
+          },
+        ],
+        kept: [],
+      },
+    };
+
+    beforeEach(() => {
+      fns.review.mockResolvedValue({
+        success: true,
+        data: reviewOf({ starter: WITH_PAGES_OFFERED }),
+      });
+    });
+
+    const pagesBox = (dialog: HTMLElement) =>
+      within(dialog).getByRole("checkbox", {
+        name: "Add the Starter's new pages",
+      });
+
+    it("offers them unselected, says why, and does not claim the author removed them", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      expect(pagesBox(dialog).getAttribute("aria-checked")).toBe("false");
+      const offered = [
+        ...starter.querySelectorAll('[data-kept-reason="new-in-starter"]'),
+      ];
+      expect(offered).toHaveLength(2);
+      for (const item of offered) {
+        expect(item.textContent).toContain(
+          "the Starter now has this page and this Theme does not",
+        );
+        expect(item.textContent).not.toContain("removed");
+      }
+      expect(offered.map((item) => item.textContent)).toEqual([
+        expect.stringContaining(ACCOUNT),
+        expect.stringContaining(ORDER_TRANSFER),
+      ]);
+      const header = starter.querySelector('[data-kept-reason="needs-route"]');
+      expect(header?.textContent).toContain(HEADER);
+      expect(header?.textContent).toContain(
+        "links to a page this Theme does not have",
+      );
+      // Not in the changes until selected.
+      expect(
+        within(starter).queryByRole("button", { name: new RegExp(ACCOUNT) }),
+      ).toBeNull();
+    });
+
+    it("applies the review without them unless the author selects them", async () => {
+      const { onApplied } = renderNotice();
+      await openReview();
+      fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: STARTER_DIGEST,
+        },
+      });
+    });
+
+    it("selected: shows them and the Header as changes, and applies that review's digest", async () => {
+      const { onApplied } = renderNotice();
+      const dialog = await openReview();
+      fireEvent.click(pagesBox(dialog));
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      for (const path of [HEADER, ACCOUNT, ORDER_TRANSFER]) {
+        expect(
+          within(starter).getByRole("button", { name: new RegExp(path) }),
+        ).toBeTruthy();
+      }
+      expect(starter.querySelector("[data-kept-reason]")).toBeNull();
+      fireEvent.click(
+        within(starter).getByRole("button", { name: new RegExp(ACCOUNT) }),
+      );
+      expect(
+        screen.getByLabelText(`Changes to ${ACCOUNT}`).textContent,
+      ).toContain("+ account page");
+
+      fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: PAGES_DIGEST,
+        },
+      });
+    });
+
+    it("cannot be selected without the Starter upgrade itself", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      fireEvent.click(
+        within(dialog).getByRole("checkbox", {
+          name: "Apply the Starter upgrade",
+        }),
+      );
+      expect((pagesBox(dialog) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
 });

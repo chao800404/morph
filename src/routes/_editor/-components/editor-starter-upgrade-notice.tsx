@@ -36,11 +36,17 @@ type Review = {
   versionState: StarterUpgradeStatusDTO["versionState"];
   storedVersion: number | null;
   currentVersion: number;
-  starter: Part<StarterUpgradeKeptReason>;
+  starter: Part<StarterUpgradeKeptReason> & {
+    /** The review with the Starter's new pages selected, under its digest. */
+    optional:
+      | (Omit<Part<StarterUpgradeKeptReason>, "applies"> & { paths: string[] })
+      | null;
+  };
   catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
 };
 
 type PartName = "starter" | "catalog";
+type Choice = PartName | "pages";
 
 const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   changed:
@@ -52,6 +58,10 @@ const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
     "Not upgraded: its new version needs a file you removed from this Theme.",
   "origin-unknown":
     "Not added: this Theme does not record which Starter it came from, so Morph cannot tell whether you removed it. Add it yourself if you want it.",
+  "new-in-starter":
+    "Not added unless you select it: the Starter now has this page and this Theme does not. Select \"Add the Starter's new pages\" above to add it.",
+  "needs-route":
+    "Not upgraded: its new version links to a page this Theme does not have, so it is kept as it is. Adding the Starter's new pages upgrades it too.",
 };
 
 const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {
@@ -166,9 +176,11 @@ export function EditorStarterUpgradeNotice({
   const [open, setOpen] = useState(false);
   const [review, setReview] = useState<Review | null>(null);
   const [shownKey, setShownKey] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<Record<PartName, boolean>>({
+  // The Starter's new pages are never pre-selected: only the author adds them.
+  const [chosen, setChosen] = useState<Record<Choice, boolean>>({
     starter: true,
     catalog: true,
+    pages: false,
   });
   const [message, setMessage] = useState<string | null>(null);
 
@@ -189,7 +201,7 @@ export function EditorStarterUpgradeNotice({
             ? `catalog:${next.catalog.changes[0].path}`
             : null;
       setShownKey(first);
-      setChosen({ starter: true, catalog: true });
+      setChosen({ starter: true, catalog: true, pages: false });
       setMessage(null);
       setOpen(true);
     },
@@ -205,7 +217,8 @@ export function EditorStarterUpgradeNotice({
   const applyMutation = useMutation({
     mutationFn: async (input: {
       reviewed: Review;
-      starter: boolean;
+      /** The Starter digest the author applies, when they apply it. */
+      starterDigest: string | null;
       catalog: boolean;
     }) => {
       const result = await applyStorefrontStarterUpgrade({
@@ -213,8 +226,8 @@ export function EditorStarterUpgradeNotice({
           storefrontId,
           themeId,
           expectedSourceGeneration: input.reviewed.sourceGeneration,
-          ...(input.starter
-            ? { starterDigest: input.reviewed.starter.digest }
+          ...(input.starterDigest !== null
+            ? { starterDigest: input.starterDigest }
             : {}),
           ...(input.catalog
             ? { catalogDigest: input.reviewed.catalog.digest }
@@ -277,12 +290,23 @@ export function EditorStarterUpgradeNotice({
   const catalogOffered = catalogShown && review!.catalog.changes.length > 0;
   const applyStarter = starterOffered && chosen.starter;
   const applyCatalog = catalogOffered && chosen.catalog;
+  const pagesOffered = starterOffered && !!review!.starter.optional;
+  const addPages = pagesOffered && applyStarter && chosen.pages;
+  // What the Starter part writes and keeps: with the new pages once the
+  // author selects them, which is a plan of its own with its own digest.
+  const starterPart = review
+    ? addPages && review.starter.optional
+      ? review.starter.optional
+      : review.starter
+    : null;
 
   const [shownPart, ...shownRest] = shownKey?.split(":") ?? [];
   const shownPath = shownRest.join(":");
   const shown =
-    review && (shownPart === "starter" || shownPart === "catalog")
-      ? review[shownPart].changes.find((change) => change.path === shownPath)
+    review && starterPart && (shownPart === "starter" || shownPart === "catalog")
+      ? (shownPart === "starter" ? starterPart : review.catalog).changes.find(
+          (change) => change.path === shownPath,
+        )
       : undefined;
   const rows = shown ? diffLines(shown.before ?? "", shown.after ?? "") : null;
 
@@ -346,17 +370,49 @@ export function EditorStarterUpgradeNotice({
                       />
                       Starter upgrade
                     </label>
-                    {!review.starter.applies ? (
+                    {!review.starter.applies || !starterPart ? (
                       <p className="text-muted-foreground">
                         This Theme is not a TanStack Start Theme, so the Starter
                         upgrade does not apply to it.
                       </p>
                     ) : (
                       <>
+                        {review.starter.optional ? (
+                          <div
+                            className="space-y-1 rounded-md border p-2"
+                            data-starter-optional-pages=""
+                          >
+                            <label className="flex items-center gap-2 font-medium">
+                              <Checkbox
+                                aria-label="Add the Starter's new pages"
+                                checked={addPages}
+                                disabled={!pagesOffered || !applyStarter}
+                                onCheckedChange={(value) =>
+                                  setChosen((prev) => ({
+                                    ...prev,
+                                    pages: value === true,
+                                  }))
+                                }
+                              />
+                              Add the Starter&apos;s new pages
+                            </label>
+                            <p className="text-muted-foreground">
+                              The Starter now has these pages and this Theme
+                              does not. They are added only if you select this.
+                            </p>
+                            <ul className="font-mono">
+                              {review.starter.optional.paths.map((path) => (
+                                <li key={path} className="truncate">
+                                  {path}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                         <h3 className="font-medium">
-                          Changes ({review.starter.changes.length})
+                          Changes ({starterPart.changes.length})
                         </h3>
-                        {review.starter.changes.length === 0 ? (
+                        {starterPart.changes.length === 0 ? (
                           <p className="text-muted-foreground">
                             No file needs changing. Applying records Starter{" "}
                             {review.currentVersion} for this Theme.
@@ -364,16 +420,16 @@ export function EditorStarterUpgradeNotice({
                         ) : (
                           <ChangeList
                             part="starter"
-                            changes={review.starter.changes}
+                            changes={starterPart.changes}
                             shown={shownKey}
                             onShow={setShownKey}
                           />
                         )}
                         <h3 className="font-medium">
-                          Kept as they are ({review.starter.kept.length})
+                          Kept as they are ({starterPart.kept.length})
                         </h3>
                         <KeptList
-                          kept={review.starter.kept}
+                          kept={starterPart.kept}
                           text={STARTER_KEPT}
                         />
                       </>
@@ -479,7 +535,8 @@ export function EditorStarterUpgradeNotice({
                 review &&
                 applyMutation.mutate({
                   reviewed: review,
-                  starter: applyStarter,
+                  starterDigest:
+                    applyStarter && starterPart ? starterPart.digest : null,
                   catalog: applyCatalog,
                 })
               }

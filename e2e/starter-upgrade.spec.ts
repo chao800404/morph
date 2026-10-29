@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { expect, test, type Frame, type Page } from "@playwright/test";
@@ -44,6 +45,10 @@ import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/defau
  *      review keeps it and says why; cancelling writes nothing;
  *   P. a Theme that records no Starter version: shown as pending, never as
  *      the latest, and opening writes nothing.
+ *   R. a Theme created before the Starter had its account and order-transfer
+ *      pages: the review offers them unselected and holds back the Header
+ *      that links to /account; applying without them adds neither and keeps
+ *      the Header; selecting them adds both and updates the Header.
  *
  * Markers are random, so no component default can produce them. With the
  * container transport each case also builds and checks the isolated Build
@@ -670,6 +675,89 @@ test.describe("Starter upgrade, reviewed by the author", () => {
         ...GROUP.map((path) => ({ path, content: original[path]! })),
         { path: CONTENT_MODULE, content: original[CONTENT_MODULE]! },
       ]);
+      setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    }
+  });
+
+  test("R. a Theme created without the Starter's new pages: offered unselected; the Header waits for them", async ({
+    page,
+  }) => {
+    // Its own setup and clean-up: the Header 97e9474 wrote (no /account
+    // link), both pages removed, and the version that commit recorded.
+    const PAGES = ["src/routes/account.tsx", "src/routes/order-transfer.tsx"];
+    const HEADER = "src/components/Header.tsx";
+    const legacyHeader = (
+      JSON.parse(
+        readFileSync(
+          "src/lib/storefront/__fixtures__/starter-history/v26-97e9474.json",
+          "utf8",
+        ),
+      ) as { files: { path: string; content: string }[] }
+    ).files.find((file) => file.path === HEADER)!.content;
+    await openEditor(page);
+    const original = await workspace(page);
+    for (const path of [...PAGES, HEADER]) {
+      expect(original[path], path).toBeDefined();
+    }
+    expect(original[HEADER]).toContain('href: "/account"');
+    expect(legacyHeader).not.toContain('"/account"');
+    const setUp = async () => {
+      const removed = await removeThemeFiles(page, scope!, PAGES);
+      expect(removed.success, JSON.stringify(removed)).toBe(true);
+      await save(page, [{ path: HEADER, content: legacyHeader }]);
+      setStarterVersion(26);
+      await openEditor(page);
+    };
+    try {
+      await setUp();
+      let dialog = await openReview(page);
+      let starter = dialog.getByRole("region", { name: "Starter upgrade" });
+      const pages = starter.getByRole("checkbox", {
+        name: "Add the Starter's new pages",
+      });
+      await expect(pages).not.toBeChecked();
+      for (const path of PAGES) {
+        await expect(
+          starter.locator('[data-kept-reason="new-in-starter"]', {
+            hasText: path,
+          }),
+        ).toHaveCount(1);
+      }
+      await expect(
+        starter.locator('[data-kept-reason="needs-route"]', { hasText: HEADER }),
+      ).toHaveCount(1);
+      await expect(starter.getByRole("button", { name: HEADER })).toHaveCount(0);
+
+      // Applied without them: neither is added, the Header is kept.
+      await applyReview(page, dialog, /^Apply selected$/);
+      let after = await workspace(page);
+      for (const path of PAGES) expect(after[path], path).toBeUndefined();
+      expect(after[HEADER]).toBe(legacyHeader);
+      expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
+
+      // Selected: both are added, and the Header updated with them.
+      setStarterVersion(26);
+      await openEditor(page);
+      dialog = await openReview(page);
+      starter = dialog.getByRole("region", { name: "Starter upgrade" });
+      await starter
+        .getByRole("checkbox", { name: "Add the Starter's new pages" })
+        .click();
+      for (const path of [...PAGES, HEADER]) {
+        await expect(starter.getByRole("button", { name: path })).toBeVisible();
+      }
+      await applyReview(page, dialog, /^Apply selected$/);
+      after = await workspace(page);
+      for (const path of PAGES) expect(after[path], path).toBe(original[path]);
+      expect(after[HEADER]).toBe(original[HEADER]);
+      expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
+    } finally {
+      await openEditor(page);
+      const now = await workspace(page);
+      const restore = [...PAGES, HEADER]
+        .filter((path) => now[path] !== original[path])
+        .map((path) => ({ path, content: original[path]! }));
+      if (restore.length > 0) await save(page, restore);
       setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
     }
   });
