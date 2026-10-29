@@ -346,10 +346,10 @@ async function expectLiveProbe(page: Page, marker: string) {
   const probe = previewFrame(page).locator("[data-pages-probe]");
   await expect(probe).toContainText(marker, { timeout: 90_000 });
   await expect(probe).not.toContainText("PAGES_GET_FAILED");
-  // Which runtime served it, from the page's own document asked again. Both
-  // previews answer with the probe page rendered, but only the full Start
-  // preview's server reads this test's draft, so only its answer carries the
-  // marker. Not the environment settings: what the runtime actually returned.
+  // Which runtime served it, from the page's own document asked again: the
+  // full Start preview renders the loader's answer on the server, the
+  // client-only preview sends a shell the browser fills in. Not the
+  // environment settings: what the runtime actually returned.
   const served = await previewFrame(page)
     .locator("body")
     .evaluate(async () => {
@@ -363,17 +363,17 @@ async function expectLiveProbe(page: Page, marker: string) {
   // The probe's own page, answered.
   expect(served.path).toMatch(/\/pages-probe$/);
   expect(served.status).toBe(200);
-  // The probe's loader rendered it: its fixed prefix, inside the probe.
-  expect(served.html).toMatch(/data-pages-probe=""[^>]*>pages-probe-loader:/);
-  // Start: the loader's answer, inside that same element, is this test's
-  // marker, which no other page or run can carry. Markers are letters,
-  // digits and hyphens, so the marker is its own pattern.
-  const answered = new RegExp(
-    `data-pages-probe=""[^>]*>pages-probe-loader:[^<]*${marker}`,
-  );
   if (START_PREVIEW) {
-    expect(served.html).toMatch(answered);
+    // The probe's loader rendered it on the server, and its answer, inside
+    // the probe, is this test's marker, which no other page or run can
+    // carry. Markers are letters, digits and hyphens, so the marker is its
+    // own pattern.
+    expect(served.html).toMatch(
+      new RegExp(`data-pages-probe=""[^>]*>pages-probe-loader:[^<]*${marker}`),
+    );
   } else {
+    // A shell: neither the loader's prefix nor the marker.
+    expect(served.html).not.toContain("pages-probe-loader:");
     expect(served.html).not.toContain(marker);
   }
 }
