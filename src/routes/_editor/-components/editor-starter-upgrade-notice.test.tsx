@@ -289,6 +289,56 @@ describe("EditorStarterUpgradeNotice", () => {
     );
   });
 
+  it("lists every file it leaves alone in the review, each with why, and nowhere else", async () => {
+    fns.review.mockResolvedValue({
+      success: true,
+      data: reviewOf({
+        versionState: "pending",
+        storedVersion: null,
+        starter: {
+          ...STARTER_PART,
+          kept: [
+            { path: "src/components/Header.tsx", reason: "changed" },
+            { path: "src/components/sections/Hero.tsx", reason: "missing" },
+            { path: "src/components/Footer.tsx", reason: "needs-missing" },
+            { path: "src/morph/link.tsx", reason: "origin-unknown" },
+            { path: "src/components/Principles.tsx", reason: "markers-kept" },
+          ],
+        },
+      }),
+    });
+    renderNotice({
+      status: { ...AVAILABLE, versionState: "pending", storedVersion: null },
+    });
+    const dialog = await openReview();
+    const starter = within(dialog).getByRole("region", {
+      name: "Starter upgrade",
+    });
+    const shown = (reason: string) =>
+      [...starter.querySelectorAll(`[data-kept-reason="${reason}"]`)].map(
+        (item) => item.textContent ?? "",
+      );
+    expect(shown("changed")).toEqual([
+      expect.stringContaining("src/components/Header.tsx"),
+    ]);
+    expect(shown("changed")[0]).toContain("it is yours");
+    expect(shown("missing")[0]).toContain("not added back");
+    expect(shown("needs-missing")[0]).toContain(
+      "needs a file you removed from this Theme",
+    );
+    expect(shown("origin-unknown")[0]).toContain(
+      "cannot tell whether you removed it",
+    );
+    expect(shown("markers-kept")[0]).toContain("markers keep working");
+    expect(starter.textContent).toContain("Kept as they are (5)");
+    // One notice, one review: no second prompt for what is kept. The notice
+    // is outside the open dialog, so it is counted by its own attribute.
+    expect(
+      document.querySelectorAll("[data-editor-starter-upgrade]"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
   it("does not apply while this tab has unsaved changes", async () => {
     renderNotice({ unsavedCount: 2 });
     await openReview();
