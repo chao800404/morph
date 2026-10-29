@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpCircle, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -11,9 +12,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { StarterUpgradeStatusDTO } from "@/lib/storefront/dto/storefront-theme.dto";
+import type { ThemeCatalogKeptReason } from "@/lib/storefront/service/theme-catalog-setup";
 import type {
   StarterUpgradeChange,
-  StarterUpgradeKept,
   StarterUpgradeKeptReason,
 } from "@/lib/storefront/starter-theme-upgrade-review";
 import { diffLines } from "@/lib/text/line-diff";
@@ -23,18 +24,25 @@ import {
   reviewStorefrontStarterUpgrade,
 } from "@/server/storefront/storefront-themes.serverFn";
 
+type Part<Reason extends string> = {
+  applies: boolean;
+  digest: string;
+  changes: StarterUpgradeChange[];
+  kept: { path: string; reason: Reason }[];
+};
+
 type Review = {
   sourceGeneration: number;
   versionState: StarterUpgradeStatusDTO["versionState"];
   storedVersion: number | null;
   currentVersion: number;
-  applies: boolean;
-  digest: string;
-  changes: StarterUpgradeChange[];
-  kept: StarterUpgradeKept[];
+  starter: Part<StarterUpgradeKeptReason>;
+  catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
 };
 
-const KEPT_REASON: Record<StarterUpgradeKeptReason, string> = {
+type PartName = "starter" | "catalog";
+
+const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   changed:
     "Kept as it is: it differs from every Starter copy Morph knows, so it is yours. That includes formatting-only changes.",
   missing: "Not in this Theme, and not added back.",
@@ -42,22 +50,98 @@ const KEPT_REASON: Record<StarterUpgradeKeptReason, string> = {
     "Kept as it is: you changed it. Its data-* markers keep working; remove them by hand if you like.",
 };
 
-function versionLine(status: StarterUpgradeStatusDTO): string {
-  if (status.versionState === "pending") {
-    return `This Theme does not record which Starter it came from. Review it against Starter ${status.currentVersion} to record one.`;
-  }
-  return `This Theme is on Starter ${status.storedVersion}; Starter ${status.currentVersion} is available.`;
+const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {
+  changed:
+    "Kept as it is: it differs from the catalog copy Morph wrote, so it is yours.",
+  missing: "Not in this Theme any more, and not added back.",
+  "products-route-exists":
+    "Not installed: this Theme has its own /products route, which is kept.",
+  "route-conflict":
+    "Not installed: it would conflict with this Theme's routes.",
+};
+
+function noticeLine(status: StarterUpgradeStatusDTO): string {
+  const starter =
+    status.versionState === "pending"
+      ? `This Theme does not record which Starter it came from. Review it against Starter ${status.currentVersion} to record one.`
+      : status.versionState === "available"
+        ? `This Theme is on Starter ${status.storedVersion}; Starter ${status.currentVersion} is available.`
+        : null;
+  const catalog =
+    status.catalogPending === "install"
+      ? "This Theme can add a product list page (/products) and a product detail page (/products/<slug>) for this store's products. These pages are not created until you review and apply them."
+      : status.catalogPending === "update"
+        ? "Product catalog pages Morph added earlier have updates. They stay as they are until you review and apply them."
+        : null;
+  return [starter, catalog].filter(Boolean).join(" ");
+}
+
+function ChangeList({
+  part,
+  changes,
+  shown,
+  onShow,
+}: {
+  part: PartName;
+  changes: StarterUpgradeChange[];
+  shown: string | null;
+  onShow: (key: string) => void;
+}) {
+  return (
+    <ul>
+      {changes.map((change) => {
+        const key = `${part}:${change.path}`;
+        return (
+          <li key={key}>
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left font-mono",
+                key === shown && "bg-muted",
+              )}
+              onClick={() => onShow(key)}
+            >
+              <span className="w-12 shrink-0 text-[10px] uppercase text-muted-foreground">
+                {change.operation}
+              </span>
+              <span className="truncate">{change.path}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function KeptList<Reason extends string>({
+  kept,
+  text,
+}: {
+  kept: { path: string; reason: Reason }[];
+  text: Record<Reason, string>;
+}) {
+  return (
+    <ul className="space-y-1">
+      {kept.map((item) => (
+        <li key={item.path} data-kept-reason={item.reason}>
+          <div className="truncate font-mono">{item.path}</div>
+          <div className="text-muted-foreground">{text[item.reason]}</div>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 /**
- * A Starter upgrade the author has not reviewed yet.
+ * A Starter upgrade or a product catalog change the author has not reviewed.
  *
- * Opening the editor never upgrades a Theme. This says one is available, or
- * that the Theme's version is unknown, and opens a review: every file the
- * upgrade would write, with its text before and after, and every Starter file
- * it leaves alone, with why. Applying sends the review's generation and
- * digest, so what is written is what was shown; a Theme that moved on since
- * is refused, with nothing written.
+ * Opening the editor writes neither. This says what is waiting and opens one
+ * review with two parts kept apart: the Starter upgrade and the product
+ * catalog. Each lists every file it would write, with its text before and
+ * after, and every file it leaves alone, with why. The author chooses which
+ * parts to apply; applying sends the review's generation and each chosen
+ * part's digest, so what is written is what was shown, and a Theme that moved
+ * on since is refused with nothing written.
  */
 export function EditorStarterUpgradeNotice({
   status,
@@ -77,7 +161,11 @@ export function EditorStarterUpgradeNotice({
 }) {
   const [open, setOpen] = useState(false);
   const [review, setReview] = useState<Review | null>(null);
-  const [shownPath, setShownPath] = useState<string | null>(null);
+  const [shownKey, setShownKey] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<Record<PartName, boolean>>({
+    starter: true,
+    catalog: true,
+  });
   const [message, setMessage] = useState<string | null>(null);
 
   const reviewMutation = useMutation({
@@ -90,7 +178,14 @@ export function EditorStarterUpgradeNotice({
     },
     onSuccess: (next) => {
       setReview(next);
-      setShownPath(next.changes[0]?.path ?? null);
+      const first =
+        next.starter.changes[0] !== undefined
+          ? `starter:${next.starter.changes[0].path}`
+          : next.catalog.changes[0] !== undefined
+            ? `catalog:${next.catalog.changes[0].path}`
+            : null;
+      setShownKey(first);
+      setChosen({ starter: true, catalog: true });
       setMessage(null);
       setOpen(true);
     },
@@ -104,13 +199,22 @@ export function EditorStarterUpgradeNotice({
   });
 
   const applyMutation = useMutation({
-    mutationFn: async (reviewed: Review) => {
+    mutationFn: async (input: {
+      reviewed: Review;
+      starter: boolean;
+      catalog: boolean;
+    }) => {
       const result = await applyStorefrontStarterUpgrade({
         data: {
           storefrontId,
           themeId,
-          expectedSourceGeneration: reviewed.sourceGeneration,
-          planDigest: reviewed.digest,
+          expectedSourceGeneration: input.reviewed.sourceGeneration,
+          ...(input.starter
+            ? { starterDigest: input.reviewed.starter.digest }
+            : {}),
+          ...(input.catalog
+            ? { catalogDigest: input.reviewed.catalog.digest }
+            : {}),
         },
       });
       if (!result.success) throw new Error(result.message);
@@ -120,7 +224,7 @@ export function EditorStarterUpgradeNotice({
       setOpen(false);
       setReview(null);
       setMessage(
-        "Starter upgrade applied. The preview is reloading; publish when you are ready.",
+        "Applied. The preview is reloading; publish when you are ready.",
       );
       await onApplied();
     },
@@ -131,7 +235,10 @@ export function EditorStarterUpgradeNotice({
     },
   });
 
-  if (!status || status.versionState === "current") {
+  const waiting =
+    !!status &&
+    (status.versionState !== "current" || status.catalogPending !== null);
+  if (!status || !waiting) {
     return message ? (
       <div
         role="status"
@@ -150,9 +257,28 @@ export function EditorStarterUpgradeNotice({
     ) : null;
   }
 
-  const shown = review?.changes.find((change) => change.path === shownPath);
+  // The Starter part is offered while its version is not current, even with
+  // no file to change: applying it records the version. The catalog part is
+  // offered when it has files to write, and shown when it keeps any.
+  const starterShown =
+    !!review &&
+    (review.versionState !== "current" || review.starter.changes.length > 0);
+  const starterOffered = starterShown && review!.starter.applies;
+  const catalogShown =
+    !!review &&
+    review.catalog.applies &&
+    (review.catalog.changes.length > 0 || review.catalog.kept.length > 0);
+  const catalogOffered = catalogShown && review!.catalog.changes.length > 0;
+  const applyStarter = starterOffered && chosen.starter;
+  const applyCatalog = catalogOffered && chosen.catalog;
+
+  const [shownPart, ...shownRest] = shownKey?.split(":") ?? [];
+  const shownPath = shownRest.join(":");
+  const shown =
+    review && (shownPart === "starter" || shownPart === "catalog")
+      ? review[shownPart].changes.find((change) => change.path === shownPath)
+      : undefined;
   const rows = shown ? diffLines(shown.before ?? "", shown.after ?? "") : null;
-  const nothingToWrite = review !== null && review.changes.length === 0;
 
   return (
     <>
@@ -162,11 +288,14 @@ export function EditorStarterUpgradeNotice({
           "flex items-center gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs",
           className,
         )}
-        data-editor-starter-upgrade={status.versionState}
+        data-editor-starter-upgrade={
+          status.versionState === "current" ? "catalog" : status.versionState
+        }
+        data-catalog-pending={status.catalogPending ?? "none"}
       >
         <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
         <span className="min-w-0 flex-1">
-          {versionLine(status)} Nothing changes until you apply it.
+          {noticeLine(status)} Nothing changes until you apply it.
           {message ? ` ${message}` : null}
         </span>
         <Button
@@ -186,65 +315,104 @@ export function EditorStarterUpgradeNotice({
           <DialogHeader>
             <DialogTitle>Review the Starter upgrade</DialogTitle>
             <DialogDescription>
-              Only files that still match a Starter copy Morph wrote are
-              changed. Files you changed are kept and listed below. Applying
-              saves one new revision; it does not publish.
+              Only files that still match a copy Morph wrote are changed, and
+              new files are added only where nothing is in the way. Files you
+              changed are kept and listed. Applying saves one new revision; it
+              does not publish.
             </DialogDescription>
           </DialogHeader>
-          {review && !review.applies ? (
-            <p className="text-xs text-muted-foreground">
-              This Theme is not a TanStack Start Theme, so the Starter upgrade
-              does not apply to it.
-            </p>
-          ) : review ? (
-            <div className="grid min-h-0 grid-cols-[14rem_1fr] gap-3 text-xs">
-              <div className="max-h-[28rem] space-y-3 overflow-auto">
-                <section aria-label="Changes">
-                  <h3 className="mb-1 font-medium">
-                    Changes ({review.changes.length})
-                  </h3>
-                  {review.changes.length === 0 ? (
+          {review ? (
+            <div className="grid min-h-0 grid-cols-[16rem_1fr] gap-3 text-xs">
+              <div className="max-h-[28rem] space-y-4 overflow-auto">
+                {starterShown ? (
+                  <section aria-label="Starter upgrade" className="space-y-2">
+                    <label className="flex items-center gap-2 font-medium">
+                      <Checkbox
+                        aria-label="Apply the Starter upgrade"
+                        checked={applyStarter}
+                        disabled={!starterOffered}
+                        onCheckedChange={(value) =>
+                          setChosen((prev) => ({
+                            ...prev,
+                            starter: value === true,
+                          }))
+                        }
+                      />
+                      Starter upgrade
+                    </label>
+                    {!review.starter.applies ? (
+                      <p className="text-muted-foreground">
+                        This Theme is not a TanStack Start Theme, so the Starter
+                        upgrade does not apply to it.
+                      </p>
+                    ) : (
+                      <>
+                        <h3 className="font-medium">
+                          Changes ({review.starter.changes.length})
+                        </h3>
+                        {review.starter.changes.length === 0 ? (
+                          <p className="text-muted-foreground">
+                            No file needs changing. Applying records Starter{" "}
+                            {review.currentVersion} for this Theme.
+                          </p>
+                        ) : (
+                          <ChangeList
+                            part="starter"
+                            changes={review.starter.changes}
+                            shown={shownKey}
+                            onShow={setShownKey}
+                          />
+                        )}
+                        <h3 className="font-medium">
+                          Kept as they are ({review.starter.kept.length})
+                        </h3>
+                        <KeptList
+                          kept={review.starter.kept}
+                          text={STARTER_KEPT}
+                        />
+                      </>
+                    )}
+                  </section>
+                ) : null}
+                {catalogShown ? (
+                  <section aria-label="Product catalog" className="space-y-2">
+                    <label className="flex items-center gap-2 font-medium">
+                      <Checkbox
+                        aria-label="Apply the product catalog changes"
+                        checked={applyCatalog}
+                        disabled={!catalogOffered}
+                        onCheckedChange={(value) =>
+                          setChosen((prev) => ({
+                            ...prev,
+                            catalog: value === true,
+                          }))
+                        }
+                      />
+                      Product catalog
+                    </label>
                     <p className="text-muted-foreground">
-                      No file needs changing. Applying records Starter{" "}
-                      {review.currentVersion} for this Theme.
+                      {review.catalog.kind === "install"
+                        ? "Adds a product list page (/products) and a product detail page (/products/<slug>) for this store's products. They are not created until you apply this part. Product data is not changed."
+                        : review.catalog.kind === "update"
+                          ? "Updates catalog files Morph wrote earlier. Product data is not changed."
+                          : "Nothing to install or update."}{" "}
+                      Applying it does not change the Starter version.
                     </p>
-                  ) : (
-                    <ul>
-                      {review.changes.map((change) => (
-                        <li key={change.path}>
-                          <button
-                            type="button"
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left font-mono",
-                              change.path === shownPath && "bg-muted",
-                            )}
-                            onClick={() => setShownPath(change.path)}
-                          >
-                            <span className="w-12 shrink-0 text-[10px] uppercase text-muted-foreground">
-                              {change.operation}
-                            </span>
-                            <span className="truncate">{change.path}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
-                <section aria-label="Kept">
-                  <h3 className="mb-1 font-medium">
-                    Kept as they are ({review.kept.length})
-                  </h3>
-                  <ul className="space-y-1">
-                    {review.kept.map((item) => (
-                      <li key={item.path} data-kept-reason={item.reason}>
-                        <div className="truncate font-mono">{item.path}</div>
-                        <div className="text-muted-foreground">
-                          {KEPT_REASON[item.reason]}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
+                    <h3 className="font-medium">
+                      Changes ({review.catalog.changes.length})
+                    </h3>
+                    <ChangeList
+                      part="catalog"
+                      changes={review.catalog.changes}
+                      shown={shownKey}
+                      onShow={setShownKey}
+                    />
+                    <h3 className="font-medium">
+                      Kept as they are ({review.catalog.kept.length})
+                    </h3>
+                    <KeptList kept={review.catalog.kept} text={CATALOG_KEPT} />
+                  </section>
+                ) : null}
               </div>
               <div
                 className="max-h-[28rem] overflow-auto rounded-md border bg-card font-mono text-[11px]"
@@ -297,16 +465,23 @@ export function EditorStarterUpgradeNotice({
             <Button
               disabled={
                 !review ||
-                !review.applies ||
+                (!applyStarter && !applyCatalog) ||
                 unsavedCount > 0 ||
                 applyMutation.isPending
               }
-              onClick={() => review && applyMutation.mutate(review)}
+              onClick={() =>
+                review &&
+                applyMutation.mutate({
+                  reviewed: review,
+                  starter: applyStarter,
+                  catalog: applyCatalog,
+                })
+              }
             >
               {applyMutation.isPending ? (
                 <LoaderCircle className="size-3.5 animate-spin" />
               ) : null}
-              {nothingToWrite ? "Record version" : "Apply upgrade"}
+              Apply selected
             </Button>
           </DialogFooter>
         </DialogContent>

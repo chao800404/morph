@@ -1,18 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({
-  resolveForTheme: vi.fn(),
-  hasChannelProducts: vi.fn(),
-  getSourceGeneration: vi.fn(),
-  listFiles: vi.fn(),
-  saveFilesBatch: vi.fn(),
-}));
-vi.mock("../dal/store-context.dal", () => ({ storeContextDal: mocks }));
-vi.mock("../dal/store-catalog.dal", () => ({ storeCatalogDal: mocks }));
-vi.mock("../storage/theme-storage.server", () => ({ themeSourceStore: mocks }));
+import { describe, expect, it } from "vitest";
 import {
-  ensureThemeCatalog,
   planThemeCatalogFiles,
   planThemeCatalogUpgrades,
+  reviewThemeCatalog,
 } from "./theme-catalog-setup";
 import { STARTER_THEME_FILES } from "../starter-theme-files";
 import {
@@ -20,42 +10,158 @@ import {
   STARTER_THEME_CATALOG_UPGRADES,
   starterThemeCatalogSource,
 } from "../starter-theme-catalog-files";
-const input = {
-  storefrontId: "storefront",
-  themeId: "theme",
-  createdBy: "verified-admin",
+
+const withIds = (files: readonly { path: string; content: string }[]) =>
+  files.map((file) => ({
+    id: `file-${file.path}`,
+    path: file.path,
+    content: file.content,
+    version: 3,
+  }));
+
+const AUTHORED_PRODUCTS_ROUTE = {
+  path: "src/routes/products.tsx",
+  content:
+    'import {createFileRoute} from "@tanstack/react-router"; export const Route=createFileRoute("/products")({component: Custom}); function Custom(){return <p>Authored</p>}',
 };
-describe("automatic catalog source setup", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.resolveForTheme.mockResolvedValue({ salesChannelId: "sc" });
-    mocks.hasChannelProducts.mockResolvedValue(true);
-    mocks.getSourceGeneration.mockResolvedValue(8);
-    mocks.listFiles.mockResolvedValue(STARTER_THEME_FILES);
-    mocks.saveFilesBatch.mockResolvedValue([]);
+
+describe("the catalog review", () => {
+  it("offers to install the catalog routes, additively, with each file's text", () => {
+    const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
+      hasProducts: true,
+    });
+    expect(review.applies).toBe(true);
+    expect(review.kind).toBe("install");
+    expect(review.changes.map((change) => change.path).sort()).toEqual(
+      STARTER_THEME_CATALOG_FILES.map((file) => file.path).sort(),
+    );
+    for (const change of review.changes) {
+      expect(change.operation).toBe("create");
+      expect(change.before).toBeNull();
+      expect(change.after).toBe(starterThemeCatalogSource(change.path));
+    }
+    // Each new file is written only if it is still missing when applied.
+    expect(
+      review.plan.files.every(
+        (file) => "expectMissing" in file && file.expectMissing,
+      ),
+    ).toBe(true);
+    expect(review.kept).toEqual([]);
+    expect(review.digest).toMatch(/^[a-f0-9]{64}$/);
   });
-  it("adds one shared pair of routes with atomic OCC and a revision", async () => {
-    expect(await ensureThemeCatalog(input)).toBe(true);
-    expect(mocks.saveFilesBatch).toHaveBeenCalledWith(
-      "storefront",
-      "theme",
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: "src/routes/products.$slug.tsx",
-          expectMissing: true,
-        }),
+
+  it("offers nothing to a store whose channel has no products", () => {
+    const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
+      hasProducts: false,
+    });
+    expect(review.applies).toBe(false);
+    expect(review.changes).toEqual([]);
+    expect(review.plan.files).toEqual([]);
+  });
+
+  it("keeps a products route of the author's own and installs nothing over it", () => {
+    const review = reviewThemeCatalog(
+      withIds([...STARTER_THEME_FILES, AUTHORED_PRODUCTS_ROUTE]),
+      { hasProducts: true },
+    );
+    expect(review.changes).toEqual([]);
+    expect(review.plan.files).toEqual([]);
+    expect(new Set(review.kept.map((item) => item.reason))).toEqual(
+      new Set(["products-route-exists"]),
+    );
+  });
+
+  it("does not install over a file at one of its paths, and lists the rest as kept", () => {
+    const review = reviewThemeCatalog(
+      withIds([
+        ...STARTER_THEME_FILES,
+        {
+          path: "src/components/ProductList.tsx",
+          content: "export default function Custom(){return null}",
+        },
       ]),
-      {
-        expectedSourceGeneration: 8,
-        createdBy: "verified-admin",
-        createRevision: true,
-        revisionMessage: "Create storefront product catalog routes",
-      },
+      { hasProducts: true },
     );
-    expect(mocks.getSourceGeneration.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.listFiles.mock.invocationCallOrder[0],
+    expect(review.changes).toEqual([]);
+    expect(review.kept).toContainEqual({
+      path: "src/components/ProductList.tsx",
+      reason: "changed",
+    });
+    expect(review.kept).toContainEqual({
+      path: "src/routes/products.index.tsx",
+      reason: "missing",
+    });
+  });
+
+  it("updates only an untouched older catalog file, and keeps an edited one", () => {
+    const upgrade = STARTER_THEME_CATALOG_UPGRADES[0]!;
+    const files = withIds(
+      STARTER_THEME_CATALOG_FILES.map((file) =>
+        file.path === upgrade.path
+          ? { path: file.path, content: upgrade.legacyContent }
+          : file,
+      ),
+    );
+    const review = reviewThemeCatalog(files, { hasProducts: true });
+    expect(review.kind).toBe("update");
+    expect(review.changes).toEqual([
+      {
+        path: upgrade.path,
+        operation: "update",
+        before: upgrade.legacyContent,
+        after: starterThemeCatalogSource(upgrade.path),
+      },
+    ]);
+
+    const edited = reviewThemeCatalog(
+      files.map((file) =>
+        file.path === upgrade.path
+          ? { ...file, content: `${file.content}\n// author's note\n` }
+          : file,
+      ),
+      { hasProducts: true },
+    );
+    expect(edited.changes).toEqual([]);
+    expect(edited.kept).toContainEqual({
+      path: upgrade.path,
+      reason: "changed",
+    });
+  });
+
+  it("does not add back catalog files the author removed, and lists them as kept", () => {
+    const removed = [
+      "src/components/ProductDetail.tsx",
+      "src/routes/products.$slug.tsx",
+    ];
+    const review = reviewThemeCatalog(
+      withIds([
+        ...STARTER_THEME_FILES,
+        ...STARTER_THEME_CATALOG_FILES.filter(
+          (file) => !removed.includes(file.path),
+        ),
+      ]),
+      { hasProducts: true },
+    );
+    expect(review.kind).toBeNull();
+    expect(review.changes).toEqual([]);
+    expect(review.plan.files).toEqual([]);
+    expect(review.kept).toEqual(
+      removed.map((path) => ({ path, reason: "missing" })),
     );
   });
+
+  it("has nothing to do once every catalog file is current", () => {
+    const review = reviewThemeCatalog(
+      withIds([...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES]),
+      { hasProducts: true },
+    );
+    expect(review.kind).toBeNull();
+    expect(review.changes).toEqual([]);
+    expect(review.kept).toEqual([]);
+  });
+});
+
+describe("automatic catalog source setup", () => {
   it("is idempotent and preserves existing source", () => {
     expect(
       planThemeCatalogFiles([
@@ -64,14 +170,7 @@ describe("automatic catalog source setup", () => {
       ]),
     ).toEqual([]);
     expect(
-      planThemeCatalogFiles([
-        ...STARTER_THEME_FILES,
-        {
-          path: "src/routes/products.tsx",
-          content:
-            'import {createFileRoute} from "@tanstack/react-router"; export const Route=createFileRoute("/products")({component: Custom}); function Custom(){return <p>Authored</p>}',
-        },
-      ]),
+      planThemeCatalogFiles([...STARTER_THEME_FILES, AUTHORED_PRODUCTS_ROUTE]),
     ).toEqual([]);
     expect(
       planThemeCatalogFiles([
@@ -83,31 +182,9 @@ describe("automatic catalog source setup", () => {
       ]),
     ).toEqual([]);
   });
-  it("does not generate source for an unrelated theme or an empty channel", async () => {
-    mocks.resolveForTheme.mockResolvedValue(null);
-    expect(await ensureThemeCatalog(input)).toBe(false);
-    expect(mocks.hasChannelProducts).not.toHaveBeenCalled();
-    mocks.resolveForTheme.mockResolvedValue({ salesChannelId: "sc" });
-    mocks.hasChannelProducts.mockResolvedValue(false);
-    expect(await ensureThemeCatalog(input)).toBe(false);
-    expect(mocks.saveFilesBatch).not.toHaveBeenCalled();
-  });
-  it("propagates conflicts without overwrite, retry or publish", async () => {
-    mocks.saveFilesBatch.mockRejectedValue(new Error("SOURCE_CONFLICT"));
-    await expect(ensureThemeCatalog(input)).rejects.toThrow("SOURCE_CONFLICT");
-    expect(mocks.saveFilesBatch).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("catalog source upgrades", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.resolveForTheme.mockResolvedValue({ salesChannelId: "sc" });
-    mocks.hasChannelProducts.mockResolvedValue(true);
-    mocks.getSourceGeneration.mockResolvedValue(8);
-    mocks.saveFilesBatch.mockResolvedValue([]);
-  });
-
   /** One installed workspace, sitting on exactly one past generation. */
   const workspaceOn = (upgrade: { path: string; legacyContent: string }) =>
     [
@@ -180,19 +257,5 @@ describe("catalog source upgrades", () => {
       version: 3,
     }));
     expect(planThemeCatalogUpgrades(current)).toEqual([]);
-  });
-
-  it("upgrades a theme that already has the catalog routes", async () => {
-    const upgrade = STARTER_THEME_CATALOG_UPGRADES[0]!;
-    mocks.listFiles.mockResolvedValue(workspaceOn(upgrade));
-
-    await expect(ensureThemeCatalog(input)).resolves.toBe(true);
-
-    const [, , files, options] = mocks.saveFilesBatch.mock.calls[0] ?? [];
-    expect(files).toHaveLength(1);
-    expect(options.revisionMessage).toBe(
-      "Update storefront product catalog routes",
-    );
-    expect(options.expectedSourceGeneration).toBe(8);
   });
 });

@@ -1,5 +1,8 @@
-import { test, expect } from "@playwright/test";
-import { EDITOR_PATH } from "./helpers";
+import { test, expect, type Page } from "@playwright/test";
+import { EDITOR_PATH, isServerFunctionCall, openEditor } from "./helpers";
+import { queryLocalD1 } from "./helpers/editor-writes-paused";
+import { themeScopeFromEditorPath } from "./native-compat";
+import { STARTER_THEME_CATALOG_FILES } from "../src/lib/storefront/starter-theme-catalog-files";
 
 test.skip(
   !EDITOR_PATH,
@@ -10,6 +13,120 @@ function editorAt(routePath: string): string {
   const editor = new URL(EDITOR_PATH!, "http://localhost:3000");
   editor.searchParams.set("routePath", routePath);
   return editor.pathname + editor.search;
+}
+
+const FILES_MODULE =
+  "/src/server/storefront/storefront-theme-files.serverFn.ts";
+const CATALOG_PATHS = STARTER_THEME_CATALOG_FILES.map((file) => file.path);
+
+/** Every text file, path → content, as the source store lists it. */
+async function workspace(page: Page): Promise<Record<string, string>> {
+  const scope = themeScopeFromEditorPath(EDITOR_PATH!);
+  return page.evaluate(
+    async ({ module, scope }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      const listed = await fns.listStorefrontThemeFiles({ data: scope });
+      if (!listed?.success) throw new Error(listed?.message ?? "list failed");
+      return Object.fromEntries(
+        listed.data.files.map((file: { path: string; content: string }) => [
+          file.path,
+          file.content,
+        ]),
+      );
+    },
+    { module: FILES_MODULE, scope },
+  );
+}
+
+/** The Starter record and the home Document, as D1 holds them. */
+function starterRecord() {
+  const { themeId } = themeScopeFromEditorPath(EDITOR_PATH!);
+  const [theme] = queryLocalD1<{ metadata: string | null }>(
+    `SELECT metadata FROM storefront_themes WHERE id = '${themeId}'`,
+  );
+  const [home] = queryLocalD1<{ document: string; draft_generation: number }>(
+    `SELECT document, draft_generation FROM storefront_theme_templates
+     WHERE theme_id = '${themeId}' AND type = 'index' AND deleted_at IS NULL`,
+  );
+  return { metadata: theme?.metadata ?? null, home };
+}
+
+/**
+ * The author installs the catalog: opening the editor writes nothing and says
+ * the catalog is waiting; the review lists its files apart from any Starter
+ * upgrade; applying the catalog alone writes only its files, and records
+ * nothing about the Starter.
+ */
+async function installCatalogByReview(page: Page) {
+  // The shared helper waits until the editor is ready to take a click.
+  await openEditor(page, editorAt("/"));
+  const before = await workspace(page);
+  const recordBefore = starterRecord();
+  for (const path of CATALOG_PATHS) {
+    expect(Object.keys(before), `${path} before the review`).not.toContain(
+      path,
+    );
+  }
+
+  const notice = page.locator("[data-editor-starter-upgrade]");
+  await expect(notice).toHaveAttribute("data-catalog-pending", "install", {
+    timeout: 30000,
+  });
+  await expect(notice).toContainText(
+    "a product list page (/products) and a product detail page (/products/<slug>)",
+  );
+  await expect(notice).toContainText(
+    "These pages are not created until you review and apply them.",
+  );
+  await notice.getByRole("button", { name: "Review upgrade" }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review the Starter upgrade",
+  });
+  await expect(dialog).toBeVisible({ timeout: 30000 });
+  const catalog = dialog.getByRole("region", { name: "Product catalog" });
+  for (const path of CATALOG_PATHS) {
+    await expect(catalog.getByRole("button", { name: path })).toBeVisible();
+  }
+  await catalog
+    .getByRole("button", { name: "src/routes/products.index.tsx" })
+    .click();
+  await expect(
+    dialog.getByLabel("Changes to src/routes/products.index.tsx"),
+  ).toContainText("+ ");
+  // Only the catalog: a Starter part, if one is offered, is left out.
+  const starter = dialog.getByRole("checkbox", {
+    name: "Apply the Starter upgrade",
+  });
+  if ((await starter.count()) > 0 && (await starter.isChecked())) {
+    await starter.click();
+  }
+
+  // Nothing is written while the author reads it.
+  expect(await workspace(page)).toEqual(before);
+  expect(starterRecord()).toEqual(recordBefore);
+
+  const applied = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "applyStorefrontStarterUpgrade"),
+    { timeout: 60000 },
+  );
+  await dialog.getByRole("button", { name: "Apply selected" }).click();
+  const response = await applied;
+  expect(response.ok()).toBe(true);
+  // A refused apply still answers 200; the refusal is in the body.
+  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  await expect(dialog).toBeHidden({ timeout: 30000 });
+
+  // Exactly the catalog's files were added; nothing else changed.
+  const after = await workspace(page);
+  const expected = { ...before };
+  for (const file of STARTER_THEME_CATALOG_FILES) {
+    expected[file.path] = file.content;
+  }
+  expect(after).toEqual(expected);
+  // No Starter record and no home Document reset.
+  expect(starterRecord()).toEqual(recordBefore);
 }
 
 /**
@@ -41,7 +158,15 @@ function editorAt(routePath: string): string {
  * not implement. The href is still asserted, because that is the part the
  * published storefront depends on.
  */
-test("catalog routes are provisioned and render public products in the editor", async ({
+test.describe.configure({ mode: "serial" });
+
+test("opening the editor installs no catalog; the author's review installs it alone", async ({
+  page,
+}) => {
+  await installCatalogByReview(page);
+});
+
+test("catalog routes render public products in the editor", async ({
   page,
 }) => {
   // The interesting failures happen inside the preview iframe, where a thrown

@@ -18,6 +18,12 @@ export type StarterUpgradeStatusDTO = {
   versionState: StarterVersionState;
   storedVersion: number | null;
   currentVersion: number;
+  /**
+   * What the product catalog has waiting for review: `install` adds the
+   * product list and product detail pages, `update` corrects catalog files
+   * Morph wrote earlier. `null` when it has nothing to write.
+   */
+  catalogPending: "install" | "update" | null;
 };
 
 export interface StorefrontThemeEditorDTO {

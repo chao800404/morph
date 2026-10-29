@@ -27,6 +27,12 @@ import {
   reviewStarterThemeUpgrade,
   type StarterUpgradeReview,
 } from "../starter-theme-upgrade-review";
+import {
+  reviewThemeCatalog,
+  type ThemeCatalogReview,
+} from "../service/theme-catalog-setup";
+import { storeCatalogDal } from "./store-catalog.dal";
+import { storeContextDal } from "./store-context.dal";
 import { themeSourceStore } from "../storage/theme-storage.server";
 import { defaultPreviewRuntimeForNewTheme } from "../theme-preview-runtime";
 import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
@@ -612,13 +618,33 @@ export type StarterUpgradeReviewResult = {
   storedVersion: number | null;
   currentVersion: number;
   review: StarterUpgradeReview;
+  /** The product catalog, kept apart from the Starter upgrade. */
+  catalog: ThemeCatalogReview;
 };
 
 export type StarterUpgradeApplyResult =
-  | { status: "applied"; filesSaved: boolean; sourceGeneration: number }
+  | {
+      status: "applied";
+      filesSaved: boolean;
+      sourceGeneration: number;
+      /** Whether the Starter part was applied, and so its version recorded. */
+      starter: boolean;
+      catalog: boolean;
+    }
   | { status: "not-applicable" }
   /** The workspace or the plan changed since the author reviewed it. */
   | { status: "stale"; sourceGeneration: number | null };
+
+/** Whether the store's channel sells anything a catalog could list. */
+async function themeChannelHasProducts(
+  storefrontId: string,
+  themeId: string,
+): Promise<boolean> {
+  const context = await storeContextDal.resolveForTheme(storefrontId, themeId);
+  return context
+    ? storeCatalogDal.hasChannelProducts(context.salesChannelId)
+    : false;
+}
 
 /**
  * Creates the minimum editable website graph for a storefront channel.
@@ -674,9 +700,10 @@ export const storefrontDal = {
       data.themeId,
     );
     if (!stored.found) return null;
-    const [files, sourceGeneration] = await Promise.all([
+    const [files, sourceGeneration, hasProducts] = await Promise.all([
       themeSourceStore.listFiles(data.storefrontId, data.themeId),
       themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
+      themeChannelHasProducts(data.storefrontId, data.themeId),
     ]);
     if (sourceGeneration === null) return null;
     return {
@@ -685,9 +712,13 @@ export const storefrontDal = {
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
       review: reviewStarterThemeUpgrade(files),
+      catalog: reviewThemeCatalog(files, { hasProducts }),
     };
   },
-  /** The stored version only, for the editor's notice. Writes nothing. */
+  /**
+   * What the editor's notice needs: the stored version, and whether the
+   * product catalog has something to install or update. Writes nothing.
+   */
   async readStarterUpgradeStatus(data: {
     storefrontId: string;
     themeId: string;
@@ -707,28 +738,41 @@ export const storefrontDal = {
     ) {
       return null;
     }
+    const [files, hasProducts] = await Promise.all([
+      themeSourceStore.listFiles(data.storefrontId, data.themeId),
+      themeChannelHasProducts(data.storefrontId, data.themeId),
+    ]);
+    const catalog = reviewThemeCatalog(files, { hasProducts });
     return {
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
       currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+      catalogPending: catalog.changes.length > 0 ? catalog.kind : null,
     };
   },
   /**
-   * Applies the upgrade its author reviewed, and only that one.
+   * Applies the parts of a review its author confirmed, and only those.
    *
-   * The plan is made again from the stored files. If the source generation or
-   * the plan's digest is not the one the author saw, nothing is written. The
-   * files are saved as one batch through the source store, under the
-   * generation and each file's version, with a revision. Only then does the
-   * home rule run and the version get recorded.
+   * Each part is named by the digest the author saw: `starterDigest` for the
+   * Starter upgrade, `catalogDigest` for the product catalog. The plans are
+   * made again from the stored files; if the source generation or a named
+   * part's digest is not the one reviewed, nothing is written. The files are
+   * saved as one batch through the source store, under the generation and
+   * each file's version, with one revision. Only when the Starter part was
+   * confirmed does the home rule run and the version get recorded: applying
+   * the catalog alone records nothing about the Starter.
    */
   async applyReviewedStarterUpgrade(data: {
     storefrontId: string;
     themeId: string;
     createdBy: string;
     expectedSourceGeneration: number;
-    planDigest: string;
+    starterDigest?: string;
+    catalogDigest?: string;
   }): Promise<StarterUpgradeApplyResult> {
+    if (data.starterDigest === undefined && data.catalogDigest === undefined) {
+      throw new Error("Nothing was confirmed to apply.");
+    }
     const db = await getDb();
     const stored = await readStoredStarterVersion(
       db,
@@ -748,15 +792,46 @@ export const storefrontDal = {
       data.storefrontId,
       data.themeId,
     );
-    const review = reviewStarterThemeUpgrade(files);
-    if (!review.applies) return { status: "not-applicable" };
-    if (review.digest !== data.planDigest) {
+    const starter =
+      data.starterDigest === undefined
+        ? null
+        : reviewStarterThemeUpgrade(files);
+    if (starter && !starter.applies) return { status: "not-applicable" };
+    if (starter && starter.digest !== data.starterDigest) {
+      return { status: "stale", sourceGeneration };
+    }
+    const catalog =
+      data.catalogDigest === undefined
+        ? null
+        : reviewThemeCatalog(files, {
+            hasProducts: await themeChannelHasProducts(
+              data.storefrontId,
+              data.themeId,
+            ),
+          });
+    // A catalog part with nothing to write is never offered, so a confirmed
+    // one that has none is refused rather than reported as applied.
+    if (catalog && (!catalog.applies || catalog.changes.length === 0)) {
+      return { status: "not-applicable" };
+    }
+    if (catalog && catalog.digest !== data.catalogDigest) {
+      return { status: "stale", sourceGeneration };
+    }
+
+    const writes = [
+      ...(starter?.plan.files ?? []),
+      ...(catalog?.plan.files ?? []),
+    ];
+    const deletions = starter?.plan.deletions ?? [];
+    // The two plans never name the same file; if they ever did, neither is
+    // written over the other.
+    const paths = [...writes, ...deletions].map((file) => file.path);
+    if (new Set(paths).size !== paths.length) {
       return { status: "stale", sourceGeneration };
     }
 
     let savedGeneration = sourceGeneration;
-    const filesSaved =
-      review.plan.files.length > 0 || review.plan.deletions.length > 0;
+    const filesSaved = writes.length > 0 || deletions.length > 0;
     if (filesSaved) {
       // Through the source store, as every other workspace save goes: it
       // decides the revision and records the manifest that names binary
@@ -765,12 +840,21 @@ export const storefrontDal = {
         const saved = await themeSourceStore.saveFilesBatch(
           data.storefrontId,
           data.themeId,
-          review.plan.files,
+          writes,
           {
             expectedSourceGeneration: data.expectedSourceGeneration,
-            deletions: review.plan.deletions,
+            deletions,
             createRevision: true,
-            revisionMessage: "Upgrade Starter Theme (reviewed)",
+            revisionMessage: [
+              starter ? "Upgrade Starter Theme (reviewed)" : null,
+              catalog?.kind === "install"
+                ? "Create storefront product catalog routes (reviewed)"
+                : catalog?.kind === "update"
+                  ? "Update storefront product catalog routes (reviewed)"
+                  : null,
+            ]
+              .filter(Boolean)
+              .join("; "),
             createdBy: data.createdBy,
           },
         );
@@ -792,14 +876,22 @@ export const storefrontDal = {
         throw error;
       }
     }
-    assertStarterUpgradeRecorded(
-      await ensureStarterHomeDocument(db, data.themeId, {
-        filesSaved,
-        storefrontId: data.storefrontId,
-        record: true,
-      }),
-    );
-    return { status: "applied", filesSaved, sourceGeneration: savedGeneration };
+    if (starter) {
+      assertStarterUpgradeRecorded(
+        await ensureStarterHomeDocument(db, data.themeId, {
+          filesSaved,
+          storefrontId: data.storefrontId,
+          record: true,
+        }),
+      );
+    }
+    return {
+      status: "applied",
+      filesSaved,
+      sourceGeneration: savedGeneration,
+      starter: starter !== null,
+      catalog: catalog !== null,
+    };
   },
   async findActive(id?: string): Promise<StorefrontDTO | null> {
     const db = await getDb();
