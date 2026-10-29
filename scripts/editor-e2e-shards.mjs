@@ -20,6 +20,7 @@ export const EDITOR_SHARDS = [
     "public-svg.spec.ts",
     "starter-shell-content.spec.ts",
     "theme-path-refused.spec.ts",
+    "preview-old-bridge.spec.ts",
   ],
   [
     "preview-frame-load.spec.ts",
