@@ -40,10 +40,46 @@ import {
   THEME_PREVIEW_RUNTIMES,
   THEME_PREVIEW_RUNTIME_VAR,
   deploymentThemePreviewRuntime,
+  resolveThemePreviewRuntime,
 } from "../src/lib/storefront/theme-preview-runtime-default.mjs";
 
 /** The variable the specs choose their runtime branch from. */
 export const SPEC_PREVIEW_RUNTIME_VAR = "MORPH_E2E_PREVIEW_RUNTIME";
+
+/**
+ * Record mode: the runtime the run's Themes record (R1), read by
+ * `e2e/helpers/recorded-preview-runtime.ts`. A Theme's record is served ahead
+ * of the Worker's default, so a run may show that the record alone selects a
+ * runtime the Worker's default does not. Never set in CI.
+ */
+export const RECORD_PREVIEW_RUNTIME_VAR = "MORPH_E2E_RECORD_PREVIEW_RUNTIME";
+
+/**
+ * The Worker's own `MORPH_THEME_PREVIEW_RUNTIME` as the runner read it, passed
+ * to Playwright in record mode only, so the record helper resolves each
+ * Theme's runtime with the Worker's rule and the Worker's value rather than
+ * assuming either. Empty when the Worker has none.
+ */
+export const WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR = "MORPH_E2E_WORKER_PREVIEW_RUNTIME";
+
+/**
+ * The spec files (relative to `e2e/`) that may run in record mode: each
+ * creates or records every Theme it previews through the record helper, which
+ * verifies the stored record and its resolved runtime before the preview is
+ * read, and reads the preview only through `previewFrame`, which refuses a
+ * Theme that was not verified. Any other spec would be previewed as the
+ * Worker's default while it expects the record, so a record-mode run that
+ * selects anything else, or nothing (the whole suite), is refused. Pinned by
+ * `e2e-preview-runtime-guard.test.mjs`.
+ */
+export const RECORD_MODE_SPECS = /** @type {const} */ ([
+  "native-compat-preview.spec.ts",
+  "loader-data-binding.spec.ts",
+  "code-controlled-field.spec.ts",
+  "spread-override-binding.spec.ts",
+  "binding-acceptance-c.spec.ts",
+  "binding-acceptance-p.spec.ts",
+]);
 
 /**
  * @typedef {{
@@ -170,6 +206,78 @@ export function readSpecPreviewRuntime(env) {
   };
 }
 
+/**
+ * The runtime the run's Themes are declared to record, or undefined when the
+ * run is not in record mode (unset or empty, as the record helper reads it).
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {{ value: string, source: string } | undefined}
+ */
+export function readRecordedPreviewRuntime(env) {
+  const value = env[RECORD_PREVIEW_RUNTIME_VAR];
+  return value === undefined || value === ""
+    ? undefined
+    : { value, source: "the runner's environment (shell or .env.e2e)" };
+}
+
+/** Playwright flags whose value is the next argument. */
+const VALUE_FLAGS = new Set([
+  "-g",
+  "--grep",
+  "-G",
+  "--grep-invert",
+  "--project",
+  "-j",
+  "--workers",
+  "--repeat-each",
+  "--retries",
+  "--timeout",
+  "--reporter",
+  "--max-failures",
+  "--config",
+  "-c",
+]);
+
+/** @param {string} arg */
+function isRecordModeSpec(arg) {
+  const name = arg.replace(/:\d+(?::\d+)?$/, "").replaceAll("\\", "/");
+  return RECORD_MODE_SPECS.some(
+    (spec) => name === spec || name === `e2e/${spec}` || name.endsWith(`/e2e/${spec}`),
+  );
+}
+
+/**
+ * Null when every file a record-mode run selects is in `RECORD_MODE_SPECS`,
+ * else the refusal.
+ *
+ * @param {readonly string[]} args The Playwright arguments the run was given.
+ * @returns {string | null}
+ */
+export function recordModeSelectionRefusal(args) {
+  const listed = RECORD_MODE_SPECS.join(", ");
+  /** @type {string[]} */
+  const files = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith("--shard")) {
+      return `RECORD_MODE_SELECTION: ${RECORD_PREVIEW_RUNTIME_VAR} is set and the run selects a shard, which holds specs that do not record their Themes. Select record-mode spec files by name: ${listed}.`;
+    }
+    if (VALUE_FLAGS.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    files.push(arg);
+  }
+  if (files.length === 0) {
+    return `RECORD_MODE_SELECTION: ${RECORD_PREVIEW_RUNTIME_VAR} is set and the run selects the whole suite, most of which previews Themes that record nothing. Select record-mode spec files by name: ${listed}.`;
+  }
+  const outside = files.filter((file) => !isRecordModeSpec(file));
+  return outside.length === 0
+    ? null
+    : `RECORD_MODE_SELECTION: ${RECORD_PREVIEW_RUNTIME_VAR} is set and the run selects ${outside.map((file) => JSON.stringify(file)).join(", ")}, not a record-mode spec file. Only these record every Theme they preview through the record helper: ${listed}.`;
+}
+
 /** @param {string} name @param {RuntimeReading} reading */
 function describeSetting(name, reading) {
   return reading.value === undefined
@@ -178,24 +286,121 @@ function describeSetting(name, reading) {
 }
 
 /**
- * Null when the two agree, else the refusal.
+ * Null when the run's settings agree, else the refusal.
+ *
+ * Without record mode the Worker's default is what every Theme is served
+ * with, and it must equal the specs' runtime. In record mode the run's Themes
+ * record a runtime, and the Worker serves a Theme's record ahead of its
+ * default (`resolveThemePreviewRuntime`, the Worker's own rule), so it is that
+ * resolution that must equal the specs' runtime. That is a claim about Themes
+ * that do not exist yet: the record helper checks each one's stored record
+ * and resolution once it does, before its preview is read.
  *
  * @param {RuntimeReading} worker
  * @param {RuntimeReading} spec
+ * @param {{ value: string, source: string }} [record] From `readRecordedPreviewRuntime`.
  * @returns {string | null}
  */
-export function previewRuntimeRefusal(worker, spec) {
+export function previewRuntimeRefusal(worker, spec, record) {
   const workerSetting = describeSetting(THEME_PREVIEW_RUNTIME_VAR, worker);
   const specSetting = describeSetting(SPEC_PREVIEW_RUNTIME_VAR, spec);
+  const recordSetting = record
+    ? `${RECORD_PREVIEW_RUNTIME_VAR}=${JSON.stringify(record.value)} from ${record.source}`
+    : null;
   const unknown = [
     isUnknown(worker.value) ? workerSetting : null,
     isUnknown(spec.value) ? specSetting : null,
+    record && isUnknown(record.value) ? recordSetting : null,
   ].filter((setting) => setting !== null);
   if (unknown.length > 0) {
     return `PREVIEW_RUNTIME_UNKNOWN: ${unknown.join("; ")}. The runtimes are ${THEME_PREVIEW_RUNTIMES.join(" and ")}; anything else is read as client-only, which is not what a value set to something else meant. Set it to one of them or remove it. Nothing was changed.`;
+  }
+  if (record) {
+    const resolved = resolveThemePreviewRuntime({
+      recorded: record.value,
+      deploymentEnvValue: worker.value,
+    });
+    if (resolved.runtime !== spec.runtime) {
+      return `PREVIEW_RUNTIME_MISMATCH: the run's Themes will record ${JSON.stringify(record.value)} (${recordSetting}), which the Worker serves ahead of its default (${workerSetting}), so they get ${describeRuntime(resolved.runtime)}; but the specs will take their ${spec.runtime === "start" ? "full Start" : "client-only"} branches (${specSetting}). A run like that is evidence for neither runtime. Set them to the same runtime; nothing was changed.`;
+    }
+    return null;
   }
   if (worker.runtime !== spec.runtime) {
     return `PREVIEW_RUNTIME_MISMATCH: the Worker will serve ${describeRuntime(worker.runtime)} (${workerSetting}), but the specs will take their ${spec.runtime === "start" ? "full Start" : "client-only"} branches (${specSetting}). A run like that is evidence for neither runtime. Set both to the same runtime; nothing was changed.`;
   }
   return null;
+}
+
+/**
+ * Where the record helper lists the Themes it verified, in the run's state
+ * directory: a file rather than memory, so a worker Playwright restarts after a
+ * failure still knows a fixture Theme it reuses was verified.
+ */
+export const RECORD_VERIFIED_FILE = "recorded-preview-runtime-verified.json";
+
+/**
+ * Null when a record-mode Theme, as stored, is served the runtime the specs
+ * expect because of its own record; else why not. Read by the record helper
+ * once the Theme exists and before its preview is read.
+ *
+ * Its stored record must be exactly the declared one, and the Worker's rule
+ * (`resolveThemePreviewRuntime`) applied to that record and the Worker's
+ * actual default must resolve from the Theme's record (`source: "theme"`) to
+ * the specs' runtime. A Theme that records nothing fails even when the
+ * Worker's default happens to match: that would be the default being
+ * exercised, not the record.
+ *
+ * @param {{
+ *   themeId: string,
+ *   rows: ReadonlyArray<Record<string, unknown>>,
+ *   declared: "client" | "start",
+ *   workerDefault: string | undefined,
+ *   specValue: string | undefined,
+ * }} input `rows`: the Theme's `preview_runtime` rows, as read back.
+ *   `workerDefault`: `MORPH_E2E_WORKER_PREVIEW_RUNTIME`, set by the runner.
+ * @returns {string | null}
+ */
+export function recordedThemeRefusal({ themeId, rows, declared, workerDefault, specValue }) {
+  const prefix = `RECORDED_RUNTIME_UNVERIFIED: ${RECORD_PREVIEW_RUNTIME_VAR}=${JSON.stringify(declared)}, Theme ${themeId}`;
+  if (workerDefault === undefined) {
+    return `${prefix}: ${WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR} is not set, so the Worker's default is unknown here. Run through scripts/run-editor-e2e.mjs, which sets it after checking the run's settings.`;
+  }
+  if (rows.length !== 1) {
+    return `${prefix}: ${rows.length} rows in storefront_themes, not one.`;
+  }
+  const stored = rows[0]?.preview_runtime ?? null;
+  const resolved = resolveThemePreviewRuntime({
+    recorded: typeof stored === "string" ? stored : null,
+    deploymentEnvValue: workerDefault,
+  });
+  const expected = deploymentThemePreviewRuntime(specValue);
+  if (stored === declared && resolved.source === "theme" && resolved.runtime === expected) {
+    return null;
+  }
+  return `${prefix}: stored record ${JSON.stringify(stored)}, which the Worker resolves to ${describeRuntime(resolved.runtime)} from ${resolved.source === "theme" ? "the Theme's record" : `its own default (${THEME_PREVIEW_RUNTIME_VAR}=${JSON.stringify(workerDefault)})`}; the run declared ${JSON.stringify(declared)} and the specs expect ${describeRuntime(expected)} (${SPEC_PREVIEW_RUNTIME_VAR}=${JSON.stringify(specValue ?? null)}). Create or record the Theme through e2e/helpers/recorded-preview-runtime.ts; nothing was changed.`;
+}
+
+/**
+ * Null when the editor page whose preview is about to be read names a Theme
+ * the record helper verified; else why not. Read by `previewFrame` in record
+ * mode, which every record-mode spec reads its preview through.
+ *
+ * @param {string} pageUrl
+ * @param {readonly string[]} verifiedThemeIds
+ * @returns {string | null}
+ */
+export function previewedThemeRefusal(pageUrl, verifiedThemeIds) {
+  let pathname = "";
+  try {
+    pathname = new URL(pageUrl).pathname;
+  } catch {
+    pathname = "";
+  }
+  const match = /\/themes\/([0-9a-f-]{36})(?=\/|$)/.exec(pathname);
+  if (!match) {
+    return `RECORDED_RUNTIME_UNVERIFIED: ${RECORD_PREVIEW_RUNTIME_VAR} is set, and a preview is about to be read from a page that names no Theme (${pathname || pageUrl}), so whether its Theme's record was verified is unknown.`;
+  }
+  return verifiedThemeIds.includes(match[1])
+    ? null
+    : `RECORDED_RUNTIME_UNVERIFIED: ${RECORD_PREVIEW_RUNTIME_VAR} is set, and the preview of Theme ${match[1]} is about to be read, but its stored record was never verified. Unverified, it may be served the Worker's default instead of the record. Create or record the Theme through e2e/helpers/recorded-preview-runtime.ts.`;
 }

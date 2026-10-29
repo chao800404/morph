@@ -21,7 +21,10 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
-import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 import { B1_INTEGRATION_CASES, NEW_SECTION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
   BAS_HERO_LABELS,
@@ -175,6 +178,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
       'binding-acceptance-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   );
+  verifyRecordedThemePreviewRuntime(created);
   return created;
 }
 

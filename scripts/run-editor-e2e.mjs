@@ -39,9 +39,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
 import {
+  RECORD_PREVIEW_RUNTIME_VAR,
+  WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR,
   previewRuntimeRefusal,
+  readRecordedPreviewRuntime,
   readSpecPreviewRuntime,
   readWorkerPreviewRuntime,
+  recordModeSelectionRefusal,
 } from "./e2e-preview-runtime-guard.mjs";
 import { createSidecarRecorder } from "./sidecar-observe-record.mjs";
 import {
@@ -907,8 +911,22 @@ async function main() {
     cloudflareEnv: WRANGLER_ENV,
   });
   const specRuntime = readSpecPreviewRuntime(process.env);
-  const runtimeRefusal = previewRuntimeRefusal(workerRuntime, specRuntime);
+  // Record mode (`MORPH_E2E_RECORD_PREVIEW_RUNTIME`, never in CI): the run's
+  // Themes record a runtime the Worker serves ahead of its default. Accepted
+  // here only for spec files whose every previewed Theme goes through the
+  // record helper, which then verifies each Theme's stored record and resolved
+  // runtime before its preview is read; see `RECORD_MODE_SPECS`.
+  const recordRuntime = readRecordedPreviewRuntime(process.env);
+  const runtimeRefusal =
+    previewRuntimeRefusal(workerRuntime, specRuntime, recordRuntime) ??
+    (recordRuntime ? recordModeSelectionRefusal(extra) : null);
   if (runtimeRefusal) throw new Error(runtimeRefusal);
+  if (recordRuntime) {
+    process.env[WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR] = workerRuntime.value ?? "";
+    log(
+      `record mode: Themes record "${recordRuntime.value}" and specs expect "${specRuntime.runtime}", accepted over the Worker's ${workerRuntime.runtime} default only because ${RECORD_PREVIEW_RUNTIME_VAR} is declared; each Theme's stored record and resolved runtime are verified before its preview is read`,
+    );
+  }
   const shellWorkerRuntime = process.env.MORPH_THEME_PREVIEW_RUNTIME;
   if (
     shellWorkerRuntime !== undefined &&

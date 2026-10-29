@@ -11,14 +11,20 @@
  * upgrade that changed which file wins fails here.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
+  RECORD_MODE_SPECS,
   previewRuntimeRefusal,
+  previewedThemeRefusal,
+  readRecordedPreviewRuntime,
   readSpecPreviewRuntime,
   readWorkerPreviewRuntime,
+  recordModeSelectionRefusal,
+  recordedThemeRefusal,
 } from "./e2e-preview-runtime-guard.mjs";
 import { deploymentThemePreviewRuntime } from "../src/lib/storefront/theme-preview-runtime-default.mjs";
 
@@ -199,6 +205,162 @@ describe("the preview runtime guard", () => {
         readSpecPreviewRuntime({ MORPH_E2E_PREVIEW_RUNTIME: value }).runtime,
         deploymentThemePreviewRuntime(value),
       );
+    }
+  });
+});
+
+/** @param {string | undefined} value */
+const workerReading = (value) => ({
+  value,
+  runtime: deploymentThemePreviewRuntime(value),
+  source: value === undefined ? "not set in anything Wrangler loads" : ".dev.vars.local_preview_e2e",
+});
+
+describe("record mode before the run starts", () => {
+  const recordStart = readRecordedPreviewRuntime({ MORPH_E2E_RECORD_PREVIEW_RUNTIME: "start" });
+
+  it("is off when the record variable is unset or empty, leaving the plain check as it was", () => {
+    assert.equal(readRecordedPreviewRuntime({}), undefined);
+    assert.equal(readRecordedPreviewRuntime({ MORPH_E2E_RECORD_PREVIEW_RUNTIME: "" }), undefined);
+    const spec = readSpecPreviewRuntime({ MORPH_E2E_PREVIEW_RUNTIME: "start" });
+    assert.match(
+      previewRuntimeRefusal(workerReading(undefined), spec, undefined) ?? "",
+      /^PREVIEW_RUNTIME_MISMATCH: the Worker will serve the client-only preview/,
+    );
+  });
+
+  it("accepts a client Worker default with start specs only because Themes declare start", () => {
+    const spec = readSpecPreviewRuntime({ MORPH_E2E_PREVIEW_RUNTIME: "start" });
+    assert.equal(previewRuntimeRefusal(workerReading(undefined), spec, recordStart), null);
+    assert.ok(previewRuntimeRefusal(workerReading(undefined), spec));
+  });
+
+  it("accepts a declared client record over a start Worker default for client specs", () => {
+    const record = readRecordedPreviewRuntime({ MORPH_E2E_RECORD_PREVIEW_RUNTIME: "client" });
+    assert.equal(previewRuntimeRefusal(workerReading("start"), readSpecPreviewRuntime({}), record), null);
+  });
+
+  it("refuses a declared record the specs do not expect, even when the Worker's default matches them", () => {
+    const refusal = previewRuntimeRefusal(workerReading(undefined), readSpecPreviewRuntime({}), recordStart);
+    assert.match(refusal ?? "", /^PREVIEW_RUNTIME_MISMATCH: the run's Themes will record "start"/);
+    assert.match(refusal ?? "", /MORPH_E2E_RECORD_PREVIEW_RUNTIME="start"/);
+    assert.match(refusal ?? "", /client-only branches/);
+  });
+
+  it("refuses a record value that names no runtime", () => {
+    const record = readRecordedPreviewRuntime({ MORPH_E2E_RECORD_PREVIEW_RUNTIME: "Start" });
+    assert.match(
+      previewRuntimeRefusal(workerReading(undefined), readSpecPreviewRuntime({}), record) ?? "",
+      /^PREVIEW_RUNTIME_UNKNOWN: MORPH_E2E_RECORD_PREVIEW_RUNTIME="Start"/,
+    );
+  });
+
+  it("accepts only record-mode spec files, named explicitly", () => {
+    assert.equal(recordModeSelectionRefusal(["e2e/native-compat-preview.spec.ts"]), null);
+    assert.equal(
+      recordModeSelectionRefusal(["native-compat-preview.spec.ts:42", "-g", "server routes", "--workers=1"]),
+      null,
+    );
+    assert.equal(recordModeSelectionRefusal(["/home/x/morph/e2e/loader-data-binding.spec.ts"]), null);
+    assert.match(
+      recordModeSelectionRefusal(["e2e/native-compat-preview.spec.ts", "e2e/catalog.spec.ts"]) ?? "",
+      /^RECORD_MODE_SELECTION: .*"e2e\/catalog\.spec\.ts"/,
+    );
+    assert.match(recordModeSelectionRefusal([]) ?? "", /whole suite/);
+    assert.match(recordModeSelectionRefusal(["-g", "native-compat-preview.spec.ts"]) ?? "", /whole suite/);
+    assert.match(recordModeSelectionRefusal(["--shard=1/6"]) ?? "", /selects a shard/);
+    // A file name that only contains a listed one is not it.
+    assert.ok(recordModeSelectionRefusal(["e2e/old-native-compat-preview.spec.ts"]));
+  });
+});
+
+describe("record mode once a Theme exists", () => {
+  const THEME = "11111111-2222-4333-8444-555555555555";
+  /** @param {Partial<Parameters<typeof recordedThemeRefusal>[0]>} input */
+  const verify = (input) =>
+    recordedThemeRefusal({
+      themeId: THEME,
+      rows: [{ preview_runtime: "start" }],
+      declared: "start",
+      workerDefault: "",
+      specValue: "start",
+      ...input,
+    });
+
+  it("passes a Theme that stores the declared record and resolves from it to the specs' runtime", () => {
+    assert.equal(verify({}), null);
+    assert.equal(verify({ workerDefault: "start" }), null);
+    assert.equal(
+      verify({
+        rows: [{ preview_runtime: "client" }],
+        declared: "client",
+        workerDefault: "start",
+        specValue: undefined,
+      }),
+      null,
+    );
+  });
+
+  it("fails a Theme that records nothing, without falling back to the Worker's default", () => {
+    assert.match(
+      verify({ rows: [{ preview_runtime: null }] }) ?? "",
+      /^RECORDED_RUNTIME_UNVERIFIED: .*stored record null, which the Worker resolves to the client-only preview from its own default/,
+    );
+    // Even when the default would have served the specs' runtime.
+    assert.match(
+      verify({ rows: [{ preview_runtime: null }], workerDefault: "start" }) ?? "",
+      /from its own default \(MORPH_THEME_PREVIEW_RUNTIME="start"\)/,
+    );
+  });
+
+  it("fails a Theme that records another runtime, or one that is not a runtime", () => {
+    assert.match(
+      verify({ rows: [{ preview_runtime: "client" }] }) ?? "",
+      /stored record "client", which the Worker resolves to the client-only preview from the Theme's record/,
+    );
+    assert.ok(verify({ rows: [{ preview_runtime: "Start" }] }));
+  });
+
+  it("fails when the specs expect another runtime than the record resolves to", () => {
+    assert.match(verify({ specValue: undefined }) ?? "", /the specs expect the client-only preview/);
+  });
+
+  it("fails a missing Theme, and a run that did not go through the runner", () => {
+    assert.match(verify({ rows: [] }) ?? "", /0 rows in storefront_themes/);
+    assert.match(verify({ workerDefault: undefined }) ?? "", /MORPH_E2E_WORKER_PREVIEW_RUNTIME is not set/);
+  });
+
+  it("lets a preview be read only for a verified Theme named by the editor page", () => {
+    const url = `http://localhost:3100/store/00000000-0000-4000-8000-000000000002/themes/${THEME}/editor?templateId=x`;
+    assert.equal(previewedThemeRefusal(url, [THEME]), null);
+    assert.match(
+      previewedThemeRefusal(url, []) ?? "",
+      new RegExp(`preview of Theme ${THEME} is about to be read, but its stored record was never verified`),
+    );
+    assert.match(previewedThemeRefusal("about:blank", [THEME]) ?? "", /names no Theme/);
+  });
+});
+
+describe("the record-mode spec list", () => {
+  const E2E = fileURLToPath(new URL("../e2e/", import.meta.url));
+
+  it("names spec files that go through the record helper and read the preview only through previewFrame", async () => {
+    const binding = await readFile(path.join(E2E, "binding-acceptance-helpers.ts"), "utf8");
+    for (const spec of RECORD_MODE_SPECS) {
+      const source = await readFile(path.join(E2E, spec), "utf8");
+      const through = source.includes("binding-acceptance-helpers") ? binding : source;
+      assert.match(
+        through,
+        /verifyRecordedThemePreviewRuntime|recordThemePreviewRuntime\(/,
+        `${spec} creates or records its Themes through the record helper`,
+      );
+      for (const text of [source, through]) {
+        assert.doesNotMatch(
+          text,
+          /frameLocator\(|\.frame\(|contentFrame\(/,
+          `${spec} reads the preview only through previewFrame`,
+        );
+      }
     }
   });
 });
