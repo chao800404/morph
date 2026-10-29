@@ -199,6 +199,14 @@ async function applyReview(
       isServerFunctionCall(response.url(), "applyStorefrontStarterUpgrade"),
     { timeout: 60_000 },
   );
+  // Only the Starter part: the catalog, if it is waiting too, is the
+  // catalog spec's to apply.
+  const catalog = dialog.getByRole("checkbox", {
+    name: "Apply the product catalog changes",
+  });
+  if ((await catalog.count()) > 0 && (await catalog.isChecked())) {
+    await catalog.click();
+  }
   await dialog.getByRole("button", { name: label }).click();
   const response = await applied;
   expect(response.ok()).toBe(true);
@@ -403,14 +411,18 @@ test.describe("Starter upgrade, reviewed by the author", () => {
 
     const dialog = await openReview(page);
     await expect(
-      dialog.getByRole("heading", { name: "Changes (0)" }),
+      dialog
+        .getByRole("region", { name: "Starter upgrade" })
+        .getByRole("heading", { name: "Changes (0)" }),
     ).toBeVisible();
-    await applyReview(page, dialog, /^Record version$/);
+    await applyReview(page, dialog, /^Apply selected$/);
     expect(await workspace(page)).toEqual(before);
     expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
     await openEditor(page);
-    await expect(upgradeNotice(page)).toHaveCount(0);
+    await expect(
+      page.locator('[data-editor-starter-upgrade="available"]'),
+    ).toHaveCount(0);
   });
 
   test("B. the untouched pre-pages module on an older Starter: reviewed, then only content.ts is replaced, once", async ({
@@ -434,7 +446,9 @@ test.describe("Starter upgrade, reviewed by the author", () => {
     // The review shows the one change, with its text before and after.
     const dialog = await openReview(page);
     await expect(
-      dialog.getByRole("heading", { name: "Changes (1)" }),
+      dialog
+        .getByRole("region", { name: "Starter upgrade" })
+        .getByRole("heading", { name: "Changes (1)" }),
     ).toBeVisible();
     const diff = dialog.getByLabel(`Changes to ${CONTENT_MODULE}`);
     await expect(diff).toBeVisible();
@@ -443,7 +457,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
     // Still nothing written while the author reads it.
     expect(await workspace(page)).toEqual(before);
 
-    await applyReview(page, dialog, /^Apply upgrade$/);
+    await applyReview(page, dialog, /^Apply selected$/);
     const after = await workspace(page);
     expect(after[CONTENT_MODULE]).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
     expect({ ...after, [CONTENT_MODULE]: "" }).toEqual({
@@ -490,7 +504,7 @@ test.describe("Starter upgrade, reviewed by the author", () => {
 
     setStarterVersion(OLDER);
     await openEditor(page);
-    await applyReview(page, await openReview(page), /^Apply upgrade$/);
+    await applyReview(page, await openReview(page), /^Apply selected$/);
     expect(
       JSON.parse((await workspace(page))[PACKAGE]!).devDependencies[
         "@cloudflare/vite-plugin"

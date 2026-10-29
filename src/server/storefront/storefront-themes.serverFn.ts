@@ -118,11 +118,8 @@ export const getStorefrontThemeEditor = createServerFn({ method: "POST" })
         themeId: data.themeId,
         createdBy: authContext.user.id,
       });
-      await ensureThemeCatalog({
-        storefrontId: data.storefrontId,
-        themeId: data.themeId,
-        createdBy: authContext.user.id,
-      });
+      // The product catalog is no longer installed or updated here: like a
+      // Starter upgrade, it waits for its author's review.
       const [context, starterUpgrade] = await Promise.all([
         storefrontThemeDal.findEditorContext(data.storefrontId, data.themeId),
         storefrontDal.readStarterUpgradeStatus({
@@ -176,13 +173,22 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       if (!result) {
         return fail("Storefront theme not found", { error: "NOT_FOUND" });
       }
-      const { review, ...status } = result;
+      const { review, catalog, ...status } = result;
       return ok("Starter upgrade reviewed", {
         ...status,
-        applies: review.applies,
-        digest: review.digest,
-        changes: review.changes,
-        kept: review.kept,
+        starter: {
+          applies: review.applies,
+          digest: review.digest,
+          changes: review.changes,
+          kept: review.kept,
+        },
+        catalog: {
+          applies: catalog.applies,
+          kind: catalog.kind,
+          digest: catalog.digest,
+          changes: catalog.changes,
+          kept: catalog.kept,
+        },
       });
     } catch (error) {
       return failure(
@@ -219,7 +225,7 @@ export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       }
       if (result.status === "not-applicable") {
         return fail(
-          "The Starter upgrade does not apply to this Theme's framework, so nothing was applied.",
+          "What was reviewed no longer applies to this Theme, so nothing was applied. Review it again.",
           { error: "STARTER_UPGRADE_NOT_APPLICABLE" },
         );
       }
@@ -787,4 +793,3 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
       );
     }
   });
-import { ensureThemeCatalog } from "@/lib/storefront/service/theme-catalog-setup";

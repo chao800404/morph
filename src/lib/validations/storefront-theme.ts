@@ -15,13 +15,26 @@ export const storefrontThemeEditorInputSchema = z.object({
 export const reviewStorefrontStarterUpgradeInputSchema =
   storefrontThemeEditorInputSchema;
 
-/** The review the author confirmed: its source generation and plan digest. */
-export const applyStorefrontStarterUpgradeInputSchema = z.object({
-  storefrontId: idSchema("storefront"),
-  themeId: idSchema("storefront theme"),
-  expectedSourceGeneration: z.number().int().min(1),
-  planDigest: z.string().regex(/^[a-f0-9]{64}$/),
-});
+const planDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * The review the author confirmed: its source generation, and the digest of
+ * each part they chose to apply, the Starter upgrade, the product catalog or
+ * both.
+ */
+export const applyStorefrontStarterUpgradeInputSchema = z
+  .object({
+    storefrontId: idSchema("storefront"),
+    themeId: idSchema("storefront theme"),
+    expectedSourceGeneration: z.number().int().min(1),
+    starterDigest: planDigestSchema.optional(),
+    catalogDigest: planDigestSchema.optional(),
+  })
+  .refine(
+    (input) =>
+      input.starterDigest !== undefined || input.catalogDigest !== undefined,
+    { message: "Choose the Starter upgrade, the product catalog, or both." },
+  );
 
 /** Draft-only. Does not publish, build, or activate a rendering mode. */
 export const updateStorefrontThemeRenderPolicyInputSchema =

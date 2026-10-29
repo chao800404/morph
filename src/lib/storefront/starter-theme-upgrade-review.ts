@@ -50,7 +50,13 @@ export type StarterUpgradeReview = {
   digest: string;
 };
 
-function planDigest(plan: StarterThemeWorkspaceUpgradePlan): string {
+/**
+ * Names a plan exactly, guards included. Shared by the Starter upgrade and
+ * the product catalog, so both parts of a review are checked the same way.
+ */
+export function reviewPlanDigest(
+  plan: StarterThemeWorkspaceUpgradePlan,
+): string {
   return crypto
     .createHash("sha256")
     .update(
@@ -93,7 +99,7 @@ export function reviewStarterThemeUpgrade(
       plan,
       changes: [],
       kept: [],
-      digest: planDigest(plan),
+      digest: reviewPlanDigest(plan),
     };
   }
   const existing = new Map(existingFiles.map((file) => [file.path, file]));
@@ -134,6 +140,6 @@ export function reviewStarterThemeUpgrade(
     plan,
     changes,
     kept: [...kept].map(([path, reason]) => ({ path, reason })).sort(byPath),
-    digest: planDigest(plan),
+    digest: reviewPlanDigest(plan),
   };
 }

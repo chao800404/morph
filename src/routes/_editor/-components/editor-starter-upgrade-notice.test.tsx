@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fns = vi.hoisted(() => ({
@@ -14,15 +20,12 @@ vi.mock("@/server/storefront/storefront-themes.serverFn", () => ({
 
 import { EditorStarterUpgradeNotice } from "./editor-starter-upgrade-notice";
 
-const DIGEST = "a".repeat(64);
+const STARTER_DIGEST = "a".repeat(64);
+const CATALOG_DIGEST = "b".repeat(64);
 
-const REVIEW = {
-  sourceGeneration: 7,
-  versionState: "available",
-  storedVersion: 28,
-  currentVersion: 29,
+const STARTER_PART = {
   applies: true,
-  digest: DIGEST,
+  digest: STARTER_DIGEST,
   changes: [
     {
       path: "src/morph/content.ts",
@@ -37,6 +40,48 @@ const REVIEW = {
   ],
 };
 
+const CATALOG_PART = {
+  applies: true,
+  kind: "install",
+  digest: CATALOG_DIGEST,
+  changes: [
+    {
+      path: "src/routes/products.index.tsx",
+      operation: "create",
+      before: null,
+      after: "export const Route = 1;\n",
+    },
+  ],
+  kept: [],
+};
+
+const NO_CATALOG = {
+  applies: true,
+  kind: null,
+  digest: CATALOG_DIGEST,
+  changes: [],
+  kept: [],
+};
+
+function reviewOf(overrides: Record<string, unknown> = {}) {
+  return {
+    sourceGeneration: 7,
+    versionState: "available",
+    storedVersion: 28,
+    currentVersion: 29,
+    starter: STARTER_PART,
+    catalog: NO_CATALOG,
+    ...overrides,
+  };
+}
+
+const AVAILABLE = {
+  versionState: "available" as const,
+  storedVersion: 28,
+  currentVersion: 29,
+  catalogPending: false,
+};
+
 function renderNotice(
   props: Partial<Parameters<typeof EditorStarterUpgradeNotice>[0]> = {},
 ) {
@@ -47,11 +92,7 @@ function renderNotice(
   render(
     <QueryClientProvider client={client}>
       <EditorStarterUpgradeNotice
-        status={{
-          versionState: "available",
-          storedVersion: 28,
-          currentVersion: 29,
-        }}
+        status={AVAILABLE}
         storefrontId="storefront-a"
         themeId="theme-a"
         unsavedCount={0}
@@ -63,35 +104,38 @@ function renderNotice(
   return { onApplied };
 }
 
+async function openReview() {
+  fireEvent.click(screen.getByRole("button", { name: "Review upgrade" }));
+  return screen.findByRole("dialog", { name: "Review the Starter upgrade" });
+}
+
 beforeEach(() => {
   fns.review.mockReset();
   fns.apply.mockReset();
-  fns.review.mockResolvedValue({ success: true, data: REVIEW });
+  fns.review.mockResolvedValue({ success: true, data: reviewOf() });
   fns.apply.mockResolvedValue({
     success: true,
-    data: { status: "applied", filesSaved: true, sourceGeneration: 8 },
+    data: {
+      status: "applied",
+      filesSaved: true,
+      sourceGeneration: 8,
+      starter: true,
+      catalog: false,
+    },
   });
 });
 
 describe("EditorStarterUpgradeNotice", () => {
-  it("shows nothing for a Theme on the current Starter", () => {
+  it("shows nothing when the Starter is current and the catalog has nothing waiting", () => {
     renderNotice({
-      status: {
-        versionState: "current",
-        storedVersion: 29,
-        currentVersion: 29,
-      },
+      status: { ...AVAILABLE, versionState: "current", storedVersion: 29 },
     });
     expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("says an unknown version is pending, not the latest", () => {
     renderNotice({
-      status: {
-        versionState: "pending",
-        storedVersion: null,
-        currentVersion: 29,
-      },
+      status: { ...AVAILABLE, versionState: "pending", storedVersion: null },
     });
     const notice = screen.getByRole("status");
     expect(notice.getAttribute("data-editor-starter-upgrade")).toBe("pending");
@@ -101,13 +145,26 @@ describe("EditorStarterUpgradeNotice", () => {
     expect(notice.textContent).toContain("Nothing changes until you apply it.");
   });
 
+  it("shows the notice when only the catalog has something waiting", () => {
+    renderNotice({
+      status: {
+        ...AVAILABLE,
+        versionState: "current",
+        storedVersion: 29,
+        catalogPending: true,
+      },
+    });
+    const notice = screen.getByRole("status");
+    expect(notice.getAttribute("data-editor-starter-upgrade")).toBe("catalog");
+    expect(notice.getAttribute("data-catalog-pending")).toBe("true");
+    expect(notice.textContent).toContain(
+      "Product catalog pages can be installed or updated",
+    );
+  });
+
   it("reviews without writing, shows each change and each kept file, and applies exactly that review", async () => {
     const { onApplied } = renderNotice();
-
-    fireEvent.click(screen.getByRole("button", { name: "Review upgrade" }));
-    const dialog = await screen.findByRole("dialog", {
-      name: "Review the Starter upgrade",
-    });
+    const dialog = await openReview();
     expect(fns.review).toHaveBeenCalledWith({
       data: { storefrontId: "storefront-a", themeId: "theme-a" },
     });
@@ -120,27 +177,78 @@ describe("EditorStarterUpgradeNotice", () => {
     expect(dialog.textContent).toContain("src/components/Hero.tsx");
     expect(dialog.textContent).toContain("formatting-only changes");
     expect(dialog.textContent).toContain("not added back");
+    // No catalog section when the catalog has nothing to show.
+    expect(
+      within(dialog).queryByRole("region", { name: "Product catalog" }),
+    ).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply upgrade" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
     expect(fns.apply).toHaveBeenCalledWith({
       data: {
         storefrontId: "storefront-a",
         themeId: "theme-a",
         expectedSourceGeneration: 7,
-        planDigest: DIGEST,
+        starterDigest: STARTER_DIGEST,
+      },
+    });
+  });
+
+  it("keeps the Starter upgrade and the product catalog apart, and applies only the parts chosen", async () => {
+    fns.review.mockResolvedValue({
+      success: true,
+      data: reviewOf({ catalog: CATALOG_PART }),
+    });
+    const { onApplied } = renderNotice({
+      status: { ...AVAILABLE, catalogPending: true },
+    });
+    const dialog = await openReview();
+    const starter = within(dialog).getByRole("region", {
+      name: "Starter upgrade",
+    });
+    const catalog = within(dialog).getByRole("region", {
+      name: "Product catalog",
+    });
+    expect(starter.textContent).toContain("src/morph/content.ts");
+    expect(starter.textContent).not.toContain("products.index.tsx");
+    expect(catalog.textContent).toContain("src/routes/products.index.tsx");
+    expect(catalog.textContent).toContain(
+      "does not change the Starter version",
+    );
+
+    fireEvent.click(
+      within(catalog).getByRole("button", { name: /products\.index\.tsx/ }),
+    );
+    expect(
+      screen.getByLabelText("Changes to src/routes/products.index.tsx")
+        .textContent,
+    ).toContain("+ export const Route = 1;");
+
+    // The catalog alone: the Starter part is left out of the apply.
+    fireEvent.click(
+      within(starter).getByRole("checkbox", {
+        name: "Apply the Starter upgrade",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(fns.apply).toHaveBeenCalledWith({
+      data: {
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        expectedSourceGeneration: 7,
+        catalogDigest: CATALOG_DIGEST,
       },
     });
   });
 
   it("does not apply while this tab has unsaved changes", async () => {
     renderNotice({ unsavedCount: 2 });
-    fireEvent.click(screen.getByRole("button", { name: "Review upgrade" }));
-    await screen.findByRole("dialog", { name: "Review the Starter upgrade" });
+    await openReview();
     expect(
       (
         screen.getByRole("button", {
-          name: "Apply upgrade",
+          name: "Apply selected",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
@@ -149,16 +257,15 @@ describe("EditorStarterUpgradeNotice", () => {
     ).toBeTruthy();
   });
 
-  it("keeps the notice and says why when the Theme moved on since the review", async () => {
+  it("keeps the notice and asks for a new review when the Theme moved on since", async () => {
     fns.apply.mockResolvedValue({
       success: false,
       message:
         "The Theme changed since this upgrade was reviewed, so nothing was applied. Review it again.",
     });
     const { onApplied } = renderNotice();
-    fireEvent.click(screen.getByRole("button", { name: "Review upgrade" }));
-    await screen.findByRole("dialog", { name: "Review the Starter upgrade" });
-    fireEvent.click(screen.getByRole("button", { name: "Apply upgrade" }));
+    await openReview();
+    fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
 
     await waitFor(() =>
       expect(

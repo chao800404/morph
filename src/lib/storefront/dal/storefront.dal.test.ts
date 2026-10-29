@@ -37,6 +37,13 @@ vi.mock("./storefront-theme-file.dal", () => ({
     saveFilesBatch: mocks.dalSaveFilesBatch,
   },
 }));
+// No products in the channel: the catalog part has nothing to offer here.
+vi.mock("./store-context.dal", () => ({
+  storeContextDal: { resolveForTheme: vi.fn(async () => null) },
+}));
+vi.mock("./store-catalog.dal", () => ({
+  storeCatalogDal: { hasChannelProducts: vi.fn(async () => false) },
+}));
 vi.mock("../storage/theme-storage.server", () => ({
   themeSourceStore: {
     saveFilesBatch: mocks.saveFilesBatch,
@@ -60,7 +67,7 @@ function applyReviewed(
     themeId: "theme-a",
     createdBy: "user-a",
     expectedSourceGeneration,
-    planDigest: reviewStarterThemeUpgrade(files).digest,
+    starterDigest: reviewStarterThemeUpgrade(files).digest,
   });
 }
 

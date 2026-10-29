@@ -18,6 +18,8 @@ export type StarterUpgradeStatusDTO = {
   versionState: StarterVersionState;
   storedVersion: number | null;
   currentVersion: number;
+  /** The product catalog has files to install or update, awaiting review. */
+  catalogPending: boolean;
 };
 
 export interface StorefrontThemeEditorDTO {
