@@ -765,6 +765,14 @@ test.describe("Starter upgrade, reviewed by the author", () => {
           starter.locator('[data-kept-reason="missing"]', { hasText: path }),
         ).toHaveCount(0);
       }
+      // The Starter part has nothing to apply until the pages are selected.
+      // The catalog, if it is waiting too, is the catalog spec's to apply.
+      const catalog = dialog.getByRole("checkbox", {
+        name: "Apply the product catalog changes",
+      });
+      if ((await catalog.count()) > 0 && (await catalog.isChecked())) {
+        await catalog.click();
+      }
       await expect(
         dialog.getByRole("button", { name: /^Apply selected$/ }),
       ).toBeDisabled();
