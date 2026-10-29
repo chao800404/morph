@@ -13,7 +13,12 @@ import { parsePreviewToEditorEnvelope } from "./preview-protocol";
  * Nothing is executed: the message types and field names are read from the
  * frozen entry script, and the values are representative. That is enough to
  * answer "does today's parser accept, refuse or ignore this shape"; it does
- * not prove the old page behaves in a browser (that is the E2E part).
+ * not prove the old page behaves in a browser (that is the E2E part,
+ * `e2e/preview-old-bridge.spec.ts`).
+ *
+ * Three bridges, newest first: before the editor-capabilities handshake
+ * (document ids, 7f1cbe3), before document ids (5e19e2b), and before
+ * capabilities (22fbc72).
  *
  * A message the old bridge builds from computed values (the sibling, section
  * and array-item reorder commits, built in `preview-reorder-identity`) is not
@@ -152,22 +157,37 @@ const REPLAYS: Replay[] = [
   },
 ];
 
+/** A document id as the old protocol module mints one (32 lowercase hex). */
+const DOCUMENT = "8c1e2f3a4b5c6d7e8f90a1b2c3d4e5f6";
+
 const VARIANTS = [
+  {
+    // 7f1cbe3: document ids, but not the editor-capabilities handshake.
+    label: "without-editor-capabilities",
+    capabilities: ["selection-field-section"] as string[] | undefined,
+    documentId: true,
+  },
   {
     label: "without-document-id",
     capabilities: ["selection-field-section"] as string[] | undefined,
+    documentId: false,
   },
-  { label: "without-capabilities", capabilities: undefined },
+  { label: "without-capabilities", capabilities: undefined, documentId: false },
 ];
 
 function replay(
   data: Record<string, unknown>,
   previewSession = SESSION,
+  previewDocument?: string,
 ): ReturnType<typeof parsePreviewToEditorEnvelope> {
   const source = {} as Window;
   return parsePreviewToEditorEnvelope(
     {
-      data: { ...data, previewSession },
+      data: {
+        ...data,
+        previewSession,
+        ...(previewDocument === undefined ? {} : { previewDocument }),
+      },
       origin: ORIGIN,
       source,
     } as unknown as MessageEvent<unknown>,
@@ -177,10 +197,12 @@ function replay(
 
 describe.each(VARIANTS)(
   "the current editor reading the $label bridge",
-  ({ label, capabilities }) => {
+  ({ label, capabilities, documentId }) => {
     const { manifest, files } = load(label);
     const entry = files.get(ENTRY) ?? "";
     const bundle = [...files.values()].join("\n");
+    // What this bridge stamps on its envelope: its document's id, or nothing.
+    const stamped = documentId ? DOCUMENT : undefined;
 
     it("is the frozen bytes its manifest names", () => {
       const sorted = [...files.entries()].sort(([a], [b]) =>
@@ -191,13 +213,27 @@ describe.each(VARIANTS)(
       ).toBe(manifest.sha256);
     });
 
-    it("posts with the older envelope: the session, and no document id", () => {
+    it(`posts its envelope with the session${documentId ? " and its document id" : ", and no document id"}`, () => {
       const protocol = files.get(PROTOCOL) ?? "";
       const post = protocol.slice(
         protocol.indexOf("export function postPreviewToEditorMessage"),
       );
       expect(post).toContain("previewSession: channel.previewSession");
-      expect(protocol).not.toContain("previewDocument");
+      if (documentId) {
+        expect(post).toContain("previewDocument: documentPreviewIdentity()");
+      } else {
+        expect(protocol).not.toContain("previewDocument");
+      }
+    });
+
+    it("never hears the editor's capabilities, and does not ask for them", () => {
+      // The handshake (4b3e034): an editor answers a ready that names
+      // `code-default-selection` with `editor-capabilities`. No old bridge
+      // names the token or reads the answer.
+      expect(bundle).not.toContain(
+        "morph:storefront-preview-editor-capabilities",
+      );
+      expect(bundle).not.toContain("code-default-selection");
     });
 
     it("posts the types this replay covers, and no others of its own", () => {
@@ -229,12 +265,13 @@ describe.each(VARIANTS)(
           }
         });
 
-        it("is accepted and read without a document id", () => {
-          const envelope = replay({ type, ...payload });
+        it(`is accepted and read ${documentId ? "with its document id" : "without a document id"}`, () => {
+          const envelope = replay({ type, ...payload }, SESSION, stamped);
           expect(envelope).not.toBeNull();
           expect(envelope?.message.type).toBe(type);
-          // An older bridge names no document: unverified, not malformed.
-          expect(envelope?.previewDocument).toBeNull();
+          // A bridge that names no document is unverified, not malformed;
+          // one that names its document is read as that document.
+          expect(envelope?.previewDocument).toBe(stamped ?? null);
           expect(envelope?.malformedDocument).toBe(false);
         });
       },
@@ -245,7 +282,7 @@ describe.each(VARIANTS)(
         type: "morph:storefront-preview-ready",
         ...(capabilities ? { capabilities } : {}),
       };
-      const message = replay(ready)?.message;
+      const message = replay(ready, SESSION, stamped)?.message;
       expect(message).toEqual({
         type: "morph:storefront-preview-ready",
         ...(capabilities ? { capabilities } : {}),
@@ -255,7 +292,11 @@ describe.each(VARIANTS)(
     it("refuses the same messages under another session without throwing", () => {
       for (const { type, payload } of REPLAYS) {
         expect(
-          replay({ type, ...payload }, "1f5c8a52-7c3a-4d1e-9b1a-2f7d6b3c4e5f"),
+          replay(
+            { type, ...payload },
+            "1f5c8a52-7c3a-4d1e-9b1a-2f7d6b3c4e5f",
+            stamped,
+          ),
         ).toBeNull();
       }
     });
