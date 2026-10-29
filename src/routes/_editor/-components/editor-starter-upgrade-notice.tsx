@@ -48,6 +48,10 @@ const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   missing: "Not in this Theme, and not added back.",
   "markers-kept":
     "Kept as it is: you changed it. Its data-* markers keep working; remove them by hand if you like.",
+  "needs-missing":
+    "Not upgraded: its new version needs a file you removed from this Theme.",
+  "origin-unknown":
+    "Not added: this Theme does not record which Starter it came from, so Morph cannot tell whether you removed it. Add it yourself if you want it.",
 };
 
 const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {
@@ -220,11 +224,13 @@ export function EditorStarterUpgradeNotice({
       if (!result.success) throw new Error(result.message);
       return result.data;
     },
-    onSuccess: async () => {
+    onSuccess: async (applied) => {
       setOpen(false);
       setReview(null);
       setMessage(
-        "Applied. The preview is reloading; publish when you are ready.",
+        applied.starter && !applied.versionRecorded
+          ? "Applied what could be applied. This Theme still does not record which Starter it came from, so the files Morph could not place stay as they are and this notice stays. The preview is reloading; publish when you are ready."
+          : "Applied. The preview is reloading; publish when you are ready.",
       );
       await onApplied();
     },
