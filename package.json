@@ -10,6 +10,7 @@
   "scripts": {
     "generate:theme-types": "node scripts/generate-theme-package-types.mjs",
     "generate:preview-bridge": "node scripts/generate-preview-bridge-sources.mjs",
+    "check:preview-bridge-sources": "node scripts/generate-preview-bridge-sources.mjs --check",
     "generate:morph-sdk": "node scripts/generate-morph-sdk-sources.mjs",
     "check:morph-sdk-sources": "node scripts/generate-morph-sdk-sources.mjs --check",
     "dev": "vite dev --port 3000",
