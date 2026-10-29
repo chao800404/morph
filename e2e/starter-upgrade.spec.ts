@@ -275,6 +275,19 @@ async function typeHeroMarker(page: Page, marker: string) {
       (response.request().postData() ?? "").includes(marker),
     { timeout: 30_000 },
   );
+  // Under the full Start preview the server reads its own content snapshot,
+  // which only the sync after this save updates (preview-content-sync.ts).
+  // Leaving before it answers can leave that server on the older snapshot,
+  // and a later document request would not carry the marker. So it also
+  // waits for that sync to answer that it applied.
+  const synced = START_PREVIEW
+    ? page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          isServerFunctionCall(response.url(), "syncThemePreviewContent"),
+        { timeout: 30_000 },
+      )
+    : null;
   await field.fill(marker);
   await field.press("Tab");
   await expect(
@@ -285,6 +298,11 @@ async function typeHeroMarker(page: Page, marker: string) {
   // A refused write still answers 200; the refusal is in the body.
   expect(await response.text()).not.toMatch(/"success":\s*false/);
   await savedField(page, scope!, marker);
+  if (synced) {
+    const answer = await synced;
+    expect(answer.ok()).toBe(true);
+    expect(await answer.text()).not.toMatch(/"success":\s*false/);
+  }
 }
 
 async function expectLiveProbe(page: Page, marker: string) {
