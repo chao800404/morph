@@ -16,6 +16,12 @@ import { fromCrossJSON } from "seroval";
  * could drift is a loud failure here rather than a silent pass: a body that is
  * not JSON, not cross-JSON, or lacks the `result` wrapper throws.
  *
+ * What a failure says is bounded on purpose. Test output ends up in CI logs
+ * and reports, and an answer can carry anything the server returned, so a
+ * failure names only which check failed, the type and value of `success`, and
+ * the refusal's `error` when it is a short upper-case code. It never repeats
+ * the body, a message, data, or a whole object.
+ *
  * Only Start's default plugins are used, as `auth-failure.test.ts` does. The
  * app registers one adapter more (`authFailureSerializationAdapter`), and it
  * applies to thrown errors, which do not arrive wrapped in `result` anyway.
@@ -27,15 +33,31 @@ export type ServerFnResult = unknown;
 /** A handler result that said it succeeded. */
 export type ServerFnSuccess = { success: true } & Record<string, unknown>;
 
-const describe = (value: unknown) => {
-  let text: string;
-  try {
-    text = JSON.stringify(value) ?? String(value);
-  } catch {
-    text = String(value);
-  }
-  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
-};
+const PREFIX = "server function answer";
+
+/** `typeof`, with `null` and arrays told apart. Never the value itself. */
+function kindOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** `success`, said only when it is a boolean or absent. */
+function describeSuccess(value: unknown): string {
+  return typeof value === "boolean" || value === undefined
+    ? String(value)
+    : `(${kindOf(value)})`;
+}
+
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** A refusal's `error`, said only when it is a short code like `NOT_FOUND`. */
+function describeErrorCode(value: unknown): string {
+  if (value === undefined) return "(none)";
+  return typeof value === "string" && ERROR_CODE.test(value)
+    ? value
+    : `(withheld ${kindOf(value)})`;
+}
 
 /**
  * The `result` a server function returned, decoded from the response body.
@@ -51,9 +73,10 @@ export function decodeServerFnResult(body: string): ServerFnResult {
       plugins: [...defaultSerovalPlugins],
     });
   } catch (cause) {
+    // Not chained: a JSON parse error quotes the text it choked on.
+    const name = cause instanceof Error ? cause.name : kindOf(cause);
     throw new Error(
-      `server function answer is not decodable seroval cross-JSON: ${body.slice(0, 400)}`,
-      { cause },
+      `${PREFIX} is not decodable seroval cross-JSON (${name}, body length ${body.length})`,
     );
   }
   if (
@@ -62,13 +85,13 @@ export function decodeServerFnResult(body: string): ServerFnResult {
     !Object.prototype.hasOwnProperty.call(decoded, "result")
   ) {
     throw new Error(
-      `server function answer has no "result" wrapper: ${describe(decoded)}`,
+      `${PREFIX} has no "result" wrapper (decoded ${kindOf(decoded)})`,
     );
   }
   const wrapper = decoded as { result: unknown; error?: unknown };
   if (wrapper.error !== undefined) {
     throw new Error(
-      `server function answer carries an error: ${describe(wrapper.error)}`,
+      `${PREFIX} carries an error in its wrapper (${kindOf(wrapper.error)})`,
     );
   }
   return wrapper.result;
@@ -78,17 +101,19 @@ export function decodeServerFnResult(body: string): ServerFnResult {
  * The decoded result, when and only when it says `success: true`.
  *
  * A refusal (`success: false`, whatever its code), a missing `success`, or an
- * undecodable body throws with what the server actually said. The result is
- * returned so a caller can go on to check its data or message.
+ * undecodable body throws, naming `success` and the refusal's code. The result
+ * is returned so a caller can go on to check its data or message.
  */
 export function assertServerFnSuccess(body: string): ServerFnSuccess {
   const result = decodeServerFnResult(body);
-  if (
-    typeof result !== "object" ||
-    result === null ||
-    (result as { success?: unknown }).success !== true
-  ) {
-    throw new Error(`server function did not succeed: ${describe(result)}`);
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new Error(`${PREFIX}: result is not an object (${kindOf(result)})`);
+  }
+  const { success, error } = result as { success?: unknown; error?: unknown };
+  if (success !== true) {
+    throw new Error(
+      `${PREFIX}: server function did not succeed (success=${describeSuccess(success)}, error=${describeErrorCode(error)})`,
+    );
   }
   return result as ServerFnSuccess;
 }
