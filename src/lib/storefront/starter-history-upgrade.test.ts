@@ -14,7 +14,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { normalizeRevisionSnapshot } from "./compiler/theme-build-materializer";
 import { validateThemeStartPackageContract } from "./compiler/theme-start-toolchain";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "./default-storefront-document";
@@ -39,6 +39,15 @@ type Fixture = {
 type File = { id: string; path: string; content: string; version: number };
 
 const VERSIONS = [11, 15, 20, 26, 28] as const;
+
+// Every test here is synchronous and CPU-bound, and in a full run the file
+// takes about a minute. Vitest's runner reaches no macrotask between
+// synchronous tests, so for that whole time the worker could not read the
+// replies to its RPC calls; past vitest's 60 s RPC timeout the run ended with
+// an unhandled "Timeout calling onTaskUpdate", every test passing. Each test
+// now ends on a real turn of the event loop. Cases and assertions are as they
+// were.
+afterEach(() => new Promise<void>((resolve) => setImmediate(resolve)));
 const FIXTURE_DIR = join(__dirname, "__fixtures__", "starter-history");
 const SOURCE_COMMITS: Record<number, string> = {
   11: "0493527792e42ccec5a6ba2dfbb146bbecc3700c",
