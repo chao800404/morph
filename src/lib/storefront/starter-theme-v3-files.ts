@@ -1145,15 +1145,36 @@ function legacyHeaderSource(navBlock: string) {
 export const LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE =
   legacyHeaderSource(HEADER_NAV_BLOCK_ID_FALLBACK);
 
-/** The Header of template version 24: the link as the row, keyed by position. */
+/**
+ * The Header of template version 24: the link as the row, keyed by position.
+ *
+ * Provenance: not a byte-set any Starter version shipped. The Header that
+ * version actually shipped has no `id` doc block on `HeaderNavItem`; it is
+ * recognised as `LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SHIPPED_BYTE_SET` in
+ * starter-theme-legacy-byte-sets.ts. Kept as is, see T1 inventory 2026-10-29.
+ */
 export const LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE =
   legacyHeaderSource(HEADER_NAV_BLOCK_INDEX_KEYED);
 
-/** The Header of template version 23: an index, and still the span. */
+/**
+ * The Header of template version 23: an index, and still the span.
+ *
+ * Provenance: not a byte-set any Starter version shipped. The Header that
+ * version actually shipped has no `id` doc block on `HeaderNavItem`; it is
+ * recognised as `LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SHIPPED_BYTE_SET` in
+ * starter-theme-legacy-byte-sets.ts. Kept as is, see T1 inventory 2026-10-29.
+ */
 export const LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE =
   legacyHeaderSource(HEADER_NAV_BLOCK_INDEXED_SPAN);
 
-/** The Header before either change. */
+/**
+ * The Header before either change.
+ *
+ * Provenance: not a byte-set any Starter version shipped. The Header v19, v20
+ * and v22 actually shipped has no `id` doc block on `HeaderNavItem`; it is
+ * recognised as `LEGACY_STARTER_THEME_HEADER_UNINDEXED_SHIPPED_BYTE_SET` in
+ * starter-theme-legacy-byte-sets.ts. Kept as is, see T1 inventory 2026-10-29.
+ */
 export const LEGACY_STARTER_THEME_HEADER_UNINDEXED_SOURCE = legacyHeaderSource(
   HEADER_NAV_BLOCK_UNINDEXED_SPAN,
 );
@@ -1562,6 +1583,10 @@ export default function HomePage({
 /**
  * The shell that let the two components own their defaults but gave the
  * author nowhere to store an edit. Kept so it can be recognised and replaced.
+ *
+ * Provenance: matches no file any of the 47 Starter commits examined by the T1
+ * inventory (2026-10-29) shipped; it may predate them (not verified). Kept as
+ * is.
  */
 export const LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE = `import type { ReactNode } from "react";
 import Header from "../components/Header";
@@ -1656,6 +1681,10 @@ export default function StorefrontLayout({ children }: StorefrontLayoutProps) {
  * correct because that shell is platform-generated, while production would
  * serve an unstyled fragment. Kept verbatim so an untouched copy can be
  * upgraded and an edited one left alone.
+ *
+ * Provenance: matches no file any of the 47 Starter commits examined by the T1
+ * inventory (2026-10-29) shipped; it may predate them (not verified). Kept as
+ * is.
  */
 export const LEGACY_STARTER_THEME_ROOT_ROUTE_SOURCE = `import { Outlet, createRootRoute } from "@tanstack/react-router";
 import StorefrontLayout from "../layouts/StorefrontLayout";
@@ -1787,6 +1816,11 @@ declare module "@tanstack/react-router" {
 }
 `;
 
+/**
+ * Provenance: matches no file any of the 47 Starter commits examined by the T1
+ * inventory (2026-10-29) shipped; it may predate them (not verified). Kept as
+ * is.
+ */
 export const LEGACY_STARTER_THEME_HOME_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/")({
@@ -1798,6 +1832,11 @@ function HomeRoute() {
 }
 `;
 
+/**
+ * Provenance: matches no file any of the 47 Starter commits examined by the T1
+ * inventory (2026-10-29) shipped; it may predate them (not verified). Kept as
+ * is.
+ */
 export const LEGACY_STARTER_THEME_STOREFRONT_PAGE_ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import { StorefrontPage } from "@morph/storefront-runtime";
 
@@ -1900,6 +1939,11 @@ export const loadContentSlots = createIsomorphicFn()
   });
 `;
 
+/**
+ * Provenance: matches no file any of the 47 Starter commits examined by the T1
+ * inventory (2026-10-29) shipped; it may predate them (not verified). Kept as
+ * is.
+ */
 export const LEGACY_STARTER_THEME_HOME_ROUTE_SLOTLESS_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
 import CategoryShowcase from "../components/CategoryShowcase";
 import EditorialIntro from "../components/EditorialIntro";
@@ -3695,6 +3739,11 @@ export default function ImageWithText({
  * Three of its four markers named what the interpreter already derives: it
  * runs the `map()` itself, so it knows which row it is on. The fourth stays,
  * because the image's source is a fallback chain rather than one field.
+ *
+ * Provenance: not a byte-set any Starter version shipped. The file v19 and v20
+ * shipped is these bytes without the final newline, recognised as
+ * `LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SHIPPED_BYTE_SET` in
+ * starter-theme-legacy-byte-sets.ts. Kept as is, see T1 inventory 2026-10-29.
  */
 export const LEGACY_STARTER_THEME_CATEGORY_SHOWCASE_PATH_MARKED_SOURCE = `import type { ThemeContentFields } from "../morph/content-fields";
 import ThemeLink from "../morph/link";
