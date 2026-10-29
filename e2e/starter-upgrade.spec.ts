@@ -55,6 +55,11 @@ import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/defau
 
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
 const CONTAINERS = TRANSPORT === "cloudflare-sandbox";
+/**
+ * Which Live Preview runtime the run expects. The full Start job sets it;
+ * `expectLiveProbe` checks the page it gets really came from that runtime.
+ */
+const START_PREVIEW = process.env.MORPH_E2E_PREVIEW_RUNTIME === "start";
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
 const SERVER_FN_MODULE =
@@ -76,7 +81,9 @@ export const Route = createFileRoute("/pages-probe")({
       return { read: "PAGES_GET_FAILED " + String((error as { code?: string }).code ?? error) };
     }
   },
-  component: () => <pre data-pages-probe="">{Route.useLoaderData().read}</pre>,
+  component: () => (
+    <pre data-pages-probe="">{"pages-probe-loader:" + Route.useLoaderData().read}</pre>
+  ),
 });
 `,
 };
@@ -285,6 +292,36 @@ async function expectLiveProbe(page: Page, marker: string) {
   const probe = previewFrame(page).locator("[data-pages-probe]");
   await expect(probe).toContainText(marker, { timeout: 90_000 });
   await expect(probe).not.toContainText("PAGES_GET_FAILED");
+  // Which runtime served it, from the page's own document asked again. Both
+  // previews answer with the probe page rendered, but only the full Start
+  // preview's server reads this test's draft, so only its answer carries the
+  // marker. Not the environment settings: what the runtime actually returned.
+  const served = await previewFrame(page)
+    .locator("body")
+    .evaluate(async () => {
+      const response = await fetch(location.pathname, { cache: "no-store" });
+      return {
+        path: location.pathname,
+        status: response.status,
+        html: await response.text(),
+      };
+    });
+  // The probe's own page, answered.
+  expect(served.path).toMatch(/\/pages-probe$/);
+  expect(served.status).toBe(200);
+  // The probe's loader rendered it: its fixed prefix, inside the probe.
+  expect(served.html).toMatch(/data-pages-probe=""[^>]*>pages-probe-loader:/);
+  // Start: the loader's answer, inside that same element, is this test's
+  // marker, which no other page or run can carry. Markers are letters,
+  // digits and hyphens, so the marker is its own pattern.
+  const answered = new RegExp(
+    `data-pages-probe=""[^>]*>pages-probe-loader:[^<]*${marker}`,
+  );
+  if (START_PREVIEW) {
+    expect(served.html).toMatch(answered);
+  } else {
+    expect(served.html).not.toContain(marker);
+  }
 }
 
 async function build(page: Page) {

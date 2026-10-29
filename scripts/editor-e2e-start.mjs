@@ -26,7 +26,7 @@ export const START_PREVIEW_JOB_NAME = "Editor E2E full Start preview";
 export const START_PREVIEW_SHARDS = [
   ["loader-data-binding.spec.ts", "native-compat-preview.spec.ts", "code-controlled-field.spec.ts"],
   ["spread-override-binding.spec.ts", "binding-acceptance-c.spec.ts", "preview-start-bridge-interruption.spec.ts"],
-  ["binding-acceptance-p.spec.ts"],
+  ["binding-acceptance-p.spec.ts", "starter-upgrade.spec.ts"],
 ];
 export const START_PREVIEW_SHARD_COUNT = START_PREVIEW_SHARDS.length;
 
@@ -76,5 +76,13 @@ export const START_PREVIEW_EXPECTED_SKIPS = [
   {
     file: "native-compat-preview.spec.ts",
     title: "KNOWN GAP: server routes do not exist",
+  },
+  // Not a client-only gap: case E needs the container transport, which this
+  // job does not run, so it skips here as it does on the shards. A skip here
+  // is not container acceptance; E is proven only where containers run.
+  {
+    file: "starter-upgrade.spec.ts",
+    title:
+      "E. a toolchain pin an earlier Starter wrote: refused by the build, built once the reviewed upgrade is applied",
   },
 ];
