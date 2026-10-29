@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Page } from "@playwright/test";
+import { test, type Page } from "@playwright/test";
 import {
   RECORD_VERIFIED_FILE,
   WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR,
@@ -133,11 +133,18 @@ export function verifyRecordedThemePreviewRuntime(scope: {
  * In record mode, throws unless the editor page names a Theme that
  * `verifyRecordedThemePreviewRuntime` passed. `previewFrame` calls it, so a
  * record-mode spec cannot read a preview served as the Worker's default.
- * Without record mode it does nothing.
+ * The precondition projects (`setup`, `preview-transport`) are exempt; see
+ * `previewedThemeRefusal`. Without record mode it does nothing.
  */
 export function assertPreviewedThemeVerified(page: Page): void {
   if (!RECORDED_PREVIEW_RUNTIME) return;
-  const refusal = previewedThemeRefusal(page.url(), verifiedThemeIds());
+  let project = "";
+  try {
+    project = test.info().project.name;
+  } catch {
+    // Outside a test nothing names a project, so nothing is exempt.
+  }
+  const refusal = previewedThemeRefusal(page.url(), verifiedThemeIds(), project);
   if (refusal) throw new Error(refusal);
 }
 

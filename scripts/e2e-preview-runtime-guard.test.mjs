@@ -17,6 +17,7 @@ import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  RECORD_GATE_EXEMPT_PROJECTS,
   RECORD_MODE_SPECS,
   previewRuntimeRefusal,
   previewedThemeRefusal,
@@ -332,17 +333,34 @@ describe("record mode once a Theme exists", () => {
 
   it("lets a preview be read only for a verified Theme named by the editor page", () => {
     const url = `http://localhost:3100/store/00000000-0000-4000-8000-000000000002/themes/${THEME}/editor?templateId=x`;
-    assert.equal(previewedThemeRefusal(url, [THEME]), null);
+    assert.equal(previewedThemeRefusal(url, [THEME], "editor"), null);
     assert.match(
-      previewedThemeRefusal(url, []) ?? "",
+      previewedThemeRefusal(url, [], "editor") ?? "",
       new RegExp(`preview of Theme ${THEME} is about to be read, but its stored record was never verified`),
     );
-    assert.match(previewedThemeRefusal("about:blank", [THEME]) ?? "", /names no Theme/);
+    assert.match(previewedThemeRefusal("about:blank", [THEME], "editor") ?? "", /names no Theme/);
+    // Every project but the two preconditions is gated, cross-browser ones too.
+    assert.ok(previewedThemeRefusal(url, [], "editor-webkit"));
+    assert.ok(previewedThemeRefusal(url, [], ""));
+  });
+
+  it("does not gate the precondition projects, which preview the seeded Theme before any spec runs", () => {
+    const seeded = "http://localhost:3100/store/00000000-0000-4000-8000-000000000002/themes/00000000-0000-4000-8000-000000000003/editor";
+    assert.equal(previewedThemeRefusal(seeded, [], "preview-transport"), null);
+    assert.equal(previewedThemeRefusal(seeded, [], "setup"), null);
   });
 });
 
 describe("the record-mode spec list", () => {
   const E2E = fileURLToPath(new URL("../e2e/", import.meta.url));
+
+  it("exempts exactly the precondition projects playwright.config.ts declares", async () => {
+    const config = await readFile(fileURLToPath(new URL("../playwright.config.ts", import.meta.url)), "utf8");
+    for (const name of RECORD_GATE_EXEMPT_PROJECTS) {
+      assert.match(config, new RegExp(`name: "${name}"`));
+    }
+    assert.match(config, /name: "editor",\s+dependencies: \["setup", "preview-transport"\]/);
+  });
 
   it("names spec files that go through the record helper and read the preview only through previewFrame", async () => {
     const binding = await readFile(path.join(E2E, "binding-acceptance-helpers.ts"), "utf8");

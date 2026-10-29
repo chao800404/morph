@@ -338,6 +338,12 @@ export function previewRuntimeRefusal(worker, spec, record) {
  */
 export const RECORD_VERIFIED_FILE = "recorded-preview-runtime-verified.json";
 
+/** The precondition projects in playwright.config.ts; see `previewedThemeRefusal`. */
+export const RECORD_GATE_EXEMPT_PROJECTS = /** @type {readonly string[]} */ ([
+  "setup",
+  "preview-transport",
+]);
+
 /**
  * Null when a record-mode Theme, as stored, is served the runtime the specs
  * expect because of its own record; else why not. Read by the record helper
@@ -385,11 +391,21 @@ export function recordedThemeRefusal({ themeId, rows, declared, workerDefault, s
  * the record helper verified; else why not. Read by `previewFrame` in record
  * mode, which every record-mode spec reads its preview through.
  *
+ * The Playwright projects that run before the specs as preconditions are not
+ * gated: `setup` signs in, and `preview-transport` checks which transport
+ * serves the seeded Theme, whichever runtime that Theme is served. Neither is
+ * preview acceptance for a runtime, and neither previews a Theme the specs
+ * create. Every other project is gated, so a spec run in record mode outside
+ * the runner, or outside `RECORD_MODE_SPECS`, still cannot read an unverified
+ * Theme's preview.
+ *
  * @param {string} pageUrl
  * @param {readonly string[]} verifiedThemeIds
+ * @param {string} projectName The Playwright project of the calling test.
  * @returns {string | null}
  */
-export function previewedThemeRefusal(pageUrl, verifiedThemeIds) {
+export function previewedThemeRefusal(pageUrl, verifiedThemeIds, projectName) {
+  if (RECORD_GATE_EXEMPT_PROJECTS.includes(projectName)) return null;
   let pathname = "";
   try {
     pathname = new URL(pageUrl).pathname;

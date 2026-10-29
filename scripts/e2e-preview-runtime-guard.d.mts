@@ -19,7 +19,10 @@ export declare function recordedThemeRefusal(input: {
   specValue: string | undefined;
 }): string | null;
 
+export declare const RECORD_GATE_EXEMPT_PROJECTS: readonly string[];
+
 export declare function previewedThemeRefusal(
   pageUrl: string,
   verifiedThemeIds: readonly string[],
+  projectName: string,
 ): string | null;
