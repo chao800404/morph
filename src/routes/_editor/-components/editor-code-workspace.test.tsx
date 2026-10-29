@@ -883,7 +883,7 @@ describe("EditorCodeWorkspace file creation", () => {
     },
   ];
 
-  function renderTree(files = [file]) {
+  function renderTree(files = [file], onRestartPreview?: () => void) {
     // The editor route hydrates the workspace from the files it passes in.
     // Without this a folder delete finds no server copy of its files, and
     // passed only because an earlier describe had left Hero.tsx behind.
@@ -903,6 +903,7 @@ describe("EditorCodeWorkspace file creation", () => {
           themeId="theme-1"
           files={files}
           tree={folderTree as never}
+          onRestartPreview={onRestartPreview}
         />
       </QueryClientProvider>,
     );
@@ -1302,6 +1303,24 @@ describe("EditorCodeWorkspace file creation", () => {
         name: RESTORE_THEME_CONTENT_MODULE_COMMAND,
       });
     }
+
+    it("requests a preview restart after restoring the exact original Starter content", async () => {
+      const onRestartPreview = vi.fn();
+      vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
+        success: true,
+        message: "ok",
+        data: { ...contentModule, content: STARTER_THEME_CONTENT_MODULE_SOURCE, sourceGeneration: 6 },
+      } as never);
+      renderTree([file], onRestartPreview);
+      useThemeWorkspaceStore.getState().setBaseSourceGeneration(5, scope);
+
+      fireEvent.click(openRestoreCommand());
+
+      await waitFor(() => expect(onRestartPreview).toHaveBeenCalledTimes(1));
+      expect(saveStorefrontThemeFile).toHaveBeenCalledTimes(1);
+      expect(useThemeWorkspaceStore.getState().getWorkspaceFiles("store-1", "theme-1")[THEME_CONTENT_MODULE_PATH]?.serverContent)
+        .toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+    });
 
     it("creates the missing module from the Starter source with the create precondition and accepted generation", async () => {
       vi.mocked(saveStorefrontThemeFile).mockResolvedValue({
