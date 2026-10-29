@@ -11,6 +11,10 @@ import { reviewStarterThemeUpgrade } from "./starter-theme-upgrade-review";
 
 type File = { id: string; path: string; content: string; version: number };
 
+/** Reviewed as a Theme recorded at Starter 28, the last before the current. */
+const reviewOlder = (files: File[]) =>
+  reviewStarterThemeUpgrade(files, { storedVersion: 28 });
+
 const CONTENT = "src/morph/content.ts";
 
 /** A workspace created today: source-first, no manifest. */
@@ -57,14 +61,14 @@ export default function Principles({ label = "Why we choose differently" }: Prin
 
 describe("reviewStarterThemeUpgrade", () => {
   it("has nothing to change or keep on a current, untouched workspace", () => {
-    const review = reviewStarterThemeUpgrade(sourceFirst());
+    const review = reviewOlder(sourceFirst());
     expect(review.applies).toBe(true);
     expect(review.changes).toEqual([]);
     expect(review.kept).toEqual([]);
   });
 
   it("shows an untouched older content module with its text before and after", () => {
-    const review = reviewStarterThemeUpgrade(
+    const review = reviewOlder(
       sourceFirst(
         setContent(CONTENT, LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
       ),
@@ -100,9 +104,7 @@ describe("reviewStarterThemeUpgrade", () => {
   ])(
     "keeps a content module changed by %s, byte for byte, and says so",
     (_label, content) => {
-      const review = reviewStarterThemeUpgrade(
-        sourceFirst(setContent(CONTENT, content)),
-      );
+      const review = reviewOlder(sourceFirst(setContent(CONTENT, content)));
       expect(review.changes.map((change) => change.path)).not.toContain(
         CONTENT,
       );
@@ -113,15 +115,13 @@ describe("reviewStarterThemeUpgrade", () => {
 
   it("keeps an edited content module with exports of the author's own", () => {
     const content = `${STARTER_THEME_CONTENT_MODULE_SOURCE}\nexport function myHelper() {\n  return 1;\n}\nexport type Mine = { a: string };\n`;
-    const review = reviewStarterThemeUpgrade(
-      sourceFirst(setContent(CONTENT, content)),
-    );
+    const review = reviewOlder(sourceFirst(setContent(CONTENT, content)));
     expect(review.changes).toEqual([]);
     expect(review.kept).toEqual([{ path: CONTENT, reason: "changed" }]);
   });
 
   it("does not add back a Starter file the author removed, and lists it", () => {
-    const review = reviewStarterThemeUpgrade(sourceFirst(without(CONTENT)));
+    const review = reviewOlder(sourceFirst(without(CONTENT)));
     expect(review.changes).toEqual([]);
     expect(review.kept).toContainEqual({ path: CONTENT, reason: "missing" });
   });
@@ -137,7 +137,7 @@ describe("reviewStarterThemeUpgrade", () => {
       ),
     ).toContain("src/components/Principles.tsx");
 
-    const review = reviewStarterThemeUpgrade(files);
+    const review = reviewOlder(files);
     expect(review.plan.files.map((file) => file.path)).not.toContain(
       "src/components/Principles.tsx",
     );
@@ -148,7 +148,7 @@ describe("reviewStarterThemeUpgrade", () => {
   });
 
   it("does not apply to a workspace of another framework", () => {
-    const review = reviewStarterThemeUpgrade(
+    const review = reviewOlder(
       sourceFirst(
         compose(
           setContent(CONTENT, LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
@@ -168,13 +168,13 @@ describe("reviewStarterThemeUpgrade", () => {
     const files = sourceFirst(
       setContent(CONTENT, LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE),
     );
-    const digest = reviewStarterThemeUpgrade(files).digest;
+    const digest = reviewOlder(files).digest;
     expect(digest).toMatch(/^[a-f0-9]{64}$/);
-    expect(reviewStarterThemeUpgrade(files).digest).toBe(digest);
+    expect(reviewOlder(files).digest).toBe(digest);
     // The same change under another file version is another plan: its guard
     // differs.
     expect(
-      reviewStarterThemeUpgrade(
+      reviewOlder(
         files.map((file) =>
           file.path === CONTENT ? { ...file, version: 2 } : file,
         ),

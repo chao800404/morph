@@ -120,6 +120,7 @@ beforeEach(() => {
       filesSaved: true,
       sourceGeneration: 8,
       starter: true,
+      versionRecorded: true,
       catalog: false,
     },
   });
@@ -263,6 +264,29 @@ describe("EditorStarterUpgradeNotice", () => {
         catalogDigest: CATALOG_DIGEST,
       },
     });
+  });
+
+  it("says the notice stays when a Theme of unknown origin was only partly upgraded", async () => {
+    fns.apply.mockResolvedValue({
+      success: true,
+      data: {
+        status: "applied",
+        filesSaved: true,
+        sourceGeneration: 8,
+        starter: true,
+        versionRecorded: false,
+        catalog: false,
+      },
+    });
+    const { onApplied } = renderNotice({
+      status: { ...AVAILABLE, versionState: "pending", storedVersion: null },
+    });
+    await openReview();
+    fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status").textContent).toContain(
+      "still does not record which Starter it came from",
+    );
   });
 
   it("does not apply while this tab has unsaved changes", async () => {
