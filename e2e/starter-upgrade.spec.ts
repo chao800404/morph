@@ -737,11 +737,16 @@ test.describe("Starter upgrade, reviewed by the author", () => {
       expect(after[HEADER]).toBe(legacyHeader);
       expect(starterVersion()).toBe(STOREFRONT_STARTER_TEMPLATE_VERSION);
 
-      // Reopened: on the current Starter no notice asks again, but the
-      // Command Palette opens the same review, which still offers them and
-      // does not say they were removed.
+      // Reopened: on the current Starter no Starter notice asks again (the
+      // product catalog keeps its own notice when the store has products),
+      // but the Command Palette opens the same review, which still offers
+      // them and does not say they were removed.
       await openEditor(page);
-      await expect(upgradeNotice(page)).toHaveCount(0);
+      await expect(
+        page.locator(
+          '[data-editor-starter-upgrade="available"], [data-editor-starter-upgrade="pending"]',
+        ),
+      ).toHaveCount(0);
       await page.getByRole("button", { name: "Code", exact: true }).click();
       await page.getByTitle("Command Palette (Ctrl+Shift+P)").click();
       await page
