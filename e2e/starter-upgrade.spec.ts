@@ -7,6 +7,7 @@ import { fromCrossJSON } from "seroval";
 
 import {
   EDITOR_PATH,
+  assertServerFnSuccess,
   clickExposedElement,
   enableSelection,
   isServerFunctionCall,
@@ -220,7 +221,7 @@ async function applyReview(
   const response = await applied;
   expect(response.ok()).toBe(true);
   // A refused apply still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
@@ -319,7 +320,7 @@ async function typeHeroMarker(page: Page, marker: string) {
   const response = await saved;
   expect(response.ok()).toBe(true);
   // A refused write still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await savedField(page, scope!, marker);
   if (synced) {
     const answer = await synced;
