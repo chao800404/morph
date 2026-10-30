@@ -2,8 +2,6 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import { expect, test, type Frame, type Page, type Request } from "@playwright/test";
-import { defaultSerovalPlugins } from "@tanstack/router-core";
-import { fromCrossJSON } from "seroval";
 
 import {
   EDITOR_PATH,
@@ -325,19 +323,12 @@ async function typeHeroMarker(page: Page, marker: string) {
   if (synced) {
     const answer = await synced;
     expect(answer.ok()).toBe(true);
-    // Start encodes a server function's answer with seroval, as
-    // `{ result, error, context }` (start-server-core's
-    // server-functions-handler); decoded with Start's own plugins, so an
-    // unreadable answer fails here, loudly.
-    const decoded = fromCrossJSON(await answer.json(), {
-      refs: new Map(),
-      plugins: defaultSerovalPlugins,
-    }) as { result?: { success?: unknown; data?: { ticket?: unknown } } };
-    expect(decoded.result?.success).toBe(true);
-    const ticket = decoded.result?.data?.ticket;
+    // A refused sync still answers 200; the refusal is in the body.
+    const result = assertServerFnSuccess(await answer.text());
+    const ticket = (result.data as { ticket?: unknown } | undefined)?.ticket;
     expect(
       typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0,
-      `the sync names the ticket the preview reads: ${JSON.stringify(decoded)}`,
+      `the sync names the ticket the preview reads (got ${typeof ticket})`,
     ).toBe(true);
   }
 }
