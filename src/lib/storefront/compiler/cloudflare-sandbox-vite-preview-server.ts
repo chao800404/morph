@@ -364,6 +364,13 @@ type StartObservation = {
     action: "reused" | "restarted" | "started";
     runningProcessId: string | null;
     processId: string | null;
+    /**
+     * Present, and true, only when this start handed the Vite process the
+     * container-side request record's switch (theme-preview-request-trace.ts):
+     * the record's health signal on the Worker's side. Absent otherwise, so a
+     * deployment's log is unchanged.
+     */
+    requestTrace?: true;
   };
   address?: { reused: boolean; digest: string | null };
   /** Why the start left the workspace marked untrusted instead of succeeding. */
@@ -1154,6 +1161,7 @@ export class CloudflareSandboxVitePreviewServer {
         action: alreadyServing ? "restarted" : "started",
         runningProcessId: alreadyServing?.id ?? null,
         processId: null,
+        ...(this.requestTrace ? { requestTrace: true as const } : {}),
       };
       // Stamped before the server starts, so its Worker names this server
       // and no earlier one on the address probe (docs/astro-theme-plan.md

@@ -474,6 +474,26 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     });
   });
 
+  it("says in its start record whether the request record was handed to Vite", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line) => {
+      logged.push(String(line));
+    });
+    try {
+      await startWith(createSession("ready"), {}, { requestTrace: true });
+      await startWith(createSession("ready"));
+    } finally {
+      spy.mockRestore();
+    }
+    const starts = logged
+      .filter((line) => line.startsWith("[preview-observe] start "))
+      .map((line) => JSON.parse(line.slice("[preview-observe] start ".length)));
+    expect(starts).toHaveLength(2);
+    expect(starts[0].vite.requestTrace).toBe(true);
+    // Off: the field is absent, so a deployment's log reads as before.
+    expect("requestTrace" in starts[1].vite).toBe(false);
+  });
+
   it("refuses to serve user code from any Morph host, however it is written", async () => {
     const harness = createSession("ready");
     const result = await startWith(harness, {

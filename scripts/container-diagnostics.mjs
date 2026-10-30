@@ -19,8 +19,11 @@
  *
  * A request missing from the container record is not, by itself, a request
  * that never arrived: first rule out the record missing it. recorder.ndjson
- * says which containers were followed and how many lines each gave, and each
- * Vite process writes `trace-start` when its record begins.
+ * says which containers were followed, how many log lines each gave in all
+ * (counted, never kept) and how many were records, and how reading each log
+ * ended; each Vite process writes `trace-start` when its record begins, and
+ * the Worker's own start line carries `vite.requestTrace` when it handed
+ * Vite the switch.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -179,7 +182,7 @@ function record(dir) {
 
   const known = new Map();
   const followed = new Map();
-  const counts = { events: 0, traceLines: new Map() };
+  const counts = { events: 0, traceLines: new Map(), logLines: new Map() };
 
   const follow = (id, identity) => {
     if (
@@ -200,6 +203,9 @@ function record(dir) {
       const lines = pending.split("\n");
       pending = lines.pop() ?? "";
       for (const line of lines) {
+        // Counted, never kept: says whether this container's log was read
+        // at all, apart from whether it held any record line.
+        counts.logLines.set(id, (counts.logLines.get(id) ?? 0) + 1);
         const trace = parseTraceLine(line);
         if (!trace) continue;
         counts.traceLines.set(id, (counts.traceLines.get(id) ?? 0) + 1);
@@ -219,6 +225,17 @@ function record(dir) {
         ev: "follow-error",
         container: id.slice(0, 12),
         code: error.code ?? null,
+      }),
+    );
+    // How reading the log ended: by itself (the container went away) or
+    // with an error, before the recorder was stopped.
+    child.on("exit", (code, signal) =>
+      status({
+        ev: "follow-exit",
+        container: id.slice(0, 12),
+        code,
+        signal,
+        logLines: counts.logLines.get(id) ?? 0,
       }),
     );
   };
@@ -278,6 +295,12 @@ function record(dir) {
         [...followed.keys()].map((id) => [
           id.slice(0, 12),
           counts.traceLines.get(id) ?? 0,
+        ]),
+      ),
+      logLines: Object.fromEntries(
+        [...followed.keys()].map((id) => [
+          id.slice(0, 12),
+          counts.logLines.get(id) ?? 0,
         ]),
       ),
     });
