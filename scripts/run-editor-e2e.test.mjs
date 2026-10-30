@@ -606,10 +606,11 @@ describe("the e2e runner's sidecar workspaces", () => {
         assert.equal(path.dirname(root), previews);
         assert.match(path.basename(root), /^e2e-run-/);
         assert.match(result.stdout, /\[e2e\] stopped sidecar/);
-        assert.ok(
-          result.stdout.includes(`[e2e] removed ${root}`),
-          result.stdout.slice(-2000),
-        );
+        const stoppedAt = result.stdout.indexOf("[e2e] stopped sidecar");
+        const removedAt = result.stdout.indexOf(`[e2e] removed ${root}`);
+        assert.ok(removedAt >= 0, result.stdout.slice(-2000));
+        // Removed only after the sidecar had stopped.
+        assert.ok(stoppedAt >= 0 && stoppedAt < removedAt, result.stdout.slice(-2000));
         // This run's directory and what the sidecar wrote in it are gone.
         assert.deepEqual(await readdir(previews), [path.basename(earlier)]);
         // What was there before is as it was.

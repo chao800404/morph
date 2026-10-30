@@ -561,7 +561,7 @@ async function stop({ name, child, exited }) {
   // that matters and the part with no event to listen for.
   if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
     log(`stopped ${name}`);
-    return;
+    return true;
   }
   signalGroup(child, "SIGKILL");
   // Waited for too, and not because SIGKILL can fail — it cannot be caught or
@@ -571,9 +571,10 @@ async function stop({ name, child, exited }) {
   // whatever runs next a port this run had already killed.
   if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
     log(`stopped ${name} (SIGKILL after ${STOP_TIMEOUT_MS} ms)`);
-    return;
+    return true;
   }
   log(`could not stop ${name}; something may still be running`);
+  return false;
 }
 
 /** Resolves `true` if `promise` settles within `ms`, `false` if it does not. */
@@ -622,7 +623,9 @@ function cleanUp() {
 async function runTeardown() {
   // Signalled together and awaited together. The children are independent, so
   // stopping them in sequence would make each one wait out the others' budgets.
-  await Promise.all(started.map((entry) => stop(entry)));
+  const stoppedAll = (
+    await Promise.all(started.map((entry) => stop(entry)))
+  ).every(Boolean);
   started.length = 0;
   // After the children are gone, so a container a stopping dev server was about
   // to release is not counted as leaked. That ordering was only a comment
@@ -640,11 +643,23 @@ async function runTeardown() {
       log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
     }
   }
-  // After the sidecar has stopped, so nothing is still writing in it. Only this
-  // run's directory: anything else in `.morph-previews/` is not this run's.
+  // Only once every child has stopped, so nothing is still writing in it; and
+  // only this run's directory: anything else in `.morph-previews/` is not this
+  // run's. A directory that could not be removed is reported and left, and the
+  // rest of the teardown still runs.
   if (previewWorkspaces) {
-    await rm(previewWorkspaces, { recursive: true, force: true });
-    log(`removed ${previewWorkspaces}`);
+    if (!stoppedAll) {
+      log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
+    } else {
+      try {
+        await rm(previewWorkspaces, { recursive: true, force: true });
+        log(`removed ${previewWorkspaces}`);
+      } catch (error) {
+        log(
+          `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+        );
+      }
+    }
     previewWorkspaces = null;
   }
   if (stateDir) {
