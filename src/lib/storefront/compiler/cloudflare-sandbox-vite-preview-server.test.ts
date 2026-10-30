@@ -463,6 +463,17 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(harness.envs[0]).toEqual({ NODE_ENV: "development" });
   });
 
+  it("turns the container-side request record on only when asked to", async () => {
+    const harness = createSession("ready");
+    await startWith(harness, {}, { requestTrace: true });
+
+    // A switch, never a credential: the record writes no header or body.
+    expect(harness.envs[0]).toEqual({
+      NODE_ENV: "development",
+      MORPH_PREVIEW_REQUEST_TRACE: "1",
+    });
+  });
+
   it("refuses to serve user code from any Morph host, however it is written", async () => {
     const harness = createSession("ready");
     const result = await startWith(harness, {

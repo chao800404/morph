@@ -792,7 +792,22 @@ jobs:
           MORPH_THEME_PREVIEW_RUNTIME=start
           MORPH_LOCAL_THEME_ORIGIN=http://127.0.0.1:8799
           MORPH_ALLOW_LOCAL_DOMAIN_PROVISIONING=true
+          MORPH_PREVIEW_REQUEST_TRACE=1
           EOF
+
+      # Diagnostics only (handoff 2026-10-30, closed container-port
+      # connections): Docker's container and network events, and the preview
+      # containers' own request record that MORPH_PREVIEW_REQUEST_TRACE above
+      # turns on, kept with the results. Neither step judges anything: the
+      # test's own steps below decide the job, as before.
+      - name: Record container diagnostics
+        run: |
+          nohup node scripts/container-diagnostics.mjs record "$RUNNER_TEMP/container-diagnostics"             > "$RUNNER_TEMP/container-diagnostics.out" 2>&1 &
+          for i in $(seq 1 50); do
+            grep -q '"ev":"recording"' "$RUNNER_TEMP/container-diagnostics/recorder.ndjson" 2>/dev/null && exit 0
+            sleep 0.1
+          done
+          echo "::warning::Container diagnostics did not start; the run goes on without them."
 
       - name: Run M1 container lifecycle acceptance
         env:
@@ -802,6 +817,10 @@ jobs:
           MORPH_THEME_PREVIEW_RUNTIME: start
           MORPH_E2E_REPORT_PATH: test-results/container-acceptance.json
         run: node scripts/run-editor-e2e.mjs e2e/m1-container-lifecycle-acceptance.spec.ts
+
+      - name: Stop container diagnostics
+        if: always()
+        run: node scripts/container-diagnostics.mjs stop "$RUNNER_TEMP/container-diagnostics" test-results/container-diagnostics
 
       - name: Require M1 container acceptance test to have passed with zero skip and zero retry
         run: node scripts/check-container-acceptance.mjs test-results/container-acceptance.json

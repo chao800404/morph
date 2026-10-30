@@ -2,6 +2,7 @@ import {
   resolveThemeFramework,
   type ThemeFrameworkAdapter,
 } from "../theme-framework";
+import { PREVIEW_REQUEST_TRACE_ENV } from "./theme-preview-request-trace";
 import {
   registeredThemeToolchains,
   themeToolchainForFramework,
@@ -424,6 +425,12 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   /** Idle time after which the container may be reclaimed. */
   sleepAfter?: string | number;
   maxLogLines?: number;
+  /**
+   * Starts Vite with the container-side request record on
+   * (theme-preview-request-trace.ts). Diagnostics for the container
+   * acceptance job only; never set in production.
+   */
+  requestTrace?: boolean;
 }>;
 
 export class CloudflareSandboxVitePreviewServer {
@@ -434,6 +441,7 @@ export class CloudflareSandboxVitePreviewServer {
   private readonly stopTimeoutMs: number;
   private readonly sleepAfter: string | number;
   private readonly maxLogLines: number;
+  private readonly requestTrace: boolean;
 
   constructor(options: CloudflareSandboxVitePreviewServerOptions = {}) {
     this.sandboxBinding = options.sandboxBinding;
@@ -445,6 +453,7 @@ export class CloudflareSandboxVitePreviewServer {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
     this.sleepAfter = options.sleepAfter ?? "10m";
     this.maxLogLines = options.maxLogLines ?? 200;
+    this.requestTrace = options.requestTrace === true;
   }
 
   private async acquire(previewId: string): Promise<PreviewServerSession> {
@@ -1172,7 +1181,11 @@ export class CloudflareSandboxVitePreviewServer {
           // Nothing from Morph's own environment. The preview holds no
           // credential, and its capability is the preview URL alone; a
           // framework's dev server gets only what its adapter declares.
-          env: { NODE_ENV: "development", ...devServer?.env },
+          env: {
+            NODE_ENV: "development",
+            ...(this.requestTrace ? { [PREVIEW_REQUEST_TRACE_ENV]: "1" } : {}),
+            ...devServer?.env,
+          },
           ...(devServer ? { cwd: prepared.workspaceRoot } : {}),
           onOutput: (_stream, data) => {
             addLog(data);
