@@ -7,6 +7,7 @@ import {
   EDITOR_PATH,
   assertServerFnSuccess,
   clickExposedElement,
+  decodeServerFnResult,
   enableSelection,
   isServerFunctionCall,
   openContentTab,
@@ -24,6 +25,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../src/lib/storefront/starter-theme-v3-files";
+import { THEME_PREVIEW_SERVER_BASE_PATH } from "../src/lib/storefront/compiler/theme-preview-dev-server";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
@@ -288,6 +290,7 @@ async function typeHeroMarker(page: Page, marker: string) {
   // waits for that sync: this Theme's, sent after this save was answered
   // (both times from the browser's own clock), and answering that the
   // preview reads it.
+  let syncRequest: Request | null = null;
   const synced = START_PREVIEW
     ? page.waitForResponse(
         (response) => {
@@ -301,15 +304,44 @@ async function typeHeroMarker(page: Page, marker: string) {
           }
           const body = request.postData() ?? "";
           const save = saveRequest.timing();
+          const hit =
+            body.includes(scope!.storefrontId) &&
+            body.includes(scope!.themeId) &&
+            request.timing().startTime >= save.startTime + save.responseStart;
+          if (hit) syncRequest = request;
+          return hit;
+        },
+        { timeout: 30_000 },
+      )
+    : null;
+  // A sync can also be refused with one of the two answers the editor then
+  // confirms instead of writing again (CONFIRMABLE_REFUSALS in
+  // preview-content-sync.ts): it asks confirmThemePreviewContent whether the
+  // preview reads the ticket the sync was written under. That confirmation
+  // is this Theme's, sent after the sync. Waited for only on such a refusal.
+  const confirmed = START_PREVIEW
+    ? page.waitForResponse(
+        (response) => {
+          const request = response.request();
+          if (
+            request.method() !== "POST" ||
+            !isServerFunctionCall(response.url(), "confirmThemePreviewContent") ||
+            !syncRequest
+          ) {
+            return false;
+          }
+          const body = request.postData() ?? "";
           return (
             body.includes(scope!.storefrontId) &&
             body.includes(scope!.themeId) &&
-            request.timing().startTime >= save.startTime + save.responseStart
+            request.timing().startTime >= syncRequest.timing().startTime
           );
         },
         { timeout: 30_000 },
       )
     : null;
+  // Not awaited when the sync applies; its timeout then rejects unobserved.
+  confirmed?.catch(() => {});
   await field.fill(marker);
   await field.press("Tab");
   await expect(
@@ -324,12 +356,45 @@ async function typeHeroMarker(page: Page, marker: string) {
     const answer = await synced;
     expect(answer.ok()).toBe(true);
     // A refused sync still answers 200; the refusal is in the body.
-    const result = assertServerFnSuccess(await answer.text());
-    const ticket = (result.data as { ticket?: unknown } | undefined)?.ticket;
-    expect(
-      typeof ticket === "number" && Number.isSafeInteger(ticket) && ticket > 0,
-      `the sync names the ticket the preview reads (got ${typeof ticket})`,
-    ).toBe(true);
+    const result = decodeServerFnResult(await answer.text()) as {
+      success?: unknown;
+      error?: unknown;
+      data?: { ticket?: unknown };
+      sentTicket?: unknown;
+    };
+    const isTicket = (value: unknown): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+    if (result.success === true) {
+      expect(
+        isTicket(result.data?.ticket),
+        `the sync names the ticket the preview reads (got ${typeof result.data?.ticket})`,
+      ).toBe(true);
+    } else {
+      const code =
+        typeof result.error === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(result.error)
+          ? result.error
+          : `(${typeof result.error})`;
+      expect(
+        ["PREVIEW_CONTENT_SUPERSEDED", "PREVIEW_CONTENT_NOT_CONFIRMED"],
+        `the sync was refused with ${code}, which the editor does not confirm`,
+      ).toContain(code);
+      const sent = result.sentTicket;
+      expect(
+        isTicket(sent),
+        `the refused sync names the ticket it was written under (got ${typeof sent})`,
+      ).toBe(true);
+      const confirmation = await confirmed!;
+      expect(confirmation.ok()).toBe(true);
+      const confirmedResult = assertServerFnSuccess(await confirmation.text());
+      const read = (confirmedResult.data as { ticket?: unknown } | undefined)
+        ?.ticket;
+      // The preview reads that ticket or a later one. Whether a later one
+      // carries this save is the document's to show, below.
+      expect(
+        isTicket(read) && read >= (sent as number),
+        `the confirmation names a ticket the preview reads, at or after the sync's (got ${typeof read})`,
+      ).toBe(true);
+    }
   }
 }
 
@@ -352,8 +417,14 @@ async function expectLiveProbe(page: Page, marker: string) {
         html: await response.text(),
       };
     });
-  // The probe's own page, answered.
-  expect(served.path).toMatch(/\/pages-probe$/);
+  // The probe's own page, answered. The full Start preview serves each
+  // route at its own path; the client-only preview serves one shell at its
+  // base path and routes inside the page, so its address stays there.
+  if (START_PREVIEW) {
+    expect(served.path).toMatch(/\/pages-probe$/);
+  } else {
+    expect(served.path).toBe(THEME_PREVIEW_SERVER_BASE_PATH);
+  }
   expect(served.status).toBe(200);
   if (START_PREVIEW) {
     // The probe's loader rendered it on the server, and its answer, inside
