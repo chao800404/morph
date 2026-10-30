@@ -439,6 +439,15 @@ export async function saveEditedSource(
   );
 }
 
+/**
+ * Decoding a server function's answer, and requiring it to say success.
+ * Its text never contains `"success":false`; see the module for why.
+ */
+export {
+  assertServerFnSuccess,
+  decodeServerFnResult,
+} from "../src/lib/test-utils/server-fn-answer";
+
 /** Whether a request calls the server function exported as `name`. */
 export function isServerFunctionCall(url: string, name: string) {
   const id = url.split("/_serverFn/")[1]?.split(/[/?]/)[0];
