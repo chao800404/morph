@@ -103,6 +103,11 @@ if (tool === "vite") {
     .listen(port);
 } else if (tool === "playwright") {
   if (process.env.FAKE_ARGS_FILE) writeFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(rest));
+  if (process.env.FAKE_ENV_FILE) {
+    writeFileSync(process.env.FAKE_ENV_FILE, JSON.stringify({
+      workerDefault: process.env.MORPH_E2E_WORKER_PREVIEW_RUNTIME ?? null,
+    }));
+  }
   const mode = process.env.FAKE_PLAYWRIGHT_MODE;
   if (mode === "hang") {
     writeFileSync(process.env.FAKE_PLAYWRIGHT_PID_FILE, String(process.pid));
@@ -331,6 +336,58 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
     assert.ok(!result.stdout.includes("starting the dev server"));
     assert.deepEqual(result.leftBehind, []);
   });
+
+  // The scratch directory has no .dev.vars, so the Worker would serve the
+  // client-only preview; specs told to expect Start must not run against it.
+  // The guard's own cases are in e2e-preview-runtime-guard.test.mjs.
+  it("refuses specs expecting a runtime the Worker will not serve, before starting services", async () => {
+    const result = await runRunner({ MORPH_E2E_PREVIEW_RUNTIME: "start" });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /PREVIEW_RUNTIME_MISMATCH/);
+    assert.ok(!result.stdout.includes("applying migrations"));
+    assert.ok(!result.stdout.includes("starting the dev server"));
+    assert.deepEqual(result.leftBehind, []);
+  });
+
+  // Record mode alone is not a way past the guard: a spec that does not record
+  // its Themes would be previewed as the Worker's client-only default.
+  it("refuses record mode for a spec outside the record-mode list, before starting services", async () => {
+    const result = await runRunner({
+      MORPH_E2E_PREVIEW_RUNTIME: "start",
+      MORPH_E2E_RECORD_PREVIEW_RUNTIME: "start",
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /RECORD_MODE_SELECTION: .*"fake\.spec\.ts"/);
+    assert.ok(!result.stdout.includes("applying migrations"));
+    assert.ok(!result.stdout.includes("starting the dev server"));
+    assert.deepEqual(result.leftBehind, []);
+  });
+
+  it(
+    "accepts a declared record over the Worker's default for a record-mode spec, and hands the Worker's default to the suite",
+    { timeout: 90_000 },
+    async () => {
+      const envFile = path.join(scratch, "record-mode", "env.json");
+      await mkdir(path.dirname(envFile), { recursive: true });
+      const result = await runRunner(
+        {
+          MORPH_E2E_PREVIEW_RUNTIME: "start",
+          MORPH_E2E_RECORD_PREVIEW_RUNTIME: "start",
+          FAKE_ENV_FILE: envFile,
+        },
+        undefined,
+        ["e2e/native-compat-preview.spec.ts"],
+      );
+      assert.equal(result.code, 0, result.stderr + result.stdout.slice(-1000));
+      assert.match(
+        result.stdout,
+        /record mode: Themes record "start" and specs expect "start", accepted over the Worker's client default only because MORPH_E2E_RECORD_PREVIEW_RUNTIME is declared/,
+      );
+      // No .dev.vars in the scratch directory: the Worker has no value.
+      assert.deepEqual(JSON.parse(await readFile(envFile, "utf8")), { workerDefault: "" });
+      assert.deepEqual(result.leftBehind, []);
+    },
+  );
 
   it(
     "keeps reading the dev server, so the suite's requests are all answered",

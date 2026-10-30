@@ -18,7 +18,10 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
-import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 
 /**
  * A component's source default is edited from Design only where it is what
@@ -138,6 +141,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
       'code-controlled-field-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   ]);
+  verifyRecordedThemePreviewRuntime(created);
   return created;
 }
 

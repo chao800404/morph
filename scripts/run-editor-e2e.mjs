@@ -38,6 +38,15 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  RECORD_PREVIEW_RUNTIME_VAR,
+  WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR,
+  previewRuntimeRefusal,
+  readRecordedPreviewRuntime,
+  readSpecPreviewRuntime,
+  readWorkerPreviewRuntime,
+  recordModeSelectionRefusal,
+} from "./e2e-preview-runtime-guard.mjs";
 import { createSidecarRecorder } from "./sidecar-observe-record.mjs";
 import {
   DEFAULT_LOCK_FILE,
@@ -891,6 +900,45 @@ async function main() {
       `CLOUDFLARE_CREDENTIALS_PRESENT: ${credentialsFound.join(", ")}. This run publishes, and publishing is atomic — the pointer moves and the release is deployed by whichever deployer the Worker composes. With a credential in scope that is the real one, which uploads to Cloudflare. Remove it from the environment this run loads, or run the suite without the publish slice.`,
     );
   }
+
+  // The Worker and the specs read the Live Preview runtime from two different
+  // settings; a run where they disagree is evidence for neither runtime. The
+  // credentials above are checked across every file that might hold one, which
+  // is the safe reading for a secret; the runtime is read the way Wrangler
+  // actually builds the Worker's bindings, because the question here is what
+  // the Worker will serve. See `e2e-preview-runtime-guard.mjs`.
+  const workerRuntime = await readWorkerPreviewRuntime({
+    cloudflareEnv: WRANGLER_ENV,
+  });
+  const specRuntime = readSpecPreviewRuntime(process.env);
+  // Record mode (`MORPH_E2E_RECORD_PREVIEW_RUNTIME`, never in CI): the run's
+  // Themes record a runtime the Worker serves ahead of its default. Accepted
+  // here only for spec files whose every previewed Theme goes through the
+  // record helper, which then verifies each Theme's stored record and resolved
+  // runtime before its preview is read; see `RECORD_MODE_SPECS`.
+  const recordRuntime = readRecordedPreviewRuntime(process.env);
+  const runtimeRefusal =
+    previewRuntimeRefusal(workerRuntime, specRuntime, recordRuntime) ??
+    (recordRuntime ? recordModeSelectionRefusal(extra) : null);
+  if (runtimeRefusal) throw new Error(runtimeRefusal);
+  if (recordRuntime) {
+    process.env[WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR] = workerRuntime.value ?? "";
+    log(
+      `record mode: Themes record "${recordRuntime.value}" and specs expect "${specRuntime.runtime}", accepted over the Worker's ${workerRuntime.runtime} default only because ${RECORD_PREVIEW_RUNTIME_VAR} is declared; each Theme's stored record and resolved runtime are verified before its preview is read`,
+    );
+  }
+  const shellWorkerRuntime = process.env.MORPH_THEME_PREVIEW_RUNTIME;
+  if (
+    shellWorkerRuntime !== undefined &&
+    shellWorkerRuntime !== workerRuntime.value
+  ) {
+    log(
+      `note: MORPH_THEME_PREVIEW_RUNTIME="${shellWorkerRuntime}" in the shell does not reach the Worker: Wrangler passes the shell on only when no .dev.vars file exists and CLOUDFLARE_INCLUDE_PROCESS_ENV is set`,
+    );
+  }
+  log(
+    `preview runtime ${workerRuntime.runtime}: Worker ${workerRuntime.value === undefined ? "default" : `"${workerRuntime.value}"`} (${workerRuntime.source}), specs ${specRuntime.value === undefined ? "default" : `"${specRuntime.value}"`}`,
+  );
 
   // After every check that needs nothing shared, so a run that is refused
   // anyway does not wait for a slot first; before the port check, which would
