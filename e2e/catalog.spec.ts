@@ -1,5 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import { EDITOR_PATH, isServerFunctionCall, openEditor } from "./helpers";
+import {
+  EDITOR_PATH,
+  assertServerFnSuccess,
+  decodeServerFnResult,
+  isServerFunctionCall,
+  openEditor,
+} from "./helpers";
 import { queryLocalD1 } from "./helpers/editor-writes-paused";
 import { themeScopeFromEditorPath } from "./native-compat";
 import { STARTER_THEME_CATALOG_FILES } from "../src/lib/storefront/starter-theme-catalog-files";
@@ -17,6 +23,7 @@ function editorAt(routePath: string): string {
 
 const FILES_MODULE =
   "/src/server/storefront/storefront-theme-files.serverFn.ts";
+const THEMES_MODULE = "/src/server/storefront/storefront-themes.serverFn.ts";
 const CATALOG_PATHS = STARTER_THEME_CATALOG_FILES.map((file) => file.path);
 
 /** Every text file, path → content, as the source store lists it. */
@@ -115,7 +122,7 @@ async function installCatalogByReview(page: Page) {
   const response = await applied;
   expect(response.ok()).toBe(true);
   // A refused apply still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await expect(dialog).toBeHidden({ timeout: 30000 });
 
   // Exactly the catalog's files were added; nothing else changed.
@@ -238,4 +245,64 @@ test("catalog routes render public products in the editor", async ({
     path: "test-results/catalog-detail.png",
     fullPage: true,
   });
+});
+
+/**
+ * Reverse evidence for `assertServerFnSuccess`, from a real answer.
+ *
+ * The apply is asked for under a source generation no workspace has, so the
+ * server refuses it as stale before reading or writing anything (the first
+ * check in `applyReviewedStarterUpgrade`). The refusal comes back as HTTP 200,
+ * and its body is the one the old text check `/"success":\s*false/` was run
+ * against: that check passes on it, while the decoding check fails.
+ */
+test("a real refused apply answers 200 and fails the server-fn success check", async ({
+  page,
+}) => {
+  await openEditor(page, editorAt("/"));
+  const before = await workspace(page);
+  const recordBefore = starterRecord();
+
+  const answered = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      isServerFunctionCall(response.url(), "applyStorefrontStarterUpgrade"),
+    { timeout: 60000 },
+  );
+  const clientResult = await page.evaluate(
+    async ({ module, data }) => {
+      const fns = await import(/* @vite-ignore */ module);
+      return fns.applyStorefrontStarterUpgrade({ data });
+    },
+    {
+      module: THEMES_MODULE,
+      data: {
+        ...themeScopeFromEditorPath(EDITOR_PATH!),
+        expectedSourceGeneration: 2147483647,
+        catalogDigest: "0".repeat(64),
+      },
+    },
+  );
+  const response = await answered;
+  const body = await response.text();
+
+  // A genuine business refusal, over HTTP 200.
+  expect(response.status()).toBe(200);
+  expect(clientResult).toMatchObject({
+    success: false,
+    error: "STARTER_UPGRADE_STALE",
+  });
+  expect(decodeServerFnResult(body)).toMatchObject({
+    success: false,
+    error: "STARTER_UPGRADE_STALE",
+  });
+  // The old check passes on it; the new one fails, naming only the code.
+  expect(body).not.toMatch(/"success":\s*false/);
+  expect(() => assertServerFnSuccess(body)).toThrow(
+    "server function did not succeed (success=false, error=STARTER_UPGRADE_STALE)",
+  );
+
+  // Refused means nothing was written.
+  expect(await workspace(page)).toEqual(before);
+  expect(starterRecord()).toEqual(recordBefore);
 });
