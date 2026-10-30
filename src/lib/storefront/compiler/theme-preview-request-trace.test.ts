@@ -4,8 +4,11 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  parsePreviewRequestTraceRecords,
   PREVIEW_REQUEST_TRACE_ENV,
   PREVIEW_REQUEST_TRACE_MARKER,
+  PREVIEW_REQUEST_TRACE_MAX_BYTES,
+  PREVIEW_REQUEST_TRACE_RECORD_PATH,
   PREVIEW_REQUEST_TRACE_STATUS_PATH,
   themePreviewRequestTracePluginSource,
 } from "./theme-preview-request-trace";
@@ -18,10 +21,21 @@ type TraceEvent = Record<string, unknown>;
  */
 const statuses: unknown[] = [];
 
-function loadPlugin(env: Record<string, string>, lines: string[]) {
+function loadPlugin(
+  env: Record<string, string>,
+  lines: string[],
+  existingBytes?: number,
+) {
   const fs = {
+    statSync(path: string) {
+      expect(path).toBe(PREVIEW_REQUEST_TRACE_RECORD_PATH);
+      if (existingBytes === undefined) {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return { size: existingBytes };
+    },
     appendFileSync(path: string, line: string) {
-      expect(path).toBe("/proc/1/fd/1");
+      expect(path).toBe(PREVIEW_REQUEST_TRACE_RECORD_PATH);
       lines.push(line);
     },
     writeFileSync(path: string, text: string) {
@@ -66,10 +80,11 @@ async function serve(
   handler: http.RequestListener,
   env: Record<string, string>,
   lines: string[],
+  existingBytes?: number,
 ) {
   const server = http.createServer(handler);
   servers.push(server);
-  loadPlugin(env, lines).configureServer({ httpServer: server });
+  loadPlugin(env, lines, existingBytes).configureServer({ httpServer: server });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return (server.address() as AddressInfo).port;
 }
@@ -98,7 +113,7 @@ describe("preview request trace plugin", () => {
       httpServer: null,
     });
     expect(statuses).toEqual([
-      { pid: 4242, httpServer: false, writeError: null },
+      { pid: 4242, httpServer: false, writeError: null, capped: false },
     ]);
     expect(lines).toEqual([]);
   });
@@ -131,9 +146,13 @@ describe("preview request trace plugin", () => {
     ]) {
       expect(text).not.toContain(secret);
     }
-    expect(all[0]).toMatchObject({ ev: "trace-start", pid: 4242 });
+    expect(all[0]).toMatchObject({ ev: "trace-start", pid: 4242, n: 1 });
+    // Each line is numbered within its process, so a line read twice is
+    // known to be the same.
+    expect(all.map((event) => event.n)).toEqual(all.map((_e, i) => i + 1));
+    expect(all.every((event) => event.pid === 4242)).toBe(true);
     expect(statuses).toEqual([
-      { pid: 4242, httpServer: true, writeError: null },
+      { pid: 4242, httpServer: true, writeError: null, capped: false },
     ]);
     const request = all.find((x) => x.ev === "req")!;
     expect(request).toMatchObject({
@@ -154,7 +173,9 @@ describe("preview request trace plugin", () => {
         "ev",
         "handedBytes",
         "ms",
+        "n",
         "outcome",
+        "pid",
         "seq",
         "status",
         "t",
@@ -210,6 +231,9 @@ describe("preview request trace plugin", () => {
     let calls = 0;
     const kept: unknown[] = [];
     const fs = {
+      statSync() {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
       appendFileSync() {
         calls++;
         throw Object.assign(new Error("broken pipe"), { code: "EPIPE" });
@@ -235,8 +259,61 @@ describe("preview request trace plugin", () => {
     expect(calls).toBe(1);
     // The failure is kept where the Worker reads it, not in the log it failed on.
     expect(kept).toEqual([
-      { pid: 1, httpServer: true, writeError: null },
-      { pid: 1, httpServer: true, writeError: "EPIPE" },
+      { pid: 1, httpServer: true, writeError: null, capped: false },
+      { pid: 1, httpServer: true, writeError: "EPIPE", capped: false },
     ]);
+  });
+
+  it("stops growing the file at its limit, counting what earlier processes wrote", async () => {
+    const lines: string[] = [];
+    const port = await serve(
+      (_req, res) => res.end("ok"),
+      { [PREVIEW_REQUEST_TRACE_ENV]: "1" },
+      lines,
+      // Room for the first line only.
+      PREVIEW_REQUEST_TRACE_MAX_BYTES - 120,
+    );
+    const answer = await fetch(`http://127.0.0.1:${port}/src/a.ts`);
+    expect(await answer.text()).toBe("ok");
+    expect(events(lines).map((event) => event.ev)).toEqual(["trace-start"]);
+    expect(statuses).toEqual([
+      { pid: 4242, httpServer: true, writeError: null, capped: false },
+      { pid: 4242, httpServer: true, writeError: null, capped: true },
+    ]);
+  });
+});
+
+describe("reading the record back", () => {
+  it("keeps only the plugin's fields, a path without its query, and no delivered count", () => {
+    const text = [
+      `${PREVIEW_REQUEST_TRACE_MARKER} {"t":"2026-10-30T14:35:18.700Z","pid":5223,"n":7,"ev":"res","seq":3,"outcome":"closed-before-finish","status":200,"ms":12,"handedBytes":65536,"deliveredBytes":"139374","cookie":"session=1"}`,
+      `${PREVIEW_REQUEST_TRACE_MARKER} {"t":"x","pid":5223,"n":8,"ev":"req","path":"/src/a.ts?previewSession=secret#h","headers":{"authorization":"Bearer z"}}`,
+      `${PREVIEW_REQUEST_TRACE_MARKER} {"t":"x","pid":5223,"n":9,"ev":"res","deliveredBytes":"unknown"}`,
+      `${PREVIEW_REQUEST_TRACE_MARKER} not json`,
+      "something else",
+      `${PREVIEW_REQUEST_TRACE_MARKER} [1]`,
+      "",
+    ].join("\n");
+    const { records, invalid } = parsePreviewRequestTraceRecords(text);
+    expect(invalid).toBe(3);
+    expect(records).toEqual([
+      {
+        t: "2026-10-30T14:35:18.700Z",
+        pid: 5223,
+        n: 7,
+        ev: "res",
+        seq: 3,
+        outcome: "closed-before-finish",
+        status: 200,
+        ms: 12,
+        handedBytes: 65536,
+      },
+      { t: "x", pid: 5223, n: 8, ev: "req", path: "/src/a.ts" },
+      { t: "x", pid: 5223, n: 9, ev: "res", deliveredBytes: "unknown" },
+    ]);
+    const kept = JSON.stringify(records);
+    for (const secret of ["session", "secret", "Bearer", "139374", "#"]) {
+      expect(kept).not.toContain(secret);
+    }
   });
 });

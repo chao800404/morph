@@ -3,7 +3,9 @@ import {
   type ThemeFrameworkAdapter,
 } from "../theme-framework";
 import {
+  parsePreviewRequestTraceRecords,
   PREVIEW_REQUEST_TRACE_ENV,
+  PREVIEW_REQUEST_TRACE_RECORD_PATH,
   PREVIEW_REQUEST_TRACE_STATUS_PATH,
 } from "./theme-preview-request-trace";
 import {
@@ -443,6 +445,20 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   requestTrace?: boolean;
 }>;
 
+/** Request record lines per log line: each line stays some 15 KB. */
+const REQUEST_TRACE_RECORDS_PER_LINE = 100;
+
+/** Per preview and Vite process, the last record line this isolate logged. */
+const requestTraceLoggedThrough = new Map<string, number>();
+
+function readFailure(error: unknown): "missing" | "unreadable" {
+  // The SDK answers a file that is not there with FileNotFoundError.
+  return (error as { name?: unknown } | null)?.name === "FileNotFoundError" ||
+    /not found|no such file|ENOENT/i.test(String(error))
+    ? "missing"
+    : "unreadable";
+}
+
 export class CloudflareSandboxVitePreviewServer {
   private readonly sandboxBinding?: unknown;
   private readonly sandboxProvider?: PreviewServerProvider;
@@ -487,10 +503,15 @@ export class CloudflareSandboxVitePreviewServer {
     const startedAt = new Date().toISOString();
     let result: StartPreviewServerResult | null = null;
     let requestTraceStatus: unknown;
+    let requestTraceRecord: unknown;
     try {
       result = await this.startObserved(input, observation);
       if (this.requestTrace && result.ok) {
         requestTraceStatus = await this.readRequestTraceStatus(input.previewId);
+        requestTraceRecord = await this.readRequestTraceRecord(
+          input.previewId,
+          observation.attemptId,
+        );
       }
       return { ...result, attemptId: observation.attemptId };
     } finally {
@@ -509,6 +530,7 @@ export class CloudflareSandboxVitePreviewServer {
         address: observation.address ?? null,
         failedClosed: observation.failedClosed ?? null,
         ...(requestTraceStatus !== undefined ? { requestTraceStatus } : {}),
+        ...(requestTraceRecord !== undefined ? { requestTraceRecord } : {}),
         ...(result?.ok ? { timings: result.timings } : {}),
       });
     }
@@ -520,10 +542,13 @@ export class CloudflareSandboxVitePreviewServer {
    * API: its health signal when the container's log holds none of it. Only
    * the record's three fields are kept; anything else reads as what it is.
    */
-  private async readRequestTraceStatus(
-    previewId: string,
-  ): Promise<
-    | { pid: number | null; httpServer: boolean | null; writeError: string | null }
+  private async readRequestTraceStatus(previewId: string): Promise<
+    | {
+        pid: number | null;
+        httpServer: boolean | null;
+        writeError: string | null;
+        capped: boolean | null;
+      }
     | "missing"
     | "unreadable"
   > {
@@ -549,14 +574,84 @@ export class CloudflareSandboxVitePreviewServer {
           typeof parsed.writeError === "string"
             ? parsed.writeError.slice(0, 40)
             : null,
+        capped: typeof parsed.capped === "boolean" ? parsed.capped : null,
       };
     } catch (error) {
-      // The SDK answers a file that is not there with FileNotFoundError.
-      return (error as { name?: unknown } | null)?.name ===
-        "FileNotFoundError" || /not found|no such file|ENOENT/i.test(String(error))
-        ? "missing"
-        : "unreadable";
+      return readFailure(error);
     }
+  }
+
+  /**
+   * The container-side request record itself, read back the same way and
+   * written to this log in parts, so the job log holds what the container's
+   * own log could not. Read only after a start completes, never after a
+   * failed request. Lines already logged by this isolate for the same Vite
+   * process are left out; one logged twice by another isolate carries the
+   * same process id and line number.
+   */
+  private async readRequestTraceRecord(
+    previewId: string,
+    attemptId: string,
+  ): Promise<
+    | {
+        chars: number;
+        records: number;
+        logged: number;
+        invalid: number;
+        readMs: number;
+      }
+    | "missing"
+    | "unreadable"
+  > {
+    const readStarted = Date.now();
+    let text: string | null;
+    try {
+      const session = await this.acquire(previewId);
+      if (!session.readFile) return "unreadable";
+      const value = await session.readFile(PREVIEW_REQUEST_TRACE_RECORD_PATH, {
+        encoding: "utf-8",
+      });
+      text =
+        typeof value === "string"
+          ? value
+          : typeof value.content === "string"
+            ? value.content
+            : null;
+    } catch (error) {
+      return readFailure(error);
+    }
+    if (text === null) return "unreadable";
+    const readMs = Date.now() - readStarted;
+    const { records, invalid } = parsePreviewRequestTraceRecords(text);
+    const fresh = records.filter((record) => {
+      if (typeof record.pid !== "number" || typeof record.n !== "number") {
+        return true;
+      }
+      const key = `${previewId}:${record.pid}`;
+      if (record.n <= (requestTraceLoggedThrough.get(key) ?? 0)) return false;
+      requestTraceLoggedThrough.set(key, record.n);
+      return true;
+    });
+    const parts = Math.ceil(fresh.length / REQUEST_TRACE_RECORDS_PER_LINE);
+    for (let part = 0; part < parts; part++) {
+      logPreviewServerEvent("request-trace", {
+        attemptId,
+        previewId,
+        part: part + 1,
+        parts,
+        records: fresh.slice(
+          part * REQUEST_TRACE_RECORDS_PER_LINE,
+          (part + 1) * REQUEST_TRACE_RECORDS_PER_LINE,
+        ),
+      });
+    }
+    return {
+      chars: text.length,
+      records: records.length,
+      logged: fresh.length,
+      invalid,
+      readMs,
+    };
   }
 
   /**

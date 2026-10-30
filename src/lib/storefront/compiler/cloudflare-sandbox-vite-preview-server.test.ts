@@ -495,7 +495,9 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     // The harness's Vite writes no state file: read back as missing, and
     // only when the record was turned on.
     expect(starts[0].requestTraceStatus).toBe("missing");
+    expect(starts[0].requestTraceRecord).toBe("missing");
     expect("requestTraceStatus" in starts[1]).toBe(false);
+    expect("requestTraceRecord" in starts[1]).toBe(false);
   });
 
   it("reads back only the record's own state fields", async () => {
@@ -520,7 +522,86 @@ describe("CloudflareSandboxVitePreviewServer", () => {
       pid: 7,
       httpServer: true,
       writeError: "EACCES",
+      capped: null,
     });
+  });
+
+  it("writes the container's request record to its log once per line, keeping only the record's fields", async () => {
+    const harness = createSession("ready");
+    const recordPath = "/tmp/morph-preview-request-trace.txt";
+    const line = (fields: Record<string, unknown>) =>
+      `MORPH_PREVIEW_REQUEST_TRACE ${JSON.stringify(fields)}\n`;
+    const first =
+      line({ t: "a", pid: 9, n: 1, ev: "trace-start" }) +
+      line({
+        t: "b",
+        pid: 9,
+        n: 2,
+        ev: "req",
+        seq: 1,
+        path: "/src/a.ts?previewSession=secret",
+        cookie: "session=hunter2",
+      });
+    await harness.session.writeFile(recordPath, first);
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((value) => {
+      logged.push(String(value));
+    });
+    try {
+      // A previewId of its own: what this isolate already logged is kept
+      // per preview and process.
+      await startWith(
+        harness,
+        { previewId: "trace-record" },
+        { requestTrace: true },
+      );
+      await harness.session.writeFile(
+        recordPath,
+        first +
+          line({
+            t: "c",
+            pid: 9,
+            n: 3,
+            ev: "res",
+            seq: 1,
+            deliveredBytes: "5",
+          }),
+      );
+      await startWith(
+        harness,
+        { previewId: "trace-record" },
+        { requestTrace: true },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const parse = (prefix: string) =>
+      logged
+        .filter((value) => value.startsWith(prefix))
+        .map((value) => JSON.parse(value.slice(prefix.length)));
+    const traces = parse("[preview-observe] request-trace ");
+    expect(traces.map((trace) => trace.records)).toEqual([
+      [
+        { t: "a", pid: 9, n: 1, ev: "trace-start" },
+        { t: "b", pid: 9, n: 2, ev: "req", seq: 1, path: "/src/a.ts" },
+      ],
+      [{ t: "c", pid: 9, n: 3, ev: "res", seq: 1 }],
+    ]);
+    expect(traces[0]).toMatchObject({
+      previewId: "trace-record",
+      part: 1,
+      parts: 1,
+    });
+    const starts = parse("[preview-observe] start ");
+    expect(traces[0].attemptId).toBe(starts[0].attemptId);
+    expect(starts.map((start) => start.requestTraceRecord)).toEqual([
+      expect.objectContaining({ records: 2, logged: 2, invalid: 0 }),
+      expect.objectContaining({ records: 3, logged: 1, invalid: 0 }),
+    ]);
+    const all = logged.join("\n");
+    for (const secret of ["previewSession", "hunter2", "cookie"]) {
+      expect(all).not.toContain(secret);
+    }
   });
 
   it("refuses to serve user code from any Morph host, however it is written", async () => {
