@@ -212,6 +212,17 @@ const started = [];
 const buildTimings = [];
 let stateDir = null;
 /**
+ * This run's own sidecar workspaces, under `.morph-previews/` (gitignored) and
+ * removed by the teardown. The sidecar's default is `.morph-previews/` itself,
+ * which outlives a run while the database does not: the fixed seed ids give
+ * every run the same preview id, so a run met the content snapshot an earlier
+ * run left there, under a ticket its fresh database had not reached yet, and
+ * every content sync it sent was refused as superseded by that older content.
+ * Inside the checkout rather than the temporary directory, because a Theme
+ * workspace resolves packages from the directories above it.
+ */
+let previewWorkspaces = null;
+/**
  * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
  * port check until teardown is done, so the next run starts on a machine this
  * one has left.
@@ -620,6 +631,13 @@ async function runTeardown() {
       log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
     }
   }
+  // After the sidecar has stopped, so nothing is still writing in it. Only this
+  // run's directory: anything else in `.morph-previews/` is not this run's.
+  if (previewWorkspaces) {
+    await rm(previewWorkspaces, { recursive: true, force: true });
+    log(`removed ${previewWorkspaces}`);
+    previewWorkspaces = null;
+  }
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
     log(`removed ${stateDir}`);
@@ -989,6 +1007,9 @@ async function main() {
         process.env.E2E_PASSWORD,
       ],
     });
+    await mkdir(".morph-previews", { recursive: true });
+    previewWorkspaces = await mkdtemp(path.resolve(".morph-previews", "e2e-run-"));
+    log(`sidecar workspaces in ${previewWorkspaces}`);
     const sidecar = start(
       "sidecar",
       "node",
@@ -996,7 +1017,10 @@ async function main() {
         `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
         "scripts/theme-preview-sidecar.mjs",
       ],
-      { MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1" },
+      {
+        MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1",
+        MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: previewWorkspaces,
+      },
       (line, stream) => sidecarRecorder.line(line, stream),
     );
     sidecarRecorder.started(sidecar.pid);

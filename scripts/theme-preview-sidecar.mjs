@@ -55,6 +55,9 @@ try {
   sidecar = await startLocalPreviewSidecar({
     origin,
     token: process.env.MORPH_LOCAL_THEME_PREVIEW_TOKEN,
+    // Where Theme workspaces are laid out; `.morph-previews/` when unset. The
+    // e2e runner gives each run its own, which it removes afterwards.
+    workspacesRoot: process.env.MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT || undefined,
     // The same allowlist the deployed build is held to, so a Theme cannot be
     // shown locally importing something production would refuse.
     approvedDependencies: cmsConfig?.theme?.dependencies
