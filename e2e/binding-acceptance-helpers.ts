@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import {
   EDITOR_PATH,
+  assertServerFnSuccess,
   clickExposedElement,
   enableSelection,
   isServerFunctionCall,
@@ -21,7 +22,10 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
-import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 import { B1_INTEGRATION_CASES, NEW_SECTION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
   BAS_HERO_LABELS,
@@ -175,6 +179,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
       'binding-acceptance-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   );
+  verifyRecordedThemePreviewRuntime(created);
   return created;
 }
 
@@ -657,8 +662,10 @@ async function inspectorEdit(
     walk.observed.S3response = body.slice(0, 400);
     expect(response.ok(), body.slice(0, 400)).toBe(true);
     expect(body, "the server accepted the write").not.toMatch(
-      /SECTION_SOURCE_UNCONFIRMED|SELECTION_SOURCE_CONFLICT|"success":false/,
+      /SECTION_SOURCE_UNCONFIRMED|SELECTION_SOURCE_CONFLICT/,
     );
+    // Any other refusal, which the body's text cannot show.
+    assertServerFnSuccess(body);
   }
   await page.waitForTimeout(2_000);
   await expectCanvasAfterEdit(
@@ -736,8 +743,10 @@ async function inlineEdit(
     walk.observed.S3response = body.slice(0, 400);
     expect(response.ok(), body.slice(0, 400)).toBe(true);
     expect(body, "the server accepted the write").not.toMatch(
-      /SECTION_SOURCE_UNCONFIRMED|SELECTION_SOURCE_CONFLICT|"success":false/,
+      /SECTION_SOURCE_UNCONFIRMED|SELECTION_SOURCE_CONFLICT/,
     );
+    // Any other refusal, which the body's text cannot show.
+    assertServerFnSuccess(body);
   }
   await page.waitForTimeout(2_500);
   await expectCanvasAfterEdit(

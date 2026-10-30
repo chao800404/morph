@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { expect, test, type Frame, type Page } from "@playwright/test";
+import { expect, test, type Frame, type Page, type Request } from "@playwright/test";
 
 import {
   EDITOR_PATH,
+  assertServerFnSuccess,
   clickExposedElement,
+  decodeServerFnResult,
   enableSelection,
   isServerFunctionCall,
   openContentTab,
@@ -23,6 +25,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../src/lib/storefront/starter-theme-v3-files";
+import { THEME_PREVIEW_SERVER_BASE_PATH } from "../src/lib/storefront/compiler/theme-preview-dev-server";
 import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/default-storefront-document";
 
 /**
@@ -55,6 +58,11 @@ import { STOREFRONT_STARTER_TEMPLATE_VERSION } from "../src/lib/storefront/defau
 
 const TRANSPORT = process.env.E2E_EXPECT_PREVIEW_TRANSPORT;
 const CONTAINERS = TRANSPORT === "cloudflare-sandbox";
+/**
+ * Which Live Preview runtime the run expects. The full Start job sets it;
+ * `expectLiveProbe` checks the page it gets really came from that runtime.
+ */
+const START_PREVIEW = process.env.MORPH_E2E_PREVIEW_RUNTIME === "start";
 const STATE_DIR = process.env.MORPH_E2E_STATE_DIR;
 const scope = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
 const SERVER_FN_MODULE =
@@ -76,7 +84,9 @@ export const Route = createFileRoute("/pages-probe")({
       return { read: "PAGES_GET_FAILED " + String((error as { code?: string }).code ?? error) };
     }
   },
-  component: () => <pre data-pages-probe="">{Route.useLoaderData().read}</pre>,
+  component: () => (
+    <pre data-pages-probe="">{"pages-probe-loader:" + Route.useLoaderData().read}</pre>
+  ),
 });
 `,
 };
@@ -211,7 +221,7 @@ async function applyReview(
   const response = await applied;
   expect(response.ok()).toBe(true);
   // A refused apply still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
@@ -261,13 +271,77 @@ async function typeHeroMarker(page: Page, marker: string) {
   // test that navigates on either leaves before the save is sent, and the
   // marker never reaches the server (CI run 37964261465). So it waits for
   // the save carrying the marker, and reads the draft back.
+  let saveRequest: Request | null = null;
   const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
-      (response.request().postData() ?? "").includes(marker),
+    (response) => {
+      const hit =
+        response.request().method() === "POST" &&
+        isServerFunctionCall(response.url(), "updateStorefrontThemeSectionProps") &&
+        (response.request().postData() ?? "").includes(marker);
+      if (hit) saveRequest = response.request();
+      return hit;
+    },
     { timeout: 30_000 },
   );
+  // Under the full Start preview the server reads its own content snapshot,
+  // which only the sync after this save updates (preview-content-sync.ts).
+  // Leaving before it answers can leave that server on the older snapshot,
+  // and a later document request would not carry the marker. So it also
+  // waits for that sync: this Theme's, sent after this save was answered
+  // (both times from the browser's own clock), and answering that the
+  // preview reads it.
+  let syncRequest: Request | null = null;
+  const synced = START_PREVIEW
+    ? page.waitForResponse(
+        (response) => {
+          const request = response.request();
+          if (
+            request.method() !== "POST" ||
+            !isServerFunctionCall(response.url(), "syncThemePreviewContent") ||
+            !saveRequest
+          ) {
+            return false;
+          }
+          const body = request.postData() ?? "";
+          const save = saveRequest.timing();
+          const hit =
+            body.includes(scope!.storefrontId) &&
+            body.includes(scope!.themeId) &&
+            request.timing().startTime >= save.startTime + save.responseStart;
+          if (hit) syncRequest = request;
+          return hit;
+        },
+        { timeout: 30_000 },
+      )
+    : null;
+  // A sync can also be refused with one of the two answers the editor then
+  // confirms instead of writing again (CONFIRMABLE_REFUSALS in
+  // preview-content-sync.ts): it asks confirmThemePreviewContent whether the
+  // preview reads the ticket the sync was written under. That confirmation
+  // is this Theme's, sent after the sync. Waited for only on such a refusal.
+  const confirmed = START_PREVIEW
+    ? page.waitForResponse(
+        (response) => {
+          const request = response.request();
+          if (
+            request.method() !== "POST" ||
+            !isServerFunctionCall(response.url(), "confirmThemePreviewContent") ||
+            !syncRequest
+          ) {
+            return false;
+          }
+          const body = request.postData() ?? "";
+          return (
+            body.includes(scope!.storefrontId) &&
+            body.includes(scope!.themeId) &&
+            request.timing().startTime >= syncRequest.timing().startTime
+          );
+        },
+        { timeout: 30_000 },
+      )
+    : null;
+  // Not awaited when the sync applies; its timeout then rejects unobserved.
+  confirmed?.catch(() => {});
   await field.fill(marker);
   await field.press("Tab");
   await expect(
@@ -276,8 +350,57 @@ async function typeHeroMarker(page: Page, marker: string) {
   const response = await saved;
   expect(response.ok()).toBe(true);
   // A refused write still answers 200; the refusal is in the body.
-  expect(await response.text()).not.toMatch(/"success":\s*false/);
+  assertServerFnSuccess(await response.text());
   await savedField(page, scope!, marker);
+  if (synced) {
+    const answer = await synced;
+    expect(answer.ok()).toBe(true);
+    // A refused sync still answers 200; the refusal is in the body.
+    const decoded = decodeServerFnResult(await answer.text());
+    expect(
+      typeof decoded === "object" && decoded !== null && !Array.isArray(decoded),
+      `the sync answer is an object (got ${decoded === null ? "null" : typeof decoded})`,
+    ).toBe(true);
+    const result = decoded as {
+      success?: unknown;
+      error?: unknown;
+      data?: { ticket?: unknown };
+      sentTicket?: unknown;
+    };
+    const isTicket = (value: unknown): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+    if (result.success === true) {
+      expect(
+        isTicket(result.data?.ticket),
+        `the sync names the ticket the preview reads (got ${typeof result.data?.ticket})`,
+      ).toBe(true);
+    } else {
+      const code =
+        typeof result.error === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(result.error)
+          ? result.error
+          : `(${typeof result.error})`;
+      expect(
+        ["PREVIEW_CONTENT_SUPERSEDED", "PREVIEW_CONTENT_NOT_CONFIRMED"],
+        `the sync was refused with ${code}, which the editor does not confirm`,
+      ).toContain(code);
+      const sent = result.sentTicket;
+      expect(
+        isTicket(sent),
+        `the refused sync names the ticket it was written under (got ${typeof sent})`,
+      ).toBe(true);
+      const confirmation = await confirmed!;
+      expect(confirmation.ok()).toBe(true);
+      const confirmedResult = assertServerFnSuccess(await confirmation.text());
+      const read = (confirmedResult.data as { ticket?: unknown } | undefined)
+        ?.ticket;
+      // The preview reads that ticket or a later one. Whether a later one
+      // carries this save is the document's to show, below.
+      expect(
+        isTicket(read) && read >= (sent as number),
+        `the confirmation names a ticket the preview reads, at or after the sync's (got ${typeof read})`,
+      ).toBe(true);
+    }
+  }
 }
 
 async function expectLiveProbe(page: Page, marker: string) {
@@ -285,6 +408,42 @@ async function expectLiveProbe(page: Page, marker: string) {
   const probe = previewFrame(page).locator("[data-pages-probe]");
   await expect(probe).toContainText(marker, { timeout: 90_000 });
   await expect(probe).not.toContainText("PAGES_GET_FAILED");
+  // Which runtime served it, from the page's own document asked again: the
+  // full Start preview renders the loader's answer on the server, the
+  // client-only preview sends a shell the browser fills in. Not the
+  // environment settings: what the runtime actually returned.
+  const served = await previewFrame(page)
+    .locator("body")
+    .evaluate(async () => {
+      const response = await fetch(location.pathname, { cache: "no-store" });
+      return {
+        path: location.pathname,
+        status: response.status,
+        html: await response.text(),
+      };
+    });
+  // The probe's own page, answered. The full Start preview serves each
+  // route at its own path; the client-only preview serves one shell at its
+  // base path and routes inside the page, so its address stays there.
+  if (START_PREVIEW) {
+    expect(served.path).toMatch(/\/pages-probe$/);
+  } else {
+    expect(served.path).toBe(THEME_PREVIEW_SERVER_BASE_PATH);
+  }
+  expect(served.status).toBe(200);
+  if (START_PREVIEW) {
+    // The probe's loader rendered it on the server, and its answer, inside
+    // the probe, is this test's marker, which no other page or run can
+    // carry. Markers are letters, digits and hyphens, so the marker is its
+    // own pattern.
+    expect(served.html).toMatch(
+      new RegExp(`data-pages-probe=""[^>]*>pages-probe-loader:[^<]*${marker}`),
+    );
+  } else {
+    // A shell: neither the loader's prefix nor the marker.
+    expect(served.html).not.toContain("pages-probe-loader:");
+    expect(served.html).not.toContain(marker);
+  }
 }
 
 async function build(page: Page) {
