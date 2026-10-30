@@ -40,6 +40,9 @@ export type StarterUpgradeChange = {
  * - `needs-route`: its upgrade would add a link to one of those pages while
  *   the Theme does not have it, so it is left as it is rather than written to
  *   link to nothing.
+ * - `page-not-in-theme`: one of those pages, absent while the Theme has the
+ *   other. It is not added and not offered, and nothing says why it is
+ *   absent: the files cannot tell a removal from a page that was never there.
  */
 export type StarterUpgradeKeptReason =
   | "changed"
@@ -48,7 +51,8 @@ export type StarterUpgradeKeptReason =
   | "needs-missing"
   | "origin-unknown"
   | "new-in-starter"
-  | "needs-route";
+  | "needs-route"
+  | "page-not-in-theme";
 
 export type StarterUpgradeKept = {
   path: string;
@@ -377,8 +381,10 @@ function withoutRemovedFiles(
           !linksToRoute(before, route),
       );
     };
-    const held: { file: (typeof files)[number]; reason: StarterUpgradeKeptReason }[] =
-      [];
+    const held: {
+      file: (typeof files)[number];
+      reason: StarterUpgradeKeptReason;
+    }[] = [];
     for (const file of files) {
       if (importsAbsent(file)) held.push({ file, reason: "needs-missing" });
       else if (linksAbsentRoute(file))
@@ -402,7 +408,7 @@ function withoutRemovedFiles(
  * Decided from the files alone. The recorded version does not enter into it:
  * 26 and 27 span Themes with and without them, and a Theme that declined
  * them still records the current version afterwards. Not offered when the
- * Theme has one of them: it had the pair, so the other was removed.
+ * Theme has one of them; the other is `page-not-in-theme`.
  */
 function offeredStarterRoutes(
   existing: ReadonlyMap<string, ExistingFile>,
@@ -446,11 +452,17 @@ function reviewPlan(
       kept.set(file.path, "markers-kept");
     }
   }
-  // Against the files a Theme starts with today.
+  // Against the files a Theme starts with today. The Starter's new pages
+  // are not counted as removed: the files cannot tell.
+  const optional = new Set(STARTER_OPTIONAL_ROUTES.map(({ path }) => path));
   for (const target of starterThemeWorkspaceFiles()) {
     if (planned.has(target.path) || kept.has(target.path)) continue;
     const file = existing.get(target.path);
-    if (!file) kept.set(target.path, "missing");
+    if (!file)
+      kept.set(
+        target.path,
+        optional.has(target.path) ? "page-not-in-theme" : "missing",
+      );
     else if (file.content !== target.content) kept.set(target.path, "changed");
   }
 

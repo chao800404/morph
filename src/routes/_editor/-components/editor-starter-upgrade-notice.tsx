@@ -62,9 +62,11 @@ const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   "origin-unknown":
     "Not added: this Theme does not record which Starter it came from, so Morph cannot tell whether you removed it. Add it yourself if you want it.",
   "new-in-starter":
-    "Not added unless you select it: the Starter now has this page and this Theme does not. Select \"Add the Starter's new pages\" above to add it.",
+    'Not added unless you select it: the Starter now has this page and this Theme does not. Select "Add the Starter\'s new pages" above to add it.',
   "needs-route":
-    "Not upgraded: its new version links to a page this Theme does not have, so it is kept as it is. Adding the Starter's new pages upgrades it too.",
+    "Not upgraded: its new version links to a page this Theme does not have, so it is kept as it is.",
+  "page-not-in-theme":
+    "Not in this Theme, and not added. Morph cannot tell whether it was removed or never added; add it yourself if you want it.",
 };
 
 const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {
@@ -282,20 +284,20 @@ export function EditorStarterUpgradeNotice({
   const quiet =
     !status || !waiting ? (
       message ? (
-      <div
-        role="status"
-        className={cn(
-          "flex items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs",
-          className,
-        )}
-        data-editor-starter-upgrade="applied"
-      >
-        <ArrowUpCircle className="size-4 shrink-0 text-emerald-600" />
-        <span className="min-w-0 flex-1">{message}</span>
-        <Button size="sm" variant="ghost" onClick={() => setMessage(null)}>
-          Dismiss
-        </Button>
-      </div>
+        <div
+          role="status"
+          className={cn(
+            "flex items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs",
+            className,
+          )}
+          data-editor-starter-upgrade="applied"
+        >
+          <ArrowUpCircle className="size-4 shrink-0 text-emerald-600" />
+          <span className="min-w-0 flex-1">{message}</span>
+          <Button size="sm" variant="ghost" onClick={() => setMessage(null)}>
+            Dismiss
+          </Button>
+        </div>
       ) : null
     ) : null;
 
@@ -331,7 +333,9 @@ export function EditorStarterUpgradeNotice({
   const [shownPart, ...shownRest] = shownKey?.split(":") ?? [];
   const shownPath = shownRest.join(":");
   const shown =
-    review && starterPart && (shownPart === "starter" || shownPart === "catalog")
+    review &&
+    starterPart &&
+    (shownPart === "starter" || shownPart === "catalog")
       ? (shownPart === "starter" ? starterPart : review.catalog).changes.find(
           (change) => change.path === shownPath,
         )
@@ -341,34 +345,34 @@ export function EditorStarterUpgradeNotice({
   return (
     <>
       {status && waiting ? (
-      <div
-        role="status"
-        className={cn(
-          "flex items-center gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs",
-          className,
-        )}
-        data-editor-starter-upgrade={
-          status.versionState === "current" ? "catalog" : status.versionState
-        }
-        data-catalog-pending={status.catalogPending ?? "none"}
-      >
-        <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
-        <span className="min-w-0 flex-1">
-          {noticeLine(status)} Nothing changes until you apply it.
-          {message ? ` ${message}` : null}
-        </span>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={reviewMutation.isPending}
-          onClick={() => reviewMutation.mutate()}
+        <div
+          role="status"
+          className={cn(
+            "flex items-center gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs",
+            className,
+          )}
+          data-editor-starter-upgrade={
+            status.versionState === "current" ? "catalog" : status.versionState
+          }
+          data-catalog-pending={status.catalogPending ?? "none"}
         >
-          {reviewMutation.isPending ? (
-            <LoaderCircle className="size-3.5 animate-spin" />
-          ) : null}
-          Review upgrade
-        </Button>
-      </div>
+          <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
+          <span className="min-w-0 flex-1">
+            {noticeLine(status)} Nothing changes until you apply it.
+            {message ? ` ${message}` : null}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={reviewMutation.isPending}
+            onClick={() => reviewMutation.mutate()}
+          >
+            {reviewMutation.isPending ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : null}
+            Review upgrade
+          </Button>
+        </div>
       ) : (
         quiet
       )}
@@ -431,11 +435,15 @@ export function EditorStarterUpgradeNotice({
                             <p className="text-muted-foreground">
                               The Starter now has these pages and this Theme
                               does not. They are added only if you select this;
-                              if you do not, they stay offered here.
+                              if you do not, they stay offered here. Files kept
+                              because they link to them are upgraded too.
                             </p>
                             <ul className="space-y-1">
                               {review.starter.optional.pages.map((page) => (
-                                <li key={page.path} data-starter-optional-page={page.path}>
+                                <li
+                                  key={page.path}
+                                  data-starter-optional-page={page.path}
+                                >
                                   <div className="truncate font-mono">
                                     {page.path}
                                   </div>
@@ -456,8 +464,8 @@ export function EditorStarterUpgradeNotice({
                               "No file needs changing, and this Theme is on the current Starter."
                             ) : (
                               <>
-                                No file needs changing. Applying records
-                                Starter {review.currentVersion} for this Theme.
+                                No file needs changing. Applying records Starter{" "}
+                                {review.currentVersion} for this Theme.
                               </>
                             )}
                           </p>
@@ -472,10 +480,7 @@ export function EditorStarterUpgradeNotice({
                         <h3 className="font-medium">
                           Kept as they are ({starterPart.kept.length})
                         </h3>
-                        <KeptList
-                          kept={starterPart.kept}
-                          text={STARTER_KEPT}
-                        />
+                        <KeptList kept={starterPart.kept} text={STARTER_KEPT} />
                       </>
                     )}
                   </section>

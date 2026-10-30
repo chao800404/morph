@@ -303,6 +303,7 @@ describe("EditorStarterUpgradeNotice", () => {
             { path: "src/components/Footer.tsx", reason: "needs-missing" },
             { path: "src/morph/link.tsx", reason: "origin-unknown" },
             { path: "src/components/Principles.tsx", reason: "markers-kept" },
+            { path: "src/routes/account.tsx", reason: "page-not-in-theme" },
           ],
         },
       }),
@@ -330,7 +331,12 @@ describe("EditorStarterUpgradeNotice", () => {
       "cannot tell whether you removed it",
     );
     expect(shown("markers-kept")[0]).toContain("markers keep working");
-    expect(starter.textContent).toContain("Kept as they are (5)");
+    // One of the Starter's new pages, without the other: said neutrally.
+    expect(shown("page-not-in-theme")[0]).toContain(
+      "cannot tell whether it was removed or never added",
+    );
+    expect(shown("page-not-in-theme")[0]).not.toContain("you removed");
+    expect(starter.textContent).toContain("Kept as they are (6)");
     // One notice, one review: no second prompt for what is kept. The notice
     // is outside the open dialog, so it is counted by its own attribute.
     expect(
@@ -535,7 +541,9 @@ describe("EditorStarterUpgradeNotice", () => {
         [ACCOUNT, "Customer account page (/account)"],
         [ORDER_TRANSFER, "Order transfer confirmation page (/order-transfer)"],
       ]) {
-        const row = offer.querySelector(`[data-starter-optional-page="${path}"]`);
+        const row = offer.querySelector(
+          `[data-starter-optional-page="${path}"]`,
+        );
         expect(row?.textContent).toContain(path);
         expect(row?.textContent).toContain(purpose);
       }
@@ -575,7 +583,9 @@ describe("EditorStarterUpgradeNotice", () => {
       const { rerender } = render(view(0));
       // Nothing reminds the author.
       expect(screen.queryByRole("status")).toBeNull();
-      expect(screen.queryByRole("button", { name: "Review upgrade" })).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Review upgrade" }),
+      ).toBeNull();
       expect(fns.review).not.toHaveBeenCalled();
 
       rerender(view(1));
@@ -590,7 +600,9 @@ describe("EditorStarterUpgradeNotice", () => {
         starter.querySelectorAll('[data-kept-reason="new-in-starter"]'),
       ).toHaveLength(2);
       const applyButton = () =>
-        screen.getByRole("button", { name: "Apply selected" }) as HTMLButtonElement;
+        screen.getByRole("button", {
+          name: "Apply selected",
+        }) as HTMLButtonElement;
       // Nothing to apply until the pages are selected.
       expect(applyButton().disabled).toBe(true);
 

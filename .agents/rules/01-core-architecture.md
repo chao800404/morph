@@ -383,7 +383,8 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
   與「作者刪除」。因此：
   - 只依檔案判定：Start 的 source-first workspace、兩頁都不存在、升級本身的計畫不會建立它們，
     就在既有審查中列出（`new-in-starter`），**預設不選、不自動建立、不寫成作者刪除**。記錄的版本
-    不參與判定（記到 29 之後照樣列出）；只有其中一頁存在時，另一頁才視為作者刪除（`missing`）。
+    不參與判定（記到 29 之後照樣列出）；只有其中一頁存在時，另一頁不列出、不建立，以中立說明
+    標示（`page-not-in-theme`），同樣不推定作者刪除。
   - 作者勾選才建立：勾選後是另一份計畫與 digest（`review.optional`），套用時送那份 digest，走同一條
     `applyReviewedStarterUpgrade`、同樣的 OCC 與 digest 檢查，不另開寫入路徑。
   - 不勾選只代表「這次不加」：版本照常記錄，提醒不再出現；之後可從 Code 模式 Command Palette 的

@@ -192,9 +192,9 @@ describe("the pages and the version window", () => {
     for (const { path } of STARTER_OPTIONAL_ROUTES) {
       expect(today.has(path), path).toBe(true);
     }
-    expect([...linksToPages(toFiles(starterThemeWorkspaceFiles())).keys()]).toEqual(
-      [HEADER],
-    );
+    expect([
+      ...linksToPages(toFiles(starterThemeWorkspaceFiles())).keys(),
+    ]).toEqual([HEADER]);
   });
 
   it("the version cannot tell: 26 and 27 each span Themes with and without them", () => {
@@ -214,7 +214,9 @@ describe("the pages and the version window", () => {
       [ACCOUNT, "/account"],
       [ORDER_TRANSFER, "/order-transfer"],
     ]);
-    expect(STARTER_OPTIONAL_ROUTES[0]!.purpose).toMatch(/^Customer account page/);
+    expect(STARTER_OPTIONAL_ROUTES[0]!.purpose).toMatch(
+      /^Customer account page/,
+    );
     expect(STARTER_OPTIONAL_ROUTES[1]!.purpose).toMatch(
       /^Order transfer confirmation page/,
     );
@@ -353,7 +355,10 @@ describe.each(WINDOW)("a Theme created without the pages ($name)", (entry) => {
         expect(again.kept).toContainEqual({ path, reason: "new-in-starter" });
         expect(again.kept).not.toContainEqual({ path, reason: "missing" });
       }
-      expect(again.kept).toContainEqual({ path: HEADER, reason: "needs-route" });
+      expect(again.kept).toContainEqual({
+        path: HEADER,
+        reason: "needs-route",
+      });
 
       const added = applyPlan(declined, again.optional!.plan);
       for (const path of [...PAGES, HEADER]) {
@@ -398,20 +403,30 @@ describe("Themes that may have had the pages", () => {
       expect(reviewed.optional?.paths).toEqual(PAGES);
       expect(reviewed.changes).toEqual([]);
       for (const path of PAGES) {
-        expect(reviewed.kept).toContainEqual({ path, reason: "new-in-starter" });
+        expect(reviewed.kept).toContainEqual({
+          path,
+          reason: "new-in-starter",
+        });
       }
     },
   );
 
-  it.each([26, 27, null])(
-    "recorded at %s with one of them: the other is not offered, it is missing",
+  it.each([26, 27, 28, CURRENT, null])(
+    "recorded at %s with one of them: the other is not offered, and not called missing",
     (storedVersion) => {
       const reviewed = reviewStarterThemeUpgrade(
         sourceFirstToday(without(ACCOUNT)),
         { storedVersion },
       );
       expect(reviewed.optional).toBeNull();
-      expect(reviewed.kept).toContainEqual({ path: ACCOUNT, reason: "missing" });
+      expect(reviewed.kept).toContainEqual({
+        path: ACCOUNT,
+        reason: "page-not-in-theme",
+      });
+      expect(reviewed.kept).not.toContainEqual({
+        path: ACCOUNT,
+        reason: "missing",
+      });
     },
   );
 
