@@ -356,7 +356,12 @@ async function typeHeroMarker(page: Page, marker: string) {
     const answer = await synced;
     expect(answer.ok()).toBe(true);
     // A refused sync still answers 200; the refusal is in the body.
-    const result = decodeServerFnResult(await answer.text()) as {
+    const decoded = decodeServerFnResult(await answer.text());
+    expect(
+      typeof decoded === "object" && decoded !== null && !Array.isArray(decoded),
+      `the sync answer is an object (got ${decoded === null ? "null" : typeof decoded})`,
+    ).toBe(true);
+    const result = decoded as {
       success?: unknown;
       error?: unknown;
       data?: { ticket?: unknown };
