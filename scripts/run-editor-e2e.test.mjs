@@ -153,6 +153,23 @@ const FAKE_DOCKER = `#!/bin/sh
 exit 0
 `;
 
+// The sidecar the runner starts in its default transport: it says where it
+// was told to lay out workspaces, writes one there, and serves until stopped.
+const FAKE_SIDECAR = `import { mkdirSync, writeFileSync } from "node:fs";
+if (process.env.FAKE_PID_DIR) {
+  writeFileSync(process.env.FAKE_PID_DIR + "/" + process.pid, "sidecar");
+}
+const root = process.env.MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT ?? "";
+if (root) {
+  mkdirSync(root + "/a-preview", { recursive: true });
+  writeFileSync(root + "/a-preview/.morph-preview-content.json", "{}");
+}
+if (process.env.FAKE_SIDECAR_ROOT_FILE) {
+  writeFileSync(process.env.FAKE_SIDECAR_ROOT_FILE, root);
+}
+setInterval(() => {}, 1000);
+`;
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -217,6 +234,10 @@ before(async () => {
   await chmod(path.join(scratch, "bin", "npx"), 0o755);
   await chmod(path.join(scratch, "bin", "docker"), 0o755);
   await writeFile(path.join(scratch, "scripts", "seed-e2e.mjs"), "");
+  await writeFile(
+    path.join(scratch, "scripts", "theme-preview-sidecar.mjs"),
+    FAKE_SIDECAR,
+  );
   await writeFile(
     path.join(scratch, ".env.e2e"),
     "E2E_EMAIL=runner-test@morph.invalid\nE2E_PASSWORD=unused\nE2E_EDITOR_PATH=/unused\n",
@@ -554,6 +575,53 @@ describe("the e2e runner while the dev server writes more than a pipe holds", ()
       assert.match(result.stdout, /\[e2e\] stopped dev server/);
       assert.deepEqual(result.leftBehind, []);
       assert.equal(alive(playwrightPid), false);
+    },
+  );
+});
+
+describe("the e2e runner's sidecar workspaces", () => {
+  it(
+    "gives the sidecar a workspace directory of this run's own, and removes only that",
+    { timeout: 90_000 },
+    async () => {
+      const previews = path.join(scratch, ".morph-previews");
+      // What an earlier run, or a developer's own preview, left behind.
+      const earlier = path.join(previews, "d71a98ea08efb7c153cfb496c699d0dd");
+      const earlierSnapshot = path.join(earlier, ".morph-preview-content.json");
+      await mkdir(earlier, { recursive: true });
+      await writeFile(earlierSnapshot, '{"contentTicket":20}');
+      const sidecarEnv = path.join(scratch, ".dev.vars.local_preview_e2e");
+      await writeFile(
+        sidecarEnv,
+        "MORPH_LOCAL_THEME_PREVIEW_ORIGIN=http://127.0.0.1:5199\nMORPH_LOCAL_THEME_PREVIEW_TOKEN=runner-test-token-unused\n",
+      );
+      const rootFile = path.join(scratch, `sidecar-root-${Date.now()}.txt`);
+      try {
+        const result = await runRunner({
+          MORPH_E2E_TRANSPORT: "local-sidecar",
+          FAKE_SIDECAR_ROOT_FILE: rootFile,
+        });
+        assert.equal(result.code, 0, result.stderr + result.stdout.slice(-2000));
+        const root = await readFile(rootFile, "utf8");
+        assert.equal(path.dirname(root), previews);
+        assert.match(path.basename(root), /^e2e-run-/);
+        assert.match(result.stdout, /\[e2e\] stopped sidecar/);
+        const stoppedAt = result.stdout.indexOf("[e2e] stopped sidecar");
+        const removedAt = result.stdout.indexOf(`[e2e] removed ${root}`);
+        assert.ok(removedAt >= 0, result.stdout.slice(-2000));
+        // Removed only after the sidecar had stopped.
+        assert.ok(stoppedAt >= 0 && stoppedAt < removedAt, result.stdout.slice(-2000));
+        // This run's directory and what the sidecar wrote in it are gone.
+        assert.deepEqual(await readdir(previews), [path.basename(earlier)]);
+        // What was there before is as it was.
+        assert.equal(
+          await readFile(earlierSnapshot, "utf8"),
+          '{"contentTicket":20}',
+        );
+        assert.deepEqual(result.leftBehind, []);
+      } finally {
+        await rm(sidecarEnv, { force: true });
+      }
     },
   );
 });
