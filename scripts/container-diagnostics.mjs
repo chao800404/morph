@@ -10,6 +10,16 @@
  *   stop <dir> <out>    stops the recorder started on <dir>, copies the
  *                       record to <out>
  *
+ * The preview container's request record is a file the Worker reads back
+ * only when a start completes, which never reaches traffic after a
+ * container's last start. The recorder also copies that one file out of
+ * each running preview container every SNAPSHOT_INTERVAL_MS with
+ * `docker cp` (Docker's archive API: no command runs in the container and
+ * its network is not touched), one copy at a time, bounded in size and
+ * time, until the container stops; the latest copy is kept, reduced the
+ * same way, as snapshot-requests-<container>.ndjson. Lines written after
+ * the last copy that succeeded are still not seen.
+ *
  * Nothing it writes is taken whole from Docker or a container: each Docker
  * event keeps a fixed set of fields, and from a container's log only lines
  * carrying the request record's marker are read, each reduced to that
@@ -115,6 +125,7 @@ const TRACE_FIELDS = {
   t: "string",
   ev: "string",
   pid: "number",
+  n: "number",
   conn: "number|null",
   peer: "string|null",
   peerPort: "number|null",
@@ -167,6 +178,54 @@ export function parseTraceLine(line) {
   return kept;
 }
 
+/**
+ * The request record's file in the preview container
+ * (theme-preview-request-trace.ts).
+ */
+export const RECORD_PATH = "/tmp/morph-preview-request-trace.txt";
+export const SNAPSHOT_INTERVAL_MS = 2_000;
+const SNAPSHOT_TIMEOUT_MS = 10_000;
+// The record stops at 4 MiB; a copy is that file in a tar archive.
+const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024 + 64 * 1024;
+
+/**
+ * The one regular file in the archive `docker cp <container>:<file> -`
+ * writes, or null when the archive is not that.
+ */
+export function readSingleFileTar(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 512) return null;
+  const header = buffer.subarray(0, 512);
+  if (header[156] !== 0x30 && header[156] !== 0) return null;
+  const field = header.subarray(124, 136).toString("ascii");
+  const size = Number.parseInt(field.split("\0", 1)[0].trim(), 8);
+  if (!Number.isFinite(size) || size < 0 || 512 + size > buffer.length) {
+    return null;
+  }
+  return buffer.subarray(512, 512 + size);
+}
+
+/** A copy of the record file, reduced line by line like a log line. */
+export function snapshotRecords(text, id, identity) {
+  const records = [];
+  let invalid = 0;
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    const trace = parseTraceLine(line);
+    if (!trace) {
+      invalid++;
+      continue;
+    }
+    records.push({
+      ...trace,
+      source: "snapshot",
+      container: id.slice(0, 12),
+      role: identity.role,
+      objectId: identity.objectId,
+    });
+  }
+  return { records, invalid };
+}
+
 function appendLine(file, value) {
   fs.appendFileSync(file, `${JSON.stringify(value)}\n`);
 }
@@ -182,6 +241,119 @@ function record(dir) {
 
   const known = new Map();
   const followed = new Map();
+  const snapshots = new Map();
+
+  const snapshotOnce = (id, identity, state) => {
+    if (state.inFlight) return;
+    state.inFlight = true;
+    state.taken++;
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    let stderr = "";
+    const child = spawn("docker", ["cp", `${id}:${RECORD_PATH}`, "-"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), SNAPSHOT_TIMEOUT_MS);
+    child.stdout.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > SNAPSHOT_MAX_BYTES) {
+        tooLarge = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(0, 400);
+    });
+    let settled = false;
+    const done = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      state.inFlight = false;
+      if (outcome !== "ok") state.errors++;
+      // Said once per change of outcome, not once per copy.
+      if (outcome !== state.lastOutcome) {
+        state.lastOutcome = outcome;
+        if (outcome !== "ok") {
+          status({ ev: "snapshot-error", container: id.slice(0, 12), outcome });
+        }
+      }
+    };
+    child.on("error", (error) => done(`spawn-${error.code ?? "error"}`));
+    child.on("close", (code, signal) => {
+      if (tooLarge) return done("too-large");
+      if (signal) return done(`killed-${signal}`);
+      if (code !== 0) {
+        return done(
+          /could not find|no such file/i.test(stderr)
+            ? "missing"
+            : `exit-${code}`,
+        );
+      }
+      const file = readSingleFileTar(Buffer.concat(chunks));
+      if (!file) return done("unreadable");
+      done("ok");
+      state.lastOkAt = new Date().toISOString();
+      if (file.length === state.lastBytes) return;
+      state.lastBytes = file.length;
+      state.changed++;
+      const { records, invalid } = snapshotRecords(
+        file.toString("utf8"),
+        id,
+        identity,
+      );
+      const target = path.join(
+        dir,
+        `snapshot-requests-${id.slice(0, 12)}.ndjson`,
+      );
+      fs.writeFileSync(
+        `${target}.tmp`,
+        records.map((value) => `${JSON.stringify(value)}\n`).join(""),
+      );
+      fs.renameSync(`${target}.tmp`, target);
+      state.lastAt = new Date().toISOString();
+      state.lastRecords = records.length;
+      status({
+        ev: "snapshot",
+        container: id.slice(0, 12),
+        bytes: file.length,
+        records: records.length,
+        invalid,
+      });
+    });
+  };
+
+  const startSnapshots = (id, identity) => {
+    if (identity.role !== "preview" || snapshots.has(id)) return;
+    const state = {
+      inFlight: false,
+      taken: 0,
+      changed: 0,
+      errors: 0,
+      lastBytes: -1,
+      lastAt: null,
+      lastOkAt: null,
+      lastRecords: 0,
+      lastOutcome: null,
+      timer: null,
+    };
+    state.timer = setInterval(
+      () => snapshotOnce(id, identity, state),
+      SNAPSHOT_INTERVAL_MS,
+    );
+    snapshots.set(id, state);
+  };
+
+  const stopSnapshots = (id) => {
+    const state = snapshots.get(id);
+    if (state?.timer) {
+      clearInterval(state.timer);
+      state.timer = null;
+    }
+  };
   const counts = { events: 0, traceLines: new Map(), logLines: new Map() };
 
   const follow = (id, identity) => {
@@ -272,7 +444,23 @@ function record(dir) {
       if (event.type === "container" && event.action === "start") {
         const id = raw.Actor?.ID;
         const identity = known.get(id);
-        if (typeof id === "string" && identity) follow(id, identity);
+        if (typeof id === "string" && identity) {
+          follow(id, identity);
+          startSnapshots(id, identity);
+        }
+      }
+      if (event.type === "container" && event.action === "kill") {
+        // One last copy while the container is still there; it may lose
+        // the race with its removal.
+        const id = raw.Actor?.ID;
+        const state = snapshots.get(id);
+        if (state?.timer) snapshotOnce(id, known.get(id), state);
+      }
+      if (
+        event.type === "container" &&
+        (event.action === "die" || event.action === "destroy")
+      ) {
+        stopSnapshots(raw.Actor?.ID);
       }
     }
   });
@@ -285,6 +473,7 @@ function record(dir) {
   status({ ev: "recording" });
 
   const finish = () => {
+    for (const id of snapshots.keys()) stopSnapshots(id);
     events.kill("SIGTERM");
     for (const child of followed.values()) child.kill("SIGTERM");
     status({
@@ -301,6 +490,21 @@ function record(dir) {
         [...followed.keys()].map((id) => [
           id.slice(0, 12),
           counts.logLines.get(id) ?? 0,
+        ]),
+      ),
+      snapshots: Object.fromEntries(
+        [...snapshots.entries()].map(([id, state]) => [
+          id.slice(0, 12),
+          {
+            taken: state.taken,
+            changed: state.changed,
+            errors: state.errors,
+            lastBytes: state.lastBytes,
+            lastRecords: state.lastRecords,
+            lastChangeAt: state.lastAt,
+            // The end of what the copies cover.
+            lastOkAt: state.lastOkAt,
+          },
         ]),
       ),
     });
@@ -335,10 +539,19 @@ async function stop(dir, out) {
   }
   fs.mkdirSync(out, { recursive: true });
   const copied = [];
+  let snapshotFiles = [];
+  try {
+    snapshotFiles = fs
+      .readdirSync(dir)
+      .filter((name) => /^snapshot-requests-[0-9a-f]{12}\.ndjson$/.test(name));
+  } catch {
+    // Nothing recorded.
+  }
   for (const name of [
     "docker-events.ndjson",
     "container-requests.ndjson",
     "recorder.ndjson",
+    ...snapshotFiles,
   ]) {
     const from = path.join(dir, name);
     if (fs.existsSync(from)) {

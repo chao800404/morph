@@ -3,6 +3,9 @@ import { test } from "node:test";
 import {
   containerRole,
   parseTraceLine,
+  readSingleFileTar,
+  RECORD_PATH,
+  snapshotRecords,
   sanitizeDockerEvent,
 } from "./container-diagnostics.mjs";
 
@@ -138,4 +141,80 @@ test("reads only request-record lines from a container's log, reduced to their o
     ).deliveredBytes,
     undefined,
   );
+});
+
+function tarOf(name, content, type = "0") {
+  const body = Buffer.from(content, "utf8");
+  const header = Buffer.alloc(512);
+  header.write(name, 0, "ascii");
+  header.write(body.length.toString(8).padStart(11, "0") + "\0", 124, "ascii");
+  header.write(type, 156, "ascii");
+  const padded = Buffer.alloc(Math.ceil(body.length / 512) * 512);
+  body.copy(padded);
+  return Buffer.concat([header, padded, Buffer.alloc(1024)]);
+}
+
+test("reads the one file out of the archive docker cp writes", () => {
+  const content = "MORPH_PREVIEW_REQUEST_TRACE {}\n".repeat(40);
+  assert.equal(
+    readSingleFileTar(
+      tarOf("morph-preview-request-trace.txt", content),
+    )?.toString("utf8"),
+    content,
+  );
+  assert.equal(readSingleFileTar(tarOf("x", "")).length, 0);
+  // A directory, a cut-off archive, or nothing at all is not the file.
+  assert.equal(readSingleFileTar(tarOf("d/", "", "5")), null);
+  assert.equal(readSingleFileTar(tarOf("x", "abcdef").subarray(0, 514)), null);
+  assert.equal(readSingleFileTar(Buffer.alloc(10)), null);
+  assert.equal(readSingleFileTar("not a buffer"), null);
+  assert.equal(RECORD_PATH, "/tmp/morph-preview-request-trace.txt");
+});
+
+test("reduces a copied record like a log line, keeping the line number and naming the Docker container", () => {
+  const text = [
+    'MORPH_PREVIEW_REQUEST_TRACE {"t":"2026-10-31T01:00:00.000Z","pid":5528,"n":7,"ev":"req","seq":3,"conn":2,"method":"GET","path":"/src/a.ts?previewSession=x","cookie":"sid=1"}',
+    'MORPH_PREVIEW_REQUEST_TRACE {"t":"2026-10-31T01:00:00.010Z","pid":5528,"n":8,"ev":"res","seq":3,"outcome":"finished","status":200,"ms":10,"handedBytes":5,"deliveredBytes":"5"}',
+    "MORPH_PREVIEW_REQUEST_TRACE {not json",
+    'MORPH_PREVIEW_REQUEST_TRACE {"t":"2026-10-31T01:00:00.0',
+    "",
+  ].join("\n");
+  const { records, invalid } = snapshotRecords(
+    text,
+    "3aa675dc5886ffffffffffff",
+    { role: "preview", objectId: "0743a9a8173e" },
+  );
+  // A line cut off mid-write is counted as invalid, not kept.
+  assert.equal(invalid, 2);
+  const docker = {
+    source: "snapshot",
+    container: "3aa675dc5886",
+    role: "preview",
+    objectId: "0743a9a8173e",
+  };
+  assert.deepEqual(records, [
+    {
+      t: "2026-10-31T01:00:00.000Z",
+      pid: 5528,
+      n: 7,
+      ev: "req",
+      seq: 3,
+      conn: 2,
+      method: "GET",
+      path: "/src/a.ts",
+      ...docker,
+    },
+    {
+      t: "2026-10-31T01:00:00.010Z",
+      pid: 5528,
+      n: 8,
+      ev: "res",
+      seq: 3,
+      outcome: "finished",
+      status: 200,
+      ms: 10,
+      handedBytes: 5,
+      ...docker,
+    },
+  ]);
 });
