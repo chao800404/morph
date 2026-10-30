@@ -43,6 +43,16 @@ export const PREVIEW_REQUEST_TRACE_MARKER = "MORPH_PREVIEW_REQUEST_TRACE";
 const CONTAINER_LOG_PATH = "/proc/1/fd/1";
 
 /**
+ * The record's own state, for when the container's log has none of it: one
+ * small file the Worker reads back through the sandbox's file API, only when
+ * it turned the record on. Outside the workspace, so Vite does not watch it.
+ * It holds the Vite process id, whether there was an HTTP server to record,
+ * and the code of the first write to the log that failed, if any.
+ */
+export const PREVIEW_REQUEST_TRACE_STATUS_PATH =
+  "/tmp/morph-preview-request-trace.json";
+
+/**
  * The plugin, as source for the generated container config, which imports
  * `fs` itself. Emitted as text rather than a compiled function's source, so
  * nothing the Worker's bundler adds to a function can reach the container.
@@ -52,7 +62,19 @@ export function themePreviewRequestTracePluginSource(): string {
   name: "morph-preview-request-trace",
   configureServer(server) {
     const httpServer = server.httpServer;
-    if (process.env.${PREVIEW_REQUEST_TRACE_ENV} !== "1" || !httpServer) return;
+    if (process.env.${PREVIEW_REQUEST_TRACE_ENV} !== "1") return;
+    function status(writeError) {
+      try {
+        fs.writeFileSync(
+          ${JSON.stringify(PREVIEW_REQUEST_TRACE_STATUS_PATH)},
+          JSON.stringify({ pid: process.pid, httpServer: Boolean(httpServer), writeError }),
+        );
+      } catch {
+        // The state cannot be kept; the Worker reads it as missing.
+      }
+    }
+    status(null);
+    if (!httpServer) return;
     let broken = false;
     function emit(event) {
       if (broken) return;
@@ -63,9 +85,10 @@ export function themePreviewRequestTracePluginSource(): string {
             JSON.stringify(Object.assign({ t: new Date().toISOString() }, event)) +
             "\\n",
         );
-      } catch {
+      } catch (error) {
         // A record that cannot be written stops; serving never does.
         broken = true;
+        status(typeof error?.code === "string" ? error.code : "unknown");
       }
     }
     let connections = 0;

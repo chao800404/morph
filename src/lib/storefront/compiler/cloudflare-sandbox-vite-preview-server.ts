@@ -2,7 +2,10 @@ import {
   resolveThemeFramework,
   type ThemeFrameworkAdapter,
 } from "../theme-framework";
-import { PREVIEW_REQUEST_TRACE_ENV } from "./theme-preview-request-trace";
+import {
+  PREVIEW_REQUEST_TRACE_ENV,
+  PREVIEW_REQUEST_TRACE_STATUS_PATH,
+} from "./theme-preview-request-trace";
 import {
   registeredThemeToolchains,
   themeToolchainForFramework,
@@ -483,8 +486,12 @@ export class CloudflareSandboxVitePreviewServer {
     const inflight = enterPreviewStart(input.previewId);
     const startedAt = new Date().toISOString();
     let result: StartPreviewServerResult | null = null;
+    let requestTraceStatus: unknown;
     try {
       result = await this.startObserved(input, observation);
+      if (this.requestTrace && result.ok) {
+        requestTraceStatus = await this.readRequestTraceStatus(input.previewId);
+      }
       return { ...result, attemptId: observation.attemptId };
     } finally {
       inflight.leave();
@@ -501,8 +508,54 @@ export class CloudflareSandboxVitePreviewServer {
         vite: observation.vite ?? null,
         address: observation.address ?? null,
         failedClosed: observation.failedClosed ?? null,
+        ...(requestTraceStatus !== undefined ? { requestTraceStatus } : {}),
         ...(result?.ok ? { timings: result.timings } : {}),
       });
+    }
+  }
+
+  /**
+   * The container-side request record's own state
+   * (theme-preview-request-trace.ts), read back through the sandbox's file
+   * API: its health signal when the container's log holds none of it. Only
+   * the record's three fields are kept; anything else reads as what it is.
+   */
+  private async readRequestTraceStatus(
+    previewId: string,
+  ): Promise<
+    | { pid: number | null; httpServer: boolean | null; writeError: string | null }
+    | "missing"
+    | "unreadable"
+  > {
+    try {
+      const session = await this.acquire(previewId);
+      if (!session.readFile) return "unreadable";
+      const value = await session.readFile(PREVIEW_REQUEST_TRACE_STATUS_PATH, {
+        encoding: "utf-8",
+      });
+      const text =
+        typeof value === "string"
+          ? value
+          : typeof value.content === "string"
+            ? value.content
+            : null;
+      if (text === null) return "unreadable";
+      const parsed = JSON.parse(text.slice(0, 512)) as Record<string, unknown>;
+      return {
+        pid: typeof parsed.pid === "number" ? parsed.pid : null,
+        httpServer:
+          typeof parsed.httpServer === "boolean" ? parsed.httpServer : null,
+        writeError:
+          typeof parsed.writeError === "string"
+            ? parsed.writeError.slice(0, 40)
+            : null,
+      };
+    } catch (error) {
+      // The SDK answers a file that is not there with FileNotFoundError.
+      return (error as { name?: unknown } | null)?.name ===
+        "FileNotFoundError" || /not found|no such file|ENOENT/i.test(String(error))
+        ? "missing"
+        : "unreadable";
     }
   }
 

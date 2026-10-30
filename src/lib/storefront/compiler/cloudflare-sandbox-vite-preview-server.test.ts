@@ -492,6 +492,35 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     expect(starts[0].vite.requestTrace).toBe(true);
     // Off: the field is absent, so a deployment's log reads as before.
     expect("requestTrace" in starts[1].vite).toBe(false);
+    // The harness's Vite writes no state file: read back as missing, and
+    // only when the record was turned on.
+    expect(starts[0].requestTraceStatus).toBe("missing");
+    expect("requestTraceStatus" in starts[1]).toBe(false);
+  });
+
+  it("reads back only the record's own state fields", async () => {
+    const harness = createSession("ready");
+    await harness.session.writeFile(
+      "/tmp/morph-preview-request-trace.json",
+      JSON.stringify({ pid: 7, httpServer: true, writeError: "EACCES", extra: "x" }),
+    );
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line) => {
+      logged.push(String(line));
+    });
+    try {
+      await startWith(harness, {}, { requestTrace: true });
+    } finally {
+      spy.mockRestore();
+    }
+    const start = logged
+      .filter((line) => line.startsWith("[preview-observe] start "))
+      .map((line) => JSON.parse(line.slice("[preview-observe] start ".length)))[0];
+    expect(start.requestTraceStatus).toEqual({
+      pid: 7,
+      httpServer: true,
+      writeError: "EACCES",
+    });
   });
 
   it("refuses to serve user code from any Morph host, however it is written", async () => {

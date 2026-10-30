@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   PREVIEW_REQUEST_TRACE_ENV,
   PREVIEW_REQUEST_TRACE_MARKER,
+  PREVIEW_REQUEST_TRACE_STATUS_PATH,
   themePreviewRequestTracePluginSource,
 } from "./theme-preview-request-trace";
 
@@ -15,11 +16,17 @@ type TraceEvent = Record<string, unknown>;
  * Runs the emitted source as the container config does, with `fs` and
  * `process` standing in for the container's.
  */
+const statuses: unknown[] = [];
+
 function loadPlugin(env: Record<string, string>, lines: string[]) {
   const fs = {
     appendFileSync(path: string, line: string) {
       expect(path).toBe("/proc/1/fd/1");
       lines.push(line);
+    },
+    writeFileSync(path: string, text: string) {
+      expect(path).toBe(PREVIEW_REQUEST_TRACE_STATUS_PATH);
+      statuses.push(JSON.parse(text));
     },
   };
   const fakeProcess = { env, pid: 4242 };
@@ -43,6 +50,7 @@ function events(lines: string[]): TraceEvent[] {
 
 const servers: http.Server[] = [];
 afterEach(async () => {
+  statuses.length = 0;
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -80,6 +88,19 @@ describe("preview request trace plugin", () => {
     const answer = await fetch(`http://127.0.0.1:${port}/src/a.ts?t=1`);
     expect(await answer.text()).toBe("ok");
     expect(lines).toEqual([]);
+    // Off: not even its state is kept.
+    expect(statuses).toEqual([]);
+  });
+
+  it("keeps its state where the Worker can read it, even with no server to record", () => {
+    const lines: string[] = [];
+    loadPlugin({ [PREVIEW_REQUEST_TRACE_ENV]: "1" }, lines).configureServer({
+      httpServer: null,
+    });
+    expect(statuses).toEqual([
+      { pid: 4242, httpServer: false, writeError: null },
+    ]);
+    expect(lines).toEqual([]);
   });
 
   it("records a request's path without its query, and the body bytes handed to Node", async () => {
@@ -111,6 +132,9 @@ describe("preview request trace plugin", () => {
       expect(text).not.toContain(secret);
     }
     expect(all[0]).toMatchObject({ ev: "trace-start", pid: 4242 });
+    expect(statuses).toEqual([
+      { pid: 4242, httpServer: true, writeError: null },
+    ]);
     const request = all.find((x) => x.ev === "req")!;
     expect(request).toMatchObject({
       seq: 1,
@@ -184,10 +208,14 @@ describe("preview request trace plugin", () => {
 
   it("stops recording, and keeps serving, once a line cannot be written", async () => {
     let calls = 0;
+    const kept: unknown[] = [];
     const fs = {
       appendFileSync() {
         calls++;
-        throw new Error("EPIPE");
+        throw Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+      },
+      writeFileSync(_path: string, text: string) {
+        kept.push(JSON.parse(text));
       },
     };
     const plugin = new Function(
@@ -205,5 +233,10 @@ describe("preview request trace plugin", () => {
     const answer = await fetch(`http://127.0.0.1:${port}/x`);
     expect(await answer.text()).toBe("still here");
     expect(calls).toBe(1);
+    // The failure is kept where the Worker reads it, not in the log it failed on.
+    expect(kept).toEqual([
+      { pid: 1, httpServer: true, writeError: null },
+      { pid: 1, httpServer: true, writeError: "EPIPE" },
+    ]);
   });
 });
