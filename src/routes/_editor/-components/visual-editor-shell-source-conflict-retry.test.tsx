@@ -1,5 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { themeRouteStructureLock } from "@/lib/storefront/compiler/theme-route-sections";
@@ -45,10 +52,11 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * double refuses every save whose expectedSourceGeneration is not the
  * current one, as the real source-generation check does.
  *
- * The Code workspace is never opened or preloaded here (the E2E never enters
- * Code mode), so `editorCodeWorkspaceRef.current` is null and the
+ * The first tests never open or preload the Code workspace (the E2E never
+ * enters Code mode), so `editorCodeWorkspaceRef.current` is null and the
  * `saveAll` branch cannot send: any save after the press is the loop's
- * `handleUnifiedSaveFile`.
+ * `handleUnifiedSaveFile`. The Code tests mount the real Code workspace
+ * (Monaco is a textarea), preloaded as hovering its button does, or opened.
  */
 
 const EDITOR_ORIGIN = "http://localhost:3000";
@@ -96,6 +104,37 @@ vi.mock(
 vi.mock("@/lib/storefront/editor/preview-protocol", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   postEditorToPreviewMessage: vi.fn(),
+}));
+vi.mock("@monaco-editor/react", () => ({
+  default: ({
+    defaultValue,
+    onChange,
+  }: {
+    defaultValue?: string;
+    onChange?: (value?: string) => void;
+  }) => {
+    const [value, setValue] = useState(defaultValue ?? "");
+    return (
+      <textarea
+        aria-label="Code editor"
+        value={value}
+        onChange={(event) => {
+          setValue(event.currentTarget.value);
+          onChange?.(event.currentTarget.value);
+        }}
+      />
+    );
+  },
+}));
+vi.mock("./editor-code-language-support", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./editor-code-language-support")>()),
+  configureThemeTypeScript: vi.fn(),
+  disposeThemeWorkspaceModels: vi.fn(),
+  ensureThemeWorkspaceModels: vi.fn(),
+  registerTailwindCompletionProvider: vi.fn(() => ({ dispose: vi.fn() })),
+}));
+vi.mock("./editor-code-formatter", () => ({
+  formatEditorCode: vi.fn(async (content: string) => content),
 }));
 // Instrumentation only: the real lock, its calls recorded.
 vi.mock(
@@ -247,6 +286,22 @@ const tree = (
 const TREE_AT_3 = tree(themeFiles(DATA_PLAIN, 1), 3);
 /** The newest Theme: another tab changed only the loader's module. */
 const TREE_AT_4 = tree(themeFiles(DATA_PAGE, 2), 4);
+/**
+ * The newest Theme when the other tab changed a file that leaves the route
+ * unlocked: the reorder may be saved, against this read's generation.
+ */
+const TREE_AT_4_UNLOCKED = tree(
+  themeFiles(DATA_PLAIN, 1).map((entry) =>
+    entry.path === "src/router.tsx"
+      ? {
+          ...entry,
+          content: "export const getRouter = () => undefined;\n",
+          version: 2,
+        }
+      : entry,
+  ),
+  4,
+);
 const SERVER_GENERATION = 4;
 
 const context = {
@@ -399,8 +454,11 @@ const lockToastShown = () =>
  * The reorder, refused on generation; the Theme read its refusal starts is
  * held until `answerRead` is called.
  */
-async function refusedReorderWithReadHeld() {
+async function refusedReorderWithReadHeld(options?: {
+  beforeReorder?: () => Promise<void>;
+}) {
   await settled();
+  await options?.beforeReorder?.();
   // Precondition: what this tab holds before the reorder.
   expect(store().getAcceptedSourceGeneration(scope)).toBe(3);
   expect(store().getObservedSourceGeneration(scope)).toBe(3);
@@ -436,16 +494,83 @@ async function refusedReorderWithReadHeld() {
   expect(store().getObservedSourceGeneration(scope)).toBe(3);
 
   return {
-    answerRead: async () => {
+    first,
+    /** `data` may be a function, for a Theme that changes on later reads. */
+    answerRead: async (
+      data: typeof TREE_AT_4 | (() => typeof TREE_AT_4) = TREE_AT_4,
+    ) => {
+      const current = typeof data === "function" ? data : () => data;
       vi.mocked(listStorefrontThemeFiles).mockImplementation(
         async () =>
-          ({ success: true, message: "ok", data: TREE_AT_4 }) as never,
+          ({ success: true, message: "ok", data: current() }) as never,
       );
-      read.resolve({ success: true, message: "ok", data: TREE_AT_4 });
+      read.resolve({ success: true, message: "ok", data: current() });
+      await tick(50);
+    },
+    /** The read, and any retry of it, fails. */
+    failRead: async () => {
+      const failed = {
+        success: false,
+        error: "LIST_FAILED",
+        message: "Failed to list theme files",
+      };
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () => failed as never,
+      );
+      read.resolve(failed);
       await tick(50);
     },
   };
 }
+
+/** Mounts the Code workspace without showing it, as hovering its button does. */
+async function preloadCode() {
+  act(() => {
+    fireEvent.pointerEnter(screen.getByRole("button", { name: /^Code$/ }));
+  });
+  await waitFor(
+    () => {
+      expect(codeSurfaceMounted()).toBe(true);
+      expect(screen.queryByText("Loading Code Workspace…")).toBeNull();
+    },
+    { timeout: 15_000 },
+  );
+}
+
+/** Switches to Code and opens a file there, as the author clicks its row. */
+async function openInCode(path: string) {
+  act(() => {
+    screen.getByRole("button", { name: /^Code$/ }).click();
+  });
+  const row = await waitFor(
+    () => {
+      const found = document.querySelector<HTMLElement>(
+        `[data-file-tree-file="${path}"] > div`,
+      );
+      expect(found, `the row of ${path} in the Code explorer`).not.toBeNull();
+      return found!;
+    },
+    { timeout: 15_000 },
+  );
+  act(() => {
+    fireEvent.click(row);
+  });
+  return screen.findByRole(
+    "textbox",
+    { name: "Code editor" },
+    { timeout: 15_000 },
+  );
+}
+
+/** Opens a file in Code and replaces its text, as the author types. */
+async function editInCode(path: string, content: string) {
+  const editor = await openInCode(path);
+  fireEvent.change(editor, { target: { value: content } });
+  await tick(0);
+}
+
+const routeFileState = () =>
+  store().getWorkspaceFiles("storefront-1", "theme-1")[ROUTE_FILE];
 
 async function pressSaveMyChanges() {
   await act(async () => {
@@ -606,53 +731,270 @@ describe("2B: 'Save my changes' after a Design reorder refused on generation", (
     ).toBeTruthy();
   });
 
-  it("(i) press while the read is in flight (current behaviour): the lock runs on this tab's stale loader module, answers unlocked, and the loop's handleUnifiedSaveFile resends the same body with generation 3", async () => {
+  it("(i) press while the read is in flight: the press waits for that read, accepts its generation, and the lock judged on its files refuses; nothing is sent", async () => {
     const { answerRead } = await refusedReorderWithReadHeld();
-    const [first] = sentSaves();
     // Precondition: Code workspace never mounted, so `saveAll` cannot send.
     expect(codeSurfaceMounted()).toBe(false);
     const sentBeforePress = sentSaves().length;
 
     await pressSaveMyChanges();
-    // The press accepted what was observed then: still 3.
+    // Nothing accepted, asked or sent before the newest read is answered.
     expect(store().getAcceptedSourceGeneration(scope)).toBe(3);
-    // The lock check waits on the same in-flight read (fetchQuery, staleTime 0).
     expect(lockCalls().calls.length).toBe(0);
+    expect(sentSaves().length).toBe(sentBeforePress);
     await answerRead();
     const outcome = await outcomeAfterPress(sentBeforePress);
 
-    // The lock was asked once, by `saveSourceConflicts` …
+    // Asked once, on the newest loader module: this tab never changed that
+    // file, so its older copy does not stand in for the stored one.
     expect(outcome.lockRan).toBe(1);
-    // … with the files this tab held at the press for every file but the
-    // route: the loader's module as it was before the other tab's save.
-    expect(outcome.lockSawDataFile).toEqual([DATA_PLAIN]);
-    expect(outcome.lockAnswers).toEqual([null]);
-    expect(outcome.lockToastShown).toBe(false);
-    // One save, byte-identical to the refused one, still against generation 3.
-    expect(outcome.sent).toHaveLength(1);
-    expect(outcome.sent[0]).toEqual(first);
-    expect(outcome.sent[0]?.expectedSourceGeneration).toBe(3);
-    // Refused again by the server double; the hydrated read moved observed
-    // to 4 after the accept, so accepted stays behind it.
-    expect(store().getObservedSourceGeneration(scope)).toBe(4);
-    expect(store().getAcceptedSourceGeneration(scope)).toBe(3);
+    expect(outcome.lockSawDataFile).toEqual([DATA_PAGE]);
+    expect(outcome.lockAnswers[0]).toMatch(LOCKED);
+    expect(outcome.lockToastShown).toBe(true);
+    expect(outcome.sent).toEqual([]);
+    // The generation of the read the lock was judged on.
+    expect(store().getAcceptedSourceGeneration(scope)).toBe(4);
+    // Not discarded: still marked and unsaved.
+    expect(routeFileState()?.sourceConflict).toBe(true);
+    expect(routeFileState()?.dirty).toBe(true);
     expect(
       screen.getByRole("button", { name: "Save my changes" }),
     ).toBeTruthy();
   });
 
-  it.fails(
-    "(i) press while the read is in flight (intended): refused locally by the lock on the newest Theme, nothing sent",
-    async () => {
-      const { answerRead } = await refusedReorderWithReadHeld();
+  it("(i) press while the read is in flight (intended): refused locally by the lock on the newest Theme, nothing sent", async () => {
+    const { answerRead } = await refusedReorderWithReadHeld();
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await answerRead();
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    expect(outcome.sent).toEqual([]);
+    expect(outcome.lockToastShown).toBe(true);
+  });
+
+  it("generation consistency: when the newest read leaves the route unlocked, the resend carries that read's generation and lands", async () => {
+    const { answerRead, first } = await refusedReorderWithReadHeld();
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await answerRead(TREE_AT_4_UNLOCKED);
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    // The lock was judged on that read's files and allowed the edit …
+    expect(outcome.lockRan).toBe(1);
+    expect(outcome.lockSawDataFile).toEqual([DATA_PLAIN]);
+    expect(outcome.lockAnswers).toEqual([null]);
+    expect(outcome.lockToastShown).toBe(false);
+    // … and the one send carries the same read's generation, with the route
+    // file's own version unchanged (the server still checks both).
+    expect(outcome.sent).toHaveLength(1);
+    expect(outcome.sent[0]).toEqual({
+      ...first,
+      expectedSourceGeneration: TREE_AT_4_UNLOCKED.sourceGeneration,
+    });
+    expect(outcome.sent[0]?.expectedVersion).toBe(first?.expectedVersion);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Save my changes" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("read failure: the newest read fails, nothing is sent, the edit stays unsaved and an error is shown", async () => {
+    const { failRead } = await refusedReorderWithReadHeld();
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await failRead();
+    await waitFor(
+      () =>
+        expect(
+          vi
+            .mocked(toast.error)
+            .mock.calls.some((call) =>
+              /latest version of the Theme could not be read/.test(
+                String(call[0]),
+              ),
+            ),
+        ).toBe(true),
+      { timeout: 5_000 },
+    );
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    expect(outcome.sent).toEqual([]);
+    expect(outcome.lockRan).toBe(0);
+    expect(store().getAcceptedSourceGeneration(scope)).toBe(3);
+    expect(routeFileState()?.sourceConflict).toBe(true);
+    expect(routeFileState()?.dirty).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Save my changes" }),
+    ).toBeTruthy();
+  });
+});
+
+describe("2B with the Code workspace mounted", () => {
+  it("Code preloaded, no edit in Code: the Design reorder is left out of Code's save, refused by the lock on the newest Theme, nothing sent", async () => {
+    const { answerRead } = await refusedReorderWithReadHeld({
+      beforeReorder: preloadCode,
+    });
+    expect(codeSurfaceMounted()).toBe(true);
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await answerRead();
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    expect(outcome.sent).toEqual([]);
+    expect(outcome.lockRan).toBe(1);
+    expect(outcome.lockSawDataFile).toEqual([DATA_PAGE]);
+    expect(outcome.lockAnswers[0]).toMatch(LOCKED);
+    expect(outcome.lockToastShown).toBe(true);
+    expect(routeFileState()?.sourceConflict).toBe(true);
+    expect(routeFileState()?.dirty).toBe(true);
+  });
+
+  it("Code mode active, route file shown unsaved only from the Design reorder: still refused by the lock on the newest Theme, nothing sent", async () => {
+    const { answerRead, first } = await refusedReorderWithReadHeld();
+    // Code is shown, on the route file, which it lists as unsaved: the
+    // author has not typed in it.
+    const editor = await openInCode(ROUTE_FILE);
+    expect(
+      editor.closest("[data-editor-mode-surface]")?.getAttribute("aria-hidden"),
+    ).toBe("false");
+    expect(routeFileState()?.dirty).toBe(true);
+    expect(routeFileState()?.localContent).toBe(first!.content);
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await answerRead();
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    expect(outcome.sent).toEqual([]);
+    expect(outcome.lockRan).toBe(1);
+    expect(outcome.lockSawDataFile).toEqual([DATA_PAGE]);
+    expect(outcome.lockAnswers[0]).toMatch(LOCKED);
+    expect(outcome.lockToastShown).toBe(true);
+    expect(routeFileState()?.sourceConflict).toBe(true);
+    expect(routeFileState()?.dirty).toBe(true);
+  });
+
+  it.each([
+    ["unlocked", TREE_AT_4_UNLOCKED, null],
+    ["locked", TREE_AT_4, LOCKED],
+  ] as const)(
+    "Code saves another file first, moving the generation on: the Theme is read again, and the Design reorder is judged on that read and sent against its generation, or held (newest Theme %s)",
+    async (_label, base, expectedLock) => {
+      // A server that stores what it accepts and moves its generation on.
+      let generation = base.sourceGeneration;
+      const stored = new Map(base.files.map((entry) => [entry.path, entry]));
+      const currentTree = () => tree([...stored.values()], generation);
+      const reads: number[] = [];
+      saveThemeFile.mockImplementation(async (request: { data: SentSave }) => {
+        if (request.data.expectedSourceGeneration !== generation) {
+          return {
+            success: false,
+            error: "SOURCE_GENERATION_CONFLICT",
+            message: `Theme source changed (current generation: ${generation}).`,
+          };
+        }
+        const before = stored.get(request.data.path)!;
+        const saved = {
+          ...before,
+          content: request.data.content,
+          version: before.version + 1,
+        };
+        stored.set(saved.path, saved);
+        generation += 1;
+        return {
+          success: true,
+          message: "saved",
+          data: { ...saved, sourceGeneration: generation },
+        };
+      });
+      const { answerRead, first } = await refusedReorderWithReadHeld();
+      // The author's own edit, in Code, of a file the reorder did not touch.
+      const PROMO = "src/components/sections/RetryPromo.tsx";
+      const promo = `${retryComponent("RetryPromo")}// edited in Code\n`;
+      await editInCode(PROMO, promo);
       const sentBeforePress = sentSaves().length;
 
       await pressSaveMyChanges();
-      await answerRead();
+      await answerRead(() => {
+        reads.push(generation);
+        return currentTree();
+      });
       const outcome = await outcomeAfterPress(sentBeforePress);
 
-      expect(outcome.sent).toEqual([]);
-      expect(outcome.lockToastShown).toBe(true);
+      // Code saved the promo against the first read's generation, and it
+      // landed: the generation moved on past that read.
+      const promoLanded = outcome.sent.filter(
+        (save) =>
+          save.path === PROMO &&
+          save.expectedSourceGeneration === base.sourceGeneration,
+      );
+      expect(promoLanded).toHaveLength(1);
+      expect(stored.get(PROMO)?.content).toBe(promo);
+      // The Theme was read again after that save, and the lock was judged on
+      // that read: it holds the promo as saved.
+      expect(reads).toContain(base.sourceGeneration + 1);
+      expect(outcome.lockRan).toBe(1);
+      const judged = lockCalls().calls[0]![0] as Array<{
+        path: string;
+        content: string;
+      }>;
+      expect(judged.find((entry) => entry.path === PROMO)?.content).toBe(promo);
+      const routeSends = outcome.sent.filter(
+        (save) => save.path === ROUTE_FILE,
+      );
+      if (expectedLock) {
+        expect(outcome.lockAnswers[0]).toMatch(expectedLock);
+        expect(outcome.lockToastShown).toBe(true);
+        expect(routeSends).toEqual([]);
+        expect(routeFileState()?.sourceConflict).toBe(true);
+        expect(routeFileState()?.dirty).toBe(true);
+      } else {
+        expect(outcome.lockAnswers).toEqual([null]);
+        // Sent once, against the generation of the read the lock used.
+        expect(routeSends).toEqual([
+          {
+            ...first,
+            expectedSourceGeneration: base.sourceGeneration + 1,
+          },
+        ]);
+        expect(stored.get(ROUTE_FILE)?.content).toBe(first!.content);
+      }
     },
   );
+
+  it("explicit Code rewrite: the author's own edit of the route in Code is saved by Code, against the newest read's generation", async () => {
+    const { answerRead, first } = await refusedReorderWithReadHeld();
+    // The author's own rewrite, on top of the refused reorder.
+    const rewrite = `${first!.content}// kept by hand\n`;
+    await editInCode(ROUTE_FILE, rewrite);
+    const sentBeforePress = sentSaves().length;
+
+    await pressSaveMyChanges();
+    await answerRead();
+    const outcome = await outcomeAfterPress(sentBeforePress);
+
+    // Not the Design guard's to judge: the lock is not asked about it.
+    expect(outcome.lockRan).toBe(0);
+    // Code's autosave may have sent it once already, against the refused
+    // generation; the author's save sends it against the newest read's, and
+    // the server double, which refuses any other generation, stores it.
+    const landed = outcome.sent.filter(
+      (save) => save.expectedSourceGeneration === SERVER_GENERATION,
+    );
+    expect(landed).toHaveLength(1);
+    expect(landed[0]).toMatchObject({
+      path: ROUTE_FILE,
+      content: rewrite,
+      expectedVersion: first?.expectedVersion,
+    });
+    expect(outcome.sent.every((save) => save.content === rewrite)).toBe(true);
+    await waitFor(() => expect(routeFileState()?.dirty).toBe(false));
+    expect(routeFileState()?.sourceConflict).toBeFalsy();
+  });
 });

@@ -6438,50 +6438,116 @@ export function VisualEditorShell({
    * Accepting the newer generation only lets the saves be attempted; each
    * file is still written against the version this tab holds, so a file the
    * other side also changed comes back as a file conflict to resolve.
+   *
+   * A Design structure edit is sent only against a source the structure lock
+   * was judged on and the generation of that same read: one read of the
+   * newest Theme, made before anything is sent, and read again before such an
+   * edit if a save earlier in the run moved the generation on. Accepting
+   * whatever this tab had observed instead let a press during a read still in
+   * flight resend against the generation already refused, and a lock judged
+   * on this tab's older copies of files it never changed answer "not locked"
+   * for a route the newest Theme locks.
    */
   const saveSourceConflicts = useCallback(async () => {
     const readFiles = () =>
       useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
-    useThemeWorkspaceStore
-      .getState()
-      .acceptRemoteGeneration(undefined, workspaceScope);
+    const acceptedGeneration = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getAcceptedSourceGeneration(workspaceScope);
+    /**
+     * The newest stored Theme, its generation accepted to send against; null,
+     * with the author told, when it cannot be read, or reads older than a save
+     * this tab has already seen land.
+     */
+    const readNewest = async (): Promise<{
+      files: readonly StorefrontThemeFileDTO[];
+      sourceGeneration: number;
+    } | null> => {
+      const atLeast = acceptedGeneration();
+      try {
+        const read = await queryClient.fetchQuery({
+          ...storefrontThemeFileQueries.tree(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ),
+          staleTime: 0,
+        });
+        if (
+          Number.isInteger(read.sourceGeneration) &&
+          read.sourceGeneration >= atLeast
+        ) {
+          useThemeWorkspaceStore
+            .getState()
+            .acceptRemoteGeneration(read.sourceGeneration, workspaceScope);
+          return read;
+        }
+      } catch {
+        // Told below.
+      }
+      toast.error(
+        "Your changes were not saved: the latest version of the Theme could not be read. Your changes are kept; try again.",
+      );
+      return null;
+    };
     setIsSavingSourceConflicts(true);
     try {
+      // Nothing is sent, and nothing discarded, without it: the edits stay
+      // unsaved and marked.
+      let newest = await readNewest();
+      if (!newest) return;
+      // Design structure edits still exactly as Design wrote them. Code mode
+      // tracks every unsaved file, these included, so it is told to leave
+      // them: they are checked against the structure lock below before they
+      // are sent. Only the author changing such a file in Code makes it
+      // theirs: then it no longer matches, and Code saves it. Code being
+      // open, or showing the file as unsaved, does not.
+      const conflicted = readFiles();
+      const designStructureEdits = new Map<string, string>();
+      for (const path of sourceConflictPaths(conflicted)) {
+        const content = conflicted[path]?.localContent;
+        if (
+          content !== undefined &&
+          designStructureEditsRef.current.get(path) === content
+        ) {
+          designStructureEdits.set(path, content);
+        }
+      }
       // Code mode keeps its own drafts, and its own record of which are
       // unsaved; saving through it is what clears that record. Whatever it
       // did not cover — an edit made in Design mode — goes through the same
       // save path directly.
-      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      await editorCodeWorkspaceRef.current?.saveAll({
+        confirmed: true,
+        leave: designStructureEdits,
+      });
       const files = readFiles();
-      // The newest stored Theme, asked for now: a Design structure edit was
-      // checked against the files this tab had, and the lock can change
-      // without its route file changing.
-      let newest: readonly StorefrontThemeFileDTO[] | null = null;
       for (const path of sourceConflictPaths(files)) {
         const content = files[path]?.localContent;
         if (content === undefined) continue;
         if (designStructureEditsRef.current.get(path) === content) {
-          newest ??= (
-            await queryClient.fetchQuery({
-              ...storefrontThemeFileQueries.tree(
-                workspaceScope.storefrontId,
-                workspaceScope.themeId,
-              ),
-              staleTime: 0,
-            })
-          ).files;
-          // The route as stored, among every other file as this tab would
-          // now save it: is a structure edit on it still allowed?
+          // A save in this run landed and moved the generation on: the read
+          // the lock would be judged on no longer matches what would be sent.
+          if (newest.sourceGeneration !== acceptedGeneration()) {
+            newest = await readNewest();
+            if (!newest) return;
+          }
+          // The route as stored, among the newest stored files, except where
+          // this tab holds an edit of its own not yet saved: is a structure
+          // edit on it still allowed? A file this tab never changed counts as
+          // stored, never as this tab's possibly older copy of it.
+          const current = readFiles();
           const locked = themeRouteStructureLock(
-            newest.map((file) => ({
-              ...file,
-              content:
-                file.path === path
-                  ? file.content
-                  : (files[file.path]?.localContent ?? file.content),
-            })),
+            newest.files.map((file) => {
+              const local = current[file.path];
+              return file.path !== path &&
+                local &&
+                (local.dirty || local.saveState !== "clean")
+                ? { ...file, content: local.localContent }
+                : file;
+            }),
             path,
           );
           if (locked) {
