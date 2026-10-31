@@ -174,16 +174,21 @@ describe("bounded recovery of SDK module routing failures", () => {
   });
 });
 
-describe("conditional request headers toward the container", () => {
+describe("revalidation headers toward the container", () => {
   // A 304 has no body, and a bodiless first response on a fresh pooled
   // container-port tunnel gets the next request on it closed
-  // (cloudflare/workerd#7597). Vite answers a read without these with 200.
-  const conditional = {
+  // (cloudflare/workerd#7597). Vite answers a module read without these
+  // with 200.
+  const revalidation = {
     "If-None-Match": '"v1"',
     "If-Modified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
+  };
+  // Not a cache shortcut: never removed, on any request.
+  const preconditions = {
     "If-Match": '"v1"',
     "If-Unmodified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
     "If-Range": '"v1"',
+    Range: "bytes=0-99",
   };
   const kept = {
     Accept: "text/javascript",
@@ -194,19 +199,16 @@ describe("conditional request headers toward the container", () => {
   };
 
   it.each([
-    ["/src/components/Hero.tsx", "GET"],
-    ["/@vite/client", "GET"],
-    ["/", "GET"],
-    ["/public/logo.png", "GET"],
-    ["/src/components/Hero.tsx", "HEAD"],
+    "/src/components/Hero.tsx",
+    "/@vite/client",
+    "/__morph-theme-preview__/src/styles/global.css",
   ])(
-    "drops them from %s %s and keeps every other header and the URL",
-    async (path, method) => {
+    "drops only If-None-Match and If-Modified-Since from the module read %s",
+    async (path) => {
       const input = new Request(`https://preview.example${path}?t=1`, {
-        method,
-        headers: { ...conditional, ...kept },
+        headers: { ...revalidation, ...preconditions, ...kept },
       });
-      const success = new Response(method === "HEAD" ? null : "body");
+      const success = new Response("body");
       const proxy = vi.fn().mockResolvedValue(success);
       expect(await proxyPreviewModuleRequest(input, proxy, vi.fn())).toBe(
         success,
@@ -214,11 +216,16 @@ describe("conditional request headers toward the container", () => {
       expect(proxy).toHaveBeenCalledTimes(1);
       const sent = proxy.mock.calls[0]![0] as Request;
       expect(sent.url).toBe(input.url);
-      expect(sent.method).toBe(method);
-      for (const name of Object.keys(conditional)) {
+      expect(sent.method).toBe("GET");
+      for (const name of Object.keys(revalidation)) {
         expect(sent.headers.has(name)).toBe(false);
       }
-      for (const [name, value] of Object.entries(kept)) {
+      // If-Range stays with Range: dropping one without the other would
+      // change what a partial read returns.
+      for (const [name, value] of Object.entries({
+        ...preconditions,
+        ...kept,
+      })) {
         expect(sent.headers.get(name)).toBe(value);
       }
       // The caller's request is not altered.
@@ -235,7 +242,7 @@ describe("conditional request headers toward the container", () => {
       .mockResolvedValueOnce(new Response("export default {}"));
     await proxyPreviewModuleRequest(
       new Request("https://preview.example/src/components/Hero.tsx", {
-        headers: { ...conditional, ...kept },
+        headers: { ...revalidation, ...kept },
       }),
       proxy,
       vi.fn().mockResolvedValue(undefined),
@@ -247,23 +254,34 @@ describe("conditional request headers toward the container", () => {
     }
   });
 
-  it.each(["POST", "PUT", "PATCH", "DELETE"])(
-    "keeps a %s request's preconditions, which guard the Theme's own write",
-    async (method) => {
-      const input = new Request("https://preview.example/api/item", {
+  it.each([
+    ["/", "GET"],
+    ["/products/hat", "GET"],
+    ["/public/logo.png", "GET"],
+    ["/api/item", "GET"],
+    ["/src/components/Hero.tsx", "HEAD"],
+    ["/api/item", "POST"],
+    ["/api/item", "PUT"],
+    ["/api/item", "DELETE"],
+  ])(
+    "sends %s %s on exactly as it came, every condition included",
+    async (path, method) => {
+      const input = new Request(`https://preview.example${path}`, {
         method,
-        headers: { ...conditional, ...kept },
-        body: method === "DELETE" ? undefined : "{}",
+        headers: { ...revalidation, ...preconditions, ...kept },
+        body: method === "POST" || method === "PUT" ? "{}" : undefined,
       });
-      const proxy = vi.fn().mockResolvedValue(new Response("done"));
+      const proxy = vi
+        .fn()
+        .mockResolvedValue(new Response(method === "HEAD" ? null : "done"));
       await proxyPreviewModuleRequest(input, proxy, vi.fn());
       expect(proxy.mock.calls).toEqual([[input]]);
     },
   );
 
-  it("sends a read with no conditional header on as it is", async () => {
+  it("sends a module read with no revalidation header on as it is", async () => {
     const input = new Request("https://preview.example/src/main.tsx", {
-      headers: kept,
+      headers: { ...preconditions, ...kept },
     });
     const proxy = vi.fn().mockResolvedValue(new Response("body"));
     await proxyPreviewModuleRequest(input, proxy, vi.fn());

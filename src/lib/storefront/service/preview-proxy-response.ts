@@ -3,18 +3,17 @@ import { isolateSvgResponse } from "../theme-svg-isolation";
 import { withoutPlatformCookies } from "./preview-proxy-credentials";
 import { previewRuntimeInterruptedResponse } from "./preview-runtime-interruption";
 
-/** Request headers that let the container answer a read with no body. */
-const CONDITIONAL_REQUEST_HEADERS = [
-  "if-none-match",
-  "if-modified-since",
-  "if-match",
-  "if-unmodified-since",
-  "if-range",
-] as const;
+/**
+ * The two request headers that make Vite answer a module read with an empty
+ * 304. Only these: `If-Match`, `If-Unmodified-Since` and `If-Range` are not a
+ * cache shortcut (dropping `If-Range` while `Range` stays would change what a
+ * partial read returns), and they are never removed.
+ */
+const MODULE_REVALIDATION_HEADERS = ["if-none-match", "if-modified-since"];
 
 /**
- * A read sent on to the container without its conditional headers, so Vite
- * answers 200 with the body rather than an empty 304.
+ * A module read sent on to the container without its revalidation headers,
+ * so Vite answers 200 with the body rather than an empty 304.
  *
  * workerd pools the tunnels behind `getTcpPort().fetch`; when a fresh
  * tunnel's first response has no body, the next request on it is closed right
@@ -26,15 +25,16 @@ const CONDITIONAL_REQUEST_HEADERS = [
  * instead of a 304. Vite's hashed dependencies are immutable and never
  * revalidated, so this is the Theme's own sources and Vite's client modules.
  *
- * Only GET and HEAD: a write's preconditions belong to the Theme's own API,
- * and dropping them would turn a guarded write into a blind one.
+ * Module GETs only (`moduleRead` below). The Theme's own routes, pages and
+ * files keep every condition they were sent with; a HEAD is bodiless whatever
+ * it is sent with, so this does nothing for HEAD.
  */
-function withoutConditionalHeaders(request: Request): Request {
-  if (request.method !== "GET" && request.method !== "HEAD") return request;
-  if (!CONDITIONAL_REQUEST_HEADERS.some((name) => request.headers.has(name)))
+function withoutModuleRevalidation(request: Request): Request {
+  if (!MODULE_REVALIDATION_HEADERS.some((name) => request.headers.has(name))) {
     return request;
+  }
   const headers = new Headers(request.headers);
-  for (const name of CONDITIONAL_REQUEST_HEADERS) headers.delete(name);
+  for (const name of MODULE_REVALIDATION_HEADERS) headers.delete(name);
   return new Request(request, { headers });
 }
 
@@ -81,7 +81,7 @@ export async function proxyPreviewModuleRequest(
         path.startsWith("/node_modules/.vite/") ||
         path.startsWith("/@id/")) &&
         /\.(?:[cm]?[jt]sx?|css)$/.test(path)));
-  const forwarded = withoutConditionalHeaders(request);
+  const forwarded = moduleRead ? withoutModuleRevalidation(request) : request;
   for (let attempt = 0; ; attempt++) {
     const response = await proxy(forwarded);
     if (!moduleRead || response?.status !== 500) return response;
