@@ -241,18 +241,28 @@ test.describe("a list whose rows are rendered by their own component", () => {
 });
 
 /**
- * Design's layers-panel Delete on a route's own markup, against the route's
- * sections (handoff/2026-10-31/guard-d-reorder-removal.md D3): in the Live
- * preview the route file's elements are listed under the route's own root and
- * their Delete is enabled. Deleting a plain wrapper that holds two section call
- * sites would remove both sections, so it is refused with the page-structure
- * message and nothing is written; deleting an ordinary element beside them is
- * saved, and a fresh load shows it gone with both sections still there.
- * visual-editor-shell-element-structure-guard.test.tsx is the unit-level
- * version of this route.
+ * Design element edits in the real Live Preview, against the route's
+ * sections (handoff/2026-10-31/guard-d-reorder-removal.md;
+ * visual-editor-shell-element-structure-guard.test.tsx is the shell-level
+ * version).
+ *
+ * b194679 tried to delete the route's own wrapper from the layers panel. In
+ * this Live Preview fixture the route's own markup is not listed in the
+ * panel, so that step never reached the guard (run kept in
+ * handoff/2026-10-31/guard-e2e-b194679/run1). The shell-level reproduction of
+ * that path stands; it is not claimed here. The two cases below are what a
+ * browser can show:
+ * - the ordinary operation: a layers-panel Delete of a plain element inside
+ *   a section component this page alone uses is saved, read back from the
+ *   stored source, and still gone after a reload;
+ * - a message-injection test, not a drag: a sibling reorder naming two
+ *   section call sites, posted from the real preview iframe with its own
+ *   envelope, is refused by the real shell; nothing is saved and the stored
+ *   route is unchanged.
  */
 const GUARD_ROUTE_PATH = "/element-guard";
 const GUARD_ROUTE_FILE = "src/routes/element-guard.tsx";
+const GUARD_HERO_FILE = "src/element-guard/GuardHero.tsx";
 const GUARD_SECTIONS = ["guard-hero", "guard-banner"] as const;
 const SECTIONS_MESSAGE = "Sections are managed from the page structure tree.";
 
@@ -264,13 +274,14 @@ export default function ${name}({ title = "${name} default" }: { title?: string 
   return (
     <section className="px-6 py-10">
       <h2 className="text-2xl font-semibold">{title}</h2>
+      <p className="${name.toLowerCase()}-note">${name} note</p>
     </section>
   );
 }
 `;
 
-// The wrapper is padded so that part of it is its own on the canvas: a click
-// inside the sections would select a section, not the wrapper.
+// Line numbers matter: the injected reorder names the two section call sites
+// by `line:column` of their opening tags (14:9 and 15:9).
 const GUARD_FILES = [
   {
     path: GUARD_ROUTE_FILE,
@@ -286,26 +297,24 @@ export const Route = createFileRoute("${GUARD_ROUTE_PATH}")({
 function ElementGuardRoute() {
   return (
     <main>
-      <div className="guard-stack" style={{ padding: "32px" }}>
+      <div className="guard-stack">
         <GuardHero {...content("${GUARD_SECTIONS[0]}")} />
         <GuardBanner {...content("${GUARD_SECTIONS[1]}")} />
       </div>
       <p className="guard-note">Plain note</p>
-      <small className="guard-fine">Fine print</small>
     </main>
   );
 }
 `,
   },
-  {
-    path: "src/element-guard/GuardHero.tsx",
-    content: guardSection("GuardHero"),
-  },
+  { path: GUARD_HERO_FILE, content: guardSection("GuardHero") },
   {
     path: "src/element-guard/GuardBanner.tsx",
     content: guardSection("GuardBanner"),
   },
 ];
+const HERO_CALL_SITE = "14:9";
+const BANNER_CALL_SITE = "15:9";
 
 /** A file as stored, read through the server function Code mode lists with. */
 async function storedSource(page: Page, scope: ThemeScope, path: string) {
@@ -345,7 +354,7 @@ async function openGuardRoute(page: Page) {
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
     timeout: 45_000,
   });
-  await expect(guardCanvas(page, "small.guard-fine")).toBeVisible({
+  await expect(guardCanvas(page, "p.guard-note")).toBeVisible({
     timeout: 90_000,
   });
 }
@@ -359,28 +368,22 @@ async function expectBothSections(page: Page) {
   }
 }
 
-/**
- * Selects `target` on the canvas, opens Delete from its own row in the layers
- * panel (the row the selection expanded to and marked), and presses Delete in
- * the confirmation. Returns the confirmation dialog.
- */
-async function deleteFromLayers(page: Page, target: string) {
-  expect(
-    await clickExposedElement(page, guardCanvas(page, target)),
-    `${target} was not exposed on the canvas`,
-  ).not.toBeNull();
-  const row = page.locator(
-    '[data-editor-tree-node-selected="true"] button[aria-current="true"]',
-  );
-  await expect(row).toBeVisible({ timeout: 15_000 });
-  await row.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Delete" }).click();
-  const dialog = page.getByRole("alertdialog");
-  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
-  return dialog;
+/** Records every source save the editor sends from now on. */
+function recordSourceSaves(page: Page) {
+  const saves: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      (isServerFunctionCall(request.url(), "saveStorefrontThemeFile") ||
+        isServerFunctionCall(request.url(), "saveStorefrontThemeFilesBatch"))
+    ) {
+      saves.push(request.url());
+    }
+  });
+  return saves;
 }
 
-test.describe("a Design delete of route markup around the route's sections", () => {
+test.describe("Design element edits around the route's sections, in the Live Preview", () => {
   test.describe.configure({ mode: "serial" });
 
   test.beforeAll(async ({ browser }) => {
@@ -403,21 +406,12 @@ test.describe("a Design delete of route markup around the route's sections", () 
     await page.context().close();
   });
 
-  test("the wrapper holding both sections is refused; an ordinary element is deleted, saved and stays deleted", async ({
+  test("a plain element inside this page's own section component is deleted from the layers panel, saved, and stays deleted", async ({
     page,
   }) => {
     test.setTimeout(180_000);
-    const sourceSaves: string[] = [];
-    page.on("request", (request) => {
-      if (
-        request.method() === "POST" &&
-        (isServerFunctionCall(request.url(), "saveStorefrontThemeFile") ||
-          isServerFunctionCall(request.url(), "saveStorefrontThemeFilesBatch"))
-      ) {
-        sourceSaves.push(request.url());
-      }
-    });
     await openGuardRoute(page);
+    // As the spec's other cases do: selection may already be on.
     if (
       await page
         .getByRole("button", { name: "Enable section selection" })
@@ -427,48 +421,143 @@ test.describe("a Design delete of route markup around the route's sections", () 
       await enableSelection(page);
     }
     await expectBothSections(page);
-    const before = await storedSource(page, scope!, GUARD_ROUTE_FILE);
-    expect(before).toContain('className="guard-stack"');
+    const heroBefore = await storedSource(page, scope!, GUARD_HERO_FILE);
+    const routeBefore = await storedSource(page, scope!, GUARD_ROUTE_FILE);
+    expect(heroBefore).toContain('className="guardhero-note"');
 
-    // The wrapper: refused with the page-structure message. The dialog stays
-    // open on a refusal, and nothing was sent to be saved.
-    const refused = await deleteFromLayers(page, "div.guard-stack");
-    await expect(
-      page.locator("[data-sonner-toast]").filter({ hasText: SECTIONS_MESSAGE }),
-    ).toBeVisible({ timeout: 10_000 });
-    await refused.getByRole("button", { name: "Cancel" }).click();
-    await expect(refused).toHaveCount(0);
-    expect(sourceSaves).toEqual([]);
-    expect(await storedSource(page, scope!, GUARD_ROUTE_FILE)).toBe(before);
-    await expect(guardCanvas(page, "div.guard-stack")).toBeVisible();
-    await expectBothSections(page);
-
-    // An ordinary element beside the wrapper: deleted and saved.
+    expect(
+      await clickExposedElement(page, guardCanvas(page, "p.guardhero-note")),
+      "the hero note was not exposed on the canvas",
+    ).not.toBeNull();
+    const row = page.locator(
+      '[data-editor-tree-node-selected="true"] button[aria-current="true"]',
+    );
+    await expect(row).toBeVisible({ timeout: 15_000 });
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
         isServerFunctionCall(response.url(), "saveStorefrontThemeFile"),
       { timeout: 30_000 },
     );
-    const dialog = await deleteFromLayers(page, "p.guard-note");
+    await row.click({ button: "right" });
+    await page.getByRole("menuitem", { name: /^Delete/ }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
     assertServerFnSuccess(await (await saved).text());
     await expect(dialog).toHaveCount(0);
-    const after = await storedSource(page, scope!, GUARD_ROUTE_FILE);
-    expect(after).not.toContain("guard-note");
-    expect(after).toContain('className="guard-stack"');
-    expect(after).toContain('className="guard-fine"');
-    for (const sectionId of GUARD_SECTIONS) {
-      expect(after).toContain(`{...content("${sectionId}")}`);
-    }
-    await expect(guardCanvas(page, "p.guard-note")).toHaveCount(0, {
+
+    const heroAfter = await storedSource(page, scope!, GUARD_HERO_FILE);
+    expect(heroAfter).not.toContain("guardhero-note");
+    expect(heroAfter).toContain("{title}");
+    expect(await storedSource(page, scope!, GUARD_ROUTE_FILE)).toBe(
+      routeBefore,
+    );
+    await expect(guardCanvas(page, "p.guardhero-note")).toHaveCount(0, {
       timeout: 30_000,
     });
+    await expect(guardCanvas(page, "p.guardbanner-note")).toBeVisible();
     await expectBothSections(page);
 
     // What was saved is what a fresh load renders.
     await openGuardRoute(page);
-    await expect(guardCanvas(page, "p.guard-note")).toHaveCount(0);
-    await expect(guardCanvas(page, "div.guard-stack")).toBeVisible();
+    await expect(guardCanvas(page, "p.guardhero-note")).toHaveCount(0);
+    await expect(guardCanvas(page, "p.guardbanner-note")).toBeVisible();
+    await expectBothSections(page);
+  });
+
+  test("message injection: a sibling reorder of two section call sites, posted from the real preview frame, is refused and saves nothing", async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await openGuardRoute(page);
+    // As the spec's other cases do: selection may already be on.
+    if (
+      await page
+        .getByRole("button", { name: "Enable section selection" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await enableSelection(page);
+    }
+    await expectBothSections(page);
+    const routeBefore = await storedSource(page, scope!, GUARD_ROUTE_FILE);
+    expect(routeBefore).toContain('{...content("guard-hero")}');
+
+    // The envelope the frame's own bridge stamps on its messages, read from
+    // one it sends when a section is clicked.
+    await page.evaluate(() => {
+      const captured = window as unknown as {
+        __guardEnvelope?: { previewSession: string; previewDocument: string };
+      };
+      window.addEventListener("message", (event) => {
+        const data = event.data as Record<string, unknown> | null;
+        if (
+          data &&
+          typeof data.previewSession === "string" &&
+          typeof data.previewDocument === "string"
+        ) {
+          captured.__guardEnvelope = {
+            previewSession: data.previewSession,
+            previewDocument: data.previewDocument,
+          };
+        }
+      });
+    });
+    expect(
+      await clickExposedElement(page, guardCanvas(page, "p.guardbanner-note")),
+    ).not.toBeNull();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __guardEnvelope?: unknown })
+              .__guardEnvelope ?? null,
+        ),
+      )
+      .not.toBeNull();
+    const envelope = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __guardEnvelope: {
+              previewSession: string;
+              previewDocument: string;
+            };
+          }
+        ).__guardEnvelope,
+    );
+
+    const saves = recordSourceSaves(page);
+    const editorOrigin = new URL(page.url()).origin;
+    const frame = page
+      .frames()
+      .find((candidate) => candidate !== page.mainFrame())!;
+    await frame.evaluate(
+      ({ message, envelope, editorOrigin }) => {
+        window.parent.postMessage({ ...message, ...envelope }, editorOrigin);
+      },
+      {
+        editorOrigin,
+        envelope,
+        message: {
+          type: "morph:storefront-preview-commit-sibling-reorder",
+          sectionId: GUARD_ROUTE_FILE,
+          sourceFilePath: GUARD_ROUTE_FILE,
+          draggedNodeId: HERO_CALL_SITE,
+          targetNodeId: BANNER_CALL_SITE,
+        },
+      },
+    );
+
+    // The refusal is the signal that the shell took the message and judged
+    // it; it is shown only on the path that returns before sending.
+    await expect(
+      page.locator("[data-sonner-toast]").filter({ hasText: SECTIONS_MESSAGE }),
+    ).toBeVisible({ timeout: 15_000 });
+    expect(saves).toEqual([]);
+    expect(await storedSource(page, scope!, GUARD_ROUTE_FILE)).toBe(
+      routeBefore,
+    );
     await expectBothSections(page);
   });
 });
