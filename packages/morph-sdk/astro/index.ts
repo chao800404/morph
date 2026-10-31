@@ -10,11 +10,14 @@
  *   on the public site, the preview Worker for the draft snapshot, the build's
  *   prerender wrapper for the sealed snapshot. A Theme never picks the source.
  * - Astro has no `getRequest()`, and a module a page imports does not see
- *   `Astro.request`. So the platform's middleware (`./middleware`, added by
- *   Morph's integration with `addMiddleware`, never by the author) runs each
- *   render inside `runWithMorphRequest`, and the reads take the request from
- *   that render's AsyncLocalStorage. Nothing about a request is kept at module
- *   scope, so two renders at once cannot see each other's source.
+ *   `Astro.request`. So the platform's middleware (theme-morph-sdk.ts, added
+ *   by Morph's integrations with `addMiddleware`, never by the author) runs
+ *   each render inside its own AsyncLocalStorage and hands that storage to
+ *   this entry with `useMorphRenders`; the reads take the request from it.
+ *   The storage is the platform's, not this package's, so the package names
+ *   no Node built-in (scripts/sdk-package-check.mjs). Nothing about a request
+ *   is kept at module scope, so two renders at once cannot see each other's
+ *   source.
  * - A read outside a render the platform wired, or a request without the
  *   header, fails with `no_content_source`; it never falls back to default
  *   content. (Reading published content on the author's own machine is
@@ -28,8 +31,6 @@
  * name to its own copy written into the workspace (`.morph/sdk/`); the Theme
  * does not carry or own these files.
  */
-import { AsyncLocalStorage } from "node:async_hooks";
-
 import { createMorphReader } from "../src/client";
 import { MorphError } from "../src/index";
 import type {
@@ -45,11 +46,22 @@ export * from "../src/index";
 /** The header the platform names a request's content source in. */
 export const MORPH_CONTENT_ORIGIN_HEADER = "x-morph-content-origin";
 
-const renders = new AsyncLocalStorage<Request>();
+/**
+ * Where the platform keeps each render's request: its AsyncLocalStorage, of
+ * which this entry needs only `getStore`.
+ */
+export interface MorphRenders {
+  getStore(): Request | undefined;
+}
 
-/** Runs `next` as the render of `request`; see the platform's middleware. */
-export function runWithMorphRequest<T>(request: Request, next: () => T): T {
-  return renders.run(request, next);
+let renders: MorphRenders | null = null;
+
+/**
+ * Called once by the platform's middleware, when it is loaded. The storage
+ * holds no request outside a render, so keeping it here keeps none either.
+ */
+export function useMorphRenders(source: MorphRenders): void {
+  renders = source;
 }
 
 /** The content origin a request may read: the platform's header only. */
@@ -64,7 +76,7 @@ export function contentOriginFor(request: Request): string {
  * next call, from this render or another, asks again.
  */
 export function morphForRequest(): Morph {
-  const request = renders.getStore();
+  const request = renders?.getStore();
   if (!request) throw new MorphError("no_content_source", null);
   return createMorphReader(
     { baseUrl: contentOriginFor(request) },

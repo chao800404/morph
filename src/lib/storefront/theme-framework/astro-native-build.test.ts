@@ -154,8 +154,11 @@ describe("the Worker config an Astro build wrote", () => {
 
 describe("an Astro build and @morph/sdk/astro", () => {
   it("carries the platform's SDK copy and names it in the build's identity", async () => {
-    const { themeMorphSdkFiles, themeMorphSdkSourceHash } =
-      await import("../compiler/theme-morph-sdk");
+    const {
+      themeMorphSdkAstroMiddlewareFile,
+      themeMorphSdkFiles,
+      themeMorphSdkSourceHash,
+    } = await import("../compiler/theme-morph-sdk");
     const { nativeAstroCompilerIdentity } =
       await import("./astro-native-build");
     const plan = planNativeAstroBuild(astroThemeFiles());
@@ -163,7 +166,10 @@ describe("an Astro build and @morph/sdk/astro", () => {
     const planned = new Map(
       plan.workspaceFiles.map((file) => [file.path, file.content]),
     );
-    for (const sdk of themeMorphSdkFiles()) {
+    for (const sdk of [
+      ...themeMorphSdkFiles(),
+      themeMorphSdkAstroMiddlewareFile(),
+    ]) {
       expect(planned.get(sdk.path), sdk.path).toBe(sdk.content);
     }
     expect(

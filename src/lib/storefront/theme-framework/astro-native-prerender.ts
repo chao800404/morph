@@ -1,6 +1,7 @@
 import {
   THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
   themeMorphSdkAliasesSource,
+  themeMorphSdkAstroMiddlewareFile,
   themeMorphSdkFiles,
 } from "../compiler/theme-morph-sdk";
 import {
@@ -126,6 +127,7 @@ export function astroPrerenderWorkspaceFiles(options: {
     },
     // The SDK the Theme reads content with (@morph/sdk/astro).
     ...themeMorphSdkFiles(),
+    themeMorphSdkAstroMiddlewareFile(),
   ];
 }
 

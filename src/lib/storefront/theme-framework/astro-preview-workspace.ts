@@ -1,6 +1,7 @@
 import {
   THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
   themeMorphSdkAliasesSource,
+  themeMorphSdkAstroMiddlewareFile,
   themeMorphSdkFiles,
 } from "../compiler/theme-morph-sdk";
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
@@ -389,6 +390,7 @@ export function planAstroPreviewWorkspace(
     },
     // The SDK the Theme reads content with, as every Start workspace has it.
     ...themeMorphSdkFiles(),
+    themeMorphSdkAstroMiddlewareFile(),
     ...GENERATED_PREVIEW_BRIDGE_SOURCES.map((module) => ({
       path: module.path,
       content: module.content,
