@@ -58,7 +58,7 @@ import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
 import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
 import {
-  applyDesignElementOperation,
+  resolveDesignElementOperation,
   DESIGN_ELEMENT_UNSAVED_MESSAGE,
   type DesignElementOperation,
 } from "@/lib/storefront/compiler/design-element-operation";
@@ -109,9 +109,12 @@ function sourceGenerationConflict(currentGeneration: number | null) {
  * the editor.
  *
  * The edit is recomputed from the stored file of one snapshot of the Theme
- * (`getSourceSnapshot`) with the same `applyDesignElementOperation` the
+ * (`getSourceSnapshot`) with the same `resolveDesignElementOperation` the
  * editor ran, judged against the sections that snapshot renders, and saved
- * only if it equals what was sent, with `expectedSourceGeneration` set to
+ * only if it equals what was sent. An undo is checked the other way round
+ * (`undoDesignElementEdit`): the edit, applied to the sent text, must give
+ * the stored file, and is judged on the sent text against the sections
+ * rendered now. Either way it is saved with `expectedSourceGeneration` set to
  * the snapshot's generation: anything that landed after the snapshot is
  * refused by the write's own CAS. The operation name only says which check
  * to run; it grants nothing. Every refusal writes nothing.
@@ -156,10 +159,11 @@ async function saveDesignElementOperation(
         { error: "FILE_VERSION_CONFLICT" },
       );
     }
-    const applied = applyDesignElementOperation(
+    const applied = resolveDesignElementOperation(
       snapshot.files,
       data.path,
       stored.content,
+      data.content,
       operation,
     );
     if (applied.status === "refused") {

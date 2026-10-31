@@ -108,13 +108,19 @@ export type CodeDefaultWriteProof = z.infer<typeof codeDefaultWriteProofSchema>;
 const elementKeySchema = z.string().trim().min(1).max(200);
 
 /** See `DesignElementOperation`; the server recomputes it, never trusts it. */
-export const designElementOperationSchema = z.discriminatedUnion("kind", [
+const designElementEditSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("remove-element"), targetKey: elementKeySchema }),
   z.object({
     kind: z.literal("swap-siblings"),
     firstKey: elementKeySchema,
     secondKey: elementKeySchema,
   }),
+]);
+
+export const designElementOperationSchema = z.union([
+  designElementEditSchema,
+  // The undo of an edit: the sent content is the text the edit was made on.
+  z.object({ kind: z.literal("undo"), edit: designElementEditSchema }),
 ]);
 
 function requireDesignElementOperationPairing(

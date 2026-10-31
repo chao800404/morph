@@ -34,6 +34,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  HISTORY_REPLAY_NOT_SAVED_MESSAGE,
   PENDING_DESIGN_WRITE_HELD_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -1181,5 +1182,118 @@ describe("text held behind a Design write still on its way (decision A)", () => 
     expect(savesOf(ROUTE_FILE)).toHaveLength(1);
     expect(sentSaves().some((sent) => sent.content === onTop)).toBe(false);
     expect(localContent()).toBe(newer);
+  });
+});
+
+describe("undo and redo of a Design element edit (decision A, Q2)", () => {
+  const undoKey = () =>
+    act(() => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+  const redoKey = () =>
+    act(() => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    });
+
+  it("undo goes as the undo of the Delete, redo as the Delete itself, each for the server to judge again", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+
+    undoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+    expect(savesOf(ROUTE_FILE)[1]).toMatchObject({
+      content: SOURCE,
+      operation: "design-element",
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
+    await waitFor(() => expect(localContent()).toBe(SOURCE));
+
+    redoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: deleted,
+      operation: "design-element",
+      designElement: REMOVE_NOTE,
+    });
+  });
+
+  it("an undo the server refuses is taken back and stays on the stack", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
+
+    undoKey();
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        `Could not undo: ${DESIGN_ELEMENT_SECTIONS_MESSAGE}`,
+      ),
+    );
+    // Taken back: the file holds the Delete again, as stored.
+    expect(localContent()).toBe(deleted);
+
+    // Still on the stack: the next press sends the undo again.
+    undoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: SOURCE,
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
+  });
+
+  it("an undo that does not land (a source conflict) stays on the stack, kept as the undo it is", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+    // The Delete landed at generation 5 (route v2); another tab moved the
+    // Theme to 6 by writing some other file.
+    saveThemeFile.mockImplementationOnce(async () => {
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () =>
+          ({
+            success: true,
+            message: "ok",
+            data: {
+              ...treeAt(6),
+              files: FILES.map((entry) =>
+                entry.path === ROUTE_FILE
+                  ? file(ROUTE_FILE, deleted, 2)
+                  : entry,
+              ),
+            },
+          }) as never,
+      );
+      return {
+        success: false,
+        error: "SOURCE_GENERATION_CONFLICT",
+        message:
+          "Remote source changes detected (current generation: 6): the theme working source was updated by another operation.",
+      };
+    });
+
+    undoKey();
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        `Could not undo: ${HISTORY_REPLAY_NOT_SAVED_MESSAGE}`,
+      ),
+    );
+    expect(workspaceFile()?.sourceConflict).toBe(true);
+
+    // Save my changes sends it as the undo, not as a plain save.
+    await press("Save my changes");
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: SOURCE,
+      operation: "design-element",
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
   });
 });
