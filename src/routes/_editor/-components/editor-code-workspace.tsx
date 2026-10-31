@@ -270,9 +270,20 @@ type EditorCodeWorkspaceProps = {
   dependencySourceRevisionId?: string;
 };
 
+export type EditorCodeSaveAllOptions = {
+  confirmed?: boolean;
+  /**
+   * Files not to save, by path, while what Code holds for them is still
+   * exactly the given text: a Design structure edit the caller checks before
+   * sending (see the shell's `saveSourceConflicts`). Once the author changes
+   * such a file in Code, it no longer matches and is saved as theirs.
+   */
+  leave?: ReadonlyMap<string, string>;
+};
+
 export type EditorCodeWorkspaceHandle = {
   /** `confirmed`: the author asked for this save (see `onSaveFile`). */
-  saveAll: (options?: { confirmed?: boolean }) => Promise<boolean>;
+  saveAll: (options?: EditorCodeSaveAllOptions) => Promise<boolean>;
   /** Flushes Monaco drafts before a consumer changes authoring mode. */
   flushPendingChanges: () => Promise<boolean>;
   /**
@@ -3211,7 +3222,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   autoSaveFileRef.current = handleAutoSaveFile;
 
   const handleSaveAll = useCallback(
-    async (options?: { confirmed?: boolean }): Promise<boolean> => {
+    async (options?: EditorCodeSaveAllOptions): Promise<boolean> => {
       if (saveInFlightRef.current) {
         const pending = pendingSavePromiseRef.current;
         if (!pending) return false;
@@ -3231,8 +3242,14 @@ const EditorCodeWorkspaceContent = forwardRef<
       }
       autoSaveTimersRef.current.clear();
       const dirtyPaths = combinedDirtyPathsRef.current;
+      const leave = options?.leave;
       const paths = combinedDirtyPathsRef.current.filter(
-        (path) => !externalConflictFiles?.[path],
+        (path) =>
+          !externalConflictFiles?.[path] &&
+          !(
+            leave?.has(path) &&
+            leave.get(path) === getCurrentEditorContent(path)
+          ),
       );
       if (paths.length === 0) return dirtyPaths.length === 0;
 
