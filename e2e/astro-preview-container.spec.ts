@@ -8,7 +8,7 @@ import {
   openEditor,
   serverFn,
   storefrontHarness,
-  writeDraftField,
+  writeDraftFieldRecordedAsStart,
 } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -82,8 +82,23 @@ async function heroDraft(page: Page) {
   throw new Error("no template has a hero section");
 }
 
-const setDraft = async (page: Page, value: string) =>
-  writeDraftField(page, scope!, await heroDraft(page), value);
+/**
+ * The hero's draft. Design writes are refused on an Astro Theme, so the
+ * harness records it as Start for this write (writeDraftFieldRecordedAsStart).
+ */
+const setDraft = async (
+  page: Page,
+  value: string,
+  harness: Parameters<typeof writeDraftFieldRecordedAsStart>[4],
+) =>
+  writeDraftFieldRecordedAsStart(
+    page,
+    scope!,
+    await heroDraft(page),
+    value,
+    harness,
+    "astro",
+  );
 
 const sync = (page: Page) =>
   serverFn(page, PREVIEW, "syncThemePreviewContent", scope) as Promise<Answer>;
@@ -158,7 +173,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
       { path: `src/pages${ROUTE}.astro`, content: PAGE },
     ]);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
-    await setDraft(page, a);
+    await setDraft(page, a, harness!);
 
     // 1. The editor starts the Live Preview: astro dev in the container,
     //    serving the draft it was started with.
@@ -167,7 +182,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     await expect.poll(async () => (await shown(frame)).body, { timeout: 120_000 }).toContain(a);
 
     // 2. B, written and synced: confirmed by the Worker, and then shown.
-    await setDraft(page, b);
+    await setDraft(page, b, harness!);
     const synced = await sync(page);
     expect(synced, JSON.stringify(synced)).toMatchObject({ success: true });
     const ticketB = synced.data!.ticket;
@@ -190,9 +205,9 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     //    too (preview-write-fence-sandbox.test.ts), but here the next page
     //    request was then interrupted by the platform in 2 of 2 runs (0 of 2
     //    one after the other); docs/astro-theme-plan.md 6.7, not located.
-    await setDraft(page, c);
+    await setDraft(page, c, harness!);
     const resultC = await sync(page);
-    await setDraft(page, d);
+    await setDraft(page, d, harness!);
     const resultD = await sync(page);
     expect(resultD, JSON.stringify(resultD)).toMatchObject({ success: true });
     expect(
@@ -207,7 +222,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
 
     // 5. The preview stopped and started again: a new dev server, the
     //    latest draft, and tickets that keep counting.
-    await setDraft(page, e);
+    await setDraft(page, e, harness!);
     const stopped = (await serverFn(page, PREVIEW, "stopThemePreviewServer", scope)) as Answer;
     expect(stopped.success, JSON.stringify(stopped)).toBe(true);
     await openEditor(page);

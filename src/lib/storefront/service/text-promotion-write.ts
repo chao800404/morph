@@ -149,6 +149,7 @@ export async function promoteTextToField(input: TextPromotionWriteInput) {
   }
 
   const source = resolveSectionSourceComponent({
+    framework: context.theme.framework,
     templateType: template.type,
     templateRoutePath: template.routePath,
     sectionId: input.sectionId,
