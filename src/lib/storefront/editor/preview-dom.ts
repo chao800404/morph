@@ -285,6 +285,140 @@ export const PREVIEW_SECTION_ROOT_SELECTOR =
   "[data-storefront-section-id],[data-morph-section],[data-morph-component]";
 
 /** Section identity, preferring the Document binding when both are present. */
+/**
+ * L1.5a (docs/astro-theme-plan.md 3.6.2.2): an Astro Live Preview has no
+ * Document sections, so an element is selected by its source location alone.
+ * Set by that preview's client only; every other preview is unchanged.
+ */
+type PreviewSourceSelection = Readonly<{ nonce: string }>;
+
+function previewSourceSelection(): PreviewSourceSelection | null {
+  const value = (globalThis as { __morphPreviewSourceSelection?: unknown })
+    .__morphPreviewSourceSelection;
+  if (!value || typeof value !== "object") return null;
+  const nonce = (value as { nonce?: unknown }).nonce;
+  return typeof nonce === "string" && /^[0-9a-f]{16}$/.test(nonce)
+    ? { nonce }
+    : null;
+}
+
+/** Selection identity of a source-located element: its file, not an instance. */
+export const PREVIEW_SOURCE_SECTION_PREFIX = "source:";
+
+function sourceSelectionSectionId(location: string | undefined): string | null {
+  if (!location || !previewSourceSelection()) return null;
+  const file = location.replace(/:\d+:\d+$/, "");
+  return file !== location && file.startsWith("src/")
+    ? `${PREVIEW_SOURCE_SECTION_PREFIX}${file}`
+    : null;
+}
+
+const PREVIEW_BOUNDARY_MARKER =
+  /^(\/?)morph:s ([0-9a-f]{16}):([0-9a-f]{8}):(\d{1,6})$/;
+
+export type PreviewBoundaryReport = Readonly<{
+  /** `<nonce>:<source hash>:<n>`, or null outside every boundary. */
+  marker: string | null;
+  /** Whether the range is one the canvas may select. Never a binding. */
+  selectable: boolean;
+  /** Why not: outside, unpaired, crossing, duplicate, empty, split-inside. */
+  reason: string | null;
+}>;
+
+/**
+ * The boundary candidate an element sits in, judged on the DOM as it is.
+ *
+ * Markers with another nonce are ignored, not trusted and not counted. A range
+ * is selectable only when its opening and closing comments share a parent,
+ * nest cleanly, occur once in the document and enclose an element; anything
+ * else is reported as not selectable, never repaired.
+ */
+export function previewSourceBoundaryOf(
+  element: Element,
+): PreviewBoundaryReport | null {
+  const mode = previewSourceSelection();
+  if (!mode) return null;
+  const read = (node: Node) => {
+    if (node.nodeType !== 8) return null;
+    const match = PREVIEW_BOUNDARY_MARKER.exec((node as Comment).data);
+    if (!match || match[2] !== mode.nonce) return null;
+    return { close: match[1] === "/", id: `${match[2]}:${match[3]}:${match[4]}` };
+  };
+  // A level passed on the way up that holds a marker without its partner had
+  // a range split by the browser (a block inside `<p>`, a row moved into a
+  // tbody): the enclosing candidate then holds content of a range it cannot
+  // see, so it is reported but never selectable.
+  let splitInside = false;
+  for (let node: Node | null = element; node?.parentNode; node = node.parentNode) {
+    const closedBefore = new Set<string>();
+    for (let sibling = node.previousSibling; sibling; sibling = sibling.previousSibling) {
+      const marker = read(sibling);
+      if (!marker) continue;
+      if (marker.close) {
+        closedBefore.add(marker.id);
+        continue;
+      }
+      if (closedBefore.delete(marker.id)) continue;
+      const judged = judgeBoundary(sibling, marker.id, read);
+      return splitInside && judged.selectable
+        ? { ...judged, selectable: false, reason: "split-inside" }
+        : judged;
+    }
+    if (!levelIsBalanced(node.parentNode, read)) splitInside = true;
+  }
+  return { marker: null, selectable: false, reason: "outside" };
+}
+
+function levelIsBalanced(
+  parent: Node,
+  read: (node: Node) => { close: boolean; id: string } | null,
+): boolean {
+  const open: string[] = [];
+  for (let child = parent.firstChild; child; child = child.nextSibling) {
+    const marker = read(child);
+    if (!marker) continue;
+    if (!marker.close) open.push(marker.id);
+    else if (open.pop() !== marker.id) return false;
+  }
+  return open.length === 0;
+}
+
+function judgeBoundary(
+  open: Node,
+  id: string,
+  read: (node: Node) => { close: boolean; id: string } | null,
+): PreviewBoundaryReport {
+  const refuse = (reason: string) => ({ marker: id, selectable: false, reason });
+  const stack: string[] = [];
+  let elements = 0;
+  let closed = false;
+  for (let sibling = open.nextSibling; sibling; sibling = sibling.nextSibling) {
+    const marker = read(sibling);
+    if (!marker) {
+      if (sibling.nodeType === 1) elements++;
+      continue;
+    }
+    if (marker.id === id) {
+      if (!marker.close) return refuse("duplicate");
+      if (stack.length > 0) return refuse("crossing");
+      closed = true;
+      break;
+    }
+    if (!marker.close) stack.push(marker.id);
+    else if (stack.pop() !== marker.id) return refuse("crossing");
+  }
+  if (!closed) return refuse("unpaired");
+  let opens = 0;
+  const walker = document.createTreeWalker(document, NodeFilter.SHOW_COMMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const marker = read(node);
+    if (marker && !marker.close && marker.id === id) opens++;
+  }
+  if (opens !== 1) return refuse("duplicate");
+  if (elements === 0) return refuse("empty");
+  return { marker: id, selectable: true, reason: null };
+}
+
 export function previewSectionIdOf(element: HTMLElement): string | undefined {
   return (
     element.dataset.storefrontSectionId ??
@@ -889,7 +1023,9 @@ export const selectionMetadata = (item: SelectableInfo) => {
     sourceFilePath:
       sourceElement?.dataset.morphSourceFile ??
       item.section?.dataset.morphSourceFile ??
-      null,
+      (item.sectionId?.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
+        ? item.sectionId.slice(PREVIEW_SOURCE_SECTION_PREFIX.length)
+        : null),
     tagName: item.tagName,
     role: item.role,
     inputType: item.inputType,
@@ -1176,7 +1312,9 @@ const resolveSelectableElement = (
       element: morphEl,
       section: sectionEl,
       sourceLocation: morphEl.dataset.morphLoc ?? null,
-      sectionId: sectionEl ? (previewSectionIdOf(sectionEl) ?? null) : null,
+      sectionId: sectionEl
+        ? (previewSectionIdOf(sectionEl) ?? null)
+        : sourceSelectionSectionId(morphEl.dataset.morphLoc),
       type: selectableType,
       label: getComponentDisplayName(selectableType),
       elementKey,

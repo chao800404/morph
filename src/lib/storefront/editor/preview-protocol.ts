@@ -381,6 +381,23 @@ export type EditorToPreviewMessage =
       value: string;
     };
 
+/** L1.5a (docs/astro-theme-plan.md 3.6.2.2). */
+export type PreviewSelectionBoundary = Readonly<{
+  marker: string | null;
+  selectable: boolean;
+  reason: string | null;
+}>;
+
+function isNullablePreviewBoundary(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (!isRecord(value)) return false;
+  return (
+    isNullableBoundedString(value.marker, 40) &&
+    typeof value.selectable === "boolean" &&
+    isNullableBoundedString(value.reason, 40)
+  );
+}
+
 export type PreviewSelectionMessage = {
   type: "morph:storefront-preview-select-section";
   sectionId: string;
@@ -390,6 +407,18 @@ export type PreviewSelectionMessage = {
   sourceFilePath: string | null;
   /** `file:line:column`, present when the preview could annotate the element. */
   sourceLocation?: string | null;
+  /**
+   * L1.5a (docs/astro-theme-plan.md 3.6.2.2): the source version the
+   * location belongs to, when the preview recorded one.
+   */
+  sourceVersion?: string | null;
+  /** L1.5a: the boundary candidate the element sits in. Never a binding. */
+  previewBoundary?: PreviewSelectionBoundary | null;
+  /**
+   * L1.5a: `enclosing` when the click landed where nothing is located
+   * (inside an island) and the element around it was selected instead.
+   */
+  locatedAt?: "enclosing" | null;
   elementKey: string | null;
   fieldKey: string | null;
   field: string | null;
@@ -1503,6 +1532,14 @@ export function parsePreviewToEditorMessage(
         !isNullableBoundedString(value.sourceFilePath, 1_000) ||
         (value.sourceLocation !== undefined &&
           !isNullableBoundedString(value.sourceLocation, 400)) ||
+        (value.sourceVersion !== undefined &&
+          !isNullableBoundedString(value.sourceVersion, 16)) ||
+        !isNullablePreviewBoundary(value.previewBoundary) ||
+        !(
+          value.locatedAt === undefined ||
+          value.locatedAt === null ||
+          value.locatedAt === "enclosing"
+        ) ||
         !isNullableBoundedString(value.elementKey, 200) ||
         !isNullableBoundedString(value.fieldKey, 200) ||
         !isNullableBoundedString(value.field, 200) ||
@@ -1548,6 +1585,15 @@ export function parsePreviewToEditorMessage(
         nodeId: value.nodeId,
         sourceFilePath: value.sourceFilePath,
         sourceLocation: value.sourceLocation ?? null,
+        sourceVersion: value.sourceVersion ?? null,
+        locatedAt: value.locatedAt === "enclosing" ? "enclosing" : null,
+        previewBoundary: isRecord(value.previewBoundary)
+          ? {
+              marker: (value.previewBoundary.marker as string | null) ?? null,
+              selectable: value.previewBoundary.selectable === true,
+              reason: (value.previewBoundary.reason as string | null) ?? null,
+            }
+          : null,
         elementKey: value.elementKey,
         fieldKey: value.fieldKey,
         field: value.field,
