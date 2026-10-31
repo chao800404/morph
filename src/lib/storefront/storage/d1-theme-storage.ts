@@ -569,6 +569,8 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
   },
   getSourceGeneration: (...args) =>
     storefrontThemeFileDal.getSourceGeneration(...args),
+  getSourceSnapshot: (...args) =>
+    storefrontThemeFileDal.getSourceSnapshot(...args),
 };
 
 /**

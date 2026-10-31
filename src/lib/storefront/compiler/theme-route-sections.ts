@@ -568,6 +568,78 @@ export function themeRouteStructureLock(
 }
 
 /**
+ * What cutting out or moving these `[start, end)` ranges of a file does to
+ * the sections that file renders.
+ *
+ * For Design's ordinary element edits (layers-panel delete, sibling
+ * reorder), which rewrite a whole JSX element and everything inside it. A
+ * section call site, bound or still a Bind candidate, that lies inside a
+ * range goes with it, so the edit changes the page's section structure
+ * even when the element it names is a plain `<div>` around the sections.
+ * Such an edit belongs to the structure tree, whatever the route's lock
+ * says.
+ *
+ * `unknown` when the file cannot be analysed or the analysis is unsure of
+ * its sections (any diagnostic): Design cannot tell what the edit touches.
+ * Sections are found by the same analysis as everywhere else, never by
+ * component name.
+ */
+export type ElementEditSectionEffect =
+  | Readonly<{ kind: "clear" }>
+  | Readonly<{ kind: "sections"; sections: readonly string[] }>
+  | Readonly<{ kind: "unknown"; reason: string }>;
+
+export function sectionEffectOfElementEdit(
+  files: readonly ThemeSourceFile[],
+  filePath: string,
+  spans: readonly Readonly<{ start: number; end: number }>[],
+): ElementEditSectionEffect {
+  let parsed: ReturnType<typeof parsePositionedSections>;
+  try {
+    parsed = parsePositionedSections(files, filePath);
+  } catch (error) {
+    return {
+      kind: "unknown",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!parsed.ast || parsed.diagnostics.length > 0) {
+    return {
+      kind: "unknown",
+      reason: parsed.diagnostics[0] ?? `${filePath} could not be analysed.`,
+    };
+  }
+  const inside = (start: unknown, end: unknown) =>
+    typeof start === "number" &&
+    typeof end === "number" &&
+    spans.some((span) => start >= span.start && end <= span.end);
+  const touched = [
+    ...parsed.sections
+      .filter((section) => inside(section.node?.start, section.node?.end))
+      .map((section) => section.slotId),
+    ...parsed.unboundSections
+      .filter((section) => inside(section.sourceStart, section.sourceEnd))
+      .map((section) => section.sourceLocation),
+  ];
+  // A section the analysis knows but cannot place is not proven untouched.
+  if (
+    parsed.sections.some(
+      (section) =>
+        typeof section.node?.start !== "number" ||
+        typeof section.node?.end !== "number",
+    )
+  ) {
+    return {
+      kind: "unknown",
+      reason: `${filePath} has a section whose position is unknown.`,
+    };
+  }
+  return touched.length > 0
+    ? { kind: "sections", sections: touched }
+    : { kind: "clear" };
+}
+
+/**
  * Derives section identity and order from the route's rendered JSX. The
  * Document is deliberately absent: it supplies values, never structure.
  */

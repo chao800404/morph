@@ -3,7 +3,11 @@ import { act, render, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveThemeRouteSections } from "@/lib/storefront/compiler/theme-route-sections";
+import {
+  deriveThemeRouteSections,
+  themeRouteStructureLock,
+} from "@/lib/storefront/compiler/theme-route-sections";
+import { DESIGN_ELEMENT_SECTIONS_MESSAGE } from "@/lib/storefront/compiler/design-element-operation";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import {
   postEditorToPreviewMessage,
@@ -29,21 +33,23 @@ import { themePreviewServerQueries } from "../-queries/theme-preview-server.quer
 import { VisualEditorShell } from "./visual-editor-shell";
 
 /**
- * Reproductions for the Design structure guard (handoff/2026-10-31/
- * guard-d-reorder-removal.md D3 and R3; server-structure-guard-proposal.md,
- * user decisions E).
+ * Design's ordinary element edits and the route's section structure
+ * (handoff/2026-10-31/guard-d-reorder-removal.md D3 and R3;
+ * server-structure-guard-proposal.md, user decisions E).
  *
- * The route renders two sections inside a plain wrapper `<div>`, and two
- * ordinary elements after it. Design's ordinary element operations, the
- * layers-panel Delete and the canvas sibling reorder, rewrite the route file
+ * The open route renders two sections inside a plain wrapper `<div>` and two
+ * ordinary elements after it; the locked route reads its one section through
+ * its loader. The layers-panel Delete and the canvas sibling reorder run
  * through the shell's real handlers; only server functions and the preview
- * transport are mocked. Section structure is read with the real analysis,
- * `deriveThemeRouteSections`, not with component names.
+ * transport are mocked, so these tests show what the shell sends, not what
+ * the database accepts (storefront-theme-files-design-element.test.ts covers
+ * the server on real SQL). Sections are read with the real analysis,
+ * `deriveThemeRouteSections`, never with component names.
  *
- * The tests named "today:" record what the shell does now. They are the
- * reproduction and are inverted by the fix: an ordinary element operation that
- * deletes or reorders a section call site, or an ancestor that wraps one, is
- * refused and nothing is written.
+ * 830b51c reproduced the two refusals below as saves that removed or swapped
+ * the sections. An edit that deletes or moves a section call site, or an
+ * element containing one, is refused before anything is sent; an edit of
+ * ordinary elements only is still saved, on a locked route too.
  */
 
 const EDITOR_ORIGIN = "http://localhost:3000";
@@ -125,9 +131,6 @@ vi.mock("./editor-sections-panel", async (importOriginal) => {
   };
 });
 
-const ROUTE_PATH = "/guard";
-const ROUTE_FILE = "src/routes/guard.tsx";
-
 const sectionComponent = (name: string) => `export const contentFields = {
   title: { type: "text", label: "${name} title" },
 } as const;
@@ -140,14 +143,26 @@ export default function ${name}({ title = "${name} default" }: { title?: string 
   );
 }
 `;
+type Fixture = Readonly<{
+  routePath: string;
+  routeFile: string;
+  templateId: string;
+  source: string;
+  at: Readonly<Record<string, string>>;
+}>;
+
 // Line numbers matter: the tests name elements by `line:column` of their
 // opening tag, as the preview does for unmarked elements.
-const ROUTE_SOURCE = `import { createFileRoute } from "@tanstack/react-router";
+const OPEN: Fixture = {
+  routePath: "/guard",
+  routeFile: "src/routes/guard.tsx",
+  templateId: "template-guard",
+  source: `import { createFileRoute } from "@tanstack/react-router";
 import { content } from "../morph/content";
 import GuardHero from "../components/sections/GuardHero";
 import GuardBanner from "../components/sections/GuardBanner";
 
-export const Route = createFileRoute("${ROUTE_PATH}")({
+export const Route = createFileRoute("/guard")({
   component: GuardRoute,
 });
 
@@ -163,14 +178,50 @@ function GuardRoute() {
     </main>
   );
 }
+`,
+  at: {
+    wrapper: "13:7",
+    hero: "14:9",
+    banner: "15:9",
+    note: "17:7",
+    fine: "18:7",
+  },
+};
+
+/** A route whose section comes from its loader: its structure is locked. */
+const LOCKED: Fixture = {
+  routePath: "/guard-locked",
+  routeFile: "src/routes/guard-locked.tsx",
+  templateId: "template-guard-locked",
+  source: `import { createFileRoute } from "@tanstack/react-router";
+import GuardHero from "../components/sections/GuardHero";
+import { getGuardPage } from "../server/guard";
+
+export const Route = createFileRoute("/guard-locked")({
+  loader: () => getGuardPage(),
+  component: GuardLockedRoute,
+});
+
+function GuardLockedRoute() {
+  const page = Route.useLoaderData();
+  return (
+    <main>
+      <GuardHero {...page.hero} />
+      <p className="note">Plain note</p>
+      <small className="fine">Fine print</small>
+    </main>
+  );
+}
+`,
+  at: { hero: "14:7", note: "15:7", fine: "16:7" },
+};
+const LOCKED_DATA = `import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+
+export const getGuardPage = createServerFn().handler(() =>
+  morph.pages.get("/guard-locked"),
+);
 `;
-const AT = {
-  wrapper: "13:7",
-  hero: "14:9",
-  banner: "15:9",
-  note: "17:7",
-  fine: "18:7",
-} as const;
 
 const file = (path: string, content: string, version = 1) => ({
   id: `file-${path}`,
@@ -207,7 +258,9 @@ const FILES = [
     "src/components/sections/GuardBanner.tsx",
     sectionComponent("GuardBanner"),
   ),
-  file(ROUTE_FILE, ROUTE_SOURCE),
+  file("src/server/guard.ts", LOCKED_DATA),
+  file(OPEN.routeFile, OPEN.source),
+  file(LOCKED.routeFile, LOCKED.source),
 ];
 const TREE = {
   files: FILES,
@@ -229,6 +282,17 @@ const TREE = {
   latestPublishedRevision: null,
 };
 
+const pageTemplate = (fixture: Fixture) => ({
+  id: fixture.templateId,
+  type: "page",
+  name: fixture.routePath,
+  routePath: fixture.routePath,
+  document: { version: 1, sections: [] },
+  draftRevisionId: null,
+  publishedRevisionId: null,
+  draftGeneration: 1,
+  version: 1,
+});
 const context = {
   previewChannel: { editorOrigin: EDITOR_ORIGIN, sessionId: PREVIEW_SESSION },
   storefront: {
@@ -247,26 +311,10 @@ const context = {
       draftGeneration: 1,
       version: 1,
     },
-    {
-      id: "template-guard",
-      type: "page",
-      name: "Guard",
-      routePath: ROUTE_PATH,
-      document: { version: 1, sections: [] },
-      draftRevisionId: null,
-      publishedRevisionId: null,
-      draftGeneration: 1,
-      version: 1,
-    },
+    pageTemplate(OPEN),
+    pageTemplate(LOCKED),
   ],
 } as unknown as StorefrontThemeEditorDTO;
-
-const search = {
-  template: "page",
-  templateId: "template-guard",
-  routePath: ROUTE_PATH,
-  viewport: "desktop",
-} as StorefrontThemeEditorSearch;
 
 type Posted = { type: string; routeRequestId?: number };
 let log: Posted[] = [];
@@ -290,8 +338,18 @@ const tick = (ms = 20) =>
     await new Promise((resolve) => setTimeout(resolve, ms));
   });
 
-/** Renders the route page and brings the frame up on it. */
-async function settled() {
+/** The route's sections, as the real analysis reads them from `source`. */
+function sectionIds(fixture: Fixture, source: string) {
+  const files = FILES.map((entry) =>
+    entry.path === fixture.routeFile ? { ...entry, content: source } : entry,
+  );
+  return deriveThemeRouteSections(files, fixture.routeFile).sections.map(
+    (section) => section.slotId,
+  );
+}
+
+/** Renders the fixture's page and brings the frame up on it. */
+async function settled(fixture: Fixture) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -311,9 +369,16 @@ async function settled() {
     <QueryClientProvider client={client}>
       <VisualEditorShell
         context={context}
-        search={search}
+        search={
+          {
+            template: "page",
+            templateId: fixture.templateId,
+            routePath: fixture.routePath,
+            viewport: "desktop",
+          } as StorefrontThemeEditorSearch
+        }
         onSearchChange={vi.fn()}
-        navigatingRoutePath={ROUTE_PATH}
+        navigatingRoutePath={fixture.routePath}
       />
     </QueryClientProvider>,
   );
@@ -332,80 +397,84 @@ async function settled() {
   fromPreview({
     type: "morph:storefront-preview-route-applied",
     routeRequestId: request?.routeRequestId,
-    routePath: ROUTE_PATH,
+    routePath: fixture.routePath,
   });
   fromPreview({
     type: "morph:storefront-preview-structure",
     nodes: [],
-    routePath: ROUTE_PATH,
+    routePath: fixture.routePath,
   });
-  await tick(50);
-  // Precondition: both sections are in the route, in this order.
-  expect(sectionIds(ROUTE_SOURCE)).toEqual(["hero", "banner"]);
   await waitFor(() =>
     expect(lastSectionsPanelProps?.onDeleteEditableNode).toBeTypeOf("function"),
-  );
-}
-
-/** The route's sections as the real analysis reads them from `content`. */
-function sectionIds(routeSource: string) {
-  const files = FILES.map((entry) =>
-    entry.path === ROUTE_FILE ? { ...entry, content: routeSource } : entry,
-  );
-  return deriveThemeRouteSections(files, ROUTE_FILE).sections.map(
-    (section) => section.slotId,
   );
 }
 
 const sentSaves = () =>
   saveThemeFile.mock.calls.map(
     ([request]) =>
-      (request as { data: { path: string; content: string } }).data,
+      (
+        request as {
+          data: {
+            path: string;
+            content: string;
+            operation?: string;
+            designElement?: unknown;
+          };
+        }
+      ).data,
   );
+const localContent = (fixture: Fixture) =>
+  useThemeWorkspaceStore
+    .getState()
+    .getWorkspaceFiles("storefront-1", "theme-1")[fixture.routeFile]
+    ?.localContent ?? fixture.source;
 
 /**
  * A layers-panel row for a route-file element under the route's own root, as
  * the Live preview reports it (guard-d-reorder-removal.md D3): its section is
  * the route source itself.
  */
-const routeElement = (key: keyof typeof AT): PreviewEditableNode => ({
+const routeElement = (fixture: Fixture, key: string): PreviewEditableNode => ({
   id: `route:${key}`,
   parentId: null,
-  sectionId: ROUTE_FILE,
+  sectionId: fixture.routeFile,
   label: key,
   kind: "custom",
-  tagName: key === "wrapper" ? "div" : key === "note" ? "p" : "small",
+  tagName: "div",
   target: {
-    sectionId: ROUTE_FILE,
-    sourceLocation: `${ROUTE_FILE}:${AT[key]}`,
+    sectionId: fixture.routeFile,
+    sourceLocation: `${fixture.routeFile}:${fixture.at[key]}`,
     isSection: false,
   },
 });
 
-async function deleteFromPanel(key: keyof typeof AT) {
+/** The panel's confirmed Delete; resolves with the shell's own answer. */
+async function deleteFromPanel(fixture: Fixture, key: string) {
   let result: unknown;
   await act(async () => {
     result = await lastSectionsPanelProps!.onDeleteEditableNode!(
-      routeElement(key),
+      routeElement(fixture, key),
     );
   });
-  await tick(100);
   return result as { success: boolean; message?: string };
 }
 
-async function siblingReorderFromFrame(
-  dragged: keyof typeof AT,
-  target: keyof typeof AT,
+function siblingReorderFromFrame(
+  fixture: Fixture,
+  dragged: string,
+  target: string,
 ) {
   fromPreview({
     type: "morph:storefront-preview-commit-sibling-reorder",
-    sectionId: ROUTE_FILE,
-    sourceFilePath: ROUTE_FILE,
-    draggedNodeId: AT[dragged],
-    targetNodeId: AT[target],
+    sectionId: fixture.routeFile,
+    sourceFilePath: fixture.routeFile,
+    draggedNodeId: fixture.at[dragged],
+    targetNodeId: fixture.at[target],
   });
-  await tick(100);
 }
+
+const warned = (message: string) =>
+  vi.mocked(toast.warning).mock.calls.some((call) => call[0] === message);
 
 beforeEach(() => {
   log = [];
@@ -502,52 +571,122 @@ afterEach(() => {
 });
 
 describe("Design element operations and the route's section structure", () => {
-  it("today: deleting a wrapper that contains sections reaches the save and removes both sections", async () => {
-    await settled();
-    const result = await deleteFromPanel("wrapper");
-
-    expect(result.success).toBe(true);
-    expect(sentSaves()).toHaveLength(1);
-    const [saved] = sentSaves();
-    expect(saved?.path).toBe(ROUTE_FILE);
-    expect(sectionIds(saved!.content)).toEqual([]);
-    expect(saved!.content).toContain('<p className="note">');
-  });
-
-  it("deleting an ordinary element that wraps no section is saved, sections unchanged", async () => {
-    await settled();
-    const result = await deleteFromPanel("note");
-
-    expect(result.success).toBe(true);
-    expect(sentSaves()).toHaveLength(1);
-    const [saved] = sentSaves();
-    expect(saved?.path).toBe(ROUTE_FILE);
-    expect(saved!.content).not.toContain("Plain note");
-    expect(sectionIds(saved!.content)).toEqual(["hero", "banner"]);
-  });
-
-  it("reordering two ordinary siblings is saved, sections unchanged", async () => {
-    await settled();
-    await siblingReorderFromFrame("note", "fine");
-
-    expect(sentSaves()).toHaveLength(1);
-    const [saved] = sentSaves();
-    expect(saved!.content.indexOf("Fine print")).toBeLessThan(
-      saved!.content.indexOf("Plain note"),
+  it("precondition: the open route has two sections and no lock; the loader route has one and is locked", () => {
+    expect(sectionIds(OPEN, OPEN.source)).toEqual(["hero", "banner"]);
+    expect(themeRouteStructureLock(FILES, OPEN.routeFile)).toBeNull();
+    expect(sectionIds(LOCKED, LOCKED.source)).toHaveLength(1);
+    expect(themeRouteStructureLock(FILES, LOCKED.routeFile)).toMatch(
+      /route loader/,
     );
-    expect(sectionIds(saved!.content)).toEqual(["hero", "banner"]);
   });
 
-  it("today: a sibling reorder message naming two section call sites reaches the save and swaps the sections", async () => {
+  // Reproduced by 830b51c: this delete reached the save and removed both.
+  it("deleting a wrapper that contains sections is refused: nothing is sent, the route and its sections are unchanged", async () => {
+    await settled(OPEN);
+    const result = await deleteFromPanel(OPEN, "wrapper");
+
+    expect(result).toEqual({
+      success: false,
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    });
+    expect(sentSaves()).toEqual([]);
+    expect(localContent(OPEN)).toBe(OPEN.source);
+    expect(sectionIds(OPEN, localContent(OPEN))).toEqual(["hero", "banner"]);
+  });
+
+  // Reproduced by 830b51c: this message reached the save and swapped them.
+  it("a sibling reorder message naming two section call sites is refused: nothing is sent, the order is unchanged", async () => {
     // Not a message the bridge produces for this page (a section root reorders
-    // through the section list, guard-d-reorder-removal.md R1); the shell takes
-    // the iframe's file path and keys as given (R3).
-    await settled();
-    await siblingReorderFromFrame("hero", "banner");
+    // through the section list, guard-d-reorder-removal.md R1); the shell no
+    // longer takes the iframe's file path and keys as an ordinary reorder (R3).
+    await settled(OPEN);
+    siblingReorderFromFrame(OPEN, "hero", "banner");
+    await waitFor(() =>
+      expect(warned(DESIGN_ELEMENT_SECTIONS_MESSAGE)).toBe(true),
+    );
+
+    expect(sentSaves()).toEqual([]);
+    expect(localContent(OPEN)).toBe(OPEN.source);
+    expect(sectionIds(OPEN, localContent(OPEN))).toEqual(["hero", "banner"]);
+  });
+
+  it("reordering the wrapper that contains sections with an ordinary sibling is refused", async () => {
+    await settled(OPEN);
+    siblingReorderFromFrame(OPEN, "wrapper", "note");
+    await waitFor(() =>
+      expect(warned(DESIGN_ELEMENT_SECTIONS_MESSAGE)).toBe(true),
+    );
+
+    expect(sentSaves()).toEqual([]);
+    expect(localContent(OPEN)).toBe(OPEN.source);
+  });
+
+  for (const fixture of [OPEN, LOCKED]) {
+    const label =
+      fixture === LOCKED ? "on the locked loader route" : "on the open route";
+
+    it(`deleting an ordinary element is saved as a Design element edit, sections unchanged, ${label}`, async () => {
+      await settled(fixture);
+      const sectionsBefore = sectionIds(fixture, fixture.source);
+      const result = await deleteFromPanel(fixture, "note");
+
+      expect(result).toEqual({ success: true });
+      expect(sentSaves()).toHaveLength(1);
+      const [saved] = sentSaves();
+      expect(saved?.path).toBe(fixture.routeFile);
+      expect(saved?.operation).toBe("design-element");
+      expect(saved?.designElement).toEqual({
+        kind: "remove-element",
+        targetKey: fixture.at.note,
+      });
+      expect(saved!.content).not.toContain("Plain note");
+      expect(sectionIds(fixture, saved!.content)).toEqual(sectionsBefore);
+    });
+
+    it(`reordering two ordinary siblings is saved as a Design element edit, sections unchanged, ${label}`, async () => {
+      await settled(fixture);
+      const sectionsBefore = sectionIds(fixture, fixture.source);
+      siblingReorderFromFrame(fixture, "note", "fine");
+      await waitFor(() => expect(sentSaves()).toHaveLength(1));
+
+      const [saved] = sentSaves();
+      expect(saved?.operation).toBe("design-element");
+      expect(saved?.designElement).toEqual({
+        kind: "swap-siblings",
+        firstKey: fixture.at.note,
+        secondKey: fixture.at.fine,
+      });
+      expect(saved!.content.indexOf("Fine print")).toBeLessThan(
+        saved!.content.indexOf("Plain note"),
+      );
+      expect(sectionIds(fixture, saved!.content)).toEqual(sectionsBefore);
+    });
+  }
+
+  it("deleting the loader-bound section call site of the locked route is refused", async () => {
+    await settled(LOCKED);
+    const result = await deleteFromPanel(LOCKED, "hero");
+
+    expect(result.success).toBe(false);
+    expect(result.message).toBe(DESIGN_ELEMENT_SECTIONS_MESSAGE);
+    expect(sentSaves()).toEqual([]);
+    expect(localContent(LOCKED)).toBe(LOCKED.source);
+  });
+
+  it("a server refusal of a Design element edit puts the file back and says why", async () => {
+    saveThemeFile.mockImplementation(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
+    await settled(OPEN);
+    const result = await deleteFromPanel(OPEN, "note");
 
     expect(sentSaves()).toHaveLength(1);
-    const [saved] = sentSaves();
-    expect(saved?.path).toBe(ROUTE_FILE);
-    expect(sectionIds(saved!.content)).toEqual(["banner", "hero"]);
+    expect(result).toEqual({
+      success: false,
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    });
+    expect(localContent(OPEN)).toBe(OPEN.source);
   });
 });

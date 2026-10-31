@@ -262,11 +262,11 @@ import {
   isDocumentWriteTarget,
   isPageStandInId,
 } from "@/lib/storefront/editor/page-stand-in";
+import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
-  patchElementClassNameResult,
-  removeJsxElement,
-  swapSiblingMorphNodes,
-} from "@/lib/storefront/ast/theme-ast-transformer";
+  applyDesignElementOperation,
+  type DesignElementOperation,
+} from "@/lib/storefront/compiler/design-element-operation";
 import {
   patchThemeLinkBinding,
   patchThemeLinkElement,
@@ -577,6 +577,13 @@ export const PREVIEW_RELOAD_DEFERRED_MESSAGE =
  */
 export const PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE =
   "The canvas was reloaded but your latest content could not be loaded into it, so it may show older content. Your changes are kept.";
+
+/**
+ * The server refused a Design element edit on what it touches (a section, or
+ * an effect it cannot tell). An answer, not an unknown outcome: nothing was
+ * written, and the file is put back as it was.
+ */
+class DesignElementRefusedError extends Error {}
 
 /** A route's own document before its first write: no sections stored yet. */
 const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
@@ -5231,10 +5238,15 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
-      codeDefaultSave?: {
-        operation: "code-default";
-        codeDefault: CodeDefaultWriteProof;
-      },
+      operationSave?:
+        | {
+            operation: "code-default";
+            codeDefault: CodeDefaultWriteProof;
+          }
+        | {
+            operation: "design-element";
+            designElement: DesignElementOperation;
+          },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5352,12 +5364,7 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
-                        ...(codeDefaultSave
-                          ? {
-                              operation: codeDefaultSave.operation,
-                              codeDefault: codeDefaultSave.codeDefault,
-                            }
-                          : {}),
+                        ...(operationSave ?? {}),
                       },
                     }),
               );
@@ -5444,6 +5451,12 @@ export function VisualEditorShell({
                     workspaceScope,
                   );
                 }
+              }
+              if (
+                operationSave?.operation === "design-element" &&
+                res.error?.startsWith("DESIGN_ELEMENT_")
+              ) {
+                throw new DesignElementRefusedError(res.message);
               }
               throw new Error(res.message);
             }
@@ -5547,8 +5560,9 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
-          operation?: "code-default";
+          operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
+          designElement?: DesignElementOperation;
         },
       ) => Promise<unknown>)
     | null
@@ -5564,8 +5578,13 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
-        operation?: "code-default";
+        operation?: "code-default" | "design-element";
         codeDefault?: CodeDefaultWriteProof;
+        /**
+         * A Design element edit (delete, sibling reorder). The server
+         * recomputes and judges it rather than taking the content as is.
+         */
+        designElement?: DesignElementOperation;
         /**
          * A Design section structure edit (reorder, remove, bind) computed
          * on this tab's files. Recorded so that saving it again later, after
@@ -5632,7 +5651,12 @@ export function VisualEditorShell({
               operation: "code-default",
               codeDefault: options.codeDefault,
             }
-          : undefined,
+          : options?.operation === "design-element" && options.designElement
+            ? {
+                operation: "design-element",
+                designElement: options.designElement,
+              }
+            : undefined,
       );
       if (
         result.status === "superseded" ||
@@ -5806,6 +5830,31 @@ export function VisualEditorShell({
     ],
   );
 
+  /**
+   * Puts a file back as it was before a Design element edit that did not
+   * land, in the workspace and in the frame, which shows the edit already.
+   */
+  const restoreRefusedDesignElementEdit = useCallback(
+    (filePath: string, before: string) => {
+      updateWorkspaceLocal(filePath, before, workspaceScope);
+      postPreviewThemeFiles(
+        themeFiles.map((file) => ({
+          path: file.path,
+          content:
+            file.path === filePath
+              ? before
+              : (useThemeWorkspaceStore
+                  .getState()
+                  .getWorkspaceFiles(
+                    workspaceScope.storefrontId,
+                    workspaceScope.themeId,
+                  )[file.path]?.localContent ?? file.content),
+        })),
+      );
+    },
+    [postPreviewThemeFiles, themeFiles, updateWorkspaceLocal, workspaceScope],
+  );
+
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
       if (refuseSectionTemplateWrite(filePath)) return;
@@ -5822,25 +5871,32 @@ export function VisualEditorShell({
         return;
       }
 
-      const result = swapSiblingMorphNodes(
+      // The frame names the file and the two elements; that is not trusted
+      // to mean an ordinary reorder. What the swap would move is judged here,
+      // and again by the server, against the sections the file renders.
+      const designElement = {
+        kind: "swap-siblings",
+        firstKey: draggedNodeId,
+        secondKey: targetNodeId,
+      } as const;
+      const result = applyDesignElementOperation(
+        themeFiles,
+        filePath,
         currentSource,
-        draggedNodeId,
-        targetNodeId,
+        designElement,
       );
-      if (!result.editable) {
-        const message = (() => {
-          switch (result.reason) {
-            case "not-siblings":
-              return "Only elements under the same source parent can be reordered.";
-            case "parse-error":
-              return `Cannot reorder because ${filePath} contains a syntax error.`;
-            case "same-node":
-              // Dropped where it already was. Nothing changed and nothing failed.
-              return null;
-            default:
-              return "This rendered element cannot be mapped to one unique source sibling.";
-          }
-        })();
+      if (result.status !== "ok") {
+        const message =
+          result.status === "unchanged"
+            ? // Dropped where it already was. Nothing changed and nothing failed.
+              null
+            : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+              ? result.message
+              : result.reason === "not-siblings"
+                ? "Only elements under the same source parent can be reordered."
+                : result.reason === "parse-error"
+                  ? `Cannot reorder because ${filePath} contains a syntax error.`
+                  : "This rendered element cannot be mapped to one unique source sibling.";
         if (message) toast.warning(message);
         postPreviewThemeFiles(
           themeFiles.map((file) => ({
@@ -5858,23 +5914,16 @@ export function VisualEditorShell({
       }
 
       try {
-        await handleUnifiedSaveFile(filePath, result.code);
+        await handleUnifiedSaveFile(filePath, result.code, {
+          operation: "design-element",
+          designElement,
+        });
       } catch (error) {
-        updateWorkspaceLocal(filePath, currentSource, workspaceScope);
-        postPreviewThemeFiles(
-          themeFiles.map((file) => ({
-            path: file.path,
-            content:
-              file.path === filePath
-                ? currentSource
-                : (useThemeWorkspaceStore
-                    .getState()
-                    .getWorkspaceFiles(
-                      workspaceScope.storefrontId,
-                      workspaceScope.themeId,
-                    )[file.path]?.localContent ?? file.content),
-          })),
-        );
+        restoreRefusedDesignElementEdit(filePath, currentSource);
+        if (error instanceof DesignElementRefusedError) {
+          toast.warning(error.message);
+          return;
+        }
         toast.error(
           `Failed to reorder source elements: ${error instanceof Error ? error.message : "Save failed"}`,
         );
@@ -5884,8 +5933,8 @@ export function VisualEditorShell({
       handleUnifiedSaveFile,
       postPreviewThemeFiles,
       refuseSectionTemplateWrite,
+      restoreRefusedDesignElementEdit,
       themeFiles,
-      updateWorkspaceLocal,
       workspaceScope,
     ],
   );
@@ -9272,20 +9321,35 @@ export function VisualEditorShell({
         };
       }
 
-      const result = removeJsxElement(currentSource, targetKey);
-      if (!result.editable) {
+      const designElement = {
+        kind: "remove-element",
+        targetKey,
+      } as const;
+      const result = applyDesignElementOperation(
+        effectiveThemeFiles,
+        filePath,
+        currentSource,
+        designElement,
+      );
+      if (result.status !== "ok") {
         const message =
-          result.reason === "parse-error"
-            ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
-            : result.reason === "not-direct-child"
-              ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
-              : "This element no longer maps to one unique source node. Refresh the preview and try again.";
+          result.status === "unchanged"
+            ? "This element no longer maps to one unique source node. Refresh the preview and try again."
+            : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+              ? result.message
+              : result.reason === "parse-error"
+                ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
+                : result.reason === "not-direct-child"
+                  ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
+                  : "This element no longer maps to one unique source node. Refresh the preview and try again.";
         return { success: false, message };
       }
 
       try {
         const saved = await handleUnifiedSaveFile(filePath, result.code, {
           preserveCanvasPosition: true,
+          operation: "design-element",
+          designElement,
         });
         if (saved === null) {
           return {
@@ -9294,6 +9358,10 @@ export function VisualEditorShell({
           };
         }
       } catch (error) {
+        if (error instanceof DesignElementRefusedError) {
+          restoreRefusedDesignElementEdit(filePath, currentSource);
+          return { success: false, message: error.message };
+        }
         return {
           success: false,
           message:
@@ -9311,6 +9379,7 @@ export function VisualEditorShell({
     [
       effectiveThemeFiles,
       handleUnifiedSaveFile,
+      restoreRefusedDesignElementEdit,
       sharedLayoutPaths,
       workspaceScope,
     ],
