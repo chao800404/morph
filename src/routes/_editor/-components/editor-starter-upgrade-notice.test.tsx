@@ -303,6 +303,7 @@ describe("EditorStarterUpgradeNotice", () => {
             { path: "src/components/Footer.tsx", reason: "needs-missing" },
             { path: "src/morph/link.tsx", reason: "origin-unknown" },
             { path: "src/components/Principles.tsx", reason: "markers-kept" },
+            { path: "src/routes/account.tsx", reason: "page-not-in-theme" },
           ],
         },
       }),
@@ -330,7 +331,12 @@ describe("EditorStarterUpgradeNotice", () => {
       "cannot tell whether you removed it",
     );
     expect(shown("markers-kept")[0]).toContain("markers keep working");
-    expect(starter.textContent).toContain("Kept as they are (5)");
+    // One of the Starter's new pages, without the other: said neutrally.
+    expect(shown("page-not-in-theme")[0]).toContain(
+      "cannot tell whether it was removed or never added",
+    );
+    expect(shown("page-not-in-theme")[0]).not.toContain("you removed");
+    expect(starter.textContent).toContain("Kept as they are (6)");
     // One notice, one review: no second prompt for what is kept. The notice
     // is outside the open dialog, so it is counted by its own attribute.
     expect(
@@ -370,5 +376,248 @@ describe("EditorStarterUpgradeNotice", () => {
       ).toBeTruthy(),
     );
     expect(onApplied).not.toHaveBeenCalled();
+  });
+
+  describe("the Starter's new pages", () => {
+    const PAGES_DIGEST = "c".repeat(64);
+    const HEADER = "src/components/Header.tsx";
+    const ACCOUNT = "src/routes/account.tsx";
+    const ORDER_TRANSFER = "src/routes/order-transfer.tsx";
+    const WITH_PAGES_OFFERED = {
+      ...STARTER_PART,
+      kept: [
+        { path: HEADER, reason: "needs-route" },
+        { path: ACCOUNT, reason: "new-in-starter" },
+        { path: ORDER_TRANSFER, reason: "new-in-starter" },
+      ],
+      optional: {
+        paths: [ACCOUNT, ORDER_TRANSFER],
+        pages: [
+          {
+            path: ACCOUNT,
+            route: "/account",
+            purpose: "Customer account page (/account): for the test.",
+          },
+          {
+            path: ORDER_TRANSFER,
+            route: "/order-transfer",
+            purpose:
+              "Order transfer confirmation page (/order-transfer): for the test.",
+          },
+        ],
+        digest: PAGES_DIGEST,
+        changes: [
+          ...STARTER_PART.changes,
+          {
+            path: HEADER,
+            operation: "update",
+            before: "old header\n",
+            after: 'link "/account"\n',
+          },
+          {
+            path: ACCOUNT,
+            operation: "create",
+            before: null,
+            after: "account page\n",
+          },
+          {
+            path: ORDER_TRANSFER,
+            operation: "create",
+            before: null,
+            after: "order transfer page\n",
+          },
+        ],
+        kept: [],
+      },
+    };
+
+    beforeEach(() => {
+      fns.review.mockResolvedValue({
+        success: true,
+        data: reviewOf({ starter: WITH_PAGES_OFFERED }),
+      });
+    });
+
+    const pagesBox = (dialog: HTMLElement) =>
+      within(dialog).getByRole("checkbox", {
+        name: "Add the Starter's new pages",
+      });
+
+    it("offers them unselected, says why, and does not claim the author removed them", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      expect(pagesBox(dialog).getAttribute("aria-checked")).toBe("false");
+      const offered = [
+        ...starter.querySelectorAll('[data-kept-reason="new-in-starter"]'),
+      ];
+      expect(offered).toHaveLength(2);
+      for (const item of offered) {
+        expect(item.textContent).toContain(
+          "the Starter now has this page and this Theme does not",
+        );
+        expect(item.textContent).not.toContain("removed");
+      }
+      expect(offered.map((item) => item.textContent)).toEqual([
+        expect.stringContaining(ACCOUNT),
+        expect.stringContaining(ORDER_TRANSFER),
+      ]);
+      const header = starter.querySelector('[data-kept-reason="needs-route"]');
+      expect(header?.textContent).toContain(HEADER);
+      expect(header?.textContent).toContain(
+        "links to a page this Theme does not have",
+      );
+      // Not in the changes until selected.
+      expect(
+        within(starter).queryByRole("button", { name: new RegExp(ACCOUNT) }),
+      ).toBeNull();
+    });
+
+    it("applies the review without them unless the author selects them", async () => {
+      const { onApplied } = renderNotice();
+      await openReview();
+      fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: STARTER_DIGEST,
+        },
+      });
+    });
+
+    it("selected: shows them and the Header as changes, and applies that review's digest", async () => {
+      const { onApplied } = renderNotice();
+      const dialog = await openReview();
+      fireEvent.click(pagesBox(dialog));
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      for (const path of [HEADER, ACCOUNT, ORDER_TRANSFER]) {
+        expect(
+          within(starter).getByRole("button", { name: new RegExp(path) }),
+        ).toBeTruthy();
+      }
+      expect(starter.querySelector("[data-kept-reason]")).toBeNull();
+      fireEvent.click(
+        within(starter).getByRole("button", { name: new RegExp(ACCOUNT) }),
+      );
+      expect(
+        screen.getByLabelText(`Changes to ${ACCOUNT}`).textContent,
+      ).toContain("+ account page");
+
+      fireEvent.click(screen.getByRole("button", { name: "Apply selected" }));
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: PAGES_DIGEST,
+        },
+      });
+    });
+
+    it("cannot be selected without the Starter upgrade itself", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      fireEvent.click(
+        within(dialog).getByRole("checkbox", {
+          name: "Apply the Starter upgrade",
+        }),
+      );
+      expect((pagesBox(dialog) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("lists both pages with what each is for", async () => {
+      renderNotice();
+      const dialog = await openReview();
+      const offer = dialog.querySelector("[data-starter-optional-pages]")!;
+      for (const [path, purpose] of [
+        [ACCOUNT, "Customer account page (/account)"],
+        [ORDER_TRANSFER, "Order transfer confirmation page (/order-transfer)"],
+      ]) {
+        const row = offer.querySelector(
+          `[data-starter-optional-page="${path}"]`,
+        );
+        expect(row?.textContent).toContain(path);
+        expect(row?.textContent).toContain(purpose);
+      }
+    });
+
+    it("on the current Starter: no notice, the review opens on request, and applies only the selected pages", async () => {
+      const CURRENT_STATUS = {
+        versionState: "current" as const,
+        storedVersion: 29,
+        currentVersion: 29,
+        catalogPending: null,
+      };
+      fns.review.mockResolvedValue({
+        success: true,
+        data: reviewOf({
+          versionState: "current",
+          storedVersion: 29,
+          starter: { ...WITH_PAGES_OFFERED, changes: [] },
+        }),
+      });
+      const onApplied = vi.fn();
+      const client = new QueryClient({
+        defaultOptions: { mutations: { retry: false } },
+      });
+      const view = (reviewRequest: number) => (
+        <QueryClientProvider client={client}>
+          <EditorStarterUpgradeNotice
+            status={CURRENT_STATUS}
+            storefrontId="storefront-a"
+            themeId="theme-a"
+            unsavedCount={0}
+            onApplied={onApplied}
+            reviewRequest={reviewRequest}
+          />
+        </QueryClientProvider>
+      );
+      const { rerender } = render(view(0));
+      // Nothing reminds the author.
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Review upgrade" }),
+      ).toBeNull();
+      expect(fns.review).not.toHaveBeenCalled();
+
+      rerender(view(1));
+      const dialog = await screen.findByRole("dialog", {
+        name: "Review the Starter upgrade",
+      });
+      expect(fns.review).toHaveBeenCalledTimes(1);
+      const starter = within(dialog).getByRole("region", {
+        name: "Starter upgrade",
+      });
+      expect(
+        starter.querySelectorAll('[data-kept-reason="new-in-starter"]'),
+      ).toHaveLength(2);
+      const applyButton = () =>
+        screen.getByRole("button", {
+          name: "Apply selected",
+        }) as HTMLButtonElement;
+      // Nothing to apply until the pages are selected.
+      expect(applyButton().disabled).toBe(true);
+
+      fireEvent.click(pagesBox(dialog));
+      expect(applyButton().disabled).toBe(false);
+      fireEvent.click(applyButton());
+      await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
+      expect(fns.apply).toHaveBeenCalledWith({
+        data: {
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          expectedSourceGeneration: 7,
+          starterDigest: PAGES_DIGEST,
+        },
+      });
+    });
   });
 });

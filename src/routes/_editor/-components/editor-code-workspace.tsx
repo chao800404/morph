@@ -106,6 +106,7 @@ import {
 } from "@dnd-kit/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowUpCircle,
   AlertCircle,
   Braces,
   ChevronDown,
@@ -243,6 +244,8 @@ type EditorCodeWorkspaceProps = {
   ) => void;
   /** Recreates the preview after a file-tree or toolchain change. */
   onRestartPreview?: () => void;
+  /** Opens the editor's Starter upgrade review (`EditorStarterUpgradeNotice`). */
+  onReviewStarterUpgrade?: () => void;
   onThemeFilesMoved?: (
     moves: ReadonlyArray<{ from: string; to: string }>,
   ) => void;
@@ -528,6 +531,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     externalConflictFiles,
     onResolveConflict,
     onRestartPreview,
+    onReviewStarterUpgrade,
     onThemeFilesMoved,
     onDirtyFilesChange,
     onSaveFile,
@@ -3774,6 +3778,17 @@ const EditorCodeWorkspaceContent = forwardRef<
         icon: PanelBottomOpen,
         run: () => setBottomPanelOpen((current) => !current),
       },
+      ...(onReviewStarterUpgrade
+        ? [
+            {
+              id: "review-starter-upgrade",
+              label: "Theme: Review Starter Upgrade",
+              detail: "Starter updates and pages this Theme does not have",
+              icon: ArrowUpCircle,
+              run: onReviewStarterUpgrade,
+            } satisfies EditorCodeCommand,
+          ]
+        : []),
       ...(onBuildPreview
         ? [
             {
@@ -3796,6 +3811,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       handleSaveAll,
       handleSaveCurrentFile,
       onBuildPreview,
+      onReviewStarterUpgrade,
       setDependenciesDialogOpen,
       startCreatingFolder,
       startCreatingIn,
