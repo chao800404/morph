@@ -1,3 +1,4 @@
+import { PREVIEW_SOURCE_SECTION_PREFIX } from "@/lib/storefront/editor/preview-dom";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   advanceSelectionAfterTextPromotion,
@@ -392,7 +393,10 @@ import {
   type EditorAssistantPanelTab,
 } from "./editor-assistant-panel";
 import { EditorCanvasComments } from "./editor-canvas-comments";
-import { resolveCodeSelectionTarget } from "./editor-code-selection";
+import {
+  resolveCodeSelectionTarget,
+  resolveSourceLocatedTarget,
+} from "./editor-code-selection";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorReleaseHistoryDialog } from "./editor-release-history";
 import {
@@ -550,6 +554,13 @@ export const HISTORY_OTHER_PAGE_MESSAGE =
  */
 export const CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
   "Canvas editing isn't available for this Theme's framework yet. Use the panel on the right or Code mode.";
+/**
+ * Said when an Astro canvas click names a source location the editor cannot
+ * open as given: another version of the file, or a place in it that is not
+ * the clicked element. Nothing is opened on a guess.
+ */
+export const SOURCE_LOCATION_STALE_MESSAGE =
+  "This element's source has changed since the preview showed it. Wait for the preview to update, then click it again.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
 /**
@@ -3426,6 +3437,11 @@ export function VisualEditorShell({
   /** For the preview message handler, which is not rebuilt for it. */
   const themeRouteRegistryRef = useRef(themeRouteRegistry);
   themeRouteRegistryRef.current = themeRouteRegistry;
+  /** The files an Astro canvas location is checked against; see below. */
+  const effectiveThemeFilesRef = useRef(effectiveThemeFiles);
+  effectiveThemeFilesRef.current = effectiveThemeFiles;
+  const handleJumpToCodeRef = useRef(handleJumpToCode);
+  handleJumpToCodeRef.current = handleJumpToCode;
   /**
    * Whether this Theme's preview is proven to be one document; null until
    * the Theme's files are read.
@@ -8872,6 +8888,33 @@ export function VisualEditorShell({
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
+      // Astro (L1.5a, docs/astro-theme-plan.md 3.6.2): a click only locates.
+      // It opens the clicked element's source in Code, checked against the
+      // file the editor holds; it is never a Design selection, and nothing is
+      // written. The location is the preview's hint, not a write target.
+      if (
+        canvasUnavailableForFrameworkRef.current &&
+        message.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
+      ) {
+        if (!previewSelection.isNewCanvasIntent(message)) return;
+        const target = resolveSourceLocatedTarget({
+          selection: {
+            sectionId: message.sectionId,
+            sourceLocation: message.sourceLocation ?? null,
+            sourceVersion: message.sourceVersion ?? null,
+            tagName: message.tagName ?? null,
+          } as EditorSelectionDescriptor,
+          themeFiles: effectiveThemeFilesRef.current,
+        });
+        if (target) {
+          handleJumpToCodeRef.current(target.filePath, target.line, target.column);
+        } else {
+          toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
+            id: "source-location-stale",
+          });
+        }
+        return;
+      }
       // An element of another page, or of a page not known yet: its slot id
       // may be one this page has too, and the Inspector would then edit this
       // page's copy of it.
@@ -8992,6 +9035,7 @@ export function VisualEditorShell({
         nodeId,
         sourceFilePath,
         sourceLocation: message.sourceLocation ?? null,
+        sourceVersion: message.sourceVersion ?? null,
         elementKey,
         fieldKey,
         fieldPath,

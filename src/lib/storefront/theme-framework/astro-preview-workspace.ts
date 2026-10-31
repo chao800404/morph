@@ -39,6 +39,10 @@ import {
 import { ASTRO_PRERENDER_ENTRY } from "./astro-native-prerender";
 import { nativeAstroAllowedPackages } from "./astro-native-build";
 import { themeToolchainForFramework } from "./theme-toolchains";
+import {
+  astroPreviewLocatePluginSource,
+  astroPreviewMarkerNonce,
+} from "./astro-preview-locate";
 
 /**
  * The workspace an Astro Live Preview runs in (docs/astro-theme-plan.md 2.4,
@@ -101,9 +105,17 @@ export const ASTRO_PREVIEW_DEV_SERVER = {
 } as const;
 
 /** Source of the client module every Astro Live Preview page loads. */
-export function astroPreviewClientSource(): string {
+export function astroPreviewClientSource(locateNonce: string | null = null): string {
   return `import { documentPreviewRuntimeChannel } from "/src/morph/preview/preview-protocol.ts";
-
+${
+    locateNonce
+      ? `
+// L1.5a (docs/astro-theme-plan.md 3.6.2.2): elements are selected by
+// their source location, and boundary markers carry this preview's nonce.
+globalThis.__morphPreviewSourceSelection = { nonce: ${JSON.stringify(locateNonce)} };
+`
+      : ""
+  }
 // Read first, before anything can navigate away from the query the editor's
 // channel is carried in.
 documentPreviewRuntimeChannel();
@@ -202,6 +214,7 @@ function previewImportGuardSource(): string {
 function integrationSource(options: {
   allowedPackages: readonly string[];
   fsAllow: readonly string[];
+  locateNonce: string | null;
 }): string {
   return `// Written by Morph for this Live Preview (astro-preview-workspace.ts).
 import fs from "node:fs";
@@ -228,7 +241,8 @@ const previewContentPlugin = ${themePreviewContentPluginSource()};
 const previewHttpHmrPlugin = ${previewHttpHmrPluginSource()};
 // The platform's copy of the Morph SDK (.morph/sdk/), by its exact names.
 const morphSdkAliases = ${themeMorphSdkAliasesSource("workspaceRoot")};
-
+${options.locateNonce ? `const previewLocatePlugin = ${astroPreviewLocatePluginSource(options.locateNonce)};
+` : ""}
 export function morphAstroPreview() {
   return {
     name: "morph:astro-preview",
@@ -241,7 +255,7 @@ export function morphAstroPreview() {
           vite: {
             resolve: { alias: morphSdkAliases },
             cacheDir: depsCacheDir,
-            plugins: [
+            plugins: [${options.locateNonce ? "\n              previewLocatePlugin," : ""}
               previewServerSourcePlugin,
               previewSvgIsolationPlugin,
               previewContentPlugin,
@@ -333,6 +347,9 @@ export function planAstroPreviewWorkspace(
 
   const workspaceRoot = "/workspace";
   const hostWorkspaceRoot = input.hostWorkspaceRoot ?? workspaceRoot;
+  // Source locations and boundary candidates (L1.5a): hints for the editor,
+  // never a write target. This preview's own nonce tells its markers apart.
+  const locateNonce = astroPreviewMarkerNonce(input.buildId);
   const toolchainRoot =
     input.toolchainRoot ?? themeToolchainForFramework("astro").root;
   const at = (relative: string) => `${workspaceRoot}/${relative}`;
@@ -352,6 +369,7 @@ export function planAstroPreviewWorkspace(
       content: integrationSource({
         allowedPackages: nativeAstroAllowedPackages(),
         fsAllow: themePreviewFsAllowRoots({ hostWorkspaceRoot, toolchainRoot }),
+        locateNonce,
       }),
     },
     {
@@ -365,7 +383,10 @@ export function planAstroPreviewWorkspace(
         ASTRO_PRERENDER_ENTRY,
       ),
     },
-    { path: THEME_PREVIEW_START_CLIENT_PATH, content: astroPreviewClientSource() },
+    {
+      path: THEME_PREVIEW_START_CLIENT_PATH,
+      content: astroPreviewClientSource(locateNonce),
+    },
     // The SDK the Theme reads content with, as every Start workspace has it.
     ...themeMorphSdkFiles(),
     ...GENERATED_PREVIEW_BRIDGE_SOURCES.map((module) => ({
