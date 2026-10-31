@@ -612,6 +612,16 @@ export const PENDING_DESIGN_WRITE_HELD_MESSAGE =
 class PendingDesignWriteHeldError extends Error {}
 
 /**
+ * The server's structure guard refused a Design section structure write: an
+ * answer, not an unknown outcome; nothing was written.
+ */
+class DesignStructureRefusedError extends Error {}
+
+/** An undo or redo whose write did not land; the entry stays. */
+export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
+  "the change is not saved yet. It stays in the history; try again once the file is saved.";
+
+/**
  * Whether a file may take a Design element edit now: the edit is judged on
  * the stored file, so one with changes not yet saved (or a save running)
  * would be judged on other content than the one shown.
@@ -5309,7 +5319,8 @@ export function VisualEditorShell({
         | {
             operation: "design-element";
             designElement: DesignElementOperation;
-          },
+          }
+        | { operation: "design-structure" },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5527,6 +5538,17 @@ export function VisualEditorShell({
                   .markRefused(filePath, res.message, workspaceScope);
                 throw new DesignElementRefusedError(res.message);
               }
+              if (
+                operationSave?.operation === "design-structure" &&
+                res.error?.startsWith("DESIGN_STRUCTURE_")
+              ) {
+                // Refused by the structure guard: nothing was written, and
+                // that is known.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markRefused(filePath, res.message, workspaceScope);
+                throw new DesignStructureRefusedError(res.message);
+              }
               throw new Error(res.message);
             }
 
@@ -5636,6 +5658,8 @@ export function VisualEditorShell({
           operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
           designElement?: DesignElementOperation;
+          historyReplay?: boolean;
+          structureEdit?: boolean;
         },
       ) => Promise<unknown>)
     | null
@@ -5675,6 +5699,13 @@ export function VisualEditorShell({
          * `PendingDesignSender.codeEdit`.
          */
         codeEdit?: boolean;
+        /**
+         * An undo or redo replaying a recorded edit. Refused by the server, it
+         * is taken back like an edit is: the file returns to what it held
+         * before the replay. (A resend, also `fromHistory`, is not: its draft
+         * is the author's and is kept.)
+         */
+        historyReplay?: boolean;
       },
     ) => {
       // What this write is. Named by the caller, or else the pending Design
@@ -5713,16 +5744,18 @@ export function VisualEditorShell({
       // through — swapping two elements twice takes two presses to undo. That
       // only holds while every write to the file records an entry; the two
       // places that write one without recording retire its history instead.
-      const before = options?.fromHistory
-        ? null
-        : (useThemeWorkspaceStore
-            .getState()
-            .getWorkspaceFiles(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            )[filePath]?.localContent ??
-          themeFiles.find((file) => file.path === filePath)?.content ??
-          null);
+      const priorLocal =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+          filePath
+        ]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content ??
+        null;
+      const before = options?.fromHistory ? null : priorLocal;
+      // What a refused Design element write is taken back to: the text before
+      // an edit, or before an undo or redo replayed it.
+      const takeBackTo = before ?? (options?.historyReplay ? priorLocal : null);
       const opKey = getScopedOpKey(filePath);
       pendingSaveWritesRef.current.cancel(opKey);
 
@@ -5809,7 +5842,9 @@ export function VisualEditorShell({
                   operation: "design-element",
                   designElement: origin.designElement,
                 }
-              : undefined,
+              : origin?.kind === "structure-edit"
+                ? { operation: "design-structure" }
+                : undefined,
         );
       } catch (error) {
         // A Design element edit the server refused is taken back, in the
@@ -5818,7 +5853,15 @@ export function VisualEditorShell({
         // still holds this edit's content. An edit made while the refusal was
         // on its way is the author's newest, and stays. Any other failure,
         // an unanswered save above all, keeps the content as it is.
-        if (error instanceof DesignElementRefusedError && before !== null) {
+        // A structure write the guard refused is the author's draft and is
+        // kept (no revert, no resend); only an undo or redo replaying one is
+        // taken back, as a replayed element edit is.
+        const takeBack =
+          takeBackTo !== null &&
+          (error instanceof DesignElementRefusedError ||
+            (error instanceof DesignStructureRefusedError &&
+              options?.historyReplay === true));
+        if (takeBack) {
           const stillThisEdit =
             saveQueueRef.current.latestRevision(opKey) === nextRevision &&
             useThemeWorkspaceStore
@@ -5827,8 +5870,8 @@ export function VisualEditorShell({
                 workspaceScope.storefrontId,
                 workspaceScope.themeId,
               )[filePath]?.localContent === content;
-          if (stillThisEdit) {
-            updateWorkspaceLocal(filePath, before, workspaceScope);
+          if (stillThisEdit && takeBackTo !== null) {
+            updateWorkspaceLocal(filePath, takeBackTo, workspaceScope);
             postPreviewThemeFiles(
               themeFiles.map((file) => ({
                 path: file.path,
@@ -5859,12 +5902,44 @@ export function VisualEditorShell({
           options?.operation === "code-default" && options.codeDefault
             ? options.codeDefault
             : undefined;
+        // A Design element edit is replayed as itself (redo) or as its undo,
+        // for the server to judge again on the files as they are then
+        // (decision A, Q2). Never as a plain save of the recorded text.
+        const designElementEdit =
+          options?.operation === "design-element" &&
+          options.designElement &&
+          options.designElement.kind !== "undo"
+            ? options.designElement
+            : undefined;
+        // A section structure edit is replayed as one, both ways, for the
+        // structure guard to judge on the files as they are then.
+        const structureEdit = options?.structureEdit === true;
+        // A replay that did not land (superseded, a source conflict, a pause)
+        // has not reversed anything: it throws, so the entry stays where it
+        // is instead of the stack claiming a reversal storage never took.
+        const replay = async (
+          text: string,
+          replayOptions: Parameters<
+            NonNullable<typeof handleUnifiedSaveFileRef.current>
+          >[2],
+        ) => {
+          const saved = await handleUnifiedSaveFileRef.current?.(
+            filePath,
+            text,
+            replayOptions,
+          );
+          if (saved === null || saved === undefined) {
+            throw new Error(HISTORY_REPLAY_NOT_SAVED_MESSAGE);
+          }
+          return saved;
+        };
         history.record({
           label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
           scope: themeFileHistoryScope(filePath),
           undo: () =>
-            handleUnifiedSaveFileRef.current?.(filePath, before, {
+            replay(before, {
               fromHistory: true,
+              historyReplay: true,
               renderDocument: true,
               ...(codeDefaultOption
                 ? {
@@ -5875,18 +5950,36 @@ export function VisualEditorShell({
                       value: codeDefaultOption.expectedCurrentDefault,
                     },
                   }
-                : {}),
+                : designElementEdit
+                  ? {
+                      operation: "design-element" as const,
+                      designElement: {
+                        kind: "undo" as const,
+                        edit: designElementEdit,
+                      },
+                    }
+                  : structureEdit
+                    ? { structureEdit: true }
+                    : {}),
             }),
           redo: () =>
-            handleUnifiedSaveFileRef.current?.(filePath, content, {
+            replay(content, {
               fromHistory: true,
+              historyReplay: true,
               renderDocument: true,
               ...(codeDefaultOption
                 ? {
                     operation: "code-default" as const,
                     codeDefault: codeDefaultOption,
                   }
-                : {}),
+                : designElementEdit
+                  ? {
+                      operation: "design-element" as const,
+                      designElement: designElementEdit,
+                    }
+                  : structureEdit
+                    ? { structureEdit: true }
+                    : {}),
             }),
         });
       }
@@ -9434,6 +9527,7 @@ export function VisualEditorShell({
                 .getAcceptedSourceGeneration(workspaceScope),
               createRevision: true,
               revisionMessage: `Create page-specific copy of ${componentPath}`,
+              operation: "design-structure",
             },
           }),
       );
@@ -9451,6 +9545,9 @@ export function VisualEditorShell({
         // retain the pre-detach route as a phantom dirty edit.
         updateWorkspaceLocal(saved.path, saved.content, workspaceScope);
         markWorkspaceSaved(saved, workspaceScope, result.data.sourceGeneration);
+        // Written outside the history: entries for it now hold text this
+        // batch moved past (decision B).
+        history.discardScope(themeFileHistoryScope(saved.path));
       }
 
       const previewFiles = effectiveThemeFiles.map((file) => ({
@@ -9753,6 +9850,7 @@ export function VisualEditorShell({
                     .getAcceptedSourceGeneration(workspaceScope),
                   createRevision: true,
                   revisionMessage: `Remove section ${sectionId}`,
+                  operation: "design-structure",
                 },
               }),
           );
@@ -9779,6 +9877,14 @@ export function VisualEditorShell({
           }
           for (const deletion of deletions) {
             discardWorkspaceLocal(deletion.path, workspaceScope);
+          }
+          // Written outside the history: entries for these files now hold
+          // text this batch moved past (decision B).
+          for (const path of [
+            ...(saved.data.files ?? []).map((savedFile) => savedFile.path),
+            ...deletions.map((deletion) => deletion.path),
+          ]) {
+            history.discardScope(themeFileHistoryScope(path));
           }
           await queryClient.invalidateQueries({
             queryKey: storefrontThemeFileQueries.tree(
@@ -11634,6 +11740,7 @@ export function VisualEditorShell({
                 .getAcceptedSourceGeneration(workspaceScope),
               createRevision: true,
               revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
+              operation: "design-structure",
             },
           }),
       );
@@ -11649,6 +11756,9 @@ export function VisualEditorShell({
           workspaceScope,
           saved.data.sourceGeneration,
         );
+        // Written outside the history: entries for it now hold text this
+        // batch moved past (decision B).
+        history.discardScope(themeFileHistoryScope(savedFile.path));
       }
 
       const previewContents = new Map(

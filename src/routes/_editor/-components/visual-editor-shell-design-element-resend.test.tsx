@@ -34,6 +34,7 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  HISTORY_REPLAY_NOT_SAVED_MESSAGE,
   PENDING_DESIGN_WRITE_HELD_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -68,6 +69,7 @@ const OWNER = { id: "user-1", name: "Owner", email: "owner@morph.test" };
 const updateSectionProps = vi.hoisted(() => vi.fn());
 const getThemeEditor = vi.hoisted(() => vi.fn());
 const saveThemeFile = vi.hoisted(() => vi.fn());
+const saveBatch = vi.hoisted(() => vi.fn());
 const getThemeFile = vi.hoisted(() => vi.fn());
 const getSession = vi.hoisted(() => vi.fn());
 let lastSectionsPanelProps: ComponentProps<
@@ -88,6 +90,7 @@ vi.mock(
     ...(await importOriginal<Record<string, unknown>>()),
     listStorefrontThemeFiles: vi.fn(),
     saveStorefrontThemeFile: saveThemeFile,
+    saveStorefrontThemeFilesBatch: saveBatch,
     getStorefrontThemeFile: getThemeFile,
   }),
 );
@@ -520,6 +523,21 @@ beforeEach(() => {
   getThemeFile.mockReset();
   getThemeFile.mockResolvedValue(stored());
   updateSectionProps.mockReset();
+  saveBatch.mockReset();
+  saveBatch.mockImplementation(
+    async (request: {
+      data: { files: Array<{ path: string; content: string }> };
+    }) => ({
+      success: true,
+      message: "Theme files batch saved",
+      data: {
+        files: request.data.files.map((entry) =>
+          file(entry.path, entry.content, 2),
+        ),
+        sourceGeneration: 7,
+      },
+    }),
+  );
   saveThemeFile.mockReset();
   saveThemeFile.mockImplementation(
     async (request: { data: { path: string; content: string } }) => ({
@@ -1181,5 +1199,225 @@ describe("text held behind a Design write still on its way (decision A)", () => 
     expect(savesOf(ROUTE_FILE)).toHaveLength(1);
     expect(sentSaves().some((sent) => sent.content === onTop)).toBe(false);
     expect(localContent()).toBe(newer);
+  });
+});
+
+describe("undo and redo of a Design element edit (decision A, Q2)", () => {
+  const undoKey = () =>
+    act(() => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+  const redoKey = () =>
+    act(() => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    });
+
+  it("undo goes as the undo of the Delete, redo as the Delete itself, each for the server to judge again", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+
+    undoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+    expect(savesOf(ROUTE_FILE)[1]).toMatchObject({
+      content: SOURCE,
+      operation: "design-element",
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
+    await waitFor(() => expect(localContent()).toBe(SOURCE));
+
+    redoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: deleted,
+      operation: "design-element",
+      designElement: REMOVE_NOTE,
+    });
+  });
+
+  it("an undo the server refuses is taken back and stays on the stack", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
+
+    undoKey();
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        `Could not undo: ${DESIGN_ELEMENT_SECTIONS_MESSAGE}`,
+      ),
+    );
+    // Taken back: the file holds the Delete again, as stored.
+    expect(localContent()).toBe(deleted);
+
+    // Still on the stack: the next press sends the undo again.
+    undoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: SOURCE,
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
+  });
+
+  it("an undo that does not land (a source conflict) stays on the stack, kept as the undo it is", async () => {
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const deleted = savesOf(ROUTE_FILE)[0]!.content;
+    // The Delete landed at generation 5 (route v2); another tab moved the
+    // Theme to 6 by writing some other file.
+    saveThemeFile.mockImplementationOnce(async () => {
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () =>
+          ({
+            success: true,
+            message: "ok",
+            data: {
+              ...treeAt(6),
+              files: FILES.map((entry) =>
+                entry.path === ROUTE_FILE
+                  ? file(ROUTE_FILE, deleted, 2)
+                  : entry,
+              ),
+            },
+          }) as never,
+      );
+      return {
+        success: false,
+        error: "SOURCE_GENERATION_CONFLICT",
+        message:
+          "Remote source changes detected (current generation: 6): the theme working source was updated by another operation.",
+      };
+    });
+
+    undoKey();
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        `Could not undo: ${HISTORY_REPLAY_NOT_SAVED_MESSAGE}`,
+      ),
+    );
+    expect(workspaceFile()?.sourceConflict).toBe(true);
+
+    // Save my changes sends it as the undo, not as a plain save.
+    await press("Save my changes");
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+    expect(savesOf(ROUTE_FILE)[2]).toMatchObject({
+      content: SOURCE,
+      operation: "design-element",
+      designElement: { kind: "undo", edit: REMOVE_NOTE },
+    });
+  });
+});
+
+describe("Design section structure writes carry their tag (structure guard)", () => {
+  const undoKey = () =>
+    act(() => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+
+  /**
+   * The panel's reorder. A refusal is thrown back to the panel, whose
+   * mutation reports it; here it is caught and returned instead.
+   */
+  async function reorderBannerFirst() {
+    let result: unknown;
+    await act(async () => {
+      result = await lastSectionsPanelProps!.onReorderSections!([
+        "banner",
+        "hero",
+      ]).catch((error: unknown) => error);
+    });
+    return result;
+  }
+
+  it("a panel reorder is sent as operation design-structure", async () => {
+    await settled();
+    await reorderBannerFirst();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+
+    const sent = savesOf(ROUTE_FILE)[0]!;
+    expect(sent.operation).toBe("design-structure");
+    expect(sent.content.indexOf('content("banner")')).toBeLessThan(
+      sent.content.indexOf('content("hero")'),
+    );
+  });
+
+  it("a section removed from the panel is sent as operation design-structure", async () => {
+    await settled();
+    await act(async () => {
+      await lastSectionsPanelProps!.onDeleteSection!("banner");
+    });
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+
+    expect(savesOf(ROUTE_FILE)[0]).toMatchObject({
+      operation: "design-structure",
+    });
+    expect(savesOf(ROUTE_FILE)[0]!.content).not.toContain('content("banner")');
+  });
+
+  it("the undo of a reorder is sent as operation design-structure", async () => {
+    await settled();
+    await reorderBannerFirst();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+
+    undoKey();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+    expect(savesOf(ROUTE_FILE)[1]).toMatchObject({
+      content: SOURCE,
+      operation: "design-structure",
+    });
+  });
+
+  it("a reorder the guard refuses keeps the draft unsaved, with the reason, and sends nothing more", async () => {
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_STRUCTURE_LOCKED",
+      message: "This page reads its content through its route loader.",
+    }));
+    await settled();
+    await reorderBannerFirst();
+    await waitFor(() =>
+      expect(workspaceFile()?.errorMessage).toBe(
+        "This page reads its content through its route loader.",
+      ),
+    );
+    await flush();
+
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
+    const kept = localContent();
+    expect(kept).not.toBe(SOURCE);
+    expect(kept.indexOf('content("banner")')).toBeLessThan(
+      kept.indexOf('content("hero")'),
+    );
+    expect(workspaceFile()?.dirty).toBe(true);
+  });
+
+  it("a section added from the panel goes as a design-structure batch, and retires the route's older history", async () => {
+    await settled();
+    await reorderBannerFirst();
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(1));
+    const option = lastSectionsPanelProps!.sectionOptions?.[0];
+    expect(option, "a section the panel can add").toBeDefined();
+
+    await act(async () => {
+      await lastSectionsPanelProps!.onAddSection!(option!);
+    });
+    await waitFor(() => expect(saveBatch).toHaveBeenCalledTimes(1));
+    expect(
+      (saveBatch.mock.calls[0]![0] as { data: { operation?: string } }).data
+        .operation,
+    ).toBe("design-structure");
+
+    // The reorder's entry held route text this batch moved past: undo has
+    // nothing left to send for the route.
+    undoKey();
+    await flush();
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
   });
 });

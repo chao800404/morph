@@ -13,9 +13,16 @@ import { sectionEffectOfElementEdit } from "./theme-route-sections";
  * operation "design-element"). The same function answers both, so the two
  * cannot disagree about what an edit touches.
  */
-export type DesignElementOperation =
+export type DesignElementEdit =
   | Readonly<{ kind: "remove-element"; targetKey: string }>
   | Readonly<{ kind: "swap-siblings"; firstKey: string; secondKey: string }>;
+
+/**
+ * A Design element edit, or the undo of one (`undoDesignElementEdit`): the
+ * file put back to the text the edit was made on.
+ */
+export type DesignElementOperation =
+  DesignElementEdit | Readonly<{ kind: "undo"; edit: DesignElementEdit }>;
 
 export type DesignElementOperationRefusal =
   | "DESIGN_ELEMENT_NOT_APPLICABLE"
@@ -59,7 +66,7 @@ export function applyDesignElementOperation(
   files: readonly ThemeSourceFile[],
   filePath: string,
   source: string,
-  operation: DesignElementOperation,
+  operation: DesignElementEdit,
 ): DesignElementOperationResult {
   const result =
     operation.kind === "remove-element"
@@ -96,4 +103,80 @@ export function applyDesignElementOperation(
     };
   }
   return { status: "ok", code: result.code };
+}
+
+export const DESIGN_ELEMENT_UNDO_NOT_APPLICABLE_MESSAGE =
+  "This change can no longer be undone here: the file has changed since. Make it in Code mode.";
+
+/**
+ * The undo of `edit`: `stored`, the current content of `filePath`, put back
+ * to `restored`, the text the edit was made on.
+ *
+ * An undo is not a plain save of older text. It is allowed only when it can
+ * be shown to reverse exactly this edit, and to touch ordinary elements only
+ * as the files stand now:
+ *
+ * - the current file can be analysed (anything the analysis cannot read is
+ *   refused, as an edit would be);
+ * - `edit`, applied to `restored`, gives exactly `stored` — so `restored` is
+ *   the text the edit was made on, and the undo changes nothing else;
+ * - that edit is judged on `restored` against the sections the files render
+ *   now. An element the undo would bring back may since have come to hold a
+ *   section call site (another file changed): then the undo would add a
+ *   section, and it is refused like any edit that touches one.
+ *
+ * Anything that cannot be shown is refused; nothing is guessed.
+ */
+export function undoDesignElementEdit(
+  files: readonly ThemeSourceFile[],
+  filePath: string,
+  stored: string,
+  restored: string,
+  edit: DesignElementEdit,
+): DesignElementOperationResult {
+  const current = sectionEffectOfElementEdit(
+    files.map((file) =>
+      file.path === filePath ? { ...file, content: stored } : file,
+    ),
+    filePath,
+    [],
+  );
+  if (current.kind === "unknown") {
+    return {
+      status: "refused",
+      error: "DESIGN_ELEMENT_EFFECT_UNKNOWN",
+      message: DESIGN_ELEMENT_UNKNOWN_MESSAGE,
+    };
+  }
+  const forward = applyDesignElementOperation(files, filePath, restored, edit);
+  if (
+    forward.status === "refused" &&
+    forward.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+  ) {
+    return forward;
+  }
+  if (forward.status !== "ok" || forward.code !== stored) {
+    return {
+      status: "refused",
+      error: "DESIGN_ELEMENT_NOT_APPLICABLE",
+      message: DESIGN_ELEMENT_UNDO_NOT_APPLICABLE_MESSAGE,
+    };
+  }
+  return { status: "ok", code: restored };
+}
+
+/**
+ * `operation` on `filePath`, whose stored content is `stored`: the edit
+ * recomputed, or its undo checked against the `sent` text it restores.
+ */
+export function resolveDesignElementOperation(
+  files: readonly ThemeSourceFile[],
+  filePath: string,
+  stored: string,
+  sent: string,
+  operation: DesignElementOperation,
+): DesignElementOperationResult {
+  return operation.kind === "undo"
+    ? undoDesignElementEdit(files, filePath, stored, sent, operation.edit)
+    : applyDesignElementOperation(files, filePath, stored, operation);
 }

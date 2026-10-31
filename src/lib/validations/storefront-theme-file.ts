@@ -108,7 +108,7 @@ export type CodeDefaultWriteProof = z.infer<typeof codeDefaultWriteProofSchema>;
 const elementKeySchema = z.string().trim().min(1).max(200);
 
 /** See `DesignElementOperation`; the server recomputes it, never trusts it. */
-export const designElementOperationSchema = z.discriminatedUnion("kind", [
+const designElementEditSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("remove-element"), targetKey: elementKeySchema }),
   z.object({
     kind: z.literal("swap-siblings"),
@@ -117,9 +117,15 @@ export const designElementOperationSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+export const designElementOperationSchema = z.union([
+  designElementEditSchema,
+  // The undo of an edit: the sent content is the text the edit was made on.
+  z.object({ kind: z.literal("undo"), edit: designElementEditSchema }),
+]);
+
 function requireDesignElementOperationPairing(
   value: {
-    operation?: "save" | "code-default" | "design-element";
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
     designElement?: unknown;
     expectMissing?: boolean;
     expectedFileId?: string;
@@ -153,7 +159,7 @@ function requireDesignElementOperationPairing(
 export function requireCodeDefaultOperationPairing(
   value: {
     path?: string;
-    operation?: "save" | "code-default" | "design-element";
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
     codeDefault?: {
       componentPath?: string;
     };
@@ -216,7 +222,9 @@ export const saveThemeFileInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
-    operation: z.enum(["save", "code-default", "design-element"]).optional(),
+    operation: z
+      .enum(["save", "code-default", "design-element", "design-structure"])
+      .optional(),
     codeDefault: codeDefaultWriteProofSchema.optional(),
     designElement: designElementOperationSchema.optional(),
   })
@@ -311,6 +319,12 @@ export const saveThemeFilesBatchInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
+    /**
+     * A Design section structure write (add, detach, remove with its page
+     * copy): judged by the structure guard on one snapshot before it is
+     * written. Selects the check; grants nothing.
+     */
+    operation: z.literal("design-structure").optional(),
   })
   .refine(
     (input) =>

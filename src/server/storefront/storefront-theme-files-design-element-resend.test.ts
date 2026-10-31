@@ -557,3 +557,81 @@ describe("a Design element delete sent again after a component changed (real SQL
     expect(readFile(ROUTE_PATH).content).not.toContain("<PromoCard />");
   });
 });
+
+describe("the undo of a Design element delete, on real SQL (decision A, Q2)", () => {
+  /** The tagged delete lands at generation 1: route v2, generation 2. */
+  async function deleteLands() {
+    const body = await deleteBodyAtFirstGeneration();
+    const res = await callSave({
+      ...resendBody(body),
+      expectedSourceGeneration: 1,
+      operation: "design-element",
+      designElement: REMOVE_PROMO,
+    });
+    expect(res.success).toBe(true);
+    expect(readGeneration()).toBe(2);
+    return body;
+  }
+  const undoBody = (content: string, generation: number) => ({
+    storefrontId: STORE,
+    themeId: THEME,
+    path: ROUTE_PATH,
+    content,
+    expectedFileId: ROUTE_ID,
+    expectedVersion: 2,
+    expectedSourceGeneration: generation,
+    operation: "design-element",
+    designElement: { kind: "undo", edit: REMOVE_PROMO },
+  });
+
+  it("an undo that reverses exactly the delete lands, putting the wrapper back", async () => {
+    await deleteLands();
+
+    const res = await callSave(undoBody(ROUTE_SOURCE, 2));
+
+    expect(res.success).toBe(true);
+    expect(readGeneration()).toBe(3);
+    expect(readFile(ROUTE_PATH)).toEqual({ content: ROUTE_SOURCE, version: 3 });
+  });
+
+  it("an undo that would bring back a call site that is a section now is refused, and nothing is written", async () => {
+    await deleteLands();
+    // Another tab drops the row field: PromoCard's call site would come back
+    // as a section.
+    const saved = await themeSourceStore.saveFile(
+      STORE,
+      THEME,
+      BANNER_PATH,
+      BANNER_WITHOUT_ROWS,
+      undefined,
+      {
+        expectedFileId: BANNER_ID,
+        expectedVersion: 1,
+        expectMissing: false,
+        expectedSourceGeneration: 2,
+      },
+    );
+    expect(saved.sourceGeneration).toBe(3);
+    const before = stateNow();
+
+    const res = await callSave(undoBody(ROUTE_SOURCE, 3));
+
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("DESIGN_ELEMENT_TOUCHES_SECTIONS");
+    expect(stateNow()).toEqual(before);
+    expect(readFile(ROUTE_PATH).content).not.toContain("<PromoCard />");
+  });
+
+  it("an undo sending other text than the delete was made on is refused, and nothing is written", async () => {
+    await deleteLands();
+    const before = stateNow();
+
+    const res = await callSave(
+      undoBody(ROUTE_SOURCE.replace("Plain note", "Smuggled note"), 2),
+    );
+
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("DESIGN_ELEMENT_NOT_APPLICABLE");
+    expect(stateNow()).toEqual(before);
+  });
+});
