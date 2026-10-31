@@ -12,6 +12,7 @@ import {
 } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import { themeStartStaticPreviewPluginSource } from "./theme-start-static-preview";
+import { themePreviewRequestTracePluginSource } from "./theme-preview-request-trace";
 import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
@@ -822,6 +823,11 @@ const previewServerSourcePlugin = ${
 const previewSvgIsolationPlugin = ${
     mode === "preview-server" ? svgIsolationVitePluginSource() : "null"
   };
+// Inert unless the container acceptance job turns it on; see
+// theme-preview-request-trace.ts.
+const previewRequestTracePlugin = ${
+    mode === "preview-server" ? themePreviewRequestTracePluginSource() : "null"
+  };
 // A Theme's root-path public/ URL (\`/images/hero.png\`) served from under the
 // preview's base, as the storefront serves it at the root; see
 // theme-preview-root-public.ts. Preview only: builds keep Vite's own serving.
@@ -1031,6 +1037,7 @@ export default defineConfig({
     // preview's own middleware comes first so its endpoints answer before
     // the Worker does. No debugger port, no persisted state: the Worker has
     // no bindings to persist.
+    ...(previewRequestTracePlugin ? [previewRequestTracePlugin] : []),
     ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewContentPlugin ? [previewContentPlugin] : []),
@@ -1050,6 +1057,7 @@ export default defineConfig({
     // Static Start artifacts use the native client compiler too, so local
     // .server implementations are removed. Only the legacy live preview
     // and non-Start Themes retain the shared server-module stubs.
+    ...(previewRequestTracePlugin ? [previewRequestTracePlugin] : []),
     ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewHealthPlugin ? [previewHealthPlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),

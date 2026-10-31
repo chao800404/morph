@@ -3,6 +3,12 @@ import {
   type ThemeFrameworkAdapter,
 } from "../theme-framework";
 import {
+  parsePreviewRequestTraceRecords,
+  PREVIEW_REQUEST_TRACE_ENV,
+  PREVIEW_REQUEST_TRACE_RECORD_PATH,
+  PREVIEW_REQUEST_TRACE_STATUS_PATH,
+} from "./theme-preview-request-trace";
+import {
   registeredThemeToolchains,
   themeToolchainForFramework,
 } from "../theme-framework/theme-toolchains";
@@ -363,6 +369,13 @@ type StartObservation = {
     action: "reused" | "restarted" | "started";
     runningProcessId: string | null;
     processId: string | null;
+    /**
+     * Present, and true, only when this start handed the Vite process the
+     * container-side request record's switch (theme-preview-request-trace.ts):
+     * the record's health signal on the Worker's side. Absent otherwise, so a
+     * deployment's log is unchanged.
+     */
+    requestTrace?: true;
   };
   address?: { reused: boolean; digest: string | null };
   /** Why the start left the workspace marked untrusted instead of succeeding. */
@@ -424,7 +437,27 @@ export type CloudflareSandboxVitePreviewServerOptions = Readonly<{
   /** Idle time after which the container may be reclaimed. */
   sleepAfter?: string | number;
   maxLogLines?: number;
+  /**
+   * Starts Vite with the container-side request record on
+   * (theme-preview-request-trace.ts). Diagnostics for the container
+   * acceptance job only; never set in production.
+   */
+  requestTrace?: boolean;
 }>;
+
+/** Request record lines per log line: each line stays some 15 KB. */
+const REQUEST_TRACE_RECORDS_PER_LINE = 100;
+
+/** Per preview and Vite process, the last record line this isolate logged. */
+const requestTraceLoggedThrough = new Map<string, number>();
+
+function readFailure(error: unknown): "missing" | "unreadable" {
+  // The SDK answers a file that is not there with FileNotFoundError.
+  return (error as { name?: unknown } | null)?.name === "FileNotFoundError" ||
+    /not found|no such file|ENOENT/i.test(String(error))
+    ? "missing"
+    : "unreadable";
+}
 
 export class CloudflareSandboxVitePreviewServer {
   private readonly sandboxBinding?: unknown;
@@ -434,6 +467,7 @@ export class CloudflareSandboxVitePreviewServer {
   private readonly stopTimeoutMs: number;
   private readonly sleepAfter: string | number;
   private readonly maxLogLines: number;
+  private readonly requestTrace: boolean;
 
   constructor(options: CloudflareSandboxVitePreviewServerOptions = {}) {
     this.sandboxBinding = options.sandboxBinding;
@@ -445,6 +479,7 @@ export class CloudflareSandboxVitePreviewServer {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
     this.sleepAfter = options.sleepAfter ?? "10m";
     this.maxLogLines = options.maxLogLines ?? 200;
+    this.requestTrace = options.requestTrace === true;
   }
 
   private async acquire(previewId: string): Promise<PreviewServerSession> {
@@ -467,8 +502,17 @@ export class CloudflareSandboxVitePreviewServer {
     const inflight = enterPreviewStart(input.previewId);
     const startedAt = new Date().toISOString();
     let result: StartPreviewServerResult | null = null;
+    let requestTraceStatus: unknown;
+    let requestTraceRecord: unknown;
     try {
       result = await this.startObserved(input, observation);
+      if (this.requestTrace && result.ok) {
+        requestTraceStatus = await this.readRequestTraceStatus(input.previewId);
+        requestTraceRecord = await this.readRequestTraceRecord(
+          input.previewId,
+          observation.attemptId,
+        );
+      }
       return { ...result, attemptId: observation.attemptId };
     } finally {
       inflight.leave();
@@ -485,9 +529,129 @@ export class CloudflareSandboxVitePreviewServer {
         vite: observation.vite ?? null,
         address: observation.address ?? null,
         failedClosed: observation.failedClosed ?? null,
+        ...(requestTraceStatus !== undefined ? { requestTraceStatus } : {}),
+        ...(requestTraceRecord !== undefined ? { requestTraceRecord } : {}),
         ...(result?.ok ? { timings: result.timings } : {}),
       });
     }
+  }
+
+  /**
+   * The container-side request record's own state
+   * (theme-preview-request-trace.ts), read back through the sandbox's file
+   * API: its health signal when the container's log holds none of it. Only
+   * the record's three fields are kept; anything else reads as what it is.
+   */
+  private async readRequestTraceStatus(previewId: string): Promise<
+    | {
+        pid: number | null;
+        httpServer: boolean | null;
+        writeError: string | null;
+        capped: boolean | null;
+      }
+    | "missing"
+    | "unreadable"
+  > {
+    try {
+      const session = await this.acquire(previewId);
+      if (!session.readFile) return "unreadable";
+      const value = await session.readFile(PREVIEW_REQUEST_TRACE_STATUS_PATH, {
+        encoding: "utf-8",
+      });
+      const text =
+        typeof value === "string"
+          ? value
+          : typeof value.content === "string"
+            ? value.content
+            : null;
+      if (text === null) return "unreadable";
+      const parsed = JSON.parse(text.slice(0, 512)) as Record<string, unknown>;
+      return {
+        pid: typeof parsed.pid === "number" ? parsed.pid : null,
+        httpServer:
+          typeof parsed.httpServer === "boolean" ? parsed.httpServer : null,
+        writeError:
+          typeof parsed.writeError === "string"
+            ? parsed.writeError.slice(0, 40)
+            : null,
+        capped: typeof parsed.capped === "boolean" ? parsed.capped : null,
+      };
+    } catch (error) {
+      return readFailure(error);
+    }
+  }
+
+  /**
+   * The container-side request record itself, read back the same way and
+   * written to this log in parts, so the job log holds what the container's
+   * own log could not. Read only after a start completes, never after a
+   * failed request. Lines already logged by this isolate for the same Vite
+   * process are left out; one logged twice by another isolate carries the
+   * same process id and line number.
+   */
+  private async readRequestTraceRecord(
+    previewId: string,
+    attemptId: string,
+  ): Promise<
+    | {
+        chars: number;
+        records: number;
+        logged: number;
+        invalid: number;
+        readMs: number;
+      }
+    | "missing"
+    | "unreadable"
+  > {
+    const readStarted = Date.now();
+    let text: string | null;
+    try {
+      const session = await this.acquire(previewId);
+      if (!session.readFile) return "unreadable";
+      const value = await session.readFile(PREVIEW_REQUEST_TRACE_RECORD_PATH, {
+        encoding: "utf-8",
+      });
+      text =
+        typeof value === "string"
+          ? value
+          : typeof value.content === "string"
+            ? value.content
+            : null;
+    } catch (error) {
+      return readFailure(error);
+    }
+    if (text === null) return "unreadable";
+    const readMs = Date.now() - readStarted;
+    const { records, invalid } = parsePreviewRequestTraceRecords(text);
+    const fresh = records.filter((record) => {
+      if (typeof record.pid !== "number" || typeof record.n !== "number") {
+        return true;
+      }
+      const key = `${previewId}:${record.pid}`;
+      if (record.n <= (requestTraceLoggedThrough.get(key) ?? 0)) return false;
+      requestTraceLoggedThrough.set(key, record.n);
+      return true;
+    });
+    const parts = Math.ceil(fresh.length / REQUEST_TRACE_RECORDS_PER_LINE);
+    for (let part = 0; part < parts; part++) {
+      logPreviewServerEvent("request-trace", {
+        attemptId,
+        previewId,
+        part: part + 1,
+        parts,
+        records: fresh.slice(
+          part * REQUEST_TRACE_RECORDS_PER_LINE,
+          (part + 1) * REQUEST_TRACE_RECORDS_PER_LINE,
+        ),
+      });
+    }
+    return {
+      chars: text.length,
+      records: records.length,
+      logged: fresh.length,
+      invalid,
+      readMs,
+    };
   }
 
   /**
@@ -1145,6 +1309,7 @@ export class CloudflareSandboxVitePreviewServer {
         action: alreadyServing ? "restarted" : "started",
         runningProcessId: alreadyServing?.id ?? null,
         processId: null,
+        ...(this.requestTrace ? { requestTrace: true as const } : {}),
       };
       // Stamped before the server starts, so its Worker names this server
       // and no earlier one on the address probe (docs/astro-theme-plan.md
@@ -1172,7 +1337,11 @@ export class CloudflareSandboxVitePreviewServer {
           // Nothing from Morph's own environment. The preview holds no
           // credential, and its capability is the preview URL alone; a
           // framework's dev server gets only what its adapter declares.
-          env: { NODE_ENV: "development", ...devServer?.env },
+          env: {
+            NODE_ENV: "development",
+            ...(this.requestTrace ? { [PREVIEW_REQUEST_TRACE_ENV]: "1" } : {}),
+            ...devServer?.env,
+          },
           ...(devServer ? { cwd: prepared.workspaceRoot } : {}),
           onOutput: (_stream, data) => {
             addLog(data);

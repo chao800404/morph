@@ -136,7 +136,14 @@ export function createServerThemePreviewServer(
     return {
       enabled: true,
       kind: "cloudflare-sandbox",
-      server: new CloudflareSandboxVitePreviewServer({ sandboxBinding }),
+      server: new CloudflareSandboxVitePreviewServer({
+        sandboxBinding,
+        // Container-side request record for the container acceptance job;
+        // see theme-preview-request-trace.ts. Never in production.
+        requestTrace:
+          readString(bindings.MORPH_PREVIEW_REQUEST_TRACE) === "1" &&
+          !isProductionEnvironment(bindings),
+      }),
       previewHostname: host.hostname,
       admitAddress: ({ url, env: requestEnv }) =>
         validateExposedPreviewUrl({ url, hostname: host.hostname, env: requestEnv }),
