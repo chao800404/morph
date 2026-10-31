@@ -174,6 +174,121 @@ describe("bounded recovery of SDK module routing failures", () => {
   });
 });
 
+describe("revalidation headers toward the container", () => {
+  // A 304 has no body, and a bodiless first response on a fresh pooled
+  // container-port tunnel gets the next request on it closed
+  // (cloudflare/workerd#7597). Vite answers a module read without these
+  // with 200.
+  const revalidation = {
+    "If-None-Match": '"v1"',
+    "If-Modified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
+  };
+  // Not a cache shortcut: never removed, on any request.
+  const preconditions = {
+    "If-Match": '"v1"',
+    "If-Unmodified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
+    "If-Range": '"v1"',
+    Range: "bytes=0-99",
+  };
+  const kept = {
+    Accept: "text/javascript",
+    "Accept-Encoding": "gzip",
+    "Cache-Control": "max-age=0",
+    Referer: "https://preview.example/",
+    "X-Theme-Header": "kept",
+  };
+
+  it.each([
+    "/src/components/Hero.tsx",
+    "/@vite/client",
+    "/__morph-theme-preview__/src/styles/global.css",
+  ])(
+    "drops only If-None-Match and If-Modified-Since from the module read %s",
+    async (path) => {
+      const input = new Request(`https://preview.example${path}?t=1`, {
+        headers: { ...revalidation, ...preconditions, ...kept },
+      });
+      const success = new Response("body");
+      const proxy = vi.fn().mockResolvedValue(success);
+      expect(await proxyPreviewModuleRequest(input, proxy, vi.fn())).toBe(
+        success,
+      );
+      expect(proxy).toHaveBeenCalledTimes(1);
+      const sent = proxy.mock.calls[0]![0] as Request;
+      expect(sent.url).toBe(input.url);
+      expect(sent.method).toBe("GET");
+      for (const name of Object.keys(revalidation)) {
+        expect(sent.headers.has(name)).toBe(false);
+      }
+      // If-Range stays with Range: dropping one without the other would
+      // change what a partial read returns.
+      for (const [name, value] of Object.entries({
+        ...preconditions,
+        ...kept,
+      })) {
+        expect(sent.headers.get(name)).toBe(value);
+      }
+      // The caller's request is not altered.
+      expect(input.headers.get("If-None-Match")).toBe('"v1"');
+    },
+  );
+
+  it("drops them from every retry of an interrupted module", async () => {
+    const proxy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Proxy routing error", { status: 500 }),
+      )
+      .mockResolvedValueOnce(new Response("export default {}"));
+    await proxyPreviewModuleRequest(
+      new Request("https://preview.example/src/components/Hero.tsx", {
+        headers: { ...revalidation, ...kept },
+      }),
+      proxy,
+      vi.fn().mockResolvedValue(undefined),
+    );
+    expect(proxy).toHaveBeenCalledTimes(2);
+    for (const [sent] of proxy.mock.calls as [Request][]) {
+      expect(sent.headers.has("If-None-Match")).toBe(false);
+      expect(sent.headers.get("Accept")).toBe(kept.Accept);
+    }
+  });
+
+  it.each([
+    ["/", "GET"],
+    ["/products/hat", "GET"],
+    ["/public/logo.png", "GET"],
+    ["/api/item", "GET"],
+    ["/src/components/Hero.tsx", "HEAD"],
+    ["/api/item", "POST"],
+    ["/api/item", "PUT"],
+    ["/api/item", "DELETE"],
+  ])(
+    "sends %s %s on exactly as it came, every condition included",
+    async (path, method) => {
+      const input = new Request(`https://preview.example${path}`, {
+        method,
+        headers: { ...revalidation, ...preconditions, ...kept },
+        body: method === "POST" || method === "PUT" ? "{}" : undefined,
+      });
+      const proxy = vi
+        .fn()
+        .mockResolvedValue(new Response(method === "HEAD" ? null : "done"));
+      await proxyPreviewModuleRequest(input, proxy, vi.fn());
+      expect(proxy.mock.calls).toEqual([[input]]);
+    },
+  );
+
+  it("sends a module read with no revalidation header on as it is", async () => {
+    const input = new Request("https://preview.example/src/main.tsx", {
+      headers: { ...preconditions, ...kept },
+    });
+    const proxy = vi.fn().mockResolvedValue(new Response("body"));
+    await proxyPreviewModuleRequest(input, proxy, vi.fn());
+    expect(proxy.mock.calls).toEqual([[input]]);
+  });
+});
+
 describe("uncacheablePreviewError", () => {
   it("forbids storing a refusal, keeping everything else about it", async () => {
     const refused = new Response(
