@@ -1559,3 +1559,74 @@ describe("published content endpoint", () => {
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });
+
+/**
+ * M1 source isolation, G3 — a characterization, not a guarantee
+ * (handoff/2026-10-27/m1-item4-source-isolation-audit.md §3, §4.2).
+ *
+ * A page request is resolved to the active release, and the Theme Worker is
+ * told which (`x-morph-release-id`). The Theme's content read
+ * (`/_morph/content`) resolves the active release again, on its own. So a
+ * render that straddles a publish or a rollback can read content from a
+ * release other than the one its page was resolved to. Whether one render
+ * should be pinned to one release is undecided (a user decision): this test
+ * records what happens today, so that a change to it is seen.
+ */
+describe("a content read during a release change (G3, current behaviour)", () => {
+  it("reads the release active when the read is made, not the one the page request named", async () => {
+    const reads: string[] = [];
+    const releases = [
+      { id: "rel_1", contentPublicationId: "pub_1" },
+      { id: "rel_2", contentPublicationId: "pub_2" },
+    ];
+    let active = 0;
+    const base = resolverDeps();
+    const service = new StorefrontProductionService({
+      runtime: { kind: "local-direct", handle: vi.fn() } as never,
+      r2Bucket: r2(),
+      resolverDeps: {
+        ...base,
+        releaseDal: {
+          getActive: async () => ({
+            ...(await base.releaseDal!.getActive("sf_1" as never))!,
+            ...releases[active]!,
+          }),
+        },
+      },
+      contentPorts: {
+        getPublishedDocument: vi.fn(
+          async (input: { publicationId: string }) => {
+            reads.push(input.publicationId);
+            return {
+              sections: [
+                {
+                  id: "starter-hero",
+                  enabled: true,
+                  props: { heading: input.publicationId },
+                },
+              ],
+            };
+          },
+        ),
+      } as never,
+    });
+
+    // The page was resolved to release 1; it is published over before the
+    // Theme reads its content, naming release 1 as the page request did.
+    active = 1;
+    const res = await service.handleRequest(
+      req("/_morph/content?path=/", {
+        headers: { "x-morph-release-id": "rel_1" },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      slots: { "starter-hero": { heading: "pub_2" } },
+      hiddenSlots: [],
+    });
+    // Today: release 2's publication, whatever the page request named.
+    expect(reads.every((publication) => publication === "pub_2")).toBe(true);
+    expect(res.headers.get("ETag")).toContain("rel_2");
+  });
+});
