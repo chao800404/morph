@@ -1,3 +1,4 @@
+import { localThemeTransportAllowed } from "./local-theme-transport";
 import { normalizeStorefrontHostname } from "./storefront-host-resolver";
 import {
   DispatchNamespaceThemeRuntime,
@@ -311,12 +312,22 @@ export function createThemeRuntime(
     return new DispatchNamespaceThemeRuntime(dispatcher);
   }
 
+  // A blank origin is not configured, so it gets the "not configured" reason
+  // below rather than the production/credential refusal.
   const localOrigin =
-    typeof environment?.MORPH_LOCAL_THEME_ORIGIN === "string"
+    typeof environment?.MORPH_LOCAL_THEME_ORIGIN === "string" &&
+    environment.MORPH_LOCAL_THEME_ORIGIN.trim() !== ""
       ? environment.MORPH_LOCAL_THEME_ORIGIN
       : null;
   if (localOrigin) {
-    return new LocalDirectThemeRuntime(localOrigin);
+    // Same predicate as the deployer factory: a deployment that would be
+    // refused here must not leave a runtime that still forwards locally.
+    if (localThemeTransportAllowed(environment)) {
+      return new LocalDirectThemeRuntime(localOrigin);
+    }
+    return new UnavailableThemeRuntime(
+      "Storefront runtime is not configured: MORPH_LOCAL_THEME_ORIGIN is only used for local development (not in production, and not when Cloudflare credentials are set). Bind THEME_WORKER to the deployed Theme Worker.",
+    );
   }
 
   return new UnavailableThemeRuntime(
