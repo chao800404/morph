@@ -29,7 +29,15 @@ export const THEME_MORPH_SDK_ROOT = ".morph/sdk";
 export const THEME_MORPH_SDK_MODULES: Readonly<Record<string, string>> = {
   "@morph/sdk": `${THEME_MORPH_SDK_ROOT}/src/index.ts`,
   "@morph/sdk/start": `${THEME_MORPH_SDK_ROOT}/start/index.ts`,
+  "@morph/sdk/astro": `${THEME_MORPH_SDK_ROOT}/astro/index.ts`,
 };
+
+/**
+ * The platform's Astro middleware in a workspace (`@morph/sdk/astro`'s
+ * per-render request), which Morph's Astro integrations add with
+ * `addMiddleware`. Workspace-relative.
+ */
+export const THEME_MORPH_SDK_ASTRO_MIDDLEWARE = `${THEME_MORPH_SDK_ROOT}/astro/middleware.ts`;
 
 /**
  * How a build names the SDK it was built with.

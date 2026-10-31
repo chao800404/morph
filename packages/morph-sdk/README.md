@@ -2,7 +2,7 @@
 
 One framework-agnostic core for reading published Morph content and public products. It imports nothing outside this folder: no React, TanStack Start, Astro or Morph server code. It talks to Morph over HTTP only.
 
-The contract is proposed in [draft PR #245](https://github.com/chao800404/morph/pull/245). It is **not published to npm**. The app's own code does not import it; the platform copies it into every TanStack Start Theme workspace (see "How a Theme gets the SDK"). `start/` is the platform's thin entry for a hosted Start Theme (`@morph/sdk/start`). The Starter migration comes later.
+The contract is proposed in [draft PR #245](https://github.com/chao800404/morph/pull/245). It is **not published to npm**. The app's own code does not import it; the platform copies it into every TanStack Start and Astro Theme workspace (see "How a Theme gets the SDK"). `start/` is the platform's thin entry for a hosted Start Theme (`@morph/sdk/start`); `astro/` is the one for a hosted Astro Theme (`@morph/sdk/astro`, see "Astro"). The Starter migration comes later.
 
 ```ts
 import { createMorph, MorphError } from "@morph/sdk";
@@ -61,11 +61,34 @@ Every failure throws a `MorphError` with a `code`, a `resource` (`"page"`, `"pro
 
 `no_content_source` is in the type for parity with the Starter. The core never produces it, because there is always a `baseUrl`. `@morph/sdk/start` produces it when the request carries no `x-morph-content-origin` header and no development fallback applies.
 
+## Astro
+
+`@morph/sdk/astro` is the hosted Astro entry. An Astro page reads in its frontmatter exactly as ROADMAP 1.2 writes it:
+
+```astro
+---
+import { morph } from "@morph/sdk/astro";
+import Hero from "../components/Hero.astro";
+const home = await morph.pages.get("/");
+const { hero } = home;
+---
+<Hero {...hero} />
+```
+
+- **The request.** Astro has no `getRequest()`, and a module a page imports does not see `Astro.request`. So the platform's middleware (`astro/middleware.ts`) runs every render inside an AsyncLocalStorage that holds that render's request. Each read takes the request from there.
+- **Wiring.** Morph's own Astro integrations add the middleware with `addMiddleware({ order: "pre" })`: the Live Preview's (`astro-preview-workspace.ts`) and the build's (`astro-native-prerender.ts`). It runs before any middleware of the author's. The author writes no middleware and no reader, and their `astro.config.*` is not changed.
+- **Source.** The source is the platform's `x-morph-content-origin` header only. On the public site Core sets it; in the Live Preview the preview Worker sets it, for the draft snapshot; when prerendering, the build's wrapper sets it, for the sealed snapshot.
+- **Failures.**
+  - A read outside a wired render, or a request without the header, fails with `no_content_source`. It never falls back to default content.
+  - Reading published content on the author's own machine is deferred, but must stay possible (docs/content-read-core-design.md §4.7).
+- **AsyncLocalStorage on Workers.** The official `@astrojs/cloudflare` adapter already adds `nodejs_als` to the Worker config it writes, when no ALS-capable flag is set. Morph adds nothing.
+- **Build identity.** An Astro build names the SDK it carries in its compiler version, as a Start build does: `<astro>+morph-sdk.<16 hex>`.
+
 ## How a Theme gets the SDK
 
 A Theme does not install the SDK or own its files. The platform puts a copy in each build workspace, so the code a Theme runs is the code these tests ran.
 
-1. **Sources.** `packages/morph-sdk/src/*.ts` and `packages/morph-sdk/start/*.ts`. Test files are left out.
+1. **Sources.** `packages/morph-sdk/src/*.ts`, `packages/morph-sdk/start/*.ts` and `packages/morph-sdk/astro/*.ts`. Test files are left out.
 2. **Generator.** `scripts/generate-morph-sdk-sources.mjs` is the only way the generated module is produced. Run `pnpm generate:morph-sdk` after any SDK change and commit the result.
    - It refuses an import that would not resolve in a workspace. Only the copy itself and `@tanstack/react-start` (and `/server`) are allowed.
    - `--check` (`pnpm check:morph-sdk-sources`) writes nothing. It exits 1 when the committed module is stale.
@@ -73,12 +96,12 @@ A Theme does not install the SDK or own its files. The platform puts a copy in e
 3. **Generated module.** `src/lib/storefront/compiler/morph-sdk-sources.generated.ts` (do not edit) exports:
    - `GENERATED_MORPH_SDK_SOURCES`: the files, at `.morph/sdk/src/*` and `.morph/sdk/start/*`;
    - `MORPH_SDK_SOURCE_HASH`: SHA-256 of the UTF-8 JSON `[[path, content], …]`, in path order.
-4. **Workspace.** `theme-morph-sdk.ts` hands the files to every TanStack Start workspace under `.morph/sdk/`:
+4. **Workspace.** `theme-morph-sdk.ts` hands the files to every TanStack Start workspace, and every Astro preview and build workspace (`astro-preview-workspace.ts`, `astro-native-prerender.ts`), under `.morph/sdk/`:
    - the platform preview and build (`theme-sandbox-workspace.ts`, Themes with a route registry);
    - the local platform build runner (`local-vite-theme-build-runner.ts`), which writes the same files and aliases into its own configs;
    - the native Start build (`tanstack-start-native-build.ts`).
    A Theme file at the same path is replaced, never used.
-5. **Aliases.** The generated Vite config (`theme-sandbox-workspace.ts`), the local runner's in-process configs (`themeMorphSdkAliases`) and the native wrapper (`tanstack-start-native-wrapper.ts`) map the exact names `@morph/sdk` → `.morph/sdk/src/index.ts` and `@morph/sdk/start` → `.morph/sdk/start/index.ts`. They come before the Theme's own aliases. Any other `@morph/…` name is an unapproved package.
+5. **Aliases.** The generated Vite config (`theme-sandbox-workspace.ts`), the local runner's in-process configs (`themeMorphSdkAliases`) and the native wrapper (`tanstack-start-native-wrapper.ts`) map the exact names `@morph/sdk` → `.morph/sdk/src/index.ts`, `@morph/sdk/start` → `.morph/sdk/start/index.ts` and `@morph/sdk/astro` → `.morph/sdk/astro/index.ts`. They come before the Theme's own aliases. Any other `@morph/…` name is an unapproved package.
 
 ### Build identity
 

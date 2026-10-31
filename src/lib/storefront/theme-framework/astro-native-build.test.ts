@@ -54,7 +54,10 @@ describe("an Astro plan's Wrangler config", () => {
         ...withoutWrangler(),
         { path: "wrangler.jsonc", content: config },
       ]);
-      expect(plan).toMatchObject({ ok: false, code: "NATIVE_BINDINGS_UNMAPPED" });
+      expect(plan).toMatchObject({
+        ok: false,
+        code: "NATIVE_BINDINGS_UNMAPPED",
+      });
     }
   });
 });
@@ -80,7 +83,8 @@ describe("a native build's source", () => {
       { path: "vite.config.ts", content: "export default {};" },
       {
         path: "wrangler.jsonc",
-        content: '{ "name": "x", "main": "@tanstack/react-start/server-entry" }',
+        content:
+          '{ "name": "x", "main": "@tanstack/react-start/server-entry" }',
       },
     ];
     expect(planNativeStartBuild(start).ok).toBe(true);
@@ -93,10 +97,15 @@ describe("a native build's source", () => {
 });
 
 const enc = (value: unknown) => JSON.stringify(value);
-const built = (worker: Record<string, unknown>, extra: Record<string, string> = {}) =>
+const built = (
+  worker: Record<string, unknown>,
+  extra: Record<string, string> = {},
+) =>
   new Map(
     Object.entries({
-      ".wrangler/deploy/config.json": enc({ configPath: "../../dist/server/wrangler.json" }),
+      ".wrangler/deploy/config.json": enc({
+        configPath: "../../dist/server/wrangler.json",
+      }),
       "dist/server/wrangler.json": enc({
         main: "entry.mjs",
         assets: { binding: "ASSETS", directory: "../client" },
@@ -112,9 +121,15 @@ const built = (worker: Record<string, unknown>, extra: Record<string, string> = 
 describe("the Worker config an Astro build wrote", () => {
   it("passes with the adapter's own defaults, and leaves the tool state out", () => {
     const artifact = collectNativeAstroArtifact(
-      built({ compatibility_date: "2026-10-01", compatibility_flags: [], kv_namespaces: [] }),
+      built({
+        compatibility_date: "2026-10-01",
+        compatibility_flags: [],
+        kv_namespaces: [],
+      }),
     );
-    expect([...artifact.files.keys()].some((path) => path.includes(".wrangler"))).toBe(false);
+    expect(
+      [...artifact.files.keys()].some((path) => path.includes(".wrangler")),
+    ).toBe(false);
   });
 
   it("is refused when it declares a binding Morph cannot map, whoever wrote it", () => {
@@ -134,5 +149,27 @@ describe("the Worker config an Astro build wrote", () => {
         built({}, { "dist/server/.wrangler/state/v3/kv/data.sqlite": "state" }),
       ),
     ).toThrow(/^NATIVE_ARTIFACT_TOOL_STATE: /);
+  });
+});
+
+describe("an Astro build and @morph/sdk/astro", () => {
+  it("carries the platform's SDK copy and names it in the build's identity", async () => {
+    const { themeMorphSdkFiles, themeMorphSdkSourceHash } =
+      await import("../compiler/theme-morph-sdk");
+    const { nativeAstroCompilerIdentity } =
+      await import("./astro-native-build");
+    const plan = planNativeAstroBuild(astroThemeFiles());
+    if (!plan.ok) throw new Error("fixture: the plan is refused");
+    const planned = new Map(
+      plan.workspaceFiles.map((file) => [file.path, file.content]),
+    );
+    for (const sdk of themeMorphSdkFiles()) {
+      expect(planned.get(sdk.path), sdk.path).toBe(sdk.content);
+    }
+    expect(
+      nativeAstroCompilerIdentity().version.endsWith(
+        `+morph-sdk.${themeMorphSdkSourceHash().slice(0, 16)}`,
+      ),
+    ).toBe(true);
   });
 });

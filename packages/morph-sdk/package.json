@@ -6,7 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./start": "./start/index.ts"
+    "./start": "./start/index.ts",
+    "./astro": "./astro/index.ts",
+    "./astro/middleware": "./astro/middleware.ts"
   },
   "peerDependencies": {
     "@tanstack/react-start": "1.168.32"

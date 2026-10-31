@@ -1,3 +1,8 @@
+import {
+  THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+  themeMorphSdkAliasesSource,
+  themeMorphSdkFiles,
+} from "../compiler/theme-morph-sdk";
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
 import { GENERATED_PREVIEW_BRIDGE_SOURCES } from "../compiler/preview-bridge-sources.generated";
 import {
@@ -221,14 +226,20 @@ const previewServerSourcePlugin = ${themePreviewServerSourcePluginSource()};
 const previewSvgIsolationPlugin = ${svgIsolationVitePluginSource()};
 const previewContentPlugin = ${themePreviewContentPluginSource()};
 const previewHttpHmrPlugin = ${previewHttpHmrPluginSource()};
+// The platform's copy of the Morph SDK (.morph/sdk/), by its exact names.
+const morphSdkAliases = ${themeMorphSdkAliasesSource("workspaceRoot")};
 
 export function morphAstroPreview() {
   return {
     name: "morph:astro-preview",
     hooks: {
-      "astro:config:setup": ({ updateConfig }) => {
+      "astro:config:setup": ({ updateConfig, addMiddleware }) => {
+        // Each render runs as its own request's, so @morph/sdk/astro reads
+        // the draft source this preview names; before the author's own.
+        addMiddleware({ order: "pre", entrypoint: path.join(workspaceRoot, ${JSON.stringify(THEME_MORPH_SDK_ASTRO_MIDDLEWARE)}) });
         updateConfig({
           vite: {
+            resolve: { alias: morphSdkAliases },
             cacheDir: depsCacheDir,
             plugins: [
               previewServerSourcePlugin,
@@ -355,6 +366,8 @@ export function planAstroPreviewWorkspace(
       ),
     },
     { path: THEME_PREVIEW_START_CLIENT_PATH, content: astroPreviewClientSource() },
+    // The SDK the Theme reads content with, as every Start workspace has it.
+    ...themeMorphSdkFiles(),
     ...GENERATED_PREVIEW_BRIDGE_SOURCES.map((module) => ({
       path: module.path,
       content: module.content,

@@ -48,11 +48,27 @@ const headline = await heroHeadline(Astro.request, "/");
 <html><head><title>${marker}</title></head><body><Hero headline={headline} /><p data-marker>${marker}</p></body></html>
 `;
 
+/** ROADMAP 1.2's Astro pattern: the platform's SDK, nothing else wired. */
+const SDK_PAGE = `---
+import { morph } from "@morph/sdk/astro";
+import Hero from "../components/Hero.astro";
+export const prerender = false;
+const home = await morph.pages.get("/");
+const { hero } = home;
+---
+<html><body><Hero {...hero} /></body></html>
+`;
+
 const files = astroThemeFiles({
-  extra: [{ path: "src/pages/live.astro", content: PAGE("live-v1") }],
+  extra: [
+    { path: "src/pages/live.astro", content: PAGE("live-v1") },
+    { path: "src/pages/sdk.astro", content: SDK_PAGE },
+  ],
 });
 const previewContent = {
-  templates: { index: { slots: { hero: { headline: DRAFT } }, hiddenSlots: [] } },
+  templates: {
+    index: { slots: { hero: { headline: DRAFT } }, hiddenSlots: [] },
+  },
   pages: {},
 };
 
@@ -114,7 +130,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server?.stop(PREVIEW_ID).catch(() => {});
-  await fs.rm(WORKSPACES_ROOT, { recursive: true, force: true }).catch(() => {});
+  await fs
+    .rm(WORKSPACES_ROOT, { recursive: true, force: true })
+    .catch(() => {});
 }, 60_000);
 
 describe.skipIf(!available)(
@@ -133,10 +151,24 @@ describe.skipIf(!available)(
       const html = await (await fetch(`${origin}/live`)).text();
       expect(html).toContain(DRAFT);
       const head = /<head>([\s\S]*?)<\/head>/.exec(html)?.[1] ?? "";
-      expect(head.indexOf(`/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBeGreaterThan(-1);
+      expect(
+        head.indexOf(`/${THEME_PREVIEW_START_CLIENT_PATH}`),
+      ).toBeGreaterThan(-1);
       expect(head.indexOf(`/${THEME_PREVIEW_START_CLIENT_PATH}`)).toBeLessThan(
         head.indexOf("<title>"),
       );
+    });
+
+    it("a page reading with @morph/sdk/astro renders the draft, through the platform's middleware", async () => {
+      // The author wrote no middleware and no reader: the read gets the
+      // draft source the preview Worker names on the request.
+      expect(files.some((file) => file.path === "src/middleware.ts")).toBe(
+        false,
+      );
+      const response = await fetch(`${origin}/sdk`);
+      const html = await response.text();
+      expect(response.status, html.slice(0, 500)).toBe(200);
+      expect(html).toContain(DRAFT);
     });
 
     it("injects into a page written without a <head>, and into a prerendered one", async () => {
@@ -169,7 +201,11 @@ describe.skipIf(!available)(
       ]);
       expect(written.changed).toEqual(["src/pages/live.astro"]);
       let types: string[] = [];
-      for (let attempt = 0; attempt < 20 && !types.includes("full-reload"); attempt++) {
+      for (
+        let attempt = 0;
+        attempt < 20 && !types.includes("full-reload");
+        attempt++
+      ) {
         const relayed = (await (
           await fetch(`${origin}/_morph/hmr?after=${cursor.sequence}`)
         ).json()) as { entries: Array<{ payload: { type: string } }> };
@@ -183,19 +219,24 @@ describe.skipIf(!available)(
     // page as a ticketed snapshot, confirmed through the Worker before a
     // page may reload; a late older one never replaces a newer one.
     it("keeps the newest content snapshot, whatever order they arrive in", async () => {
-
       // A, then C; B, taken between them, arrives last.
-      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-A", 101))).toEqual({
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-A", 101)),
+      ).toEqual({
         applied: true,
         ticket: 101,
       });
       expect(await shown()).toBe("A6B-A");
-      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-C", 103))).toEqual({
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-C", 103)),
+      ).toEqual({
         applied: true,
         ticket: 103,
       });
       expect(await shown()).toBe("A6B-C");
-      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-B", 102))).toEqual({
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-B", 102)),
+      ).toEqual({
         applied: false,
         reason: "PREVIEW_CONTENT_SUPERSEDED",
         ticket: 103,
@@ -235,11 +276,15 @@ describe.skipIf(!available)(
     // the dev server a snapshot was written to may confirm it.
     it("confirms a resend of the same snapshot, and refuses its ticket with other content", async () => {
       // D (104) is what the preview holds after the test above.
-      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-D", 104))).toEqual({
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-D", 104)),
+      ).toEqual({
         applied: true,
         ticket: 104,
       });
-      expect(await server.writeContent(PREVIEW_ID, await snapshot("A6B-E", 104))).toEqual({
+      expect(
+        await server.writeContent(PREVIEW_ID, await snapshot("A6B-E", 104)),
+      ).toEqual({
         applied: false,
         reason: "PREVIEW_CONTENT_TICKET_CONFLICT",
         ticket: 104,
@@ -258,12 +303,18 @@ describe.skipIf(!available)(
       const f = await snapshot("A6B-F", 105);
       await fs.writeFile(
         contentFile,
-        JSON.stringify({ ...JSON.parse(f), previewInstance: "an-earlier-server" }),
+        JSON.stringify({
+          ...JSON.parse(f),
+          previewInstance: "an-earlier-server",
+        }),
       );
       await expect.poll(shown, { timeout: 10_000 }).toBe("A6B-F");
       expect(
         await server.writeContent(PREVIEW_ID, f, { confirmTimeoutMs: 3_000 }),
-      ).toMatchObject({ applied: false, reason: "PREVIEW_CONTENT_NOT_CONFIRMED" });
+      ).toMatchObject({
+        applied: false,
+        reason: "PREVIEW_CONTENT_NOT_CONFIRMED",
+      });
       // Written by this server's transport, stamped with this server: G is
       // confirmed.
       expect(
@@ -279,8 +330,14 @@ describe.skipIf(!available)(
         ticket: 106,
       });
       expect(
-        await server.confirmContent(PREVIEW_ID, 999, { confirmTimeoutMs: 1_000 }),
-      ).toEqual({ applied: false, reason: "PREVIEW_CONTENT_NOT_CONFIRMED", ticket: 106 });
+        await server.confirmContent(PREVIEW_ID, 999, {
+          confirmTimeoutMs: 1_000,
+        }),
+      ).toEqual({
+        applied: false,
+        reason: "PREVIEW_CONTENT_NOT_CONFIRMED",
+        ticket: 106,
+      });
       expect(await shown()).toBe("A6B-G");
     });
 
