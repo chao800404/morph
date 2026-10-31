@@ -1050,16 +1050,23 @@ export type PatchClassNameResult = {
   reason?: "not-found" | "dynamic-classname" | "parse-error";
 };
 
+/** A `[start, end)` range of the source an edit cut out or moved. */
+export type SourceSpan = Readonly<{ start: number; end: number }>;
+
 export type SwapSiblingMorphNodesResult = {
   code: string;
   editable: boolean;
   reason?: "parse-error" | "not-found" | "not-siblings" | "same-node";
+  /** The two elements moved, in the source as it was. Set when editable. */
+  spans?: readonly SourceSpan[];
 };
 
 export type RemoveJsxElementResult = {
   code: string;
   editable: boolean;
   reason?: "parse-error" | "not-found" | "not-direct-child";
+  /** The element removed, in the source as it was. Set when editable. */
+  spans?: readonly SourceSpan[];
 };
 
 /**
@@ -1250,6 +1257,7 @@ export function swapSiblingMorphNodes(
         earlierSource +
         sourceCode.slice(later.end),
       editable: true,
+      spans: [earlier, later],
     };
   } catch {
     return { code: sourceCode, editable: false, reason: "parse-error" };
@@ -1324,6 +1332,7 @@ export function removeJsxElement(
     return {
       code: sourceCode.slice(0, start) + sourceCode.slice(end),
       editable: true,
+      spans: [{ start, end }],
     };
   } catch {
     return { code: sourceCode, editable: false, reason: "parse-error" };
