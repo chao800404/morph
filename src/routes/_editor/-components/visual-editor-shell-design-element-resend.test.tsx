@@ -1,6 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authRequired } from "@/lib/auth/auth-failure";
@@ -118,6 +124,39 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
       {children}
     </a>
   ),
+}));
+// Code mode, as visual-editor-shell-source-conflict-retry.test.tsx mounts it:
+// Monaco is a textarea; language services and formatting are inert.
+vi.mock("@monaco-editor/react", () => ({
+  default: ({
+    defaultValue,
+    onChange,
+  }: {
+    defaultValue?: string;
+    onChange?: (value?: string) => void;
+  }) => {
+    const [value, setValue] = useState(defaultValue ?? "");
+    return (
+      <textarea
+        aria-label="Code editor"
+        value={value}
+        onChange={(event) => {
+          setValue(event.currentTarget.value);
+          onChange?.(event.currentTarget.value);
+        }}
+      />
+    );
+  },
+}));
+vi.mock("./editor-code-language-support", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./editor-code-language-support")>()),
+  configureThemeTypeScript: vi.fn(),
+  disposeThemeWorkspaceModels: vi.fn(),
+  ensureThemeWorkspaceModels: vi.fn(),
+  registerTailwindCompletionProvider: vi.fn(() => ({ dispose: vi.fn() })),
+}));
+vi.mock("./editor-code-formatter", () => ({
+  formatEditorCode: vi.fn(async (content: string) => content),
 }));
 // The real panel; its props are recorded so a test can reach the shell's own
 // delete handler with a node, as the panel's confirmed Delete does.
@@ -404,7 +443,7 @@ function reorderNoteAndFine() {
   });
 }
 
-async function press(name: string) {
+async function press(name: string | RegExp) {
   const button = await screen.findByRole<HTMLButtonElement>("button", {
     name,
   });
@@ -724,5 +763,196 @@ describe("resume after an auth pause when the held file's read fails (decision Q
     await resumeAndWait();
 
     expect(sentSaves()).toHaveLength(2);
+  });
+});
+
+/** Switches to Code and opens a file there, as the author clicks its row. */
+async function openInCode(path: string) {
+  act(() => {
+    screen.getByRole("button", { name: /^Code$/ }).click();
+  });
+  const row = await waitFor(
+    () => {
+      const found = document.querySelector<HTMLElement>(
+        `[data-file-tree-file="${path}"] > div`,
+      );
+      expect(found, `the row of ${path} in the Code explorer`).not.toBeNull();
+      return found!;
+    },
+    { timeout: 15_000 },
+  );
+  act(() => {
+    fireEvent.click(row);
+  });
+  return screen.findByRole(
+    "textbox",
+    { name: "Code editor" },
+    { timeout: 15_000 },
+  );
+}
+
+/** The Save my changes of the notice whose text matches `notice`. */
+function saveMyChangesOf(notice: RegExp) {
+  const button = screen
+    .getAllByRole<HTMLButtonElement>("button", { name: "Save my changes" })
+    .find((candidate) => {
+      let node: HTMLElement | null = candidate.parentElement;
+      while (node && !notice.test(node.textContent ?? "")) {
+        node = node.parentElement;
+      }
+      return node !== null && node !== document.body;
+    });
+  expect(button, `Save my changes of the notice ${notice}`).toBeDefined();
+  return button!;
+}
+
+const HERO_FILE = "src/components/sections/GuardHero.tsx";
+const savesOf = (path: string) =>
+  sentSaves().filter((save) => save.path === path);
+const sourceConflictAt4 = async () => {
+  // Another tab saved meanwhile; the Theme read from now on is newer.
+  vi.mocked(listStorefrontThemeFiles).mockImplementation(
+    async () => ({ success: true, message: "ok", data: treeAt(4) }) as never,
+  );
+  return {
+    success: false,
+    error: "SOURCE_GENERATION_CONFLICT",
+    message:
+      "Remote source changes detected (current generation: 4): the theme working source was updated by another operation.",
+  };
+};
+
+describe("pending Design writes across paths and states (decision A)", () => {
+  // A6. The first send was refused by the server, but the answer was lost:
+  // the edit is unconfirmed. Check finds it did not land and sends it again
+  // as the same operation; the server refuses it again; that answer is
+  // known: refused and unsaved, no longer unconfirmed. No plain save.
+  it("A6: a refusal whose answer was lost: Check sends the same op, the server refuses it again, nothing plain is sent", async () => {
+    saveThemeFile.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await settled();
+    await deleteNote();
+    await waitFor(() =>
+      expect(workspaceFile()?.unconfirmedContent).toBeDefined(),
+    );
+    const held = localContent();
+    getThemeFile.mockResolvedValue(stored(SOURCE));
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
+
+    await press("Check and save");
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        DESIGN_ELEMENT_SECTIONS_MESSAGE,
+      ),
+    );
+
+    expect(sentSaves()).toHaveLength(2);
+    for (const sent of sentSaves()) {
+      expect(sent).toMatchObject({
+        path: ROUTE_FILE,
+        content: held,
+        operation: "design-element",
+        designElement: REMOVE_NOTE,
+      });
+    }
+    expect(localContent()).toBe(held);
+    expect(workspaceFile()?.dirty).toBe(true);
+    expect(workspaceFile()?.unconfirmedContent).toBeUndefined();
+  });
+
+  // A2. Two files in different pending states, Code mode open. The route
+  // holds a Design Delete still held by a pause (its read failed on resume,
+  // so it was not sent); a component the author edited in Code met a source
+  // conflict. Saving the source conflicts runs Code's save of everything
+  // unsaved: it must leave the held Design write to its own path, not send
+  // it as a plain save along the way.
+  it("A2: Save my changes for a Code file's source conflict leaves a Design Delete held by a pause unsent", async () => {
+    const held = await deleteWhilePausedThenVerify();
+    getThemeFile.mockResolvedValue({
+      success: false,
+      message: "Failed to load theme file",
+      error: "GET_FAILED",
+    });
+    await resumeAndWait();
+    expect(workspaceFile()?.authPaused).toBe(true);
+    expect(sentSaves()).toHaveLength(1);
+
+    // The author edits a component in Code; its autosave meets a Theme that
+    // moved on.
+    saveThemeFile.mockImplementationOnce(sourceConflictAt4);
+    const editor = await openInCode(HERO_FILE);
+    const edited = `${sectionComponent("GuardHero")}// edited in Code\n`;
+    fireEvent.change(editor, { target: { value: edited } });
+    await waitFor(
+      () =>
+        expect(
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(scope.storefrontId, scope.themeId)[HERO_FILE]
+            ?.sourceConflict,
+        ).toBe(true),
+      { timeout: 5_000 },
+    );
+    expect(savesOf(HERO_FILE)).toHaveLength(1);
+
+    await act(async () => {
+      saveMyChangesOf(/The source may be/).click();
+    });
+    await waitFor(() => expect(savesOf(HERO_FILE)).toHaveLength(2));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull(),
+    );
+
+    expect(savesOf(HERO_FILE)[1]).toMatchObject({ content: edited });
+    // The route was sent once, the first time, as the Design Delete; nothing
+    // sent it again, plain or otherwise.
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
+    expect(savesOf(ROUTE_FILE)[0]).toMatchObject({
+      operation: "design-element",
+      designElement: REMOVE_NOTE,
+    });
+    expect(localContent()).toBe(held);
+    expect(workspaceFile()?.authPaused).toBe(true);
+  });
+
+  // A plain save call is not the author taking the file over: Code's own
+  // Save of the very text a pending Design write wrote sends that write, as
+  // itself, for the server to judge again. Here the write was refused on its
+  // resend (Q4: kept, unsaved); the author opens the route in Code and
+  // presses Save without changing it.
+  it("Code's Save of the unchanged text of a refused Design Delete sends it as the design-element op again", async () => {
+    saveThemeFile.mockImplementationOnce(sourceConflictAt4);
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    const held = localContent();
+    const refused = async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    });
+    saveThemeFile.mockImplementationOnce(refused);
+    await press("Save my changes");
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+    await waitFor(() => expect(workspaceFile()?.saveState).toBe("error"));
+
+    saveThemeFile.mockImplementationOnce(refused);
+    await openInCode(ROUTE_FILE);
+    await press(/^Save\s*Ctrl\+S$/);
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+
+    expect(localContent()).toBe(held);
+    for (const sent of savesOf(ROUTE_FILE)) {
+      expect(sent).toMatchObject({
+        content: held,
+        operation: "design-element",
+        designElement: REMOVE_NOTE,
+      });
+    }
   });
 });

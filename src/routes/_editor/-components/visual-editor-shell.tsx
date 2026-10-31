@@ -608,7 +608,12 @@ type PendingDesignOrigin =
   | { kind: "design-element"; designElement: DesignElementOperation }
   | { kind: "code-default"; codeDefault: CodeDefaultWriteProof };
 
-type PendingDesignWrite = { content: string; origin: PendingDesignOrigin };
+type PendingDesignWrite = {
+  content: string;
+  origin: PendingDesignOrigin;
+  /** The local revision of the send that recorded it. */
+  revision: number;
+};
 
 /** The save options that send `origin` again as itself. */
 function saveOptionsForOrigin(origin: PendingDesignOrigin): {
@@ -4162,17 +4167,21 @@ export function VisualEditorShell({
     [],
   );
   /**
-   * Files Code mode must not save as its own, among `paths`: what it holds
-   * is still exactly a pending Design write, sent again as itself instead.
+   * Files Code mode must not save as its own while it saves everything
+   * unsaved: what it holds is still exactly a pending Design write. Each is
+   * left to the path that settles its own state (a source conflict, a
+   * pause, an unanswered save), whichever one is running now.
    */
-  const pendingDesignWritesAmong = useCallback((paths: readonly string[]) => {
-    const leave = new Map<string, string>();
-    for (const path of paths) {
-      const pending = pendingDesignWritesRef.current.get(path);
-      if (pending) leave.set(path, pending.content);
-    }
-    return leave;
-  }, []);
+  const pendingDesignWritesToLeave = useCallback(
+    () =>
+      new Map(
+        Array.from(
+          pendingDesignWritesRef.current,
+          ([path, pending]) => [path, pending.content] as const,
+        ),
+      ),
+    [],
+  );
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const previewHeartbeatRef = useRef<{
     key: string;
@@ -5525,6 +5534,11 @@ export function VisualEditorShell({
                 operationSave?.operation === "design-element" &&
                 res.error?.startsWith("DESIGN_ELEMENT_")
               ) {
+                // Refused, and known to be: not an unknown outcome any more,
+                // whatever an earlier unanswered send of it left marked.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markRefused(filePath, res.message, workspaceScope);
                 throw new DesignElementRefusedError(res.message);
               }
               throw new Error(res.message);
@@ -5660,23 +5674,28 @@ export function VisualEditorShell({
          * the Theme moved on, asks the structure lock again first.
          */
         structureEdit?: boolean;
+        /**
+         * The author takes the file over as theirs, in Code (Keep Mine): its
+         * text goes as a plain save even if a Design write wrote it, and that
+         * write is no longer pending.
+         */
+        codeOverwrite?: boolean;
       },
     ) => {
-      // What this write is, kept with its text for as long as the file holds
-      // it unsaved; a write that is none of these (a plain save) is the
-      // file's latest, and no earlier Design write is pending any more.
+      // What this write is. Named by the caller, or else the pending Design
+      // write whose very text this is, sent again by whoever asks (Code, a
+      // publish flush, a resend): the same write, judged the same way. Only
+      // the author taking the file over in Code, or other text, ends it.
+      const pendingWrite = pendingDesignWritesRef.current.get(filePath);
       const origin: PendingDesignOrigin | null = options?.structureEdit
         ? { kind: "structure-edit" }
         : options?.operation === "design-element" && options.designElement
           ? { kind: "design-element", designElement: options.designElement }
           : options?.operation === "code-default" && options.codeDefault
             ? { kind: "code-default", codeDefault: options.codeDefault }
-            : null;
-      if (origin) {
-        pendingDesignWritesRef.current.set(filePath, { content, origin });
-      } else {
-        pendingDesignWritesRef.current.delete(filePath);
-      }
+            : !options?.codeOverwrite && pendingWrite?.content === content
+              ? pendingWrite.origin
+              : null;
       // Recorded here rather than at each call site: reordering siblings,
       // reordering sections, adding one and saving in Code mode all write a
       // whole file through this one path, and each would otherwise need its own
@@ -5721,6 +5740,17 @@ export function VisualEditorShell({
       );
 
       const nextRevision = saveQueueRef.current.claimRevision(opKey);
+      // Kept with its text and this send's local revision for as long as the
+      // file holds it unsaved; the revision says which send owns the record.
+      if (origin) {
+        pendingDesignWritesRef.current.set(filePath, {
+          content,
+          origin,
+          revision: nextRevision,
+        });
+      } else {
+        pendingDesignWritesRef.current.delete(filePath);
+      }
 
       let result: Awaited<ReturnType<typeof saveThemeFileSequentially>>;
       try {
@@ -5729,15 +5759,12 @@ export function VisualEditorShell({
           content,
           nextRevision,
           options?.confirmed ?? false,
-          options?.operation === "code-default" && options.codeDefault
-            ? {
-                operation: "code-default",
-                codeDefault: options.codeDefault,
-              }
-            : options?.operation === "design-element" && options.designElement
+          origin?.kind === "code-default"
+            ? { operation: "code-default", codeDefault: origin.codeDefault }
+            : origin?.kind === "design-element"
               ? {
                   operation: "design-element",
-                  designElement: options.designElement,
+                  designElement: origin.designElement,
                 }
               : undefined,
         );
@@ -5782,8 +5809,11 @@ export function VisualEditorShell({
       ) {
         return null;
       }
-      // Landed: nothing of this write is pending any more.
-      if (pendingDesignWritesRef.current.get(filePath)?.content === content) {
+      // Landed: nothing of this send is pending any more. A record a newer
+      // send of the file owns stays.
+      if (
+        pendingDesignWritesRef.current.get(filePath)?.revision === nextRevision
+      ) {
         pendingDesignWritesRef.current.delete(filePath);
       }
 
@@ -6089,7 +6119,7 @@ export function VisualEditorShell({
       ]?.localContent;
       if (local === undefined) return;
       toast.info(`Applying local version of ${filePath}...`);
-      await handleUnifiedSaveFile(filePath, local);
+      await handleUnifiedSaveFile(filePath, local, { codeOverwrite: true });
     },
     [
       context.storefront.id,
@@ -6650,12 +6680,14 @@ export function VisualEditorShell({
       let newest = await readNewest();
       if (!newest) return;
       // Design writes still exactly as Design wrote them. Code mode tracks
-      // every unsaved file, these included, so it is told to leave them: each
-      // is sent below as the operation it was — a structure edit checked
-      // against the structure lock first, a Design element edit or a code
-      // default for the server to judge again. Only the author changing such
-      // a file in Code makes it theirs: then it no longer matches, and Code
-      // saves it. Code being open, or showing the file as unsaved, does not.
+      // every unsaved file, these included, so it is told to leave them all:
+      // the conflicted ones are sent below as the operation they were — a
+      // structure edit checked against the structure lock first, a Design
+      // element edit or a code default for the server to judge again — and
+      // the rest (held by a pause, or unanswered) wait for their own path.
+      // Only the author changing such a file in Code makes it theirs: then it
+      // no longer matches, and Code saves it. Code being open, or showing the
+      // file as unsaved, does not.
       //
       // Code mode keeps its own drafts, and its own record of which are
       // unsaved; saving through it is what clears that record. Whatever it
@@ -6663,7 +6695,7 @@ export function VisualEditorShell({
       // save path directly.
       await editorCodeWorkspaceRef.current?.saveAll({
         confirmed: true,
-        leave: pendingDesignWritesAmong(sourceConflictPaths(readFiles())),
+        leave: pendingDesignWritesToLeave(),
       });
       const files = readFiles();
       for (const path of sourceConflictPaths(files)) {
@@ -6716,7 +6748,7 @@ export function VisualEditorShell({
   }, [
     handleUnifiedSaveFile,
     pendingDesignSaveOptions,
-    pendingDesignWritesAmong,
+    pendingDesignWritesToLeave,
     queryClient,
     workspaceScope,
   ]);
@@ -7236,11 +7268,11 @@ export function VisualEditorShell({
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      // A held Design write is left to the loop below, which sends it as the
-      // operation it was.
+      // Pending Design writes are left to the paths that settle them: a held
+      // one to the loop below, which sends it as the operation it was.
       await editorCodeWorkspaceRef.current?.saveAll({
         confirmed: true,
-        leave: pendingDesignWritesAmong(authPausedPaths(readFiles())),
+        leave: pendingDesignWritesToLeave(),
       });
       let unanswered = 0;
       for (const path of authPausedPaths(readFiles())) {
@@ -7303,7 +7335,7 @@ export function VisualEditorShell({
     handleUnifiedSaveFile,
     markWorkspaceSaved,
     pendingDesignSaveOptions,
-    pendingDesignWritesAmong,
+    pendingDesignWritesToLeave,
     settleUnconfirmedContent,
     workspaceScope,
     writeGate.epoch,
@@ -7327,11 +7359,12 @@ export function VisualEditorShell({
     setIsCheckingUnconfirmed(true);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      // An unanswered Design write is left to the loop below, which sends it
-      // as the operation it was if it did not land.
+      // Pending Design writes are left to the paths that settle them: an
+      // unanswered one to the loop below, which sends it as the operation it
+      // was if it did not land.
       await editorCodeWorkspaceRef.current?.saveAll({
         confirmed: true,
-        leave: pendingDesignWritesAmong(unconfirmedPaths(readFiles())),
+        leave: pendingDesignWritesToLeave(),
       });
       for (const path of unconfirmedPaths(readFiles())) {
         const content = readFiles()[path]?.localContent;
@@ -7355,7 +7388,7 @@ export function VisualEditorShell({
   }, [
     handleUnifiedSaveFile,
     pendingDesignSaveOptions,
-    pendingDesignWritesAmong,
+    pendingDesignWritesToLeave,
     retryFailedContent,
     workspaceScope,
   ]);
