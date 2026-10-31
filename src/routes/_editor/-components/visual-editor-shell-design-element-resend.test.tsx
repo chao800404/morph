@@ -33,7 +33,10 @@ import {
 } from "@/server/storefront/storefront-theme-preview-server.serverFn";
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
-import { VisualEditorShell } from "./visual-editor-shell";
+import {
+  PENDING_DESIGN_WRITE_HELD_MESSAGE,
+  VisualEditorShell,
+} from "./visual-editor-shell";
 
 /**
  * Reproductions for decision A (handoff/2026-10-31/guard-a-decisions.md;
@@ -954,5 +957,105 @@ describe("pending Design writes across paths and states (decision A)", () => {
         designElement: REMOVE_NOTE,
       });
     }
+  });
+
+  // Keep Mine is the author taking the file over in Code: the explicit
+  // overwrite ends the Design write's identity, and its text goes as a plain
+  // save. (Code's ordinary Save of the same text keeps it; see above.)
+  it("Keep Mine on a version conflict sends the Design Delete's text as a plain overwrite", async () => {
+    const remote = SOURCE.replace("Fine print", "Fine print, from another tab");
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "FILE_VERSION_CONFLICT",
+      message: "The file changed on the server.",
+    }));
+    getThemeFile.mockResolvedValue({
+      success: true,
+      message: "Theme file loaded",
+      data: file(ROUTE_FILE, remote, 2),
+    });
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.conflict).toBeDefined());
+    const held = localContent();
+    expect(held).not.toContain("Plain note");
+    expect(sentSaves()[0]).toMatchObject({
+      operation: "design-element",
+      designElement: REMOVE_NOTE,
+    });
+
+    await openInCode(ROUTE_FILE);
+    await press("Keep Mine (Overwrite)");
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+
+    const overwrite = savesOf(ROUTE_FILE)[1]!;
+    expect(overwrite.content).toBe(held);
+    expect(overwrite.operation).toBeUndefined();
+    expect(overwrite.designElement).toBeUndefined();
+  });
+
+  /**
+   * A Design Delete refused on its resend (Q4): kept, unsaved, still the
+   * pending write of the route.
+   */
+  async function refusedDelete() {
+    saveThemeFile.mockImplementationOnce(sourceConflictAt4);
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
+    await press("Save my changes");
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+    await waitFor(() => expect(workspaceFile()?.saveState).toBe("error"));
+    return localContent();
+  }
+
+  // Control pair, 1 of 2. Another part of the editor changes the route on top
+  // of the pending Delete (here written into the workspace directly, as such
+  // an edit leaves it); the author then only presses Save in Code. Code did
+  // not get that text from the author: sent plain, it would carry the
+  // Delete unchecked. It is held: nothing sent, the text kept, the reason
+  // shown.
+  it("Code's Save of text another part of the editor put on top of a pending Design Delete sends nothing and keeps it", async () => {
+    const held = await refusedDelete();
+    const onTop = held.replace("Fine print", "Fine print, restyled");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(ROUTE_FILE, onTop, scope),
+    );
+
+    await openInCode(ROUTE_FILE);
+    await press(/^Save\s*Ctrl\+S$/);
+    await waitFor(() =>
+      expect(workspaceFile()?.errorMessage).toBe(
+        PENDING_DESIGN_WRITE_HELD_MESSAGE,
+      ),
+    );
+
+    expect(savesOf(ROUTE_FILE)).toHaveLength(2);
+    expect(localContent()).toBe(onTop);
+    expect(workspaceFile()?.dirty).toBe(true);
+  });
+
+  // Control pair, 2 of 2. The author rewrites the route in Code, typing in
+  // it, and saves: that is theirs, and Code keeps the ability to save it.
+  it("the author's own rewrite in Code is saved as a plain Code save, ending the pending Design Delete", async () => {
+    const held = await refusedDelete();
+    const mine = `${held}// rewritten by the author\n`;
+
+    const editor = await openInCode(ROUTE_FILE);
+    fireEvent.change(editor, { target: { value: mine } });
+    await press(/^Save\s*Ctrl\+S$/);
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(3));
+
+    const saved = savesOf(ROUTE_FILE)[2]!;
+    expect(saved.content).toBe(mine);
+    expect(saved.operation).toBeUndefined();
+    expect(saved.designElement).toBeUndefined();
   });
 });
