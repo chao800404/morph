@@ -33,11 +33,48 @@ export const THEME_MORPH_SDK_MODULES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The platform's Astro middleware in a workspace (`@morph/sdk/astro`'s
- * per-render request), which Morph's Astro integrations add with
- * `addMiddleware`. Workspace-relative.
+ * The platform's Astro middleware in a workspace, which Morph's Astro
+ * integrations (Live Preview and build) add with
+ * `addMiddleware({ order: "pre" })`. Workspace-relative.
+ *
+ * It owns the AsyncLocalStorage that holds each render's request and hands
+ * it to `@morph/sdk/astro` (`useMorphRenders`). It is the platform's, not
+ * the SDK package's: the package must name no Node built-in
+ * (scripts/sdk-package-check.mjs). On Workers the official
+ * `@astrojs/cloudflare` adapter adds `nodejs_als` when no ALS-capable flag
+ * is set. It reads no content and changes neither the request nor the
+ * response; the author never writes or imports it.
+ *
+ * Not in the build identity (`withThemeMorphSdkIdentity`), like the rest of
+ * the platform's Astro wrapper code: change it only with the SDK entry it
+ * serves, so the SDK hash moves too.
  */
-export const THEME_MORPH_SDK_ASTRO_MIDDLEWARE = `${THEME_MORPH_SDK_ROOT}/astro/middleware.ts`;
+export const THEME_MORPH_SDK_ASTRO_MIDDLEWARE = ".morph/astro-middleware.ts";
+
+const ASTRO_MIDDLEWARE_SOURCE = `import { AsyncLocalStorage } from "node:async_hooks";
+import { useMorphRenders } from "./sdk/astro/index.ts";
+
+const renders = new AsyncLocalStorage<Request>();
+useMorphRenders(renders);
+
+export function onRequest(
+  context: { request: Request },
+  next: () => Promise<Response>,
+): Promise<Response> {
+  return renders.run(context.request, next);
+}
+`;
+
+/** The middleware file an Astro workspace carries; see above. */
+export function themeMorphSdkAstroMiddlewareFile(): {
+  path: string;
+  content: string;
+} {
+  return {
+    path: THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+    content: ASTRO_MIDDLEWARE_SOURCE,
+  };
+}
 
 /**
  * How a build names the SDK it was built with.

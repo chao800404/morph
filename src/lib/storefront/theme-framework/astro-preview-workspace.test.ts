@@ -19,6 +19,7 @@ import {
 } from "./astro-preview-workspace";
 import {
   THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+  themeMorphSdkAstroMiddlewareFile,
   themeMorphSdkFiles,
 } from "../compiler/theme-morph-sdk";
 
@@ -189,7 +190,10 @@ describe("an Astro Live Preview workspace", () => {
 describe("an Astro Live Preview workspace and @morph/sdk/astro", () => {
   it("carries the platform's SDK copy, and adds its middleware before the author's", () => {
     const { file } = planned(astroThemeFiles());
-    for (const sdk of themeMorphSdkFiles()) {
+    for (const sdk of [
+      ...themeMorphSdkFiles(),
+      themeMorphSdkAstroMiddlewareFile(),
+    ]) {
       expect(file(sdk.path), sdk.path).toBe(sdk.content);
     }
     const integration = file(ASTRO_PREVIEW_INTEGRATION_PATH)!;

@@ -1,24 +1,21 @@
 // @vitest-environment node
+import { AsyncLocalStorage } from "node:async_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MorphError, contentOriginFor, morph } from "./index";
-import { onRequest } from "./middleware";
+import { MorphError, contentOriginFor, morph, useMorphRenders } from "./index";
 
 /**
  * `@morph/sdk/astro` takes each render's request from the platform's
- * middleware. Here the middleware runs exactly as Astro runs it: `onRequest`
- * with the render's context, and the page's reads inside `next()`.
+ * middleware. Here it is set up as that middleware does
+ * (theme-morph-sdk.ts): one AsyncLocalStorage handed to `useMorphRenders`,
+ * and each render run inside it, the page's reads within. The real
+ * middleware runs in `astro build` and `astro dev` (astro-sdk-read.build.test.ts,
+ * local-vite-preview-server.astro.test.ts).
  */
+const renders = new AsyncLocalStorage<Request>();
+
 function render<T>(headers: Record<string, string>, page: () => Promise<T>) {
-  let result!: Promise<T>;
-  const done = onRequest(
-    { request: new Request("https://theme.invalid/", { headers }) },
-    async () => {
-      result = page();
-      await result;
-      return new Response("ok");
-    },
-  );
-  return done.then(() => result);
+  useMorphRenders(renders);
+  return renders.run(new Request("https://theme.invalid/", { headers }), page);
 }
 
 const page = (title: string) =>

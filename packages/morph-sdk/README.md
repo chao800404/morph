@@ -75,7 +75,7 @@ const { hero } = home;
 <Hero {...hero} />
 ```
 
-- **The request.** Astro has no `getRequest()`, and a module a page imports does not see `Astro.request`. So the platform's middleware (`astro/middleware.ts`) runs every render inside an AsyncLocalStorage that holds that render's request. Each read takes the request from there.
+- **The request.** Astro has no `getRequest()`, and a module a page imports does not see `Astro.request`. So the platform's middleware runs every render inside an AsyncLocalStorage that holds that render's request, and hands that storage to this entry (`useMorphRenders`). Each read takes the request from there. The middleware and its storage are the platform's (`src/lib/storefront/compiler/theme-morph-sdk.ts`), not this package's: the package names no Node built-in, so it still passes `pnpm check:sdk-package`.
 - **Wiring.** Morph's own Astro integrations add the middleware with `addMiddleware({ order: "pre" })`: the Live Preview's (`astro-preview-workspace.ts`) and the build's (`astro-native-prerender.ts`). It runs before any middleware of the author's. The author writes no middleware and no reader, and their `astro.config.*` is not changed.
 - **Source.** The source is the platform's `x-morph-content-origin` header only. On the public site Core sets it; in the Live Preview the preview Worker sets it, for the draft snapshot; when prerendering, the build's wrapper sets it, for the sealed snapshot.
 - **Failures.**

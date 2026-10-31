@@ -42,9 +42,6 @@ const WORKSPACE_ROOT = ".morph/sdk";
 const ALLOWED_PACKAGES = new Set([
   "@tanstack/react-start",
   "@tanstack/react-start/server",
-  // The Astro entry's per-render request (Workers: nodejs_als or
-  // nodejs_compat; the platform's Wrangler copy makes sure of it).
-  "node:async_hooks",
 ]);
 const OUT_RELATIVE = "src/lib/storefront/compiler/morph-sdk-sources.generated.ts";
 const OUT = join(ROOT, OUT_RELATIVE);

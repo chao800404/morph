@@ -22,7 +22,7 @@ import {
  * `@morph/sdk/astro` in a real `astro build` (ROADMAP 1.2's Astro pattern,
  * M2): the author's frontmatter reads with `morph.pages.get(...)` and spreads
  * the section, and writes nothing else — no middleware, no reader. The
- * platform's integration adds the SDK's middleware with `addMiddleware`, so
+ * platform's integration adds its own middleware with `addMiddleware`, so
  * the read gets the source the build names: the sealed snapshot.
  */
 const missingToolchain = !astroToolchainInstalled;
