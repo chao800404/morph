@@ -5732,10 +5732,23 @@ export function VisualEditorShell({
       if (verdict.kind === "held") {
         // Other text on top of a Design write of this file not yet saved. That
         // write may still be on its way: once the saves queued ahead have
-        // run, it has landed (and this is an ordinary save) or not.
+        // run, it has landed (and this is an ordinary save) or not — refused,
+        // or unanswered, and this stays held. A newer send or newer text of
+        // the file while this waited replaces it: it stops here, and does not
+        // claim a revision that would put older text after newer.
+        const claimedBefore = saveQueueRef.current.latestRevision(opKey);
         await saveQueueRef.current
           .pending(`${workspaceScope.storefrontId}:${workspaceScope.themeId}`)
           ?.catch(() => {});
+        const replaced =
+          saveQueueRef.current.latestRevision(opKey) !== claimedBefore ||
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.localContent !== content;
+        if (replaced) return null;
         verdict = pendingDesignWritesRef.current.verdict(
           filePath,
           content,

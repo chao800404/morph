@@ -1059,3 +1059,127 @@ describe("pending Design writes across paths and states (decision A)", () => {
     expect(saved.designElement).toBeUndefined();
   });
 });
+
+describe("text held behind a Design write still on its way (decision A)", () => {
+  type Answer = () => Promise<unknown>;
+  /**
+   * A Design Delete whose answer the test holds; then text another part of
+   * the editor puts on top of it, which the author only saves in Code. That
+   * save is held behind the Delete, waiting for the saves queued ahead.
+   */
+  async function heldBehindDeleteOnItsWay() {
+    let answerDelete!: (answer: Answer) => void;
+    saveThemeFile.mockImplementationOnce(
+      (request: { data: { path: string; content: string } }) =>
+        new Promise((resolve, reject) => {
+          answerDelete = (answer) => answer().then(resolve, reject);
+        }).then((value) =>
+          value === "landed"
+            ? {
+                success: true,
+                message: "saved",
+                data: {
+                  ...file(request.data.path, request.data.content, 2),
+                  sourceGeneration: 4,
+                },
+              }
+            : value,
+        ),
+    );
+    await settled();
+    act(() => {
+      void lastSectionsPanelProps!.onDeleteEditableNode!(routeElement("note"));
+    });
+    await waitFor(() => expect(sentSaves()).toHaveLength(1));
+    const deleted = localContent();
+    expect(deleted).not.toContain("Plain note");
+    const onTop = deleted.replace("Fine print", "Fine print, restyled");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(ROUTE_FILE, onTop, scope),
+    );
+    await openInCode(ROUTE_FILE);
+    await press(/^Save\s*Ctrl\+S$/);
+    // Held, waiting: nothing more is sent while the Delete is unanswered.
+    await flush();
+    expect(sentSaves()).toHaveLength(1);
+    return { answerDelete, onTop };
+  }
+
+  it("the Delete lands and nothing newer came: the held text goes, as an ordinary save", async () => {
+    const { answerDelete, onTop } = await heldBehindDeleteOnItsWay();
+
+    await act(async () => {
+      answerDelete(async () => "landed");
+    });
+    await waitFor(() => expect(savesOf(ROUTE_FILE)).toHaveLength(2));
+
+    const second = savesOf(ROUTE_FILE)[1]!;
+    expect(second.content).toBe(onTop);
+    expect(second.operation).toBeUndefined();
+  });
+
+  it("the Delete is refused: the held text stays held, nothing more is sent", async () => {
+    const { answerDelete, onTop } = await heldBehindDeleteOnItsWay();
+
+    await act(async () => {
+      answerDelete(async () => ({
+        success: false,
+        error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+        message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+      }));
+    });
+    await waitFor(() =>
+      expect(workspaceFile()?.errorMessage).toBe(
+        PENDING_DESIGN_WRITE_HELD_MESSAGE,
+      ),
+    );
+
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
+    expect(localContent()).toBe(onTop);
+  });
+
+  it("the Delete goes unanswered: the held text stays held, nothing more is sent", async () => {
+    const { answerDelete, onTop } = await heldBehindDeleteOnItsWay();
+
+    await act(async () => {
+      answerDelete(async () => {
+        throw new TypeError("Failed to fetch");
+      });
+    });
+    await waitFor(() =>
+      expect(workspaceFile()?.errorMessage).toBe(
+        PENDING_DESIGN_WRITE_HELD_MESSAGE,
+      ),
+    );
+
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
+    expect(localContent()).toBe(onTop);
+    expect(workspaceFile()?.unconfirmedContent).toBeDefined();
+  });
+
+  it("newer text replaces the held text while it waits: the held text stops, and does not go after the newer one", async () => {
+    const { answerDelete, onTop } = await heldBehindDeleteOnItsWay();
+    const newer = onTop.replace("Fine print, restyled", "Fine print, newer");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(ROUTE_FILE, newer, scope),
+    );
+
+    await act(async () => {
+      answerDelete(async () => "landed");
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull(),
+    );
+    await flush();
+
+    // Only the Delete went; the replaced text was never sent, and the newer
+    // text is what the workspace holds.
+    expect(savesOf(ROUTE_FILE)).toHaveLength(1);
+    expect(sentSaves().some((sent) => sent.content === onTop)).toBe(false);
+    expect(localContent()).toBe(newer);
+  });
+});
