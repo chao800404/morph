@@ -17,7 +17,10 @@ import * as storefrontSchema from "@/db/storefront.schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { themeSourceStore } from "@/lib/storefront/storage/theme-storage.server";
-import { applyDesignElementOperation } from "@/lib/storefront/compiler/design-element-operation";
+import {
+  applyDesignElementOperation,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
+} from "@/lib/storefront/compiler/design-element-operation";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 
 vi.mock("@tanstack/react-start", () => {
@@ -547,6 +550,8 @@ describe("saveStorefrontThemeFile operation 'design-element' (real SQL)", () => 
     });
 
     expect(res.error).toBe("DESIGN_ELEMENT_CONTENT_MISMATCH");
+    // Says the changes are kept and what to do; never "reload".
+    expect(res.message).toBe(DESIGN_ELEMENT_UNSAVED_MESSAGE);
     expect(stateNow()).toEqual(before);
   });
 

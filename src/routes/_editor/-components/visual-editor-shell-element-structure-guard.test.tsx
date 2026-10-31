@@ -7,7 +7,10 @@ import {
   deriveThemeRouteSections,
   themeRouteStructureLock,
 } from "@/lib/storefront/compiler/theme-route-sections";
-import { DESIGN_ELEMENT_SECTIONS_MESSAGE } from "@/lib/storefront/compiler/design-element-operation";
+import {
+  DESIGN_ELEMENT_SECTIONS_MESSAGE,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
+} from "@/lib/storefront/compiler/design-element-operation";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import {
   postEditorToPreviewMessage,
@@ -672,21 +675,97 @@ describe("Design element operations and the route's section structure", () => {
     expect(sentSaves()).toEqual([]);
     expect(localContent(LOCKED)).toBe(LOCKED.source);
   });
+});
 
-  it("a server refusal of a Design element edit puts the file back and says why", async () => {
-    saveThemeFile.mockImplementation(async () => ({
-      success: false,
-      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
-      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
-    }));
+describe("when a Design element edit does not land", () => {
+  const scope = { storefrontId: "storefront-1", themeId: "theme-1" };
+  const refusal = {
+    success: false,
+    error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+    message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+  };
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+  const workspaceFile = (fixture: Fixture) =>
+    useThemeWorkspaceStore
+      .getState()
+      .getWorkspaceFiles(scope.storefrontId, scope.themeId)[fixture.routeFile];
+
+  it("a refusal that comes back after the author edited the file again keeps the newer edit", async () => {
+    const answer = deferred<unknown>();
+    saveThemeFile.mockImplementation(() => answer.promise);
     await settled(OPEN);
-    const result = await deleteFromPanel(OPEN, "note");
+    let result: { success: boolean; message?: string } | undefined;
+    const deleting = act(async () => {
+      result = (await lastSectionsPanelProps!.onDeleteEditableNode!(
+        routeElement(OPEN, "note"),
+      )) as typeof result;
+    });
+    await waitFor(() => expect(sentSaves()).toHaveLength(1));
+    // While the refusal is on its way, the author types into the same file.
+    const newer = `${sentSaves()[0]!.content}// typed while the save was out\n`;
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(OPEN.routeFile, newer, scope),
+    );
+    answer.resolve(refusal);
+    await deleting;
 
-    expect(sentSaves()).toHaveLength(1);
     expect(result).toEqual({
       success: false,
       message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
     });
+    expect(localContent(OPEN)).toBe(newer);
+  });
+
+  it("a refusal of the latest edit takes it back, leaving the file clean", async () => {
+    saveThemeFile.mockImplementation(async () => refusal);
+    await settled(OPEN);
+    const result = await deleteFromPanel(OPEN, "note");
+
+    expect(result.success).toBe(false);
     expect(localContent(OPEN)).toBe(OPEN.source);
+    expect(workspaceFile(OPEN)?.saveState).toBe("clean");
+  });
+
+  it("a reorder whose save got no answer keeps the reorder and marks it unconfirmed", async () => {
+    saveThemeFile.mockImplementation(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await settled(OPEN);
+    siblingReorderFromFrame(OPEN, "note", "fine");
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+
+    expect(sentSaves()).toHaveLength(1);
+    const sent = sentSaves()[0]!.content;
+    // The outcome is unknown: it may have landed. Nothing is taken back.
+    expect(localContent(OPEN)).toBe(sent);
+    expect(workspaceFile(OPEN)?.unconfirmedContent).toBe(sent);
+  });
+
+  it("is not computed on a file with unsaved changes: refused before sending, the changes kept", async () => {
+    await settled(OPEN);
+    const draft = OPEN.source.replace("Fine print", "Fine print, edited");
+    act(() =>
+      useThemeWorkspaceStore
+        .getState()
+        .updateLocalContent(OPEN.routeFile, draft, scope),
+    );
+    const result = await deleteFromPanel(OPEN, "note");
+
+    expect(result).toEqual({
+      success: false,
+      message: DESIGN_ELEMENT_UNSAVED_MESSAGE,
+    });
+    expect(sentSaves()).toEqual([]);
+    expect(localContent(OPEN)).toBe(draft);
   });
 });

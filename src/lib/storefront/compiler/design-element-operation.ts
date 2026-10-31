@@ -37,6 +37,13 @@ export const DESIGN_ELEMENT_SECTIONS_MESSAGE =
   "Sections are managed from the page structure tree.";
 export const DESIGN_ELEMENT_UNKNOWN_MESSAGE =
   "Design cannot tell whether this change affects the page's sections. Make it in Code mode.";
+/**
+ * The edit is judged on the stored file, so a file with changes not yet
+ * saved (or still saving) would be judged on other content than the one
+ * shown. Nothing is lost: the changes stay in the editor.
+ */
+export const DESIGN_ELEMENT_UNSAVED_MESSAGE =
+  "This file has changes that are not saved yet. They are kept: save them first, then make this change again.";
 
 type ThemeSourceFile = Readonly<{ path: string; content?: string | null }>;
 

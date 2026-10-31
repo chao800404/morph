@@ -59,6 +59,7 @@ import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-sta
 import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
 import {
   applyDesignElementOperation,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
   type DesignElementOperation,
 } from "@/lib/storefront/compiler/design-element-operation";
 
@@ -165,10 +166,9 @@ async function saveDesignElementOperation(
       return fail(applied.message, { error: applied.error });
     }
     if (applied.status === "unchanged" || applied.code !== data.content) {
-      return fail(
-        "This change does not match the stored file. Reload the file and make it again.",
-        { error: "DESIGN_ELEMENT_CONTENT_MISMATCH" },
-      );
+      return fail(DESIGN_ELEMENT_UNSAVED_MESSAGE, {
+        error: "DESIGN_ELEMENT_CONTENT_MISMATCH",
+      });
     }
     const saved = await themeSourceStore.saveFile(
       data.storefrontId,
