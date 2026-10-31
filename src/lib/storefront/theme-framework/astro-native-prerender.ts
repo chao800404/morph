@@ -1,4 +1,10 @@
 import {
+  THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+  themeMorphSdkAliasesSource,
+  themeMorphSdkAstroMiddlewareFile,
+  themeMorphSdkFiles,
+} from "../compiler/theme-morph-sdk";
+import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
   THEME_PRERENDER_CONTENT_FILE,
@@ -119,6 +125,9 @@ export function astroPrerenderWorkspaceFiles(options: {
         options.prerenderContent ?? NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
       ),
     },
+    // The SDK the Theme reads content with (@morph/sdk/astro).
+    ...themeMorphSdkFiles(),
+    themeMorphSdkAstroMiddlewareFile(),
   ];
 }
 
@@ -189,6 +198,9 @@ const answerSealedContentRead = (${answerSealedContentRead.toString()});
 const pageKey = (page) => normalizeRoutePath(new URL(String(page), "http://astro.invalid").pathname);
 
 const root = fs.realpathSync(process.cwd());
+// The platform's copy of the Morph SDK (.morph/sdk/), by its exact names.
+const MORPH_SDK_MIDDLEWARE = ${JSON.stringify(THEME_MORPH_SDK_ASTRO_MIDDLEWARE)};
+const morphSdkAliases = ${themeMorphSdkAliasesSource("root")};
 
 // Judged on where an import resolves, as Start's build judges it
 // (tanstack-start-native-wrapper.ts): inside the workspace, or inside an
@@ -318,9 +330,14 @@ export function morphAstroBuild() {
   return {
     name: "morph:astro-build",
     hooks: {
-      "astro:config:setup": ({ updateConfig }) => {
+      "astro:config:setup": ({ updateConfig, addMiddleware }) => {
+        // Each render, prerendered ones included, runs as its own request's,
+        // so @morph/sdk/astro reads the source the build names; before the
+        // author's own middleware.
+        addMiddleware({ order: "pre", entrypoint: path.join(root, MORPH_SDK_MIDDLEWARE) });
         updateConfig({
           vite: {
+            resolve: { alias: morphSdkAliases },
             cacheDir: buildViteCacheDir(),
             plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin],
           },
