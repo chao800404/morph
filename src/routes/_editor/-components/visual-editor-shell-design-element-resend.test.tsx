@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authRequired } from "@/lib/auth/auth-failure";
+import { DESIGN_ELEMENT_SECTIONS_MESSAGE } from "@/lib/storefront/compiler/design-element-operation";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import {
   postEditorToPreviewMessage,
@@ -42,9 +43,10 @@ import { VisualEditorShell } from "./visual-editor-shell";
  * same operation. Decision Q3: on resume, only an explicit NOT_FOUND read may
  * mean "absent"; any other failed read keeps the file held and sends nothing.
  *
- * Tests marked `it.fails` describe the desired behaviour and fail on 8f707df
- * because of the gap they name; plain `it` tests are controls. Harness and
- * fixture copied from visual-editor-shell-element-structure-guard.test.tsx;
+ * A1, A3, A4 and A5 were committed as expected-failure reproductions on 8f707df
+ * (55b8cbd), each failing because of the gap it names; the fix turns them
+ * into plain tests. The tests marked control held before the fix too. Harness
+ * and fixture copied from visual-editor-shell-element-structure-guard.test.tsx;
  * only server functions and the preview transport are mocked.
  */
 
@@ -561,121 +563,150 @@ describe("a Design element edit sent again keeps its origin (decision A)", () =>
     });
   });
 
-  // Gap: Save my changes resends with handleUnifiedSaveFile(path, content,
-  // { fromHistory, confirmed }) and no operation (visual-editor-shell.tsx
-  // ~6639); designStructureEditsRef records section structure edits only.
-  // Decision A: the pending op keeps its origin and is resent as itself.
-  it.fails(
-    "A1: a Delete refused by generation, then Save my changes, is sent again as the same design-element op",
-    async () => {
-      saveThemeFile.mockImplementationOnce(async () => {
-        // Another tab saved meanwhile; the Theme read from now on is newer.
-        vi.mocked(listStorefrontThemeFiles).mockImplementation(
-          async () =>
-            ({ success: true, message: "ok", data: treeAt(4) }) as never,
-        );
-        return {
-          success: false,
-          error: "SOURCE_GENERATION_CONFLICT",
-          message:
-            "Remote source changes detected (current generation: 4): the theme working source was updated by another operation.",
-        };
-      });
-      await settled();
-      await deleteNote();
-      await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
-      const held = localContent();
-      expect(held).not.toContain("Plain note");
-
-      await press("Save my changes");
-      await waitFor(() => expect(sentSaves()).toHaveLength(2));
-
-      const resent = sentSaves()[1]!;
-      expect(resent.path).toBe(ROUTE_FILE);
-      expect(resent.content).toBe(held);
-      expect(resent.expectedSourceGeneration).toBe(4);
-      expect(resent.operation).toBe("design-element");
-      expect(resent.designElement).toEqual(REMOVE_NOTE);
-    },
-  );
-
-  // Gap: Check and save resends the unconfirmed file with
-  // handleUnifiedSaveFile(path, content, { fromHistory, confirmed }) and no
-  // operation (visual-editor-shell.tsx ~7236), after confirmLostSave found it
-  // had not landed. Decision A: the resend carries the original op.
-  it.fails(
-    "A5: a reorder whose send got no answer, not landed, is sent again by Check and save as the same design-element op",
-    async () => {
-      saveThemeFile.mockImplementationOnce(async () => {
-        throw new TypeError("Failed to fetch");
-      });
-      await settled();
-      reorderNoteAndFine();
-      await waitFor(() =>
-        expect(workspaceFile()?.unconfirmedContent).toBeDefined(),
+  // Was: Save my changes resent with no operation; only section structure
+  // edits were recorded. Decision A: the pending op keeps its origin and is
+  // resent as itself.
+  it("A1: a Delete refused by generation, then Save my changes, is sent again as the same design-element op", async () => {
+    saveThemeFile.mockImplementationOnce(async () => {
+      // Another tab saved meanwhile; the Theme read from now on is newer.
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () =>
+          ({ success: true, message: "ok", data: treeAt(4) }) as never,
       );
-      const held = localContent();
-      expect(sentSaves()[0]).toMatchObject({
-        operation: "design-element",
-        designElement: SWAP_NOTE_FINE,
-      });
-      // The server still holds the route as it was: the first send did not land.
-      getThemeFile.mockResolvedValue(stored(SOURCE));
+      return {
+        success: false,
+        error: "SOURCE_GENERATION_CONFLICT",
+        message:
+          "Remote source changes detected (current generation: 4): the theme working source was updated by another operation.",
+      };
+    });
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    const held = localContent();
+    expect(held).not.toContain("Plain note");
 
-      await press("Check and save");
-      await waitFor(() => expect(sentSaves()).toHaveLength(2));
+    await press("Save my changes");
+    await waitFor(() => expect(sentSaves()).toHaveLength(2));
 
-      const resent = sentSaves()[1]!;
-      expect(resent.content).toBe(held);
-      expect(resent.operation).toBe("design-element");
-      expect(resent.designElement).toEqual(SWAP_NOTE_FINE);
-    },
-  );
+    const resent = sentSaves()[1]!;
+    expect(resent.path).toBe(ROUTE_FILE);
+    expect(resent.content).toBe(held);
+    expect(resent.expectedSourceGeneration).toBe(4);
+    expect(resent.operation).toBe("design-element");
+    expect(resent.designElement).toEqual(REMOVE_NOTE);
+  });
 
-  // Gap: resumePausedWrites sends each held file through settleHeldFile with
-  // save = handleUnifiedSaveFile(path, content, { fromHistory, confirmed })
-  // and no operation (visual-editor-shell.tsx ~7183). Decision A.
-  it.fails(
-    "A3: a Delete held while writes were paused is sent on Save my changes as the same design-element op",
-    async () => {
-      const held = await deleteWhilePausedThenVerify();
-      getThemeFile.mockResolvedValue(stored(SOURCE));
+  // Decision Q4: a resend the server refuses outright is an answer, not an
+  // unknown outcome. The edit stays as it is, unsaved; it is not taken back
+  // (the author's draft) and not sent again on its own.
+  it("Q4: a resend refused by the server keeps the edit unsaved, not taken back and not sent again", async () => {
+    saveThemeFile.mockImplementationOnce(async () => {
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () =>
+          ({ success: true, message: "ok", data: treeAt(4) }) as never,
+      );
+      return {
+        success: false,
+        error: "SOURCE_GENERATION_CONFLICT",
+        message:
+          "Remote source changes detected (current generation: 4): the theme working source was updated by another operation.",
+      };
+    });
+    await settled();
+    await deleteNote();
+    await waitFor(() => expect(workspaceFile()?.sourceConflict).toBe(true));
+    const held = localContent();
+    saveThemeFile.mockImplementationOnce(async () => ({
+      success: false,
+      error: "DESIGN_ELEMENT_TOUCHES_SECTIONS",
+      message: DESIGN_ELEMENT_SECTIONS_MESSAGE,
+    }));
 
-      await press("Save my changes");
-      await waitFor(() => expect(sentSaves()).toHaveLength(2));
+    await press("Save my changes");
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        DESIGN_ELEMENT_SECTIONS_MESSAGE,
+      ),
+    );
 
-      const resent = sentSaves()[1]!;
-      expect(resent.content).toBe(held);
-      expect(resent.operation).toBe("design-element");
-      expect(resent.designElement).toEqual(REMOVE_NOTE);
-    },
-  );
+    expect(sentSaves()).toHaveLength(2);
+    expect(sentSaves()[1]).toMatchObject({
+      operation: "design-element",
+      designElement: REMOVE_NOTE,
+    });
+    expect(localContent()).toBe(held);
+    expect(workspaceFile()?.dirty).toBe(true);
+  });
+
+  // Was: Check and save resent the unconfirmed file with no operation, after
+  // confirmLostSave found it had not landed. Decision A: the resend carries
+  // the original op.
+  it("A5: a reorder whose send got no answer, not landed, is sent again by Check and save as the same design-element op", async () => {
+    saveThemeFile.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await settled();
+    reorderNoteAndFine();
+    await waitFor(() =>
+      expect(workspaceFile()?.unconfirmedContent).toBeDefined(),
+    );
+    const held = localContent();
+    expect(sentSaves()[0]).toMatchObject({
+      operation: "design-element",
+      designElement: SWAP_NOTE_FINE,
+    });
+    // The server still holds the route as it was: the first send did not land.
+    getThemeFile.mockResolvedValue(stored(SOURCE));
+
+    await press("Check and save");
+    await waitFor(() => expect(sentSaves()).toHaveLength(2));
+
+    const resent = sentSaves()[1]!;
+    expect(resent.content).toBe(held);
+    expect(resent.operation).toBe("design-element");
+    expect(resent.designElement).toEqual(SWAP_NOTE_FINE);
+  });
+
+  // Was: resumePausedWrites sent each held file through settleHeldFile with
+  // no operation. Decision A.
+  it("A3: a Delete held while writes were paused is sent on Save my changes as the same design-element op", async () => {
+    const held = await deleteWhilePausedThenVerify();
+    getThemeFile.mockResolvedValue(stored(SOURCE));
+
+    await press("Save my changes");
+    await waitFor(() => expect(sentSaves()).toHaveLength(2));
+
+    const resent = sentSaves()[1]!;
+    expect(resent.content).toBe(held);
+    expect(resent.operation).toBe("design-element");
+    expect(resent.designElement).toEqual(REMOVE_NOTE);
+  });
 });
 
 describe("resume after an auth pause when the held file's read fails (decision Q3)", () => {
-  // Gap: readLatest in resumePausedWrites maps any `success: false` answer to
-  // null (visual-editor-shell.tsx ~7180), and settleHeldFile takes null as
-  // "not landed" and sends (editor-write-recovery.ts:110-117). Decision Q3:
-  // only an explicit NOT_FOUND may mean absent; any other failure keeps the
-  // file held and sends nothing.
-  it.fails(
-    "A4: a read answered with GET_FAILED sends nothing and keeps the draft held",
-    async () => {
-      const held = await deleteWhilePausedThenVerify();
-      getThemeFile.mockResolvedValue({
-        success: false,
-        message: "Failed to load theme file",
-        error: "GET_FAILED",
-      });
+  // Was: readLatest in resumePausedWrites mapped any `success: false` answer
+  // to null, which settleHeldFile takes as "not landed", and sent. Decision
+  // Q3: only an explicit NOT_FOUND may mean absent; any other failure keeps
+  // the file held and sends nothing.
+  it("A4: a read answered with GET_FAILED sends nothing and keeps the draft held", async () => {
+    const held = await deleteWhilePausedThenVerify();
+    getThemeFile.mockResolvedValue({
+      success: false,
+      message: "Failed to load theme file",
+      error: "GET_FAILED",
+    });
 
-      await resumeAndWait();
+    await resumeAndWait();
 
-      expect(sentSaves()).toHaveLength(1);
-      expect(localContent()).toBe(held);
-      expect(workspaceFile()?.dirty).toBe(true);
-      expect(workspaceFile()?.authPaused).toBe(true);
-    },
-  );
+    expect(sentSaves()).toHaveLength(1);
+    expect(localContent()).toBe(held);
+    expect(workspaceFile()?.dirty).toBe(true);
+    expect(workspaceFile()?.authPaused).toBe(true);
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      "A file was not saved: what the server holds could not be read. Your changes are kept; try again.",
+    );
+  });
 
   // Control. `getStorefrontThemeFile` answers a missing file with
   // `fail("File not found", { error: "NOT_FOUND" })`
