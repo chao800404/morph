@@ -568,6 +568,39 @@ export function themeRouteStructureLock(
 }
 
 /**
+ * Whether Design may change the section structure of one source file on
+ * these files: `open`, `locked` (with the reason every structure edit
+ * gives), `unknown` when the file cannot be analysed at all, or `absent`
+ * when these files do not hold it. The same analysis as the rewriters and
+ * `themeRouteStructureLock`, so the server's guard and the editor agree.
+ */
+export type SourceStructureState =
+  | Readonly<{ kind: "open" }>
+  | Readonly<{ kind: "locked"; reason: string }>
+  | Readonly<{ kind: "unknown"; reason: string }>
+  | Readonly<{ kind: "absent" }>;
+
+export function sourceStructureState(
+  files: readonly ThemeSourceFile[],
+  sourcePath: string,
+): SourceStructureState {
+  const normalized = normalizePath(sourcePath);
+  const file = files.find((entry) => normalizePath(entry.path) === normalized);
+  if (typeof file?.content !== "string") return { kind: "absent" };
+  const parsed = parsePositionedSections(files, sourcePath);
+  if (!parsed.ast) {
+    return {
+      kind: "unknown",
+      reason: parsed.diagnostics[0] ?? `"${normalized}" cannot be analysed.`,
+    };
+  }
+  if (parsed.structureLocked) {
+    return { kind: "locked", reason: parsed.structureLocked };
+  }
+  return { kind: "open" };
+}
+
+/**
  * What cutting out or moving these `[start, end)` ranges of a file does to
  * the sections that file renders.
  *

@@ -125,7 +125,7 @@ export const designElementOperationSchema = z.union([
 
 function requireDesignElementOperationPairing(
   value: {
-    operation?: "save" | "code-default" | "design-element";
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
     designElement?: unknown;
     expectMissing?: boolean;
     expectedFileId?: string;
@@ -159,7 +159,7 @@ function requireDesignElementOperationPairing(
 export function requireCodeDefaultOperationPairing(
   value: {
     path?: string;
-    operation?: "save" | "code-default" | "design-element";
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
     codeDefault?: {
       componentPath?: string;
     };
@@ -222,7 +222,9 @@ export const saveThemeFileInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
-    operation: z.enum(["save", "code-default", "design-element"]).optional(),
+    operation: z
+      .enum(["save", "code-default", "design-element", "design-structure"])
+      .optional(),
     codeDefault: codeDefaultWriteProofSchema.optional(),
     designElement: designElementOperationSchema.optional(),
   })
@@ -317,6 +319,12 @@ export const saveThemeFilesBatchInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
+    /**
+     * A Design section structure write (add, detach, remove with its page
+     * copy): judged by the structure guard on one snapshot before it is
+     * written. Selects the check; grants nothing.
+     */
+    operation: z.literal("design-structure").optional(),
   })
   .refine(
     (input) =>
