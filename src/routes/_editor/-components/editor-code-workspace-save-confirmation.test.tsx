@@ -29,6 +29,7 @@ import type { StorefrontThemeFileDTO } from "@/lib/storefront/dto/storefront-the
 import { useThemeWorkspaceStore } from "@/lib/storefront/store/theme-workspace-store";
 import { saveStorefrontThemeFile } from "@/server/storefront/storefront-theme-files.serverFn";
 import { confirmLostSave } from "@/lib/storefront/editor/editor-write-recovery";
+import { formatEditorCode } from "./editor-code-formatter";
 import {
   EditorCodeWorkspace,
   type EditorCodeWorkspaceHandle,
@@ -964,5 +965,52 @@ describe("a lost Code save, confirmed later", () => {
     expect(t.editor().value).toBe(`${BASELINE}\nmine`);
     expect(t.replacements()).toBe(0);
     expect(t.workspaceRef.current!.hasUnsavedDrafts()).toBe(true);
+  });
+});
+
+/**
+ * After a save is refused because the Theme moved on (a source conflict),
+ * nothing goes again until the author presses Save my changes — not the
+ * autosave. Sent on its own, it carries the generation just refused and is
+ * refused again (CI run 41238376800, lost-editor-writes.spec.ts:95: one
+ * press, two sends).
+ */
+describe("after a save is refused for a source-generation conflict (shell)", () => {
+  it("Ctrl+S whose formatter changed the buffer: autosave does not send the refused text again", async () => {
+    vi.mocked(formatEditorCode).mockImplementation(async (content: string) =>
+      content.endsWith("\n") ? content : `${content}\n`,
+    );
+    try {
+      const t = setup("shell");
+      // As the E2E does: the model is set (no trailing newline), then Ctrl+S.
+      t.edit(`${BASELINE}\n/* next */`);
+      fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+      await advance(0);
+      expect(t.sent()).toEqual([`${BASELINE}\n/* next */\n`]);
+      // The save's answer is held (4 s in the E2E); autosave keeps polling.
+      await advance(4_000);
+      expect(t.sent()).toHaveLength(1);
+      await t.held[0]!.refuseWithSourceConflict();
+      expect(serverFile(HERO)?.sourceConflict).toBe(true);
+      await advance(2_000);
+      expect(t.sent()).toEqual([`${BASELINE}\n/* next */\n`]);
+    } finally {
+      vi.mocked(formatEditorCode).mockImplementation(
+        async (content: string) => content,
+      );
+    }
+  });
+
+  it("an edit made while the save was in flight is not autosaved against the refused generation", async () => {
+    const t = setup("shell");
+    t.edit(`${BASELINE}X`);
+    await advance(700);
+    expect(t.sent()).toEqual([`${BASELINE}X`]);
+    t.edit(`${BASELINE}XY`);
+    await advance(1_000);
+    expect(t.sent()).toHaveLength(1);
+    await t.held[0]!.refuseWithSourceConflict();
+    await advance(2_000);
+    expect(t.sent()).toEqual([`${BASELINE}X`]);
   });
 });

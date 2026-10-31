@@ -3000,7 +3000,8 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (
       isDirty &&
       !externalConflictFiles?.[path] &&
-      !hasUnconfirmedSave(workspaceScope)
+      !hasUnconfirmedSave(workspaceScope) &&
+      !isHeldFromAutoSave(workspaceScope, path)
     ) {
       autoSaveTimersRef.current.set(
         path,
@@ -3174,17 +3175,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       // author's own save (or the notice's) does; this also ends an autosave
       // that was waiting behind that save.
       if (hasUnconfirmedSave(workspaceScope)) return;
-      // Refused for an earlier sign-in: only the author's own save sends it.
-      if (
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[path]?.refusedEarlier
-      ) {
-        return;
-      }
+      // Refused for an earlier sign-in, or for a Theme that moved on since:
+      // only the author's own save sends it (for the latter, the source
+      // conflict notice's Save my changes, which reads the newest Theme
+      // first). Sent again on its own, it would carry the generation that
+      // was just refused.
+      if (isHeldFromAutoSave(workspaceScope, path)) return;
       if (saveInFlightRef.current || saveMutation.isPending) {
         autoSaveTimersRef.current.set(
           path,
@@ -3229,7 +3225,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (
         draftDirtyRef.current[path] &&
         !externalConflictFiles?.[path] &&
-        !hasUnconfirmedSave(workspaceScope)
+        !hasUnconfirmedSave(workspaceScope) &&
+        !isHeldFromAutoSave(workspaceScope, path)
       ) {
         autoSaveTimersRef.current.set(
           path,
@@ -5285,4 +5282,19 @@ function hasUnconfirmedSave(scope: {
         .getWorkspaceFiles(scope.storefrontId, scope.themeId),
     ).length > 0
   );
+}
+
+/**
+ * Whether only the author may send this file again: its last save was
+ * refused for an earlier sign-in, or because the Theme moved on (a source
+ * conflict, resolved by the notice's Save my changes).
+ */
+function isHeldFromAutoSave(
+  scope: { storefrontId: string; themeId: string },
+  path: string,
+): boolean {
+  const file = useThemeWorkspaceStore
+    .getState()
+    .getWorkspaceFiles(scope.storefrontId, scope.themeId)[path];
+  return Boolean(file?.refusedEarlier || file?.sourceConflict);
 }
