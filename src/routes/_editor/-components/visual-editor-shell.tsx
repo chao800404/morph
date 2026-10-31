@@ -262,11 +262,12 @@ import {
   isDocumentWriteTarget,
   isPageStandInId,
 } from "@/lib/storefront/editor/page-stand-in";
+import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
-  patchElementClassNameResult,
-  removeJsxElement,
-  swapSiblingMorphNodes,
-} from "@/lib/storefront/ast/theme-ast-transformer";
+  applyDesignElementOperation,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
+  type DesignElementOperation,
+} from "@/lib/storefront/compiler/design-element-operation";
 import {
   patchThemeLinkBinding,
   patchThemeLinkElement,
@@ -577,6 +578,25 @@ export const PREVIEW_RELOAD_DEFERRED_MESSAGE =
  */
 export const PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE =
   "The canvas was reloaded but your latest content could not be loaded into it, so it may show older content. Your changes are kept.";
+
+/**
+ * The server refused a Design element edit (it touches a section, its effect
+ * cannot be told, or it was computed on content the server does not hold).
+ * An answer, not an unknown outcome: nothing was written. See
+ * `handleUnifiedSaveFile` for when the edit is taken back.
+ */
+class DesignElementRefusedError extends Error {}
+
+/**
+ * Whether a file may take a Design element edit now: the edit is judged on
+ * the stored file, so one with changes not yet saved (or a save running)
+ * would be judged on other content than the one shown.
+ */
+function hasUnsavedThemeFileChanges(
+  file: { dirty?: boolean; saveState?: string } | undefined,
+): boolean {
+  return Boolean(file && (file.dirty || file.saveState !== "clean"));
+}
 
 /** A route's own document before its first write: no sections stored yet. */
 const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
@@ -5231,10 +5251,15 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
-      codeDefaultSave?: {
-        operation: "code-default";
-        codeDefault: CodeDefaultWriteProof;
-      },
+      operationSave?:
+        | {
+            operation: "code-default";
+            codeDefault: CodeDefaultWriteProof;
+          }
+        | {
+            operation: "design-element";
+            designElement: DesignElementOperation;
+          },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5352,12 +5377,7 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
-                        ...(codeDefaultSave
-                          ? {
-                              operation: codeDefaultSave.operation,
-                              codeDefault: codeDefaultSave.codeDefault,
-                            }
-                          : {}),
+                        ...(operationSave ?? {}),
                       },
                     }),
               );
@@ -5444,6 +5464,12 @@ export function VisualEditorShell({
                     workspaceScope,
                   );
                 }
+              }
+              if (
+                operationSave?.operation === "design-element" &&
+                res.error?.startsWith("DESIGN_ELEMENT_")
+              ) {
+                throw new DesignElementRefusedError(res.message);
               }
               throw new Error(res.message);
             }
@@ -5547,8 +5573,9 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
-          operation?: "code-default";
+          operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
+          designElement?: DesignElementOperation;
         },
       ) => Promise<unknown>)
     | null
@@ -5564,8 +5591,13 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
-        operation?: "code-default";
+        operation?: "code-default" | "design-element";
         codeDefault?: CodeDefaultWriteProof;
+        /**
+         * A Design element edit (delete, sibling reorder). The server
+         * recomputes and judges it rather than taking the content as is.
+         */
+        designElement?: DesignElementOperation;
         /**
          * A Design section structure edit (reorder, remove, bind) computed
          * on this tab's files. Recorded so that saving it again later, after
@@ -5622,18 +5654,59 @@ export function VisualEditorShell({
 
       const nextRevision = saveQueueRef.current.claimRevision(opKey);
 
-      const result = await saveThemeFileSequentially(
-        filePath,
-        content,
-        nextRevision,
-        options?.confirmed ?? false,
-        options?.operation === "code-default" && options.codeDefault
-          ? {
-              operation: "code-default",
-              codeDefault: options.codeDefault,
-            }
-          : undefined,
-      );
+      let result: Awaited<ReturnType<typeof saveThemeFileSequentially>>;
+      try {
+        result = await saveThemeFileSequentially(
+          filePath,
+          content,
+          nextRevision,
+          options?.confirmed ?? false,
+          options?.operation === "code-default" && options.codeDefault
+            ? {
+                operation: "code-default",
+                codeDefault: options.codeDefault,
+              }
+            : options?.operation === "design-element" && options.designElement
+              ? {
+                  operation: "design-element",
+                  designElement: options.designElement,
+                }
+              : undefined,
+        );
+      } catch (error) {
+        // A Design element edit the server refused is taken back, in the
+        // workspace and in the frame, while it is still the latest thing in
+        // this file: no later save of the file was asked for, and the file
+        // still holds this edit's content. An edit made while the refusal was
+        // on its way is the author's newest, and stays. Any other failure,
+        // an unanswered save above all, keeps the content as it is.
+        if (error instanceof DesignElementRefusedError && before !== null) {
+          const stillThisEdit =
+            saveQueueRef.current.latestRevision(opKey) === nextRevision &&
+            useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath]?.localContent === content;
+          if (stillThisEdit) {
+            updateWorkspaceLocal(filePath, before, workspaceScope);
+            postPreviewThemeFiles(
+              themeFiles.map((file) => ({
+                path: file.path,
+                content:
+                  useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(
+                      workspaceScope.storefrontId,
+                      workspaceScope.themeId,
+                    )[file.path]?.localContent ?? file.content,
+              })),
+            );
+          }
+        }
+        throw error;
+      }
       if (
         result.status === "superseded" ||
         result.status === "source-conflict" ||
@@ -5809,38 +5882,49 @@ export function VisualEditorShell({
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
       if (refuseSectionTemplateWrite(filePath)) return;
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ];
       const currentSource =
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent ??
+        workspaceFile?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) {
         toast.error(`Cannot reorder: source file ${filePath} is unavailable.`);
         return;
       }
 
-      const result = swapSiblingMorphNodes(
-        currentSource,
-        draggedNodeId,
-        targetNodeId,
-      );
-      if (!result.editable) {
-        const message = (() => {
-          switch (result.reason) {
-            case "not-siblings":
-              return "Only elements under the same source parent can be reordered.";
-            case "parse-error":
-              return `Cannot reorder because ${filePath} contains a syntax error.`;
-            case "same-node":
-              // Dropped where it already was. Nothing changed and nothing failed.
-              return null;
-            default:
-              return "This rendered element cannot be mapped to one unique source sibling.";
-          }
-        })();
+      // The frame names the file and the two elements; that is not trusted
+      // to mean an ordinary reorder. What the swap would move is judged here,
+      // and again by the server, against the sections the file renders.
+      const designElement = {
+        kind: "swap-siblings",
+        firstKey: draggedNodeId,
+        secondKey: targetNodeId,
+      } as const;
+      const result = hasUnsavedThemeFileChanges(workspaceFile)
+        ? null
+        : applyDesignElementOperation(
+            themeFiles,
+            filePath,
+            currentSource,
+            designElement,
+          );
+      if (result?.status !== "ok") {
+        const message =
+          result === null
+            ? DESIGN_ELEMENT_UNSAVED_MESSAGE
+            : result.status === "unchanged"
+              ? // Dropped where it already was. Nothing changed and nothing failed.
+                null
+              : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+                ? result.message
+                : result.reason === "not-siblings"
+                  ? "Only elements under the same source parent can be reordered."
+                  : result.reason === "parse-error"
+                    ? `Cannot reorder because ${filePath} contains a syntax error.`
+                    : "This rendered element cannot be mapped to one unique source sibling.";
         if (message) toast.warning(message);
         postPreviewThemeFiles(
           themeFiles.map((file) => ({
@@ -5858,23 +5942,19 @@ export function VisualEditorShell({
       }
 
       try {
-        await handleUnifiedSaveFile(filePath, result.code);
+        await handleUnifiedSaveFile(filePath, result.code, {
+          operation: "design-element",
+          designElement,
+        });
       } catch (error) {
-        updateWorkspaceLocal(filePath, currentSource, workspaceScope);
-        postPreviewThemeFiles(
-          themeFiles.map((file) => ({
-            path: file.path,
-            content:
-              file.path === filePath
-                ? currentSource
-                : (useThemeWorkspaceStore
-                    .getState()
-                    .getWorkspaceFiles(
-                      workspaceScope.storefrontId,
-                      workspaceScope.themeId,
-                    )[file.path]?.localContent ?? file.content),
-          })),
-        );
+        // Refused: `handleUnifiedSaveFile` has taken the edit back if it was
+        // still the latest. Anything else may have landed (an unanswered
+        // save is marked unconfirmed and asked about before anything else
+        // goes), so the reorder stays as it is.
+        if (error instanceof DesignElementRefusedError) {
+          toast.warning(error.message);
+          return;
+        }
         toast.error(
           `Failed to reorder source elements: ${error instanceof Error ? error.message : "Save failed"}`,
         );
@@ -5885,7 +5965,6 @@ export function VisualEditorShell({
       postPreviewThemeFiles,
       refuseSectionTemplateWrite,
       themeFiles,
-      updateWorkspaceLocal,
       workspaceScope,
     ],
   );
@@ -9258,34 +9337,51 @@ export function VisualEditorShell({
       const sourceFile = effectiveThemeFiles.find(
         (file) => file.path === filePath,
       );
-      const currentSource =
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent ?? sourceFile?.content;
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ];
+      const currentSource = workspaceFile?.localContent ?? sourceFile?.content;
       if (!sourceFile || currentSource === undefined) {
         return {
           success: false,
           message: `The source file ${filePath} is unavailable.`,
         };
       }
+      if (hasUnsavedThemeFileChanges(workspaceFile)) {
+        return { success: false, message: DESIGN_ELEMENT_UNSAVED_MESSAGE };
+      }
 
-      const result = removeJsxElement(currentSource, targetKey);
-      if (!result.editable) {
+      const designElement = {
+        kind: "remove-element",
+        targetKey,
+      } as const;
+      const result = applyDesignElementOperation(
+        effectiveThemeFiles,
+        filePath,
+        currentSource,
+        designElement,
+      );
+      if (result.status !== "ok") {
         const message =
-          result.reason === "parse-error"
-            ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
-            : result.reason === "not-direct-child"
-              ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
-              : "This element no longer maps to one unique source node. Refresh the preview and try again.";
+          result.status === "unchanged"
+            ? "This element no longer maps to one unique source node. Refresh the preview and try again."
+            : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+              ? result.message
+              : result.reason === "parse-error"
+                ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
+                : result.reason === "not-direct-child"
+                  ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
+                  : "This element no longer maps to one unique source node. Refresh the preview and try again.";
         return { success: false, message };
       }
 
       try {
         const saved = await handleUnifiedSaveFile(filePath, result.code, {
           preserveCanvasPosition: true,
+          operation: "design-element",
+          designElement,
         });
         if (saved === null) {
           return {
@@ -9294,6 +9390,10 @@ export function VisualEditorShell({
           };
         }
       } catch (error) {
+        // Refused: taken back by `handleUnifiedSaveFile` if still the latest.
+        if (error instanceof DesignElementRefusedError) {
+          return { success: false, message: error.message };
+        }
         return {
           success: false,
           message:

@@ -105,10 +105,55 @@ export const codeDefaultWriteProofSchema = z.object({
 
 export type CodeDefaultWriteProof = z.infer<typeof codeDefaultWriteProofSchema>;
 
+const elementKeySchema = z.string().trim().min(1).max(200);
+
+/** See `DesignElementOperation`; the server recomputes it, never trusts it. */
+export const designElementOperationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("remove-element"), targetKey: elementKeySchema }),
+  z.object({
+    kind: z.literal("swap-siblings"),
+    firstKey: elementKeySchema,
+    secondKey: elementKeySchema,
+  }),
+]);
+
+function requireDesignElementOperationPairing(
+  value: {
+    operation?: "save" | "code-default" | "design-element";
+    designElement?: unknown;
+    expectMissing?: boolean;
+    expectedFileId?: string;
+    expectedVersion?: number;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const isDesignElement = value.operation === "design-element";
+  if (isDesignElement !== (value.designElement !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: isDesignElement ? ["designElement"] : ["operation"],
+      message:
+        "operation 'design-element' and a designElement operation go together",
+    });
+  }
+  if (
+    isDesignElement &&
+    (value.expectMissing ||
+      !value.expectedFileId ||
+      value.expectedVersion === undefined)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectedFileId"],
+      message: "a design-element operation edits an existing file",
+    });
+  }
+}
+
 export function requireCodeDefaultOperationPairing(
   value: {
     path?: string;
-    operation?: "save" | "code-default";
+    operation?: "save" | "code-default" | "design-element";
     codeDefault?: {
       componentPath?: string;
     };
@@ -171,11 +216,13 @@ export const saveThemeFileInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
-    operation: z.enum(["save", "code-default"]).optional(),
+    operation: z.enum(["save", "code-default", "design-element"]).optional(),
     codeDefault: codeDefaultWriteProofSchema.optional(),
+    designElement: designElementOperationSchema.optional(),
   })
   .superRefine(requireWritePrecondition)
-  .superRefine(requireCodeDefaultOperationPairing);
+  .superRefine(requireCodeDefaultOperationPairing)
+  .superRefine(requireDesignElementOperationPairing);
 
 const batchFileSchema = z
   .object({

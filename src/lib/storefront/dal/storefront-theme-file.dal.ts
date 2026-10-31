@@ -1737,6 +1737,82 @@ export const storefrontThemeFileDal = {
   },
 
   /**
+   * The source files and the generation they belong to, read together.
+   *
+   * `listFiles` and `getSourceGeneration` are separate reads: two of them can
+   * straddle one commit, so files from one generation can be judged under
+   * another's number, even though each write changes files and generation
+   * together. Here both are one D1 batch, which runs as one SQL transaction
+   * (https://developers.cloudflare.com/d1/worker-api/d1-database/#batch), so
+   * they are one snapshot. The same ownership and deletion conditions as the
+   * separate reads apply; null when the Theme is not this storefront's.
+   *
+   * A guard judges on this and then writes with `expectedSourceGeneration`
+   * set to its generation, so the write's own CAS refuses anything that
+   * landed since.
+   */
+  async getSourceSnapshot(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<{
+    sourceGeneration: number;
+    files: StorefrontThemeFileDTO[];
+  } | null> {
+    const [themeResult, filesResult] = await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        `SELECT source_generation AS sourceGeneration
+         FROM storefront_themes
+         WHERE id = ?1 AND storefront_id = ?2 AND deleted_at IS NULL
+         LIMIT 1`,
+      ).bind(themeId, storefrontId),
+      env.DATABASE.prepare(
+        `SELECT f.id, f.storefront_id AS storefrontId, f.theme_id AS themeId,
+                f.path, f.content, f.mime_type AS mimeType,
+                f.is_entry AS isEntry, f.version,
+                f.created_at AS createdAt, f.updated_at AS updatedAt
+         FROM storefront_theme_files f
+         JOIN storefront_themes t
+           ON t.id = f.theme_id
+          AND t.storefront_id = f.storefront_id
+          AND t.deleted_at IS NULL
+         WHERE f.storefront_id = ?1 AND f.theme_id = ?2
+           AND f.deleted_at IS NULL AND f.encoding = 'utf8'
+         ORDER BY f.path ASC`,
+      ).bind(storefrontId, themeId),
+    ]);
+    const theme = (themeResult?.results ?? [])[0] as
+      { sourceGeneration: number | null } | undefined;
+    if (!theme || typeof theme.sourceGeneration !== "number") return null;
+    const rows = (filesResult?.results ?? []) as Array<{
+      id: string;
+      storefrontId: string;
+      themeId: string;
+      path: string;
+      content: string;
+      mimeType: string | null;
+      isEntry: number | boolean | null;
+      version: number | null;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+    return {
+      sourceGeneration: theme.sourceGeneration,
+      files: rows.map((row) => ({
+        id: row.id,
+        storefrontId: row.storefrontId,
+        themeId: row.themeId,
+        path: row.path,
+        content: row.content,
+        mimeType: row.mimeType ?? "text/plain",
+        isEntry: Boolean(row.isEntry),
+        version: row.version ?? 1,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+    };
+  },
+
+  /**
    * One page of a theme's revision history, with the count the pager needs.
    *
    * Revisions grow without an upper bound — every save, AI edit, publish and
