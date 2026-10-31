@@ -250,8 +250,16 @@ type EditorCodeWorkspaceProps = {
   onSaveFile?: (
     path: string,
     content: string,
-    /** The author asked for this save; see `saveThemeFileSequentially`. */
-    options?: { confirmed?: boolean },
+    options?: {
+      /** The author asked for this save; see `saveThemeFileSequentially`. */
+      confirmed?: boolean;
+      /**
+       * The author typed in this file in Code since its last save of their
+       * own landed: the text is theirs. Code saving text it holds only
+       * because another part of the editor wrote it is not.
+       */
+      codeEdit?: boolean;
+    },
   ) => Promise<StorefrontThemeFileDTO | null>;
   /**
    * The author typed in a file. Called for their edits only, not for a
@@ -270,9 +278,20 @@ type EditorCodeWorkspaceProps = {
   dependencySourceRevisionId?: string;
 };
 
+export type EditorCodeSaveAllOptions = {
+  confirmed?: boolean;
+  /**
+   * Files not to save, by path, while what Code holds for them is still
+   * exactly the given text: a Design structure edit the caller checks before
+   * sending (see the shell's `saveSourceConflicts`). Once the author changes
+   * such a file in Code, it no longer matches and is saved as theirs.
+   */
+  leave?: ReadonlyMap<string, string>;
+};
+
 export type EditorCodeWorkspaceHandle = {
   /** `confirmed`: the author asked for this save (see `onSaveFile`). */
-  saveAll: (options?: { confirmed?: boolean }) => Promise<boolean>;
+  saveAll: (options?: EditorCodeSaveAllOptions) => Promise<boolean>;
   /** Flushes Monaco drafts before a consumer changes authoring mode. */
   flushPendingChanges: () => Promise<boolean>;
   /**
@@ -729,6 +748,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   const draftContentsRef = useRef<Record<string, string>>({});
   const draftDirtyRef = useRef<Record<string, boolean>>({});
   const draftRevisionRef = useRef<Record<string, number>>({});
+  /**
+   * Files the author typed in, here, since their last own save landed or
+   * their draft was dropped; see `onSaveFile`'s `codeEdit`.
+   */
+  const authorEditedPathsRef = useRef(new Set<string>());
   /** Saves sent and not yet answered; see `code-save-confirmation`. */
   const sentWritesRef = useRef(createSentCodeWrites());
   const autoSaveTimersRef = useRef(
@@ -1361,7 +1385,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       // Answered in `onSettled`, which receives this same object.
       sentWritesRef.current.sent(variables);
       markWorkspaceSaving(path, workspaceScope);
-      if (onSaveFile) return onSaveFile(path, content, { confirmed });
+      if (onSaveFile) {
+        return onSaveFile(path, content, {
+          confirmed,
+          codeEdit: authorEditedPathsRef.current.has(path),
+        });
+      }
 
       const state = useThemeWorkspaceStore
         .getState()
@@ -1415,6 +1444,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       });
       if (draft === "clean") {
         draftDirtyRef.current[saved.path] = false;
+        // What the author typed is saved, and nothing newer is waiting.
+        authorEditedPathsRef.current.delete(saved.path);
       } else if (draft === "dirty") {
         draftDirtyRef.current[saved.path] = true;
       }
@@ -1598,11 +1629,13 @@ const EditorCodeWorkspaceContent = forwardRef<
         delete draftContentsRef.current[path];
         delete draftDirtyRef.current[path];
         delete draftRevisionRef.current[path];
+        authorEditedPathsRef.current.delete(path);
       }
       for (const { path, content } of reset) {
         draftContentsRef.current[path] = content;
         draftDirtyRef.current[path] = false;
         delete draftRevisionRef.current[path];
+        authorEditedPathsRef.current.delete(path);
         const model = modelFor(path);
         if (model && model.getValue() !== content) {
           suppressModelChangeRef.current = true;
@@ -1748,6 +1781,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         draftContentsRef.current[saved.path] = saved.content;
         draftDirtyRef.current[saved.path] = false;
         delete draftRevisionRef.current[saved.path];
+        authorEditedPathsRef.current.delete(saved.path);
         for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
           const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
           if (
@@ -1834,6 +1868,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       delete draftContentsRef.current[path];
       delete draftDirtyRef.current[path];
       delete draftRevisionRef.current[path];
+      authorEditedPathsRef.current.delete(path);
       discardWorkspaceLocal(path, workspaceScope);
       syncCombinedDirtyPaths(
         useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
@@ -2085,6 +2120,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         draftContentsRef.current[saved.path] = saved.content;
         draftDirtyRef.current[saved.path] = false;
         delete draftRevisionRef.current[saved.path];
+        authorEditedPathsRef.current.delete(saved.path);
         markWorkspaceSaved(saved, workspaceScope);
       }
       await queryClient.invalidateQueries({
@@ -2176,6 +2212,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           delete draftContentsRef.current[path];
           delete draftDirtyRef.current[path];
           delete draftRevisionRef.current[path];
+          authorEditedPathsRef.current.delete(path);
           discardWorkspaceLocal(path, workspaceScope);
         }
         syncCombinedDirtyPaths(
@@ -2418,6 +2455,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         delete draftContentsRef.current[from];
         delete draftDirtyRef.current[from];
         delete draftRevisionRef.current[from];
+        authorEditedPathsRef.current.delete(from);
         discardWorkspaceLocal(from, workspaceScope);
         for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
           const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
@@ -2454,6 +2492,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           draftContentsRef.current[saved.path] = saved.content;
           draftDirtyRef.current[saved.path] = false;
           delete draftRevisionRef.current[saved.path];
+          authorEditedPathsRef.current.delete(saved.path);
         } else {
           draftDirtyRef.current[saved.path] = true;
         }
@@ -2927,6 +2966,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     onAuthorInput?.();
 
     const path = activeFilePath;
+    authorEditedPathsRef.current.add(path);
     draftContentsRef.current[path] = value;
     draftRevisionRef.current[path] = (draftRevisionRef.current[path] ?? 0) + 1;
     const isDirty = value !== getFileBaseline(path);
@@ -3211,7 +3251,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   autoSaveFileRef.current = handleAutoSaveFile;
 
   const handleSaveAll = useCallback(
-    async (options?: { confirmed?: boolean }): Promise<boolean> => {
+    async (options?: EditorCodeSaveAllOptions): Promise<boolean> => {
       if (saveInFlightRef.current) {
         const pending = pendingSavePromiseRef.current;
         if (!pending) return false;
@@ -3231,8 +3271,14 @@ const EditorCodeWorkspaceContent = forwardRef<
       }
       autoSaveTimersRef.current.clear();
       const dirtyPaths = combinedDirtyPathsRef.current;
+      const leave = options?.leave;
       const paths = combinedDirtyPathsRef.current.filter(
-        (path) => !externalConflictFiles?.[path],
+        (path) =>
+          !externalConflictFiles?.[path] &&
+          !(
+            leave?.has(path) &&
+            leave.get(path) === getCurrentEditorContent(path)
+          ),
       );
       if (paths.length === 0) return dirtyPaths.length === 0;
 
@@ -3408,6 +3454,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     delete draftContentsRef.current[path];
     delete draftDirtyRef.current[path];
     delete draftRevisionRef.current[path];
+    authorEditedPathsRef.current.delete(path);
     syncCombinedDirtyPaths(
       useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
     );

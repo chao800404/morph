@@ -305,7 +305,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Code editor" }) as HTMLTextAreaElement).value).toBe(projected.content));
     fireEvent.change(screen.getByRole("textbox", { name: "Code editor" }), { target: { value: "User-agent: *\nDisallow: /private\n" } });
     fireEvent.click(screen.getByRole("button", { name: /Save/ }));
-    await waitFor(() => expect(onSaveFile).toHaveBeenCalledWith(publicFile.path, "User-agent: *\nDisallow: /private\n", { confirmed: true }));
+    await waitFor(() => expect(onSaveFile).toHaveBeenCalledWith(publicFile.path, "User-agent: *\nDisallow: /private\n", { confirmed: true, codeEdit: true }));
     expect(formatEditorCode).not.toHaveBeenCalled();
     await waitFor(() => expect(useThemeWorkspaceStore.getState().files[publicFile.path].serverVersion).toBe(2));
   });
@@ -404,6 +404,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() => {
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "latest draft", {
         confirmed: true,
+        codeEdit: true,
       });
     });
   });
@@ -435,6 +436,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       () =>
         expect(onSaveFile).toHaveBeenCalledWith(file.path, "live draft", {
           confirmed: false,
+          codeEdit: true,
         }),
       { timeout: 1_500 },
     );
@@ -458,7 +460,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     expect(onSaveFile).toHaveBeenCalledWith(
       file.path,
       "draft before switching to Design",
-      { confirmed: false },
+      { confirmed: false, codeEdit: true },
     );
   });
 
@@ -481,6 +483,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     expect(onSaveFile).toHaveBeenCalledTimes(1);
     expect(onSaveFile).toHaveBeenCalledWith(file.path, "flush now", {
       confirmed: false,
+      codeEdit: true,
     });
   });
 
@@ -555,6 +558,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
       // Leaving sent the draft, and the save is still out.
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "first", {
         confirmed: false,
+        codeEdit: true,
       });
       expect(blocked).toBeUndefined();
 
@@ -613,6 +617,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() =>
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "formatted(draft)", {
         confirmed: true,
+        codeEdit: true,
       }),
     );
     await waitFor(() =>
@@ -639,6 +644,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() =>
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "unformatted draft", {
         confirmed: true,
+        codeEdit: true,
       }),
     );
   });
@@ -661,6 +667,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() =>
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "original draft", {
         confirmed: true,
+        codeEdit: true,
       }),
     );
   });
@@ -690,6 +697,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() =>
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "formatted once", {
         confirmed: true,
+        codeEdit: true,
       }),
     );
     expect(onSaveFile).toHaveBeenCalledTimes(1);
@@ -717,6 +725,7 @@ describe("EditorCodeWorkspace transient Monaco drafts", () => {
     await waitFor(() =>
       expect(onSaveFile).toHaveBeenCalledWith(file.path, "newer draft", {
         confirmed: true,
+        codeEdit: true,
       }),
     );
     expect((editor as HTMLTextAreaElement).value).toBe("newer draft");

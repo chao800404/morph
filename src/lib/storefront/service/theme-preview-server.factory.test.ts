@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { createServerThemePreviewServer } from "./theme-preview-server.factory";
 import { validateLoopbackPreviewUrl } from "./theme-preview-server-origin";
+import { observedPreviewNamespace } from "./preview-sandbox-cause-observation";
 
 /**
  * Which Live Preview transport an environment gets.
@@ -46,10 +47,32 @@ describe("choosing the Live Preview transport", () => {
     });
     expect(selection.enabled).toBe(true);
     if (!selection.enabled) return;
+    const binding = (selection.server as unknown as { sandboxBinding: unknown })
+      .sandboxBinding;
+    // The preview's namespace, as every preview caller holds it: observed,
+    // and one object for all of them.
+    expect(binding).toBe(observedPreviewNamespace(SANDBOX.PreviewSandbox));
+    expect(binding).not.toBe(observedPreviewNamespace(SANDBOX.Sandbox));
+  });
+
+  it("turns the container-side request record on only for a non-production binding", () => {
+    const traced = (bindings: Record<string, unknown>) => {
+      const selection = createServerThemePreviewServer({
+        ...SANDBOX,
+        ...PREVIEW_HOST,
+        ...bindings,
+      });
+      expect(selection.enabled).toBe(true);
+      if (!selection.enabled) return null;
+      return (selection.server as unknown as { requestTrace: boolean })
+        .requestTrace;
+    };
+    expect(traced({})).toBe(false);
+    expect(traced({ MORPH_PREVIEW_REQUEST_TRACE: "0" })).toBe(false);
+    expect(traced({ MORPH_PREVIEW_REQUEST_TRACE: "1" })).toBe(true);
     expect(
-      (selection.server as unknown as { sandboxBinding: unknown })
-        .sandboxBinding,
-    ).toBe(SANDBOX.PreviewSandbox);
+      traced({ MORPH_PREVIEW_REQUEST_TRACE: "1", ENVIRONMENT: "production" }),
+    ).toBe(false);
   });
 
   it("is refused when only Sandbox is bound, rather than run without the preview's policy", () => {

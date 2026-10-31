@@ -5,6 +5,7 @@ import {
 } from "./theme-preview-diagnostic-script";
 import { THEME_PREVIEW_BRIDGE_PATH } from "./theme-preview-bridge-entry";
 import {
+  PREVIEW_ADDRESS_PROBE_BODY,
   START_PREVIEW_ADDRESS_PROBE_PATH,
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
@@ -223,10 +224,12 @@ export default {
       } catch {
         // Unreadable: the probe still answers, naming no snapshot.
       }
-      return new Response(null, {
-        status: 204,
+      // A body, never an empty 204; see PREVIEW_ADDRESS_PROBE_BODY.
+      return new Response(request.method === "GET" ? ${JSON.stringify(PREVIEW_ADDRESS_PROBE_BODY)} : null, {
+        status: 200,
         headers: {
           "cache-control": "no-store",
+          "content-type": "text/plain; charset=utf-8",
           ${JSON.stringify(START_PREVIEW_ID_HEADER)}: ${JSON.stringify(previewId)},
           ${JSON.stringify(PREVIEW_CONTENT_TICKET_HEADER)}: String(ticket),
           ${JSON.stringify(PREVIEW_INSTANCE_HEADER)}: instance,

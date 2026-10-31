@@ -57,6 +57,15 @@ import { isEditablePublicTextPath, projectPublicTextFile } from "@/lib/storefron
 import { THEME_PUBLIC_LIMITS } from "@/lib/storefront/theme-public-files";
 import { isThemeAuthoringRefusedPath } from "@/lib/storefront/compiler/theme-start-toolchain";
 import { proveAndPatchSourceDefault } from "@/lib/storefront/editor/source-default-control";
+import {
+  resolveDesignElementOperation,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
+  type DesignElementOperation,
+} from "@/lib/storefront/compiler/design-element-operation";
+import {
+  type DesignStructureRefusal,
+  judgeDesignStructureWrite,
+} from "@/lib/storefront/compiler/design-structure-guard";
 
 function rejectLegacyManifestDeletion() {
   return fail(
@@ -90,6 +99,226 @@ function rejectAuthoringRefusedPath(path: string) {
     `"${path}" is provided by the platform's build and cannot be written. It may only be deleted.`,
     { error: "THEME_PATH_REFUSED" },
   );
+}
+
+function sourceGenerationConflict(currentGeneration: number | null) {
+  return fail(
+    `Remote source changes detected (current generation: ${currentGeneration ?? "unknown"}): the theme working source was updated by another operation.`,
+    { error: "SOURCE_GENERATION_CONFLICT" },
+  );
+}
+
+/**
+ * A Design element edit (operation "design-element"): checked here, not in
+ * the editor.
+ *
+ * The edit is recomputed from the stored file of one snapshot of the Theme
+ * (`getSourceSnapshot`) with the same `resolveDesignElementOperation` the
+ * editor ran, judged against the sections that snapshot renders, and saved
+ * only if it equals what was sent. An undo is checked the other way round
+ * (`undoDesignElementEdit`): the edit, applied to the sent text, must give
+ * the stored file, and is judged on the sent text against the sections
+ * rendered now. Either way it is saved with `expectedSourceGeneration` set to
+ * the snapshot's generation: anything that landed after the snapshot is
+ * refused by the write's own CAS. The operation name only says which check
+ * to run; it grants nothing. Every refusal writes nothing.
+ */
+async function saveDesignElementOperation(
+  data: {
+    storefrontId: string;
+    themeId: string;
+    path: string;
+    content: string;
+    mimeType?: string;
+    expectedFileId?: string;
+    expectedVersion?: number;
+    expectedSourceGeneration: number;
+    createRevision?: boolean;
+    revisionMessage?: string;
+  },
+  operation: DesignElementOperation,
+  context: { user?: { id: string } | null },
+) {
+  try {
+    const snapshot = await themeSourceStore.getSourceSnapshot(
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!snapshot) {
+      return fail("Theme not found or does not belong to storefront.", {
+        error: "THEME_NOT_FOUND",
+      });
+    }
+    if (snapshot.sourceGeneration !== data.expectedSourceGeneration) {
+      return sourceGenerationConflict(snapshot.sourceGeneration);
+    }
+    const stored = snapshot.files.find((file) => file.path === data.path);
+    if (
+      !stored ||
+      stored.id !== data.expectedFileId ||
+      stored.version !== data.expectedVersion
+    ) {
+      return fail(
+        "Version conflict detected: file was modified by another operation.",
+        { error: "FILE_VERSION_CONFLICT" },
+      );
+    }
+    const applied = resolveDesignElementOperation(
+      snapshot.files,
+      data.path,
+      stored.content,
+      data.content,
+      operation,
+    );
+    if (applied.status === "refused") {
+      return fail(applied.message, { error: applied.error });
+    }
+    if (applied.status === "unchanged" || applied.code !== data.content) {
+      return fail(DESIGN_ELEMENT_UNSAVED_MESSAGE, {
+        error: "DESIGN_ELEMENT_CONTENT_MISMATCH",
+      });
+    }
+    const saved = await themeSourceStore.saveFile(
+      data.storefrontId,
+      data.themeId,
+      data.path,
+      applied.code,
+      data.mimeType ?? stored.mimeType,
+      {
+        expectedFileId: stored.id,
+        expectedVersion: stored.version,
+        expectMissing: false,
+        expectedSourceGeneration: snapshot.sourceGeneration,
+        createRevision: data.createRevision,
+        revisionMessage: data.revisionMessage,
+        createdBy: context.user?.id,
+      },
+    );
+    return ok("Theme file saved", saved);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+    ) {
+      return sourceGenerationConflict(
+        await themeSourceStore.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        ),
+      );
+    }
+    if (
+      error instanceof Error &&
+      error.message.includes("CONFLICT_VERSION_MISMATCH")
+    ) {
+      return fail(
+        "Version conflict detected: file was modified by another operation.",
+        { error: "FILE_VERSION_CONFLICT" },
+      );
+    }
+    return failure(
+      "Save theme file design-element error",
+      error,
+      "SAVE_FAILED",
+      "Failed to save theme file",
+    );
+  }
+}
+
+/** A structure-guard refusal: nothing was written. */
+function designStructureRefused(refusal: DesignStructureRefusal) {
+  return fail(refusal.message, { error: refusal.error });
+}
+
+/**
+ * A Design section structure write to one file (operation
+ * "design-structure"): reorder, remove, bind, and their undo, redo and
+ * resends. Judged by `judgeDesignStructureWrite` on one snapshot of the
+ * Theme (`getSourceSnapshot`), then saved with `expectedSourceGeneration`
+ * set to that snapshot's generation: a dependency anyone changes after the
+ * check (the loader's module) makes the write's own CAS refuse it. The
+ * operation name selects the check; it grants nothing.
+ */
+async function saveDesignStructureWrite(
+  data: {
+    storefrontId: string;
+    themeId: string;
+    path: string;
+    content: string;
+    mimeType?: string;
+    expectedFileId?: string;
+    expectedVersion?: number;
+    expectMissing?: boolean;
+    expectedSourceGeneration: number;
+    createRevision?: boolean;
+    revisionMessage?: string;
+  },
+  context: { user?: { id: string } | null },
+) {
+  try {
+    const snapshot = await themeSourceStore.getSourceSnapshot(
+      data.storefrontId,
+      data.themeId,
+    );
+    if (!snapshot) {
+      return fail("Theme not found or does not belong to storefront.", {
+        error: "THEME_NOT_FOUND",
+      });
+    }
+    if (snapshot.sourceGeneration !== data.expectedSourceGeneration) {
+      return sourceGenerationConflict(snapshot.sourceGeneration);
+    }
+    const judged = judgeDesignStructureWrite(
+      snapshot.files,
+      [{ path: data.path, content: data.content }],
+      [],
+    );
+    if (!judged.ok) return designStructureRefused(judged);
+    const saved = await themeSourceStore.saveFile(
+      data.storefrontId,
+      data.themeId,
+      data.path,
+      data.content,
+      data.mimeType,
+      {
+        expectedFileId: data.expectedFileId,
+        expectedVersion: data.expectedVersion,
+        expectMissing: data.expectMissing,
+        expectedSourceGeneration: snapshot.sourceGeneration,
+        createRevision: data.createRevision,
+        revisionMessage: data.revisionMessage,
+        createdBy: context.user?.id,
+      },
+    );
+    return ok("Theme file saved", saved);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("CONFLICT_SOURCE_GENERATION_MISMATCH")
+    ) {
+      return sourceGenerationConflict(
+        await themeSourceStore.getSourceGeneration(
+          data.storefrontId,
+          data.themeId,
+        ),
+      );
+    }
+    if (
+      error instanceof Error &&
+      error.message.includes("CONFLICT_VERSION_MISMATCH")
+    ) {
+      return fail(
+        "Version conflict detected: file was modified by another operation.",
+        { error: "FILE_VERSION_CONFLICT" },
+      );
+    }
+    return failure(
+      "Save theme file design-structure error",
+      error,
+      "SAVE_FAILED",
+      "Failed to save theme file",
+    );
+  }
 }
 
 /**
@@ -736,6 +965,18 @@ export const saveStorefrontThemeFile = createServerFn({ method: "POST" })
         );
       }
     }
+    if (data.operation === "design-element" || data.designElement) {
+      if (data.operation !== "design-element" || !data.designElement) {
+        return fail(
+          "A design-element write needs operation 'design-element' with its operation.",
+          { error: "DESIGN_ELEMENT_OPERATION_REQUIRED" },
+        );
+      }
+      return saveDesignElementOperation(data, data.designElement, context);
+    }
+    if (data.operation === "design-structure") {
+      return saveDesignStructureWrite(data, context);
+    }
     try {
       const saved = await themeSourceStore.saveFile(
         data.storefrontId,
@@ -819,6 +1060,42 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
     if (refusedPath !== undefined) {
       return rejectAuthoringRefusedPath(refusedPath);
     }
+    let expectedSourceGeneration = data.expectedSourceGeneration;
+    if (data.operation === "design-structure") {
+      // A Design structure batch writes and removes source only; anything
+      // else in it is not what the guard judges.
+      if (
+        data.publicUrlRewrite ||
+        (data.routePathMoves?.length ?? 0) > 0 ||
+        (data.binaryCopies?.length ?? 0) > 0
+      ) {
+        return fail(
+          "A Design structure write carries source files and deletions only.",
+          { error: "DESIGN_STRUCTURE_SHAPE" },
+        );
+      }
+      const snapshot = await themeSourceStore.getSourceSnapshot(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (!snapshot) {
+        return fail("Theme not found or does not belong to storefront.", {
+          error: "THEME_NOT_FOUND",
+        });
+      }
+      if (snapshot.sourceGeneration !== data.expectedSourceGeneration) {
+        return sourceGenerationConflict(snapshot.sourceGeneration);
+      }
+      const judged = judgeDesignStructureWrite(
+        snapshot.files,
+        data.files,
+        (data.deletions ?? []).map((deletion) => deletion.path),
+      );
+      if (!judged.ok) return designStructureRefused(judged);
+      // Committed against the generation the check read: whatever lands in
+      // between makes the batch's own CAS refuse all of it.
+      expectedSourceGeneration = snapshot.sourceGeneration;
+    }
     try {
       let files = data.files;
       if (data.publicUrlRewrite) {
@@ -845,7 +1122,7 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
         data.themeId,
         files,
         {
-          expectedSourceGeneration: data.expectedSourceGeneration,
+          expectedSourceGeneration,
           deletions: data.deletions,
           routePathMoves: data.routePathMoves,
           binaryCopies: data.binaryCopies,

@@ -105,10 +105,61 @@ export const codeDefaultWriteProofSchema = z.object({
 
 export type CodeDefaultWriteProof = z.infer<typeof codeDefaultWriteProofSchema>;
 
+const elementKeySchema = z.string().trim().min(1).max(200);
+
+/** See `DesignElementOperation`; the server recomputes it, never trusts it. */
+const designElementEditSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("remove-element"), targetKey: elementKeySchema }),
+  z.object({
+    kind: z.literal("swap-siblings"),
+    firstKey: elementKeySchema,
+    secondKey: elementKeySchema,
+  }),
+]);
+
+export const designElementOperationSchema = z.union([
+  designElementEditSchema,
+  // The undo of an edit: the sent content is the text the edit was made on.
+  z.object({ kind: z.literal("undo"), edit: designElementEditSchema }),
+]);
+
+function requireDesignElementOperationPairing(
+  value: {
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
+    designElement?: unknown;
+    expectMissing?: boolean;
+    expectedFileId?: string;
+    expectedVersion?: number;
+  },
+  ctx: z.RefinementCtx,
+) {
+  const isDesignElement = value.operation === "design-element";
+  if (isDesignElement !== (value.designElement !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: isDesignElement ? ["designElement"] : ["operation"],
+      message:
+        "operation 'design-element' and a designElement operation go together",
+    });
+  }
+  if (
+    isDesignElement &&
+    (value.expectMissing ||
+      !value.expectedFileId ||
+      value.expectedVersion === undefined)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectedFileId"],
+      message: "a design-element operation edits an existing file",
+    });
+  }
+}
+
 export function requireCodeDefaultOperationPairing(
   value: {
     path?: string;
-    operation?: "save" | "code-default";
+    operation?: "save" | "code-default" | "design-element" | "design-structure";
     codeDefault?: {
       componentPath?: string;
     };
@@ -171,11 +222,15 @@ export const saveThemeFileInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
-    operation: z.enum(["save", "code-default"]).optional(),
+    operation: z
+      .enum(["save", "code-default", "design-element", "design-structure"])
+      .optional(),
     codeDefault: codeDefaultWriteProofSchema.optional(),
+    designElement: designElementOperationSchema.optional(),
   })
   .superRefine(requireWritePrecondition)
-  .superRefine(requireCodeDefaultOperationPairing);
+  .superRefine(requireCodeDefaultOperationPairing)
+  .superRefine(requireDesignElementOperationPairing);
 
 const batchFileSchema = z
   .object({
@@ -264,6 +319,12 @@ export const saveThemeFilesBatchInputSchema = z
     expectedSourceGeneration: z.number().int().min(1),
     createRevision: z.boolean().optional().default(false),
     revisionMessage: z.string().max(200).optional(),
+    /**
+     * A Design section structure write (add, detach, remove with its page
+     * copy): judged by the structure guard on one snapshot before it is
+     * written. Selects the check; grants nothing.
+     */
+    operation: z.literal("design-structure").optional(),
   })
   .refine(
     (input) =>
