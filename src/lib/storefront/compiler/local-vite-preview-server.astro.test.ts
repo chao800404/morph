@@ -123,7 +123,9 @@ describe.skipIf(!available)(
   () => {
     it("answers the address probe with its own id", async () => {
       const probe = await fetch(`${origin}/_morph/preview-health`);
-      expect(probe.status).toBe(204);
+      // A body, never an empty 204 (cloudflare/workerd#7597).
+      expect(probe.status).toBe(200);
+      expect(await probe.text()).toBe("ok");
       expect(probe.headers.get("x-morph-preview-id")).toBe(PREVIEW_ID);
     });
 

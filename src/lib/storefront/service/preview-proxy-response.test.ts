@@ -174,6 +174,103 @@ describe("bounded recovery of SDK module routing failures", () => {
   });
 });
 
+describe("conditional request headers toward the container", () => {
+  // A 304 has no body, and a bodiless first response on a fresh pooled
+  // container-port tunnel gets the next request on it closed
+  // (cloudflare/workerd#7597). Vite answers a read without these with 200.
+  const conditional = {
+    "If-None-Match": '"v1"',
+    "If-Modified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
+    "If-Match": '"v1"',
+    "If-Unmodified-Since": "Sat, 31 Oct 2026 00:00:00 GMT",
+    "If-Range": '"v1"',
+  };
+  const kept = {
+    Accept: "text/javascript",
+    "Accept-Encoding": "gzip",
+    "Cache-Control": "max-age=0",
+    Referer: "https://preview.example/",
+    "X-Theme-Header": "kept",
+  };
+
+  it.each([
+    ["/src/components/Hero.tsx", "GET"],
+    ["/@vite/client", "GET"],
+    ["/", "GET"],
+    ["/public/logo.png", "GET"],
+    ["/src/components/Hero.tsx", "HEAD"],
+  ])(
+    "drops them from %s %s and keeps every other header and the URL",
+    async (path, method) => {
+      const input = new Request(`https://preview.example${path}?t=1`, {
+        method,
+        headers: { ...conditional, ...kept },
+      });
+      const success = new Response(method === "HEAD" ? null : "body");
+      const proxy = vi.fn().mockResolvedValue(success);
+      expect(await proxyPreviewModuleRequest(input, proxy, vi.fn())).toBe(
+        success,
+      );
+      expect(proxy).toHaveBeenCalledTimes(1);
+      const sent = proxy.mock.calls[0]![0] as Request;
+      expect(sent.url).toBe(input.url);
+      expect(sent.method).toBe(method);
+      for (const name of Object.keys(conditional)) {
+        expect(sent.headers.has(name)).toBe(false);
+      }
+      for (const [name, value] of Object.entries(kept)) {
+        expect(sent.headers.get(name)).toBe(value);
+      }
+      // The caller's request is not altered.
+      expect(input.headers.get("If-None-Match")).toBe('"v1"');
+    },
+  );
+
+  it("drops them from every retry of an interrupted module", async () => {
+    const proxy = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Proxy routing error", { status: 500 }),
+      )
+      .mockResolvedValueOnce(new Response("export default {}"));
+    await proxyPreviewModuleRequest(
+      new Request("https://preview.example/src/components/Hero.tsx", {
+        headers: { ...conditional, ...kept },
+      }),
+      proxy,
+      vi.fn().mockResolvedValue(undefined),
+    );
+    expect(proxy).toHaveBeenCalledTimes(2);
+    for (const [sent] of proxy.mock.calls as [Request][]) {
+      expect(sent.headers.has("If-None-Match")).toBe(false);
+      expect(sent.headers.get("Accept")).toBe(kept.Accept);
+    }
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"])(
+    "keeps a %s request's preconditions, which guard the Theme's own write",
+    async (method) => {
+      const input = new Request("https://preview.example/api/item", {
+        method,
+        headers: { ...conditional, ...kept },
+        body: method === "DELETE" ? undefined : "{}",
+      });
+      const proxy = vi.fn().mockResolvedValue(new Response("done"));
+      await proxyPreviewModuleRequest(input, proxy, vi.fn());
+      expect(proxy.mock.calls).toEqual([[input]]);
+    },
+  );
+
+  it("sends a read with no conditional header on as it is", async () => {
+    const input = new Request("https://preview.example/src/main.tsx", {
+      headers: kept,
+    });
+    const proxy = vi.fn().mockResolvedValue(new Response("body"));
+    await proxyPreviewModuleRequest(input, proxy, vi.fn());
+    expect(proxy.mock.calls).toEqual([[input]]);
+  });
+});
+
 describe("uncacheablePreviewError", () => {
   it("forbids storing a refusal, keeping everything else about it", async () => {
     const refused = new Response(

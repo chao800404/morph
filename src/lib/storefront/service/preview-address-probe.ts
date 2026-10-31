@@ -23,6 +23,12 @@ export type PreviewAddressState = "serving" | "stale" | "unknown";
 export const PREVIEW_ADDRESS_PROBE_PATH = "/_morph/preview-health";
 export const START_PREVIEW_ADDRESS_PROBE_PATH = PREVIEW_ADDRESS_PROBE_PATH;
 export const START_PREVIEW_ID_HEADER = "x-morph-preview-id";
+/**
+ * What the probe answers to a GET, with status 200. Never an empty 204: on a
+ * fresh pooled container-port tunnel, a first response without a body gets
+ * the next request on that tunnel closed (cloudflare/workerd#7597).
+ */
+export const PREVIEW_ADDRESS_PROBE_BODY = "ok";
 
 export function previewAddressProbePath(_runtime?: string): string {
   // Probe the instance that is running, not the runtime a later request's
@@ -72,7 +78,11 @@ export function classifyPreviewAddressProbe(
   identity?: { expected: string; actual: string | null },
 ): PreviewAddressState {
   if (status < 400 && identity) {
-    return status === 204 && identity.actual === identity.expected
+    // 200 with PREVIEW_ADDRESS_PROBE_BODY now; 204 from a container started
+    // before that change. Identity, not status, tells the platform's answer
+    // from a Theme page or a redirect.
+    return (status === 200 || status === 204) &&
+      identity.actual === identity.expected
       ? "serving"
       : "unknown";
   }

@@ -1,5 +1,6 @@
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
 import {
+  PREVIEW_ADDRESS_PROBE_BODY,
   PREVIEW_ADDRESS_PROBE_PATH,
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
@@ -804,11 +805,14 @@ const previewHealthPlugin = isLivePreview && !isStartPreview ? {
       if (req.method !== "GET" && req.method !== "HEAD") {
         res.statusCode = 405;
         res.setHeader("Allow", "GET, HEAD");
-      } else {
-        res.statusCode = 204;
-        res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+        res.end();
+        return;
       }
-      res.end();
+      // A body, never an empty 204; see PREVIEW_ADDRESS_PROBE_BODY.
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+      res.end(req.method === "GET" ? ${JSON.stringify(PREVIEW_ADDRESS_PROBE_BODY)} : undefined);
     });
   },
 } : null;

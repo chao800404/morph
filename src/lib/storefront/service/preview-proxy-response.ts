@@ -3,6 +3,41 @@ import { isolateSvgResponse } from "../theme-svg-isolation";
 import { withoutPlatformCookies } from "./preview-proxy-credentials";
 import { previewRuntimeInterruptedResponse } from "./preview-runtime-interruption";
 
+/** Request headers that let the container answer a read with no body. */
+const CONDITIONAL_REQUEST_HEADERS = [
+  "if-none-match",
+  "if-modified-since",
+  "if-match",
+  "if-unmodified-since",
+  "if-range",
+] as const;
+
+/**
+ * A read sent on to the container without its conditional headers, so Vite
+ * answers 200 with the body rather than an empty 304.
+ *
+ * workerd pools the tunnels behind `getTcpPort().fetch`; when a fresh
+ * tunnel's first response has no body, the next request on it is closed right
+ * after it is written ("Container port connection closed unexpectedly";
+ * cloudflare/workerd#7597, open, reported on our workerd 1.20261001.1). Every
+ * proxy rejection in CI run 41169951961 was the second request on a tunnel
+ * whose first answer was a 304 or a 204: a strong candidate, not a proven
+ * cause. The cost: a browser revalidating a module now gets the full module
+ * instead of a 304. Vite's hashed dependencies are immutable and never
+ * revalidated, so this is the Theme's own sources and Vite's client modules.
+ *
+ * Only GET and HEAD: a write's preconditions belong to the Theme's own API,
+ * and dropping them would turn a guarded write into a blind one.
+ */
+function withoutConditionalHeaders(request: Request): Request {
+  if (request.method !== "GET" && request.method !== "HEAD") return request;
+  if (!CONDITIONAL_REQUEST_HEADERS.some((name) => request.headers.has(name)))
+    return request;
+  const headers = new Headers(request.headers);
+  for (const name of CONDITIONAL_REQUEST_HEADERS) headers.delete(name);
+  return new Request(request, { headers });
+}
+
 /**
  * The SDK catches a runtime interruption and returns this exact, opaque 500.
  * A failed ESM import poisons that document's module graph even if the runtime
@@ -46,8 +81,9 @@ export async function proxyPreviewModuleRequest(
         path.startsWith("/node_modules/.vite/") ||
         path.startsWith("/@id/")) &&
         /\.(?:[cm]?[jt]sx?|css)$/.test(path)));
+  const forwarded = withoutConditionalHeaders(request);
   for (let attempt = 0; ; attempt++) {
-    const response = await proxy(request);
+    const response = await proxy(forwarded);
     if (!moduleRead || response?.status !== 500) return response;
     // Only inspect a bounded text body. The SDK uses a short plain-text
     // response, but the container can also return arbitrary 500 bodies.
