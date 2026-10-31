@@ -1,0 +1,119 @@
+{
+  "label": "without-document-id",
+  "sourceCommit": "5e19e2be334c283de935fccfd0af9b17c7b99fd5",
+  "predatesFeatureCommit": {
+    "sha": "85e8ece57bea030e09541734db6f082368c2058c",
+    "feature": "document id: protocol mints previewDocument and stamps it on every frame-to-editor envelope"
+  },
+  "characteristics": "ready.capabilities (selection-field-section) and required sectionId on update-selection-field; no document id",
+  "entryPath": "src/morph/preview-bridge.ts",
+  "storage": "Each file's bytes are stored at files/<path>.txt so nothing here is typechecked, linted or bundled.",
+  "howGenerated": "Detached worktree at sourceCommit; GENERATED_PREVIEW_BRIDGE_SOURCES (src/morph/preview/*), themePreviewBridgeEntrySource() (entry) and themePreviewContentModuleSource() (src/morph/preview-content.ts, which the entry imports) written out by tsx. preview-content-snapshot.ts and the content data file are per-site data and are not included.",
+  "sha256Algorithm": "sha256 of JSON.stringify([[path, content], ...]) with files sorted by path, content as UTF-8 strings",
+  "sha256": "8476f6f29135891f7d993ddf0555ed1fa969f735b2424025d0babf639f3cc6c2",
+  "fileCount": 17,
+  "files": [
+    {
+      "path": "src/morph/preview-bridge.ts",
+      "storedAs": "files/src/morph/preview-bridge.ts.txt",
+      "bytes": 49778,
+      "sha256": "4f106b106267e7f0739f83f97a5ce4f100fd3f943e9103135dee91d4f9a42f6b"
+    },
+    {
+      "path": "src/morph/preview-content.ts",
+      "storedAs": "files/src/morph/preview-content.ts.txt",
+      "bytes": 7056,
+      "sha256": "134515d9bd2a79e72c2ed8beb84246752f955a06ac864daf320ed82d10b53ab5"
+    },
+    {
+      "path": "src/morph/preview/array-item-field-path.ts",
+      "storedAs": "files/src/morph/preview/array-item-field-path.ts.txt",
+      "bytes": 1403,
+      "sha256": "588e1fc36fe56ca6c92b1d8b93f6d56a4b647864fe3f4f7e324fe9319cb1d767"
+    },
+    {
+      "path": "src/morph/preview/inline-text-edit.ts",
+      "storedAs": "files/src/morph/preview/inline-text-edit.ts.txt",
+      "bytes": 2914,
+      "sha256": "274b0672d0ef010402e5411d24a857da3e49406ab0814de0c17b1cffd987890a"
+    },
+    {
+      "path": "src/morph/preview/inline-text-editor.ts",
+      "storedAs": "files/src/morph/preview/inline-text-editor.ts.txt",
+      "bytes": 12985,
+      "sha256": "331c514c649ed81993f9c99d79ebe18c14fa9170a562e513c4919f7d63850d15"
+    },
+    {
+      "path": "src/morph/preview/preview-dom.ts",
+      "storedAs": "files/src/morph/preview/preview-dom.ts.txt",
+      "bytes": 45162,
+      "sha256": "58d0f0ec855c816b43e71549b8927e43527aaa41621f3b27f129b44dbccf79d4"
+    },
+    {
+      "path": "src/morph/preview/preview-empty-text-layout.ts",
+      "storedAs": "files/src/morph/preview/preview-empty-text-layout.ts.txt",
+      "bytes": 3333,
+      "sha256": "37694573c2cb55e1031b6d9beb5b553897b55e0faa1315bd76968f676c5d773a"
+    },
+    {
+      "path": "src/morph/preview/preview-height-reporter.ts",
+      "storedAs": "files/src/morph/preview/preview-height-reporter.ts.txt",
+      "bytes": 7523,
+      "sha256": "5af259beb62e0167e955663902b503089c53b13c1d6bf2ea969b84ddc21fc0b3"
+    },
+    {
+      "path": "src/morph/preview/preview-protocol.ts",
+      "storedAs": "files/src/morph/preview/preview-protocol.ts.txt",
+      "bytes": 62926,
+      "sha256": "412705d947eee94b9b561044edc7fe5cf2aa125131ac39f3b08cc04f32b189dc"
+    },
+    {
+      "path": "src/morph/preview/preview-reorder-identity.ts",
+      "storedAs": "files/src/morph/preview/preview-reorder-identity.ts.txt",
+      "bytes": 7478,
+      "sha256": "7b02f86c23eb1b08332d7c38c31d7671bf303670b5cc6c51dfd53d6353f1ae58"
+    },
+    {
+      "path": "src/morph/preview/preview-selection-overlays.ts",
+      "storedAs": "files/src/morph/preview/preview-selection-overlays.ts.txt",
+      "bytes": 12286,
+      "sha256": "6367c89eae6c0a350e987d12200189309d9eea69143ac731ba74d9c319991aa8"
+    },
+    {
+      "path": "src/morph/preview/preview-sizing-css.ts",
+      "storedAs": "files/src/morph/preview/preview-sizing-css.ts.txt",
+      "bytes": 2475,
+      "sha256": "53a71d466c9711354ddde679e2a94b31f96684e27c18ecfb647ef82fea75b265"
+    },
+    {
+      "path": "src/morph/preview/selection-overlay-geometry.ts",
+      "storedAs": "files/src/morph/preview/selection-overlay-geometry.ts.txt",
+      "bytes": 4134,
+      "sha256": "9aa6c232e73d85a84d7b701b5342755c6919e53334473ebc837b2498c745fdb1"
+    },
+    {
+      "path": "src/morph/preview/selection-style-preview.ts",
+      "storedAs": "files/src/morph/preview/selection-style-preview.ts.txt",
+      "bytes": 5896,
+      "sha256": "975aa17d3cddfa395bd7a855cee715ff5cb5dda8265df60fb556322b40995097"
+    },
+    {
+      "path": "src/morph/preview/selection-taxonomy.ts",
+      "storedAs": "files/src/morph/preview/selection-taxonomy.ts.txt",
+      "bytes": 10871,
+      "sha256": "773ae7bb0c95708cc89309c6777960161e44414f139615b0f4367a7e7d72873d"
+    },
+    {
+      "path": "src/morph/preview/source-location-key.ts",
+      "storedAs": "files/src/morph/preview/source-location-key.ts.txt",
+      "bytes": 744,
+      "sha256": "6bcf73150af68fc12fccefaceee0e665cdf87a72d573057061869bb32f27a4a1"
+    },
+    {
+      "path": "src/morph/preview/spacing-overlay.ts",
+      "storedAs": "files/src/morph/preview/spacing-overlay.ts.txt",
+      "bytes": 4166,
+      "sha256": "d92a778d8050203ddf86abd78d9946bb8cc531fc10b76ec607d49c9e6db1a696"
+    }
+  ]
+}
