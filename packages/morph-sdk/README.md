@@ -24,7 +24,8 @@ const one = await morph.products.get("linen-shirt"); // null if not found
   - Does not follow redirects (`redirect: "manual"`). A 3xx or an opaque redirect throws `redirect_refused`, and its body is not read.
   - Reads at most 2 MB (the local development proxy's cap). A larger declared `content-length` is refused before reading; otherwise the body is counted as it streams and reading stops once the cap is passed.
 - **`pages.get(path)`**
-  - Reads `GET <baseUrl>/_morph/content?path=`, which serves the active release's published content only.
+  - Reads `GET <baseUrl>/_morph/content?path=`, which serves published content only: the active release's.
+  - In a hosted Theme (`@morph/sdk/start`, `@morph/sdk/astro`), each page read also sends back the render context the platform sent with the request being served (`x-morph-render-context`). Every read of that render then stays on the release the page was resolved to, even if a publish or rollback lands mid-render. `createMorph` never sends one.
   - Returns the Starter's `MorphPage` shape: slots spread onto one object, hidden slot ids in `_hidden`.
   - Refused in a browser (`window` and `document` both present), because the endpoint sends no CORS headers. This throws `invalid_content_origin` before anything is sent; v0 keeps the code set the same as the Starter's and #245's rather than adding one.
 - **`products.list({ q, page, limit, order })`**
