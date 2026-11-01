@@ -66,6 +66,7 @@ const plan = (
     deletions?: { path: string }[];
     writes?: { path: string; content: string }[];
     entries?: StorefrontThemeWorkspaceEntryDTO[];
+    framework?: string | null;
   } = {},
 ) =>
   planThemeBinaryCopies({
@@ -73,6 +74,8 @@ const plan = (
     copies,
     writes: extra.writes ?? [],
     deletions: extra.deletions ?? [],
+    // Unrecorded, which is Start: every case above this one's own describe.
+    framework: extra.framework ?? null,
   });
 
 describe("planThemeBinaryCopies", () => {
@@ -192,5 +195,60 @@ describe("planThemeBinaryCopies", () => {
         deletions: [{ path: "public/big-0.png" }],
       }).ok,
     ).toBe(true);
+  });
+});
+
+describe("planThemeBinaryCopies by the recorded framework", () => {
+  // A hybrid workspace: Astro's page and Start's leftover route both present,
+  // so only the record can say which one is the Theme's.
+  const hybrid: StorefrontThemeWorkspaceEntryDTO[] = [
+    ...entries,
+    source("astro.config.mjs", "export default {};"),
+    source("src/pages/about.astro", "<h1>About</h1>"),
+    source("src/pages/feed.png.ts", "export const GET = () => new Response();"),
+  ];
+
+  it("refuses on an Astro Theme a copy that would take an Astro page's path", () => {
+    for (const to of ["public/about", "public/feed.png"]) {
+      const result = plan([copy("public/images/hero.png", to)], {
+        entries: hybrid,
+        framework: "astro",
+      });
+      expect(result.ok, to).toBe(false);
+      expect(!result.ok && result.message, to).toContain("already answers");
+    }
+  });
+
+  it("does not hold an Astro Theme to Start's routes, nor a Start one to Astro's", () => {
+    // Start's leftover /lookbook.png is no page of the Astro Theme.
+    expect(
+      plan([copy("public/images/hero.png", "public/lookbook.png")], {
+        entries: hybrid,
+        framework: "astro",
+      }).ok,
+    ).toBe(true);
+    // And for a Start Theme (recorded or not) Astro's page is just a file.
+    for (const framework of [null, "tanstack-start"]) {
+      expect(
+        plan([copy("public/images/hero.png", "public/feed.png")], {
+          entries: hybrid,
+          framework,
+        }).ok,
+      ).toBe(true);
+      expect(
+        plan([copy("public/images/hero.png", "public/lookbook.png")], {
+          entries: hybrid,
+          framework,
+        }).ok,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a framework Morph does not know rather than reading it as Start", () => {
+    const result = plan([copy("public/images/hero.png", "public/x.png")], {
+      framework: "nuxt",
+    });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.message).toMatch(/^THEME_FRAMEWORK_UNKNOWN/);
   });
 });

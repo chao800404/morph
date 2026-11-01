@@ -139,6 +139,7 @@ beforeEach(() => {
       source_index_status text,
       source_index text,
       metadata text,
+      framework text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text

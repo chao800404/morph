@@ -8,7 +8,11 @@ import {
   themeRevisionStore,
   themeSourceStore,
 } from "@/lib/storefront/storage/theme-storage.server";
-import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
+import {
+  designWritesUnavailableReason,
+  storefrontThemeDal,
+} from "@/lib/storefront/dal/storefront-theme.dal";
+import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import {
   applyThemeManifestMigration,
   readThemeManifestMigrationSnapshot,
@@ -1189,6 +1193,24 @@ export const saveStorefrontThemeFilesBatch = createServerFn({ method: "POST" })
   });
 
 /**
+ * Why pages may not be added to or removed from this Theme, or null when
+ * they may. A page here is a TanStack Start route file, so a Theme whose
+ * record names another framework is refused by its record, read here on the
+ * server, before its files are planned as Start's: planned that way, an
+ * Astro Theme still holding the Starter's routes would get a TSX page its
+ * site never serves. The framework is recorded once and never converted, so
+ * reading it apart from the write races nothing.
+ */
+async function pageWritesUnavailableReason(
+  storefrontId: string,
+  themeId: string,
+): Promise<string | null> {
+  return designWritesUnavailableReason(
+    await storefrontThemeBuildDal.readThemeFramework(storefrontId, themeId),
+  );
+}
+
+/**
  * Creates the source file for a page an author asked for.
  *
  * A Theme's routes are read from its files, so this writes one file and the
@@ -1212,6 +1234,14 @@ export const createStorefrontThemePage = createServerFn({ method: "POST" })
     if (!input.success) return input;
     const { storefrontId, themeId, routePath, expectedSourceGeneration } =
       input.data;
+
+    const unavailable = await pageWritesUnavailableReason(
+      storefrontId,
+      themeId,
+    );
+    if (unavailable) {
+      return fail(unavailable, { error: "THEME_FRAMEWORK_UNAVAILABLE" });
+    }
 
     // Read for planning, not for the write: the page has to be checked against
     // the theme as it actually is, while the write is still held to what the
@@ -1310,6 +1340,14 @@ export const deleteStorefrontThemePage = createServerFn({ method: "POST" })
       expectedVersion,
       expectedSourceGeneration,
     } = input.data;
+
+    const unavailable = await pageWritesUnavailableReason(
+      storefrontId,
+      themeId,
+    );
+    if (unavailable) {
+      return fail(unavailable, { error: "THEME_FRAMEWORK_UNAVAILABLE" });
+    }
 
     const files = await themeSourceStore.listFiles(storefrontId, themeId);
     const plan = planThemePageDeletion({

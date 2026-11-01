@@ -8,6 +8,22 @@ import {
   reviewPlanDigest,
   type StarterUpgradeChange,
 } from "../starter-theme-upgrade-review";
+import { UNRECORDED_THEME_FRAMEWORK } from "../theme-framework/theme-framework.types";
+
+/**
+ * Why the product catalog is not offered to a Theme of this framework, or
+ * null when it may be. The catalog's files are TanStack Start routes, so a
+ * Theme whose record names any other framework (NULL reads as Start) is
+ * refused by its framework, before its files are read as Start's: judged
+ * that way, an Astro Theme would look like one whose routes conflict.
+ */
+export function themeCatalogUnavailableReason(
+  framework: string | null | undefined,
+): string | null {
+  const id = framework ?? UNRECORDED_THEME_FRAMEWORK;
+  if (id === UNRECORDED_THEME_FRAMEWORK) return null;
+  return `THEME_FRAMEWORK_UNAVAILABLE: The product catalog is made of TanStack Start routes and is not offered to ${id} Themes.`;
+}
 
 /** Additive only. Route/source collisions are never resolved by overwriting authors. */
 export function planThemeCatalogFiles(
@@ -87,8 +103,13 @@ export type ThemeCatalogKeptReason =
   "changed" | "missing" | "products-route-exists" | "route-conflict";
 
 export type ThemeCatalogReview = {
-  /** False when the store's channel has no products: no catalog is offered. */
+  /**
+   * False when no catalog is offered: the store's channel has no products,
+   * or the Theme is not a TanStack Start one (`unavailable`).
+   */
   applies: boolean;
+  /** Why the Theme's framework is not offered the catalog, else null. */
+  unavailable: string | null;
   /** Install or update; never both, as before. */
   plan: {
     files:
@@ -117,12 +138,18 @@ export function reviewThemeCatalog(
     content: string;
     version: number;
   }[],
-  options: { hasProducts: boolean },
+  options: {
+    hasProducts: boolean;
+    /** The Theme's recorded framework (`storefront_themes.framework`). */
+    framework: string | null | undefined;
+  },
 ): ThemeCatalogReview {
   const empty = { files: [], deletions: [] as [] };
-  if (!options.hasProducts) {
+  const unavailable = themeCatalogUnavailableReason(options.framework);
+  if (!options.hasProducts || unavailable) {
     return {
       applies: false,
+      unavailable,
       plan: empty,
       kind: null,
       changes: [],
@@ -174,6 +201,7 @@ export function reviewThemeCatalog(
   }
   return {
     applies: true,
+    unavailable: null,
     plan,
     kind: install.length ? "install" : writes.length ? "update" : null,
     changes,

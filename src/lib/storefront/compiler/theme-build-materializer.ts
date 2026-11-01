@@ -19,6 +19,7 @@ import {
 } from "./theme-start-toolchain";
 import { themeFramework, type ThemeFrameworkId } from "../theme-framework";
 import { themeToolchainById } from "../theme-framework/theme-toolchains";
+import { THEME_FRAMEWORK_ROUTES } from "../theme-framework/theme-routes";
 import { normalizeThemeDependencyMap } from "./theme-dependency-policy";
 import { deriveThemeSourceRuntimeContract } from "../theme-source-runtime-contract";
 import {
@@ -332,11 +333,11 @@ export function normalizeRevisionSnapshot(
     a.path.localeCompare(b.path),
   );
   if (binaryFiles.length > 0) {
-    const routePaths = (
-      astro
-        ? (framework.build.native.routeRegistry(sortedFiles)?.routes ?? [])
-        : buildThemeRouteRegistry(sortedFiles).routes
-    ).map((route) => route.path);
+    // The same table an upload's and a copy's checks read
+    // (theme-framework/theme-routes.ts), so all three see the same pages.
+    const routePaths = THEME_FRAMEWORK_ROUTES[framework.id](
+      sortedFiles,
+    ).routes.map((route) => route.path);
     const publicCheck = checkThemePublicFiles(
       binaryFiles.map((file) => ({ path: file.path, size: file.sizeBytes })),
       routePaths,
