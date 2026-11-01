@@ -89,7 +89,7 @@ const SPELLING = RUNTIME === "start" ? "loader" : "content";
 
 const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
 
-type Fixture = { scope: ThemeScope; editorPath: string };
+export type Fixture = { scope: ThemeScope; editorPath: string };
 let fixture: Fixture | null = null;
 
 type Mode = "inspector" | "inline";
@@ -428,6 +428,16 @@ function singletonCaseFile(testCase: BasCase, seed: boolean) {
 
 async function buildSingletonFixture(page: Page): Promise<Fixture> {
   const built = await throwawayFixture(page);
+  await seedSingletonCases(page, built);
+  return built;
+}
+
+/**
+ * Writes every home and layout case onto `built`'s Theme and stores their
+ * seed through the editor's own write, then saves the case shapes over it.
+ * The Theme's home route and root layout become the cases'.
+ */
+export async function seedSingletonCases(page: Page, built: Fixture) {
   const scope = built.scope;
   // The home page is H1's route; the layout's other pages have no sections.
   const plainPages = B1_HOME_LAYOUT_CASES.flatMap(
@@ -464,7 +474,11 @@ async function buildSingletonFixture(page: Page): Promise<Fixture> {
       caseSections(testCase, storedSectionsOf(await rawDocument(built, documentOf(testCase)))),
     ).toEqual(testCase.seed);
   }
-  return built;
+}
+
+/** A case's own sections as its draft Document stores them, read raw from D1. */
+export async function storedCaseSections(fx: Fixture, testCase: BasCase) {
+  return caseSections(testCase, storedSectionsOf(await rawDocument(fx, documentOf(testCase))));
 }
 
 // ---------------------------------------------------------------------------
@@ -686,10 +700,20 @@ const LOCATE = {
   untraced: expectShownAsCode,
 } as const;
 
-export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
+/**
+ * One walk. `on` names the Theme to walk on when the caller owns it (the
+ * publish acceptance walks the singleton cases on the run's own Theme);
+ * otherwise the fixture the case and mode use.
+ */
+export async function walkCase(
+  page: Page,
+  sharedCase: BasCase,
+  mode: Mode,
+  on?: Fixture,
+) {
   test.setTimeout(420_000);
   // This walk's own route and Document, on the Theme that holds them.
-  const fx = fixtureFor(sharedCase, mode);
+  const fx = on ?? fixtureFor(sharedCase, mode);
   const testCase: BasCase = { ...sharedCase, ...routeFor(sharedCase, mode) };
   const walk: Walk = {
     runtime: RUNTIME,

@@ -52,6 +52,8 @@ export function startPreviewFilesForShard(shard) {
  * @type {Record<string, string>}
  */
 export const START_PREVIEW_EXCLUDED = {
+  "b1-publish-rollback-acceptance.spec.ts":
+    "The B1 publish and rollback acceptance publishes, which builds in the Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport. Its container run (full Start preview, exact titles in container-acceptance-targets/b1-publish-rollback.mjs) is wired in stage 3.",
   "m1-container-lifecycle-acceptance.spec.ts":
     "The M1 container lifecycle acceptance runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
   "public-svg.spec.ts":
