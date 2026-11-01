@@ -107,10 +107,22 @@ function fakeSocket() {
   const listeners: Record<string, Array<(event: unknown) => void>> = {};
   return {
     accepted: false,
+    // workerd's default from compatibility date 2026-03-17.
+    binaryType: "blob" as "blob" | "arraybuffer",
+    acceptedAs: null as "blob" | "arraybuffer" | null,
     sent: [] as unknown[],
     closes: [] as Array<{ code?: number; reason?: string }>,
     accept() {
       this.accepted = true;
+      this.acceptedAs = this.binaryType;
+    },
+    /** A binary frame arriving, as workerd hands it to `message`. */
+    receiveBinary(bytes: number[]) {
+      const data =
+        this.binaryType === "arraybuffer"
+          ? new Uint8Array(bytes).buffer
+          : new Blob([new Uint8Array(bytes)]);
+      (listeners.message ?? []).forEach((l) => l({ data }));
     },
     send(data: unknown) {
       this.sent.push(data);
@@ -254,6 +266,26 @@ describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/
     expect(container.closes[0]!.code).toBe(1000);
     // Ended, so it is no longer counted.
     expect(await object.closePreviewGrants([GRANT])).toBe(0);
+  });
+
+  it("takes binary frames as ArrayBuffer on both sides, so workerd's Blob default is never refused", async () => {
+    const container = fakeSocket();
+    sdk.fetch.mockResolvedValue(switched(container));
+    const object = sandbox();
+    await object.fetch(upgrade());
+    const browser = pairs[0]!.server;
+
+    browser.receiveBinary([0, 1, 255]);
+    container.receiveBinary([7, 8]);
+    await vi.waitFor(() => {
+      expect(container.sent).toHaveLength(1);
+      expect(browser.sent).toHaveLength(1);
+    });
+    expect([...new Uint8Array(container.sent[0] as ArrayBuffer)]).toEqual([0, 1, 255]);
+    expect([...new Uint8Array(browser.sent[0] as ArrayBuffer)]).toEqual([7, 8]);
+    expect([...browser.closes, ...container.closes]).toEqual([]);
+    expect(container.acceptedAs).toBe("arraybuffer");
+    expect(browser.acceptedAs).toBe("arraybuffer");
   });
 
   it("never shows the container the relay's headers, and leaves other requests to the SDK", async () => {

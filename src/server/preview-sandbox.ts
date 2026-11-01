@@ -69,11 +69,17 @@ export class PreviewSandbox extends Sandbox {
       container.close(1000, "Preview access ended.");
       return refused(403);
     }
+    // From compatibility date 2026-03-17 workerd delivers binary frames as
+    // Blob unless a socket asks otherwise before accept(); the relay forwards
+    // strings and ArrayBuffers only, in order, so both sides ask for
+    // ArrayBuffer (the A7 probe met the Blob default on the real path).
+    container.binaryType = "arraybuffer";
     container.accept();
     const [client, server] = Object.values(new WebSocketPair()) as [
       WebSocket,
       WebSocket,
     ];
+    server.binaryType = "arraybuffer";
     server.accept();
 
     const sockets = this.previewSockets.get(grantId) ?? new Set();
