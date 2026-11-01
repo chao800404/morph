@@ -6,7 +6,17 @@ import {
   storefrontThemes,
 } from "@/db/storefront.schema";
 import type { StorefrontPreviewAccessKind } from "@/db/storefront.schema";
-import { and, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 
 /** What a consumed exchange code was issued for. */
 export type PreviewAccessExchangeRecord = Readonly<{
@@ -45,6 +55,80 @@ export type PreviewAccessGrantRecord = Readonly<{
   revokedAt: string | null;
 }> &
   PreviewAccessAuthorityRecord;
+
+/** At most this many grant tokens are looked up for one request. */
+const MAX_GRANT_LOOKUP = 8;
+
+/**
+ * Grants, with their session, user and Theme, in one query. Left joins, so
+ * that a session, user or Theme that is gone reads as missing and is refused
+ * by the caller. The session is read from its table, never from a cached
+ * cookie.
+ */
+async function findGrantsWhere(
+  match: SQL,
+  limit: number,
+): Promise<PreviewAccessGrantRecord[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      grant: storefrontPreviewAccessGrants,
+      session: {
+        id: sessions.id,
+        userId: sessions.userId,
+        expiresAt: sessions.expiresAt,
+      },
+      user: { id: users.id, role: users.role, banned: users.banned },
+      themeId: storefrontThemes.id,
+    })
+    .from(storefrontPreviewAccessGrants)
+    .leftJoin(
+      sessions,
+      eq(sessions.id, storefrontPreviewAccessGrants.sessionId),
+    )
+    .leftJoin(users, eq(users.id, storefrontPreviewAccessGrants.userId))
+    .leftJoin(
+      storefrontThemes,
+      and(
+        eq(storefrontThemes.id, storefrontPreviewAccessGrants.themeId),
+        eq(
+          storefrontThemes.storefrontId,
+          storefrontPreviewAccessGrants.storefrontId,
+        ),
+        isNull(storefrontThemes.deletedAt),
+      ),
+    )
+    .where(and(match, isNull(storefrontPreviewAccessGrants.deletedAt)))
+    .limit(limit);
+  return rows.map((row) => {
+    const { grant, session, user } = row;
+    return {
+      id: grant.id,
+      flowId: grant.flowId,
+      kind: grant.kind,
+      sessionId: grant.sessionId,
+      userId: grant.userId,
+      storefrontId: grant.storefrontId,
+      themeId: grant.themeId,
+      previewId: grant.previewId,
+      previewHost: grant.previewHost,
+      expiresAt: grant.expiresAt,
+      createdAt: grant.createdAt,
+      activatedAt: grant.activatedAt,
+      revokedAt: grant.revokedAt,
+      session: session?.id
+        ? {
+            userId: session.userId,
+            expiresAtMs: new Date(session.expiresAt).getTime(),
+          }
+        : null,
+      user: user?.id
+        ? { role: user.role ?? null, banned: Boolean(user.banned) }
+        : null,
+      themeLive: Boolean(row.themeId),
+    };
+  });
+}
 
 const exchangeColumns = {
   id: storefrontPreviewAccessExchanges.id,
@@ -223,69 +307,32 @@ export const storefrontPreviewAccessDal = {
   async findGrantByTokenHash(
     tokenHash: string,
   ): Promise<PreviewAccessGrantRecord | null> {
-    const db = await getDb();
-    const [row] = await db
-      .select({
-        grant: storefrontPreviewAccessGrants,
-        session: {
-          id: sessions.id,
-          userId: sessions.userId,
-          expiresAt: sessions.expiresAt,
-        },
-        user: { id: users.id, role: users.role, banned: users.banned },
-        themeId: storefrontThemes.id,
-      })
-      .from(storefrontPreviewAccessGrants)
-      .leftJoin(
-        sessions,
-        eq(sessions.id, storefrontPreviewAccessGrants.sessionId),
-      )
-      .leftJoin(users, eq(users.id, storefrontPreviewAccessGrants.userId))
-      .leftJoin(
-        storefrontThemes,
-        and(
-          eq(storefrontThemes.id, storefrontPreviewAccessGrants.themeId),
-          eq(
-            storefrontThemes.storefrontId,
-            storefrontPreviewAccessGrants.storefrontId,
-          ),
-          isNull(storefrontThemes.deletedAt),
-        ),
-      )
-      .where(
-        and(
-          eq(storefrontPreviewAccessGrants.tokenHash, tokenHash),
-          isNull(storefrontPreviewAccessGrants.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (!row) return null;
-    const { grant, session, user } = row;
-    return {
-      id: grant.id,
-      flowId: grant.flowId,
-      kind: grant.kind,
-      sessionId: grant.sessionId,
-      userId: grant.userId,
-      storefrontId: grant.storefrontId,
-      themeId: grant.themeId,
-      previewId: grant.previewId,
-      previewHost: grant.previewHost,
-      expiresAt: grant.expiresAt,
-      createdAt: grant.createdAt,
-      activatedAt: grant.activatedAt,
-      revokedAt: grant.revokedAt,
-      session: session?.id
-        ? {
-            userId: session.userId,
-            expiresAtMs: new Date(session.expiresAt).getTime(),
-          }
-        : null,
-      user: user?.id
-        ? { role: user.role ?? null, banned: Boolean(user.banned) }
-        : null,
-      themeLive: Boolean(row.themeId),
-    };
+    const [record] = await findGrantsWhere(
+      eq(storefrontPreviewAccessGrants.tokenHash, tokenHash),
+      1,
+    );
+    return record ?? null;
+  },
+
+  /**
+   * The same read for every candidate a preview request carries, in one
+   * query. The caller bounds the list (preview-access-cookies.ts); this
+   * refuses a longer one rather than splitting it, so no request costs more
+   * than one statement here.
+   */
+  async findGrantsByTokenHashes(
+    tokenHashes: readonly string[],
+  ): Promise<PreviewAccessGrantRecord[]> {
+    if (tokenHashes.length === 0) return [];
+    if (tokenHashes.length > MAX_GRANT_LOOKUP) {
+      throw new Error(
+        `PREVIEW_ACCESS_LOOKUP_TOO_LARGE: at most ${MAX_GRANT_LOOKUP} grant tokens per request.`,
+      );
+    }
+    return findGrantsWhere(
+      inArray(storefrontPreviewAccessGrants.tokenHash, [...tokenHashes]),
+      tokenHashes.length,
+    );
   },
 
   /**

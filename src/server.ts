@@ -213,6 +213,9 @@ const loadPreviewCredentials = keepImport(
   () => import("@/lib/storefront/service/preview-proxy-credentials"),
 );
 const loadSandboxSdk = keepImport(() => import("@cloudflare/sandbox"));
+const loadPreviewAccessRequest = keepImport(
+  () => import("@/server/preview-access-request"),
+);
 const loadPreviewSandboxBinding = keepImport(
   () => import("@/lib/storefront/service/preview-sandbox-binding"),
 );
@@ -326,6 +329,25 @@ export default {
       const { serveBuildPreviewRequest } = await loadBuildPreviewRequest();
       const buildPreviewResponse = await serveBuildPreviewRequest(request);
       if (buildPreviewResponse) return buildPreviewResponse;
+    }
+
+    // A `pv-` Live Preview host asks for its credential on every request and
+    // answers it there, refusal included; nothing for it falls through to the
+    // handlers below, so an error is a 503 rather than Morph's own app.
+    if (url.hostname.startsWith("pv-")) {
+      try {
+        const { servePreviewAccessRequest } = await loadPreviewAccessRequest();
+        const previewAccessResponse = await servePreviewAccessRequest(request);
+        if (previewAccessResponse) return previewAccessResponse;
+      } catch {
+        return new Response("Preview access cannot be checked right now.", {
+          status: 503,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
     }
 
     // Store APIs are Morph-owned and bypass the Vite container. Preview
