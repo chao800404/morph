@@ -6,7 +6,10 @@ import {
   THEME_PREVIEW_START_WORKER_PATH,
 } from "../compiler/theme-preview-start-runtime";
 import type { PlanThemeWorkspaceInput } from "../compiler/theme-sandbox-workspace";
-import { astroConfig, astroThemeFiles } from "./astro-native-prerender.fixtures";
+import {
+  astroConfig,
+  astroThemeFiles,
+} from "./astro-native-prerender.fixtures";
 import {
   ASTRO_PREVIEW_CONFIG_PATH,
   ASTRO_PREVIEW_DEV_SERVER,
@@ -14,6 +17,11 @@ import {
   ASTRO_PREVIEW_WRANGLER_PATH,
   planAstroPreviewWorkspace,
 } from "./astro-preview-workspace";
+import {
+  THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+  themeMorphSdkAstroMiddlewareFile,
+  themeMorphSdkFiles,
+} from "../compiler/theme-morph-sdk";
 
 const input = (
   files: PlanThemeWorkspaceInput["files"],
@@ -34,9 +42,9 @@ const planned = (files: PlanThemeWorkspaceInput["files"]) => {
     plan,
     file: (path: string) =>
       (
-        plan.workspaceFiles.find((file) => file.path === `/workspace/${path}`) as
-          | { content: string }
-          | undefined
+        plan.workspaceFiles.find(
+          (file) => file.path === `/workspace/${path}`,
+        ) as { content: string } | undefined
       )?.content,
   };
 };
@@ -91,7 +99,9 @@ describe("an Astro Live Preview workspace", () => {
   });
 
   it("loads the bridge as a document, with no router", () => {
-    const client = planned(astroThemeFiles()).file(THEME_PREVIEW_START_CLIENT_PATH)!;
+    const client = planned(astroThemeFiles()).file(
+      THEME_PREVIEW_START_CLIENT_PATH,
+    )!;
     expect(client).toContain("DOMContentLoaded");
     expect(client).not.toContain("__TSR_ROUTER__");
     expect(client).not.toContain("__morphPreviewRouter");
@@ -135,7 +145,10 @@ describe("an Astro Live Preview workspace", () => {
       planAstroPreviewWorkspace(
         input([
           ...astroThemeFiles(),
-          { path: THEME_PREVIEW_START_WORKER_PATH, content: "export default {}" },
+          {
+            path: THEME_PREVIEW_START_WORKER_PATH,
+            content: "export default {}",
+          },
         ]),
       ),
     ).toMatchObject({
@@ -166,8 +179,28 @@ describe("an Astro Live Preview workspace", () => {
   it("changes its fingerprint with any byte of the project", () => {
     const one = planned(astroThemeFiles()).plan.workspaceFingerprint;
     const two = planned(
-      astroThemeFiles({ extra: [{ path: "src/pages/x.astro", content: "<p/>" }] }),
+      astroThemeFiles({
+        extra: [{ path: "src/pages/x.astro", content: "<p/>" }],
+      }),
     ).plan.workspaceFingerprint;
     expect(one).not.toBe(two);
+  });
+});
+
+describe("an Astro Live Preview workspace and @morph/sdk/astro", () => {
+  it("carries the platform's SDK copy, and adds its middleware before the author's", () => {
+    const { file } = planned(astroThemeFiles());
+    for (const sdk of [
+      ...themeMorphSdkFiles(),
+      themeMorphSdkAstroMiddlewareFile(),
+    ]) {
+      expect(file(sdk.path), sdk.path).toBe(sdk.content);
+    }
+    const integration = file(ASTRO_PREVIEW_INTEGRATION_PATH)!;
+    expect(integration).toContain(
+      `addMiddleware({ order: "pre", entrypoint: path.join(workspaceRoot, ${JSON.stringify(THEME_MORPH_SDK_ASTRO_MIDDLEWARE)}) })`,
+    );
+    // The exact name, aliased to the platform's copy.
+    expect(integration).toContain('".morph/sdk/astro/index.ts"');
   });
 });

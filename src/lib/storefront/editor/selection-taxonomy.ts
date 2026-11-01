@@ -170,6 +170,8 @@ export type EditorSelectionDescriptor = {
   sourceFilePath: string | null;
   /** `file:line:column` of the selected element, when the preview supplied it. */
   sourceLocation?: string | null;
+  /** L1.5a: the source version `sourceLocation` belongs to. */
+  sourceVersion?: string | null;
   elementKey: string | null;
   fieldKey: string | null;
   fieldPath: string | null;

@@ -385,6 +385,40 @@ export async function writeDraftField(
   expect(written.success, written.message).toBe(true);
 }
 
+/**
+ * `writeDraftField` on a Theme recorded as another framework. Core refuses
+ * Design writes on any framework but TanStack Start until that framework's
+ * source can be judged (Astro: L1.5b), so a spec that needs draft content
+ * there records the Theme as Start for this one write, through its own
+ * harness, and as `framework` again after it — whatever the write answered.
+ * Harness seeding only: the product path stays refused.
+ */
+export async function writeDraftFieldRecordedAsStart(
+  page: Page,
+  scope: ThemeScope,
+  field: Awaited<ReturnType<typeof savedField>>,
+  value: string,
+  harness: {
+    writeD1: (sql: string, ...params: string[]) => Promise<number>;
+  },
+  framework: string,
+) {
+  const record = (recorded: string | null) =>
+    harness.writeD1(
+      recorded === null
+        ? "UPDATE storefront_themes SET framework = NULL WHERE id = ?1 AND storefront_id = ?2"
+        : `UPDATE storefront_themes SET framework = '${recorded}' WHERE id = ?1 AND storefront_id = ?2`,
+      scope.themeId,
+      scope.storefrontId,
+    );
+  expect(await record(null)).toBe(1);
+  try {
+    await writeDraftField(page, scope, field, value);
+  } finally {
+    expect(await record(framework)).toBe(1);
+  }
+}
+
 export async function latestRelease(page: Page, scope: ThemeScope) {
   const history = (await serverFn(
     page,

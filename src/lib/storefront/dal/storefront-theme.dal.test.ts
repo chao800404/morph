@@ -3424,6 +3424,128 @@ export default function SiteHeader() { return <header />; }`;
     ).resolves.toBeNull();
   });
 
+  /**
+   * Design judges every section write against Start source. A Theme of
+   * another framework has none of it (an Astro Theme's pages are `.astro`),
+   * so its writes would fall into the legacy path that lets the stored
+   * Document stand in for the source. They are refused before the files are
+   * read; a Theme recorded before frameworks were (NULL) is Start and keeps
+   * the legacy path, as the tests above show.
+   */
+  describe("a Theme of a framework Design cannot judge yet", () => {
+    const document =
+      '{"version":1,"sections":[{"id":"hero","type":"hero","enabled":true,"props":{"title":"Original"}}]}';
+    const seed = (templateId: string, framework: string) =>
+      sqlite.exec(`
+        UPDATE storefront_themes SET framework = '${framework}' WHERE id = 'theme-a';
+        INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, created_at, updated_at)
+        VALUES
+          ('${templateId}', 'theme-a', 'index', 'Home', '${document}',
+           '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'now', 'now');
+        INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES
+          ('11111111-1111-4111-8111-111111111111', '${templateId}', 1, '${document}', 'now');
+      `);
+    const stored = (templateId: string) => {
+      const row = sqlite
+        .prepare(
+          `SELECT document, draft_revision_id AS draft FROM storefront_theme_templates WHERE id = '${templateId}'`,
+        )
+        .get() as { document: string; draft: string };
+      const revisions = sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count FROM storefront_theme_template_revisions WHERE template_id = '${templateId}'`,
+        )
+        .get() as { count: number };
+      return {
+        document: JSON.parse(row.document),
+        draft: row.draft,
+        revisions: revisions.count,
+      };
+    };
+    const unchanged = (templateId: string) =>
+      expect(stored(templateId)).toEqual({
+        document: JSON.parse(document),
+        draft: "11111111-1111-4111-8111-111111111111",
+        revisions: 1,
+      });
+
+    it("refuses a section content write on an Astro Theme, and writes nothing", async () => {
+      seed("template-astro-props", "astro");
+      await expect(
+        storefrontThemeDal.updateSectionProps({
+          expectedSourceGeneration: 1,
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "template-astro-props",
+          sectionId: "hero",
+          props: { title: "Edited" },
+          expectedDraftGeneration: 1,
+          createdBy: "user-1",
+        }),
+      ).rejects.toThrow(/Design cannot change astro Themes yet/);
+      unchanged("template-astro-props");
+    });
+
+    it("refuses a reorder and a rename on an Astro Theme, and writes nothing", async () => {
+      seed("template-astro-structure", "astro");
+      await expect(
+        storefrontThemeDal.reorderSections({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "template-astro-structure",
+          sectionIds: ["hero"],
+          expectedDraftGeneration: 1,
+          createdBy: "user-1",
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        storefrontThemeDal.renameSection({
+          storefrontId: "storefront-a",
+          themeId: "theme-a",
+          templateId: "template-astro-structure",
+          sectionId: "hero",
+          name: "Brand story",
+          expectedDraftGeneration: 1,
+          createdBy: "user-1",
+        }),
+      ).resolves.toBeNull();
+      unchanged("template-astro-structure");
+    });
+
+    it("refuses a route document on an Astro Theme before reading its routes", async () => {
+      sqlite.exec(
+        "UPDATE storefront_themes SET framework = 'astro' WHERE id = 'theme-a'",
+      );
+      const result = await storefrontThemeDal.ensureRouteTemplate({
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        routePath: "/about",
+      });
+      expect(result).toEqual({
+        ok: false,
+        reason: expect.stringMatching(/Design cannot change astro Themes yet/),
+      });
+    });
+
+    it("still writes a Theme that records TanStack Start", async () => {
+      seed("template-start-props", "tanstack-start");
+      const result = await storefrontThemeDal.updateSectionProps({
+        expectedSourceGeneration: 1,
+        storefrontId: "storefront-a",
+        themeId: "theme-a",
+        templateId: "template-start-props",
+        sectionId: "hero",
+        props: { title: "Updated Title" },
+        expectedDraftGeneration: 1,
+        createdBy: "user-1",
+      });
+      expect(result?.document.sections[0].props.title).toBe("Updated Title");
+    });
+  });
+
   it("strictly filters out presentation styling props and keeps only content fields", async () => {
     sqlite.exec(`
       INSERT INTO storefront_theme_templates

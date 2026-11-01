@@ -35,6 +35,11 @@ let host = "";
 let client: LocalBuildPreviewServerClient;
 // Counted by hand: the suite's mock reset would clear a vi.fn implementation.
 let starts = 0;
+/** The capability's state as the DAL reads it now: revoked, and the role. */
+const capabilityState = {
+  revokedAt: null as string | null,
+  role: "admin",
+};
 
 async function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -133,7 +138,7 @@ beforeAll(async () => {
             buildId: build.id,
             userId: "admin-1",
             expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-            revokedAt: null,
+            revokedAt: capabilityState.revokedAt,
             build: {
               storefrontId: build.storefrontId,
               themeId: build.themeId,
@@ -142,7 +147,7 @@ beforeAll(async () => {
               contentPublicationId: "pub-of-build",
             },
             themeLive: true,
-            user: { role: "admin", banned: false },
+            user: { role: capabilityState.role, banned: false },
           },
   } as unknown as StorefrontBuildPreviewCapabilityDAL;
 
@@ -284,5 +289,46 @@ describe("a Build Preview, end to end on this machine", () => {
     const answer = await send("/account");
     expect(answer.body).toBe("worker:/account");
     expect(starts).toBe(2);
+  }, 60_000);
+});
+
+/**
+ * M1 source isolation, G8 (handoff/2026-10-27/m1-item4-source-isolation-
+ * audit.md §3): revoking a Build Preview's capability, or the role it was
+ * issued to, stops it over HTTP on the next request — with the build's
+ * content shown first, so the refusal is not mistaken for a page that never
+ * rendered.
+ */
+describe("a Build Preview's access, revoked over HTTP (G8)", () => {
+  it("serves the content before, and refuses it on the next request once the capability is revoked", async () => {
+    const before = await send("/content");
+    expect(before.status).toBe(200);
+    expect(before.body).toContain("Frozen");
+
+    capabilityState.revokedAt = new Date().toISOString();
+    try {
+      for (const path of ["/content", "/account", "/app.css"]) {
+        const after = await send(path);
+        expect([403, 410], `${path}: ${after.status}`).toContain(after.status);
+        expect(after.body).not.toContain("Frozen");
+        expect(after.body).not.toContain("worker:");
+        expect(after.body).not.toContain("body{color:red}");
+      }
+    } finally {
+      capabilityState.revokedAt = null;
+    }
+  }, 60_000);
+
+  it("refuses it once the user it was issued to is no longer an admin", async () => {
+    expect((await send("/content")).body).toContain("Frozen");
+
+    capabilityState.role = "guest";
+    try {
+      const after = await send("/content");
+      expect([403, 410], String(after.status)).toContain(after.status);
+      expect(after.body).not.toContain("Frozen");
+    } finally {
+      capabilityState.role = "admin";
+    }
   }, 60_000);
 });

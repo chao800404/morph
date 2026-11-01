@@ -34,7 +34,9 @@ export function themePreviewBridgeEntrySource(): string {
 import {
   collectPreviewEditableNodes,
   createSelectionFieldRefusalLog,
+  PREVIEW_SOURCE_SECTION_PREFIX,
   previewSectionSelector,
+  previewSourceBoundaryOf,
   selectionFieldRefusal,
   resolvePageStandIn,
   findPreviewSelectionRestoreElement,
@@ -346,6 +348,9 @@ function sendSelectionReport(item) {
       componentType: item.type,
       kind: selectionKindOf(item),
       sourceLocation: item.element.dataset.morphLoc ?? null,
+      sourceVersion: item.element.dataset.morphLocV ?? null,
+      locatedAt: item.locatedAt ?? null,
+      previewBoundary: previewSourceBoundaryOf(item.element),
       nodeId:
         item.element.getAttribute("data-morph-node") ||
         item.element.dataset.morphNode ||
@@ -534,6 +539,19 @@ function reportSelection(target) {
   if (!channel) return;
   const item = selectableAt(target);
   if (!item?.sectionId) return;
+  // L1.5a (docs/astro-theme-plan.md 3.6.2.3): an island's own elements
+  // carry no location, so a click inside one selects the located element
+  // around it. Said on the canvas label and in the report, so it is never
+  // taken for the element that was clicked.
+  if (
+    item.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX) &&
+    target instanceof Element &&
+    target.closest("astro-island") &&
+    !item.element.closest("astro-island")
+  ) {
+    item.locatedAt = "enclosing";
+    item.label = \`\${item.label} · enclosing element (island not located)\`;
+  }
   selectionRevision += 1;
   clearSelectionAttributes();
   selectionStylePreview.clear();
@@ -920,6 +938,10 @@ if (channel) {
       if (!selectionEnabled) return;
       const item = selectableAt(event.target);
       if (!item?.sectionId) return;
+      // L1.5a (docs/astro-theme-plan.md 3.6.2.2): a source-located
+      // selection only locates. Editing text in place would write the
+      // author's source, which this round does not open.
+      if (item.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)) return;
       if (
         inlineEditor.begin(
           { ...item, kind: selectionKindOf(item) },
