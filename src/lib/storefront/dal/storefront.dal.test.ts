@@ -352,9 +352,17 @@ describe("storefrontDal starter workspace provisioning", () => {
     select.mockImplementation(() => {
       const chain = first() as { limit: ReturnType<typeof vi.fn> };
       if (calls++ === 0) {
-        chain.limit = vi.fn(async () => [
-          { id: "storefront-a", activeThemeId: "theme-a", framework: "astro" },
-        ]);
+        const limit = chain.limit;
+        chain.limit = vi.fn(async () => {
+          await limit();
+          return [
+            {
+              id: "storefront-a",
+              activeThemeId: "theme-a",
+              framework: "astro",
+            },
+          ];
+        });
       }
       return chain;
     });
@@ -378,9 +386,13 @@ describe("storefrontDal starter workspace provisioning", () => {
       select.mockImplementation(() => {
         const chain = first() as { limit: ReturnType<typeof vi.fn> };
         if (calls++ === 0) {
-          chain.limit = vi.fn(async () => [
-            { id: "storefront-a", activeThemeId: "theme-a", framework },
-          ]);
+          const limit = chain.limit;
+          chain.limit = vi.fn(async () => {
+            await limit();
+            return [
+              { id: "storefront-a", activeThemeId: "theme-a", framework },
+            ];
+          });
         }
         return chain;
       });
