@@ -40,7 +40,32 @@ export function previewAccessHostname(
   previewId: string,
   previewParentHostname: string,
 ): string {
-  return `${LABEL_PREFIX}${previewId}.${previewParentHostname}`;
+  const parent =
+    normalizePreviewParentHostname(previewParentHostname) ??
+    previewParentHostname.toLowerCase();
+  return `${LABEL_PREFIX}${previewId}.${parent}`;
+}
+
+/** The configured preview parent, normalised the one way every caller uses. */
+export function normalizePreviewParentHostname(
+  previewParentHostname: string | null | undefined,
+): string | null {
+  return previewParentHostname
+    ? normalizeStorefrontHostname(previewParentHostname)
+    : null;
+}
+
+/** The `pv-` label directly under the preview parent, whatever its id. */
+function previewAccessLabel(
+  hostname: string,
+  previewParentHostname: string | null,
+): string | null {
+  const parent = normalizePreviewParentHostname(previewParentHostname);
+  if (!parent) return null;
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (!host.endsWith(`.${parent}`)) return null;
+  const label = host.slice(0, host.length - parent.length - 1);
+  return label.startsWith(LABEL_PREFIX) && !label.includes(".") ? label : null;
 }
 
 /** The preview id a `pv-` host names, or null when the host is not one. */
@@ -48,14 +73,8 @@ export function parsePreviewAccessHost(
   hostname: string,
   previewParentHostname: string | null,
 ): string | null {
-  const parent = previewParentHostname
-    ? normalizeStorefrontHostname(previewParentHostname)
-    : null;
-  if (!parent) return null;
-  const host = hostname.toLowerCase().replace(/\.$/, "");
-  if (!host.endsWith(`.${parent}`)) return null;
-  const label = host.slice(0, host.length - parent.length - 1);
-  if (!label.startsWith(LABEL_PREFIX)) return null;
+  const label = previewAccessLabel(hostname, previewParentHostname);
+  if (!label) return null;
   const previewId = label.slice(LABEL_PREFIX.length);
   return PREVIEW_ID.test(previewId) ? previewId : null;
 }
@@ -71,10 +90,57 @@ export type PreviewAccessRequestDeps = Readonly<{
   forward(previewId: string, request: Request): Promise<Response | null>;
   /** Removes platform credentials; the same rule every preview proxy uses. */
   stripCredentials(request: Request): Request;
-  /** Whether an origin is Morph's own: the only parent a begin page talks to. */
+  /**
+   * Whether an origin is exactly one of Morph's own app origins (scheme,
+   * host and port): the only parent a begin page talks to.
+   */
   isAppOrigin(origin: string): boolean;
   now?: () => Date;
 }>;
+
+/** The message a refused preview document sends its editor; it carries no secret. */
+export const PREVIEW_ACCESS_ENDED_MESSAGE = "morph:preview-access-ended";
+
+/**
+ * A refusal, shaped for whoever asked. A document loading in the editor's
+ * frame tells the editor, so it can offer Retry at once rather than wait for
+ * its load watchdog; every other request gets plain text. Neither carries a
+ * Theme byte.
+ */
+function refusalResponse(
+  request: Request,
+  status: number,
+  reason: string,
+  body: string,
+  extra: Record<string, string> = {},
+): Response {
+  const destination = request.headers.get("sec-fetch-dest");
+  if (destination !== "iframe" && destination !== "document") {
+    return plainResponse(status, body, extra);
+  }
+  const nonce = crypto.randomUUID().replace(/-/g, "");
+  const message = JSON.stringify({
+    type: PREVIEW_ACCESS_ENDED_MESSAGE,
+    reason,
+  }).replace(/</g, "\\u003c");
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><title>Preview</title><p>${body.replace(/[<&]/g, "")}</p>` +
+      // Posted to any parent: it names only that access ended, and the
+      // editor checks the frame window and origin it came from.
+      `<script nonce="${nonce}">if(parent!==window)parent.postMessage(${message},"*");</script>`,
+    {
+      status,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "private, no-store",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'`,
+        ...extra,
+      },
+    },
+  );
+}
 
 /** What a refused request is told, by reason; never a Theme byte. */
 function refusalStatus(reason: PreviewAccessRefusal): 401 | 403 {
@@ -130,11 +196,15 @@ export async function handlePreviewAccessRequest(
   observe?: (decision: PreviewAccessDecision) => void,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+  if (!previewAccessLabel(url.hostname, deps.previewParentHostname))
+    return null;
   const previewId = parsePreviewAccessHost(
     url.hostname,
     deps.previewParentHostname,
   );
-  if (!previewId) return null;
+  // A `pv-` label that names no preview is still the preview domain's: it is
+  // answered here, never by the rest of the Worker.
+  if (!previewId) return plainResponse(404, "Not found.");
 
   if (url.pathname.startsWith(PREVIEW_ACCESS_AUTH_PATH_PREFIX)) {
     // The authorization flow's own pages. Nothing under this path ever
@@ -159,12 +229,23 @@ export async function handlePreviewAccessRequest(
     return plainResponse(404, "Not found.");
   }
 
+  // A socket must be opened by this preview's own documents: a Theme on
+  // another preview host shares the cookie jar, not the origin.
+  if (
+    request.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+    request.headers.get("origin") !== url.origin
+  ) {
+    return plainResponse(403, "Preview access required.");
+  }
+
   const candidates = readPreviewAccessCandidates(request.headers.get("cookie"));
   if (candidates.kind === "overflow") {
     observe?.({ kind: "refused", reason: "OVERFLOW" });
     // Refused, never served from a chosen subset (addendum A4.1).
-    return plainResponse(
+    return refusalResponse(
+      request,
       431,
+      "OVERFLOW",
       "Too many preview sign-ins are stored in this browser. Sign out of the other sessions under Settings › Profile › Sessions, or sign out and sign in again, then choose Retry.",
     );
   }
@@ -179,14 +260,20 @@ export async function handlePreviewAccessRequest(
     });
   } catch {
     observe?.({ kind: "refused", reason: "UNAVAILABLE" });
-    return plainResponse(503, "Preview access cannot be checked right now.", {
-      "Retry-After": "5",
-    });
+    return refusalResponse(
+      request,
+      503,
+      "UNAVAILABLE",
+      "Preview access cannot be checked right now.",
+      { "Retry-After": "5" },
+    );
   }
   if (!verified.ok) {
     observe?.({ kind: "refused", reason: verified.reason });
-    return plainResponse(
+    return refusalResponse(
+      request,
       refusalStatus(verified.reason),
+      verified.reason,
       "Preview access required. Open this preview from the editor.",
     );
   }
@@ -194,8 +281,10 @@ export async function handlePreviewAccessRequest(
   // agree, so a grant can never open another preview's container.
   if (verified.grant.previewId !== previewId) {
     observe?.({ kind: "refused", reason: "HOST_MISMATCH" });
-    return plainResponse(
+    return refusalResponse(
+      request,
       403,
+      "HOST_MISMATCH",
       "Preview access required. Open this preview from the editor.",
     );
   }

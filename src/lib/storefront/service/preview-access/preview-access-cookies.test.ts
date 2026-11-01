@@ -94,12 +94,25 @@ describe("the preview host's grant cookies", () => {
     });
   });
 
-  it("refuses a Cookie header over 16 KiB before reading it", () => {
-    const header = `${grant(1)}; filler=${"x".repeat(MAX_PREVIEW_ACCESS_COOKIE_HEADER_BYTES)}`;
+  it("refuses more than 16 KiB of preview cookies", () => {
+    const header = [
+      grant(1),
+      `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${flow(2)}=${"x".repeat(MAX_PREVIEW_ACCESS_COOKIE_HEADER_BYTES)}`,
+    ].join("; ");
 
     expect(readPreviewAccessCandidates(header)).toEqual({
       kind: "overflow",
       reason: "header-too-large",
+    });
+  });
+
+  it("does not count another site's or a Theme's cookies, however large", () => {
+    const header = `${grant(1)}; filler=${"x".repeat(MAX_PREVIEW_ACCESS_COOKIE_HEADER_BYTES * 2)}`;
+
+    expect(readPreviewAccessCandidates(header)).toEqual({
+      kind: "candidates",
+      tokens: [token(1)],
+      malformedNames: [],
     });
   });
 

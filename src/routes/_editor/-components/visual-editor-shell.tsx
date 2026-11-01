@@ -316,6 +316,18 @@ import {
 } from "@/lib/storefront/editor/inline-text-edit";
 import { resolveLivePreviewSecurity } from "@/lib/storefront/editor/live-preview-security";
 import { resolveLivePreviewSource } from "@/lib/storefront/editor/live-preview-source";
+import {
+  acceptLivePreviewAccessBegin,
+  isLivePreviewAccessEnded,
+  isLivePreviewAccessFailure,
+  LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+  LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+  livePreviewAccessBeginUrl,
+  livePreviewAccessCodeMessage,
+  startLivePreviewAccessFlow,
+  type LivePreviewAccessFlow,
+} from "@/lib/storefront/editor/live-preview-access";
+import { issueThemePreviewAccess } from "@/server/storefront/storefront-theme-preview-access.serverFn";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import { EditorPreviewRuntimeMenu } from "./editor-preview-runtime-menu";
 import {
@@ -2717,6 +2729,37 @@ export function VisualEditorShell({
   const previewUrl = previewSource?.url ?? null;
   previewSourceOriginRef.current = previewSource?.origin ?? null;
   const previewKey = previewUrl ? `${previewUrl}-${previewRevision}` : null;
+  // A preview on its `pv-` host is framed through the authorization flow
+  // first (#214 P2): one flow per framed document, answered at most once.
+  const previewAccessMode =
+    previewServer.data?.success === true &&
+    previewServer.data.data.access === "pv-exchange"
+      ? "pv-exchange"
+      : "open";
+  const previewAccessFlowRef = useRef<{
+    key: string;
+    flow: LivePreviewAccessFlow;
+  } | null>(null);
+  if (
+    previewAccessMode === "pv-exchange" &&
+    previewKey &&
+    previewAccessFlowRef.current?.key !== previewKey
+  ) {
+    previewAccessFlowRef.current = {
+      key: previewKey,
+      flow: startLivePreviewAccessFlow(Date.now()),
+    };
+  }
+  const framedPreviewSrc =
+    previewAccessMode === "pv-exchange" &&
+    previewUrl &&
+    previewAccessFlowRef.current
+      ? livePreviewAccessBeginUrl({
+          framedUrl: previewUrl,
+          flowId: previewAccessFlowRef.current.flow.flowId,
+          editorOrigin: context.previewChannel?.editorOrigin ?? "",
+        })
+      : previewUrl;
   const previewUrlRef = useRef(previewUrl);
   previewUrlRef.current = previewUrl;
   const previewRevisionRef = useRef(previewRevision);
@@ -2927,6 +2970,75 @@ export function VisualEditorShell({
   useEffect(() => {
     dispatchPreviewLifecycle({ type: "reset" });
   }, [livePreviewWorkspaceKey]);
+
+  // The authorization flow's two messages from the framed begin page. Only
+  // the frame's own window, on the preview's origin, for the flow being
+  // waited on, is answered, and only once (live-preview-access.ts).
+  useEffect(() => {
+    if (previewAccessMode !== "pv-exchange") return;
+    const storefrontId = context.storefront.id;
+    const themeId = context.theme.id;
+    const failed = () =>
+      dispatchPreviewLifecycle({
+        type: "server-failed",
+        message: LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
+      });
+    const onMessage = (event: MessageEvent) => {
+      const entry = previewAccessFlowRef.current;
+      if (!entry) return;
+      const frame = previewIframeRef.current?.contentWindow ?? null;
+      const expected = {
+        origin: previewSourceOriginRef.current ?? "",
+        window: frame,
+      };
+      if (isLivePreviewAccessFailure(entry.flow, event, expected)) {
+        entry.flow.ended = true;
+        failed();
+        return;
+      }
+      if (isLivePreviewAccessEnded(event, expected)) {
+        entry.flow.ended = true;
+        dispatchPreviewLifecycle({
+          type: "server-failed",
+          message: LIVE_PREVIEW_ACCESS_ENDED_NOTICE,
+        });
+        return;
+      }
+      const binderHash = acceptLivePreviewAccessBegin(
+        entry.flow,
+        event,
+        expected,
+        Date.now(),
+      );
+      if (!binderHash) return;
+      void issueThemePreviewAccess({
+        data: {
+          storefrontId,
+          themeId,
+          flowId: entry.flow.flowId,
+          binderHash,
+        },
+      }).then(
+        (result) => {
+          // A newer frame has its own flow; this answer is for nobody.
+          if (previewAccessFlowRef.current !== entry) return;
+          if (!result.success) {
+            failed();
+            return;
+          }
+          frame?.postMessage(
+            livePreviewAccessCodeMessage(entry.flow, result.data.code),
+            expected.origin,
+          );
+        },
+        () => {
+          if (previewAccessFlowRef.current === entry) failed();
+        },
+      );
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [previewAccessMode, context.storefront.id, context.theme.id]);
 
   useEffect(() => {
     if (previewLifecycle.phase === "reconnecting" || previewServer.isFetching) {
@@ -13687,7 +13799,7 @@ export function VisualEditorShell({
                   <iframe
                     ref={previewIframeRef}
                     key={previewKey}
-                    src={previewUrl}
+                    src={framedPreviewSrc ?? previewUrl}
                     title={`${activeTemplate?.name ?? context.theme.name} storefront preview`}
                     sandbox={
                       livePreviewSecurity.enabled

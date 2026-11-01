@@ -9,9 +9,11 @@
  * served by any one that verifies; which one is the server's choice, never
  * the order the browser sent them in.
  *
- * The bounds are the request's, not the browser's: a `Cookie` header over
- * 16 KiB, more than 32 preview-prefixed names, or more than 8 distinct
- * well-formed values is refused as an overflow. Nothing is picked out of an
+ * The bounds are the request's, not the browser's: more than 16 KiB of
+ * preview-prefixed cookies, more than 32 preview-prefixed names, or more than
+ * 8 distinct well-formed values is refused as an overflow. Only the preview's
+ * own cookies count: another site's or a Theme's cookies, however large, can
+ * never push a request over, so no Theme can lock every preview out. Nothing is picked out of an
  * over-full set — any choice of "which 8" would let forged values push a
  * valid one out — and the overflow is answered explicitly, never served.
  */
@@ -60,21 +62,20 @@ export function readPreviewAccessCandidates(
 ): PreviewAccessCandidates {
   if (!cookieHeader)
     return { kind: "candidates", tokens: [], malformedNames: [] };
-  if (
-    new TextEncoder().encode(cookieHeader).byteLength >
-    MAX_PREVIEW_ACCESS_COOKIE_HEADER_BYTES
-  ) {
-    return { kind: "overflow", reason: "header-too-large" };
-  }
   const tokens = new Set<string>();
   const malformedNames: string[] = [];
   let prefixed = 0;
+  let prefixedBytes = 0;
   for (const part of cookieHeader.split(";")) {
     const separator = part.indexOf("=");
     if (separator === -1) continue;
     const name = part.slice(0, separator).trim();
     if (!name.startsWith(PREVIEW_ACCESS_GRANT_COOKIE_PREFIX)) continue;
     if (name.startsWith(PREVIEW_ACCESS_BINDER_COOKIE_PREFIX)) continue;
+    prefixedBytes += new TextEncoder().encode(part).byteLength;
+    if (prefixedBytes > MAX_PREVIEW_ACCESS_COOKIE_HEADER_BYTES) {
+      return { kind: "overflow", reason: "header-too-large" };
+    }
     prefixed += 1;
     if (prefixed > MAX_PREVIEW_ACCESS_PREFIXED_NAMES) {
       return { kind: "overflow", reason: "too-many-names" };

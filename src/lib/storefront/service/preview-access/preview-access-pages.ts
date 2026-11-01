@@ -16,10 +16,13 @@ import {
  *
  * - **begin** sets this flow's binder cookie and tells the editor, the frame's
  *   parent, only the binder's hash. It then waits for the code the editor was
- *   issued for that hash, and submits it to redeem in a form body. The binder
- *   itself is never in a response body, a URL or a message.
+ *   issued for that hash, posts it to redeem with a same-origin `fetch`, and
+ *   on success replaces itself with the preview path. A form would not do:
+ *   the editor frames previews sandboxed without `allow-forms`, which blocks
+ *   every form submission, a scripted one included. The binder itself is
+ *   never in a response body, a URL or a message.
  * - **redeem** consumes the code with the binder the browser presents, sets
- *   the grant cookie, and answers 303 to the preview path.
+ *   the grant cookie, and answers whether it did.
  *
  * Messages carry the flow id both ways, and each side checks the other's
  * window and origin, so a Theme document later loaded on the same host can
@@ -82,14 +85,6 @@ function scriptJson(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function escapeAttribute(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
 function page(
   status: number,
   args: Readonly<{
@@ -108,7 +103,9 @@ function page(
     "Content-Security-Policy": [
       "default-src 'none'",
       `script-src 'nonce-${nonce}'`,
-      "form-action 'self'",
+      // Only begin's own redeem request.
+      "connect-src 'self'",
+      "form-action 'none'",
       "base-uri 'none'",
       `frame-ancestors ${args.appOrigin ?? "'none'"}`,
     ].join("; "),
@@ -172,8 +169,11 @@ export async function previewAccessBegin(
     flowId,
     binderHash,
     appOrigin,
+    returnPath,
+    redeem: PREVIEW_ACCESS_REDEEM_PATH,
     begin: PREVIEW_ACCESS_BEGIN_MESSAGE,
     code: PREVIEW_ACCESS_CODE_MESSAGE,
+    failed: PREVIEW_ACCESS_FAILED_MESSAGE,
   });
   return page(200, {
     appOrigin,
@@ -184,19 +184,20 @@ export async function previewAccessBegin(
         BINDER_MAX_AGE_S,
       ),
     ],
-    body:
-      `<form id="redeem" method="post" action="${PREVIEW_ACCESS_REDEEM_PATH}">` +
-      `<input type="hidden" name="flow" value="${escapeAttribute(flowId)}">` +
-      `<input type="hidden" name="return" value="${escapeAttribute(returnPath)}">` +
-      `<input type="hidden" name="editorOrigin" value="${escapeAttribute(appOrigin)}">` +
-      `<input type="hidden" name="code" value=""></form>`,
+    body: "<p>Opening the preview…</p>",
     script:
       `(()=>{const s=${state};let done=false;` +
+      `const failed=(reason)=>{if(parent!==window)parent.postMessage({type:s.failed,flowId:s.flowId,reason},s.appOrigin);};` +
       `addEventListener("message",(e)=>{` +
       `if(done||e.source!==parent||e.origin!==s.appOrigin)return;` +
       `const d=e.data;` +
       `if(!d||d.type!==s.code||d.flowId!==s.flowId||typeof d.code!=="string"||!/^[0-9a-f]{64}$/.test(d.code))return;` +
-      `done=true;const f=document.getElementById("redeem");f.elements.code.value=d.code;f.submit();});` +
+      `done=true;` +
+      `fetch(s.redeem,{method:"POST",credentials:"same-origin",cache:"no-store",` +
+      `headers:{"content-type":"application/x-www-form-urlencoded"},` +
+      `body:new URLSearchParams({flow:s.flowId,return:s.returnPath,editorOrigin:s.appOrigin,code:d.code}).toString()})` +
+      `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true)location.replace(s.returnPath);else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
+      `.catch(()=>failed("REDEEM_UNAVAILABLE"));});` +
       `if(parent!==window)parent.postMessage({type:s.begin,flowId:s.flowId,binderHash:s.binderHash},s.appOrigin);` +
       `})();`,
   });
@@ -208,25 +209,43 @@ function reuseCandidates(request: Request): readonly string[] {
   return read.kind === "candidates" ? read.tokens : [];
 }
 
+/** Redeem's answer to begin's request: whether the grant is in place. */
+function redeemAnswer(
+  status: number,
+  body: Readonly<{ ok: boolean; reason?: string }>,
+  setCookies: readonly string[] = [],
+): Response {
+  const headers = new Headers({
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "private, no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  });
+  for (const value of setCookies) headers.append("Set-Cookie", value);
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
 /**
- * POST redeem, from begin's own form. Consumes the code with this flow's
- * binder; on success sets the grant and answers 303 to the preview path.
+ * POST redeem, from begin's own same-origin request. Consumes the code with
+ * this flow's binder; on success sets the grant and says so.
  */
 export async function previewAccessRedeem(
   request: Request,
   deps: PreviewAccessPagesDeps,
 ): Promise<Response> {
-  if (request.method !== "POST") return plain(405, "Method not allowed.");
+  if (request.method !== "POST") {
+    return redeemAnswer(405, { ok: false, reason: "METHOD_NOT_ALLOWED" });
+  }
   const url = new URL(request.url);
-  // The form is begin's own: posted from this origin, never another.
+  // Begin's own request: sent from this origin, never another.
   if (request.headers.get("origin") !== url.origin) {
-    return plain(403, "Open this preview from the editor.");
+    return redeemAnswer(403, { ok: false, reason: "ORIGIN_REFUSED" });
   }
   let form: FormData;
   try {
     form = await request.formData();
   } catch {
-    return plain(400, "Open this preview from the editor.");
+    return redeemAnswer(400, { ok: false, reason: "REQUEST_INVALID" });
   }
   const field = (name: string) => {
     const value = form.get(name);
@@ -237,7 +256,7 @@ export async function previewAccessRedeem(
   const appOrigin = appOriginFrom(field("editorOrigin"), deps);
   const code = field("code");
   if (!flowId || !FLOW_ID.test(flowId) || !returnPath || !appOrigin || !code) {
-    return plain(400, "Open this preview from the editor.");
+    return redeemAnswer(400, { ok: false, reason: "REQUEST_INVALID" });
   }
   const binderName = `${PREVIEW_ACCESS_BINDER_COOKIE_PREFIX}${flowId}`;
   const binder = readCookie(request.headers.get("cookie"), binderName);
@@ -259,24 +278,13 @@ export async function previewAccessRedeem(
   });
   const clearBinder = cookie(binderName, "", 0);
   if (!redeemed.ok) {
-    return page(403, {
-      appOrigin,
-      setCookies: [clearBinder],
-      body: "<p>Preview sign-in expired. Retry from the editor.</p>",
-      script:
-        `(()=>{const s=${scriptJson({ appOrigin, flowId, type: PREVIEW_ACCESS_FAILED_MESSAGE, reason: redeemed.reason })};` +
-        `if(parent!==window)parent.postMessage({type:s.type,flowId:s.flowId,reason:s.reason},s.appOrigin);})();`,
-    });
+    return redeemAnswer(403, { ok: false, reason: redeemed.reason }, [
+      clearBinder,
+    ]);
   }
-  const headers = new Headers({
-    Location: returnPath,
-    "Cache-Control": "private, no-store",
-    "Referrer-Policy": "no-referrer",
-  });
-  headers.append("Set-Cookie", clearBinder);
+  const setCookies = [clearBinder];
   if (redeemed.token) {
-    headers.append(
-      "Set-Cookie",
+    setCookies.push(
       cookie(
         `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${flowId}`,
         redeemed.token,
@@ -284,7 +292,7 @@ export async function previewAccessRedeem(
       ),
     );
   }
-  return new Response(null, { status: 303, headers });
+  return redeemAnswer(200, { ok: true }, setCookies);
 }
 
 function readCookie(header: string | null, name: string): string | null {

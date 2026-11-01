@@ -124,7 +124,7 @@ async function grantToken(overrides: Parameters<typeof issue>[0] = {}) {
     kind: overrides.kind ?? "iframe",
   });
   if (!redeemed.ok) throw new Error(redeemed.reason);
-  return redeemed.token;
+  return redeemed.token!;
 }
 
 const verify = (token: string, now = later(2000), previewHost = HOST) =>
@@ -140,7 +140,7 @@ describe("preview access exchange", () => {
     const redeemed = await redeem(issued);
     expect(redeemed.ok).toBe(true);
     if (!redeemed.ok) return;
-    const verified = await verify(redeemed.token);
+    const verified = await verify(redeemed.token!);
     expect(verified).toMatchObject({
       ok: true,
       grant: {
@@ -284,7 +284,7 @@ describe("preview access exchange", () => {
       sqlite.prepare("SELECT * FROM storefront_preview_access_exchanges").all(),
       sqlite.prepare("SELECT * FROM storefront_preview_access_grants").all(),
     ]);
-    for (const secret of [issued.code, BINDER, redeemed.token]) {
+    for (const secret of [issued.code, BINDER, redeemed.token!]) {
       expect(dump).not.toContain(secret);
     }
   });
@@ -375,8 +375,8 @@ describe("preview access flows", () => {
     expect(redeemedA.grant.flowId).toBe(a.flowId);
     expect(redeemedB.grant.flowId).toBe(b.flowId);
     expect(redeemedA.grant.id).not.toBe(redeemedB.grant.id);
-    expect((await verify(redeemedA.token)).ok).toBe(true);
-    expect((await verify(redeemedB.token)).ok).toBe(true);
+    expect((await verify(redeemedA.token!)).ok).toBe(true);
+    expect((await verify(redeemedB.token!)).ok).toBe(true);
   });
 
   it("stores at most one grant per flow", async () => {
@@ -436,7 +436,9 @@ describe("preview access grant activation", () => {
     const issued = await issue(overrides);
     const result = await redeem(issued);
     if (!result.ok) throw new Error(result.reason);
-    return result;
+    // Nothing is reused here: every redeem creates its grant and token.
+    if (!result.token) throw new Error("expected a new grant");
+    return { ...result, token: result.token };
   }
 
   const row = (id: string) =>
@@ -477,19 +479,19 @@ describe("preview access grant activation", () => {
     const inside = await redeemed();
     const atEdge = await redeemed();
 
-    expect((await verify(inside.token, later(CREATED + WINDOW - 1))).ok).toBe(
+    expect((await verify(inside.token!, later(CREATED + WINDOW - 1))).ok).toBe(
       true,
     );
-    expect(await verify(atEdge.token, later(CREATED + WINDOW))).toEqual({
+    expect(await verify(atEdge.token!, later(CREATED + WINDOW))).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
-    expect(await verify(atEdge.token, later(CREATED + 2 * WINDOW))).toEqual({
+    expect(await verify(atEdge.token!, later(CREATED + 2 * WINDOW))).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
     expect(row(atEdge.grant.id).activated_at).toBeNull();
-    expect((await verify(inside.token, later(CREATED + 2 * WINDOW))).ok).toBe(
+    expect((await verify(inside.token!, later(CREATED + 2 * WINDOW))).ok).toBe(
       true,
     );
   });
@@ -593,7 +595,7 @@ describe("preview access grant activation", () => {
 
   it("leaves a tab's grant in use alone while another tab's lost grant lapses and that tab recovers", async () => {
     const working = await redeemed();
-    await verify(working.token, later(2000));
+    await verify(working.token!, later(2000));
     const before = row(working.grant.id);
 
     // Another tab's 303 is lost: its grant is never used.
@@ -604,12 +606,12 @@ describe("preview access grant activation", () => {
     if (!lost.ok) throw new Error(lost.reason);
     // That tab starts one new flow, and its new grant is used.
     const recovered = await redeemed();
-    expect((await verify(recovered.token, later(3000))).ok).toBe(true);
+    expect((await verify(recovered.token!, later(3000))).ok).toBe(true);
 
     const after = later(CREATED + 2 * WINDOW);
-    expect((await verify(working.token, after)).ok).toBe(true);
-    expect((await verify(recovered.token, after)).ok).toBe(true);
-    expect(await verify(lost.token, after)).toEqual({
+    expect((await verify(working.token!, after)).ok).toBe(true);
+    expect((await verify(recovered.token!, after)).ok).toBe(true);
+    expect(await verify(lost.token!, after)).toEqual({
       ok: false,
       reason: "GRANT_NOT_ACTIVATED",
     });
@@ -949,7 +951,7 @@ describe("a request on the pv- preview host", () => {
     });
     const redeemed = await redeem(issued, { previewHost: PV_HOST });
     if (!redeemed.ok) throw new Error(redeemed.reason);
-    return { token: redeemed.token, flowId: issued.flowId };
+    return { token: redeemed.token!, flowId: issued.flowId };
   }
 
   const cookie = (...grants: Array<{ token: string; flowId: string }>) =>
@@ -1063,7 +1065,7 @@ describe("a request on the pv- preview host", () => {
 
     const res = await handlePreviewAccessRequest(
       get("/", {
-        cookie: cookie({ token: redeemed.token, flowId: issued.flowId }),
+        cookie: cookie({ token: redeemed.token!, flowId: issued.flowId }),
       }),
       value,
     );
@@ -1271,6 +1273,14 @@ describe("the pv- authorization flow", () => {
     expect(res.headers.get("content-security-policy")).toContain(
       `frame-ancestors ${APP_ORIGIN}`,
     );
+    expect(res.headers.get("content-security-policy")).toContain(
+      "connect-src 'self'",
+    );
+    // The editor frames previews without allow-forms, which blocks every
+    // form submission; begin redeems with a same-origin fetch instead.
+    expect(html).not.toContain("<form");
+    expect(html).toContain('"redeem":"/__morph/preview-auth/redeem"');
+    expect(html).toContain("location.replace");
     expect(res.headers.get("cache-control")).toBe("private, no-store");
   });
 
@@ -1304,8 +1314,8 @@ describe("the pv- authorization flow", () => {
       deps(),
     );
 
-    expect(redeemed!.status).toBe(303);
-    expect(redeemed!.headers.get("location")).toBe(RETURN);
+    expect(redeemed!.status).toBe(200);
+    expect(await redeemed!.json()).toEqual({ ok: true });
     jarFrom(redeemed!, jar);
     expect(jar.has(`__Host-morph-pvb-${flowId}`)).toBe(false);
     expect(jar.get(`__Host-morph-pv-${flowId}`)).toMatch(/^[0-9a-f]{64}$/);
@@ -1333,7 +1343,10 @@ describe("the pv- authorization flow", () => {
       deps(),
     );
     expect(stolen!.status).toBe(403);
-    expect(await stolen!.text()).toContain("morph:preview-auth-failed");
+    expect(await stolen!.json()).toEqual({
+      ok: false,
+      reason: "EXCHANGE_INVALID",
+    });
     expect(
       stolen!.headers
         .getSetCookie()
@@ -1347,7 +1360,7 @@ describe("the pv- authorization flow", () => {
       ),
       deps(),
     );
-    expect(owner!.status).toBe(303);
+    expect(owner!.status).toBe(200);
   });
 
   it("refuses a redeem posted from another origin", async () => {
@@ -1408,7 +1421,7 @@ describe("the pv- authorization flow", () => {
       deps({ now: () => later(2000) }),
     );
 
-    expect(res!.status).toBe(303);
+    expect(res!.status).toBe(200);
     expect(grantCount()).toBe(1);
     expect(
       res!.headers
@@ -1461,7 +1474,117 @@ describe("the pv- authorization flow", () => {
       deps({ now: () => later(2000) }),
     );
 
-    expect(res!.status).toBe(303);
+    expect(res!.status).toBe(200);
     expect(grantCount()).toBe(2);
+  });
+});
+
+describe("the pv- host's refusals and edges (#214 P2, review fixes)", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "00112233445566778899aabbccddeeff";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const deps = (): PreviewAccessRequestDeps => ({
+    previewParentHostname: PARENT,
+    dal,
+    now: () => later(2000),
+    isAppOrigin: () => true,
+    stripCredentials: (request) => request,
+    forward: async () => new Response("<p>DRAFT</p>"),
+  });
+
+  async function pvCookie() {
+    const issued = await issue({ previewHost: PV_HOST, previewId: PREVIEW_ID });
+    const redeemed = await redeem(issued, { previewHost: PV_HOST });
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    return `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${issued.flowId}=${redeemed.token!}`;
+  }
+
+  it("answers a pv- label that names no preview itself, never by the rest of the Worker", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://pv-not-an-id.${PARENT}/`),
+      deps(),
+    );
+    expect(res!.status).toBe(404);
+  });
+
+  it("refuses a WebSocket opened from any origin but the preview's own", async () => {
+    const cookie = await pvCookie();
+    const upgrade = (origin: string) =>
+      new Request(`https://${PV_HOST}/socket`, {
+        headers: { upgrade: "websocket", origin, cookie },
+      });
+    const forwarded: Request[] = [];
+    const value = {
+      ...deps(),
+      forward: async (_id: string, r: Request) => (
+        forwarded.push(r),
+        new Response("ok")
+      ),
+    };
+
+    const foreign = await handlePreviewAccessRequest(
+      upgrade(`https://pv-${"f".repeat(32)}.${PARENT}`),
+      value,
+    );
+    const own = await handlePreviewAccessRequest(
+      upgrade(`https://${PV_HOST}`),
+      value,
+    );
+
+    expect(foreign!.status).toBe(403);
+    expect(own!.status).toBe(200);
+    expect(forwarded).toHaveLength(1);
+  });
+
+  it("tells the editor when a framed document is refused, with no draft", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/`, {
+        headers: { "sec-fetch-dest": "iframe" },
+      }),
+      deps(),
+    );
+    const html = await res!.text();
+    expect(res!.status).toBe(401);
+    expect(html).toContain("morph:preview-access-ended");
+    expect(html).not.toContain("DRAFT");
+    expect(res!.headers.get("content-security-policy")).toContain(
+      "script-src 'nonce-",
+    );
+  });
+
+  it("answers a refused sub-resource in plain text", async () => {
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/@vite/client`, {
+        headers: { "sec-fetch-dest": "script" },
+      }),
+      deps(),
+    );
+    expect(res!.status).toBe(401);
+    expect(res!.headers.get("content-type")).toContain("text/plain");
+  });
+
+  it("is not pushed over its bound by another site's or a Theme's large cookies", async () => {
+    const cookie = await pvCookie();
+    const big = Array.from(
+      { length: 6 },
+      (_, i) => `theme_${i}=${"x".repeat(4000)}`,
+    ).join("; ");
+
+    const res = await handlePreviewAccessRequest(
+      new Request(`https://${PV_HOST}/`, {
+        headers: { cookie: `${big}; ${cookie}` },
+      }),
+      deps(),
+    );
+
+    expect(res!.status).toBe(200);
+  });
+
+  it("issues and parses the host under one normalisation of the preview parent", () => {
+    const host = previewAccessHostname(PREVIEW_ID, "Preview.Example.Test.");
+    expect(host).toBe(PV_HOST);
+    expect(parsePreviewAccessHost(host, "Preview.Example.Test.")).toBe(
+      PREVIEW_ID,
+    );
   });
 });
