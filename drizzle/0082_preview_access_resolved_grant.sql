@@ -1,0 +1,1 @@
+ALTER TABLE `storefront_preview_access_exchanges` ADD `resolved_grant_id` text;

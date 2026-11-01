@@ -48,6 +48,7 @@ export type PreviewAccessRefusal =
   | "THEME_NOT_LIVE"
   | "SESSION_ENDED"
   | "GRANT_NOT_CREATED"
+  | "GRANT_NOT_RECORDED"
   | "GRANT_UNKNOWN"
   | "GRANT_REVOKED"
   | "GRANT_EXPIRED"
@@ -214,7 +215,14 @@ export async function redeemPreviewAccessExchange(input: {
   if (refusal) return { ok: false, reason: refusal };
 
   const reusable = await reusableGrant(input, exchange, now);
-  if (reusable) return { ok: true, grant: verifiedGrant(reusable) };
+  if (reusable) {
+    // The exchange says which grant it ended in; without that record it is
+    // not reported as a success.
+    if (!(await recordResolution(input.dal, exchange.id, reusable.id, now))) {
+      return { ok: false, reason: "GRANT_NOT_RECORDED" };
+    }
+    return { ok: true, grant: verifiedGrant(reusable) };
+  }
 
   const token = createPreviewAccessSecret();
   const expiresAt = new Date(
@@ -244,7 +252,29 @@ export async function redeemPreviewAccessExchange(input: {
   } catch {
     return { ok: false, reason: "GRANT_NOT_CREATED" };
   }
+  // A grant whose exchange does not record it is never handed out: its
+  // cookie is not set, so it dies unused at its activation deadline.
+  if (!(await recordResolution(input.dal, exchange.id, grant.id, now))) {
+    return { ok: false, reason: "GRANT_NOT_RECORDED" };
+  }
   return { ok: true, token, grant };
+}
+
+async function recordResolution(
+  dal: StorefrontPreviewAccessDAL,
+  exchangeId: string,
+  grantId: string,
+  now: Date,
+): Promise<boolean> {
+  try {
+    return await dal.recordResolvedGrant({
+      exchangeId,
+      grantId,
+      now: now.toISOString(),
+    });
+  } catch {
+    return false;
+  }
 }
 
 /**

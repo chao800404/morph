@@ -59,11 +59,16 @@ beforeEach(() => {
     INSERT INTO storefronts VALUES ('store-a');
     INSERT INTO storefront_themes VALUES ('theme-a', 'store-a', NULL);
   `);
-  sqlite.exec(
-    readFileSync(resolve("drizzle/0081_preview_access_grants.sql"), "utf8")
-      .split("--> statement-breakpoint")
-      .join("\n"),
-  );
+  for (const migration of [
+    "drizzle/0081_preview_access_grants.sql",
+    "drizzle/0082_preview_access_resolved_grant.sql",
+  ]) {
+    sqlite.exec(
+      readFileSync(resolve(migration), "utf8")
+        .split("--> statement-breakpoint")
+        .join("\n"),
+    );
+  }
   vi.mocked(getDb).mockResolvedValue(drizzle(sqlite, { schema }) as never);
 });
 
@@ -1586,5 +1591,107 @@ describe("the pv- host's refusals and edges (#214 P2, review fixes)", () => {
     expect(parsePreviewAccessHost(host, "Preview.Example.Test.")).toBe(
       PREVIEW_ID,
     );
+  });
+});
+
+describe("which grant an exchange ended in (addendum A4.1, user decision 2026-11-01)", () => {
+  const resolved = (flowId: string) =>
+    (
+      sqlite
+        .prepare(
+          "SELECT resolved_grant_id FROM storefront_preview_access_exchanges WHERE flow_id = ?",
+        )
+        .get(flowId) as { resolved_grant_id: string | null }
+    ).resolved_grant_id;
+
+  it("records the grant redeem created", async () => {
+    const issued = await issue();
+    const redeemed = await redeem(issued);
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+
+    expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
+  });
+
+  it("records the grant a redeem reused, and creates none", async () => {
+    const first = await issue();
+    const firstRedeemed = await redeem(first);
+    if (!firstRedeemed.ok) throw new Error(firstRedeemed.reason);
+    await verify(firstRedeemed.token!);
+
+    const second = await issue();
+    const reused = await redeem(second, {
+      reuse: { tokens: [firstRedeemed.token!], minRemainingMs: 10 * 60_000 },
+      now: later(3000),
+    });
+
+    expect(reused).toMatchObject({
+      ok: true,
+      grant: { id: firstRedeemed.grant.id },
+    });
+    expect(reused.ok && reused.token).toBeUndefined();
+    expect(resolved(second.flowId)).toBe(firstRedeemed.grant.id);
+  });
+
+  it("does not report a success it could not record, for a new grant or a reused one", async () => {
+    const failing = {
+      ...dal,
+      recordResolvedGrant: async () => false,
+    } as typeof dal;
+
+    const fresh = await redeemPreviewAccessExchange({
+      dal: failing,
+      ...(await (async () => {
+        const issued = await issue();
+        return { code: issued.code, flowId: issued.flowId };
+      })()),
+      binder: BINDER,
+      previewHost: HOST,
+      kind: "iframe",
+      now: later(1000),
+    });
+    expect(fresh).toEqual({ ok: false, reason: "GRANT_NOT_RECORDED" });
+
+    const first = await issue();
+    const firstRedeemed = await redeem(first);
+    if (!firstRedeemed.ok) throw new Error(firstRedeemed.reason);
+    await verify(firstRedeemed.token!);
+    const second = await issue();
+    const throwing = {
+      ...dal,
+      recordResolvedGrant: async () => {
+        throw new Error("D1_ERROR");
+      },
+    } as typeof dal;
+    const reused = await redeemPreviewAccessExchange({
+      dal: throwing,
+      code: second.code,
+      flowId: second.flowId,
+      binder: BINDER,
+      previewHost: HOST,
+      kind: "iframe",
+      now: later(3000),
+      reuse: { tokens: [firstRedeemed.token!], minRemainingMs: 10 * 60_000 },
+    });
+    expect(reused).toEqual({ ok: false, reason: "GRANT_NOT_RECORDED" });
+  });
+
+  it("records once: a resolved exchange is never re-pointed", async () => {
+    const issued = await issue();
+    const redeemed = await redeem(issued);
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    const exchange = sqlite
+      .prepare(
+        "SELECT id FROM storefront_preview_access_exchanges WHERE flow_id = ?",
+      )
+      .get(issued.flowId) as { id: string };
+
+    expect(
+      await dal.recordResolvedGrant({
+        exchangeId: exchange.id,
+        grantId: "another-grant",
+        now: later(5000).toISOString(),
+      }),
+    ).toBe(false);
+    expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
   });
 });

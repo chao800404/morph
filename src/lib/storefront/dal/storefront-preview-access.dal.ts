@@ -223,6 +223,31 @@ export const storefrontPreviewAccessDal = {
     return row ?? null;
   },
 
+  /**
+   * Records which grant a consumed exchange ended in, once. Says whether it
+   * did: an exchange not consumed, already resolved, or gone records nothing.
+   */
+  async recordResolvedGrant(data: {
+    exchangeId: string;
+    grantId: string;
+    now: string;
+  }): Promise<boolean> {
+    const db = await getDb();
+    const rows = await db
+      .update(storefrontPreviewAccessExchanges)
+      .set({ resolvedGrantId: data.grantId, updatedAt: data.now })
+      .where(
+        and(
+          eq(storefrontPreviewAccessExchanges.id, data.exchangeId),
+          isNotNull(storefrontPreviewAccessExchanges.consumedAt),
+          isNull(storefrontPreviewAccessExchanges.resolvedGrantId),
+          isNull(storefrontPreviewAccessExchanges.deletedAt),
+        ),
+      )
+      .returning({ id: storefrontPreviewAccessExchanges.id });
+    return rows.length === 1;
+  },
+
   /** The session, user and Theme a consumed code answers to, as they are now. */
   async readAuthority(data: {
     sessionId: string;
