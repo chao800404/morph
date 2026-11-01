@@ -523,7 +523,13 @@ describe("editing text in the page it is rendered on", () => {
     // Editing needs the caret the browser is about to place, which a
     // preventDefault on the click would have thrown away.
     const dbl = BRIDGE.indexOf('"dblclick"');
-    const click = BRIDGE.indexOf('"click"');
+    // The selection's click handler. The one before it, on a page that
+    // navigates as documents, only notes that a link was followed and takes
+    // nothing from the event.
+    const click = BRIDGE.indexOf(
+      '"click"',
+      BRIDGE.indexOf("function currentRoutePattern"),
+    );
     expect(dbl).toBeGreaterThan(-1);
     expect(dbl).toBeLessThan(click);
   });
@@ -978,6 +984,9 @@ describe("answering the editor's request for a route", () => {
       "restoreSelectedSection",
       "reportStructure",
       "currentRoutePattern",
+      // A Start page: no document navigation declared
+      // (theme-preview-bridge-document-navigation.test.ts has the other).
+      "documentNavigation",
       source + "; return applyEditorRoute;",
     )(
       {
@@ -1004,6 +1013,7 @@ describe("answering the editor's request for a route", () => {
       () => {},
       () => steps.push("structure"),
       options.matched,
+      false,
     ) as (message: Record<string, unknown>) => void;
     return { apply, steps, posted, attributes, timers };
   }
