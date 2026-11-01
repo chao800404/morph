@@ -239,20 +239,62 @@ function drawOverlays() {
  */
 const documentNavigation = window.__morphPreviewNavigation === "document";
 /**
- * Where the document before this one sent the frame, read once as this one
- * loads and then forgotten, so it describes only the load that made this
- * document and nothing older.
+ * How the load that made this document came about, read once as it loads
+ * and then forgotten, so it describes that load and nothing older:
+ *
+ * - \`{ kind: "editor", target }\`: the document before this one was sent to
+ *   \`target\` by the editor (\`applyDocumentRoute\`);
+ * - \`{ kind: "frame" }\`: the author followed a link or sent a form inside
+ *   the frame;
+ * - null: anything else, the frame the editor loaded or a reload of it.
  */
 const DOCUMENT_NAVIGATION_KEY =
   "morph:preview-document-navigation:" + (channel?.previewSession ?? "");
-let arrivedByNavigationTo = null;
+let arrivedBy = null;
+/** Set once this document sends the frame somewhere itself. */
+let leavingForEditor = false;
+/** When the author last clicked a link or sent a form here. */
+let frameNavigationIntentAt = 0;
 if (documentNavigation) {
   try {
-    arrivedByNavigationTo = sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY);
+    const recorded = sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY);
     sessionStorage.removeItem(DOCUMENT_NAVIGATION_KEY);
+    if (recorded === "frame") arrivedBy = { kind: "frame" };
+    else if (typeof recorded === "string" && recorded.startsWith("editor:")) {
+      arrivedBy = { kind: "editor", target: recorded.slice("editor:".length) };
+    }
   } catch {
-    arrivedByNavigationTo = null;
+    arrivedBy = null;
   }
+  // Interact mode only: in select mode the click belongs to the editor and
+  // no link is followed.
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (selectionEnabled || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target?.closest?.("a[href]");
+      if (!link || link.hasAttribute("download")) return;
+      if (link.target && link.target !== "_self") return;
+      frameNavigationIntentAt = Date.now();
+    },
+    { capture: true },
+  );
+  document.addEventListener(
+    "submit",
+    () => {
+      if (!selectionEnabled) frameNavigationIntentAt = Date.now();
+    },
+    { capture: true },
+  );
+  // Said by the document that leaves, for the one that comes: only right
+  // after the author's own click, never when the editor replaced the frame.
+  window.addEventListener("pagehide", () => {
+    if (leavingForEditor || Date.now() - frameNavigationIntentAt > 10000) return;
+    try {
+      sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, "frame");
+    } catch {}
+  });
 }
 
 /** Whether two URL paths name the same page: a trailing slash or a
@@ -298,9 +340,16 @@ function concreteDocumentUrl(routePath) {
  * other page is loaded in this frame, and nothing is answered. The document
  * that loads there comes up with its own bridge, says it is ready, is sent
  * the route again, and answers then; until that answer the editor takes
- * nothing from the frame. A route that is not an address, or a load that
- * ended somewhere else (a redirect), is never answered: the editor's wait
- * runs out and says so, instead of anything claiming the page is open.
+ * nothing from the frame.
+ *
+ * Except the first request after a load the editor did not ask for — a link
+ * the author followed in the frame — or the request sent again after one it
+ * did ask for that ended somewhere else (a redirect). That request is the
+ * editor still naming the page it had; loading it again would undo the
+ * author's click, or load the redirect again and again. It is answered with
+ * where this document is, and the editor follows the frame there (or, on a
+ * page it does not list, keeps its edits off). A route that is not an
+ * address is never answered: the editor's wait runs out and says so.
  */
 function applyDocumentRoute(message) {
   const target = message.routePath ?? "/";
@@ -311,30 +360,32 @@ function applyDocumentRoute(message) {
     );
     return;
   }
+  const arrival = arrivedBy;
+  arrivedBy = null;
   if (sameDocumentPath(location.pathname, target)) {
-    arrivedByNavigationTo = null;
     appliedRoutePath = target;
     reportStructure();
     answerRouteRequest(message.routeRequestId, location.pathname);
     return;
   }
-  if (arrivedByNavigationTo !== null && sameDocumentPath(arrivedByNavigationTo, target)) {
-    // Sent to this route once already and landed here: sent again it would
-    // land here again, and again. Once only, for the load that made this
-    // document; the author asking again tries again.
-    arrivedByNavigationTo = null;
-    console.warn(
-      "[morph-preview] not opened: " + target + " loaded " + location.pathname + " instead.",
-    );
+  if (
+    arrival !== null &&
+    (arrival.kind === "frame" || sameDocumentPath(arrival.target, target))
+  ) {
+    // Answered first, then reported: the report after the answer is the one
+    // the editor follows.
+    answerRouteRequest(message.routeRequestId, location.pathname);
+    reportStructure();
     return;
   }
   try {
-    sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, target);
+    sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, "editor:" + target);
   } catch {
-    // Without the record the redirect case above would never stop.
+    // Without the record a redirect would be loaded again and again.
     console.warn("[morph-preview] not opened: " + target + " (no session storage).");
     return;
   }
+  leavingForEditor = true;
   inlineEditor.finish(true);
   selectedItem = null;
   hoveredItem = null;

@@ -31,6 +31,19 @@ export type PreviewDocumentNavigationState =
       startedAt: number;
     }>
   | Readonly<{ status: "open"; key: string; routePath: string }>
+  /**
+   * The frame answered from another page than the one asked for: the author
+   * followed a link inside it, or a redirect ended there. The editor follows
+   * it to a page it lists (the shell's frame follow); on any other page the
+   * canvas stays off. Settled, so nothing times out.
+   */
+  | Readonly<{
+      status: "elsewhere";
+      key: string;
+      routePath: string;
+      /** Where the frame is. */
+      framePath: string;
+    }>
   | Readonly<{
       status: "failed";
       key: string;
@@ -93,7 +106,9 @@ export function reducePreviewDocumentNavigation(
           ? state.routePath
           : sameFrame && state.status === "opening"
             ? state.from
-            : null;
+            : sameFrame && state.status === "elsewhere"
+              ? state.framePath
+              : null;
       return {
         status: "opening",
         key: event.key,
@@ -117,9 +132,16 @@ export function reducePreviewDocumentNavigation(
           : state;
       }
       // Late is still an answer: the page is there now, and says so.
-      return samePage(event.routePath, state.routePath)
-        ? { status: "open", key: state.key, routePath: state.routePath }
-        : state;
+      if (samePage(event.routePath, state.routePath)) {
+        return { status: "open", key: state.key, routePath: state.routePath };
+      }
+      // Never the page asked for; the frame is somewhere else, and says so.
+      return {
+        status: "elsewhere",
+        key: state.key,
+        routePath: state.routePath,
+        framePath: event.routePath,
+      };
     }
     case "timed-out":
       if (
@@ -143,6 +165,8 @@ export function reducePreviewDocumentNavigation(
 export function previewDocumentNavigationNotice(
   state: PreviewDocumentNavigationState,
   previewKey: string | null,
+  /** Whether the editor follows the frame to this path (a page it lists). */
+  followsTo: (framePath: string) => boolean = () => false,
 ):
   | Readonly<{ kind: "status"; message: string }>
   | Readonly<{ kind: "alert"; message: string; retry: boolean }>
@@ -167,6 +191,14 @@ export function previewDocumentNavigationNotice(
           : `The preview did not open ${state.routePath}. Canvas editing stays paused. Retry Preview to reload it.`;
     // Reloading the preview cannot give a pattern an address.
     return { kind: "alert", message, retry: state.reason !== "pattern" };
+  }
+  if (state.status === "elsewhere") {
+    return {
+      kind: "status",
+      message: followsTo(state.framePath)
+        ? `Following the preview to ${state.framePath}…`
+        : `The preview is showing ${state.framePath}, which is not a page the editor can open. Canvas editing is off there; open a page from the list to edit it.`,
+    };
   }
   return null;
 }

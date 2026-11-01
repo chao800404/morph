@@ -579,6 +579,13 @@ export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
 export const PREVIEW_PAGE_OPENING_MESSAGE =
   "The preview is still opening this page. Click again once it shows.";
 /**
+ * Said when a canvas click comes from a page the preview moved to by itself
+ * that is not one the editor lists (a 404, or an address of a dynamic
+ * route): the editor did not follow it there, so nothing on it is taken.
+ */
+export const PREVIEW_PAGE_NOT_EDITABLE_MESSAGE =
+  "The preview is showing a page the editor can't open. Open a page from the list to edit it.";
+/**
  * Said when a page that has no address of its own is asked for in a preview
  * that navigates as documents: a dynamic route needs concrete parameters,
  * and the editor does not invent them.
@@ -9093,10 +9100,18 @@ export function VisualEditorShell({
         if (!previewSelection.isNewCanvasIntent(message)) return;
         // Paused while a document-navigating frame has not answered for the
         // editor's page (D3): the click may be on the page it is leaving.
+        // Answered from another page (a link the author followed to a page
+        // the editor does not list): off there.
         if (documentNavigationRef.current && !frameShowsEditorPage()) {
-          toast.info(PREVIEW_PAGE_OPENING_MESSAGE, {
-            id: "preview-page-opening",
-          });
+          if (latestRouteRequestAnswered(previewReadyRoundRef.current)) {
+            toast.info(PREVIEW_PAGE_NOT_EDITABLE_MESSAGE, {
+              id: "preview-page-not-editable",
+            });
+          } else {
+            toast.info(PREVIEW_PAGE_OPENING_MESSAGE, {
+              id: "preview-page-opening",
+            });
+          }
           return;
         }
         const target = resolveSourceLocatedTarget({
@@ -9356,7 +9371,14 @@ export function VisualEditorShell({
     return () => window.clearTimeout(timer);
   }, [documentNavigationState]);
   const documentNavigationNotice = documentNavigation
-    ? previewDocumentNavigationNotice(documentNavigationState, previewKey)
+    ? previewDocumentNavigationNotice(
+        documentNavigationState,
+        previewKey,
+        // The pages the frame follow takes the editor to.
+        (framePath) =>
+          previewFrameNavigationRoute(framePath, themeRouteRegistry.routes) !==
+          null,
+      )
     : null;
 
   useEffect(() => {

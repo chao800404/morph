@@ -29,8 +29,11 @@ describe("a page switch in a preview that navigates as documents", () => {
       kind: "status",
     });
 
-    // An answer naming another page is no answer.
-    expect(run([answered("/")], opening)).toBe(opening);
+    // An answer naming another page is not the page open.
+    expect(run([answered("/")], opening)).toMatchObject({
+      status: "elsewhere",
+      framePath: "/",
+    });
     const open = run([answered("/about/")], opening);
     expect(open).toEqual({
       status: "open",
@@ -120,6 +123,51 @@ describe("a page switch in a preview that navigates as documents", () => {
     expect(run([sent("/about", 1, "frame-2")], opening)).toMatchObject({
       key: "frame-2",
       from: null,
+    });
+  });
+
+  it("is elsewhere when the frame answers from another page, and follows from there quietly", () => {
+    // Open on /, then the author follows a link in the frame to /about: the
+    // new document is sent / again, and answers from /about.
+    const elsewhere = run([
+      sent("/"),
+      answered("/"),
+      sent("/", 10),
+      answered("/about"),
+    ]);
+    expect(elsewhere).toEqual({
+      status: "elsewhere",
+      key: "frame-1",
+      routePath: "/",
+      framePath: "/about",
+    });
+    expect(
+      previewDocumentNavigationNotice(elsewhere, "frame-1", () => true),
+    ).toMatchObject({
+      kind: "status",
+      message: expect.stringContaining("Following the preview to /about"),
+    });
+    expect(
+      previewDocumentNavigationNotice(elsewhere, "frame-1", () => false),
+    ).toMatchObject({
+      kind: "status",
+      message: expect.stringContaining("not a page the editor can open"),
+    });
+    // Settled: no clock runs, so nothing times out.
+    expect(
+      run(
+        [{ type: "timed-out", key: "frame-1", routePath: "/", startedAt: 10 }],
+        elsewhere,
+      ),
+    ).toBe(elsewhere);
+
+    // The editor follows: it asks for /about, where the frame already is.
+    const following = run([sent("/about", 20)], elsewhere);
+    expect(following).toMatchObject({ status: "opening", from: "/about" });
+    expect(previewDocumentNavigationNotice(following, "frame-1")).toBeNull();
+    expect(run([answered("/about")], following)).toMatchObject({
+      status: "open",
+      routePath: "/about",
     });
   });
 });

@@ -13,6 +13,8 @@ import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import {
   answerFramePings,
   frameEnvelope,
+  modelCurrentBridge,
+  reloadFrameDocument,
 } from "@/lib/test-utils/preview-frame-handshake";
 import type { StorefrontThemeEditorSearch } from "@/lib/validations/storefront-theme";
 import { listStorefrontThemeFiles } from "@/server/storefront/storefront-theme-files.serverFn";
@@ -25,6 +27,8 @@ import {
 import { storefrontThemeFileQueries } from "../-queries/storefront-theme-files.queries";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
 import {
+  PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+  PREVIEW_PAGE_NOT_EDITABLE_MESSAGE,
   PREVIEW_PAGE_OPENING_MESSAGE,
   VisualEditorShell,
 } from "./visual-editor-shell";
@@ -537,12 +541,18 @@ describe("switching pages in a preview that navigates as documents (D3)", () => 
     expect(updateSectionProps).not.toHaveBeenCalled();
   });
 
-  it("an answer for another page is no answer", async () => {
+  it("an answer from another page does not open the page asked for", async () => {
     await rendered(astroContext, "/about");
 
     frameAnswers("/");
     await tick();
-    expect(navigationNotice()?.textContent).toContain("Opening /about");
+    // The frame is on / (a page the editor lists, so it follows there).
+    expect(navigationNotice()?.textContent).toContain(
+      "Following the preview to /",
+    );
+    locatedClick(1);
+    await tick();
+    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
   });
 
   it("a page that never answers ends in a clear state, and a late answer still opens it", async () => {
@@ -583,5 +593,177 @@ describe("switching pages in a preview that navigates as documents (D3)", () => 
     expect(routeRequests().at(-1)?.routePath).toBe("/guard");
     await tick(PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS + 10);
     expect(navigationNotice()).toBeNull();
+  });
+});
+
+/**
+ * The author follows a link inside an Astro preview: a new document comes up
+ * on another page. The editor follows it there, as it follows a Start
+ * router's own navigation, and never sends the frame back. The frame here
+ * plays the bridge (theme-preview-bridge-document-navigation.test.ts): the
+ * new document answers the editor's first request, which still names the
+ * old page, from where it is, then reports.
+ */
+describe("following a link the author clicks inside an Astro preview", () => {
+  let searchChanges: Partial<StorefrontThemeEditorSearch>[] = [];
+
+  /** The editor at `routePath`, whose route follows its own requests. */
+  async function routed(routePath: string) {
+    searchChanges = [];
+    modelCurrentBridge();
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: astroContext,
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    client.setQueryData(
+      themePreviewServerQueries.forTheme("storefront-1", "theme-1").queryKey,
+      {
+        success: true,
+        message: "Live Preview server ready",
+        data: { url: `${PREVIEW_ORIGIN}/store/1/themes/1/preview` },
+      } as never,
+    );
+    client.setQueryData(
+      storefrontThemeFileQueries.tree("storefront-1", "theme-1").queryKey,
+      treeAt(3) as never,
+    );
+    function Routed() {
+      const [search, setSearch] = useState<StorefrontThemeEditorSearch>({
+        template: "index",
+        templateId: "template-1",
+        routePath,
+        viewport: "desktop",
+      } as StorefrontThemeEditorSearch);
+      return (
+        <VisualEditorShell
+          context={astroContext}
+          search={search}
+          onSearchChange={(next) => {
+            searchChanges.push(next);
+            setSearch((current) => ({ ...current, ...next }));
+          }}
+          navigatingRoutePath={search.routePath}
+          currentUser={OWNER}
+        />
+      );
+    }
+    render(
+      <QueryClientProvider client={client}>
+        <Routed />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    documentReady();
+    await tick();
+    frameAnswers(routePath);
+    report(routePath);
+    await tick();
+  }
+  function documentReady() {
+    fromPreview({
+      type: "morph:storefront-preview-ready",
+      servedInstance: {
+        kind: "known",
+        instance: { session: SESSION, serial: 1 },
+      },
+    });
+  }
+  const report = (routePath: string) =>
+    fromPreview({
+      type: "morph:storefront-preview-structure",
+      nodes: [],
+      routePath,
+    });
+  /** The link click: a new document, on `routePath`, answering from there. */
+  async function linkFollowedTo(routePath: string) {
+    reloadFrameDocument();
+    documentReady();
+    await tick();
+    // The editor's request after that ready still names its own page.
+    expect(routeRequests().at(-1)?.routePath).toBe("/");
+    frameAnswers(routePath);
+    report(routePath);
+    await tick();
+  }
+  const routesAskedAfter = (index: number) =>
+    routeRequests()
+      .slice(index)
+      .map((request) => request.routePath ?? "/");
+  const commitText = () =>
+    fromPreview({
+      type: "morph:storefront-preview-commit-inline-text",
+      sectionId: "hero",
+      fieldKey: "heading",
+      fieldPath: "heading",
+      value: "Typed",
+      originalValue: "Stored",
+    });
+
+  it("follows the frame to a listed page, never sending it back, and takes the canvas only after its handshake", async () => {
+    await routed("/");
+    const before = routeRequests().length;
+
+    await linkFollowedTo("/about");
+
+    // The editor moved to /about; the frame was never asked for / again.
+    expect(searchChanges.some((next) => next.routePath === "/about")).toBe(
+      true,
+    );
+    const asked = routesAskedAfter(before);
+    expect(asked.at(-1)).toBe("/about");
+    expect(asked.slice(asked.indexOf("/about"))).not.toContain("/");
+
+    // Before the frame answers that request: paused.
+    locatedClick(1);
+    await tick();
+    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+
+    frameAnswers("/about");
+    report("/about");
+    await tick();
+    expect(navigationNotice()).toBeNull();
+
+    locatedClick(2);
+    const editor = await screen.findByRole(
+      "textbox",
+      { name: "Code editor" },
+      { timeout: 15_000 },
+    );
+    expect((editor as HTMLTextAreaElement).value).toBe(ABOUT_SOURCE);
+  });
+
+  it("does not follow to a page it does not list, and takes nothing from it", async () => {
+    await routed("/");
+    const before = routeRequests().length;
+
+    // A page of a dynamic route: an address no list entry names.
+    await linkFollowedTo("/blog/hello");
+
+    expect(searchChanges.some((next) => next.routePath !== undefined)).toBe(
+      false,
+    );
+    expect(routesAskedAfter(before)).toEqual(["/"]);
+    expect(navigationNotice()?.textContent).toContain(
+      "/blog/hello, which is not a page the editor can open",
+    );
+
+    locatedClick(1);
+    await tick();
+    expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+      PREVIEW_PAGE_NOT_EDITABLE_MESSAGE,
+      expect.anything(),
+    );
+    expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+    commitText();
+    await tick(400);
+    expect(updateSectionProps).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+      PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
+      expect.anything(),
+    );
   });
 });

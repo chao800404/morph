@@ -66,15 +66,17 @@ const slots = await homeSlots(Astro.request);
 ---
 <html><head><title>astro-live</title></head><body><main data-home-content={JSON.stringify(slots)} /></body></html>
 `;
-/** Two plain pages the page-switch case moves between (D3). */
+/** Two plain pages the page-switch case moves between (D3); A links to B. */
 const NAV_ROUTE = "/astro-nav";
-const navPage = (marker: string) =>
-  `<html><head><title>${marker}</title></head><body><main data-astro-nav="${marker}">${marker}</main></body></html>\n`;
+const NAV_ROUTE_B = "/astro-nav-b";
+const navPage = (marker: string, link = "") =>
+  `<html><head><title>${marker}</title></head><body><main data-astro-nav="${marker}">${marker}${link}</main></body></html>\n`;
 const OWN_PATHS = [
   "astro.config.mjs",
   "src/morph/astro-live.ts",
   `src/pages${ROUTE}.astro`,
   `src/pages${NAV_ROUTE}.astro`,
+  `src/pages${NAV_ROUTE_B}.astro`,
 ];
 
 type Answer = { success: boolean; error?: string; message?: string; data?: { ticket: number } };
@@ -255,7 +257,14 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     );
     const saved = await writeThemeFiles(page, scope!, [
       { path: "astro.config.mjs", content: astroConfig() },
-      { path: `src/pages${NAV_ROUTE}.astro`, content: navPage(marker) },
+      {
+        path: `src/pages${NAV_ROUTE}.astro`,
+        content: navPage(
+          marker,
+          `<a href="${NAV_ROUTE_B}" data-astro-nav-link="${marker}">B</a>`,
+        ),
+      },
+      { path: `src/pages${NAV_ROUTE_B}.astro`, content: navPage(`${marker}-b`) },
     ]);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
 
@@ -281,5 +290,20 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     await expect(page.getByTestId("preview-document-navigation")).toHaveCount(0, {
       timeout: 60_000,
     });
+
+    // A link the author follows inside the preview (interact mode, the
+    // default): the editor follows the new document to B, and the frame
+    // is not sent back.
+    await frame.locator(`a[data-astro-nav-link="${marker}"]`).click();
+    await expect
+      .poll(() => new URL(frame.url()).pathname, { timeout: 120_000 })
+      .toBe(NAV_ROUTE_B);
+    await expect(
+      pages.getByRole("button", { name: NAV_ROUTE_B, exact: true }),
+    ).toHaveAttribute("data-active", "true", { timeout: 60_000 });
+    // Still there a moment later: nothing loaded the old page again.
+    await page.waitForTimeout(3_000);
+    expect(new URL(frame.url()).pathname).toBe(NAV_ROUTE_B);
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(0);
   });
 });
