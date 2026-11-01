@@ -2115,6 +2115,51 @@ describe("EditorCodeWorkspace TanStack route problems by framework", () => {
     expect(screen.queryByText("routeTree.gen.ts")).toBeNull();
   });
 
+  it("shows no TanStack Start import-protection problem on an Astro Theme", () => {
+    const unsafe: StorefrontThemeFileDTO = {
+      ...routeFile,
+      id: "route-unsafe",
+      path: "src/routes/unsafe.tsx",
+      content:
+        'import { secret } from "../private-data.server"; export default () => <p>{secret()}</p>;\n',
+    };
+    const server: StorefrontThemeFileDTO = {
+      ...routeFile,
+      id: "server-helper",
+      path: "src/private-data.server.ts",
+      content: "export const secret = () => 'x';\n",
+    };
+    const manifest: StorefrontThemeFileDTO = {
+      ...legacyManifestFile,
+      id: "manifest-start",
+      content: '{"version":1,"router":{"framework":"tanstack-start"}}',
+    };
+    const hybrid = [astroPage, manifest, unsafe, server];
+    const hybridTree: StorefrontThemeFileTreeNode[] = hybrid.map((entry) => ({
+      name: entry.path.split("/").pop()!,
+      path: entry.path,
+      isDirectory: false,
+    }));
+    useThemeWorkspaceStore
+      .getState()
+      .hydrateFromQuery("store-1", "theme-1", hybrid);
+
+    const astro = renderWorkspace({
+      files: hybrid,
+      tree: hybridTree,
+      framework: "astro",
+    });
+    expect(problems(astro.container)).not.toContain("THEME_IMPORT_");
+    astro.unmount();
+
+    const start = renderWorkspace({
+      files: hybrid,
+      tree: hybridTree,
+      framework: "tanstack-start",
+    });
+    expect(problems(start.container)).toContain("THEME_IMPORT_SERVER_IN_CLIENT");
+  });
+
   it("still shows them on TanStack Start, recorded or NULL", () => {
     for (const framework of [null, "tanstack-start"]) {
       const { container, unmount } = renderWorkspace({
