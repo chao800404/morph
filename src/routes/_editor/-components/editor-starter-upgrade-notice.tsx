@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpCircle, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,11 +36,20 @@ type Review = {
   versionState: StarterUpgradeStatusDTO["versionState"];
   storedVersion: number | null;
   currentVersion: number;
-  starter: Part<StarterUpgradeKeptReason>;
+  starter: Part<StarterUpgradeKeptReason> & {
+    /** The review with the Starter's new pages selected, under its digest. */
+    optional:
+      | (Omit<Part<StarterUpgradeKeptReason>, "applies"> & {
+          paths: string[];
+          pages: { path: string; route: string; purpose: string }[];
+        })
+      | null;
+  };
   catalog: Part<ThemeCatalogKeptReason> & { kind: "install" | "update" | null };
 };
 
 type PartName = "starter" | "catalog";
+type Choice = PartName | "pages";
 
 const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
   changed:
@@ -52,6 +61,12 @@ const STARTER_KEPT: Record<StarterUpgradeKeptReason, string> = {
     "Not upgraded: its new version needs a file you removed from this Theme.",
   "origin-unknown":
     "Not added: this Theme does not record which Starter it came from, so Morph cannot tell whether you removed it. Add it yourself if you want it.",
+  "new-in-starter":
+    'Not added unless you select it: the Starter now has this page and this Theme does not. Select "Add the Starter\'s new pages" above to add it.',
+  "needs-route":
+    "Not upgraded: its new version links to a page this Theme does not have, so it is kept as it is.",
+  "page-not-in-theme":
+    "Not in this Theme, and not added. Morph cannot tell whether it was removed or never added; add it yourself if you want it.",
 };
 
 const CATALOG_KEPT: Record<ThemeCatalogKeptReason, string> = {
@@ -146,6 +161,11 @@ function KeptList<Reason extends string>({
  * parts to apply; applying sends the review's generation and each chosen
  * part's digest, so what is written is what was shown, and a Theme that moved
  * on since is refused with nothing written.
+ *
+ * The notice itself shows only while an upgrade or the catalog is waiting.
+ * The same review also opens from the Command Palette (`reviewRequest`), so
+ * a Theme on the current Starter can still add the Starter's new pages it
+ * did not select before, without a notice reminding it on every open.
  */
 export function EditorStarterUpgradeNotice({
   status,
@@ -153,6 +173,7 @@ export function EditorStarterUpgradeNotice({
   themeId,
   unsavedCount,
   onApplied,
+  reviewRequest = 0,
   className,
 }: {
   status: StarterUpgradeStatusDTO | null | undefined;
@@ -161,14 +182,21 @@ export function EditorStarterUpgradeNotice({
   /** Applying waits until nothing in this tab is unsaved. */
   unsavedCount: number;
   onApplied: () => void | Promise<void>;
+  /**
+   * Opens the review when it changes: the Command Palette's way in, which
+   * does not depend on the notice being shown.
+   */
+  reviewRequest?: number;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [review, setReview] = useState<Review | null>(null);
   const [shownKey, setShownKey] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<Record<PartName, boolean>>({
+  // The Starter's new pages are never pre-selected: only the author adds them.
+  const [chosen, setChosen] = useState<Record<Choice, boolean>>({
     starter: true,
     catalog: true,
+    pages: false,
   });
   const [message, setMessage] = useState<string | null>(null);
 
@@ -189,7 +217,7 @@ export function EditorStarterUpgradeNotice({
             ? `catalog:${next.catalog.changes[0].path}`
             : null;
       setShownKey(first);
-      setChosen({ starter: true, catalog: true });
+      setChosen({ starter: true, catalog: true, pages: false });
       setMessage(null);
       setOpen(true);
     },
@@ -205,7 +233,8 @@ export function EditorStarterUpgradeNotice({
   const applyMutation = useMutation({
     mutationFn: async (input: {
       reviewed: Review;
-      starter: boolean;
+      /** The Starter digest the author applies, when they apply it. */
+      starterDigest: string | null;
       catalog: boolean;
     }) => {
       const result = await applyStorefrontStarterUpgrade({
@@ -213,8 +242,8 @@ export function EditorStarterUpgradeNotice({
           storefrontId,
           themeId,
           expectedSourceGeneration: input.reviewed.sourceGeneration,
-          ...(input.starter
-            ? { starterDigest: input.reviewed.starter.digest }
+          ...(input.starterDigest !== null
+            ? { starterDigest: input.starterDigest }
             : {}),
           ...(input.catalog
             ? { catalogDigest: input.reviewed.catalog.digest }
@@ -241,81 +270,112 @@ export function EditorStarterUpgradeNotice({
     },
   });
 
+  const handledRequest = useRef(reviewRequest);
+  const startReview = reviewMutation.mutate;
+  useEffect(() => {
+    if (reviewRequest === handledRequest.current) return;
+    handledRequest.current = reviewRequest;
+    startReview();
+  }, [reviewRequest, startReview]);
+
   const waiting =
     !!status &&
     (status.versionState !== "current" || status.catalogPending !== null);
-  if (!status || !waiting) {
-    return message ? (
-      <div
-        role="status"
-        className={cn(
-          "flex items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs",
-          className,
-        )}
-        data-editor-starter-upgrade="applied"
-      >
-        <ArrowUpCircle className="size-4 shrink-0 text-emerald-600" />
-        <span className="min-w-0 flex-1">{message}</span>
-        <Button size="sm" variant="ghost" onClick={() => setMessage(null)}>
-          Dismiss
-        </Button>
-      </div>
+  const quiet =
+    !status || !waiting ? (
+      message ? (
+        <div
+          role="status"
+          className={cn(
+            "flex items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs",
+            className,
+          )}
+          data-editor-starter-upgrade="applied"
+        >
+          <ArrowUpCircle className="size-4 shrink-0 text-emerald-600" />
+          <span className="min-w-0 flex-1">{message}</span>
+          <Button size="sm" variant="ghost" onClick={() => setMessage(null)}>
+            Dismiss
+          </Button>
+        </div>
+      ) : null
     ) : null;
-  }
 
   // The Starter part is offered while its version is not current, even with
   // no file to change: applying it records the version. The catalog part is
   // offered when it has files to write, and shown when it keeps any.
-  const starterShown =
+  // On the current Starter with nothing to change, the part is shown only to
+  // offer the Starter's new pages, and applies only once they are selected.
+  const starterHasWork =
     !!review &&
     (review.versionState !== "current" || review.starter.changes.length > 0);
+  const starterShown =
+    !!review && (starterHasWork || !!review.starter.optional);
   const starterOffered = starterShown && review!.starter.applies;
   const catalogShown =
     !!review &&
     review.catalog.applies &&
     (review.catalog.changes.length > 0 || review.catalog.kept.length > 0);
   const catalogOffered = catalogShown && review!.catalog.changes.length > 0;
-  const applyStarter = starterOffered && chosen.starter;
   const applyCatalog = catalogOffered && chosen.catalog;
+  const pagesOffered = starterOffered && !!review!.starter.optional;
+  const addPages = pagesOffered && chosen.starter && chosen.pages;
+  const applyStarter =
+    starterOffered && chosen.starter && (starterHasWork || addPages);
+  // What the Starter part writes and keeps: with the new pages once the
+  // author selects them, which is a plan of its own with its own digest.
+  const starterPart = review
+    ? addPages && review.starter.optional
+      ? review.starter.optional
+      : review.starter
+    : null;
 
   const [shownPart, ...shownRest] = shownKey?.split(":") ?? [];
   const shownPath = shownRest.join(":");
   const shown =
-    review && (shownPart === "starter" || shownPart === "catalog")
-      ? review[shownPart].changes.find((change) => change.path === shownPath)
+    review &&
+    starterPart &&
+    (shownPart === "starter" || shownPart === "catalog")
+      ? (shownPart === "starter" ? starterPart : review.catalog).changes.find(
+          (change) => change.path === shownPath,
+        )
       : undefined;
   const rows = shown ? diffLines(shown.before ?? "", shown.after ?? "") : null;
 
   return (
     <>
-      <div
-        role="status"
-        className={cn(
-          "flex items-center gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs",
-          className,
-        )}
-        data-editor-starter-upgrade={
-          status.versionState === "current" ? "catalog" : status.versionState
-        }
-        data-catalog-pending={status.catalogPending ?? "none"}
-      >
-        <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
-        <span className="min-w-0 flex-1">
-          {noticeLine(status)} Nothing changes until you apply it.
-          {message ? ` ${message}` : null}
-        </span>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={reviewMutation.isPending}
-          onClick={() => reviewMutation.mutate()}
+      {status && waiting ? (
+        <div
+          role="status"
+          className={cn(
+            "flex items-center gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs",
+            className,
+          )}
+          data-editor-starter-upgrade={
+            status.versionState === "current" ? "catalog" : status.versionState
+          }
+          data-catalog-pending={status.catalogPending ?? "none"}
         >
-          {reviewMutation.isPending ? (
-            <LoaderCircle className="size-3.5 animate-spin" />
-          ) : null}
-          Review upgrade
-        </Button>
-      </div>
+          <ArrowUpCircle className="size-4 shrink-0 text-sky-600" />
+          <span className="min-w-0 flex-1">
+            {noticeLine(status)} Nothing changes until you apply it.
+            {message ? ` ${message}` : null}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={reviewMutation.isPending}
+            onClick={() => reviewMutation.mutate()}
+          >
+            {reviewMutation.isPending ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : null}
+            Review upgrade
+          </Button>
+        </div>
+      ) : (
+        quiet
+      )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
@@ -335,7 +395,7 @@ export function EditorStarterUpgradeNotice({
                     <label className="flex items-center gap-2 font-medium">
                       <Checkbox
                         aria-label="Apply the Starter upgrade"
-                        checked={applyStarter}
+                        checked={starterOffered && chosen.starter}
                         disabled={!starterOffered}
                         onCheckedChange={(value) =>
                           setChosen((prev) => ({
@@ -346,36 +406,81 @@ export function EditorStarterUpgradeNotice({
                       />
                       Starter upgrade
                     </label>
-                    {!review.starter.applies ? (
+                    {!review.starter.applies || !starterPart ? (
                       <p className="text-muted-foreground">
                         This Theme is not a TanStack Start Theme, so the Starter
                         upgrade does not apply to it.
                       </p>
                     ) : (
                       <>
+                        {review.starter.optional ? (
+                          <div
+                            className="space-y-1 rounded-md border p-2"
+                            data-starter-optional-pages=""
+                          >
+                            <label className="flex items-center gap-2 font-medium">
+                              <Checkbox
+                                aria-label="Add the Starter's new pages"
+                                checked={addPages}
+                                disabled={!pagesOffered || !chosen.starter}
+                                onCheckedChange={(value) =>
+                                  setChosen((prev) => ({
+                                    ...prev,
+                                    pages: value === true,
+                                  }))
+                                }
+                              />
+                              Add the Starter&apos;s new pages
+                            </label>
+                            <p className="text-muted-foreground">
+                              The Starter now has these pages and this Theme
+                              does not. They are added only if you select this;
+                              if you do not, they stay offered here. Files kept
+                              because they link to them are upgraded too.
+                            </p>
+                            <ul className="space-y-1">
+                              {review.starter.optional.pages.map((page) => (
+                                <li
+                                  key={page.path}
+                                  data-starter-optional-page={page.path}
+                                >
+                                  <div className="truncate font-mono">
+                                    {page.path}
+                                  </div>
+                                  <div className="text-muted-foreground">
+                                    {page.purpose}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                         <h3 className="font-medium">
-                          Changes ({review.starter.changes.length})
+                          Changes ({starterPart.changes.length})
                         </h3>
-                        {review.starter.changes.length === 0 ? (
+                        {starterPart.changes.length === 0 ? (
                           <p className="text-muted-foreground">
-                            No file needs changing. Applying records Starter{" "}
-                            {review.currentVersion} for this Theme.
+                            {review.versionState === "current" ? (
+                              "No file needs changing, and this Theme is on the current Starter."
+                            ) : (
+                              <>
+                                No file needs changing. Applying records Starter{" "}
+                                {review.currentVersion} for this Theme.
+                              </>
+                            )}
                           </p>
                         ) : (
                           <ChangeList
                             part="starter"
-                            changes={review.starter.changes}
+                            changes={starterPart.changes}
                             shown={shownKey}
                             onShow={setShownKey}
                           />
                         )}
                         <h3 className="font-medium">
-                          Kept as they are ({review.starter.kept.length})
+                          Kept as they are ({starterPart.kept.length})
                         </h3>
-                        <KeptList
-                          kept={review.starter.kept}
-                          text={STARTER_KEPT}
-                        />
+                        <KeptList kept={starterPart.kept} text={STARTER_KEPT} />
                       </>
                     )}
                   </section>
@@ -479,7 +584,8 @@ export function EditorStarterUpgradeNotice({
                 review &&
                 applyMutation.mutate({
                   reviewed: review,
-                  starter: applyStarter,
+                  starterDigest:
+                    applyStarter && starterPart ? starterPart.digest : null,
                   catalog: applyCatalog,
                 })
               }
