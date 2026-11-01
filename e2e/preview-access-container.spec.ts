@@ -90,15 +90,22 @@ async function ownSessionPage(browser: Browser): Promise<Page> {
  * SDK-shaped host. Through a page, not `context.request`: Chromium resolves
  * `*.localhost` to loopback itself, Node's resolver does not, so a Node-side
  * request to `pv-….preview.localhost` fails with ENOTFOUND before it is sent.
+ *
+ * Keeps what `maxRedirects: 0` asserted: the answer is the URL's own, not the
+ * last stop of a redirect chain. A body that cannot be read fails the test
+ * rather than passing for one without the draft marker.
  */
 async function visit(context: BrowserContext, url: string) {
   const page = await context.newPage();
   try {
     const response = await page.goto(url, { waitUntil: "commit" });
-    return {
-      status: response?.status() ?? 0,
-      body: response ? await response.text().catch(() => "") : "",
-    };
+    expect(response, `a response for ${url}`).not.toBeNull();
+    expect(
+      response!.request().redirectedFrom()?.url() ?? null,
+      `no redirect before ${url} answered`,
+    ).toBeNull();
+    expect(response!.url(), "answered by the URL itself").toBe(url);
+    return { status: response!.status(), body: await response!.text() };
   } finally {
     await page.close();
   }
