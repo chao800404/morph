@@ -14,6 +14,7 @@ import {
   hashPreviewAccessSecret,
   issuePreviewAccessExchange,
   redeemPreviewAccessExchange,
+  reverifyPreviewAccessGrant,
   revokePreviewAccessForSession,
   revokePreviewAccessForUser,
   verifyPreviewAccessCandidates,
@@ -1693,5 +1694,175 @@ describe("which grant an exchange ended in (addendum A4.1, user decision 2026-11
       }),
     ).toBe(false);
     expect(resolved(issued.flowId)).toBe(redeemed.grant.id);
+  });
+});
+
+describe("a relayed preview socket's grant (#214 P4, addendum A5/A6)", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "abcdefabcdefabcdefabcdefabcdef01";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const PV_ORIGIN = `https://${PV_HOST}`;
+  const APP_ORIGIN = "https://app.example.test";
+
+  async function servedGrant(sessionId = "session-a") {
+    const flowId = newFlowId();
+    const binder = "f".repeat(64);
+    const issued = await issuePreviewAccessExchange({
+      dal,
+      kind: "iframe",
+      sessionId,
+      userId: "admin-1",
+      storefrontId: "store-a",
+      themeId: "theme-a",
+      previewId: PREVIEW_ID,
+      previewHost: PV_HOST,
+      flowId,
+      binderHash: await hashPreviewAccessSecret(binder),
+      now: NOW,
+    });
+    if (!issued.ok) throw new Error(issued.reason);
+    const redeemed = await redeemPreviewAccessExchange({
+      dal,
+      flowId,
+      code: issued.code,
+      binder,
+      previewHost: PV_HOST,
+      kind: "iframe",
+      now: later(1000),
+    });
+    if (!redeemed.ok) throw new Error(redeemed.reason);
+    return { token: redeemed.token!, grantId: redeemed.grant.id };
+  }
+
+  function deps(forwarded: Request[]): PreviewAccessRequestDeps {
+    return {
+      previewParentHostname: PARENT,
+      dal,
+      now: () => later(1500),
+      isAppOrigin: (origin: string) => origin === APP_ORIGIN,
+      stripCredentials: (request: Request) => {
+        const headers = new Headers(request.headers);
+        headers.delete("cookie");
+        return new Request(request, { headers });
+      },
+      forward: async (_id, request) => {
+        forwarded.push(request);
+        return new Response("ok");
+      },
+    };
+  }
+
+  it("marks a verified upgrade with its own grant, and never trusts a client's copy", async () => {
+    const { token, grantId } = await servedGrant();
+    const forwarded: Request[] = [];
+    await handlePreviewAccessRequest(
+      new Request(new URL("/hmr", PV_ORIGIN), {
+        headers: {
+          cookie: `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${"1".repeat(32)}=${token}`,
+          upgrade: "websocket",
+          origin: PV_ORIGIN,
+          "x-morph-preview-grant": "someone-elses-grant",
+          "x-morph-preview-host": "pv-other.preview.example.test",
+        },
+      }),
+      deps(forwarded),
+    );
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]!.headers.get("x-morph-preview-grant")).toBe(grantId);
+    expect(forwarded[0]!.headers.get("x-morph-preview-host")).toBe(PV_HOST);
+  });
+
+  it("removes a client's copy from a plain request, and adds none", async () => {
+    const { token } = await servedGrant();
+    const forwarded: Request[] = [];
+    await handlePreviewAccessRequest(
+      new Request(new URL("/", PV_ORIGIN), {
+        headers: {
+          cookie: `${PREVIEW_ACCESS_GRANT_COOKIE_PREFIX}${"1".repeat(32)}=${token}`,
+          "x-morph-preview-grant": "forged",
+          "x-morph-preview-host": "forged",
+        },
+      }),
+      deps(forwarded),
+    );
+    expect(forwarded[0]!.headers.has("x-morph-preview-grant")).toBe(false);
+    expect(forwarded[0]!.headers.has("x-morph-preview-host")).toBe(false);
+  });
+
+  it("re-verifies an activated grant, and refuses it once revoked, expired, its session gone, or on another host", async () => {
+    const { token, grantId } = await servedGrant();
+    // Not yet used: a socket's grant is always one a request activated.
+    expect(
+      await reverifyPreviewAccessGrant({
+        dal,
+        grantId,
+        previewHost: PV_HOST,
+        now: later(1200),
+      }),
+    ).toEqual({ ok: false, reason: "GRANT_NOT_ACTIVATED" });
+    await verifyPreviewAccessGrant({
+      dal,
+      token,
+      previewHost: PV_HOST,
+      now: later(1300),
+    });
+    const check = (now = later(2000), previewHost = PV_HOST) =>
+      reverifyPreviewAccessGrant({ dal, grantId, previewHost, now });
+
+    expect(await check()).toEqual({ ok: true });
+    expect(await check(later(2000), "pv-other.preview.example.test")).toEqual({
+      ok: false,
+      reason: "HOST_MISMATCH",
+    });
+    expect(await check(later(1000 + PREVIEW_ACCESS_GRANT_MAX_MS))).toEqual({
+      ok: false,
+      reason: "GRANT_EXPIRED",
+    });
+    expect(
+      await reverifyPreviewAccessGrant({
+        dal,
+        grantId: "no-such-grant",
+        previewHost: PV_HOST,
+      }),
+    ).toEqual({ ok: false, reason: "GRANT_UNKNOWN" });
+
+    sqlite.prepare("DELETE FROM sessions WHERE id = 'session-a'").run();
+    expect((await check()).ok).toBe(false);
+  });
+
+  it("refuses a revoked grant at the next re-verification", async () => {
+    const { token, grantId } = await servedGrant("session-b");
+    await verifyPreviewAccessGrant({
+      dal,
+      token,
+      previewHost: PV_HOST,
+      now: later(1300),
+    });
+    await revokePreviewAccessForSession({
+      dal,
+      sessionId: "session-b",
+      now: later(1400),
+    });
+    expect(
+      await reverifyPreviewAccessGrant({
+        dal,
+        grantId,
+        previewHost: PV_HOST,
+        now: later(1500),
+      }),
+    ).toEqual({ ok: false, reason: "GRANT_REVOKED" });
+  });
+
+  it("reads D1 itself: no Sessions API session or replica on the verification path (A5 assumption 1)", () => {
+    for (const file of [
+      "src/db/index.ts",
+      "src/lib/storefront/dal/storefront-preview-access.dal.ts",
+      "src/server/preview-sandbox.ts",
+    ]) {
+      const source = readFileSync(resolve(file), "utf8");
+      expect(source, file).not.toMatch(
+        /withSession|first-unconstrained|bookmark/,
+      );
+    }
   });
 });

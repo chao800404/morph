@@ -340,6 +340,20 @@ export const storefrontPreviewAccessDal = {
   },
 
   /**
+   * The same read for one grant by its id: a relayed socket's re-verification
+   * (#214 P4). Like every read here it goes to the D1 binding itself, never a
+   * Sessions API session or a read replica, so a query sent after a
+   * revocation commits reads it (addendum A5, assumption 1).
+   */
+  async findGrantById(id: string): Promise<PreviewAccessGrantRecord | null> {
+    const [record] = await findGrantsWhere(
+      eq(storefrontPreviewAccessGrants.id, id),
+      1,
+    );
+    return record ?? null;
+  },
+
+  /**
    * The same read for every candidate a preview request carries, in one
    * query. The caller bounds the list (preview-access-cookies.ts); this
    * refuses a longer one rather than splitting it, so no request costs more

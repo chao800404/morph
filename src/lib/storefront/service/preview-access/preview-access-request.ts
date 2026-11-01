@@ -8,6 +8,11 @@ import {
   previewAccessRedeem,
 } from "./preview-access-pages";
 import {
+  PREVIEW_SOCKET_GRANT_HEADER,
+  PREVIEW_SOCKET_HOST_HEADER,
+  withoutPreviewSocketHeaders,
+} from "./preview-socket-relay";
+import {
   verifyPreviewAccessCandidates,
   type PreviewAccessRefusal,
   type VerifiedPreviewAccessGrant,
@@ -179,6 +184,26 @@ function credentialedResponse(response: Response): Response {
   } as ResponseInit);
 }
 
+/**
+ * The verified request as the preview's Durable Object gets it. A client can
+ * never name a grant: any copy of the relay's headers is removed. A
+ * WebSocket upgrade then carries the grant it was verified with, so the DO
+ * relays it under that grant's lease (#214 P4, addendum A5).
+ */
+function forwardedRequest(
+  request: Request,
+  grant: VerifiedPreviewAccessGrant,
+): Request {
+  const clean = withoutPreviewSocketHeaders(request);
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return clean;
+  }
+  const headers = new Headers(clean.headers);
+  headers.set(PREVIEW_SOCKET_GRANT_HEADER, grant.id);
+  headers.set(PREVIEW_SOCKET_HOST_HEADER, grant.previewHost);
+  return new Request(clean, { headers });
+}
+
 export type PreviewAccessDecision =
   | Readonly<{ kind: "served"; grant: VerifiedPreviewAccessGrant }>
   | Readonly<{
@@ -292,7 +317,10 @@ export async function handlePreviewAccessRequest(
   observe?.({ kind: "served", grant: verified.grant });
   let response: Response | null;
   try {
-    response = await deps.forward(previewId, deps.stripCredentials(request));
+    response = await deps.forward(
+      previewId,
+      forwardedRequest(deps.stripCredentials(request), verified.grant),
+    );
   } catch {
     response = null;
   }
