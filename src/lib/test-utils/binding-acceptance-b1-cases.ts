@@ -290,6 +290,100 @@ export const B1_INTEGRATION_CASES: readonly BasCase[] = [
   ...B1_EXTRA_CASES,
 ];
 
+/** The root layout's body in case L1: two instances, the second aliased. */
+const L1_LAYOUT_BODY = `${contentLocals(["shellA", "shellB"])}
+  const { title: heading, desc: details } = shellB;
+  return (
+    <div>
+      <header data-bas-case="l1">
+        <BasHero title={shellA.title} desc={shellA.desc} />
+        <BasHero title={heading} desc={details} />
+      </header>
+      {children}
+    </div>
+  );`;
+
+/**
+ * B1 on the two documents a Theme has exactly one of (ROADMAP M1: "首頁、
+ * 非首頁、layout 共用區塊與重複實例"): the home route `/`, stored in the index
+ * Document, and sections the root layout renders on every page, stored in
+ * the layout Document. Same patterns as above, per-field props, a cross-name
+ * alias and two instances with the same text, on these documents instead of
+ * a one-off route. A Theme has one of each, so a walk cannot take a route of
+ * its own: the E2E layer gives each mode a Theme of its own instead.
+ */
+export const B1_HOME_LAYOUT_CASES: readonly BasCase[] = [
+  {
+    id: "h1",
+    verifies:
+      "home route /: a per-field instance and an aliased instance whose titles hold the same text",
+    routePath: "/",
+    routeFile: "src/routes/index.tsx",
+    slots: ["homeA", "homeB"],
+    seed: {
+      homeA: { title: SALE, desc: "H1 A desc" },
+      homeB: { title: SALE, desc: "H1 B desc" },
+    },
+    body: {
+      loader: `  const { title: heading, desc: details } = homeB;
+  return (
+    <main data-bas-case="h1">
+      <BasHero title={homeA.title} desc={homeA.desc} />
+      <BasHero title={heading} desc={details} />
+    </main>
+  );`,
+      content: `${contentLocals(["homeA", "homeB"])}
+  const { title: heading, desc: details } = homeB;
+  return (
+    <main data-bas-case="h1">
+      <BasHero title={homeA.title} desc={homeA.desc} />
+      <BasHero title={heading} desc={details} />
+    </main>
+  );`,
+    },
+    elements: [
+      { tag: "h1", nth: 0, text: (s) => v(s, "homeA", "title"), target: { kind: "field", section: "homeA", field: "title" } },
+      { tag: "p", nth: 0, text: (s) => v(s, "homeA", "desc"), target: { kind: "field", section: "homeA", field: "desc" } },
+      { tag: "h1", nth: 1, text: (s) => v(s, "homeB", "title"), target: { kind: "field", section: "homeB", field: "title" } },
+      { tag: "p", nth: 1, text: (s) => v(s, "homeB", "desc"), target: { kind: "field", section: "homeB", field: "desc" } },
+    ],
+    // The aliased second instance is edited; the first holds the same title.
+    edit: { element: 2, inspector: { section: "homeB", field: "title" }, inlineWrites: true },
+  },
+  {
+    id: "l1",
+    verifies:
+      "layout-shared sections: per-field and aliased instances, edited once, shown on the home page and a non-home page",
+    routePath: "/",
+    routeFile: "src/routes/index.tsx",
+    layout: {
+      path: "src/layouts/StorefrontLayout.tsx",
+      pages: [
+        { routePath: "/", routeFile: "src/routes/index.tsx" },
+        { routePath: "/bas-l1-page", routeFile: "src/routes/bas-l1-page.tsx" },
+      ],
+    },
+    slots: ["shellA", "shellB"],
+    seed: {
+      shellA: { title: SALE, desc: "L1 A desc" },
+      shellB: { title: SALE, desc: "L1 B desc" },
+    },
+    // A layout reads its slots with `content()` in both spellings; see
+    // `BasCase.layout`.
+    body: {
+      loader: L1_LAYOUT_BODY,
+      content: L1_LAYOUT_BODY,
+    },
+    elements: [
+      { tag: "h1", nth: 0, text: (s) => v(s, "shellA", "title"), target: { kind: "field", section: "shellA", field: "title" } },
+      { tag: "p", nth: 0, text: (s) => v(s, "shellA", "desc"), target: { kind: "field", section: "shellA", field: "desc" } },
+      { tag: "h1", nth: 1, text: (s) => v(s, "shellB", "title"), target: { kind: "field", section: "shellB", field: "title" } },
+      { tag: "p", nth: 1, text: (s) => v(s, "shellB", "desc"), target: { kind: "field", section: "shellB", field: "desc" } },
+    ],
+    edit: { element: 2, inspector: { section: "shellB", field: "title" }, inlineWrites: true },
+  },
+];
+
 /** Independent section fixture: new component, handwritten targets, same-text instances. */
 export const NEW_SECTION_CASES: readonly BasCase[] = [
   {
