@@ -284,30 +284,52 @@ describe("the parser Worker through Core's service binding", () => {
   });
 
   it("takes one parse at a time with a bounded line, refusing the rest at once", async () => {
-    // Takes the slot and keeps its body open for 1.5 s.
-    const held = parser.core("/hold?ms=1500", { method: "POST" });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const started = Date.now();
+    // Takes the slot and keeps its body open for HOLD_MS. The clock is read
+    // before the hold is sent, so the stream cannot close before
+    // `heldAt + HOLD_MS`: that is a bound a slow machine cannot break.
+    //
+    // Margins, both measured from the arrival of the queued calls (SETTLE_MS
+    // after the hold): they wait HOLD_MS - SETTLE_MS = 1000 ms against the
+    // 2000 ms wait limit, and the refusal has the same 1000 ms to come before
+    // the hold ends. A stall of a second in either direction is needed to
+    // break this, not the 300 ms the earlier numbers allowed.
+    const HOLD_MS = 1_500;
+    const SETTLE_MS = 500;
+    const heldAt = Date.now();
+    const held = parser.core(`/hold?ms=${HOLD_MS}`, { method: "POST" });
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     const queued = await Promise.all(
       Array.from({ length: ASTRO_PARSER_LIMITS.maxWaiters + 1 }, () =>
         call(parser, "<p>queued</p>").then((result) => ({
           ...result,
-          ms: Date.now() - started,
+          endedAt: Date.now(),
         })),
       ),
     );
     const busy = queued.filter((result) => result.status === 503);
     expect(busy).toHaveLength(1);
     expectRefusal(busy[0], "parser-busy");
-    expect(busy[0].ms).toBeLessThan(1_000);
+    // Refused at once: it was answered while the hold was still open. Had it
+    // been queued it could not have been answered before the hold ended.
+    expect(busy[0].endedAt).toBeLessThan(heldAt + HOLD_MS);
     const served = queued.filter((result) => result.status === 200);
     expect(served).toHaveLength(ASTRO_PARSER_LIMITS.maxWaiters);
-    for (const result of served) expect(result.ms).toBeGreaterThan(800);
+    // Served only after the hold released the slot. If the hold had not taken
+    // the slot yet, a queued call would have taken it and finished early, and
+    // this fails rather than passing for the wrong reason.
+    for (const result of served) {
+      expect(result.endedAt).toBeGreaterThanOrEqual(heldAt + HOLD_MS - 50);
+    }
     expect((await held).status).toBe(200);
   });
 
   it("refuses a request that waits longer than the bounded wait", async () => {
-    const held = parser.core("/hold?ms=3000", { method: "POST" });
+    // The hold must outlast the wait limit (2000 ms) with room to spare, yet
+    // close well inside the body deadline (5000 ms), or the hold itself would
+    // be refused. At 3500 ms: the queued call may arrive up to 1200 ms late
+    // and still time out before the hold ends, and the hold has 1500 ms of
+    // slack before its own deadline.
+    const held = parser.core("/hold?ms=3500", { method: "POST" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     const started = Date.now();
     const waited = await call(parser, "<p>waits</p>");
@@ -320,13 +342,19 @@ describe("the parser Worker through Core's service binding", () => {
 
   it("ends a body that stops arriving instead of holding the slot", async () => {
     const started = Date.now();
-    const held = await parser.core("/hold?ms=8000", { method: "POST" });
+    // The stream would close at 20 s: far past the 5 s deadline, so the
+    // refusal can only have come from the deadline, with 5 s of slack on the
+    // upper bound below.
+    const held = await parser.core("/hold?ms=20000", { method: "POST" });
     expect(held.status).toBe(ASTRO_PARSER_ERROR_STATUS["source-read-timeout"]);
     expect(await held.json()).toMatchObject({
       ok: false,
       error: { code: "source-read-timeout" },
     });
-    expect(Date.now() - started).toBeLessThan(7_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(
+      ASTRO_PARSER_LIMITS.maxBodyReadMs - 100,
+    );
+    expect(Date.now() - started).toBeLessThan(10_000);
     // The slot is free again.
     await parseOk(parser, "<p>after</p>", { mode: "outline" });
   });
