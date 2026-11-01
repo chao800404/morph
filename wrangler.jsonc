@@ -272,6 +272,19 @@
           },
         ],
       },
+      // The dedicated `.astro` parser Worker (packages/astro-parser-worker).
+      // In this environment only, and deliberately not at the top level: the
+      // top level is also what `wrangler deploy` ships, and pointing
+      // production Core at the parser is a separate approval. Nothing calls it
+      // yet; the client (src/lib/storefront/source-language/
+      // astro-parser-client.ts) answers "unavailable" when the binding is
+      // absent or no parser is running behind it.
+      "services": [
+        {
+          "binding": "ASTRO_PARSER",
+          "service": "morph-astro-parser",
+        },
+      ],
       "vars": {
         // 3000 because that is the port `pnpm dev` uses, not because anything
         // requires it. Outside production both `getPublicURL` and the auth

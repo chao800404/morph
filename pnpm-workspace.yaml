@@ -4,6 +4,26 @@ packages:
   # checked as its own package (`pnpm check:sdk-package`); private and not
   # imported by the app.
   - "packages/morph-sdk"
+  # The dedicated `.astro` parser Worker (docs/astro-theme-plan.md 0.3, 3.1).
+  # Its own deployment unit, reached from Core through a service binding only.
+  - "packages/astro-parser-worker"
+
+# The parser Worker loads compiler-rs through the official `wasm32-wasi`
+# binding, which declares `"cpu": ["wasm32"]`; with `engine-strict` pnpm
+# refuses it on x64 (docs/astro-theme-plan.md 3.1, adoption condition 5).
+# `current` keeps every native binding exactly as it was.
+supportedArchitectures:
+  cpu:
+    - current
+    - wasm32
+
+# Allowing `wasm32` also selects every other wasm-only optional binding. These
+# two are fallbacks for hosts with no native binary (StackBlitz WebContainers),
+# which Morph never runs on; sharp and Tailwind keep their native bindings.
+# Without this, the setting above would install them on every machine.
+ignoredOptionalDependencies:
+  - "@img/sharp-webcontainers-wasm32"
+  - "@tailwindcss/oxide-wasm32-wasi"
 
 # Built because the test suite uses it directly: `better-sqlite3` is a
 # devDependency and thirty-nine DAL tests need its native binding. It arrived
