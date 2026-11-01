@@ -196,6 +196,13 @@ export type EditorSectionsPanelProps = {
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
   /** Explicit "show me the source" action on a page row. */
   onOpenThemeRouteCode?: (route: ThemeRouteRecord) => void;
+  /**
+   * The Theme's framework is not TanStack Start, whose route files and
+   * `content()` slots are what pages and sections are. The tree then shows
+   * an unavailable state instead of the stored Document's sections, and no
+   * page or section structure control is offered, whatever is passed.
+   */
+  sectionsUnavailableForFramework?: boolean;
   onAddPage?: (routePath: string) => Promise<AddPageResult>;
   onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
@@ -235,11 +242,16 @@ type EditorSection =
 
 /** Shared empty tree; a new literal would defeat the identity checks below. */
 const NO_SECTIONS: EditorSection[] = [];
+const NO_UNBOUND: readonly EditorUnboundSection[] = [];
 const NO_EDITABLE_NODES: readonly PreviewEditableNode[] = [];
 const NO_LAYOUT_ROOTS: Readonly<{
   before: readonly string[];
   after: readonly string[];
 }> = { before: [], after: [] };
+
+/** Shown in the tree for a Theme whose framework is not TanStack Start. */
+export const SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
+  "Sections aren't available for this Theme's framework yet. Edit the source in Code mode.";
 
 type EditorDeleteCandidate =
   | { kind: "section"; sectionId: string; label: string }
@@ -842,18 +854,27 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onPrefetchThemeRoute,
   onOpenThemeRoute,
   onOpenThemeRouteCode,
-  onAddPage,
-  onDeletePage,
+  sectionsUnavailableForFramework = false,
+  onAddPage: onAddPageProp,
+  onDeletePage: onDeletePageProp,
   sectionOptions = [],
-  onAddSection,
-  unboundSectionCandidates = [],
-  onBindSection,
+  onAddSection: onAddSectionProp,
+  unboundSectionCandidates: unboundSectionCandidatesProp = NO_UNBOUND,
+  onBindSection: onBindSectionProp,
   onDeleteSection,
   detachableSectionIds,
   onDetachSection,
   onRenameSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
+  const structureOff = sectionsUnavailableForFramework;
+  const onAddPage = structureOff ? undefined : onAddPageProp;
+  const onDeletePage = structureOff ? undefined : onDeletePageProp;
+  const onAddSection = structureOff ? undefined : onAddSectionProp;
+  const onBindSection = structureOff ? undefined : onBindSectionProp;
+  const unboundSectionCandidates = structureOff
+    ? NO_UNBOUND
+    : unboundSectionCandidatesProp;
   const pageRoutes = useMemo(
     () => themeRoutes.filter((route) => !route.isServerOnly),
     [themeRoutes],
@@ -1567,7 +1588,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               </SidebarGroup>
             ) : null}
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
-              {routeStructurePending ? (
+              {structureOff ? (
+                <div
+                  className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
+                  role="status"
+                >
+                  {SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE}
+                </div>
+              ) : routeStructurePending ? (
                 <div
                   className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
                   role="status"
@@ -1757,44 +1785,46 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             </SidebarGroup>
           </SidebarContent>
 
-          <SidebarFooter className="border-t p-3">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full"
-                  disabled={
-                    !onAddSection ||
-                    sectionOptions.length === 0 ||
-                    addMutation.isPending ||
-                    bindMutation.isPending ||
-                    reorderMutation.isPending
-                  }
-                >
-                  <Plus /> Add section
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-64">
-                {/* Said before the choice, because the choice is where the
-                    copy stops following the library. */}
-                <DropdownMenuLabel className="text-[11px] font-normal leading-snug text-muted-foreground">
-                  Adds a copy this page owns. Later changes to the section
-                  library don&apos;t update it.
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {sectionOptions.map((option) => (
-                  <DropdownMenuItem
-                    key={option.componentRef}
-                    onSelect={() => addMutation.mutate(option)}
+          {structureOff ? null : (
+            <SidebarFooter className="border-t p-3">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    disabled={
+                      !onAddSection ||
+                      sectionOptions.length === 0 ||
+                      addMutation.isPending ||
+                      bindMutation.isPending ||
+                      reorderMutation.isPending
+                    }
                   >
-                    <Blocks aria-hidden="true" />
-                    <span>{option.sectionType}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarFooter>
+                    <Plus /> Add section
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" className="w-64">
+                  {/* Said before the choice, because the choice is where the
+                      copy stops following the library. */}
+                  <DropdownMenuLabel className="text-[11px] font-normal leading-snug text-muted-foreground">
+                    Adds a copy this page owns. Later changes to the section
+                    library don&apos;t update it.
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {sectionOptions.map((option) => (
+                    <DropdownMenuItem
+                      key={option.componentRef}
+                      onSelect={() => addMutation.mutate(option)}
+                    >
+                      <Blocks aria-hidden="true" />
+                      <span>{option.sectionType}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </SidebarFooter>
+          )}
         </Sidebar>
 
         {onAddPage ? (

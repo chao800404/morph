@@ -218,6 +218,7 @@ function renderWorkspace(props?: {
     files: Array<{ path: string; content: string }>,
   ) => void;
   onAuthorInput?: () => void;
+  framework?: string | null;
 }) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -244,6 +245,7 @@ function renderWorkspace(props?: {
         onDirtyFilesChange={props?.onDirtyFilesChange}
         onPreviewFilesChange={props?.onPreviewFilesChange}
         onAuthorInput={props?.onAuthorInput}
+        framework={props?.framework}
       />
     </QueryClientProvider>,
   );
@@ -2054,5 +2056,75 @@ describe("EditorCodeWorkspace binary files", () => {
         "src/components/hero.png",
       );
     });
+  });
+});
+
+describe("EditorCodeWorkspace TanStack route problems by framework", () => {
+  const routeFile: StorefrontThemeFileDTO = {
+    ...file,
+    id: "route-about",
+    path: "src/routes/about.tsx",
+    content: "export const Route = null;\n",
+    isEntry: false,
+  };
+  const astroPage: StorefrontThemeFileDTO = {
+    ...file,
+    id: "astro-index",
+    path: "src/pages/index.astro",
+    content: "<main>Astro</main>\n",
+    mimeType: "text/plain",
+    isEntry: false,
+  };
+  const files = [astroPage, routeFile];
+  const tree: StorefrontThemeFileTreeNode[] = files.map((entry) => ({
+    name: entry.path.split("/").pop()!,
+    path: entry.path,
+    isDirectory: false,
+  }));
+
+  beforeEach(() => {
+    useThemeWorkspaceStore.setState({
+      activeWorkspaceKey: null,
+      workspaces: {},
+      files: {},
+      acceptedGenerations: {},
+      observedGenerations: {},
+      generations: {},
+    });
+    const store = useThemeWorkspaceStore.getState();
+    store.hydrateFromQuery("store-1", "theme-1", files);
+    store.setActiveWorkspace("store-1", "theme-1");
+  });
+
+  /** The Problems panel's text, opened from the status bar. */
+  function problems(container: HTMLElement) {
+    const toggle = container.querySelector("footer button");
+    if (!toggle) throw new Error("no status bar problems button");
+    fireEvent.click(toggle);
+    return (
+      screen.getByRole("region", { name: "Code panel" }).textContent ?? ""
+    );
+  }
+
+  it("shows no TanStack route problem or route tree on an Astro Theme", () => {
+    const { container } = renderWorkspace({ files, tree, framework: "astro" });
+
+    const text = problems(container);
+    expect(text).not.toContain("MISSING_ROOT_ROUTE");
+    expect(text).not.toContain("TanStack");
+    expect(screen.queryByText("routeTree.gen.ts")).toBeNull();
+  });
+
+  it("still shows them on TanStack Start, recorded or NULL", () => {
+    for (const framework of [null, "tanstack-start"]) {
+      const { container, unmount } = renderWorkspace({
+        files,
+        tree,
+        framework,
+      });
+      expect(problems(container)).toContain("[MISSING_ROOT_ROUTE]");
+      expect(screen.getByText("routeTree.gen.ts")).toBeTruthy();
+      unmount();
+    }
   });
 });

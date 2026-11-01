@@ -276,6 +276,13 @@ type EditorCodeWorkspaceProps = {
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
   dependencySourceRevisionId?: string;
+  /**
+   * The Theme's recorded framework (`StorefrontThemeEditorDTO`; NULL reads
+   * as TanStack Start). TanStack Router's file routes — their Problems, the
+   * generated route tree and `Link to=` completion — are Start's alone: an
+   * Astro Theme has no `src/routes/__root.tsx` and never needs one.
+   */
+  framework?: string | null;
 };
 
 export type EditorCodeSaveAllOptions = {
@@ -536,10 +543,16 @@ const EditorCodeWorkspaceContent = forwardRef<
     onBuildPreview,
     externalDiagnostics,
     dependencySourceRevisionId,
+    framework = null,
   }: EditorCodeWorkspaceProps,
   ref,
 ) {
   const queryClient = useQueryClient();
+  /** Whether this Theme's routes are TanStack Router file routes. */
+  const startRoutes = (framework ?? "tanstack-start") === "tanstack-start";
+  /** For the completion provider, registered once per editor mount. */
+  const startRoutesRef = useRef(startRoutes);
+  startRoutesRef.current = startRoutes;
   const [openedPublicText, setOpenedPublicText] = useState<Record<string, StorefrontThemeFileDTO>>({});
   const files = useMemo(() => [
     ...sourceFiles,
@@ -909,18 +922,20 @@ const EditorCodeWorkspaceContent = forwardRef<
           severity,
         });
       }
-      next.push(
-        ...collectThemeRouteDiagnostics(
-          files.map((file) => ({
-            path: file.path,
-            content:
-              draftContentsRef.current[file.path] ??
-              useThemeWorkspaceStore.getState().files[file.path]
-                ?.localContent ??
-              file.content,
-          })),
-        ),
-      );
+      if (startRoutes) {
+        next.push(
+          ...collectThemeRouteDiagnostics(
+            files.map((file) => ({
+              path: file.path,
+              content:
+                draftContentsRef.current[file.path] ??
+                useThemeWorkspaceStore.getState().files[file.path]
+                  ?.localContent ??
+                file.content,
+            })),
+          ),
+        );
+      }
       next.push(
         ...collectThemeImportProtectionEditorDiagnostics(
           files.map((file) => ({
@@ -957,7 +972,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       });
       setDiagnostics(next);
     },
-    [files, workspaceScope],
+    [files, startRoutes, workspaceScope],
   );
 
   useEffect(() => {
@@ -985,9 +1000,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
       routeCompletionProviderRef.current?.dispose();
       routeCompletionProviderRef.current =
-        registerTanStackRouteCompletionProvider(
-          monaco,
-          () => themeRouteFilesRef.current,
+        registerTanStackRouteCompletionProvider(monaco, () =>
+          startRoutesRef.current ? themeRouteFilesRef.current : [],
         );
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = createJsxTagDecorations(editor);
@@ -1145,7 +1159,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     const hasThemeRoutes = files.some((file) =>
       file.path.replace(/\\/g, "/").startsWith("src/routes/"),
     );
-    if (!hasThemeRoutes) return null;
+    // A non-Start Theme's leftover `src/routes/` is not a TanStack route
+    // tree: nothing generates one for it.
+    if (!startRoutes || !hasThemeRoutes) return null;
     const sourceFiles = files.map((file) => ({
       path: file.path,
       content:
@@ -1159,7 +1175,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       mimeType: "text/typescript",
       generated: true as const,
     };
-  }, [files, routeDiagnosticsRevision]);
+  }, [files, routeDiagnosticsRevision, startRoutes]);
 
   useEffect(() => {
     if (
