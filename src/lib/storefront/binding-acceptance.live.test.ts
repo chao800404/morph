@@ -23,6 +23,11 @@
  * stored content is seeded through `updateSectionProps` itself, on a route
  * shape the product binds, before the case's route replaces it.
  *
+ * Route cases are mounted at `/` and stored in the index Document. A layout
+ * case (`BasCase.layout`, L1) is stored in the layout Document instead, and
+ * is also rendered on each of its pages, home and non-home, before and after
+ * its one edit.
+ *
  * Failures are the measurement. The targets are the rule's; nothing here is
  * marked to fail, skip or only run.
  */
@@ -32,13 +37,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "@/db";
 import * as storefrontSchema from "@/db/storefront.schema";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
-import { B1_INTEGRATION_CASES } from "@/lib/test-utils/binding-acceptance-b1-cases";
+import {
+  B1_HOME_LAYOUT_CASES,
+  B1_INTEGRATION_CASES,
+} from "@/lib/test-utils/binding-acceptance-b1-cases";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import { resolveSelectable } from "@/lib/storefront/editor/preview-dom";
 import {
   BAS_HERO_PATH,
   BAS_HERO_SOURCE,
   basCaseRootId,
+  basLayoutSource,
+  basPlainPageSource,
   basRouteSource,
   storedSectionsOf,
   unexpectedDocumentChanges,
@@ -103,6 +113,8 @@ let sqlite: Database.Database;
 const STOREFRONT = "storefront-a";
 const THEME = "theme-a";
 const TEMPLATE = "template-home";
+/** Created by a layout case's seed only, so the other cases run as before. */
+const LAYOUT_TEMPLATE = "template-layout";
 const ROUTE_FILE = "src/routes/index.tsx";
 
 beforeEach(() => {
@@ -209,12 +221,47 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Fixture: the Theme, the seed and the reads
 
-/** The Theme's files with the route at `/` in the given shape. */
-function themeFiles(routeSource: string) {
+/** The Document a case's sections are stored in. */
+const templateOf = (testCase: BasCase) =>
+  testCase.layout ? LAYOUT_TEMPLATE : TEMPLATE;
+
+/**
+ * Where a case is seen: every page of a layout case; otherwise its route,
+ * mounted at `/` (the live layer renders every route case on the home route).
+ */
+const pagesOf = (testCase: BasCase) =>
+  testCase.layout?.pages ?? [{ routePath: "/", routeFile: ROUTE_FILE }];
+
+/** The one file a case's shape lives in, with its source in that shape. */
+function caseSource(
+  testCase: BasCase,
+  spelling: BasSpelling,
+  options: Readonly<{ seed?: boolean }> = {},
+) {
+  return testCase.layout
+    ? { path: testCase.layout.path, content: basLayoutSource(testCase, options) }
+    : {
+        path: ROUTE_FILE,
+        content: basRouteSource(testCase, spelling, { routePath: "/", ...options }),
+      };
+}
+
+/** The Theme's files with the case in its shape (or its seed shape). */
+function caseFiles(
+  testCase: BasCase,
+  spelling: BasSpelling,
+  options: Readonly<{ seed?: boolean }> = {},
+) {
+  const shaped = caseSource(testCase, spelling, options);
+  const pages = (testCase.layout?.pages ?? []).map((page) => ({
+    path: page.routeFile,
+    content: basPlainPageSource(page.routePath),
+  }));
   return [
-    ...livePreviewPlatformFiles(),
+    ...livePreviewPlatformFiles().filter((file) => file.path !== shaped.path),
     { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
-    { path: ROUTE_FILE, content: routeSource },
+    ...pages,
+    shaped,
   ];
 }
 
@@ -229,10 +276,10 @@ function writeThemeFiles(files: ReadonlyArray<{ path: string; content: string }>
 }
 
 /** A Theme source save: new content, and the source generation moves on. */
-function saveRouteSource(routeSource: string) {
+function saveSource(file: Readonly<{ path: string; content: string }>) {
   sqlite
     .prepare("UPDATE storefront_theme_files SET content = ? WHERE path = ?")
-    .run(routeSource, ROUTE_FILE);
+    .run(file.content, file.path);
   sqlite
     .prepare(
       "UPDATE storefront_themes SET source_generation = source_generation + 1 WHERE id = ?",
@@ -248,16 +295,16 @@ function sourceGeneration(): number {
   ).g;
 }
 
-function draftGeneration(): number {
+function draftGeneration(templateId: string): number {
   return (
     sqlite
       .prepare("SELECT draft_generation AS g FROM storefront_theme_templates WHERE id = ?")
-      .get(TEMPLATE) as { g: number }
+      .get(templateId) as { g: number }
   ).g;
 }
 
 /** The stored Document, straight from the draft revision row. */
-function rawStoredDocument(): StoredDocument {
+function rawStoredDocument(templateId: string): StoredDocument {
   const row = sqlite
     .prepare(
       `SELECT r.document AS document
@@ -266,28 +313,37 @@ function rawStoredDocument(): StoredDocument {
          ON r.id = t.draft_revision_id AND r.template_id = t.id
        WHERE t.id = ?`,
     )
-    .get(TEMPLATE) as { document: string } | undefined;
+    .get(templateId) as { document: string } | undefined;
   if (!row) throw new Error("no draft revision is stored for the template");
   return JSON.parse(row.document) as StoredDocument;
 }
 
 /** The Document the editor and the Live Preview snapshot are given. */
-async function editorDocument(): Promise<StorefrontPageDocument> {
+async function editorDocument(templateId: string): Promise<StorefrontPageDocument> {
   const context = await storefrontThemeDal.findEditorContext(STOREFRONT, THEME);
-  const template = context?.templates.find((item) => item.id === TEMPLATE);
-  if (!template) throw new Error("the editor context has no home template");
+  const template = context?.templates.find((item) => item.id === templateId);
+  if (!template) throw new Error(`the editor context has no template ${templateId}`);
   return template.document;
 }
 
-/** One content write, exactly as the Inspector issues it. */
-async function writeField(section: string, field: string, value: string) {
+/**
+ * One content write, exactly as the Inspector issues it from the home page,
+ * to the Document the case's sections are stored in.
+ */
+async function writeField(
+  testCase: BasCase,
+  section: string,
+  field: string,
+  value: string,
+) {
+  const templateId = templateOf(testCase);
   return storefrontThemeDal.updateSectionProps({
     storefrontId: STOREFRONT,
     themeId: THEME,
-    templateId: TEMPLATE,
+    templateId,
     sectionId: section,
     props: { [field]: value },
-    expectedDraftGeneration: draftGeneration(),
+    expectedDraftGeneration: draftGeneration(templateId),
     expectedSourceGeneration: sourceGeneration(),
     createdBy: "user-1",
     routePath: "/",
@@ -299,40 +355,64 @@ async function writeField(section: string, field: string, value: string) {
  * shape it binds, then saves the case's own route over it.
  */
 async function seed(testCase: BasCase, spelling: BasSpelling) {
-  writeThemeFiles(
-    themeFiles(basRouteSource(testCase, spelling, { routePath: "/", seed: true })),
-  );
+  if (testCase.layout) {
+    sqlite.exec(`
+      INSERT INTO storefront_theme_templates (id, theme_id, type, name, document, created_at, updated_at)
+      VALUES ('${LAYOUT_TEMPLATE}', '${THEME}', 'layout', 'Shell', '{"version":1,"sections":[]}', 'now', 'now');
+    `);
+  }
+  writeThemeFiles(caseFiles(testCase, spelling, { seed: true }));
   for (const [section, props] of Object.entries(testCase.seed)) {
     for (const [field, value] of Object.entries(props)) {
-      const written = await writeField(section, field, value);
+      const written = await writeField(testCase, section, field, value);
       if (!written) throw new Error(`seed: ${section}.${field} was not written`);
     }
   }
-  const stored = storedSectionsOf(rawStoredDocument());
+  const stored = storedSectionsOf(rawStoredDocument(templateOf(testCase)));
   if (JSON.stringify(stored) !== JSON.stringify(testCase.seed)) {
     throw new Error(`seed: stored ${JSON.stringify(stored)}`);
   }
-  saveRouteSource(basRouteSource(testCase, spelling, { routePath: "/" }));
+  saveSource(caseSource(testCase, spelling));
 }
 
-/** Renders the route with the Document the editor gives the preview. */
+/**
+ * Renders one of the case's pages (the first unless named) with the
+ * Documents the editor gives the preview.
+ */
 async function renderCase(
   testCase: BasCase,
   spelling: BasSpelling,
   adjustDocument?: (document: StorefrontPageDocument) => void,
+  page = pagesOf(testCase)[0]!,
 ) {
-  const document = structuredClone(await editorDocument());
+  const document = structuredClone(await editorDocument(templateOf(testCase)));
   adjustDocument?.(document);
-  const files = themeFiles(basRouteSource(testCase, spelling, { routePath: "/" }));
+  const documents = testCase.layout
+    ? { index: await editorDocument(TEMPLATE), layout: document }
+    : { index: document };
   const { html } = await renderLivePreviewRoute({
-    files,
-    documents: { index: document },
+    files: caseFiles(testCase, spelling),
+    routeFile: page.routeFile,
+    path: page.routePath,
+    documents,
   });
   const root = mountLivePreview(html);
   const caseRoot = root.querySelector<HTMLElement>(
     `[data-bas-case="${basCaseRootId(testCase)}"]`,
   );
   return { root, caseRoot, html };
+}
+
+/** What each of the case's pages shows for its elements, by route path. */
+async function shownOnEveryPage(testCase: BasCase, spelling: BasSpelling) {
+  const shown: Record<string, Array<string | null>> = {};
+  for (const page of pagesOf(testCase)) {
+    const { caseRoot } = await renderCase(testCase, spelling, undefined, page);
+    shown[page.routePath] = testCase.elements.map(
+      (element) => elementOf(caseRoot, element)?.textContent ?? null,
+    );
+  }
+  return shown;
 }
 
 function elementOf(caseRoot: HTMLElement | null, element: BasElement) {
@@ -398,7 +478,7 @@ async function writeFromClick(
     return { selection, wrote: null as null | { section: string; field: string } };
   }
   let error: string | null = null;
-  await writeField(selection.sectionId, field, value).catch((caught) => {
+  await writeField(testCase, selection.sectionId, field, value).catch((caught) => {
     error = String(caught);
   });
   return {
@@ -417,6 +497,7 @@ async function performEdit(testCase: BasCase, spelling: BasSpelling, label: stri
   }
   try {
     const result = await writeField(
+      testCase,
       edit.inspector.section,
       edit.inspector.field,
       edit.value,
@@ -452,16 +533,16 @@ const SPELLINGS: ReadonlyArray<{ spelling: BasSpelling; runtime: string }> = [
 
 for (const { spelling, runtime } of SPELLINGS) {
   describe(`binding acceptance, ${runtime}`, () => {
-    for (const testCase of B1_INTEGRATION_CASES) {
+    for (const testCase of [...B1_INTEGRATION_CASES, ...B1_HOME_LAYOUT_CASES]) {
       describe(`${testCase.id}: ${testCase.verifies}`, () => {
         it("S1 the stored Document renders through the editor's read", async () => {
           await seed(testCase, spelling);
-          const raw = rawStoredDocument();
+          const raw = rawStoredDocument(templateOf(testCase));
           const stored = storedSectionsOf(raw);
           // Reading does not depend on binding (rule 1): the Document the
           // editor and the preview are given keeps every stored section.
           const editorSections = storedSectionsOf(
-            (await editorDocument()) as unknown as StoredDocument,
+            (await editorDocument(templateOf(testCase))) as unknown as StoredDocument,
           );
           expect
             .soft(editorSections, "the editor's Document keeps every stored section and value")
@@ -592,6 +673,28 @@ for (const { spelling, runtime } of SPELLINGS) {
           });
         }
 
+        if (testCase.layout) {
+          it("every page shows the layout's sections, and shows the one edit on each", async () => {
+            await seed(testCase, spelling);
+            const before = storedSectionsOf(rawStoredDocument(templateOf(testCase)));
+            const shownBefore = await shownOnEveryPage(testCase, spelling);
+            const { edit } = await performEdit(testCase, spelling, "pages");
+            const after = storedSectionsOf(rawStoredDocument(templateOf(testCase)));
+            const shownAfter = await shownOnEveryPage(testCase, spelling);
+            observe(spelling, testCase, "pages", { shownBefore, shownAfter, after });
+            const expectedOn = (stored: typeof before) =>
+              Object.fromEntries(
+                pagesOf(testCase).map((page) => [
+                  page.routePath,
+                  testCase.elements.map((element) => element.text(stored)),
+                ]),
+              );
+            expect(shownBefore).toEqual(expectedOn(before));
+            expect(after[edit.change!.section]?.[edit.change!.field]).toBe(edit.value);
+            expect(shownAfter).toEqual(expectedOn(after));
+          });
+        }
+
         if (testCase.id === "p4a") {
           it("keeps an own undefined spread value distinct from a code-only value", async () => {
             await seed(testCase, spelling);
@@ -636,9 +739,9 @@ for (const { spelling, runtime } of SPELLINGS) {
 
         it("S4 the raw stored Document changed only at the target", async () => {
           await seed(testCase, spelling);
-          const before = rawStoredDocument();
+          const before = rawStoredDocument(templateOf(testCase));
           const { edit } = await performEdit(testCase, spelling, "S4");
-          const after = rawStoredDocument();
+          const after = rawStoredDocument(templateOf(testCase));
           const problems = unexpectedDocumentChanges(before, after, edit.change);
           observe(spelling, testCase, "S4", {
             target: edit.change,
@@ -654,10 +757,10 @@ for (const { spelling, runtime } of SPELLINGS) {
         // click, to whatever section it selected.
         it("S4-click the editor's write from the click changes only the target", async () => {
           await seed(testCase, spelling);
-          const before = rawStoredDocument();
+          const before = rawStoredDocument(templateOf(testCase));
           const { change, value } = editFor(testCase, "S4-click");
           const fromClick = await writeFromClick(testCase, spelling, value);
-          const after = rawStoredDocument();
+          const after = rawStoredDocument(templateOf(testCase));
           const problems = unexpectedDocumentChanges(before, after, change);
           observe(spelling, testCase, "S4-click", {
             target: change,
@@ -671,12 +774,12 @@ for (const { spelling, runtime } of SPELLINGS) {
 
         it("S5 after a fresh read the canvas, the selection and storage agree", async () => {
           await seed(testCase, spelling);
-          const before = rawStoredDocument();
+          const before = rawStoredDocument(templateOf(testCase));
           await performEdit(testCase, spelling, "S5");
-          const stored = rawStoredDocument();
+          const stored = rawStoredDocument(templateOf(testCase));
           const storedSections = storedSectionsOf(stored);
           const editorSections = storedSectionsOf(
-            (await editorDocument()) as unknown as StoredDocument,
+            (await editorDocument(templateOf(testCase))) as unknown as StoredDocument,
           );
           expect
             .soft(editorSections, "the editor's Document agrees with storage")
