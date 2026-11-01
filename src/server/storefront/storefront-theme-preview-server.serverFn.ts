@@ -51,6 +51,10 @@ import { themePreviewRuntimeReport } from "@/lib/storefront/compiler/theme-clien
 import { storefrontPreviewContentTicketDal } from "@/lib/storefront/dal/storefront-preview-content-ticket.dal";
 import { storefrontThemeBuildDal } from "@/lib/storefront/dal/storefront-theme-build.dal";
 import { recordPreviewStartFailure } from "./preview-start-failure-record";
+import {
+  previewAccessOriginFor,
+  sdkOriginForFramed,
+} from "../preview-access-sandbox";
 import { withSignedPreviewMedia } from "./preview-media-urls";
 import {
   logPreviewServerEvent,
@@ -278,11 +282,21 @@ export const startThemePreviewServer = createServerFn({ method: "POST" })
       );
     }
 
+    // On the container transport the editor frames the preview's `pv-` host,
+    // which asks for a credential on every request (#214 P2), never the SDK
+    // address: that one carries the port token and stays inside the Worker.
+    const framed =
+      selection.kind === "cloudflare-sandbox"
+        ? framedPreviewAddress(url.url, previewId, selection.previewHostname)
+        : { url: url.url, origin: url.origin, access: "open" as const };
+
     return ok("Live Preview server ready", {
       previewId,
       attemptId: started.attemptId,
-      url: url.url,
-      origin: url.origin,
+      url: framed.url,
+      origin: framed.origin,
+      // How the frame is admitted: `pv-exchange` frames the access flow first.
+      access: framed.access,
       // Which transport served this, for the same reason the build runner now
       // reports it: after a deployment there is no sidecar, so "it must be the
       // container" is a code argument, and a code argument is what a bug breaks.
@@ -737,10 +751,27 @@ export const touchThemePreviewServer = createServerFn({ method: "POST" })
       themeId,
       userId: context.user.id,
     });
+    // The frame names the stable `pv-` host; the checks compare against the
+    // SDK's current address for it.
+    const expectedOrigin =
+      selection.kind === "cloudflare-sandbox"
+        ? await sdkOriginForFramed(
+            env as unknown as Record<string, unknown>,
+            previewOrigin,
+            previewId,
+            selection.previewHostname,
+          )
+        : previewOrigin;
+    if (expectedOrigin === null) {
+      return ok("Live Preview server checked", {
+        previewId: previewId as string | null,
+        serving: false,
+      });
+    }
     const servingInput = {
       previewId,
       previewHostname: selection.previewHostname,
-      expectedOrigin: previewOrigin,
+      expectedOrigin,
     };
     // The same question; a transport that names its dev server instances
     // also says which one is serving, so the editor can tell a restarted
@@ -805,8 +836,15 @@ export const probeThemePreviewAddress = createServerFn({ method: "POST" })
       return answer(serving ? "serving" : "stale", null);
     }
 
-    const address = previewAddressBelongsTo({
+    const sdkOrigin = await sdkOriginForFramed(
+      env as unknown as Record<string, unknown>,
       previewOrigin,
+      previewId,
+      selection.previewHostname,
+    );
+    if (sdkOrigin === null) return answer("stale", null);
+    const address = previewAddressBelongsTo({
+      previewOrigin: sdkOrigin,
       previewId,
       previewHostname: selection.previewHostname,
       port: THEME_PREVIEW_SERVER_PORT,
@@ -1080,3 +1118,18 @@ export const applyThemePreviewFiles = createServerFn({ method: "POST" })
       ...(servedInstance ? { servedInstance } : {}),
     });
   });
+
+/** The `pv-` address the editor frames for an SDK address: same path and port. */
+function framedPreviewAddress(
+  sdkUrl: string,
+  previewId: string,
+  previewParentHostname: string,
+): { url: string; origin: string; access: "pv-exchange" } {
+  const origin = previewAccessOriginFor(sdkUrl, previewId, previewParentHostname);
+  const sdk = new URL(sdkUrl);
+  return {
+    url: `${origin}${sdk.pathname}${sdk.search}`,
+    origin,
+    access: "pv-exchange",
+  };
+}

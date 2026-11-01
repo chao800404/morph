@@ -762,6 +762,13 @@ export const storefrontPreviewAccessExchanges = sqliteTable(
     previewHost: text("preview_host").notNull(),
     expiresAt: text("expires_at").notNull(),
     consumedAt: text("consumed_at"),
+    /**
+     * The grant this exchange ended in: the one redeem created, or an
+     * existing one it reused (addendum A4.1). For tracing only; no request
+     * is ever authorised by it. Null for exchanges that ended in none, and
+     * for every exchange recorded before this column existed.
+     */
+    resolvedGrantId: text("resolved_grant_id"),
     ...timestamps,
   },
   (table) => [

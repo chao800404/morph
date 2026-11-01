@@ -17,6 +17,8 @@ describe("isDevPreviewHost", () => {
     "5173-d71a98ea08efb7c153cfb496c699d0dd-_fkpsl7llmqaatv1.preview.localhost:3100",
     // A Build Preview host: the build's instance answers every path there.
     "bp-0123456789abcdef0123456789abcdef01234567.preview.localhost:3100",
+    // A Live Preview host that verifies its credential per request.
+    "pv-0123456789abcdef0123456789abcdef.preview.localhost:3100",
   ])("parks the preview host %s", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(true);
   });
@@ -38,6 +40,9 @@ describe("isDevPreviewHost", () => {
     "bp-0123.preview.localhost",
     "bp-0123456789abcdef0123456789abcdef01234567.sub.preview.localhost",
     "bp-0123456789abcdef0123456789abcdef01234567.preview.localhost.evil.test",
+    "pv-0123.preview.localhost",
+    "pv-0123456789abcdef0123456789abcdef.sub.preview.localhost",
+    "pv-0123456789abcdef0123456789abcdef.preview.localhost.evil.test",
     undefined,
   ])("leaves %s to Morph's own dev server", (host) => {
     expect(isDevPreviewHost(host, "preview.localhost")).toBe(false);
