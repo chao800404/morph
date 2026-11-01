@@ -1747,6 +1747,7 @@ describe("a page render during a release change (G3)", () => {
       hiddenSlots: [],
     });
     expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")).toBe("x-morph-render-context");
     expect(res.headers.get("ETag")).toContain("rel_1");
   });
 
@@ -1764,6 +1765,7 @@ describe("a page render during a release change (G3)", () => {
     expect(res.headers.get("Cache-Control")).toBe(
       "public, max-age=60, must-revalidate",
     );
+    expect(res.headers.get("Vary")).toBe("x-morph-render-context");
     expect(res.headers.get("ETag")).toContain("rel_2");
   });
 

@@ -443,6 +443,9 @@ export class StorefrontProductionService {
           ? "private, no-store"
           : "public, max-age=60, must-revalidate",
         ETag: `"${pinned ? pinned.releaseId : resolved.releaseId}:${requestedPath}"`,
+        // Both answers depend on the render-context header: a cache keyed on
+        // the URL alone must not answer a pinned read with the active one.
+        Vary: STOREFRONT_RENDER_CONTEXT_HEADER,
         "X-Content-Type-Options": "nosniff",
       },
     });
