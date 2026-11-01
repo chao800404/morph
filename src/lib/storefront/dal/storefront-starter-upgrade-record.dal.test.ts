@@ -1965,12 +1965,120 @@ describe("the product catalog part of a review", () => {
     );
     // Not even with the digest a Start review of the same files gave.
     for (const catalogDigest of [startDigest, reviewed.catalog.digest]) {
-      await expect(apply({ catalogDigest })).resolves.toEqual({
-        status: "not-applicable",
+      await expect(apply({ catalogDigest })).resolves.toMatchObject({
+        status: "framework-unavailable",
       });
     }
     expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
     expect(storedRawRow()).toEqual(before.row);
     expect(storedTemplates()).toEqual(before.templates);
   });
+});
+
+describe("the Starter upgrade on a Theme that is not TanStack Start", () => {
+  function setFramework(framework: string | null) {
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = ? WHERE id = ?")
+      .run(framework, THEME_ID);
+  }
+
+  function storedTemplates() {
+    return sqlite
+      .prepare(
+        "SELECT id, document, draft_generation, updated_at FROM storefront_theme_templates ORDER BY id",
+      )
+      .all();
+  }
+
+  function seedLegacyWorkspace() {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    workspace.files.set(THEME_ID, legacyWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+  }
+
+  async function reviewDigest() {
+    const reviewed = await storefrontDal.reviewStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+    });
+    if (!reviewed) throw new Error("no review");
+    return reviewed;
+  }
+
+  function apply(starterDigest: string) {
+    return storefrontDal.applyReviewedStarterUpgrade({
+      storefrontId: STOREFRONT_ID,
+      themeId: THEME_ID,
+      createdBy: "user-a",
+      expectedSourceGeneration: 5,
+      starterDigest,
+    });
+  }
+
+  it.each(["astro", "nuxt"])(
+    "reviews a %s Theme as unavailable, with no plan",
+    async (framework) => {
+      seedLegacyWorkspace();
+      setFramework(framework);
+
+      const reviewed = await reviewDigest();
+
+      expect(reviewed.unavailable).toMatch(
+        new RegExp(`cannot be applied to ${framework} Themes`),
+      );
+      expect(reviewed.review).toMatchObject({
+        applies: false,
+        changes: [],
+        kept: [],
+      });
+      expect(reviewed.review.plan).toEqual({ files: [], deletions: [] });
+      expect(reviewed.catalog.changes).toEqual([]);
+    },
+  );
+
+  it("refuses to apply on an Astro Theme and changes nothing, whatever digest it is sent", async () => {
+    seedLegacyWorkspace();
+    // The digest a Start review of the same files gave.
+    const startDigest = (await reviewDigest()).review.digest;
+    setFramework("astro");
+    const before = { row: storedRawRow(), templates: storedTemplates() };
+    const filesBefore = JSON.stringify(workspace.files.get(THEME_ID));
+    const reviewed = await reviewDigest();
+
+    for (const digest of [
+      startDigest,
+      reviewed.review.digest,
+      "0".repeat(64),
+    ]) {
+      await expect(apply(digest)).resolves.toMatchObject({
+        status: "framework-unavailable",
+        reason: expect.stringContaining("astro"),
+      });
+    }
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(JSON.stringify(workspace.files.get(THEME_ID))).toBe(filesBefore);
+    expect(storedRawRow()).toEqual(before.row);
+    expect(storedTemplates()).toEqual(before.templates);
+  });
+
+  it.each([null, "tanstack-start"])(
+    "leaves a Theme recorded as %s reviewed and applied as before",
+    async (framework) => {
+      seedLegacyWorkspace();
+      setFramework(framework);
+
+      const reviewed = await reviewDigest();
+      expect(reviewed.unavailable).toBeNull();
+      expect(reviewed.review.applies).toBe(true);
+      expect(reviewed.review.changes.map((change) => change.path)).toEqual([
+        "src/morph/content.ts",
+      ]);
+
+      await expect(apply(reviewed.review.digest)).resolves.toMatchObject({
+        status: "applied",
+        starter: true,
+      });
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+    },
+  );
 });

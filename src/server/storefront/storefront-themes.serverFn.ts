@@ -173,7 +173,12 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
       if (!result) {
         return fail("Storefront theme not found", { error: "NOT_FOUND" });
       }
-      const { review, catalog, ...status } = result;
+      if (result.unavailable) {
+        return fail(result.unavailable, {
+          error: "THEME_FRAMEWORK_UNAVAILABLE",
+        });
+      }
+      const { review, catalog, unavailable: _unavailable, ...status } = result;
       return ok("Starter upgrade reviewed", {
         ...status,
         starter: {
@@ -217,6 +222,9 @@ export const applyStorefrontStarterUpgrade = createServerFn({ method: "POST" })
         ...data,
         createdBy: authContext.user.id,
       });
+      if (result.status === "framework-unavailable") {
+        return fail(result.reason, { error: "THEME_FRAMEWORK_UNAVAILABLE" });
+      }
       if (result.status === "stale") {
         return fail(
           "The Theme changed since this upgrade was reviewed, so nothing was applied. Review it again.",

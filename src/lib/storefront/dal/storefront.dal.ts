@@ -24,6 +24,7 @@ import {
 } from "../default-storefront-document";
 import { storefrontThemeFileDal } from "./storefront-theme-file.dal";
 import {
+  reviewPlanDigest,
   reviewStarterThemeUpgrade,
   type StarterUpgradeReview,
 } from "../starter-theme-upgrade-review";
@@ -619,7 +620,26 @@ export function starterVersionState(version: unknown): StarterVersionState {
     : "available";
 }
 
+/**
+ * Why the Starter upgrade may not be reviewed or applied to this Theme, or
+ * null when it may. The Starter is a TanStack Start Theme, so its files and
+ * rules mean nothing to another framework's Theme; NULL is a Theme from
+ * before frameworks were recorded, which is Start.
+ */
+export function starterUpgradeUnavailableReason(
+  framework: string | null | undefined,
+): string | null {
+  if (framework === null || framework === undefined) return null;
+  if (framework === UNRECORDED_THEME_FRAMEWORK) return null;
+  return `The Starter upgrade is for TanStack Start Themes and cannot be applied to ${framework} Themes.`;
+}
+
 export type StarterUpgradeReviewResult = {
+  /**
+   * Why no upgrade is offered to this Theme (its framework is not Start), or
+   * null. When set, `review` and `catalog` hold no plan.
+   */
+  unavailable: string | null;
   sourceGeneration: number;
   versionState: StarterVersionState;
   storedVersion: number | null;
@@ -646,6 +666,8 @@ export type StarterUpgradeApplyResult =
       catalog: boolean;
     }
   | { status: "not-applicable" }
+  /** The Theme's framework is not Start; nothing was read or written. */
+  | { status: "framework-unavailable"; reason: string }
   /** The workspace or the plan changed since the author reviewed it. */
   | { status: "stale"; sourceGeneration: number | null };
 
@@ -714,6 +736,35 @@ export const storefrontDal = {
       data.themeId,
     );
     if (!stored.found) return null;
+    const unavailable = starterUpgradeUnavailableReason(stored.framework);
+    if (unavailable) {
+      const sourceGeneration = await themeSourceStore.getSourceGeneration(
+        data.storefrontId,
+        data.themeId,
+      );
+      if (sourceGeneration === null) return null;
+      const noPlan = { files: [], deletions: [] as [] };
+      // No file is read and no plan is made: the Starter is not this Theme's.
+      return {
+        unavailable,
+        sourceGeneration,
+        versionState: starterVersionState(stored.version),
+        storedVersion:
+          typeof stored.version === "number" ? stored.version : null,
+        currentVersion: STOREFRONT_STARTER_TEMPLATE_VERSION,
+        review: {
+          applies: false,
+          plan: noPlan,
+          changes: [],
+          kept: [],
+          digest: reviewPlanDigest(noPlan),
+        },
+        catalog: reviewThemeCatalog([], {
+          hasProducts: false,
+          framework: stored.framework,
+        }),
+      };
+    }
     const [files, sourceGeneration, hasProducts] = await Promise.all([
       themeSourceStore.listFiles(data.storefrontId, data.themeId),
       themeSourceStore.getSourceGeneration(data.storefrontId, data.themeId),
@@ -721,6 +772,7 @@ export const storefrontDal = {
     ]);
     if (sourceGeneration === null) return null;
     return {
+      unavailable: null,
       sourceGeneration,
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
@@ -803,6 +855,10 @@ export const storefrontDal = {
     );
     if (!stored.found)
       throw new Error("Theme not found or does not belong to storefront");
+    // Before the workspace is read, whatever the client sends.
+    const unavailable = starterUpgradeUnavailableReason(stored.framework);
+    if (unavailable)
+      return { status: "framework-unavailable", reason: unavailable };
     const sourceGeneration = await themeSourceStore.getSourceGeneration(
       data.storefrontId,
       data.themeId,
