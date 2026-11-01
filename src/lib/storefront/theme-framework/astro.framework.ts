@@ -2,7 +2,6 @@ import { assertThemePrerenderArtifacts } from "../compiler/theme-prerender";
 import {
   astroPrerenderRecordsFailure,
   astroRefusedReadsFailure,
-  astroRouteRegistry,
 } from "./astro-native-prerender";
 import {
   collectNativeAstroArtifact,
@@ -15,6 +14,7 @@ import {
   planAstroPreviewWorkspace,
 } from "./astro-preview-workspace";
 import type { ThemeFrameworkAdapter } from "./theme-framework.types";
+import { THEME_FRAMEWORK_ROUTES } from "./theme-routes";
 
 const CLIENT_ASSETS_DIRECTORY = "runtime/client";
 const ASTRO_CONFIG = /^astro\.config\.(mjs|js|ts|mts)$/;
@@ -59,7 +59,7 @@ export const astroFramework: ThemeFrameworkAdapter = {
     },
     native: {
       compilerIdentity: nativeAstroCompilerIdentity,
-      routeRegistry: astroRouteRegistry,
+      routeRegistry: THEME_FRAMEWORK_ROUTES.astro,
       allowedPackages: nativeAstroAllowedPackages,
       plan: planNativeAstroBuild,
       collect: collectNativeAstroArtifact,

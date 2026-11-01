@@ -1,5 +1,5 @@
 import { assertThemePrerenderArtifacts } from "../compiler/theme-prerender";
-import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
+import { THEME_FRAMEWORK_ROUTES } from "./theme-routes";
 import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-server";
 import { planThemeSandboxWorkspace } from "../compiler/theme-sandbox-workspace";
@@ -89,7 +89,7 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
         version: withThemeMorphSdkIdentity(THEME_START_TOOLCHAIN.reactStart),
       }),
       routeRegistry: (files) => {
-        const registry = buildThemeRouteRegistry(files);
+        const registry = THEME_FRAMEWORK_ROUTES["tanstack-start"](files);
         return registry.valid ? registry : null;
       },
       allowedPackages: nativeAllowedPackages,
