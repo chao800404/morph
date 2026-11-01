@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The SDK needs the Workers runtime to load. This stand-in registers an
 // outbound handler the way `@cloudflare/containers` does — through an
@@ -8,6 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 // `static outbound = …` field would silently bypass. That the real SDK then
 // applies it is checked against a real container, not here.
 const registry = vi.hoisted(() => new Map<string, unknown>());
+// The SDK's own fetch, which a test holds and releases: what the SDK does
+// with a request is its business; what PreviewSandbox does around it is ours.
+const sdk = vi.hoisted(() => ({
+  fetch: vi.fn<(request: Request) => Promise<unknown>>(),
+}));
+const access = vi.hoisted(() => ({ reverify: vi.fn() }));
 vi.mock("@cloudflare/sandbox", () => {
   class Sandbox {
     static get outbound(): unknown {
@@ -16,9 +22,15 @@ vi.mock("@cloudflare/sandbox", () => {
     static set outbound(handler: unknown) {
       registry.set(this.name, handler);
     }
+    fetch(request: Request) {
+      return sdk.fetch(request);
+    }
   }
   return { Sandbox };
 });
+vi.mock("@/lib/storefront/service/preview-access/preview-access", () => ({
+  reverifyPreviewAccessGrant: access.reverify,
+}));
 
 import { Sandbox } from "@cloudflare/sandbox";
 // The repo's own JSONC reader for wrangler.jsonc; a plain .mjs with no types.
@@ -87,5 +99,183 @@ describe("the Worker's container configuration", () => {
     const entry = readFileSync("src/server.ts", "utf8");
     expect(entry).toMatch(/export \{ PreviewSandbox \}/);
     expect(entry).toMatch(/export \{ ContainerProxy \}/);
+  });
+});
+
+/** A Workers WebSocket stand-in. */
+function fakeSocket() {
+  const listeners: Record<string, Array<(event: unknown) => void>> = {};
+  return {
+    accepted: false,
+    sent: [] as unknown[],
+    closes: [] as Array<{ code?: number; reason?: string }>,
+    accept() {
+      this.accepted = true;
+    },
+    send(data: unknown) {
+      this.sent.push(data);
+    },
+    close(code?: number, reason?: string) {
+      this.closes.push({ code, reason });
+    },
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      (listeners[type] ??= []).push(listener);
+    },
+    emit(type: string, event: unknown) {
+      (listeners[type] ?? []).forEach((l) => l(event));
+    },
+  };
+}
+type FakeSocket = ReturnType<typeof fakeSocket>;
+
+describe("the Live Preview DO relays pv- sockets under their grant (#214 P4, A5/A6)", () => {
+  const GRANT = "grant-1";
+  const HOST = "pv-0123456789abcdef0123456789abcdef.preview.example.test";
+  let pairs: Array<{ client: FakeSocket; server: FakeSocket }>;
+
+  beforeEach(() => {
+    pairs = [];
+    sdk.fetch.mockReset();
+    access.reverify.mockReset();
+    access.reverify.mockResolvedValue({ ok: true });
+    vi.stubGlobal(
+      "WebSocketPair",
+      class {
+        0: FakeSocket;
+        1: FakeSocket;
+        constructor() {
+          const client = fakeSocket();
+          const server = fakeSocket();
+          pairs.push({ client, server });
+          this[0] = client;
+          this[1] = server;
+        }
+      },
+    );
+    // Node's Response refuses 101; the Workers one carries a socket with it.
+    const RealResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class {
+        status: number;
+        headers: Headers;
+        webSocket: unknown;
+        body: unknown;
+        constructor(body: unknown, init: { status?: number; headers?: HeadersInit; webSocket?: unknown } = {}) {
+          this.body = body;
+          this.status = init.status ?? 200;
+          this.headers = new Headers(init.headers);
+          this.webSocket = init.webSocket ?? null;
+        }
+        text() {
+          return new RealResponse(this.body as string).text();
+        }
+      },
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const sandbox = () =>
+    new (PreviewSandbox as unknown as new () => InstanceType<typeof PreviewSandbox>)();
+  const upgrade = (headers: Record<string, string> = {}) =>
+    new Request(`https://${HOST}/socket`, {
+      headers: {
+        upgrade: "websocket",
+        "x-morph-preview-grant": GRANT,
+        "x-morph-preview-host": HOST,
+        ...headers,
+      },
+    });
+  const switched = (container: FakeSocket) => ({
+    status: 101,
+    headers: new Headers(),
+    webSocket: container,
+  });
+
+  it("refuses to relay when the grant is revoked while the SDK is still opening the container socket", async () => {
+    const container = fakeSocket();
+    let release!: (value: unknown) => void;
+    sdk.fetch.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    const object = sandbox();
+
+    const answer = object.fetch(upgrade());
+    await Promise.resolve();
+    expect(await object.closePreviewGrants([GRANT])).toBe(0);
+    release(switched(container));
+    const response = (await answer) as unknown as { status: number; webSocket: unknown };
+
+    expect(response.status).toBe(403);
+    expect(response.webSocket).toBeNull();
+    expect(container.closes).toEqual([{ code: 1000, reason: "Preview access ended." }]);
+    // No relay was registered, and no browser socket was made.
+    expect(pairs).toEqual([]);
+    expect(await object.closePreviewGrants([GRANT])).toBe(0);
+    container.emit("message", { data: "after" });
+    expect(access.reverify).not.toHaveBeenCalled();
+  });
+
+  it("refuses a new socket for a grant revoked before its upgrade, without asking the SDK", async () => {
+    const object = sandbox();
+    await object.closePreviewGrants([GRANT]);
+    const response = (await object.fetch(upgrade())) as unknown as { status: number };
+    expect(response.status).toBe(403);
+    expect(sdk.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps that refusal 2·L, and only that long", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const object = sandbox();
+    await object.closePreviewGrants([GRANT]);
+    vi.setSystemTime(1_000_000 + 60_000);
+    expect(((await object.fetch(upgrade())) as unknown as { status: number }).status).toBe(403);
+    vi.setSystemTime(1_000_000 + 60_001);
+    sdk.fetch.mockResolvedValue(switched(fakeSocket()));
+    expect(((await object.fetch(upgrade())) as unknown as { status: number }).status).toBe(101);
+  });
+
+  it("relays a socket under its grant, and a push closes it 4401", async () => {
+    const container = fakeSocket();
+    sdk.fetch.mockResolvedValue(switched(container));
+    const object = sandbox();
+    const response = (await object.fetch(upgrade())) as unknown as { status: number; webSocket: unknown };
+    expect(response.status).toBe(101);
+    expect(response.webSocket).toBe(pairs[0]!.client);
+    expect(container.accepted && pairs[0]!.server.accepted).toBe(true);
+    expect(access.reverify).toHaveBeenCalledWith(
+      expect.objectContaining({ grantId: GRANT, previewHost: HOST }),
+    );
+
+    expect(await object.closePreviewGrants([GRANT])).toBe(1);
+    expect(pairs[0]!.server.closes[0]!.code).toBe(4401);
+    expect(container.closes[0]!.code).toBe(1000);
+    // Ended, so it is no longer counted.
+    expect(await object.closePreviewGrants([GRANT])).toBe(0);
+  });
+
+  it("never shows the container the relay's headers, and leaves other requests to the SDK", async () => {
+    sdk.fetch.mockResolvedValue({ status: 200, headers: new Headers(), webSocket: null });
+    const object = sandbox();
+    await object.fetch(
+      new Request(`https://${HOST}/`, {
+        headers: { "x-morph-preview-grant": "forged", "x-morph-preview-host": "forged" },
+      }),
+    );
+    await object.fetch(upgrade());
+    for (const [request] of sdk.fetch.mock.calls) {
+      expect(request.headers.has("x-morph-preview-grant")).toBe(false);
+      expect(request.headers.has("x-morph-preview-host")).toBe(false);
+    }
+    // An upgrade without a grant (the dev-only passthrough) is the SDK's.
+    const passthrough = { status: 101, headers: new Headers(), webSocket: fakeSocket() };
+    sdk.fetch.mockResolvedValue(passthrough);
+    const answer = await object.fetch(
+      new Request(`https://${HOST}/socket`, { headers: { upgrade: "websocket" } }),
+    );
+    expect(answer).toBe(passthrough);
+    expect(pairs).toEqual([]);
   });
 });
