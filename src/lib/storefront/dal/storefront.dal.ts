@@ -1045,8 +1045,16 @@ export const storefrontDal = {
   async ensureDefault(salesChannelId: string): Promise<void> {
     const db = await getDb();
     const [existing] = await db
-      .select({ id: storefronts.id, activeThemeId: storefronts.activeThemeId })
+      .select({
+        id: storefronts.id,
+        activeThemeId: storefronts.activeThemeId,
+        framework: storefrontThemes.framework,
+      })
       .from(storefronts)
+      .leftJoin(
+        storefrontThemes,
+        eq(storefrontThemes.id, storefronts.activeThemeId),
+      )
       .where(
         and(
           eq(storefronts.salesChannelId, salesChannelId),
@@ -1056,6 +1064,9 @@ export const storefrontDal = {
       .limit(1);
 
     if (existing?.activeThemeId) {
+      // The Starter is TanStack Start's: a Theme of another framework gets
+      // none of its files or Documents, empty or not.
+      if (starterUpgradeUnavailableReason(existing.framework)) return;
       // An existing Theme's files are its author's; only an empty workspace is
       // initialised, and only then is the version recorded.
       const workspace = await ensureStarterThemeWorkspace(

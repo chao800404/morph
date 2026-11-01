@@ -101,6 +101,7 @@ function createExistingStorefrontDb(options?: { layoutTemplate?: boolean }) {
     select: vi.fn(() => {
       const chain = {
         from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
       };
@@ -125,6 +126,7 @@ function createLegacyStarterDb(starterTemplateVersion = 2) {
     select: vi.fn(() => {
       const chain = {
         from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
       };
@@ -159,6 +161,7 @@ function createNewStorefrontDb() {
     select: vi.fn(() => {
       const chain = {
         from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
       };
@@ -337,6 +340,59 @@ describe("storefrontDal starter workspace provisioning", () => {
       "theme-a",
     );
   });
+
+  it("writes no Start file or Document into an existing Theme of another framework", async () => {
+    const db = createExistingStorefrontDb();
+    // The first row is the storefront joined to its active Theme.
+    mocks.getDb.mockResolvedValue(db);
+    mocks.listFiles.mockResolvedValue([]);
+    const select = db.select as ReturnType<typeof vi.fn>;
+    const first = select.getMockImplementation()!;
+    let calls = 0;
+    select.mockImplementation(() => {
+      const chain = first() as { limit: ReturnType<typeof vi.fn> };
+      if (calls++ === 0) {
+        chain.limit = vi.fn(async () => [
+          { id: "storefront-a", activeThemeId: "theme-a", framework: "astro" },
+        ]);
+      }
+      return chain;
+    });
+
+    await storefrontDal.ensureDefault("sales-channel-a");
+
+    expect(mocks.initStarterTheme).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, "tanstack-start"])(
+    "still initializes an empty workspace recorded as %s",
+    async (framework) => {
+      const db = createExistingStorefrontDb();
+      mocks.getDb.mockResolvedValue(db);
+      mocks.listFiles.mockResolvedValue([]);
+      const select = db.select as ReturnType<typeof vi.fn>;
+      const first = select.getMockImplementation()!;
+      let calls = 0;
+      select.mockImplementation(() => {
+        const chain = first() as { limit: ReturnType<typeof vi.fn> };
+        if (calls++ === 0) {
+          chain.limit = vi.fn(async () => [
+            { id: "storefront-a", activeThemeId: "theme-a", framework },
+          ]);
+        }
+        return chain;
+      });
+
+      await storefrontDal.ensureDefault("sales-channel-a");
+
+      expect(mocks.initStarterTheme).toHaveBeenCalledWith(
+        "storefront-a",
+        "theme-a",
+      );
+    },
+  );
 
   it("preserves an existing authored workspace", async () => {
     mocks.listFiles.mockResolvedValue([{ path: "src/components/Custom.tsx" }]);
@@ -531,6 +587,7 @@ describe("storefrontDal starter workspace provisioning", () => {
       select: vi.fn(() => {
         const chain = {
           from: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
           where: vi.fn(() => chain),
           limit: vi.fn(async () => []),
         };
