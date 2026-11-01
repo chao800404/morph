@@ -66,7 +66,16 @@ const slots = await homeSlots(Astro.request);
 ---
 <html><head><title>astro-live</title></head><body><main data-home-content={JSON.stringify(slots)} /></body></html>
 `;
-const OWN_PATHS = ["astro.config.mjs", "src/morph/astro-live.ts", `src/pages${ROUTE}.astro`];
+/** Two plain pages the page-switch case moves between (D3). */
+const NAV_ROUTE = "/astro-nav";
+const navPage = (marker: string) =>
+  `<html><head><title>${marker}</title></head><body><main data-astro-nav="${marker}">${marker}</main></body></html>\n`;
+const OWN_PATHS = [
+  "astro.config.mjs",
+  "src/morph/astro-live.ts",
+  `src/pages${ROUTE}.astro`,
+  `src/pages${NAV_ROUTE}.astro`,
+];
 
 type Answer = { success: boolean; error?: string; message?: string; data?: { ticket: number } };
 
@@ -232,5 +241,45 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     expect(afterRestart, JSON.stringify(afterRestart)).toMatchObject({ success: true });
     expect(afterRestart.data!.ticket).toBeGreaterThan(resultD.data!.ticket);
     expect((await shown(frame)).body).toContain(e);
+  });
+
+  test("switches pages from the page list as documents, keeping the preview channel (D3)", async ({
+    page,
+  }) => {
+    const marker = `d3-${randomUUID()}`;
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await harness!.writeD1(
+      "UPDATE storefront_themes SET framework = 'astro' WHERE id = ?1 AND storefront_id = ?2",
+      scope!.themeId,
+      scope!.storefrontId,
+    );
+    const saved = await writeThemeFiles(page, scope!, [
+      { path: "astro.config.mjs", content: astroConfig() },
+      { path: `src/pages${NAV_ROUTE}.astro`, content: navPage(marker) },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+
+    await openEditor(page);
+    const frame = await liveFrame(page);
+    const iframeSrc = new URL(
+      (await page.locator("iframe").first().getAttribute("src"))!,
+    );
+
+    // The list is the Astro site's own pages, not the Starter's Start routes.
+    const pages = page.getByRole("list", { name: "Theme pages" });
+    await pages.getByRole("button", { name: NAV_ROUTE, exact: true }).click();
+
+    // The frame loads the other page as a document, with the channel query.
+    await expect
+      .poll(() => new URL(frame.url()).pathname, { timeout: 120_000 })
+      .toBe(NAV_ROUTE);
+    expect(new URL(frame.url()).search).toBe(iframeSrc.search);
+    await expect(frame.locator(`[data-astro-nav="${marker}"]`)).toBeVisible({
+      timeout: 120_000,
+    });
+    // The editor resumes once that document answered for the page.
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(0, {
+      timeout: 60_000,
+    });
   });
 });

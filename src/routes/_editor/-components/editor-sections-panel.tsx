@@ -1494,7 +1494,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                           >
                             <FileCode2 aria-hidden="true" />
                             <span>{route.path}</span>
-                            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            <span className="ml-auto shrink-0 text-[10px]">
                               Pattern
                             </span>
                           </SidebarMenuButton>

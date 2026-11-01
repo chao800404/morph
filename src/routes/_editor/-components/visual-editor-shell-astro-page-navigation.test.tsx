@@ -1,11 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  act,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -276,7 +270,9 @@ const tick = (ms = 0) =>
     else await new Promise((resolve) => setTimeout(resolve, ms));
   });
 const routeRequests = () =>
-  log.filter((message) => message.type === "morph:storefront-preview-set-route");
+  log.filter(
+    (message) => message.type === "morph:storefront-preview-set-route",
+  );
 
 /**
  * Renders the editor on `routePath` and brings the frame's first document
@@ -484,12 +480,8 @@ describe("the page list of an Astro Theme", () => {
     expect(pattern.textContent).toContain("Pattern");
     // The endpoint is not a page; its source still opens.
     expect(pages.queryByRole("button", { name: "/feed.xml" })).toBeNull();
-    const endpoints = within(
-      screen.getByLabelText("Theme endpoints"),
-    );
-    expect(
-      endpoints.getByRole("button", { name: "/feed.xml" }),
-    ).toBeTruthy();
+    const endpoints = within(screen.getByLabelText("Theme endpoints"));
+    expect(endpoints.getByRole("button", { name: "/feed.xml" })).toBeTruthy();
   });
 
   it("on TanStack Start the same workspace lists the Start routes, as before", async () => {

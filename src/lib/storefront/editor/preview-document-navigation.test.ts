@@ -32,7 +32,11 @@ describe("a page switch in a preview that navigates as documents", () => {
     // An answer naming another page is no answer.
     expect(run([answered("/")], opening)).toBe(opening);
     const open = run([answered("/about/")], opening);
-    expect(open).toEqual({ status: "open", key: "frame-1", routePath: "/about" });
+    expect(open).toEqual({
+      status: "open",
+      key: "frame-1",
+      routePath: "/about",
+    });
     expect(previewDocumentNavigationNotice(open, "frame-1")).toBeNull();
   });
 
@@ -44,7 +48,14 @@ describe("a page switch in a preview that navigates as documents", () => {
   it("times out into a clear failure, never into open", () => {
     const opening = run([sent("/about", 5)]);
     const failed = run(
-      [{ type: "timed-out", key: "frame-1", routePath: "/about", startedAt: 5 }],
+      [
+        {
+          type: "timed-out",
+          key: "frame-1",
+          routePath: "/about",
+          startedAt: 5,
+        },
+      ],
       opening,
     );
     expect(failed).toMatchObject({ status: "failed", reason: "timeout" });
@@ -61,7 +72,14 @@ describe("a page switch in a preview that navigates as documents", () => {
     const opening = run([sent("/about", 5), sent("/contact", 7)]);
     expect(
       run(
-        [{ type: "timed-out", key: "frame-1", routePath: "/about", startedAt: 5 }],
+        [
+          {
+            type: "timed-out",
+            key: "frame-1",
+            routePath: "/about",
+            startedAt: 5,
+          },
+        ],
         opening,
       ),
     ).toBe(opening);
@@ -86,7 +104,11 @@ describe("a page switch in a preview that navigates as documents", () => {
   });
 
   it("says nothing while the same page's document comes back", () => {
-    const reloading = run([sent("/about"), answered("/about"), sent("/about", 50)]);
+    const reloading = run([
+      sent("/about"),
+      answered("/about"),
+      sent("/about", 50),
+    ]);
     expect(reloading).toMatchObject({ status: "opening", from: "/about" });
     expect(previewDocumentNavigationNotice(reloading, "frame-1")).toBeNull();
   });

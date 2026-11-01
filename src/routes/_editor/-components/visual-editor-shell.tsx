@@ -3478,7 +3478,9 @@ export function VisualEditorShell({
    */
   const themeRouteRegistry = useMemo<ThemeRouteRegistry>(() => {
     const read = themeRoutesFor(context.theme.framework, effectiveThemeFiles);
-    return read.ok ? read.registry : { valid: false, routes: [], diagnostics: [] };
+    return read.ok
+      ? read.registry
+      : { valid: false, routes: [], diagnostics: [] };
   }, [context.theme.framework, effectiveThemeFiles]);
   /**
    * How the preview moves between pages, from the recorded framework
@@ -8616,23 +8618,7 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
-    /**
-     * Whether what this frame sends is about the editor's page.
-     *
-     * A frame with a router names its page in every structure report and
-     * route answer, its boot report included: it shows the editor's page
-     * while the page it last named, in this ready round, is that page.
-     *
-     * A frame that names no page shows the editor's page only when that is
-     * proven: the preview is one document (`previewIsSingleDocument`), and
-     * the frame answered the editor's latest route request in this round
-     * with no route, so the document on it is the one the editor last sent.
-     *
-     * Anything else is unknown — a frame just reloaded, one that never
-     * answers, one behind a newer request, an Astro or other page-to-page
-     * preview, a Theme whose files are not read — and unknown is not the
-     * editor's page.
-     */
+    /** The frame answered the editor's latest route request, in `round`. */
     const latestRouteRequestAnswered = (round: number) => {
       const routeRequest = lastRouteRequestRef.current;
       return (
@@ -8643,14 +8629,33 @@ export function VisualEditorShell({
         routeRequest.answered
       );
     };
+    /**
+     * Whether what this frame sends is about the editor's page.
+     *
+     * A frame with a router names its page in every structure report and
+     * route answer, its boot report included: it shows the editor's page
+     * while the page it last named, in this ready round, is that page.
+     *
+     * A frame that navigates as documents (Astro, D3) names its own path
+     * too, but shows the editor's page only once it has also answered the
+     * editor's latest route request in this round: until then it may be the
+     * page it is leaving.
+     *
+     * A frame that names no page shows the editor's page only when that is
+     * proven: the preview is one document (`previewIsSingleDocument`), and
+     * the frame answered the editor's latest route request in this round
+     * with no route, so the document on it is the one the editor last sent.
+     *
+     * Anything else is unknown — a frame just reloaded, one that never
+     * answers, one behind a newer request, a page-to-page preview that names
+     * no page, a Theme whose files are not read — and unknown is not the
+     * editor's page.
+     */
     const frameShowsEditorPage = () => {
       const frame = frameRouteRef.current;
       const round = previewReadyRoundRef.current;
       const named =
         frame !== null && frame.key === previewKey && frame.round === round;
-      // A preview that navigates as documents (D3): a document names its own
-      // path from the moment it boots, but it is the editor's page only once
-      // it has answered the editor's latest route request in this round.
       if (documentNavigationRef.current && !latestRouteRequestAnswered(round)) {
         return false;
       }
@@ -9343,7 +9348,10 @@ export function VisualEditorShell({
           routePath,
           startedAt,
         }),
-      Math.max(0, startedAt + PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS - Date.now()),
+      Math.max(
+        0,
+        startedAt + PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS - Date.now(),
+      ),
     );
     return () => window.clearTimeout(timer);
   }, [documentNavigationState]);
