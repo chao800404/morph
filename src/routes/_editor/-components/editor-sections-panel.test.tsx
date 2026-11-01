@@ -9,6 +9,7 @@ import type { PreviewEditableNode } from "@/lib/storefront/editor/preview-protoc
 import {
   EditorSectionsPanel,
   type EditorSectionsPanelProps,
+  SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
 } from "./editor-sections-panel";
 
 vi.mock("@dnd-kit/dom", () => ({
@@ -1258,5 +1259,83 @@ describe("EditorSectionsPanel page structure", () => {
       "Header",
       "Footer",
     ]);
+  });
+});
+
+describe("EditorSectionsPanel on a Theme of another framework", () => {
+  const pageRoutes = [
+    { id: "/", path: "/", sourcePath: "src/routes/index.tsx", kind: "route" },
+    {
+      id: "/about",
+      path: "/about",
+      sourcePath: "src/routes/about.tsx",
+      kind: "route",
+    },
+  ] as unknown as readonly ThemeRouteRecord[];
+  const candidate = {
+    componentRef: "promo.default",
+    sectionType: "promo",
+    componentName: "Promo",
+    componentSourcePath: "src/components/Promo.tsx",
+    routeSourcePath: "src/routes/index.tsx",
+    sourceLocation: "src/routes/index.tsx:4:7",
+    sourceStart: 0,
+    sourceEnd: 10,
+    canBind: true,
+    owner: "page",
+  } as const;
+  /** Every page and section structure control, as the shell passes them. */
+  const structureProps = (
+    sectionsUnavailableForFramework: boolean,
+  ): Partial<EditorSectionsPanelProps> => ({
+    sectionsUnavailableForFramework,
+    themeRoutes: pageRoutes,
+    onAddPage: vi.fn(),
+    onDeletePage: vi.fn(),
+    sectionOptions: [
+      {
+        componentRef: "promo.default",
+        sectionType: "promo",
+        componentName: "Promo",
+        componentSourcePath: "src/components/Promo.tsx",
+      },
+    ],
+    onAddSection: vi.fn(),
+    unboundSectionCandidates: [candidate],
+    onBindSection: vi.fn(),
+  });
+
+  it("shows the unavailable state instead of the stored sections, and no structure control", () => {
+    renderPanel(vi.fn(), vi.fn(), structureProps(true));
+
+    expect(
+      screen.getByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+    ).toBeTruthy();
+    // The Document's sections are not offered as editable.
+    expect(screen.queryByText("hero")).toBeNull();
+    expect(screen.queryByText("newsletter")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add page" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Delete page /about" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add section" })).toBeNull();
+    expect(screen.queryByText("Sections needing binding")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Bind Promo" })).toBeNull();
+  });
+
+  it("on TanStack Start, the same props offer all of them", () => {
+    renderPanel(vi.fn(), vi.fn(), structureProps(false));
+
+    expect(
+      screen.queryByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+    ).toBeNull();
+    expect(screen.getByText("hero")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add page" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Delete page /about" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add section" })).toBeTruthy();
+    expect(screen.getByText("Sections needing binding")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Bind Promo" })).toBeTruthy();
   });
 });

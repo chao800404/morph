@@ -3485,6 +3485,14 @@ export function VisualEditorShell({
   const canvasUnavailableForFrameworkRef = useRef(false);
   canvasUnavailableForFrameworkRef.current =
     (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
+  /**
+   * Pages and sections are TanStack Start structure: route files and their
+   * `content()` slots. On another framework the stored Document sections are
+   * not proven against anything it renders, and Core refuses every Design
+   * write (`designWritesUnavailableReason`), so the panel offers none of it.
+   */
+  const sectionsUnavailableForFramework =
+    (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -13510,6 +13518,7 @@ export function VisualEditorShell({
             onBuildPreview={() => void handleToolbarBuildPreview()}
             externalDiagnostics={buildDiagnostics}
             dependencySourceRevisionId={dependencySourceRevisionId}
+            framework={context.theme.framework}
           />
         </Suspense>
       </EditorCodeModeSurface>
@@ -13534,9 +13543,15 @@ export function VisualEditorShell({
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
           onReorderSections={
-            activeThemeRoute ? handleReorderSections : undefined
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleReorderSections
+              : undefined
           }
-          onToggleSectionEnabled={handleSectionToggleEnabled}
+          onToggleSectionEnabled={
+            sectionsUnavailableForFramework
+              ? undefined
+              : handleSectionToggleEnabled
+          }
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
           sharedSectionIds={sectionModel.sharedSectionIds}
@@ -13557,24 +13572,46 @@ export function VisualEditorShell({
           onPrefetchThemeRoute={handlePrefetchThemeRoute}
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
-          onAddPage={handleAddPage}
-          onDeletePage={handleDeletePage}
+          sectionsUnavailableForFramework={sectionsUnavailableForFramework}
+          onAddPage={
+            sectionsUnavailableForFramework ? undefined : handleAddPage
+          }
+          onDeletePage={
+            sectionsUnavailableForFramework ? undefined : handleDeletePage
+          }
           sectionOptions={routeSectionOptions}
-          onAddSection={activeThemeRoute ? handleAddSection : undefined}
+          onAddSection={
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleAddSection
+              : undefined
+          }
           unboundSectionCandidates={sectionModel.unboundSections}
           onBindSection={
-            activeThemeRoute || layoutStructure.unboundSections.length > 0
+            (activeThemeRoute || layoutStructure.unboundSections.length > 0) &&
+            !sectionsUnavailableForFramework
               ? handleBindSection
               : undefined
           }
           onDeleteSection={
-            activeThemeRoute && activeRouteSections.length > 0
+            activeThemeRoute &&
+            activeRouteSections.length > 0 &&
+            !sectionsUnavailableForFramework
               ? handleDeleteSection
               : undefined
           }
-          onDetachSection={activeThemeRoute ? handleDetachSection : undefined}
-          onRenameSection={handleRenameSection}
-          onDeleteEditableNode={handleDeleteEditableNode}
+          onDetachSection={
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleDetachSection
+              : undefined
+          }
+          onRenameSection={
+            sectionsUnavailableForFramework ? undefined : handleRenameSection
+          }
+          onDeleteEditableNode={
+            sectionsUnavailableForFramework
+              ? undefined
+              : handleDeleteEditableNode
+          }
         />
 
         {/* Left Panel Resizer */}
