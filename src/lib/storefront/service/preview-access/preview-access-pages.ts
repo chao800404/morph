@@ -27,6 +27,14 @@ import {
  * Messages carry the flow id both ways, and each side checks the other's
  * window and origin, so a Theme document later loaded on the same host can
  * never obtain a code.
+ *
+ * A separate tab (#214 P3, design §4b) runs the same flow with `mode=tab`:
+ * its peer is the editor that opened it (`window.opener`) instead of a
+ * parent frame, its grant has kind "tab", and the page may not be framed.
+ * Opened without an opener (a pasted URL, a bookmark) it says to open the
+ * preview from the editor and grants nothing. On success it drops its
+ * opener before leaving, so the Theme it lands on can never reach the
+ * editor's window; served documents also send COOP (preview-access-request).
  */
 
 export const PREVIEW_ACCESS_BEGIN_PATH = "/__morph/preview-auth/begin";
@@ -41,6 +49,16 @@ const BINDER_MAX_AGE_S = 120;
 const REUSE_MIN_REMAINING_MS = 10 * 60_000;
 const FLOW_ID = /^[0-9a-f]{32}$/;
 const MAX_RETURN_LENGTH = 2000;
+export const PREVIEW_ACCESS_NO_OPENER_TEXT =
+  "Open this preview from the editor.";
+export const PREVIEW_ACCESS_TAB_FAILED_TEXT =
+  "Preview sign-in expired. Open the preview again from the editor.";
+
+/** The flow's mode as begin and redeem are told it; null when invalid. */
+function previewAccessMode(value: string | null): "iframe" | "tab" | null {
+  if (value === null) return "iframe";
+  return value === "tab" ? "tab" : null;
+}
 
 /** A path on this host to land on after redeem, or null. Never another origin. */
 export function previewAccessReturnPath(value: string | null): string | null {
@@ -92,6 +110,8 @@ function page(
     script: string;
     body: string;
     setCookies?: readonly string[];
+    /** A tab's page is top-level only; a frame's may be framed by the editor. */
+    framable: boolean;
   }>,
 ): Response {
   const nonce = createPreviewAccessSecret().slice(0, 32);
@@ -107,7 +127,7 @@ function page(
       "connect-src 'self'",
       "form-action 'none'",
       "base-uri 'none'",
-      `frame-ancestors ${args.appOrigin ?? "'none'"}`,
+      `frame-ancestors ${(args.framable && args.appOrigin) || "'none'"}`,
     ].join("; "),
   });
   for (const value of args.setCookies ?? [])
@@ -148,8 +168,8 @@ function appOriginFrom(
 }
 
 /**
- * GET begin: `?flow=<flowId>&return=<path>&editorOrigin=<origin>`. Sets this
- * flow's binder and reports its hash to the editor.
+ * GET begin: `?flow=<flowId>&return=<path>&editorOrigin=<origin>[&mode=tab]`.
+ * Sets this flow's binder and reports its hash to the editor.
  */
 export async function previewAccessBegin(
   request: Request,
@@ -160,8 +180,9 @@ export async function previewAccessBegin(
   const flowId = url.searchParams.get("flow");
   const returnPath = previewAccessReturnPath(url.searchParams.get("return"));
   const appOrigin = appOriginFrom(url.searchParams.get("editorOrigin"), deps);
-  if (!flowId || !FLOW_ID.test(flowId) || !returnPath || !appOrigin) {
-    return plain(400, "Open this preview from the editor.");
+  const mode = previewAccessMode(url.searchParams.get("mode"));
+  if (!flowId || !FLOW_ID.test(flowId) || !returnPath || !appOrigin || !mode) {
+    return plain(400, PREVIEW_ACCESS_NO_OPENER_TEXT);
   }
   const binder = createPreviewAccessSecret();
   const binderHash = await hashPreviewAccessSecret(binder);
@@ -170,6 +191,9 @@ export async function previewAccessBegin(
     binderHash,
     appOrigin,
     returnPath,
+    tab: mode === "tab",
+    noOpener: PREVIEW_ACCESS_NO_OPENER_TEXT,
+    expired: PREVIEW_ACCESS_TAB_FAILED_TEXT,
     redeem: PREVIEW_ACCESS_REDEEM_PATH,
     begin: PREVIEW_ACCESS_BEGIN_MESSAGE,
     code: PREVIEW_ACCESS_CODE_MESSAGE,
@@ -177,6 +201,7 @@ export async function previewAccessBegin(
   });
   return page(200, {
     appOrigin,
+    framable: mode === "iframe",
     setCookies: [
       cookie(
         `${PREVIEW_ACCESS_BINDER_COOKIE_PREFIX}${flowId}`,
@@ -185,20 +210,25 @@ export async function previewAccessBegin(
       ),
     ],
     body: "<p>Opening the preview…</p>",
+    // The peer is the window that started this flow: the parent frame, or
+    // for a tab the editor that opened it. Without one nothing is posted.
     script:
       `(()=>{const s=${state};let done=false;` +
-      `const failed=(reason)=>{if(parent!==window)parent.postMessage({type:s.failed,flowId:s.flowId,reason},s.appOrigin);};` +
+      `const peer=s.tab?window.opener:(parent!==window?parent:null);` +
+      `const say=(t)=>{document.body.textContent=t;};` +
+      `if(!peer){if(s.tab)say(s.noOpener);return;}` +
+      `const failed=(reason)=>{peer.postMessage({type:s.failed,flowId:s.flowId,reason},s.appOrigin);if(s.tab)say(s.expired);};` +
       `addEventListener("message",(e)=>{` +
-      `if(done||e.source!==parent||e.origin!==s.appOrigin)return;` +
+      `if(done||e.source!==peer||e.origin!==s.appOrigin)return;` +
       `const d=e.data;` +
       `if(!d||d.type!==s.code||d.flowId!==s.flowId||typeof d.code!=="string"||!/^[0-9a-f]{64}$/.test(d.code))return;` +
       `done=true;` +
       `fetch(s.redeem,{method:"POST",credentials:"same-origin",cache:"no-store",` +
       `headers:{"content-type":"application/x-www-form-urlencoded"},` +
-      `body:new URLSearchParams({flow:s.flowId,return:s.returnPath,editorOrigin:s.appOrigin,code:d.code}).toString()})` +
-      `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true)location.replace(s.returnPath);else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
+      `body:new URLSearchParams(Object.assign({flow:s.flowId,return:s.returnPath,editorOrigin:s.appOrigin,code:d.code},s.tab?{mode:"tab"}:{})).toString()})` +
+      `.then((r)=>r.json().then((a)=>{if(r.ok&&a&&a.ok===true){if(s.tab)window.opener=null;location.replace(s.returnPath);}else failed(a&&typeof a.reason==="string"?a.reason:"REDEEM_FAILED");}))` +
       `.catch(()=>failed("REDEEM_UNAVAILABLE"));});` +
-      `if(parent!==window)parent.postMessage({type:s.begin,flowId:s.flowId,binderHash:s.binderHash},s.appOrigin);` +
+      `peer.postMessage({type:s.begin,flowId:s.flowId,binderHash:s.binderHash},s.appOrigin);` +
       `})();`,
   });
 }
@@ -255,7 +285,17 @@ export async function previewAccessRedeem(
   const returnPath = previewAccessReturnPath(field("return"));
   const appOrigin = appOriginFrom(field("editorOrigin"), deps);
   const code = field("code");
-  if (!flowId || !FLOW_ID.test(flowId) || !returnPath || !appOrigin || !code) {
+  // The kind the code was issued for must match; a frame's code never
+  // redeems a tab's grant, or the other way round.
+  const kind = previewAccessMode(field("mode"));
+  if (
+    !flowId ||
+    !FLOW_ID.test(flowId) ||
+    !returnPath ||
+    !appOrigin ||
+    !code ||
+    !kind
+  ) {
     return redeemAnswer(400, { ok: false, reason: "REQUEST_INVALID" });
   }
   const binderName = `${PREVIEW_ACCESS_BINDER_COOKIE_PREFIX}${flowId}`;
@@ -269,7 +309,7 @@ export async function previewAccessRedeem(
     code,
     binder: binder ?? "",
     previewHost,
-    kind: "iframe",
+    kind,
     now,
     reuse: {
       tokens: reuseCandidates(request),
