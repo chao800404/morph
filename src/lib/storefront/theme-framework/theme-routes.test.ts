@@ -7,7 +7,11 @@ import { STARTER_THEME_FILES } from "../starter-theme-files";
 import { astroFramework } from "./astro.framework";
 import { tanstackStartFramework } from "./tanstack-start.framework";
 import { THEME_FRAMEWORK_IDS } from "./theme-framework.types";
-import { THEME_FRAMEWORK_ROUTES, themeRoutesFor } from "./theme-routes";
+import {
+  THEME_FRAMEWORK_ROUTES,
+  themeRoutePathAfterFileMovesFor,
+  themeRoutesFor,
+} from "./theme-routes";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 
@@ -87,6 +91,111 @@ describe("the adapters' route registries", () => {
     expect(tanstackStartFramework.build.native.routeRegistry(ASTRO_PAGES)).toBe(
       null,
     );
+  });
+});
+
+describe("the editor's page after files are moved in Code", () => {
+  const move = (from: string, to: string) => [{ from, to }];
+
+  it("follows an Astro page renamed or moved within src/pages", () => {
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/about",
+        move("src/pages/about.astro", "src/pages/company.astro"),
+      ),
+    ).toBe("/company");
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/about",
+        move("src/pages/about.astro", "src/pages/company/index.astro"),
+      ),
+    ).toBe("/company");
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/",
+        move("src/pages/index.astro", "src/pages/home.astro"),
+      ),
+    ).toBe("/home");
+  });
+
+  it("leaves the editor where it is when another file moved, or the page did not change", () => {
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/about",
+        move("src/pages/contact.astro", "src/pages/reach.astro"),
+      ),
+    ).toBe(null);
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/about",
+        move("src/pages/about.astro", "src/pages/about/index.astro"),
+      ),
+    ).toBe(null);
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        "/about",
+        move("src/components/Hero.astro", "src/components/Banner.astro"),
+      ),
+    ).toBe(null);
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "astro",
+        undefined,
+        move("src/pages/about.astro", "src/pages/company.astro"),
+      ),
+    ).toBe(null);
+  });
+
+  it("does not follow an Astro page into something that is no page to stand on", () => {
+    for (const to of [
+      "src/pages/[slug].astro",
+      "src/pages/about.ts",
+      "src/pages/_about.astro",
+      "src/components/about.astro",
+    ]) {
+      expect(
+        themeRoutePathAfterFileMovesFor(
+          "astro",
+          "/about",
+          move("src/pages/about.astro", to),
+        ),
+      ).toBe(null);
+    }
+  });
+
+  it("reads a Start route file only for a Start Theme, and a src/pages file only for Astro", () => {
+    const startMove = move("src/routes/product.tsx", "src/routes/catalog.tsx");
+    for (const recorded of [null, undefined, "tanstack-start"]) {
+      expect(
+        themeRoutePathAfterFileMovesFor(recorded, "/product", startMove),
+      ).toBe("/catalog");
+    }
+    expect(themeRoutePathAfterFileMovesFor("astro", "/product", startMove)).toBe(
+      null,
+    );
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "tanstack-start",
+        "/about",
+        move("src/pages/about.astro", "src/pages/company.astro"),
+      ),
+    ).toBe(null);
+  });
+
+  it("never moves the editor for a framework it does not know", () => {
+    expect(
+      themeRoutePathAfterFileMovesFor(
+        "svelte-kit",
+        "/product",
+        move("src/routes/product.tsx", "src/routes/catalog.tsx"),
+      ),
+    ).toBe(null);
   });
 });
 
