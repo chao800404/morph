@@ -2082,3 +2082,37 @@ describe("the Starter upgrade on a Theme that is not TanStack Start", () => {
     },
   );
 });
+
+describe("opening the editor on a Theme with no files that is not TanStack Start", () => {
+  function setFramework(framework: string | null) {
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = ? WHERE id = ?")
+      .run(framework, THEME_ID);
+  }
+
+  it("writes no Start file, Document or version into an Astro Theme", async () => {
+    seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+    setFramework("astro");
+    const before = storedRawRow();
+
+    await expect(openEditor()).resolves.toBe(false);
+
+    expect(workspace.initStarterTheme).not.toHaveBeenCalled();
+    expect(workspace.files.get(THEME_ID)).toBeUndefined();
+    expect(storedRawRow()).toEqual(before);
+    expect(hooks.recordWriteAttempts).toBe(0);
+  });
+
+  it.each([null, "tanstack-start"])(
+    "still initialises an empty workspace recorded as %s",
+    async (framework) => {
+      seedTheme({ starterTemplateVersion: LEGACY_VERSION });
+      setFramework(framework);
+
+      await expect(openEditor()).resolves.toBe(true);
+
+      expect(workspace.initStarterTheme).toHaveBeenCalledTimes(1);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+    },
+  );
+});

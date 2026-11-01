@@ -178,7 +178,7 @@ export const reviewStorefrontStarterUpgrade = createServerFn({ method: "POST" })
           error: "THEME_FRAMEWORK_UNAVAILABLE",
         });
       }
-      const { review, catalog, unavailable: _unavailable, ...status } = result;
+      const { review, catalog, ...status } = result;
       return ok("Starter upgrade reviewed", {
         ...status,
         starter: {

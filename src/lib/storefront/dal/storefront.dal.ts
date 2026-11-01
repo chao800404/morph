@@ -709,6 +709,10 @@ export const storefrontDal = {
     if (!stored.found || starterVersionState(stored.version) !== "available") {
       return false;
     }
+    // The Starter's files are TanStack Start's: never put them into a Theme of
+    // another framework, even an empty one. Nothing to do, not an error: the
+    // editor opens either way and ignores this result.
+    if (starterUpgradeUnavailableReason(stored.framework)) return false;
     const workspace = await ensureStarterThemeWorkspace(
       data.storefrontId,
       data.themeId,
