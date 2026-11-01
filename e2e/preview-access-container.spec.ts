@@ -2,6 +2,7 @@ import {
   expect,
   test,
   type Browser,
+  type BrowserContext,
   type Frame,
   type Page,
 } from "@playwright/test";
@@ -84,6 +85,25 @@ async function ownSessionPage(browser: Browser): Promise<Page> {
   return context.newPage();
 }
 
+/**
+ * What a browser with this context's cookies gets for a URL on a pv- or
+ * SDK-shaped host. Through a page, not `context.request`: Chromium resolves
+ * `*.localhost` to loopback itself, Node's resolver does not, so a Node-side
+ * request to `pv-….preview.localhost` fails with ENOTFOUND before it is sent.
+ */
+async function visit(context: BrowserContext, url: string) {
+  const page = await context.newPage();
+  try {
+    const response = await page.goto(url, { waitUntil: "commit" });
+    return {
+      status: response?.status() ?? 0,
+      body: response ? await response.text().catch(() => "") : "",
+    };
+  } finally {
+    await page.close();
+  }
+}
+
 /** What a request from inside the frame gets, on the frame's own origin. */
 function fetchInFrame(frame: Frame, path: string) {
   return frame.evaluate(async (path) => {
@@ -123,21 +143,20 @@ test.describe("Live Preview private access on the pv- host", () => {
     // (b) The same address in a browser with no session.
     const stranger = await browser.newContext();
     try {
-      const response = await stranger.request.get(framedUrl.toString(), {
-        maxRedirects: 0,
-      });
-      expect(response.status()).toBe(401);
-      expect(await response.text()).not.toContain(marker);
+      const response = await visit(stranger, framedUrl.toString());
+      expect(response.status).toBe(401);
+      expect(response.body).not.toContain(marker);
       // Modules too, the draft snapshot among them.
       for (const path of [
         "/@vite/client",
         "/src/morph/preview-content-snapshot.ts",
       ]) {
-        const module = await stranger.request.get(
+        const module = await visit(
+          stranger,
           new URL(path, framedUrl).toString(),
         );
-        expect(module.status(), path).toBe(401);
-        expect(await module.text(), path).not.toContain(marker);
+        expect(module.status, path).toBe(401);
+        expect(module.body, path).not.toContain(marker);
       }
     } finally {
       await stranger.close();
@@ -147,11 +166,9 @@ test.describe("Live Preview private access on the pv- host", () => {
     // the Morph session is not a preview credential.
     const signedIn = await signedInPage(browser);
     try {
-      const response = await signedIn.request.get(framedUrl.toString(), {
-        maxRedirects: 0,
-      });
-      expect(response.status()).toBe(401);
-      expect(await response.text()).not.toContain(marker);
+      const response = await visit(signedIn.context(), framedUrl.toString());
+      expect(response.status).toBe(401);
+      expect(response.body).not.toContain(marker);
     } finally {
       await signedIn.context().close();
     }
@@ -160,10 +177,8 @@ test.describe("Live Preview private access on the pv- host", () => {
     const parent = framedUrl.hostname.split(".").slice(1).join(".");
     const sdkShaped = new URL(framedUrl);
     sdkShaped.hostname = `5173-${"a".repeat(32)}-tokentoken.${parent}`;
-    const sdk = await page.request.get(sdkShaped.toString(), {
-      maxRedirects: 0,
-    });
-    expect(sdk.status(), "an SDK-shaped host is refused").toBe(404);
+    const sdk = await visit(page.context(), sdkShaped.toString());
+    expect(sdk.status, "an SDK-shaped host is refused").toBe(404);
 
     // (d, e) A second session of the same author previews on its own grant;
     // signing it out refuses its next request and leaves the first alone.
