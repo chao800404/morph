@@ -31,13 +31,18 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *    frame | tab  x  pushed (sign-out, P2d) | notice lost (the grant revoked
  *    in D1 only, so no push reaches the Durable Object and only the lease
  *    can end the socket).
- *    Recorded separately for each: when revocation was committed (R), the
- *    last frame forwarded toward the container, the last frame forwarded
- *    toward the browser, and when the browser saw the socket close.
+ *    Recorded separately for each: the window R lies in (the commit is not
+ *    observed as one instant: for a push, sign-out sent to answered; for a
+ *    lost notice, just before the UPDATE to its return), when the container
+ *    and the browser each received the last data frame (the relay's own
+ *    forwarding moment is not observed; it is no later than these), and when
+ *    each side saw the socket close.
  *
- * Asserted: close code 4401, and nothing forwarded later than R + L + one
- * lease tick + 2 s, the lease's own bound. "Within 30 s" is reported, not
- * asserted: it remains a target to verify.
+ * Asserted, from the window's end: close code 4401; no data received later
+ * than R + L + eps (A5: the lease ends forwarding at most L after R); the
+ * close no later than R + L + one lease tick + eps (an idle socket is closed
+ * by the next tick). eps is 2 s. "Within 30 s" is reported, not asserted: it
+ * remains a target to verify.
  */
 
 const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
@@ -478,7 +483,12 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
             0,
           );
 
-          let R: number;
+          // R is not observed as one instant. The commit lies inside a
+          // window: for a push, between sending the sign-out and its answer
+          // (the after-hook revokes before the answer); for a lost notice,
+          // between just before the UPDATE and its return. Bounds use the
+          // window's end, the latest the commit can have been.
+          let rWindow: { from: number; to: number };
           let revokeDetail: Record<string, unknown>;
           if (revocation === "pushed") {
             const sentAt = Date.now();
@@ -490,8 +500,6 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
               });
             const answeredAt = Date.now();
             expect(out.ok(), "sign-out").toBe(true);
-            // The grant is revoked in the after-hook, before the answer; the
-            // commit time read back from D1 is what R is.
             const rows = d1(
               `SELECT revoked_at FROM storefront_preview_access_grants WHERE id = ?`,
               live[0]!.id,
@@ -500,23 +508,24 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
               rows[0]?.revoked_at,
               "sign-out revoked the grant",
             ).toBeTruthy();
-            R = Date.parse(rows[0]!.revoked_at!);
+            rWindow = { from: sentAt, to: answeredAt };
             revokeDetail = {
-              signOutSentAt: sentAt,
-              signOutAnsweredAt: answeredAt,
+              // The Worker's stamp, taken before its write: not the commit.
+              revokedAtStampBeforeWrite: Date.parse(rows[0]!.revoked_at!),
             };
           } else {
-            const at = new Date();
+            const before = Date.now();
+            const stamp = new Date(before).toISOString();
             const changed = d1(
               `UPDATE storefront_preview_access_grants
                   SET revoked_at = ?, updated_at = ?
                 WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
-              at.toISOString(),
-              at.toISOString(),
+              stamp,
+              stamp,
               kind,
               caseStart,
             );
-            R = Date.now();
+            rWindow = { from: before, to: Date.now() };
             revokeDetail = { grantsRevokedInD1Only: changed };
           }
 
@@ -554,14 +563,24 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
             lastEchoAt: number | null;
           };
           const atContainer = fixtureRecord(sock);
-          const lastToContainer = atContainer?.received.at(-1)?.t ?? null;
+          const lastReceivedAtContainer =
+            atContainer?.received.at(-1)?.t ?? null;
+          const after = (t: number | null | undefined) =>
+            t === null || t === undefined
+              ? null
+              : {
+                  fromWindowStart: t - rWindow.from,
+                  fromWindowEnd: t - rWindow.to,
+                };
           const result = {
-            R,
+            rWindow,
             ...revokeDetail,
-            // Stops forwarding, each direction on its own.
-            lastForwardedToContainer: lastToContainer,
-            lastForwardedToBrowser: browserSide.lastEchoAt,
-            // Closes.
+            // When each endpoint received the last data frame. The relay's
+            // own forwarding moment is not observed; it is no later than
+            // these.
+            lastDataReceivedAtContainer: lastReceivedAtContainer,
+            lastEchoReceivedAtBrowser: browserSide.lastEchoAt,
+            // Closes, each side on its own.
             browserClose: closed,
             containerClose: atContainer
               ? { t: atContainer.closedAt, code: atContainer.closeCode }
@@ -570,37 +589,39 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
             framesAtContainer: atContainer?.received.length ?? null,
             echoes: browserSide.echoes,
             ms: {
-              toContainerStopAfterR:
-                lastToContainer === null ? null : lastToContainer - R,
-              toBrowserStopAfterR:
-                browserSide.lastEchoAt === null
-                  ? null
-                  : browserSide.lastEchoAt - R,
-              closeAfterR: closed.t === undefined ? null : closed.t - R,
+              lastDataReceivedAtContainer: after(lastReceivedAtContainer),
+              lastEchoReceivedAtBrowser: after(browserSide.lastEchoAt),
+              browserClose: after(closed.t),
             },
-            within30s:
-              closed.t === undefined ? false : closed.t - R <= LEASE_MS,
+            closeWithin30sOfWindowEnd:
+              closed.t === undefined
+                ? false
+                : closed.t - rWindow.to <= LEASE_MS,
           };
           record.cases ??= {} as Record<string, unknown>;
           (record.cases as Record<string, unknown>)[caseName] = result;
           save();
 
-          const bound = R + LEASE_MS + TICK_MS + SLACK_MS;
+          // Data: the lease ends forwarding at most L after R (A5), plus eps.
+          // Close: an idle socket is closed by the next lease tick, so its
+          // bound adds one tick.
+          const dataBound = rWindow.to + LEASE_MS + SLACK_MS;
+          const closeBound = rWindow.to + LEASE_MS + TICK_MS + SLACK_MS;
           expect(closed.timeout, "the socket closed").toBeUndefined();
           expect(closed.code, "closed as revoked").toBe(4401);
           expect(
             closed.t!,
-            "closed within the lease bound",
-          ).toBeLessThanOrEqual(bound);
+            "closed within R + L + tick + eps",
+          ).toBeLessThanOrEqual(closeBound);
           expect(atContainer, "the fixture's record was read").not.toBeNull();
           expect(
-            lastToContainer!,
-            "nothing forwarded toward the container after the lease bound",
-          ).toBeLessThanOrEqual(bound);
+            lastReceivedAtContainer!,
+            "no data received at the container after R + L + eps",
+          ).toBeLessThanOrEqual(dataBound);
           expect(
             browserSide.lastEchoAt ?? 0,
-            "nothing forwarded toward the browser after the lease bound",
-          ).toBeLessThanOrEqual(bound);
+            "no data received at the browser after R + L + eps",
+          ).toBeLessThanOrEqual(dataBound);
         } finally {
           await page.context().close();
         }
