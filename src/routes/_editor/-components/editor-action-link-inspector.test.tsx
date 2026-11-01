@@ -115,6 +115,7 @@ function renderInspector(
     files?: { path: string; content: string; mimeType: string }[];
     selectionSourceFilePath?: string;
     selection?: Partial<EditorSelectionDescriptor>;
+    framework?: string | null;
   },
 ) {
   const onPropsChange = vi.fn();
@@ -132,6 +133,7 @@ function renderInspector(
   render(
     <EditorStyleInspector
       view="content"
+      framework={extra?.framework}
       section={heroSection(props as TestSection["props"])}
       themeFiles={
         [...(themeFiles as never[]), ...(extra?.files ?? [])] as never
@@ -165,6 +167,54 @@ describe("resolveInternalLinkPages", () => {
   it("returns nothing when the workspace has no files yet", () => {
     expect(resolveInternalLinkPages(undefined)).toEqual([]);
     expect(resolveInternalLinkPages([])).toEqual([]);
+  });
+
+  describe("by the Theme's recorded framework", () => {
+    const astroFiles = [
+      { path: "src/pages/index.astro", content: "<main />" },
+      { path: "src/pages/about.astro", content: "<main />" },
+      { path: "src/pages/blog/[slug].astro", content: "<main />" },
+      { path: "src/pages/docs/[...rest].astro", content: "<main />" },
+      { path: "src/pages/feed.xml.ts", content: "export const GET = () => 1;" },
+      { path: "src/pages/_draft.astro", content: "<main />" },
+    ];
+
+    it("lists an Astro Theme's pages, never a dynamic pattern or an endpoint", () => {
+      expect(resolveInternalLinkPages(astroFiles, "astro")).toEqual([
+        { path: "/", label: "Home" },
+        { path: "/about", label: "/about" },
+      ]);
+    });
+
+    it("lists no Start route for an Astro Theme that still holds some", () => {
+      expect(
+        resolveInternalLinkPages([...routeFiles, ...astroFiles], "astro").map(
+          (page) => page.path,
+        ),
+      ).toEqual(["/", "/about"]);
+      expect(
+        resolveInternalLinkPages(routeFiles, "astro"),
+      ).toEqual([]);
+    });
+
+    it("reads Start's routes for a Theme recorded as Start or unrecorded", () => {
+      const expected = [
+        { path: "/", label: "Home" },
+        { path: "/about", label: "/about" },
+      ];
+      expect(resolveInternalLinkPages(routeFiles)).toEqual(expected);
+      expect(resolveInternalLinkPages(routeFiles, null)).toEqual(expected);
+      expect(resolveInternalLinkPages(routeFiles, "tanstack-start")).toEqual(
+        expected,
+      );
+      expect(
+        resolveInternalLinkPages(astroFiles, "tanstack-start"),
+      ).toEqual([]);
+    });
+
+    it("offers no page for a framework it does not know", () => {
+      expect(resolveInternalLinkPages(routeFiles, "svelte-kit")).toEqual([]);
+    });
   });
 });
 
@@ -577,5 +627,16 @@ describe("choosing a page of this store", () => {
     expect(
       screen.queryByRole("textbox", { name: "Action Button path or URL" }),
     ).toBeNull();
+  });
+
+  it("offers an Astro Theme no Start route its workspace still holds", () => {
+    renderInspector(
+      { actionLabel: "Go", actionHref: "/about" },
+      routerHeroSource,
+      undefined,
+      { framework: "astro" },
+    );
+
+    expect(screen.getByText("No pages yet")).toBeTruthy();
   });
 });
