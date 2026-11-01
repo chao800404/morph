@@ -171,6 +171,10 @@ Morph 希望同時具備：
     - 以真實的 `astro build`（封存內容）和 `astro dev`（草稿）驗證。
   - 【已完成】Core 拒絕非 Start Theme 的 Design 寫入（#346）。區塊內容、重排、改名和路由文件一律拒絕。之前純 Astro Theme 會走 legacy 路徑，不經來源證明就接受區塊內容。
   - 【已完成】Core 依記錄的 framework 讀路由（#348）。上傳和複本的路由衝突檢查、catalog、新增／刪除頁面都改用同一張分派表：Astro 讀 `src/pages/`，未知的 framework 一律拒絕。編輯器還不會列出 Astro 的頁面，Astro 頁面怎麼切換還等使用者決定。
+  - 【已完成】編輯器在非 Start Theme 上關閉 Start 專用的介面（#349）：
+    - Code 模式不再顯示錯誤的「缺少 `src/routes/__root.tsx`」，也不產生路由樹。
+    - 區塊面板改為說明不可用，並隱藏新增／刪除頁面、新增／綁定區塊等控制項。
+  - 【未完成】編輯器列出 Astro 頁面並在頁面間切換。切換方式等使用者決定（D3）。
   - 【已完成】L1.5a 點選定位（#344）：在 Astro Theme 上點畫布元素，會在 Code 打開它在 `.astro` 裡的行與欄。只做定位，不是 Design 選取，也不寫入。
     - 位置由預覽容器中的官方 Astro compiler 算出，並帶版本。
     - 版本不符、超出範圍，或標籤對不上時，什麼都不開，並說明原因。
