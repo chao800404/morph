@@ -1,4 +1,3 @@
-import { getSandbox } from "@cloudflare/sandbox";
 import { THEME_PREVIEW_SERVER_PORT } from "@/lib/storefront/compiler/cloudflare-sandbox-vite-preview-server";
 import {
   parsePreviewAccessHost,
@@ -23,6 +22,10 @@ export async function currentPreviewSdkUrl(
   previewId: string,
   previewParentHostname: string,
 ): Promise<string | null> {
+  // Loaded here, as every other caller does: the server functions that import
+  // this module are imported by editor modules and their tests, and the SDK
+  // imports `cloudflare:workers`, which exists only in the Workers runtime.
+  const { getSandbox } = await import("@cloudflare/sandbox");
   const sandbox = getSandbox(
     previewSandboxBinding(bindings) as never,
     previewId,
