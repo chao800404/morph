@@ -173,8 +173,22 @@ export async function redeemPreviewAccessExchange(input: {
   previewHost: string;
   kind: StorefrontPreviewAccessKind;
   now?: Date;
+  /**
+   * Grants the redeeming browser already holds on this host (addendum A4.1,
+   * user decision 2026-11-01: reuse first). After the code is consumed, one
+   * of them is reused, and no grant or cookie is created, if it belongs to
+   * the very session, user, storefront, Theme, preview, host and kind the
+   * code was issued for, is activated, holds every check now, and has at
+   * least `minRemainingMs` left. The partition is never itself a reason.
+   */
+  reuse?: Readonly<{ tokens: readonly string[]; minRemainingMs: number }>;
 }): Promise<
-  | Readonly<{ ok: true; token: string; grant: VerifiedPreviewAccessGrant }>
+  | Readonly<{
+      ok: true;
+      /** The new grant's token; absent when an existing grant was reused. */
+      token?: string;
+      grant: VerifiedPreviewAccessGrant;
+    }>
   | Readonly<{ ok: false; reason: PreviewAccessRefusal }>
 > {
   if (
@@ -198,6 +212,9 @@ export async function redeemPreviewAccessExchange(input: {
   const authority = await input.dal.readAuthority(exchange);
   const refusal = authorityRefusal(authority, exchange.userId, now.getTime());
   if (refusal) return { ok: false, reason: refusal };
+
+  const reusable = await reusableGrant(input, exchange, now);
+  if (reusable) return { ok: true, grant: verifiedGrant(reusable) };
 
   const token = createPreviewAccessSecret();
   const expiresAt = new Date(
@@ -228,6 +245,53 @@ export async function redeemPreviewAccessExchange(input: {
     return { ok: false, reason: "GRANT_NOT_CREATED" };
   }
   return { ok: true, token, grant };
+}
+
+/**
+ * The grant a redeem may reuse instead of creating one, read fresh in this
+ * redeem's own query; null when none qualifies.
+ */
+async function reusableGrant(
+  input: Readonly<{
+    dal: StorefrontPreviewAccessDAL;
+    previewHost: string;
+    reuse?: Readonly<{ tokens: readonly string[]; minRemainingMs: number }>;
+  }>,
+  exchange: Readonly<{
+    sessionId: string;
+    userId: string;
+    storefrontId: string;
+    themeId: string;
+    previewId: string;
+    previewHost: string;
+    kind: StorefrontPreviewAccessKind;
+  }>,
+  now: Date,
+): Promise<PreviewAccessGrantRecord | null> {
+  const tokens = [...new Set(input.reuse?.tokens ?? [])]
+    .filter((token) => SECRET_PATTERN.test(token))
+    .slice(0, 8);
+  if (!input.reuse || tokens.length === 0) return null;
+  const nowMs = now.getTime();
+  const records = await input.dal.findGrantsByTokenHashes(
+    await Promise.all(tokens.map(hashPreviewAccessSecret)),
+  );
+  const qualifying = records
+    .filter(
+      (record) =>
+        record.sessionId === exchange.sessionId &&
+        record.userId === exchange.userId &&
+        record.storefrontId === exchange.storefrontId &&
+        record.themeId === exchange.themeId &&
+        record.previewId === exchange.previewId &&
+        record.previewHost === exchange.previewHost &&
+        record.kind === exchange.kind &&
+        record.activatedAt !== null &&
+        Date.parse(record.expiresAt) - nowMs >= input.reuse!.minRemainingMs &&
+        grantRefusal(record, input.previewHost, nowMs) === null,
+    )
+    .sort((a, b) => compareCandidates(a, b));
+  return qualifying[0] ?? null;
 }
 
 /**

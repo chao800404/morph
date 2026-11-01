@@ -2,6 +2,12 @@ import type { StorefrontPreviewAccessDAL } from "../../dal/storefront-preview-ac
 import { normalizeStorefrontHostname } from "../storefront-host-resolver";
 import { readPreviewAccessCandidates } from "./preview-access-cookies";
 import {
+  PREVIEW_ACCESS_BEGIN_PATH,
+  PREVIEW_ACCESS_REDEEM_PATH,
+  previewAccessBegin,
+  previewAccessRedeem,
+} from "./preview-access-pages";
+import {
   verifyPreviewAccessCandidates,
   type PreviewAccessRefusal,
   type VerifiedPreviewAccessGrant,
@@ -65,6 +71,8 @@ export type PreviewAccessRequestDeps = Readonly<{
   forward(previewId: string, request: Request): Promise<Response | null>;
   /** Removes platform credentials; the same rule every preview proxy uses. */
   stripCredentials(request: Request): Request;
+  /** Whether an origin is Morph's own: the only parent a begin page talks to. */
+  isAppOrigin(origin: string): boolean;
   now?: () => Date;
 }>;
 
@@ -129,8 +137,25 @@ export async function handlePreviewAccessRequest(
   if (!previewId) return null;
 
   if (url.pathname.startsWith(PREVIEW_ACCESS_AUTH_PATH_PREFIX)) {
-    // The authorization flow's pages are not served yet; nothing under this
-    // path may reach the Theme either.
+    // The authorization flow's own pages. Nothing under this path ever
+    // reaches the Theme.
+    const pages = {
+      dal: deps.dal,
+      isAppOrigin: deps.isAppOrigin,
+      ...(deps.now ? { now: deps.now } : {}),
+    };
+    try {
+      if (url.pathname === PREVIEW_ACCESS_BEGIN_PATH) {
+        return await previewAccessBegin(request, pages);
+      }
+      if (url.pathname === PREVIEW_ACCESS_REDEEM_PATH) {
+        return await previewAccessRedeem(request, pages);
+      }
+    } catch {
+      return plainResponse(503, "Preview access cannot be checked right now.", {
+        "Retry-After": "5",
+      });
+    }
     return plainResponse(404, "Not found.");
   }
 

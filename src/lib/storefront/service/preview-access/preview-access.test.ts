@@ -913,6 +913,7 @@ describe("a request on the pv- preview host", () => {
   const PREVIEW_ID = "0123456789abcdef0123456789abcdef";
   const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
   const DRAFT = "DRAFT-MARKER-7f3a";
+  const APP_ORIGIN = "https://app.example.test";
 
   function deps(overrides: Partial<PreviewAccessRequestDeps> = {}) {
     const forwarded: Request[] = [];
@@ -920,6 +921,7 @@ describe("a request on the pv- preview host", () => {
       previewParentHostname: PARENT,
       dal,
       now: () => later(2000),
+      isAppOrigin: (origin) => origin === APP_ORIGIN,
       stripCredentials: (request) => {
         const headers = new Headers(request.headers);
         headers.delete("cookie");
@@ -1124,11 +1126,342 @@ describe("a request on the pv- preview host", () => {
     const { value, forwarded } = deps();
 
     const res = await handlePreviewAccessRequest(
-      get("/__morph/preview-auth/begin", { cookie: cookie(grant) }),
+      get("/__morph/preview-auth/elsewhere", { cookie: cookie(grant) }),
       value,
     );
 
     expect(res!.status).toBe(404);
     expect(forwarded).toHaveLength(0);
+  });
+});
+
+/**
+ * #214 P2: the authorization flow on the pv- host, end to end against the
+ * real tables: begin sets the binder and reports only its hash; the editor is
+ * issued a code for that hash; redeem consumes it with the binder the browser
+ * presents and sets the grant; the next request is served by it.
+ */
+describe("the pv- authorization flow", () => {
+  const PARENT = "preview.example.test";
+  const PREVIEW_ID = "fedcba9876543210fedcba9876543210";
+  const PV_HOST = previewAccessHostname(PREVIEW_ID, PARENT);
+  const PV_ORIGIN = `https://${PV_HOST}`;
+  const APP_ORIGIN = "https://app.example.test";
+  const RETURN =
+    "/?editorOrigin=https%3A%2F%2Fapp.example.test&previewSession=s1";
+
+  const deps = (overrides: Partial<PreviewAccessRequestDeps> = {}) => ({
+    previewParentHostname: PARENT,
+    dal,
+    now: () => later(1000),
+    isAppOrigin: (origin: string) => origin === APP_ORIGIN,
+    stripCredentials: (request: Request) => {
+      const headers = new Headers(request.headers);
+      headers.delete("cookie");
+      return new Request(request, { headers });
+    },
+    forward: async () => new Response("<p>DRAFT</p>"),
+    ...overrides,
+  });
+
+  const beginUrl = (flowId: string, extra: Record<string, string> = {}) => {
+    const url = new URL("/__morph/preview-auth/begin", PV_ORIGIN);
+    url.searchParams.set("flow", flowId);
+    url.searchParams.set("return", RETURN);
+    url.searchParams.set("editorOrigin", APP_ORIGIN);
+    for (const [k, v] of Object.entries(extra)) url.searchParams.set(k, v);
+    return url;
+  };
+
+  /** What a browser keeps from Set-Cookie: name → value, Max-Age 0 removes. */
+  function jarFrom(response: Response, jar = new Map<string, string>()) {
+    for (const line of response.headers.getSetCookie()) {
+      const [pair, ...attrs] = line.split("; ");
+      const [name, value] = [
+        pair!.slice(0, pair!.indexOf("=")),
+        pair!.slice(pair!.indexOf("=") + 1),
+      ];
+      if (attrs.includes("Max-Age=0")) jar.delete(name);
+      else jar.set(name, value);
+    }
+    return jar;
+  }
+  const cookieHeader = (jar: Map<string, string>) =>
+    [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+
+  async function begin(flowId: string, jar = new Map<string, string>()) {
+    const res = await handlePreviewAccessRequest(
+      new Request(beginUrl(flowId)),
+      deps(),
+    );
+    expect(res!.status).toBe(200);
+    const html = await res!.text();
+    const binderHashValue = /"binderHash":"([0-9a-f]{64})"/.exec(html)![1]!;
+    return {
+      res: res!,
+      html,
+      binderHash: binderHashValue,
+      jar: jarFrom(res!, jar),
+    };
+  }
+
+  async function issueFor(
+    flowId: string,
+    binderHashValue: string,
+    sessionId = "session-a",
+  ) {
+    const issued = await issuePreviewAccessExchange({
+      dal,
+      kind: "iframe",
+      sessionId,
+      userId: "admin-1",
+      storefrontId: "store-a",
+      themeId: "theme-a",
+      previewId: PREVIEW_ID,
+      previewHost: PV_HOST,
+      flowId,
+      binderHash: binderHashValue,
+      now: NOW,
+    });
+    if (!issued.ok) throw new Error(issued.reason);
+    return issued.code;
+  }
+
+  const redeemRequest = (
+    fields: Record<string, string>,
+    jar: Map<string, string>,
+    origin = PV_ORIGIN,
+  ) =>
+    new Request(new URL("/__morph/preview-auth/redeem", PV_ORIGIN), {
+      method: "POST",
+      headers: {
+        origin,
+        cookie: cookieHeader(jar),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(fields).toString(),
+    });
+
+  const grantCount = () =>
+    (
+      sqlite
+        .prepare("SELECT count(*) AS n FROM storefront_preview_access_grants")
+        .get() as { n: number }
+    ).n;
+
+  it("begins with a binder cookie the page never reveals, and tells only the editor its hash", async () => {
+    const flowId = newFlowId();
+    const { res, html, binderHash: reported, jar } = await begin(flowId);
+
+    const binder = jar.get(`__Host-morph-pvb-${flowId}`)!;
+    expect(binder).toMatch(/^[0-9a-f]{64}$/);
+    expect(html).not.toContain(binder);
+    expect(reported).toBe(await hashPreviewAccessSecret(binder));
+    const setCookie = res.headers.getSetCookie()[0]!;
+    for (const attribute of [
+      "Secure",
+      "HttpOnly",
+      "SameSite=None",
+      "Partitioned",
+      "Path=/",
+      "Max-Age=120",
+    ]) {
+      expect(setCookie).toContain(attribute);
+    }
+    expect(res.headers.get("content-security-policy")).toContain(
+      `frame-ancestors ${APP_ORIGIN}`,
+    );
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it.each([
+    ["a malformed flow", { flow: "nope" }],
+    ["another origin to return to", { return: "//evil.test/" }],
+    ["an absolute return", { return: "https://evil.test/" }],
+    [
+      "an editor origin Morph does not own",
+      { editorOrigin: "https://evil.test" },
+    ],
+  ])("refuses to begin with %s", async (_name, extra) => {
+    const res = await handlePreviewAccessRequest(
+      new Request(beginUrl(newFlowId(), extra)),
+      deps(),
+    );
+    expect(res!.status).toBe(400);
+    expect(res!.headers.getSetCookie()).toEqual([]);
+  });
+
+  it("redeems the editor's code with the browser's binder, sets the grant, and the next request is served", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const redeemed = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+      ),
+      deps(),
+    );
+
+    expect(redeemed!.status).toBe(303);
+    expect(redeemed!.headers.get("location")).toBe(RETURN);
+    jarFrom(redeemed!, jar);
+    expect(jar.has(`__Host-morph-pvb-${flowId}`)).toBe(false);
+    expect(jar.get(`__Host-morph-pv-${flowId}`)).toMatch(/^[0-9a-f]{64}$/);
+
+    const page = await handlePreviewAccessRequest(
+      new Request(new URL(RETURN, PV_ORIGIN), {
+        headers: { cookie: cookieHeader(jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+    expect(page!.status).toBe(200);
+    expect(await page!.text()).toContain("DRAFT");
+  });
+
+  it("refuses a code redeemed without this browser's binder, and leaves it for the browser that has it", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const stolen = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        new Map(),
+      ),
+      deps(),
+    );
+    expect(stolen!.status).toBe(403);
+    expect(await stolen!.text()).toContain("morph:preview-auth-failed");
+    expect(
+      stolen!.headers
+        .getSetCookie()
+        .some((c) => c.startsWith("__Host-morph-pv-")),
+    ).toBe(false);
+
+    const owner = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+      ),
+      deps(),
+    );
+    expect(owner!.status).toBe(303);
+  });
+
+  it("refuses a redeem posted from another origin", async () => {
+    const flowId = newFlowId();
+    const { binderHash: reported, jar } = await begin(flowId);
+    const code = await issueFor(flowId, reported);
+
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        { flow: flowId, return: RETURN, editorOrigin: APP_ORIGIN, code },
+        jar,
+        "https://evil.test",
+      ),
+      deps(),
+    );
+
+    expect(res!.status).toBe(403);
+    expect(grantCount()).toBe(0);
+  });
+
+  it("reuses the grant this browser already holds for the same session, creating no grant and no cookie", async () => {
+    const first = newFlowId();
+    const one = await begin(first);
+    const firstRedeem = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: first,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(first, one.binderHash),
+        },
+        one.jar,
+      ),
+      deps(),
+    );
+    jarFrom(firstRedeem!, one.jar);
+    // Used once, so activated.
+    await handlePreviewAccessRequest(
+      new Request(new URL("/", PV_ORIGIN), {
+        headers: { cookie: cookieHeader(one.jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+    expect(grantCount()).toBe(1);
+
+    const second = newFlowId();
+    const two = await begin(second, one.jar);
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: second,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(second, two.binderHash),
+        },
+        two.jar,
+      ),
+      deps({ now: () => later(2000) }),
+    );
+
+    expect(res!.status).toBe(303);
+    expect(grantCount()).toBe(1);
+    expect(
+      res!.headers
+        .getSetCookie()
+        .some(
+          (c) =>
+            c.startsWith(`__Host-morph-pv-${second}=`) &&
+            !c.includes("Max-Age=0"),
+        ),
+    ).toBe(false);
+  });
+
+  it("does not reuse another session's grant", async () => {
+    const first = newFlowId();
+    const one = await begin(first);
+    jarFrom(
+      (await handlePreviewAccessRequest(
+        redeemRequest(
+          {
+            flow: first,
+            return: RETURN,
+            editorOrigin: APP_ORIGIN,
+            code: await issueFor(first, one.binderHash, "session-b"),
+          },
+          one.jar,
+        ),
+        deps(),
+      ))!,
+      one.jar,
+    );
+    await handlePreviewAccessRequest(
+      new Request(new URL("/", PV_ORIGIN), {
+        headers: { cookie: cookieHeader(one.jar) },
+      }),
+      deps({ now: () => later(1500) }),
+    );
+
+    const second = newFlowId();
+    const two = await begin(second, one.jar);
+    const res = await handlePreviewAccessRequest(
+      redeemRequest(
+        {
+          flow: second,
+          return: RETURN,
+          editorOrigin: APP_ORIGIN,
+          code: await issueFor(second, two.binderHash, "session-a"),
+        },
+        two.jar,
+      ),
+      deps({ now: () => later(2000) }),
+    );
+
+    expect(res!.status).toBe(303);
+    expect(grantCount()).toBe(2);
   });
 });

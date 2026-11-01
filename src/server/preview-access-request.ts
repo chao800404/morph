@@ -4,6 +4,7 @@ import { THEME_PREVIEW_SERVER_PORT } from "@/lib/storefront/compiler/cloudflare-
 import { storefrontPreviewAccessDal } from "@/lib/storefront/dal/storefront-preview-access.dal";
 import { handlePreviewAccessRequest } from "@/lib/storefront/service/preview-access/preview-access-request";
 import { previewRequestFor } from "@/lib/storefront/service/preview-proxy-credentials";
+import { collectPlatformHostnames } from "@/lib/storefront/service/storefront-request-routing";
 import {
   finishPreviewResponse,
   proxyPreviewModuleRequest,
@@ -35,6 +36,10 @@ export function servePreviewAccessRequest(
     previewParentHostname,
     dal: storefrontPreviewAccessDal,
     stripCredentials: previewRequestFor,
+    isAppOrigin: (origin) => {
+      const hostname = new URL(origin).hostname.toLowerCase();
+      return collectPlatformHostnames(bindings).has(hostname);
+    },
     forward: async (previewId, verified) => {
       if (!previewParentHostname) return null;
       const sandbox = getSandbox(
