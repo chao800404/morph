@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +34,9 @@ import {
   VisualEditorShell,
 } from "./visual-editor-shell";
 import { astroPreviewSourceHash } from "@/lib/storefront/theme-framework/astro-preview-locate";
+import {
+  SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE,
+} from "./editor-sections-panel";
 
 /**
  * Astro L1.5a (docs/astro-theme-plan.md 3.6.2): on an Astro Theme the canvas
@@ -310,7 +319,7 @@ const flush = () =>
   });
 
 /** Renders the route's page, signed in as OWNER, and brings the frame up. */
-async function settled() {
+async function settled(themeContext: StorefrontThemeEditorDTO = context) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -329,7 +338,7 @@ async function settled() {
   render(
     <QueryClientProvider client={client}>
       <VisualEditorShell
-        context={context}
+        context={themeContext}
         search={
           {
             template: "page",
@@ -563,5 +572,52 @@ describe("an Astro canvas click only locates (L1.5a)", () => {
       expect.anything(),
     );
     expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+  });
+});
+
+describe("Start-only page and section structure stays off on an Astro Theme", () => {
+  /** The same workspace, recorded as TanStack Start (NULL). */
+  const startContext = {
+    ...context,
+    theme: { ...context.theme, framework: null },
+  } as unknown as StorefrontThemeEditorDTO;
+  const panel = () =>
+    screen.getByRole("heading", { name: "Pages & Sections" }).closest("aside")!;
+
+  it("shows the unavailable state, and offers no Add/Delete page or Add section", async () => {
+    await settled();
+
+    const sections = within(panel());
+    expect(
+      await sections.findByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+    ).toBeTruthy();
+    expect(sections.queryByRole("button", { name: "Add page" })).toBeNull();
+    expect(
+      sections.queryByRole("button", { name: /^Delete page / }),
+    ).toBeNull();
+    expect(sections.queryByRole("button", { name: "Add section" })).toBeNull();
+    expect(sections.queryByText("Sections needing binding")).toBeNull();
+    expect(sections.queryByRole("button", { name: /^Bind / })).toBeNull();
+  });
+
+  it("on TanStack Start the same workspace still offers them", async () => {
+    getThemeEditor.mockResolvedValue({
+      success: true,
+      message: "ok",
+      data: startContext,
+    });
+    await settled(startContext);
+
+    const sections = within(panel());
+    expect(
+      await sections.findByRole("button", { name: "Add page" }),
+    ).toBeTruthy();
+    expect(
+      sections.getByRole("button", { name: `Delete page ${ROUTE_PATH}` }),
+    ).toBeTruthy();
+    expect(sections.getByRole("button", { name: "Add section" })).toBeTruthy();
+    expect(
+      sections.queryByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+    ).toBeNull();
   });
 });
