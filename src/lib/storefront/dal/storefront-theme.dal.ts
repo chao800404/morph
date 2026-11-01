@@ -1418,13 +1418,16 @@ export const storefrontThemeDal = {
         ? sourceComponent.componentRef
         : (targetSection.componentRef ?? null);
 
-    // In a route-backed Theme, derive the write mapping again from the exact
-    // source snapshot used to resolve this section. Canvas metadata is only a
-    // locator: it cannot authorize or redirect a Document write.
-    const b1ProofRequired =
-      template.type !== "layout" &&
-      sourceComponent.kind === "confirmed" &&
-      sourceComponent.callSitePath.startsWith("src/routes/");
+    // Wherever the source confirms the section, derive the write mapping again
+    // from the exact source snapshot used to resolve it. Canvas metadata is
+    // only a locator: it cannot authorize or redirect a Document write.
+    //
+    // This holds for the layout as much as for a route: the call site is
+    // then the layout file `deriveThemeLayoutSections` found the section in,
+    // which the same B1 analysis already reads to find layout sections. A
+    // layout that overrides a stored field after its spread would otherwise
+    // accept an edit the rendered page never shows.
+    const b1ProofRequired = sourceComponent.kind === "confirmed";
     let b1Claims: ReadonlyMap<
       string,
       Extract<B1Claim, { kind: "claim" }> | null
@@ -1447,7 +1450,7 @@ export const storefrontThemeDal = {
           normalizeThemeSourcePath(instance.componentPath) ===
             normalizedComponentPath,
       );
-      // A confirmed route-backed section must also have one exact B1 source
+      // A confirmed source-backed section must also have one exact B1 source
       // instance. Missing, duplicate or diagnostically ambiguous provenance
       // leaves an empty proof map, so every capability-allowed write fails
       // closed below; it never falls back to a name-based/legacy guess.

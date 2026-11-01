@@ -16,7 +16,15 @@ import { TEMPLATE_DRAFT_GENERATION_MISMATCH } from "../theme-write-errors";
 import { env as workerEnv } from "cloudflare:workers";
 import { createThemePreviewContentSnapshot } from "../compiler/theme-preview-content";
 import { resolveStorefrontContent } from "../service/storefront-content-runtime";
-import { mergeDocumentWithRouteSections } from "../compiler/theme-route-sections";
+import {
+  deriveThemeLayoutSections,
+  mergeDocumentWithRouteSections,
+} from "../compiler/theme-route-sections";
+import { analyzeB1Route } from "../ast/theme-content-provenance";
+import { starterThemeWorkspaceFiles } from "../starter-theme-files";
+import { LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE } from "../starter-theme-v3-files";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -2618,7 +2626,7 @@ export default function Hero() { return <h1 />; }`;
     });
   });
 
-  it("checks a layout write against the component the layout renders", async () => {
+  function seedLayoutTheme(layoutBody: string) {
     const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
 import StorefrontLayout from "../layouts/StorefrontLayout";
 export const Route = createRootRoute({ component: Root });
@@ -2627,7 +2635,7 @@ function Root() { return <StorefrontLayout><Outlet /></StorefrontLayout>; }`;
 import { content } from "../morph/content";
 import Header from "../components/SiteHeader";
 export default function StorefrontLayout() {
-  return <div><Header {...content("header")} /><Outlet /></div>;
+${layoutBody}
 }`;
     const header = `export const contentFields = {
   brand: { type: "text", label: "Brand" },
@@ -2646,6 +2654,90 @@ export default function SiteHeader() { return <header />; }`;
       "l-content",
       "src/morph/content.ts",
       "export const content = () => ({});",
+    );
+  }
+
+  const layoutWrite = (props: Record<string, unknown>) =>
+    storefrontThemeDal.updateSectionProps({
+      expectedSourceGeneration: 1,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-layout",
+      sectionId: "header",
+      props,
+      expectedDraftGeneration: 1,
+      createdBy: "user-1",
+    });
+
+  function insertLayoutDocument(props: Record<string, unknown>) {
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-layout', 'theme-a', 'layout', 'Layout', ?, 'now', 'now')`,
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "header",
+              type: "header",
+              componentRef: "src/components/SiteHeader.tsx",
+              enabled: true,
+              props,
+            },
+          ],
+        }),
+      );
+  }
+
+  const layoutDocument = () =>
+    sqlite
+      .prepare(
+        "SELECT document, draft_revision_id AS draftRevisionId FROM storefront_theme_templates WHERE id = 'template-layout'",
+      )
+      .get();
+
+  it("refuses a layout write the layout source overrides after the spread", async () => {
+    // The literal comes after the spread, so the stored tagline never shows.
+    seedLayoutTheme(
+      `  return <div><Header {...content("header")} tagline="Fixed in code" /><Outlet /></div>;`,
+    );
+    insertLayoutDocument({ brand: "Old", tagline: "Stored" });
+    const before = layoutDocument();
+
+    await expect(layoutWrite({ tagline: "Never shown" })).rejects.toThrow(
+      "INVALID_THEME_CONTENT_FIELD_VALUE:tagline:unproven-source",
+    );
+    expect(layoutDocument()).toEqual(before);
+
+    // The field the layout does pass through is still writable.
+    const result = await layoutWrite({ brand: "New" });
+    expect(result?.document.sections[0]?.props).toEqual({
+      brand: "New",
+      tagline: "Stored",
+    });
+  });
+
+  it("refuses a layout write to a field the layout instance never takes", async () => {
+    seedLayoutTheme(`  const header = content("header");
+  return <div><Header brand={header.brand} /><Outlet /></div>;`);
+    insertLayoutDocument({ brand: "Old" });
+    const before = layoutDocument();
+
+    await expect(layoutWrite({ tagline: "Never shown" })).rejects.toThrow(
+      "INVALID_THEME_CONTENT_FIELD_VALUE:tagline:unproven-source",
+    );
+    expect(layoutDocument()).toEqual(before);
+
+    const result = await layoutWrite({ brand: "New" });
+    expect(result?.document.sections[0]?.props).toEqual({ brand: "New" });
+  });
+
+  it("checks a layout write against the component the layout renders", async () => {
+    seedLayoutTheme(
+      `  return <div><Header {...content("header")} /><Outlet /></div>;`,
     );
     // Stored while the layout still rendered a header this Theme has removed.
     sqlite
@@ -5121,4 +5213,102 @@ export default function Entries({ items = [{ title: "One" }, { title: "Two" }] }
       [two!.id, "Two edited"],
     ]);
   });
+});
+
+describe("Starter layout writes keep their source proof", () => {
+  // Layout writes are checked against the layout source like route writes.
+  // Every field a Starter's shell passes through must stay writable: the
+  // current Starter, the shipped history and the slot-bound shell an upgrade
+  // still recognises.
+  const historyWorkspace = (version: number) =>
+    (
+      JSON.parse(
+        readFileSync(
+          join(__dirname, "..", "__fixtures__", "starter-history", `v${version}.json`),
+          "utf8",
+        ),
+      ) as { files: { path: string; content: string }[] }
+    ).files;
+  const currentWorkspace = () =>
+    starterThemeWorkspaceFiles().map(({ path, content }) => ({ path, content }));
+  const workspaces: ReadonlyArray<
+    [string, () => readonly { path: string; content: string }[]]
+  > = [
+    ["current Starter", currentWorkspace],
+    ...[11, 15, 20, 26, 28].map(
+      (version) =>
+        [`Starter v${version}`, () => historyWorkspace(version)] as [
+          string,
+          () => readonly { path: string; content: string }[],
+        ],
+    ),
+    [
+      "current Starter with the always-visible slot shell",
+      () =>
+        currentWorkspace().map((file) =>
+          file.path === "src/layouts/StorefrontLayout.tsx"
+            ? { ...file, content: LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE }
+            : file,
+        ),
+    ],
+  ];
+
+  for (const [name, filesFor] of workspaces) {
+    it(`accepts every passed-through layout field of the ${name}`, async () => {
+      const files = filesFor();
+      const insertFile = sqlite.prepare(`
+        INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+      `);
+      files.forEach((file, index) =>
+        insertFile.run(`starter-${index}`, file.path, file.content),
+      );
+      sqlite
+        .prepare(
+          `INSERT INTO storefront_theme_templates
+            (id, theme_id, type, name, document, created_at, updated_at)
+          VALUES ('template-layout', 'theme-a', 'layout', 'Layout', ?, 'now', 'now')`,
+        )
+        .run(JSON.stringify({ version: 1, sections: [] }));
+
+      const layout = deriveThemeLayoutSections(files);
+      expect(layout.diagnostics).toEqual([]);
+      const writes: Array<[string, string]> = [];
+      for (const section of layout.sections) {
+        const [instance] = analyzeB1Route(files, section.routeSourcePath)
+          .instances.filter((candidate) => candidate.section === section.slotId);
+        expect(instance, section.slotId).toBeDefined();
+        for (const field of instance!.declaredFields) {
+          writes.push([section.slotId, field]);
+        }
+      }
+      // A Starter whose shell does not adopt `content(...)` has nothing to
+      // prove; every other one must have fields to write.
+      if (layout.hasContentImport) expect(writes.length).toBeGreaterThan(0);
+
+      let draftGeneration = 1;
+      const refused: string[] = [];
+      for (const [sectionId, field] of writes) {
+        try {
+          const result = await storefrontThemeDal.updateSectionProps({
+            storefrontId: "storefront-a",
+            themeId: "theme-a",
+            templateId: "template-layout",
+            sectionId,
+            props: {},
+            resetProps: [field],
+            expectedDraftGeneration: draftGeneration,
+            expectedSourceGeneration: 1,
+            createdBy: "user-1",
+          });
+          expect(result, `${sectionId}.${field}`).not.toBeNull();
+          draftGeneration = result!.draftGeneration;
+        } catch (error) {
+          refused.push(`${sectionId}.${field}: ${(error as Error).message}`);
+        }
+      }
+      expect(refused).toEqual([]);
+    });
+  }
 });
