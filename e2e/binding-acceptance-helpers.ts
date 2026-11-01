@@ -26,12 +26,18 @@ import {
   recordedPreviewRuntimeSql,
   verifyRecordedThemePreviewRuntime,
 } from "./helpers/recorded-preview-runtime";
-import { B1_INTEGRATION_CASES, NEW_SECTION_CASES } from "../src/lib/test-utils/binding-acceptance-b1-cases";
+import {
+  B1_HOME_LAYOUT_CASES,
+  B1_INTEGRATION_CASES,
+  NEW_SECTION_CASES,
+} from "../src/lib/test-utils/binding-acceptance-b1-cases";
 import {
   BAS_HERO_LABELS,
   BAS_HERO_PATH,
   BAS_HERO_SOURCE,
   basCaseRootId,
+  basLayoutSource,
+  basPlainPageSource,
   basRouteSource,
   storedSectionsOf,
   unexpectedDocumentChanges,
@@ -71,6 +77,11 @@ import {
  * is seeded through the editor's own write, on a route shape the product
  * binds, and the case shapes are then saved over it; saving source writes no
  * content.
+ *
+ * The home and layout cases (`B1_HOME_LAYOUT_CASES`) store their sections in
+ * the index and layout Documents, which a Theme has one of each. They run on
+ * a second Theme per mode instead (`ensureSingletonFixtures`), so each walk
+ * still owns the Documents it writes.
  */
 export const RUNTIME =
   process.env.MORPH_E2E_PREVIEW_RUNTIME === "start" ? "start" : "client";
@@ -78,17 +89,48 @@ const SPELLING = RUNTIME === "start" ? "loader" : "content";
 
 const shared = EDITOR_PATH ? themeScopeFromEditorPath(EDITOR_PATH) : null;
 
-type Fixture = { scope: ThemeScope; editorPath: string };
+export type Fixture = { scope: ThemeScope; editorPath: string };
 let fixture: Fixture | null = null;
 
 type Mode = "inspector" | "inline";
 const MODES: readonly Mode[] = ["inspector", "inline"];
 
+/** The Theme per mode the home and layout cases run on. */
+let singletonFixtures: Record<Mode, Fixture> | null = null;
+
+/** A case stored in a Document the Theme has one of: the home or layout. */
+const isSingleton = (testCase: BasCase) =>
+  testCase.routePath === "/" || testCase.layout !== undefined;
+
+const fixtureFor = (testCase: BasCase, mode: Mode): Fixture =>
+  isSingleton(testCase) ? singletonFixtures![mode] : fixture!;
+
 /** The route and Document one walk owns. */
-const routeFor = (testCase: BasCase, mode: Mode) => ({
-  routePath: `/bas-${testCase.id}-${mode}`,
-  routeFile: `src/routes/bas-${testCase.id}-${mode}.tsx`,
-});
+const routeFor = (testCase: BasCase, mode: Mode) =>
+  isSingleton(testCase)
+    ? { routePath: testCase.routePath, routeFile: testCase.routeFile }
+    : {
+        routePath: `/bas-${testCase.id}-${mode}`,
+        routeFile: `src/routes/bas-${testCase.id}-${mode}.tsx`,
+      };
+
+/** Which stored Document holds a case's sections. */
+type DocumentKey =
+  | Readonly<{ routePath: string }>
+  | Readonly<{ type: "index" | "layout" }>;
+
+const documentOf = (testCase: BasCase): DocumentKey =>
+  testCase.layout
+    ? { type: "layout" }
+    : testCase.routePath === "/"
+      ? { type: "index" }
+      : { routePath: testCase.routePath };
+
+/** Only the case's own sections: a starter Document holds others too. */
+const caseSections = (testCase: BasCase, stored: StoredSections): StoredSections =>
+  Object.fromEntries(
+    testCase.slots.flatMap((slot) => (stored[slot] ? [[slot, stored[slot]]] : [])),
+  );
 
 function findLocalD1Sqlite(stateDir: string): string | null {
   const d1Dir = join(stateDir, "v3/d1/miniflare-D1DatabaseObject");
@@ -147,19 +189,31 @@ const uuid = (value: string) => {
   return value;
 };
 
-/** The route's stored Document, from its draft revision row. */
-async function rawDocument(routePath: string): Promise<StoredDocument> {
-  if (!/^\/[a-z0-9-]+$/.test(routePath)) throw new Error(routePath);
+/**
+ * The stored Document, from its draft revision row: a route's, or the
+ * Theme's home (`index`, no route path) or layout Document.
+ */
+async function rawDocument(fx: Fixture, key: DocumentKey): Promise<StoredDocument> {
+  let where: string;
+  if ("type" in key) {
+    where =
+      key.type === "layout"
+        ? "t.type = 'layout'"
+        : "t.type = 'index' AND t.route_path IS NULL";
+  } else {
+    if (!/^\/[a-z0-9-]+$/.test(key.routePath)) throw new Error(key.routePath);
+    where = `t.route_path = '${key.routePath}'`;
+  }
   const rows = await d1(
     `SELECT r.document AS document
      FROM storefront_theme_templates t
      JOIN storefront_theme_template_revisions r
        ON r.id = t.draft_revision_id AND r.template_id = t.id
-     WHERE t.theme_id = '${uuid(fixture!.scope.themeId)}'
-       AND t.route_path = '${routePath}'
+     WHERE t.theme_id = '${uuid(fx.scope.themeId)}'
+       AND ${where}
        AND t.deleted_at IS NULL`,
   );
-  expect(rows, `one stored draft for ${routePath}`).toHaveLength(1);
+  expect(rows, `one stored draft for ${JSON.stringify(key)}`).toHaveLength(1);
   return JSON.parse(String(rows[0]!.document)) as StoredDocument;
 }
 
@@ -191,23 +245,72 @@ async function storeSlot(
   props: Record<string, string>,
 ) {
   const scope = fixture!.scope;
-  const ensured = (await serverFn(page, THEMES, "ensureStorefrontThemeRouteTemplate", {
-    ...scope,
-    routePath,
-  })) as { success: boolean; data?: { id: string; draftGeneration: number } };
-  expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+  const ensured = await ensureRouteDocument(page, scope, routePath);
   const stored = (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
     ...scope,
-    templateId: ensured.data!.id,
+    templateId: ensured.id,
     sectionId,
     props,
-    expectedDraftGeneration: ensured.data!.draftGeneration,
+    expectedDraftGeneration: ensured.draftGeneration,
     expectedSourceGeneration: await themeSourceGeneration(page, scope),
     routePath,
   })) as { success: boolean };
   expect(stored.success, `seed ${routePath} ${sectionId}: ${JSON.stringify(stored)}`).toBe(
     true,
   );
+}
+
+/** The route's own Document, created through the editor's call if absent. */
+async function ensureRouteDocument(page: Page, scope: ThemeScope, routePath: string) {
+  const ensured = (await serverFn(page, THEMES, "ensureStorefrontThemeRouteTemplate", {
+    ...scope,
+    routePath,
+  })) as { success: boolean; data?: { id: string; draftGeneration: number } };
+  expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+  return ensured.data!;
+}
+
+type EditorTemplate = {
+  id: string;
+  type: string;
+  routePath?: string | null;
+  draftGeneration: number;
+};
+
+async function editorTemplates(page: Page, scope: ThemeScope) {
+  const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+    ...scope,
+  })) as { success: boolean; data?: { templates: EditorTemplate[] } };
+  expect(result.success, JSON.stringify(result)).toBe(true);
+  return result.data!.templates;
+}
+
+/**
+ * Stores one section's props in the home or layout Document through the
+ * editor's own write, as the editor issues it from the home page.
+ */
+async function storeSingletonSlot(
+  page: Page,
+  scope: ThemeScope,
+  type: "index" | "layout",
+  sectionId: string,
+  props: Record<string, string>,
+) {
+  const template = (await editorTemplates(page, scope)).find(
+    (candidate) =>
+      candidate.type === type && (type === "layout" || !candidate.routePath),
+  );
+  expect(template, `the Theme has a ${type} Document`).toBeDefined();
+  const stored = (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
+    ...scope,
+    templateId: template!.id,
+    sectionId,
+    props,
+    expectedDraftGeneration: template!.draftGeneration,
+    expectedSourceGeneration: await themeSourceGeneration(page, scope),
+    routePath: "/",
+  })) as { success: boolean };
+  expect(stored.success, `seed ${type} ${sectionId}: ${JSON.stringify(stored)}`).toBe(true);
 }
 
 /**
@@ -225,17 +328,8 @@ export async function ensureFixture(browser: Browser) {
   const page = await signedInPage(browser);
   try {
     await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
-    const scope = await createThrowawayTheme();
-    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
-      ...scope,
-    })) as { success: boolean; data?: { templates: Array<{ id: string; type: string }> } };
-    expect(result.success, JSON.stringify(result)).toBe(true);
-    const home = result.data!.templates.find((template) => template.type === "index");
-    expect(home).toBeDefined();
-    fixture = {
-      scope,
-      editorPath: `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`,
-    };
+    fixture = await throwawayFixture(page);
+    const scope = fixture.scope;
 
     // Seed: every section spread once, the shape the product binds. Each
     // case and mode has a route and Document of its own, so what one walk
@@ -259,7 +353,9 @@ export async function ensureFixture(browser: Browser) {
       for (const [section, props] of Object.entries(testCase.seed)) {
         await storeSlot(page, routePath, section, { ...props });
       }
-      expect(storedSectionsOf(await rawDocument(routePath))).toEqual(testCase.seed);
+      expect(storedSectionsOf(await rawDocument(fixture, { routePath }))).toEqual(
+        testCase.seed,
+      );
     }
 
     // The case shapes, saved over the seed routes. No content is written.
@@ -270,12 +366,119 @@ export async function ensureFixture(browser: Browser) {
     const saved = await writeThemeFiles(page, scope, caseFiles);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
     for (const { testCase, routePath } of walks) {
-      expect(storedSectionsOf(await rawDocument(routePath))).toEqual(testCase.seed);
+      expect(storedSectionsOf(await rawDocument(fixture, { routePath }))).toEqual(
+        testCase.seed,
+      );
     }
     writeFileSync(cache, JSON.stringify(fixture), { mode: 0o600 });
   } finally {
     await page.context().close();
   }
+}
+
+/** A new throwaway Theme, opened on its home Document. */
+async function throwawayFixture(page: Page): Promise<Fixture> {
+  const scope = await createThrowawayTheme();
+  const home = (await editorTemplates(page, scope)).find(
+    (template) => template.type === "index",
+  );
+  expect(home).toBeDefined();
+  return {
+    scope,
+    editorPath: `/store/${scope.storefrontId}/themes/${scope.themeId}/editor?templateId=${home!.id}`,
+  };
+}
+
+/**
+ * The home and layout cases' Themes, one per mode, once per run and runtime,
+ * cached like `ensureFixture`'s. Each holds every singleton case: H1 owns the
+ * home route, L1 the root layout, which every page renders, H1's home page
+ * included; L1's own non-home pages are written beside it.
+ */
+export async function ensureSingletonFixtures(browser: Browser) {
+  const cache = join(
+    process.env.MORPH_E2E_STATE_DIR!,
+    `bas-singleton-fixtures-${RUNTIME}.json`,
+  );
+  if (existsSync(cache)) {
+    singletonFixtures = JSON.parse(readFileSync(cache, "utf8")) as Record<Mode, Fixture>;
+    return;
+  }
+  const page = await signedInPage(browser);
+  try {
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    const built: Partial<Record<Mode, Fixture>> = {};
+    for (const mode of MODES) built[mode] = await buildSingletonFixture(page);
+    singletonFixtures = built as Record<Mode, Fixture>;
+    writeFileSync(cache, JSON.stringify(singletonFixtures), { mode: 0o600 });
+  } finally {
+    await page.context().close();
+  }
+}
+
+/** The file a singleton case's shape lives in, in that shape or its seed. */
+function singletonCaseFile(testCase: BasCase, seed: boolean) {
+  return testCase.layout
+    ? { path: testCase.layout.path, content: basLayoutSource(testCase, { seed }) }
+    : {
+        path: testCase.routeFile,
+        content: basRouteSource(testCase, SPELLING, { seed }),
+      };
+}
+
+async function buildSingletonFixture(page: Page): Promise<Fixture> {
+  const built = await throwawayFixture(page);
+  await seedSingletonCases(page, built);
+  return built;
+}
+
+/**
+ * Writes every home and layout case onto `built`'s Theme and stores their
+ * seed through the editor's own write, then saves the case shapes over it.
+ * The Theme's home route and root layout become the cases'.
+ */
+export async function seedSingletonCases(page: Page, built: Fixture) {
+  const scope = built.scope;
+  // The home page is H1's route; the layout's other pages have no sections.
+  const plainPages = B1_HOME_LAYOUT_CASES.flatMap(
+    (testCase) => testCase.layout?.pages ?? [],
+  ).filter((page) => page.routePath !== "/");
+  const seeded = await writeThemeFiles(page, scope, [
+    { path: BAS_HERO_PATH, content: BAS_HERO_SOURCE },
+    ...plainPages.map((plain) => ({
+      path: plain.routeFile,
+      content: basPlainPageSource(plain.routePath),
+    })),
+    ...B1_HOME_LAYOUT_CASES.map((testCase) => singletonCaseFile(testCase, true)),
+  ]);
+  expect(seeded.success, JSON.stringify(seeded)).toBe(true);
+  for (const plain of plainPages) await ensureRouteDocument(page, scope, plain.routePath);
+  for (const testCase of B1_HOME_LAYOUT_CASES) {
+    const type = testCase.layout ? "layout" : "index";
+    for (const [section, props] of Object.entries(testCase.seed)) {
+      await storeSingletonSlot(page, scope, type, section, { ...props });
+    }
+    expect(
+      caseSections(testCase, storedSectionsOf(await rawDocument(built, documentOf(testCase)))),
+    ).toEqual(testCase.seed);
+  }
+  // The case shapes, saved over the seed. No content is written.
+  const saved = await writeThemeFiles(
+    page,
+    scope,
+    B1_HOME_LAYOUT_CASES.map((testCase) => singletonCaseFile(testCase, false)),
+  );
+  expect(saved.success, JSON.stringify(saved)).toBe(true);
+  for (const testCase of B1_HOME_LAYOUT_CASES) {
+    expect(
+      caseSections(testCase, storedSectionsOf(await rawDocument(built, documentOf(testCase)))),
+    ).toEqual(testCase.seed);
+  }
+}
+
+/** A case's own sections as its draft Document stores them, read raw from D1. */
+export async function storedCaseSections(fx: Fixture, testCase: BasCase) {
+  return caseSections(testCase, storedSectionsOf(await rawDocument(fx, documentOf(testCase))));
 }
 
 // ---------------------------------------------------------------------------
@@ -295,9 +498,14 @@ const inspectorFieldBox = (page: Page, testCase: BasCase, field: "title" | "desc
 const inspectorInput = (page: Page, testCase: BasCase, field: "title" | "desc") =>
   inspectorFieldBox(page, testCase, field).locator("input, textarea").first();
 
-async function openCase(page: Page, testCase: BasCase) {
-  const url = new URL(fixture!.editorPath, "http://placeholder");
-  url.searchParams.set("routePath", testCase.routePath);
+async function openCase(
+  page: Page,
+  fx: Fixture,
+  testCase: BasCase,
+  routePath = testCase.routePath,
+) {
+  const url = new URL(fx.editorPath, "http://placeholder");
+  url.searchParams.set("routePath", routePath);
   await page.goto(`${url.pathname}${url.search}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
     timeout: 45_000,
@@ -492,9 +700,20 @@ const LOCATE = {
   untraced: expectShownAsCode,
 } as const;
 
-export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
+/**
+ * One walk. `on` names the Theme to walk on when the caller owns it (the
+ * publish acceptance walks the singleton cases on the run's own Theme);
+ * otherwise the fixture the case and mode use.
+ */
+export async function walkCase(
+  page: Page,
+  sharedCase: BasCase,
+  mode: Mode,
+  on?: Fixture,
+) {
   test.setTimeout(420_000);
-  // This walk's own route and Document.
+  // This walk's own route and Document, on the Theme that holds them.
+  const fx = on ?? fixtureFor(sharedCase, mode);
   const testCase: BasCase = { ...sharedCase, ...routeFor(sharedCase, mode) };
   const walk: Walk = {
     runtime: RUNTIME,
@@ -510,7 +729,7 @@ export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
     }
   });
   const element = testCase.elements[testCase.edit.element]!;
-  const before = await rawDocument(testCase.routePath);
+  const before = await rawDocument(fx, documentOf(testCase));
   const storedBefore = storedSectionsOf(before);
   const value = `BAS ${RUNTIME} ${testCase.id} ${mode} ${Date.now()}`;
   const change = wantedChange(testCase, mode, value);
@@ -521,14 +740,8 @@ export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
 
   try {
     await step(walk, "S1", async () => {
-      await openCase(page, testCase);
-      const shown = await Promise.all(
-        testCase.elements.map((candidate) =>
-          elementLocator(page, testCase, candidate)
-            .textContent({ timeout: 10_000 })
-            .catch(() => null),
-        ),
-      );
+      await openCase(page, fx, testCase);
+      const shown = await shownElements(page, testCase);
       walk.observed.S1shown = shown;
       expect(shown).toEqual(testCase.elements.map((candidate) => candidate.text(storedBefore)));
     });
@@ -575,7 +788,7 @@ export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
     });
 
     await step(walk, "S4", async () => {
-      afterWrite = await rawDocument(testCase.routePath);
+      afterWrite = await rawDocument(fx, documentOf(testCase));
       walk.observed.S4after = storedSectionsOf(afterWrite);
       const problems = unexpectedDocumentChanges(before, afterWrite, change);
       walk.observed.S4problems = problems;
@@ -583,16 +796,10 @@ export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
     });
 
     await step(walk, "S5", async () => {
-      await openCase(page, testCase);
-      const shown = await Promise.all(
-        testCase.elements.map((candidate) =>
-          elementLocator(page, testCase, candidate)
-            .textContent({ timeout: 10_000 })
-            .catch(() => null),
-        ),
-      );
+      await openCase(page, fx, testCase);
+      const shown = await shownElements(page, testCase);
       walk.observed.S5shown = shown;
-      const reloaded = await rawDocument(testCase.routePath);
+      const reloaded = await rawDocument(fx, documentOf(testCase));
       walk.observed.S5stored = storedSectionsOf(reloaded);
       expect(
         JSON.stringify(reloaded),
@@ -608,9 +815,33 @@ export async function walkCase(page: Page, sharedCase: BasCase, mode: Mode) {
       walk.observed.S5offered = await offeredFields(page).catch(() => null);
       await LOCATE[element.target.kind](page, testCase, element, storedAfter);
     });
+
+    // A layout section is edited once and shown on every page: each of the
+    // case's other pages, opened afresh, shows the edit too.
+    for (const other of (testCase.layout?.pages ?? []).slice(1)) {
+      await step(walk, `S5 ${other.routePath}`, async () => {
+        await openCase(page, fx, testCase, other.routePath);
+        const shown = await shownElements(page, testCase);
+        walk.observed[`S5shown ${other.routePath}`] = shown;
+        expect(shown, `${other.routePath} shows what is stored`).toEqual(
+          testCase.elements.map((candidate) => candidate.text(storedAfter)),
+        );
+      });
+    }
   } finally {
     record(walk);
   }
+}
+
+/** What the canvas shows for each of the case's elements, in order. */
+function shownElements(page: Page, testCase: BasCase) {
+  return Promise.all(
+    testCase.elements.map((candidate) =>
+      elementLocator(page, testCase, candidate)
+        .textContent({ timeout: 10_000 })
+        .catch(() => null),
+    ),
+  );
 }
 
 type EditContext = {
