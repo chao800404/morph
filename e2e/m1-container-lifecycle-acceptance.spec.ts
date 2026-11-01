@@ -12,9 +12,11 @@ import {
   settleSelection,
 } from "./helpers";
 import {
+  BUILD_PREVIEW,
   DOMAINS,
   RELEASES,
   editorContext,
+  expectHydrated,
   latestRelease,
   openEditor,
   publishShowingRelease,
@@ -33,6 +35,9 @@ import { themeScopeFromEditorPath } from "./native-compat";
  * 1. Design B1 canvas field click & Inspector sync -> Draft A write -> Pre-publish public draft isolation
  * 2. Cloudflare Sandbox native Build & Publish -> Release 1
  * 3. 8799 Storefront verification & Draft B edit -> Public draft isolation
+ *    - G5: Build 1's Build Preview, opened after Draft B, still shows A only
+ *    - G6: the public storefront in a browser, across <Link> navigation,
+ *      back and reload, shows A only
  * 4. Sandbox native Build & Publish -> Release 2
  * 5. OCC CAS re-activation of Release 1 (active pointer rollback, template published_revision_id remains B)
  * 6. Storefront reload & sealed content/mandatory asset verification
@@ -234,6 +239,7 @@ test.describe("M1 container lifecycle acceptance", () => {
 
   test("Design B1 -> Build/Publish Release 1 -> Storefront draft isolation -> Release 2 -> Rollback Release 1 -> Reload", async ({
     page,
+    browser,
   }) => {
     // Assert full Start runtime explicitly
     expect(
@@ -593,6 +599,160 @@ test.describe("M1 container lifecycle acceptance", () => {
     expect(contentRes2.status).toBe(200);
     expect(contentRes2.body).toContain(contentA);
     expect(contentRes2.body).not.toContain(draftB);
+
+    // M1 source isolation, G5 (handoff/2026-10-27/m1-item4-source-isolation-
+    // audit.md §3): Build 1's Build Preview, opened after Draft B was written,
+    // still shows the content Build 1 sealed (A) and never the newer draft.
+    await test.step("G5: Build Preview of Build 1 shows A, never Draft B", async () => {
+      expect(
+        relBuild1.buildContent,
+        "Build 1 must carry the content it was built with",
+      ).toBeTruthy();
+      const opened = (await serverFn(page, BUILD_PREVIEW, "openBuildPreview", {
+        ...scope!,
+        buildId: identities.build1,
+      })) as { success: boolean; message?: string; data: { url: string } };
+      expect(opened.success, opened.message).toBe(true);
+      const bpHost = new URL(opened.data.url).hostname;
+      expect(bpHost).toMatch(/^bp-[0-9a-f]{40}\./);
+      // Opened at the address it gives, then asked from inside, on its host.
+      const bp = await signedInPage(browser);
+      try {
+        await bp.goto(opened.data.url, { waitUntil: "domcontentloaded" });
+        expect(new URL(bp.url()).hostname).toBe(bpHost);
+        for (const path of [ROUTE, "/_morph/content?path=%2F"]) {
+          const served = await bp.evaluate(async (path) => {
+            const response = await fetch(path, { cache: "no-store" });
+            return { status: response.status, body: await response.text() };
+          }, path);
+          expect(served.status, `Build Preview ${path}`).toBe(200);
+          expect(served.body, `Build Preview ${path}`).toContain(contentA);
+          expect(served.body, `Build Preview ${path}`).not.toContain(draftB);
+        }
+      } finally {
+        await bp.context().close();
+      }
+    });
+
+    // M1 source isolation, G6: the public storefront in a browser while Draft
+    // B is unpublished. Client-side navigation reads same-origin
+    // /_morph/content from the Starter's client branch, so every page shown —
+    // after <Link>, back, and reload — must still be Release 1's.
+    await test.step("G6: public storefront in a browser shows A, never Draft B, across navigation", async () => {
+      const shopper = await browser.newContext();
+      try {
+        const shop = await shopper.newPage();
+        const contentReads: Array<
+          Promise<{ path: string | null; status: number; body: string }>
+        > = [];
+        shop.on("response", (response) => {
+          const url = new URL(response.url());
+          if (url.pathname !== "/_morph/content") return;
+          contentReads.push(
+            response.text().then((body) => ({
+              path: url.searchParams.get("path"),
+              status: response.status(),
+              body,
+            })),
+          );
+        });
+        /** Whether the page is still the document the first load made. */
+        const sameDocument = () =>
+          shop.evaluate(
+            () => (window as { __m1G6?: string }).__m1G6 === "first-load",
+          );
+        const expectNoDraft = async (label: string) => {
+          expect(await shop.locator("body").innerText(), label).not.toContain(
+            draftB,
+          );
+          expect(await shop.content(), label).not.toContain(draftB);
+        };
+        const expectHome = async (label: string) => {
+          await expect(shop, label).toHaveURL(`${origin}/`);
+          await expect(
+            shop.locator("main").getByText(contentA, { exact: false }).first(),
+            label,
+          ).toBeVisible({ timeout: 30_000 });
+          expect(await shop.locator("body").innerText(), label).toContain(
+            contentA,
+          );
+          await expectNoDraft(label);
+        };
+        const expectAccount = async (label: string) => {
+          await expect(shop, label).toHaveURL(`${origin}/account`);
+          await expect(
+            shop.getByRole("heading", { name: "會員帳戶" }),
+            label,
+          ).toBeVisible({ timeout: 30_000 });
+          await expectNoDraft(label);
+        };
+
+        await shop.goto(`${origin}/`, { waitUntil: "domcontentloaded" });
+        await expectHome("first load");
+        const account = shop
+          .getByRole("link", { name: "Account", exact: true })
+          .first();
+        await expectHydrated(account);
+        await shop.evaluate(() => {
+          (window as { __m1G6?: string }).__m1G6 = "first-load";
+        });
+
+        // Home -> non-home, through the header's <Link>.
+        await account.click();
+        await expectAccount("after <Link> to /account");
+        expect(await sameDocument(), "<Link> navigates in place").toBe(true);
+
+        // Non-home -> home. The Starter renders no <Link> to "/", so this
+        // asks the router directly, which is what a <Link> click does.
+        expect(
+          await shop.evaluate(
+            () => typeof (window as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__,
+          ),
+          "the storefront's router is on the page",
+        ).toBe("object");
+        await shop.evaluate(async () => {
+          await (
+            window as unknown as {
+              __TSR_ROUTER__: { navigate(to: { to: string }): Promise<void> };
+            }
+          ).__TSR_ROUTER__.navigate({ to: "/" });
+        });
+        await expectHome("after client navigation back to /");
+        expect(await sameDocument(), "client navigation stays in place").toBe(
+          true,
+        );
+
+        // Back, twice: /account, then home again, both from history.
+        await shop.goBack();
+        await expectAccount("after back to /account");
+        await shop.goBack();
+        await expectHome("after back to /");
+        expect(await sameDocument(), "back navigates in place").toBe(true);
+
+        // Reload: a fresh document, rendered by the server again.
+        await shop.reload({ waitUntil: "domcontentloaded" });
+        await expectHome("after reload");
+        expect(await sameDocument(), "reload loads a new document").toBe(false);
+
+        // The client really read content on its own while navigating, and
+        // every read it made was Release 1's.
+        const reads = await Promise.all(contentReads);
+        const homeReads = reads.filter((read) => read.path === "/");
+        expect(
+          homeReads.length,
+          "client navigation to / read /_morph/content",
+        ).toBeGreaterThan(0);
+        for (const read of reads) {
+          expect(read.status, `/_morph/content?path=${read.path}`).toBe(200);
+          expect(read.body, `/_morph/content?path=${read.path}`).not.toContain(
+            draftB,
+          );
+        }
+        for (const read of homeReads) expect(read.body).toContain(contentA);
+      } finally {
+        await shopper.close();
+      }
+    });
 
     // =========================================================================
     // 4. Container Native Build & Publish -> Release 2

@@ -88,6 +88,7 @@ const THEME_BUILD_TESTS = [
   "src/lib/storefront/theme-framework/native-import-guard.test.ts",
   "src/lib/storefront/service/build-preview/local-build-preview-worker.test.ts",
   "src/lib/storefront/service/build-preview/build-preview-chain.test.ts",
+  "src/lib/storefront/compiler/local-vite-preview-server.public-isolation.test.ts",
 ];
 
 /** What every project shares; stated once so the two cannot drift apart. */
