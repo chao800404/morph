@@ -47,6 +47,30 @@ afterEach(() => {
 });
 
 describe("@morph/sdk/astro", () => {
+  it("sends the render's context back on its page reads, and none when the render has none (G3)", async () => {
+    const sent: (string | null)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        sent.push(new Headers(init?.headers).get("x-morph-render-context"));
+        return page("ok");
+      }),
+    );
+
+    await render(
+      {
+        "x-morph-content-origin": "https://published.example",
+        "x-morph-render-context": "v1.pinned.sig",
+      },
+      () => morph.pages.get("/"),
+    );
+    await render({ "x-morph-content-origin": "https://published.example" }, () =>
+      morph.pages.get("/"),
+    );
+
+    expect(sent).toEqual(["v1.pinned.sig", null]);
+  });
+
   it("reads the content source the platform named for the render", async () => {
     const service = contentService();
     vi.stubGlobal("fetch", service.fetch);
