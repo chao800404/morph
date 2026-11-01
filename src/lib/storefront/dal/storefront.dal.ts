@@ -728,7 +728,10 @@ export const storefrontDal = {
       review: reviewStarterThemeUpgrade(files, {
         storedVersion: recordedStarterVersion(stored.version),
       }),
-      catalog: reviewThemeCatalog(files, { hasProducts }),
+      catalog: reviewThemeCatalog(files, {
+        hasProducts,
+        framework: stored.framework,
+      }),
     };
   },
   /**
@@ -758,7 +761,10 @@ export const storefrontDal = {
       themeSourceStore.listFiles(data.storefrontId, data.themeId),
       themeChannelHasProducts(data.storefrontId, data.themeId),
     ]);
-    const catalog = reviewThemeCatalog(files, { hasProducts });
+    const catalog = reviewThemeCatalog(files, {
+      hasProducts,
+      framework: stored.framework,
+    });
     return {
       versionState: starterVersionState(stored.version),
       storedVersion: typeof stored.version === "number" ? stored.version : null,
@@ -826,6 +832,7 @@ export const storefrontDal = {
               data.storefrontId,
               data.themeId,
             ),
+            framework: stored.framework,
           });
     // A catalog part with nothing to write is never offered, so a confirmed
     // one that has none is refused rather than reported as applied.
