@@ -38,11 +38,20 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *    forwarding moment is not observed; it is no later than these), and when
  *    each side saw the socket close.
  *
- * Asserted, from the window's end: close code 4401; no data received later
- * than R + L + eps (A5: the lease ends forwarding at most L after R); the
- * close no later than R + L + one lease tick + eps (an idle socket is closed
- * by the next tick). eps is 2 s. "Within 30 s" is reported, not asserted: it
- * remains a target to verify.
+ * Judged conservatively. With R somewhere in [a, b] and an event at T, the
+ * delay T - R lies in [T - b, T - a], so against a limit D:
+ *   pass       T - a <= D  (even the longest possible delay is within D);
+ *   exceeded   T - b >  D  (even the shortest possible delay is over D);
+ *   uncertain  otherwise.
+ * Only "pass" passes. A slower sign-out answer widens the window and can only
+ * move a result toward "uncertain", never toward "pass".
+ *
+ * Limits: data received at either end within L + eps (A5: the lease ends
+ * forwarding at most L after R); the close within L + one lease tick + eps
+ * (an idle socket is closed by the next tick); close code 4401. eps = 2 s is
+ * this acceptance's tolerance, not a proven bound on cloud clock error or
+ * delivery. "Within 30 s" is reported with the same three verdicts, not
+ * asserted: it remains a target to verify.
  */
 
 const EDITOR_PATH = process.env.E2E_EDITOR_PATH;
@@ -68,7 +77,33 @@ const DEV_BASE = "/__morph-theme-preview__/";
 // preview-socket-lease.ts / preview-socket-relay.ts
 const LEASE_MS = 30_000;
 const TICK_MS = 5_000;
+// This acceptance's tolerance (eps); not a proven cloud error bound.
 const SLACK_MS = 2_000;
+const TARGET_MS = 30_000;
+
+type Verdict = "pass" | "uncertain" | "exceeded";
+
+/** The delay from R in [a, b] to T, judged against limit D (see above). */
+function judge(
+  t: number,
+  window: { from: number; to: number },
+  limitMs: number,
+): {
+  verdict: Verdict;
+  longestMs: number;
+  shortestMs: number;
+  limitMs: number;
+} {
+  const longestMs = t - window.from;
+  const shortestMs = t - window.to;
+  const verdict: Verdict =
+    longestMs <= limitMs
+      ? "pass"
+      : shortestMs > limitMs
+        ? "exceeded"
+        : "uncertain";
+  return { verdict, longestMs, shortestMs, limitMs };
+}
 
 const FIXTURE = `import startEntry from "@tanstack/react-start/server-entry";
 
@@ -486,8 +521,8 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
           // R is not observed as one instant. The commit lies inside a
           // window: for a push, between sending the sign-out and its answer
           // (the after-hook revokes before the answer); for a lost notice,
-          // between just before the UPDATE and its return. Bounds use the
-          // window's end, the latest the commit can have been.
+          // between just before the UPDATE and its return. Delays are judged
+          // from both ends of it (judge()).
           let rWindow: { from: number; to: number };
           let revokeDetail: Record<string, unknown>;
           if (revocation === "pushed") {
@@ -565,13 +600,26 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
           const atContainer = fixtureRecord(sock);
           const lastReceivedAtContainer =
             atContainer?.received.at(-1)?.t ?? null;
-          const after = (t: number | null | undefined) =>
-            t === null || t === undefined
-              ? null
-              : {
-                  fromWindowStart: t - rWindow.from,
-                  fromWindowEnd: t - rWindow.to,
-                };
+          const dataLimit = LEASE_MS + SLACK_MS;
+          const closeLimit = LEASE_MS + TICK_MS + SLACK_MS;
+          const verdicts = {
+            dataAtContainer:
+              lastReceivedAtContainer === null
+                ? null
+                : judge(lastReceivedAtContainer, rWindow, dataLimit),
+            dataAtBrowser:
+              browserSide.lastEchoAt === null
+                ? null
+                : judge(browserSide.lastEchoAt, rWindow, dataLimit),
+            close:
+              closed.t === undefined
+                ? null
+                : judge(closed.t, rWindow, closeLimit),
+            closeWithinTarget:
+              closed.t === undefined
+                ? null
+                : judge(closed.t, rWindow, TARGET_MS),
+          };
           const result = {
             rWindow,
             ...revokeDetail,
@@ -588,40 +636,35 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
             framesSent: browserSide.sent,
             framesAtContainer: atContainer?.received.length ?? null,
             echoes: browserSide.echoes,
-            ms: {
-              lastDataReceivedAtContainer: after(lastReceivedAtContainer),
-              lastEchoReceivedAtBrowser: after(browserSide.lastEchoAt),
-              browserClose: after(closed.t),
-            },
-            closeWithin30sOfWindowEnd:
-              closed.t === undefined
-                ? false
-                : closed.t - rWindow.to <= LEASE_MS,
+            // Each: the longest and shortest possible delay from R, and the
+            // verdict against its limit. closeWithinTarget is reported only.
+            verdicts,
           };
           record.cases ??= {} as Record<string, unknown>;
           (record.cases as Record<string, unknown>)[caseName] = result;
           save();
 
-          // Data: the lease ends forwarding at most L after R (A5), plus eps.
-          // Close: an idle socket is closed by the next lease tick, so its
-          // bound adds one tick.
-          const dataBound = rWindow.to + LEASE_MS + SLACK_MS;
-          const closeBound = rWindow.to + LEASE_MS + TICK_MS + SLACK_MS;
           expect(closed.timeout, "the socket closed").toBeUndefined();
           expect(closed.code, "closed as revoked").toBe(4401);
-          expect(
-            closed.t!,
-            "closed within R + L + tick + eps",
-          ).toBeLessThanOrEqual(closeBound);
           expect(atContainer, "the fixture's record was read").not.toBeNull();
           expect(
-            lastReceivedAtContainer!,
-            "no data received at the container after R + L + eps",
-          ).toBeLessThanOrEqual(dataBound);
+            browserSide.lastEchoAt,
+            "the browser received echoes",
+          ).not.toBeNull();
+          // Only a conservative pass passes; "uncertain" and "exceeded" fail
+          // under their own names.
           expect(
-            browserSide.lastEchoAt ?? 0,
-            "no data received at the browser after R + L + eps",
-          ).toBeLessThanOrEqual(dataBound);
+            verdicts.dataAtContainer?.verdict,
+            `data at the container within L + eps of R: ${JSON.stringify(verdicts.dataAtContainer)}`,
+          ).toBe("pass");
+          expect(
+            verdicts.dataAtBrowser?.verdict,
+            `data at the browser within L + eps of R: ${JSON.stringify(verdicts.dataAtBrowser)}`,
+          ).toBe("pass");
+          expect(
+            verdicts.close?.verdict,
+            `close within L + tick + eps of R: ${JSON.stringify(verdicts.close)}`,
+          ).toBe("pass");
         } finally {
           await page.context().close();
         }
