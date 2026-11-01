@@ -1940,4 +1940,37 @@ describe("the product catalog part of a review", () => {
     );
     expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
   });
+
+  it("is not offered to, nor applied on, a Theme recorded as Astro", async () => {
+    channel.hasProducts = true;
+    seedTheme({ starterTemplateVersion: CURRENT });
+    // The Starter's files are still there, so only the record refuses it.
+    workspace.files.set(THEME_ID, upgradedWorkspace());
+    workspace.generation.set(THEME_ID, 5);
+    const startDigest = (await review()).catalog.digest;
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = 'astro' WHERE id = ?")
+      .run(THEME_ID);
+    const before = { row: storedRawRow(), templates: storedTemplates() };
+
+    const reviewed = await review();
+    expect(reviewed.catalog).toMatchObject({
+      applies: false,
+      kind: null,
+      changes: [],
+      kept: [],
+    });
+    expect(reviewed.catalog.unavailable).toMatch(
+      /^THEME_FRAMEWORK_UNAVAILABLE: .*not offered to astro Themes/,
+    );
+    // Not even with the digest a Start review of the same files gave.
+    for (const catalogDigest of [startDigest, reviewed.catalog.digest]) {
+      await expect(apply({ catalogDigest })).resolves.toEqual({
+        status: "not-applicable",
+      });
+    }
+    expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+    expect(storedRawRow()).toEqual(before.row);
+    expect(storedTemplates()).toEqual(before.templates);
+  });
 });

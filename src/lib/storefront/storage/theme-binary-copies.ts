@@ -1,4 +1,3 @@
-import { buildThemeRouteRegistry } from "../compiler/theme-route-registry";
 import {
   isBinaryThemeFile,
   type StorefrontThemeFileDTO,
@@ -10,6 +9,29 @@ import {
   describeThemePublicProblem,
   isThemePublicPath,
 } from "../theme-public-files";
+import { themeRoutesFor } from "../theme-framework/theme-routes";
+
+/**
+ * The page paths a binary file may not take, read the way the Theme's
+ * recorded framework reads its routes (`themeRoutesFor`): Start's
+ * `src/routes/`, Astro's `src/pages/`. The same table the build's own check
+ * reads (theme-build-materializer.ts), so a write is refused for exactly
+ * what would fail the build. A framework Morph does not know is refused, not
+ * checked as Start's.
+ */
+export function themeBinaryRoutePaths(
+  framework: string | null | undefined,
+  sourceFiles: readonly { path: string; content: string }[],
+): { ok: true; paths: string[] } | { ok: false; message: string } {
+  const routes = themeRoutesFor(framework, sourceFiles);
+  if (!routes.ok) {
+    return {
+      ok: false,
+      message: `THEME_FRAMEWORK_UNKNOWN: The Theme is recorded with framework "${routes.framework}", which Morph does not know, so its routes cannot be checked.`,
+    };
+  }
+  return { ok: true, paths: routes.registry.routes.map((route) => route.path) };
+}
 
 /**
  * A binary file placed at a new path within a batch: what the client asks.
@@ -54,6 +76,8 @@ export function planThemeBinaryCopies(args: {
   copies: readonly ThemeBinaryCopyRequest[];
   writes: readonly { path: string; content: string }[];
   deletions: readonly { path: string }[];
+  /** The Theme's recorded framework (`storefront_themes.framework`). */
+  framework: string | null | undefined;
 }):
   | { ok: true; copies: ResolvedThemeBinaryCopy[] }
   | { ok: false; message: string } {
@@ -71,9 +95,11 @@ export function planThemeBinaryCopies(args: {
     }
   }
   for (const write of args.writes) nextSource.set(write.path, write);
-  const routePaths = buildThemeRouteRegistry([
+  const routes = themeBinaryRoutePaths(args.framework, [
     ...nextSource.values(),
-  ]).routes.map((route) => route.path);
+  ]);
+  if (!routes.ok) return routes;
+  const routePaths = routes.paths;
 
   const destinations = new Set<string>();
   const resolved: ResolvedThemeBinaryCopy[] = [];

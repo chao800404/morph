@@ -11,10 +11,6 @@ import {
   answerSealedContentRead,
   type NativePrerenderContent,
 } from "../compiler/theme-prerender-content";
-import type {
-  ThemeRouteRecord,
-  ThemeRouteRegistry,
-} from "../compiler/theme-route-registry";
 import { normalizeRoutePath } from "../theme-template-routes";
 import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
 
@@ -670,44 +666,6 @@ export function astroArtifactLeaks(
   return leaks;
 }
 
-const PAGE_EXTENSIONS = /\.(astro|md|mdx|html|js|ts)$/;
-
-/**
- * An Astro project's routes, from its `src/pages/` file names, in the shape
- * the sealed content is made from (`createNativePrerenderContent`).
- *
- * `[param]` and `[...rest]` are dynamic; a name starting with `_` is not a
- * route. Paths are URL paths — percent-encoded as `Astro.url.pathname` is —
- * and Core's content keys (`normalizeRoutePath`). Whether a page prerenders is
- * the page's own `prerender` export, which the build records; this says only
- * which paths exist.
- */
-export function astroRouteRegistry(
-  files: readonly Readonly<{ path: string }>[],
-): ThemeRouteRegistry {
-  const routes: ThemeRouteRecord[] = [];
-  for (const file of files) {
-    if (!file.path.startsWith("src/pages/") || !PAGE_EXTENSIONS.test(file.path))
-      continue;
-    const segments = file.path
-      .slice("src/pages/".length)
-      .replace(PAGE_EXTENSIONS, "")
-      .split("/");
-    if (segments.some((segment) => segment.startsWith("_"))) continue;
-    if (segments[segments.length - 1] === "index") segments.pop();
-    const dynamic = segments.some((segment) => /\[.+\]/.test(segment));
-    const path = normalizeRoutePath(
-      new URL(`/${segments.join("/")}`, "http://astro.invalid").pathname,
-    );
-    routes.push({
-      id: path,
-      path,
-      sourcePath: file.path,
-      kind: "route",
-      dynamic,
-      routeType: "route",
-      componentName: null,
-    });
-  }
-  return { valid: true, routes, diagnostics: [] };
-}
+// Moved to a pure, client-safe module so Core's route checks read the same
+// routes the build does; re-exported here so the build's imports stay.
+export { astroRouteRegistry } from "../compiler/astro-route-registry";

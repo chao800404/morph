@@ -1,5 +1,6 @@
 import {
   planThemeBinaryCopies,
+  themeBinaryRoutePaths,
   type ResolvedThemeBinaryCopy,
 } from "./theme-binary-copies";
 import { env } from "cloudflare:workers";
@@ -18,7 +19,6 @@ import {
   type ThemeSourceRevisionManifest,
 } from "@/lib/storefront/dto/storefront-theme-file.dto";
 import { calculateThemeSourceSha256 } from "./cloudflare-r2-theme-source-blob-store";
-import { buildThemeRouteRegistry } from "@/lib/storefront/compiler/theme-route-registry";
 import {
   checkThemeBinaryPath,
   checkThemePublicFiles,
@@ -254,9 +254,15 @@ export async function saveThemeBinaryFile(
     themeId: string;
     file: SaveThemeBinaryFileInput;
     options: SaveThemeBinaryFileOptions;
+    /**
+     * The Theme's recorded framework (`storefront_themes.framework`), which
+     * says how its routes are read. Recorded once and never converted, so
+     * reading it apart from the write races nothing.
+     */
+    framework: string | null | undefined;
   },
 ): Promise<StorefrontThemeBinaryFileDTO & { sourceGeneration: number }> {
-  const { storefrontId, themeId, file, options } = args;
+  const { storefrontId, themeId, file, options, framework } = args;
   const entries = await storefrontThemeFileDal.listWorkspaceEntries(
     storefrontId,
     themeId,
@@ -264,9 +270,9 @@ export async function saveThemeBinaryFile(
   const sourceFiles = entries.filter(
     (entry): entry is StorefrontThemeFileDTO => !isBinaryThemeFile(entry),
   );
-  const routePaths = buildThemeRouteRegistry(sourceFiles).routes.map(
-    (route) => route.path,
-  );
+  const routes = themeBinaryRoutePaths(framework, sourceFiles);
+  if (!routes.ok) throw new Error(routes.message);
+  const routePaths = routes.paths;
 
   // `public/` always; `src/` only for a caller that opted in, until every
   // reader of a workspace — the Live Preview and Code mode among them — holds
@@ -447,6 +453,10 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
         copies: options.binaryCopies ?? [],
         writes: files,
         deletions: options.deletions ?? [],
+        framework: await storefrontThemeBuildDal.readThemeFramework(
+          storefrontId,
+          themeId,
+        ),
       });
       if (!planned.ok) throw new Error(planned.message);
       binaryCopies = planned.copies;
@@ -549,6 +559,10 @@ export const d1ThemeSourceStore: ThemeSourceStore = {
       themeId,
       file,
       options,
+      framework: await storefrontThemeBuildDal.readThemeFramework(
+        storefrontId,
+        themeId,
+      ),
     });
   },
   async readBinaryFile(digest) {
