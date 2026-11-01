@@ -230,12 +230,128 @@ function drawOverlays() {
 }
 
 /**
+ * Whether this page navigates as documents (docs/astro-theme-plan.md 6.3,
+ * D3): every page is its own document, so going to another one loads it.
+ * The preview client says so before this script loads, from the framework
+ * the Theme is recorded with (theme-preview-navigation.ts). Read once, and
+ * never inferred from a missing router: without it, everything below is
+ * exactly what it was.
+ */
+const documentNavigation = window.__morphPreviewNavigation === "document";
+/**
+ * Where the document before this one sent the frame, read once as this one
+ * loads and then forgotten, so it describes only the load that made this
+ * document and nothing older.
+ */
+const DOCUMENT_NAVIGATION_KEY =
+  "morph:preview-document-navigation:" + (channel?.previewSession ?? "");
+let arrivedByNavigationTo = null;
+if (documentNavigation) {
+  try {
+    arrivedByNavigationTo = sessionStorage.getItem(DOCUMENT_NAVIGATION_KEY);
+    sessionStorage.removeItem(DOCUMENT_NAVIGATION_KEY);
+  } catch {
+    arrivedByNavigationTo = null;
+  }
+}
+
+/** Whether two URL paths name the same page: a trailing slash or a
+ * percent-encoding apart. */
+function sameDocumentPath(left, right) {
+  const normal = (path) => {
+    let decoded = path;
+    try {
+      decoded = decodeURI(path);
+    } catch {}
+    return decoded.replace(/\\/+$/, "") || "/";
+  };
+  return normal(left) === normal(right);
+}
+
+/**
+ * A route the editor named that is an address on this origin, not a
+ * pattern: \`/blog/[slug]\` is a file name, and loading it would open no
+ * page of the Theme's.
+ */
+function concreteDocumentUrl(routePath) {
+  if (typeof routePath !== "string" || !routePath.startsWith("/")) return null;
+  if (/\\[[^\\]]*\\]/.test(routePath)) return null;
+  let next;
+  try {
+    next = new URL(routePath, location.href);
+  } catch {
+    return null;
+  }
+  // \`//host\` and \`/\\\\host\` are other origins to a URL parser.
+  if (next.origin !== location.origin) return null;
+  // The query is the editor's channel: session, viewport and whatever else
+  // this frame was opened with. The new document needs all of it.
+  next.search = location.search;
+  next.hash = "";
+  return next;
+}
+
+/**
+ * Set-route on a page that navigates as documents.
+ *
+ * Already there: answered, naming where this document is. Elsewhere: the
+ * other page is loaded in this frame, and nothing is answered. The document
+ * that loads there comes up with its own bridge, says it is ready, is sent
+ * the route again, and answers then; until that answer the editor takes
+ * nothing from the frame. A route that is not an address, or a load that
+ * ended somewhere else (a redirect), is never answered: the editor's wait
+ * runs out and says so, instead of anything claiming the page is open.
+ */
+function applyDocumentRoute(message) {
+  const target = message.routePath ?? "/";
+  const next = concreteDocumentUrl(target);
+  if (!next) {
+    console.warn(
+      "[morph-preview] not opened: " + target + " is not an address on this preview.",
+    );
+    return;
+  }
+  if (sameDocumentPath(location.pathname, target)) {
+    arrivedByNavigationTo = null;
+    appliedRoutePath = target;
+    reportStructure();
+    answerRouteRequest(message.routeRequestId, location.pathname);
+    return;
+  }
+  if (arrivedByNavigationTo !== null && sameDocumentPath(arrivedByNavigationTo, target)) {
+    // Sent to this route once already and landed here: sent again it would
+    // land here again, and again. Once only, for the load that made this
+    // document; the author asking again tries again.
+    arrivedByNavigationTo = null;
+    console.warn(
+      "[morph-preview] not opened: " + target + " loaded " + location.pathname + " instead.",
+    );
+    return;
+  }
+  try {
+    sessionStorage.setItem(DOCUMENT_NAVIGATION_KEY, target);
+  } catch {
+    // Without the record the redirect case above would never stop.
+    console.warn("[morph-preview] not opened: " + target + " (no session storage).");
+    return;
+  }
+  inlineEditor.finish(true);
+  selectedItem = null;
+  hoveredItem = null;
+  syncDragHandle();
+  drawOverlays();
+  location.assign(next.href);
+}
+
+/**
  * The route pattern the router has matched, or undefined without a router.
+ * A page that navigates as documents names its own path.
  *
  * Named in every structure report so the editor can tell a report about the
  * page it asked for from one sent on the way there.
  */
 function currentRoutePattern() {
+  if (documentNavigation) return location.pathname;
   const matches = window.__morphPreviewRouter?.state?.matches;
   const leaf = Array.isArray(matches) ? matches[matches.length - 1] : null;
   const pattern = leaf?.fullPath ?? leaf?.routeId;
@@ -287,6 +403,10 @@ function applyEditorRoute(message) {
     "data-morph-route-path",
     message.routePath ?? "/",
   );
+  if (documentNavigation) {
+    applyDocumentRoute(message);
+    return;
+  }
   const router = window.__morphPreviewRouter;
   if (router) {
     inlineEditor.finish(true);

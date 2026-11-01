@@ -978,6 +978,9 @@ describe("answering the editor's request for a route", () => {
       "restoreSelectedSection",
       "reportStructure",
       "currentRoutePattern",
+      // A Start page: no document navigation declared
+      // (theme-preview-bridge-document-navigation.test.ts has the other).
+      "documentNavigation",
       source + "; return applyEditorRoute;",
     )(
       {
@@ -1004,6 +1007,7 @@ describe("answering the editor's request for a route", () => {
       () => {},
       () => steps.push("structure"),
       options.matched,
+      false,
     ) as (message: Record<string, unknown>) => void;
     return { apply, steps, posted, attributes, timers };
   }

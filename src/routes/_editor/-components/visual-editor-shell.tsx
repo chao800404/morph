@@ -131,10 +131,19 @@ import {
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
 import {
-  buildThemeRouteRegistry,
+  isThemeEndpointRoute,
   themeRoutePathAfterFileMoves,
   type ThemeRouteRecord,
+  type ThemeRouteRegistry,
 } from "@/lib/storefront/compiler/theme-route-registry";
+import { themeRoutesFor } from "@/lib/storefront/theme-framework/theme-routes";
+import { previewNavigationFor } from "@/lib/storefront/theme-framework/theme-preview-navigation";
+import {
+  PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS,
+  initialPreviewDocumentNavigationState,
+  previewDocumentNavigationNotice,
+  reducePreviewDocumentNavigation,
+} from "@/lib/storefront/editor/preview-document-navigation";
 import {
   addThemeRouteSection,
   bindThemeRouteSection,
@@ -564,6 +573,19 @@ export const SOURCE_LOCATION_STALE_MESSAGE =
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
 /**
+ * Said when a canvas click arrives while a preview that navigates as
+ * documents has not confirmed the page the editor switched to (D3).
+ */
+export const PREVIEW_PAGE_OPENING_MESSAGE =
+  "The preview is still opening this page. Click again once it shows.";
+/**
+ * Said when a page that has no address of its own is asked for in a preview
+ * that navigates as documents: a dynamic route needs concrete parameters,
+ * and the editor does not invent them.
+ */
+export const ROUTE_PATTERN_NOT_OPENABLE_MESSAGE =
+  "This page needs a concrete address (for example a slug) to open in the preview. Open its source in Code instead.";
+/**
  * Shown near the preview while its frame did not say, on its ready, that it
  * reads the section a field edit names (an older preview build): typing in
  * the Inspector still saves, the canvas just does not follow each keystroke.
@@ -947,6 +969,13 @@ type PublicationBuildDraft = NonNullable<
 
 const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
 const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
+/** A route with no Start `content()` structure: one of another framework. */
+const NO_ROUTE_STRUCTURE: ReturnType<typeof deriveThemeRouteSections> = {
+  sections: [],
+  unboundSections: [],
+  diagnostics: [],
+  hasContentImport: false,
+};
 
 const DEFAULT_LEFT_PANEL_WIDTH = 260;
 const MIN_LEFT_PANEL_WIDTH = 220;
@@ -3440,9 +3469,31 @@ export function VisualEditorShell({
         })),
     ];
   }, [context.storefront.id, context.theme.id, themeFiles, workspaceFiles]);
-  const themeRouteRegistry = useMemo(
-    () => buildThemeRouteRegistry(effectiveThemeFiles),
-    [effectiveThemeFiles],
+  /**
+   * The Theme's routes, read the way its recorded framework reads them
+   * (`themeRoutesFor`; NULL is TanStack Start), never from the file shape: a
+   * workspace can hold both Start's and Astro's. Read-only on any framework
+   * (D2); what may be written stays with Core. A framework the editor does
+   * not know has no routes here.
+   */
+  const themeRouteRegistry = useMemo<ThemeRouteRegistry>(() => {
+    const read = themeRoutesFor(context.theme.framework, effectiveThemeFiles);
+    return read.ok ? read.registry : { valid: false, routes: [], diagnostics: [] };
+  }, [context.theme.framework, effectiveThemeFiles]);
+  /**
+   * How the preview moves between pages, from the recorded framework
+   * (theme-preview-navigation.ts). `document` (Astro): a page switch loads
+   * another document in the frame, and nothing from the frame is taken until
+   * that document has answered for the page asked for. Never inferred from a
+   * missing router: a Start Theme without one keeps its one page.
+   */
+  const documentNavigation =
+    previewNavigationFor(context.theme.framework) === "document";
+  const documentNavigationRef = useRef(documentNavigation);
+  documentNavigationRef.current = documentNavigation;
+  const [documentNavigationState, dispatchDocumentNavigation] = useReducer(
+    reducePreviewDocumentNavigation,
+    initialPreviewDocumentNavigationState,
   );
   /** For the preview message handler, which is not rebuilt for it. */
   const themeRouteRegistryRef = useRef(themeRouteRegistry);
@@ -3502,14 +3553,22 @@ export function VisualEditorShell({
       ReturnType<typeof deriveThemeRouteSections>
     >();
     for (const route of themeRouteRegistry.routes) {
-      if (route.kind !== "route" || route.isServerOnly) continue;
+      if (route.kind !== "route" || isThemeEndpointRoute(route)) continue;
       cache.set(
         route.sourcePath,
-        deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
+        // `content()` slots are Start structure, read by parsing the route as
+        // TSX. Another framework's page is never parsed so: it has none here.
+        sectionsUnavailableForFramework
+          ? NO_ROUTE_STRUCTURE
+          : deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
       );
     }
     return cache;
-  }, [effectiveThemeFiles, themeRouteRegistry.routes]);
+  }, [
+    effectiveThemeFiles,
+    sectionsUnavailableForFramework,
+    themeRouteRegistry.routes,
+  ]);
   const handlePrefetchThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
       // The editor and preview loaders already hydrate these queries in
@@ -3635,19 +3694,19 @@ export function VisualEditorShell({
   );
   const activeRouteStructure = useMemo(
     () =>
-      activeThemeRoute
+      activeThemeRoute && !sectionsUnavailableForFramework
         ? (themeRouteStructureCache.get(activeThemeRoute.sourcePath) ??
           deriveThemeRouteSections(
             effectiveThemeFiles,
             activeThemeRoute.sourcePath,
           ))
-        : {
-            sections: [],
-            unboundSections: [],
-            diagnostics: [],
-            hasContentImport: false,
-          },
-    [activeThemeRoute, effectiveThemeFiles, themeRouteStructureCache],
+        : NO_ROUTE_STRUCTURE,
+    [
+      activeThemeRoute,
+      effectiveThemeFiles,
+      sectionsUnavailableForFramework,
+      themeRouteStructureCache,
+    ],
   );
   const activeRouteSections = activeRouteStructure.sections;
   // A source-authored route is the structure owner even when it does not use
@@ -4077,8 +4136,16 @@ export function VisualEditorShell({
 
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
-      if (route.isServerOnly) {
+      if (isThemeEndpointRoute(route)) {
         handleJumpToCode(route.sourcePath, 1, 1);
+        return;
+      }
+      // A document-navigating preview opens an address, and a dynamic route
+      // is a pattern: its parameters are not known here and are not made up.
+      if (documentNavigationRef.current && route.dynamic) {
+        toast.info(ROUTE_PATTERN_NOT_OPENABLE_MESSAGE, {
+          id: "route-pattern-not-openable",
+        });
         return;
       }
       setPendingRouteSelection({
@@ -4104,7 +4171,12 @@ export function VisualEditorShell({
     (route: ThemeRouteRecord) => {
       // Endpoints have no Design page/template. Opening their source must not
       // navigate the canvas or create a content document for that URL.
-      if (!route.isServerOnly) handleOpenThemeRoute(route);
+      if (
+        !isThemeEndpointRoute(route) &&
+        !(documentNavigationRef.current && route.dynamic)
+      ) {
+        handleOpenThemeRoute(route);
+      }
       handleJumpToCode(route.sourcePath, 1, 1);
     },
     [handleJumpToCode, handleOpenThemeRoute],
@@ -8561,11 +8633,27 @@ export function VisualEditorShell({
      * preview, a Theme whose files are not read — and unknown is not the
      * editor's page.
      */
+    const latestRouteRequestAnswered = (round: number) => {
+      const routeRequest = lastRouteRequestRef.current;
+      return (
+        routeRequest !== null &&
+        routeRequest.key === previewKey &&
+        routeRequest.round === round &&
+        routeRequest.id === routeRequestIdRef.current &&
+        routeRequest.answered
+      );
+    };
     const frameShowsEditorPage = () => {
       const frame = frameRouteRef.current;
       const round = previewReadyRoundRef.current;
       const named =
         frame !== null && frame.key === previewKey && frame.round === round;
+      // A preview that navigates as documents (D3): a document names its own
+      // path from the moment it boots, but it is the editor's page only once
+      // it has answered the editor's latest route request in this round.
+      if (documentNavigationRef.current && !latestRouteRequestAnswered(round)) {
+        return false;
+      }
       if (named && frame.routePath !== null) {
         return previewStructureMatchesRoute(
           frame.routePath,
@@ -8576,14 +8664,7 @@ export function VisualEditorShell({
       // said so (no route) in answer to the editor's latest request, in this
       // round. Then the document it shows is the one the editor sent.
       if (previewIsSingleDocumentRef.current !== true || !named) return false;
-      const routeRequest = lastRouteRequestRef.current;
-      return (
-        routeRequest !== null &&
-        routeRequest.key === previewKey &&
-        routeRequest.round === round &&
-        routeRequest.id === routeRequestIdRef.current &&
-        routeRequest.answered
-      );
+      return latestRouteRequestAnswered(round);
     };
     /**
      * Whether the canvas is unavailable here, rather than on another page:
@@ -8955,6 +9036,13 @@ export function VisualEditorShell({
           routeRequest.id === message.routeRequestId
         ) {
           routeRequest.answered = true;
+          if (documentNavigationRef.current) {
+            dispatchDocumentNavigation({
+              type: "route-answered",
+              key: previewKey,
+              routePath: message.routePath,
+            });
+          }
         }
         return;
       }
@@ -8998,6 +9086,14 @@ export function VisualEditorShell({
         message.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
       ) {
         if (!previewSelection.isNewCanvasIntent(message)) return;
+        // Paused while a document-navigating frame has not answered for the
+        // editor's page (D3): the click may be on the page it is leaving.
+        if (documentNavigationRef.current && !frameShowsEditorPage()) {
+          toast.info(PREVIEW_PAGE_OPENING_MESSAGE, {
+            id: "preview-page-opening",
+          });
+          return;
+        }
         const target = resolveSourceLocatedTarget({
           selection: {
             sectionId: message.sectionId,
@@ -9218,6 +9314,42 @@ export function VisualEditorShell({
     });
     return routeRequestId;
   }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
+  /**
+   * A route request sent to a document-navigating frame: the page switch the
+   * canvas now waits on (D3). Nothing for a Theme whose preview has a router.
+   */
+  const noteDocumentRouteSent = useCallback(
+    (key: string) => {
+      if (!documentNavigationRef.current) return;
+      dispatchDocumentNavigation({
+        type: "route-sent",
+        key,
+        routePath: search.routePath ?? "/",
+        at: Date.now(),
+      });
+    },
+    [search.routePath],
+  );
+  // Stops waiting on a page switch that does not answer, and says so. Ends
+  // the wait only; a late answer still opens the page.
+  useEffect(() => {
+    if (documentNavigationState.status !== "opening") return;
+    const { key, routePath, startedAt } = documentNavigationState;
+    const timer = window.setTimeout(
+      () =>
+        dispatchDocumentNavigation({
+          type: "timed-out",
+          key,
+          routePath,
+          startedAt,
+        }),
+      Math.max(0, startedAt + PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [documentNavigationState]);
+  const documentNavigationNotice = documentNavigation
+    ? previewDocumentNavigationNotice(documentNavigationState, previewKey)
+    : null;
 
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
@@ -9231,6 +9363,7 @@ export function VisualEditorShell({
         id: routeRequestId,
         answered: false,
       };
+      noteDocumentRouteSent(previewKey);
       // A reloaded frame's content waits for the answer to this request
       // (`createInstanceContentReplay`); sending it is not the answer.
       instanceContentReplayRef.current?.routeSent(
@@ -9255,6 +9388,7 @@ export function VisualEditorShell({
     previewFrameReady?.sequence,
     previewKey,
     beginPreviewSizeMeasurement,
+    noteDocumentRouteSent,
     requestPreviewSize,
     syncPreviewRoute,
   ]);
@@ -9270,6 +9404,7 @@ export function VisualEditorShell({
       id: routeRequestId,
       answered: false,
     };
+    noteDocumentRouteSent(previewKey);
     instanceContentReplayRef.current?.routeSent(
       previewKey,
       previewReadyRoundRef.current,
@@ -13569,6 +13704,7 @@ export function VisualEditorShell({
           themeRoutes={themeRouteRegistry.routes.filter(
             (route) => route.kind === "route",
           )}
+          dynamicRoutesNotOpenable={documentNavigation}
           onPrefetchThemeRoute={handlePrefetchThemeRoute}
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
@@ -13918,6 +14054,45 @@ export function VisualEditorShell({
               </div>
             ) : null}
 
+            {documentNavigationNotice?.kind === "status" ? (
+              // A page switch in a preview that navigates as documents (D3):
+              // quiet while the other page loads.
+              <div
+                role="status"
+                data-testid="preview-document-navigation"
+                className="pointer-events-none absolute left-3 top-3 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {documentNavigationNotice.message}
+              </div>
+            ) : null}
+
+            {documentNavigationNotice?.kind === "alert" &&
+            previewLifecycle.phase !== "failed" ? (
+              <div
+                role="alert"
+                data-testid="preview-document-navigation"
+                className="absolute left-1/2 top-16 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm"
+              >
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="text-foreground">
+                    {documentNavigationNotice.message}
+                  </p>
+                  {documentNavigationNotice.retry ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={retryLivePreview}
+                    >
+                      Retry Preview
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
               <PreviewCompileErrorAlert
@@ -13956,7 +14131,10 @@ export function VisualEditorShell({
             onRouteIntent={handleRouteIntent}
             onPrefetchRoute={handlePrefetchThemeRoute}
             themeRoutes={themeRouteRegistry.routes.filter(
-              (route) => route.kind === "route",
+              (route) =>
+                route.kind === "route" &&
+                // The navigator only opens; a pattern has no address (D3).
+                !(documentNavigation && route.dynamic),
             )}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={(enabled) => {
