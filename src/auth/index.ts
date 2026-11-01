@@ -21,6 +21,29 @@ import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
 
+type PreviewAccessRevocationHooks =
+  typeof import("../server/preview-access-revocation-hooks");
+
+/**
+ * Loads the Live Preview revocation hooks and runs one (#214 P2d). Loading is
+ * inside the guard too: a module that fails to load must not turn a finished
+ * sign-out, ban or deletion into a failed one. Only the hook's name and the
+ * error's name are logged.
+ */
+async function endPreviewAccess(
+  hook: string,
+  run: (hooks: PreviewAccessRevocationHooks) => Promise<void>,
+): Promise<void> {
+  try {
+    await run(await import("../server/preview-access-revocation-hooks"));
+  } catch (error) {
+    console.error("[preview-access] revocation hook did not run", {
+      hook,
+      error: error instanceof Error ? error.name : typeof error,
+    });
+  }
+}
+
 /**
  * The bindings `createAuth` reads.
  *
@@ -145,7 +168,22 @@ function createAuth(
         ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"],
       },
     },
+    // Live Preview access ends with the session or user it answers to
+    // (#214 P2d). The after-hooks run once the change is written; they mark
+    // the preview grants revoked and ask open preview sockets to close.
+    // They never throw, so a sign-out, ban or deletion is never reported as
+    // failed for a preview's sake; the database change already refuses the
+    // next preview request, and a socket's lease ends it regardless.
     databaseHooks: {
+      session: {
+        delete: {
+          async after(session) {
+            await endPreviewAccess("session.delete", (hooks) =>
+              hooks.previewAccessAfterSessionDeleted(session),
+            );
+          },
+        },
+      },
       user: {
         create: {
           async before(userData) {
@@ -158,6 +196,25 @@ function createAuth(
               };
             }
             return { data: userData };
+          },
+        },
+        update: {
+          async after(user) {
+            await endPreviewAccess("user.update", (hooks) =>
+              hooks.previewAccessAfterUserUpdated(
+                user as typeof user & {
+                  role?: string | null;
+                  banned?: boolean | null;
+                },
+              ),
+            );
+          },
+        },
+        delete: {
+          async after(user) {
+            await endPreviewAccess("user.delete", (hooks) =>
+              hooks.previewAccessAfterUserDeleted(user),
+            );
           },
         },
       },
