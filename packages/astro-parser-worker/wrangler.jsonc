@@ -1,7 +1,7 @@
 /**
- * The dedicated `.astro` parser Worker. Not deployed: a deployment of this
- * unit, and pointing production Core at it, each need the user's approval
- * (handoff 2026-11-01, astro-parser-worker-deploy-plan.md).
+ * The dedicated `.astro` parser Worker (docs/astro-theme-plan.md 0.3). Not
+ * deployed: deploying this unit and pointing production Core at it are two
+ * separate approvals, neither given yet.
  *
  * Reached only through Core's service binding. Nothing here makes it public:
  * no workers.dev URL, no preview or version URLs, no routes. It has no D1, R2,
