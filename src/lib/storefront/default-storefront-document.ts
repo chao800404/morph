@@ -61,8 +61,13 @@ import {
  *     and Footer, so hiding one in the editor hides it on reload and on the
  *     published site instead of showing it with the component's defaults.
  *     Left alone when the content module cannot be shown to declare it.
+ * 30: an untouched `src/morph/content.ts` sends the platform's render context
+ *     back on its server reads of `/_morph/content`, so one page render reads
+ *     the one release its request was resolved to (G3). Browser reads are new
+ *     requests and send none. Preview runtime is unchanged: a Theme created
+ *     from 30 records none, as from 29.
  */
-export const STOREFRONT_STARTER_TEMPLATE_VERSION = 29;
+export const STOREFRONT_STARTER_TEMPLATE_VERSION = 30;
 
 const imageSrc = "/static/storefront/theme-preview-default.png";
 

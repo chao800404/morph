@@ -222,9 +222,9 @@ describe("the Live Preview runtime a Starter Theme records", () => {
     mocks.prepare.mock.calls.map((call) => String(call[0]));
 
   it(`records none for a Theme created from Starter ${STOREFRONT_STARTER_TEMPLATE_VERSION}`, async () => {
-    // 29 today; the first Starter that records `start` is 30
-    // (storefront.dal.v30-preview-runtime.test.ts).
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(29);
+    // 30 today, which records none as 29 did; the first Starter that records
+    // `start` is 31 (storefront.dal.v31-preview-runtime.test.ts).
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(30);
     const db = createNewStorefrontDb();
     mocks.getDb.mockResolvedValue(db);
     mocks.listFiles.mockResolvedValue([]);

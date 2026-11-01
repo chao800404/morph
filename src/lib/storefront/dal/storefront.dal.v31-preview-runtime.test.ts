@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * A Theme created from Starter 30 records the full Start preview (R-0, R1).
- * Starter 30 does not exist yet, so the current version is replaced with it
+ * A Theme created from Starter 31 records the full Start preview (R-0, R1).
+ * Starter 31 does not exist yet, so the current version is replaced with it
  * here; everything else is the real `ensureDefault`.
  */
 
@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../default-storefront-document", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../default-storefront-document")>()),
-  STOREFRONT_STARTER_TEMPLATE_VERSION: 30,
+  STOREFRONT_STARTER_TEMPLATE_VERSION: 31,
 }));
 vi.mock("@/db", () => ({ getDb: mocks.getDb }));
 // The Starter upgrade record is SQL handed to D1 directly (#260); it lands.
@@ -79,7 +79,7 @@ function createNewStorefrontDb() {
   return { db, values };
 }
 
-describe("a Theme created from Starter 30", () => {
+describe("a Theme created from Starter 31", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listFiles.mockResolvedValue([]);
@@ -87,7 +87,7 @@ describe("a Theme created from Starter 30", () => {
   });
 
   it("records the full Start preview", async () => {
-    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(30);
+    expect(STOREFRONT_STARTER_TEMPLATE_VERSION).toBe(31);
     const { db, values } = createNewStorefrontDb();
     mocks.getDb.mockResolvedValue(db);
 

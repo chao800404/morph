@@ -27,6 +27,7 @@ import {
   reviewStarterThemeUpgrade,
   STARTER_FILES_SHIPPED,
 } from "./starter-theme-upgrade-review";
+import { LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE } from "./starter-theme-v3-files";
 import { deriveThemeSourceContract } from "./theme-source-contract";
 
 type Fixture = {
@@ -38,7 +39,7 @@ type Fixture = {
 };
 type File = { id: string; path: string; content: string; version: number };
 
-const VERSIONS = [11, 15, 20, 26, 28] as const;
+const VERSIONS = [11, 15, 20, 26, 28, 29] as const;
 
 // Every test here is synchronous and CPU-bound, and in a full run the file
 // takes about a minute. Vitest's runner reaches no macrotask between
@@ -55,6 +56,7 @@ const SOURCE_COMMITS: Record<number, string> = {
   20: "63d8b5969bff731851b72729665a445e2ed53f38",
   26: "3007c63c10d53fe0593dbd1f2341aa6416a87d8f",
   28: "ca60a9d894c63045cde1d3a4690dbea360849801",
+  29: "e61823c4bd840c673787f7c21de245a0083aa9c1",
 };
 
 const fixtures = new Map<number, Fixture>(
@@ -221,13 +223,28 @@ describe("Starter history fixtures", () => {
     );
   });
 
-  it("v28 is the current Starter apart from the one file version 29 changed", () => {
+  it("v28 is the current Starter apart from the files versions 29 and 30 changed", () => {
     const { differs, extra, missing } = diffAgainstCurrent(workspace(28));
     expect({ differs, extra, missing }).toEqual({
-      differs: ["src/layouts/StorefrontLayout.tsx"],
+      differs: ["src/layouts/StorefrontLayout.tsx", "src/morph/content.ts"],
       extra: [],
       missing: [],
     });
+  });
+
+  it("v29 is the current Starter apart from the one file version 30 changed", () => {
+    const { differs, extra, missing } = diffAgainstCurrent(workspace(29));
+    expect({ differs, extra, missing }).toEqual({
+      differs: ["src/morph/content.ts"],
+      extra: [],
+      missing: [],
+    });
+    // The module version 30 replaces, kept word for word for the upgrade.
+    expect(
+      fixtures
+        .get(29)!
+        .files.find((file) => file.path === "src/morph/content.ts")!.content,
+    ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE);
   });
 });
 
@@ -269,6 +286,7 @@ describe("upgrading whole Starter workspaces from history", () => {
       missing: [],
     },
     28: { extra: [], differs: [], missing: [] },
+    29: { extra: [], differs: [], missing: [] },
   };
 
   /** Passes that changed something before the workspace stopped changing. */
@@ -280,6 +298,7 @@ describe("upgrading whole Starter workspaces from history", () => {
     20: 2,
     26: 1,
     28: 1,
+    29: 1,
   };
 
   describe.each(VERSIONS)("from Starter v%i", (v) => {
@@ -353,7 +372,7 @@ describe("upgrading whole Starter workspaces from history", () => {
       // workspace is refused until the upgrade corrects them.
       const old = () =>
         normalizeRevisionSnapshot(snapshot(workspace(v)), "rev");
-      if (v === 28) expect(old).not.toThrow();
+      if (v >= 28) expect(old).not.toThrow();
       else expect(old).toThrow(/INVALID_START_PACKAGE/);
     });
 
@@ -362,7 +381,7 @@ describe("upgrading whole Starter workspaces from history", () => {
       const pkg = settled.files.find((file) => file.path === "package.json")!;
       const current = currentStarter.get("package.json")!;
       expect(JSON.parse(pkg.content)).toEqual(JSON.parse(current));
-      if (v === 28) expect(pkg.content).toBe(current);
+      if (v >= 28) expect(pkg.content).toBe(current);
       // The upgrade serialises with a trailing newline; a new Theme has none.
       else expect(pkg.content).toBe(`${current}\n`);
     });
@@ -540,7 +559,7 @@ describe("upgrading whole Starter workspaces from history", () => {
         );
         const settled = upgradeToFixedPoint(before, v);
         const pkg = settled.files.find((f) => f.path === "package.json")!;
-        if (v === 28) {
+        if (v >= 28) {
           // Pins are current: nothing to correct, so the bytes are the author's.
           expect(pkg.content).toBe(edited);
           expect(
