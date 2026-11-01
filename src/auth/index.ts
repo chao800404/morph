@@ -145,7 +145,21 @@ function createAuth(
         ipAddressHeaders: ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"],
       },
     },
+    // Live Preview access ends with the session or user it answers to
+    // (#214 P2d). The after-hooks run once the change is written; they mark
+    // the preview grants revoked and ask open preview sockets to close.
+    // They never throw, so a sign-out, ban or deletion is never reported as
+    // failed for a preview's sake; the database change already refuses the
+    // next preview request, and a socket's lease ends it regardless.
     databaseHooks: {
+      session: {
+        delete: {
+          async after(session) {
+            const hooks = await import("../server/preview-access-revocation-hooks");
+            await hooks.previewAccessAfterSessionDeleted(session);
+          },
+        },
+      },
       user: {
         create: {
           async before(userData) {
@@ -158,6 +172,20 @@ function createAuth(
               };
             }
             return { data: userData };
+          },
+        },
+        update: {
+          async after(user) {
+            const hooks = await import("../server/preview-access-revocation-hooks");
+            await hooks.previewAccessAfterUserUpdated(
+              user as typeof user & { role?: string | null; banned?: boolean | null },
+            );
+          },
+        },
+        delete: {
+          async after(user) {
+            const hooks = await import("../server/preview-access-revocation-hooks");
+            await hooks.previewAccessAfterUserDeleted(user);
           },
         },
       },
