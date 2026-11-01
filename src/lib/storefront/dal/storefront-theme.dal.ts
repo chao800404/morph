@@ -272,6 +272,11 @@ export function resolveSectionSourceComponent(args: {
 
   if (args.templateType === "layout") {
     const derived = deriveThemeLayoutSections(args.files);
+    // A stated limitation, not a Design edit: judged by this Theme's layout
+    // source alone, never its Starter version, such a shell's shared sections
+    // are not Design-editable through the Document until the layout reads
+    // `content(...)` (the Starter upgrade, or an edit in Code mode). Source
+    // default edits proven on the canvas are a separate path and stay open.
     if (layoutIgnoresDocument(args.files, derived)) {
       return { kind: "unconfirmed", reason: LEGACY_LAYOUT_DESIGN_WRITE_REASON };
     }

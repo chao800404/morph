@@ -36,6 +36,10 @@ import {
   STOREFRONT_STARTER_TEMPLATE_VERSION,
 } from "../default-storefront-document";
 import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
+import {
+  analyzeSourceDefaultFields,
+  proveAndPatchSourceDefault,
+} from "../editor/source-default-control";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -5261,6 +5265,23 @@ describe("Starter layout writes keep their source proof", () => {
       "current Starter with the always-visible slot shell",
       withLayout(LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE),
     ],
+    // Judged by its source, not its version: a v15 Theme whose shell was
+    // rewritten in Code mode to read `content(...)`, with no upgrade applied.
+    [
+      "Starter v15 with its shell rewritten to read content",
+      () => {
+        const current = new Map(currentWorkspace().map((file) => [file.path, file]));
+        const swapped = [
+          "src/layouts/StorefrontLayout.tsx",
+          "src/components/Header.tsx",
+          "src/components/Footer.tsx",
+          ...[...current.keys()].filter((path) => path.startsWith("src/morph/")),
+        ];
+        const files = new Map(historyWorkspace(15).map((file) => [file.path, file]));
+        for (const path of swapped) files.set(path, current.get(path)!);
+        return [...files.values()];
+      },
+    ],
   ];
   // The shells that forward the layout's own default props, or none at all,
   // instead of rendering `content(...)` slots.
@@ -5444,7 +5465,58 @@ describe("Starter layout writes keep their source proof", () => {
     expect(result).not.toBeNull();
   });
 
-  type UpgradeFile = { id: string; path: string; content: string; version: number };
+  // The refusal above is for Document writes only. A source default the
+  // canvas proves on a legacy shell is written into the component file and
+  // renders, so that path stays open.
+  for (const [name, filesFor] of [
+    legacyWorkspaces[1]!,
+    legacyWorkspaces.find(([label]) => label.includes("marked"))!,
+  ]) {
+    it(`still writes and renders a proven source default on the ${name}`, async () => {
+      const files = filesFor();
+      const fields = analyzeSourceDefaultFields({
+        files,
+        componentSourcePath: "src/components/Header.tsx",
+        fieldKeys: ["cartLabel"],
+      });
+      expect(fields.cartLabel).toEqual({ status: "default" });
+      const proof = proveAndPatchSourceDefault({
+        files,
+        componentSourcePath: "src/components/Header.tsx",
+        fieldKey: "cartLabel",
+        expectedCurrentDefault: "Cart (0)",
+        value: "ZZCART",
+      });
+      expect(proof.status).toBe("ok");
+      const patched = files.map((file) =>
+        file.path === "src/components/Header.tsx" && proof.status === "ok"
+          ? { ...file, content: proof.nextContent }
+          : file,
+      );
+
+      // The same field written through the Document is still refused.
+      seedWorkspace(patched, createDefaultStorefrontLayoutDocument());
+      await expect(
+        storefrontThemeDal.updateSectionProps({
+          ...target,
+          sectionId: STOREFRONT_LAYOUT_HEADER_SLOT_ID,
+          props: { cartLabel: "Never shown" },
+          expectedSourceGeneration: 1,
+        }),
+      ).rejects.toThrow(LEGACY_LAYOUT_REASON);
+
+      const { html } = await renderLivePreviewRoute({
+        files: patched,
+        documents: {
+          index: createDefaultStorefrontHomeDocument(),
+          layout: createDefaultStorefrontLayoutDocument(),
+        },
+      });
+      expect(html).toContain("ZZCART");
+    });
+  }
+
+  type UpgradeFile ={ id: string; path: string; content: string; version: number };
   /** The reviewed upgrade, applied until it plans nothing, as the store does. */
   function upgradeStarter(version: number) {
     let files: UpgradeFile[] = historyWorkspace(version).map((file, index) => ({
