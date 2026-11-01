@@ -48,6 +48,15 @@ describe("Morph's .astro parser and the Astro toolchain", () => {
     expect(satisfiesCaret("0.5.9", "^0.5.0")).toBe(true);
   });
 
+  it("load the same version in the parser Worker, exactly pinned", () => {
+    const manifest = JSON.parse(
+      readFileSync("packages/astro-parser-worker/package.json", "utf8"),
+    ) as { dependencies: Record<string, string> };
+    expect(manifest.dependencies["@astrojs/compiler-binding-wasm32-wasi"]).toBe(
+      MORPH_ASTRO_COMPILER_RS_VERSION,
+    );
+  });
+
   it("installs the native binding the Sandbox platform needs", () => {
     expect(
       lock.packages["node_modules/@astrojs/compiler-binding-linux-x64-gnu"]

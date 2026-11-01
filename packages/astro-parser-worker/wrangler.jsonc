@@ -1,0 +1,35 @@
+/**
+ * The dedicated `.astro` parser Worker. Not deployed: a deployment of this
+ * unit, and pointing production Core at it, each need the user's approval
+ * (handoff 2026-11-01, astro-parser-worker-deploy-plan.md).
+ *
+ * Reached only through Core's service binding. Nothing here makes it public:
+ * no workers.dev URL, no preview or version URLs, no routes. It has no D1, R2,
+ * KV, queue or deployment binding; its limits are code (src/contract.ts), not
+ * vars, so no environment can loosen them.
+ */
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "morph-astro-parser",
+  "main": "src/worker.ts",
+  // Core's date and flags, which M1c and M1c-C ran the parser with.
+  "compatibility_date": "2026-03-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  // workerd refuses to compile Wasm from bytes, so the compiler's `.wasm` is
+  // imported precompiled.
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": false },
+  ],
+  // The deployment's version id, written into every log line.
+  "version_metadata": { "binding": "VERSION" },
+  // Every invocation in Workers Logs, unsampled, so a caller's request id can
+  // be matched to the platform's outcome for it (the M1c-C method; tail
+  // samples under load and was not enough on its own).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": true },
+  },
+}
