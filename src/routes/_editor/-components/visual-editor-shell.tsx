@@ -326,6 +326,7 @@ import {
   livePreviewAccessCodeMessage,
   startLivePreviewAccessFlow,
   type LivePreviewAccessFlow,
+  type LivePreviewAccessTab,
 } from "@/lib/storefront/editor/live-preview-access";
 import { issueThemePreviewAccess } from "@/server/storefront/storefront-theme-preview-access.serverFn";
 import { themePreviewServerQueries } from "../-queries/theme-preview-server.queries";
@@ -2762,6 +2763,36 @@ export function VisualEditorShell({
       : previewUrl;
   const previewUrlRef = useRef(previewUrl);
   previewUrlRef.current = previewUrl;
+  // A preview tab the editor opened runs its own flow, with its own grant
+  // (#214 P3, design §4b); one at a time, answered at most once.
+  const previewAccessTabRef = useRef<LivePreviewAccessTab | null>(null);
+  const previewTabEditorOrigin = context.previewChannel?.editorOrigin ?? null;
+  const openPreviewTab = useCallback(() => {
+    const framedUrl = previewUrlRef.current;
+    if (!framedUrl || !previewTabEditorOrigin) return;
+    const previous = previewAccessTabRef.current;
+    if (previous) previous.flow.ended = true;
+    const flow = startLivePreviewAccessFlow(Date.now());
+    // Opened with an opener: the tab's begin page reports to this window.
+    // It drops the opener itself before the Theme loads.
+    const opened = window.open(
+      livePreviewAccessBeginUrl({
+        framedUrl,
+        flowId: flow.flowId,
+        editorOrigin: previewTabEditorOrigin,
+        mode: "tab",
+      }),
+      "_blank",
+    );
+    if (!opened) {
+      previewAccessTabRef.current = null;
+      toast.error(
+        "The browser blocked the preview tab. Allow pop-ups for Morph, then try again.",
+      );
+      return;
+    }
+    previewAccessTabRef.current = { flow, window: opened };
+  }, [previewTabEditorOrigin]);
   const previewRevisionRef = useRef(previewRevision);
   previewRevisionRef.current = previewRevision;
   /**
@@ -2984,6 +3015,57 @@ export function VisualEditorShell({
         message: LIVE_PREVIEW_ACCESS_FAILED_NOTICE,
       });
     const onMessage = (event: MessageEvent) => {
+      const tab = previewAccessTabRef.current;
+      if (tab && tab.window && event.source === tab.window) {
+        const fromTab = {
+          origin: previewSourceOriginRef.current ?? "",
+          window: tab.window,
+        };
+        // The tab shows its own failure; the editor only lets go of it.
+        if (isLivePreviewAccessFailure(tab.flow, event, fromTab)) {
+          tab.flow.ended = true;
+          tab.window = null;
+          return;
+        }
+        const tabBinderHash = acceptLivePreviewAccessBegin(
+          tab.flow,
+          event,
+          fromTab,
+          Date.now(),
+        );
+        if (!tabBinderHash) return;
+        const tabWindow = tab.window as Window;
+        void issueThemePreviewAccess({
+          data: {
+            storefrontId,
+            themeId,
+            flowId: tab.flow.flowId,
+            binderHash: tabBinderHash,
+            kind: "tab",
+          },
+        }).then(
+          (result) => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            if (!result.success) {
+              tabWindow.close();
+              toast.error("The preview tab could not sign in. Try again.");
+              return;
+            }
+            tabWindow.postMessage(
+              livePreviewAccessCodeMessage(tab.flow, result.data.code),
+              fromTab.origin,
+            );
+          },
+          () => {
+            if (previewAccessTabRef.current !== tab) return;
+            tab.window = null;
+            tabWindow.close();
+            toast.error("The preview tab could not sign in. Try again.");
+          },
+        );
+        return;
+      }
       const entry = previewAccessFlowRef.current;
       if (!entry) return;
       const frame = previewIframeRef.current?.contentWindow ?? null;
@@ -14081,6 +14163,11 @@ export function VisualEditorShell({
             spacingOverlayMode={spacingOverlayMode}
             onSpacingOverlayModeChange={setSpacingOverlayMode}
             onPreviewRuntimeChanged={retryLivePreview}
+            onOpenPreviewTab={
+              previewAccessMode === "pv-exchange" && previewUrl
+                ? openPreviewTab
+                : null
+            }
             isCommentMode={isCommentMode}
             onCommentModeChange={(enabled) => {
               autoEnabledSelectionForStylesRef.current = false;
@@ -14286,6 +14373,7 @@ function EditorControls({
   spacingOverlayMode,
   onSpacingOverlayModeChange,
   onPreviewRuntimeChanged,
+  onOpenPreviewTab,
   isCommentMode,
   onCommentModeChange,
   onRefresh,
@@ -14302,6 +14390,8 @@ function EditorControls({
   onSpacingOverlayModeChange: (mode: PreviewSpacingOverlayMode) => void;
   /** Restarts the Live Preview once the Theme records another runtime. */
   onPreviewRuntimeChanged: () => void;
+  /** Opens the preview in its own tab; null while the preview has no `pv-` host. */
+  onOpenPreviewTab: (() => void) | null;
   isCommentMode: boolean;
   onCommentModeChange: (enabled: boolean) => void;
   onRefresh: () => void;
@@ -14412,9 +14502,14 @@ function EditorControls({
           variant="ghost"
           size="icon"
           className="size-7 shrink-0 shadow-none"
-          disabled
+          disabled={!onOpenPreviewTab}
           aria-label="Open preview in new tab"
-          title="Open preview is not available yet"
+          title={
+            onOpenPreviewTab
+              ? "Open preview in new tab"
+              : "Open preview in a new tab is not available for this preview"
+          }
+          onClick={() => onOpenPreviewTab?.()}
         >
           <ExternalLink />
         </Button>

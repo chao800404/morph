@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * #214 P2's Live Preview private access acceptance, which only a container
+ * #214 P2's and P3's Live Preview private access acceptance, which only a container
  * transport can run: on the shards and the full Start job the preview has no
  * `pv-` host, and the spec skips itself.
  *
@@ -14,5 +14,6 @@ export const TARGET = Object.freeze({
   file: "preview-access-container.spec.ts",
   titles: Object.freeze([
     "Live Preview private access on the pv- host › verifies every request, and a copied address alone never gets the draft",
+    "Live Preview private access on the pv- host › opens in its own tab from the editor with this run's draft; before that tab grant, a pasted address gets no draft",
   ]),
 });

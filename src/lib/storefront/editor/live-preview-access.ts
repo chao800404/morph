@@ -41,20 +41,33 @@ export function newLivePreviewAccessFlowId(): string {
 
 /**
  * The begin page for a framed preview address: on the preview's own origin,
- * returning afterwards to that address's path and query.
+ * returning afterwards to that address's path and query. A tab the editor
+ * opens (#214 P3) runs the same flow in `tab` mode, with its own grant.
  */
 export function livePreviewAccessBeginUrl(args: {
   framedUrl: string;
   flowId: string;
   editorOrigin: string;
+  mode?: "iframe" | "tab";
 }): string {
   const framed = new URL(args.framedUrl);
   const begin = new URL(LIVE_PREVIEW_ACCESS_BEGIN_PATH, framed.origin);
   begin.searchParams.set("flow", args.flowId);
   begin.searchParams.set("return", `${framed.pathname}${framed.search}`);
   begin.searchParams.set("editorOrigin", args.editorOrigin);
+  if (args.mode === "tab") begin.searchParams.set("mode", "tab");
   return begin.toString();
 }
+
+/**
+ * A preview tab the editor opened, and the flow it is running. Its window
+ * is dropped once the flow ends, so the editor keeps no handle on a tab
+ * that now runs Theme code.
+ */
+export type LivePreviewAccessTab = {
+  readonly flow: LivePreviewAccessFlow;
+  window: unknown;
+};
 
 export type LivePreviewAccessFlow = {
   readonly flowId: string;
