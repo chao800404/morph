@@ -21,6 +21,29 @@ import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "../db/schema";
 
+type PreviewAccessRevocationHooks =
+  typeof import("../server/preview-access-revocation-hooks");
+
+/**
+ * Loads the Live Preview revocation hooks and runs one (#214 P2d). Loading is
+ * inside the guard too: a module that fails to load must not turn a finished
+ * sign-out, ban or deletion into a failed one. Only the hook's name and the
+ * error's name are logged.
+ */
+async function endPreviewAccess(
+  hook: string,
+  run: (hooks: PreviewAccessRevocationHooks) => Promise<void>,
+): Promise<void> {
+  try {
+    await run(await import("../server/preview-access-revocation-hooks"));
+  } catch (error) {
+    console.error("[preview-access] revocation hook did not run", {
+      hook,
+      error: error instanceof Error ? error.name : typeof error,
+    });
+  }
+}
+
 /**
  * The bindings `createAuth` reads.
  *
@@ -155,8 +178,9 @@ function createAuth(
       session: {
         delete: {
           async after(session) {
-            const hooks = await import("../server/preview-access-revocation-hooks");
-            await hooks.previewAccessAfterSessionDeleted(session);
+            await endPreviewAccess("session.delete", (hooks) =>
+              hooks.previewAccessAfterSessionDeleted(session),
+            );
           },
         },
       },
@@ -176,16 +200,21 @@ function createAuth(
         },
         update: {
           async after(user) {
-            const hooks = await import("../server/preview-access-revocation-hooks");
-            await hooks.previewAccessAfterUserUpdated(
-              user as typeof user & { role?: string | null; banned?: boolean | null },
+            await endPreviewAccess("user.update", (hooks) =>
+              hooks.previewAccessAfterUserUpdated(
+                user as typeof user & {
+                  role?: string | null;
+                  banned?: boolean | null;
+                },
+              ),
             );
           },
         },
         delete: {
           async after(user) {
-            const hooks = await import("../server/preview-access-revocation-hooks");
-            await hooks.previewAccessAfterUserDeleted(user);
+            await endPreviewAccess("user.delete", (hooks) =>
+              hooks.previewAccessAfterUserDeleted(user),
+            );
           },
         },
       },

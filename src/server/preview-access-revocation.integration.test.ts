@@ -93,15 +93,13 @@ afterAll(async () => {
 
 /** Inserts a row, filling any other required column without a default. */
 async function insertRow(table: string, values: Record<string, unknown>) {
-  const { results } = await d1
-    .prepare(`PRAGMA table_info(${table})`)
-    .all<{
-      name: string;
-      type: string;
-      notnull: number;
-      dflt_value: unknown;
-      pk: number;
-    }>();
+  const { results } = await d1.prepare(`PRAGMA table_info(${table})`).all<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: unknown;
+    pk: number;
+  }>();
   const row: Record<string, unknown> = { ...values };
   for (const column of results) {
     if (column.name in row || !column.notnull || column.dflt_value !== null)
@@ -304,5 +302,50 @@ describe("Live Preview access ends with its session or user (#214 P2d, real Bett
       .bind(admin.sessionId)
       .first();
     expect(session).toBeNull();
+  });
+
+  // Last on purpose: it swaps the hooks module out for one that cannot load.
+  it("a hooks module that fails to load fails neither sign-out nor ban, and is logged", async () => {
+    vi.resetModules();
+    vi.doMock("@/server/preview-access-revocation-hooks", () => {
+      throw new Error("module failed to load");
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const a = await auth();
+      const admin = await signedIn(a, "admin");
+      const target = await signedIn(a, "admin");
+      await expect(
+        a.api.signOut({ headers: target.headers }),
+      ).resolves.toBeTruthy();
+      expect(
+        await d1
+          .prepare("SELECT id FROM sessions WHERE id = ?")
+          .bind(target.sessionId)
+          .first(),
+      ).toBeNull();
+      await expect(
+        a.api.banUser({
+          headers: admin.headers,
+          body: { userId: target.userId },
+        }),
+      ).resolves.toBeTruthy();
+      const banned = await d1
+        .prepare("SELECT banned FROM users WHERE id = ?")
+        .bind(target.userId)
+        .first<{ banned: number }>();
+      expect(banned?.banned).toBe(1);
+      expect(errors).toHaveBeenCalledWith(
+        "[preview-access] revocation hook did not run",
+        { hook: "session.delete", error: "Error" },
+      );
+      expect(errors).toHaveBeenCalledWith(
+        "[preview-access] revocation hook did not run",
+        { hook: "user.update", error: "Error" },
+      );
+    } finally {
+      vi.doUnmock("@/server/preview-access-revocation-hooks");
+      vi.resetModules();
+    }
   });
 });
