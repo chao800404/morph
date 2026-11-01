@@ -4,6 +4,7 @@
     "accessibility.spec.ts": 56.4,
     "astro-island-hmr.spec.ts": 0,
     "astro-preview-container.spec.ts": 0,
+    "preview-access-container.spec.ts": 0,
     "astro-publish-acceptance.spec.ts": 0,
     "auth-failure.spec.ts": 1.5,
     "authored-content.spec.ts": 0,
