@@ -22,7 +22,20 @@ import {
 } from "../compiler/theme-route-sections";
 import { analyzeB1Route } from "../ast/theme-content-provenance";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
-import { LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE } from "../starter-theme-v3-files";
+import {
+  LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
+  LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE,
+  STARTER_THEME_INDEX_SOURCE,
+} from "../starter-theme-v3-files";
+import { reviewStarterThemeUpgrade } from "../starter-theme-upgrade-review";
+import {
+  createDefaultStorefrontHomeDocument,
+  createDefaultStorefrontLayoutDocument,
+  STOREFRONT_LAYOUT_HEADER_SLOT_ID,
+  STOREFRONT_STARTER_TEMPLATE_VERSION,
+} from "../default-storefront-document";
+import { renderLivePreviewRoute } from "@/lib/test-utils/live-preview-render";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -5215,11 +5228,14 @@ export default function Entries({ items = [{ title: "One" }, { title: "Two" }] }
   });
 });
 
+const LEGACY_LAYOUT_REASON =
+  "This layout does not read Design content. Upgrade the Starter to edit it here, or edit it in Code mode.";
+
 describe("Starter layout writes keep their source proof", () => {
   // Layout writes are checked against the layout source like route writes.
-  // Every field a Starter's shell passes through must stay writable: the
-  // current Starter, the shipped history and the slot-bound shell an upgrade
-  // still recognises.
+  // A shell that renders `content(...)` slots must keep every field it passes
+  // through writable; a shell that never reads the layout Document must refuse
+  // them, since nothing stored there would reach the page.
   const historyWorkspace = (version: number) =>
     (
       JSON.parse(
@@ -5231,49 +5247,80 @@ describe("Starter layout writes keep their source proof", () => {
     ).files;
   const currentWorkspace = () =>
     starterThemeWorkspaceFiles().map(({ path, content }) => ({ path, content }));
-  const workspaces: ReadonlyArray<
-    [string, () => readonly { path: string; content: string }[]]
-  > = [
+  const withLayout = (content: string) => () =>
+    currentWorkspace().map((file) =>
+      file.path === "src/layouts/StorefrontLayout.tsx" ? { ...file, content } : file,
+    );
+  type Workspace = [string, () => readonly { path: string; content: string }[]];
+  const confirmedWorkspaces: readonly Workspace[] = [
     ["current Starter", currentWorkspace],
-    ...[11, 15, 20, 26, 28].map(
-      (version) =>
-        [`Starter v${version}`, () => historyWorkspace(version)] as [
-          string,
-          () => readonly { path: string; content: string }[],
-        ],
+    ...[20, 26, 28].map(
+      (version): Workspace => [`Starter v${version}`, () => historyWorkspace(version)],
     ),
     [
       "current Starter with the always-visible slot shell",
-      () =>
-        currentWorkspace().map((file) =>
-          file.path === "src/layouts/StorefrontLayout.tsx"
-            ? { ...file, content: LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE }
-            : file,
-        ),
+      withLayout(LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE),
     ],
   ];
+  // The shells that forward the layout's own default props, or none at all,
+  // instead of rendering `content(...)` slots.
+  const legacyWorkspaces: readonly Workspace[] = [
+    ...[11, 15].map(
+      (version): Workspace => [`Starter v${version}`, () => historyWorkspace(version)],
+    ),
+    ["current Starter with the marked shell", withLayout(LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE)],
+    ["current Starter with the index shell", withLayout(STARTER_THEME_INDEX_SOURCE)],
+    ["current Starter with the propless shell", withLayout(LEGACY_STARTER_THEME_LAYOUT_PROPLESS_SOURCE)],
+  ];
 
-  for (const [name, filesFor] of workspaces) {
+  function seedWorkspace(
+    files: readonly { path: string; content: string }[],
+    document: StorefrontPageDocument,
+  ) {
+    const insertFile = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    files.forEach((file, index) =>
+      insertFile.run(`starter-${index}`, file.path, file.content),
+    );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-layout', 'theme-a', 'layout', 'Layout', ?, 'now', 'now')`,
+      )
+      .run(JSON.stringify(document));
+  }
+  const storedLayout = () => ({
+    template: sqlite
+      .prepare(
+        "SELECT document, draft_revision_id AS draftRevisionId, draft_generation AS draftGeneration FROM storefront_theme_templates WHERE id = 'template-layout'",
+      )
+      .get(),
+    revisions: sqlite
+      .prepare(
+        "SELECT COUNT(*) AS count FROM storefront_theme_template_revisions WHERE template_id = 'template-layout'",
+      )
+      .get(),
+  });
+  const target = {
+    storefrontId: "storefront-a",
+    themeId: "theme-a",
+    templateId: "template-layout",
+    expectedDraftGeneration: 1,
+    createdBy: "user-1",
+  };
+
+  for (const [name, filesFor] of confirmedWorkspaces) {
     it(`accepts every passed-through layout field of the ${name}`, async () => {
       const files = filesFor();
-      const insertFile = sqlite.prepare(`
-        INSERT INTO storefront_theme_files
-          (id, storefront_id, theme_id, path, content, created_at, updated_at)
-        VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
-      `);
-      files.forEach((file, index) =>
-        insertFile.run(`starter-${index}`, file.path, file.content),
-      );
-      sqlite
-        .prepare(
-          `INSERT INTO storefront_theme_templates
-            (id, theme_id, type, name, document, created_at, updated_at)
-          VALUES ('template-layout', 'theme-a', 'layout', 'Layout', ?, 'now', 'now')`,
-        )
-        .run(JSON.stringify({ version: 1, sections: [] }));
+      seedWorkspace(files, { version: 1, sections: [] });
 
       const layout = deriveThemeLayoutSections(files);
       expect(layout.diagnostics).toEqual([]);
+      expect(layout.hasContentImport).toBe(true);
       const writes: Array<[string, string]> = [];
       for (const section of layout.sections) {
         const [instance] = analyzeB1Route(files, section.routeSourcePath)
@@ -5283,9 +5330,7 @@ describe("Starter layout writes keep their source proof", () => {
           writes.push([section.slotId, field]);
         }
       }
-      // A Starter whose shell does not adopt `content(...)` has nothing to
-      // prove; every other one must have fields to write.
-      if (layout.hasContentImport) expect(writes.length).toBeGreaterThan(0);
+      expect(writes.length).toBeGreaterThan(0);
 
       let draftGeneration = 1;
       const refused: string[] = [];
@@ -5309,6 +5354,155 @@ describe("Starter layout writes keep their source proof", () => {
         }
       }
       expect(refused).toEqual([]);
+    });
+  }
+
+  for (const [name, filesFor] of legacyWorkspaces) {
+    it(`refuses layout writes to the ${name} and leaves the Document unchanged`, async () => {
+      const files = filesFor();
+      const layout = deriveThemeLayoutSections(files);
+      expect(layout.sections).toEqual([]);
+      expect(layout.hasContentImport).toBe(false);
+      // The layout Document a Starter is seeded with: both sections exist, so
+      // a write finds its target and only the source can refuse it.
+      const document = createDefaultStorefrontLayoutDocument();
+      seedWorkspace(files, document);
+      const before = storedLayout();
+
+      const writes = document.sections.flatMap((section) => [
+        ...Object.keys(section.props ?? {}).map((field) => ({
+          label: `${section.id} reset ${field}`,
+          props: {},
+          resetProps: [field],
+          sectionId: section.id,
+        })),
+        {
+          label: `${section.id} storeName`,
+          props: { storeName: "Never shown" },
+          sectionId: section.id,
+        },
+        {
+          label: `${section.id} hide`,
+          props: { enabled: false },
+          sectionId: section.id,
+        },
+      ]);
+      expect(writes.length).toBeGreaterThan(4);
+      const outcomes: string[] = [];
+      let draftGeneration = 1;
+      for (const { label, ...write } of writes) {
+        try {
+          // Each write holds the generation the last one left, so one that is
+          // wrongly accepted cannot hide the next behind a draft conflict.
+          const result = await storefrontThemeDal.updateSectionProps({
+            ...target,
+            ...write,
+            expectedDraftGeneration: draftGeneration,
+            expectedSourceGeneration: 1,
+          });
+          draftGeneration = result?.draftGeneration ?? draftGeneration;
+          outcomes.push(`${label}: accepted`);
+        } catch (error) {
+          outcomes.push(`${label}: ${(error as Error).message}`);
+        }
+      }
+      expect(outcomes).toEqual(
+        writes.map(
+          ({ label }) =>
+            `${label}: SECTION_SOURCE_UNCONFIRMED: ${LEGACY_LAYOUT_REASON}`,
+        ),
+      );
+
+      // Moving or renaming the shell's sections would be as invisible.
+      await expect(
+        storefrontThemeDal.reorderSections({
+          ...target,
+          sectionIds: [...document.sections].reverse().map((s) => s.id),
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        storefrontThemeDal.renameSection({
+          ...target,
+          sectionId: document.sections[0]!.id,
+          name: "Never shown",
+        }),
+      ).resolves.toBeNull();
+
+      expect(storedLayout()).toEqual(before);
+    });
+  }
+
+  it("still accepts a website render policy on a legacy shell, which the runtime reads from the Document", async () => {
+    // The policy is read from the layout Document by the content runtime and
+    // the prerender planner, never through the shell's slots.
+    seedWorkspace(historyWorkspace(11), createDefaultStorefrontLayoutDocument());
+    const result = await storefrontThemeDal.updateRenderPolicy({
+      ...target,
+      expectedSourceGeneration: 1,
+      setting: { scope: "website", policy: { mode: "ssr" } },
+    });
+    expect(result).not.toBeNull();
+  });
+
+  type UpgradeFile = { id: string; path: string; content: string; version: number };
+  /** The reviewed upgrade, applied until it plans nothing, as the store does. */
+  function upgradeStarter(version: number) {
+    let files: UpgradeFile[] = historyWorkspace(version).map((file, index) => ({
+      id: `file-${index}`,
+      path: file.path,
+      content: file.content,
+      version: 1,
+    }));
+    let storedVersion = version;
+    for (let pass = 0; pass < 5; pass += 1) {
+      const { plan } = reviewStarterThemeUpgrade(files, { storedVersion });
+      if (plan.files.length === 0 && plan.deletions.length === 0) break;
+      const next = new Map(files.map((file) => [file.path, file]));
+      for (const deletion of plan.deletions) next.delete(deletion.path);
+      for (const write of plan.files) {
+        const existing = next.get(write.path);
+        next.set(write.path, {
+          id: existing?.id ?? `new-${write.path}`,
+          path: write.path,
+          content: write.content,
+          version: (existing?.version ?? 0) + 1,
+        });
+      }
+      files = [...next.values()];
+      storedVersion = STOREFRONT_STARTER_TEMPLATE_VERSION;
+    }
+    return files.map(({ path, content }) => ({ path, content }));
+  }
+
+  for (const version of [11, 15]) {
+    it(`accepts and renders a layout write once Starter v${version} is upgraded`, async () => {
+      const files = upgradeStarter(version);
+      expect(deriveThemeLayoutSections(files).hasContentImport).toBe(true);
+      seedWorkspace(files, createDefaultStorefrontLayoutDocument());
+
+      const result = await storefrontThemeDal.updateSectionProps({
+        ...target,
+        sectionId: STOREFRONT_LAYOUT_HEADER_SLOT_ID,
+        props: { storeName: "ZZBRAND" },
+        expectedSourceGeneration: 1,
+      });
+      expect(result).not.toBeNull();
+
+      const context = await storefrontThemeDal.findEditorContext(
+        "storefront-a",
+        "theme-a",
+      );
+      const layoutDocument = context!.templates.find(
+        (template) => template.type === "layout",
+      )!.document;
+      const { html } = await renderLivePreviewRoute({
+        files,
+        documents: {
+          index: createDefaultStorefrontHomeDocument(),
+          layout: layoutDocument,
+        },
+      });
+      expect(html).toContain("ZZBRAND");
     });
   }
 });
