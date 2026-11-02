@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -89,8 +90,13 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
     const a = withSdk(SDK_A, () => materialize());
     const b = withSdk(SDK_B, () => materialize());
 
-    expect(a.compilerVersion).toBe(`${TAILWIND_VERSION}+morph-sdk.${"a".repeat(16)}`);
-    expect(b.compilerVersion).toBe(`${TAILWIND_VERSION}+morph-sdk.${"b".repeat(16)}`);
+    // `.hide-1`: a Start build also names the hide guard it compiles in.
+    expect(a.compilerVersion).toBe(
+      `${TAILWIND_VERSION}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
+    );
+    expect(b.compilerVersion).toBe(
+      `${TAILWIND_VERSION}+morph-sdk.${"b".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
+    );
     // The three fields findSucceededBuildByIdentity matches on besides the
     // revision: a build under another SDK can never be handed back as this one.
     expect(b.inputHash).not.toBe(a.inputHash);
@@ -109,7 +115,7 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
   it("is the real generated hash by default, within the recorded column's input limit", () => {
     const input = materialize();
     expect(input.compilerVersion).toMatch(
-      /^\d+\.\d+\.\d+\+morph-sdk\.[0-9a-f]{16}$/,
+      /^\d+\.\d+\.\d+\+morph-sdk\.[0-9a-f]{16}\.hide-\d+$/,
     );
     expect(input.compilerVersion.length).toBeLessThanOrEqual(50);
   });
@@ -122,7 +128,7 @@ describe("a Theme build's identity names the Morph SDK it injects", () => {
       tanstackStartFramework.build.native!.compilerIdentity(),
     );
     expect(a.version).toBe(
-      `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.${"a".repeat(16)}`,
+      `${THEME_START_TOOLCHAIN.reactStart}+morph-sdk.${"a".repeat(16)}.${THEME_HIDE_GUARD_VERSION}`,
     );
     expect(b.version).not.toBe(a.version);
     expect(b.id).toBe(a.id);
