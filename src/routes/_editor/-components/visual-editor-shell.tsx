@@ -11073,10 +11073,15 @@ export function VisualEditorShell({
         lastSelection?.sectionId !== message.sectionId ||
         lastSelection.fieldKey !== message.fieldKey ||
         lastSelection.fieldPath !== message.fieldPath ||
-        !hasInlineTextDocumentTarget(
-          message.sectionId,
-          activeTemplate.document.sections.map((section) => section.id),
-          activeRouteSections.map((section) => section.slotId),
+        // The page's own sections, or one the shared layout renders: that one
+        // is stored in the layout's Document, and `templateIdForSection`
+        // below sends the write there, as it does for the Inspector.
+        !(
+          hasInlineTextDocumentTarget(
+            message.sectionId,
+            activeTemplate.document.sections.map((section) => section.id),
+            activeRouteSections.map((section) => section.slotId),
+          ) || sectionModel.sharedSectionIds.has(message.sectionId)
         )
       ) {
         return;
@@ -11177,6 +11182,7 @@ export function VisualEditorShell({
     activeRouteSections,
     handleSectionPropsChange,
     isSelectionMode,
+    sectionModel.sharedSectionIds,
     sectionPropsSnapshot,
     stepCanvasDeferral,
     templateIdForSection,
