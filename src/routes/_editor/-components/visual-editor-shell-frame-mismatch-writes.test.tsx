@@ -614,7 +614,7 @@ function enableSelection() {
   });
 }
 /** The author clicks a slot's heading on the page the frame shows. */
-function frameSelects(sectionId: "hero" | "promo", fieldPath = "heading") {
+function frameSelects(sectionId: string, fieldPath = "heading") {
   selectionRevision += 1;
   fromPreview({
     type: "morph:storefront-preview-select-section",
@@ -643,7 +643,7 @@ function frameSelects(sectionId: "hero" | "promo", fieldPath = "heading") {
   });
 }
 /** Text finished on the frame's page, over the stored text. */
-function frameCommitsText(sectionId: "hero" | "promo", value: string) {
+function frameCommitsText(sectionId: string, value: string) {
   fromPreview({
     type: "morph:storefront-preview-commit-inline-text",
     sectionId,
@@ -900,6 +900,135 @@ export default function Layout({ children }) {
     });
     await tick(20);
     expect(saveThemeFile).not.toHaveBeenCalled();
+  });
+
+  /**
+   * B1 case l1: the shared layout renders two instances of one component,
+   * `shellA` and `shellB`, whose headings hold the same text. They are stored
+   * in the layout's Document, not the page's. Typing over the second one on
+   * the canvas is an edit of `shellB` in the layout Document, and of nothing
+   * else.
+   */
+  describe("an inline edit of a section the shared layout renders", () => {
+    const withLayout = () => {
+      const raw = unstoredContext();
+      raw.templates.push({
+        ...raw.templates[0]!,
+        id: "template-layout",
+        type: "layout",
+        name: "Layout",
+        document: {
+          version: 1,
+          sections: [
+            {
+              id: "shellA",
+              type: "Hero",
+              enabled: true,
+              props: { heading: SAME },
+            },
+            {
+              id: "shellB",
+              type: "Hero",
+              enabled: true,
+              props: { heading: SAME },
+            },
+          ],
+        },
+      });
+      const files = [
+        ...FILES,
+        file(
+          "morph.theme.json",
+          JSON.stringify({ documentLayout: { source: "src/Layout.tsx" } }),
+        ),
+        file(
+          "src/Layout.tsx",
+          `import { content } from "./morph/content";
+import Hero from "./hero/Hero";
+export default function Layout({ children }) {
+  return (
+    <>
+      <Hero {...content("shellA")} />
+      <Hero {...content("shellB")} />
+      {children}
+    </>
+  );
+}`,
+        ),
+      ];
+      // The editor reads the Theme's files again once mounted; it must get
+      // these, the layout included, not the shared fixture's.
+      vi.mocked(listStorefrontThemeFiles).mockImplementation(
+        async () =>
+          ({ success: true, message: "ok", data: tree(files) }) as never,
+      );
+      return { raw, files };
+    };
+    const writes = () =>
+      updateSectionProps.mock.calls.map(
+        (call) =>
+          (
+            call[0] as {
+              data: {
+                templateId?: string;
+                sectionId?: string;
+                props?: Record<string, unknown>;
+              };
+            }
+          ).data,
+      );
+
+    it("writes the second instance to the layout Document and leaves the first alone", async () => {
+      const { raw, files } = withLayout();
+      await settled(homeSearch, raw, files);
+      enableSelection();
+      frameSelects("shellB");
+      await tick(0);
+      expect(selectedInInspector()).toBe("shellB");
+      frameCommitsText("shellB", "Typed in shellB");
+      await tick(400);
+      expect(
+        writes().map(({ templateId, sectionId, props }) => ({
+          templateId,
+          sectionId,
+          heading: props?.heading,
+        })),
+      ).toEqual([
+        {
+          templateId: "template-layout",
+          sectionId: "shellB",
+          heading: "Typed in shellB",
+        },
+      ]);
+      expect(toast.info).not.toHaveBeenCalled();
+    });
+
+    it("control: the Inspector edit of the same instance writes the same", async () => {
+      const { raw, files } = withLayout();
+      await settled(homeSearch, raw, files);
+      enableSelection();
+      frameSelects("shellB");
+      await tick(0);
+      expect(selectedInInspector()).toBe("shellB");
+      await editInInspector("Inspector in shellB");
+      expect(
+        writes().map(({ templateId, sectionId }) => ({
+          templateId,
+          sectionId,
+        })),
+      ).toEqual([{ templateId: "template-layout", sectionId: "shellB" }]);
+    });
+
+    it("still refuses a commit for a section neither the page nor the layout has", async () => {
+      const { raw, files } = withLayout();
+      await settled(homeSearch, raw, files);
+      enableSelection();
+      frameSelects("shellC");
+      await tick(0);
+      frameCommitsText("shellC", "Typed nowhere");
+      await tick(400);
+      expect(writes()).toEqual([]);
+    });
   });
 
   it("refuses the whole source reorder when a stored slot is unbound", async () => {
