@@ -608,13 +608,16 @@ describe("following a link the author clicks inside an Astro preview", () => {
   let searchChanges: Partial<StorefrontThemeEditorSearch>[] = [];
 
   /** The editor at `routePath`, whose route follows its own requests. */
-  async function routed(routePath: string) {
+  async function routed(
+    routePath: string,
+    themeContext: StorefrontThemeEditorDTO = astroContext,
+  ) {
     searchChanges = [];
     modelCurrentBridge();
     getThemeEditor.mockResolvedValue({
       success: true,
       message: "ok",
-      data: astroContext,
+      data: themeContext,
     });
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -640,7 +643,7 @@ describe("following a link the author clicks inside an Astro preview", () => {
       } as StorefrontThemeEditorSearch);
       return (
         <VisualEditorShell
-          context={astroContext}
+          context={themeContext}
           search={search}
           onSearchChange={(next) => {
             searchChanges.push(next);
@@ -765,5 +768,118 @@ describe("following a link the author clicks inside an Astro preview", () => {
       PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE,
       expect.anything(),
     );
+  });
+
+  /**
+   * D92-B: opening a page from the list switches the page and keeps the
+   * author's mode. The bridge leaves clicks to the Theme until the editor
+   * turns selection on (theme-preview-bridge-entry.test.ts, "leaves clicks to
+   * the Theme until the editor asks for them"), so what decides whether a link
+   * is followed is the selection mode the editor tells the frame.
+   */
+  describe("opening a page from the list keeps the interaction mode", () => {
+    type ModeMessage = Posted & {
+      enabled?: boolean;
+      restoreTarget?: { sectionId?: string };
+    };
+    const modeMessages = () =>
+      log.filter(
+        (message) =>
+          message.type === "morph:storefront-preview-set-selection-mode",
+      ) as ModeMessage[];
+    const selectionToggle = () =>
+      screen.getByRole("button", { name: /section selection$/ });
+    const isSelecting = () =>
+      selectionToggle().getAttribute("aria-pressed") === "true";
+
+    /** A page-list click; the frame then answers for that page. */
+    async function openFromList(
+      name: string,
+      routePath: string,
+      { newDocument }: { newDocument: boolean },
+    ) {
+      act(() => {
+        within(pagesList()).getByRole("button", { name }).click();
+      });
+      await tick();
+      expect(searchChanges.some((next) => next.routePath === routePath)).toBe(
+        true,
+      );
+      if (newDocument) {
+        reloadFrameDocument();
+        documentReady();
+        await tick();
+      }
+      frameAnswers(routePath);
+      report(routePath);
+      await tick();
+      await tick();
+    }
+
+    it("on Astro, stays in interact mode, so the frame never takes a link click as a selection", async () => {
+      await routed("/");
+      expect(isSelecting()).toBe(false);
+      const before = modeMessages().length;
+
+      await openFromList("/about", "/about", { newDocument: true });
+
+      // The page switched: the frame was asked for /about and answered.
+      expect(routeRequests().at(-1)?.routePath).toBe("/about");
+      expect(navigationNotice()).toBeNull();
+      // The mode did not: the frame was never told to select.
+      expect(isSelecting()).toBe(false);
+      expect(
+        modeMessages()
+          .slice(before)
+          .filter((message) => message.enabled === true),
+      ).toEqual([]);
+
+      // A link the author then clicks in the frame is followed, not located.
+      await linkFollowedFrom("/about", "/");
+      expect(searchChanges.at(-1)?.routePath).toBe("/");
+      expect(screen.queryByRole("textbox", { name: "Code editor" })).toBeNull();
+      expect(isSelecting()).toBe(false);
+    });
+
+    it("on Astro, stays in select mode when the author had turned it on", async () => {
+      await routed("/");
+      act(() => selectionToggle().click());
+      await tick();
+      expect(isSelecting()).toBe(true);
+
+      await openFromList("/about", "/about", { newDocument: true });
+
+      expect(routeRequests().at(-1)?.routePath).toBe("/about");
+      expect(isSelecting()).toBe(true);
+      expect(modeMessages().at(-1)?.enabled).toBe(true);
+    });
+
+    it("on TanStack Start, a page row still selects the page root and enters select mode, as before", async () => {
+      await routed("/", startContext);
+      expect(isSelecting()).toBe(false);
+
+      await openFromList("/guard", "/guard", { newDocument: false });
+
+      expect(isSelecting()).toBe(true);
+      expect(
+        modeMessages().some(
+          (message) =>
+            message.enabled === true &&
+            message.restoreTarget?.sectionId === "/guard",
+        ),
+      ).toBe(true);
+    });
+
+    /** The frame, on `from`, follows a link to `to`: a new document there. */
+    async function linkFollowedFrom(from: string, to: string) {
+      reloadFrameDocument();
+      documentReady();
+      await tick();
+      // The editor's request after that ready still names its own page.
+      expect(routeRequests().at(-1)?.routePath).toBe(from);
+      frameAnswers(to);
+      report(to);
+      await tick();
+    }
   });
 });

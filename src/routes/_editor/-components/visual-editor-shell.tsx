@@ -1121,6 +1121,9 @@ export function VisualEditorShell({
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  /** For the page-list open, which reads the mode it was asked in. */
+  const isSelectionModeRef = useRef(isSelectionMode);
+  isSelectionModeRef.current = isSelectionMode;
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
@@ -4157,10 +4160,17 @@ export function VisualEditorShell({
         });
         return;
       }
-      setPendingRouteSelection({
-        routePath: route.path,
-        sectionId: route.path,
-      });
+      // Selecting the page root is a selection request, and a selection
+      // request turns select mode on (handleSectionsSearchChange). A
+      // document-navigating preview (Astro, D92) only switches the page and
+      // keeps the author's mode: in interact mode its links stay links. In
+      // select mode the page root is selected as before. Start is unchanged.
+      if (!documentNavigationRef.current || isSelectionModeRef.current) {
+        setPendingRouteSelection({
+          routePath: route.path,
+          sectionId: route.path,
+        });
+      }
       setPendingRoutePath(route.path);
       const routeTemplate =
         templateForRoute(context.templates, route.path) ??
