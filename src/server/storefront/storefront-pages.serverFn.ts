@@ -1,5 +1,7 @@
 import { fail, failure, ok, paginationOf, parseInput } from "@/lib/db/server-result";
 import { storefrontPageDal } from "@/lib/storefront/dal/storefront-page.dal";
+import { readSectionHideRefusal } from "@/lib/storefront/content/section-hide-check";
+import { SECTION_HIDE_UNSUPPORTED } from "@/lib/storefront/theme-write-errors";
 import {
   createStorefrontPageInputSchema,
   getStorefrontPageInputSchema,
@@ -159,6 +161,15 @@ export const updateStorefrontPage = createServerFn({ method: "POST" })
         version,
       });
     } catch (error) {
+      const hideRefusal = readSectionHideRefusal(
+        error instanceof Error ? error.message : "",
+      );
+      if (hideRefusal) {
+        return fail(
+          hideRefusal.message || "Morph cannot hide this section yet.",
+          { error: SECTION_HIDE_UNSUPPORTED, reason: hideRefusal.reason },
+        );
+      }
       return failure(
         "Update storefront page error",
         error,

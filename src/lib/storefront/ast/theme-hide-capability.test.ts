@@ -320,6 +320,31 @@ describe("classifyHideCapability: refused before hiding", () => {
     });
   });
 
+  it("H9 with a content() spread: the early read is named, not the spread it taints", () => {
+    const files = theme(
+      contentRoute(`  const t = String(content("h9").title).toUpperCase();
+  return <Hero {...content("h9")} title={t} />;`),
+    );
+    expect(classify(files, "h9")).toMatchObject({
+      kind: "unsupported",
+      reason: "early-computation",
+      at: { file: ROUTE, line: 8 },
+    });
+  });
+
+  it("H9 through an alias: computing from a destructured section is early computation", () => {
+    const files = theme(
+      loaderRoute(`  const { h9: hero } = Route.useLoaderData();
+  const t = hero.title.toUpperCase();
+  return <Hero title={t} subtitle={hero.subtitle} />;`),
+    );
+    expect(classify(files, "h9")).toMatchObject({
+      kind: "unsupported",
+      reason: "early-computation",
+      at: { file: ROUTE, line: 16 },
+    });
+  });
+
   it("H10a: a component that calls content() itself is refused", () => {
     const files = theme(
       contentRoute(
