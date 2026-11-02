@@ -457,218 +457,228 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
     );
   });
 
-  for (const surface of ["frame", "tab"] as const) {
-    for (const revocation of ["pushed", "notice-lost"] as const) {
-      test(`${surface}, ${revocation}: the socket stops and closes 4401 within the lease`, async ({
-        browser,
-      }) => {
-        const caseName = `${surface}-${revocation}`;
-        const caseStart = new Date().toISOString();
-        const page = await ownSessionPage(browser);
-        try {
-          await openEditor(page);
-          const frame = await previewFrame(page);
-          await expect(frame.locator(HERO)).toBeVisible({ timeout: 120_000 });
-          let target: Target = frame;
-          if (surface === "tab") {
-            const framedHost = new URL(frame.url()).hostname;
-            const [tab] = await Promise.all([
-              page.context().waitForEvent("page"),
-              page
-                .getByRole("button", { name: "Open preview in new tab" })
-                .click(),
-            ]);
-            await tab.waitForURL(
-              (url) =>
-                url.hostname === framedHost &&
-                !url.pathname.startsWith("/__morph/preview-auth/"),
-              { timeout: 90_000 },
-            );
-            await expect(tab.locator(HERO)).toBeVisible({ timeout: 90_000 });
-            target = tab;
-          }
-          const sock = `${caseName}-${Date.now()}`;
-          await openSocket(target, sock);
-          // A frame every 100 ms, each echoed back, until the socket ends.
-          await target.evaluate(() => {
-            const w = window as unknown as Record<string, unknown>;
-            const ws = w.__p4ws as WebSocket;
-            let n = 0;
-            w.__p4sent = [] as Array<{ n: number; t: number }>;
-            w.__p4timer = setInterval(() => {
-              if (ws.readyState !== WebSocket.OPEN) return;
-              n += 1;
-              ws.send(`b:${n}`);
-              (w.__p4sent as Array<{ n: number; t: number }>).push({
-                n,
-                t: Date.now(),
-              });
-            }, 100);
+  /**
+   * One revocation case: `surface` is where the socket is opened, `revocation`
+   * how the grant ends. The four cases below are registered one by one, with
+   * literal titles, in the order the loop that registered them used to run.
+   */
+  async function revocationCase(
+    browser: Browser,
+    surface: "frame" | "tab",
+    revocation: "pushed" | "notice-lost",
+  ) {
+    const caseName = `${surface}-${revocation}`;
+    const caseStart = new Date().toISOString();
+    const page = await ownSessionPage(browser);
+    try {
+      await openEditor(page);
+      const frame = await previewFrame(page);
+      await expect(frame.locator(HERO)).toBeVisible({ timeout: 120_000 });
+      let target: Target = frame;
+      if (surface === "tab") {
+        const framedHost = new URL(frame.url()).hostname;
+        const [tab] = await Promise.all([
+          page.context().waitForEvent("page"),
+          page.getByRole("button", { name: "Open preview in new tab" }).click(),
+        ]);
+        await tab.waitForURL(
+          (url) =>
+            url.hostname === framedHost &&
+            !url.pathname.startsWith("/__morph/preview-auth/"),
+          { timeout: 90_000 },
+        );
+        await expect(tab.locator(HERO)).toBeVisible({ timeout: 90_000 });
+        target = tab;
+      }
+      const sock = `${caseName}-${Date.now()}`;
+      await openSocket(target, sock);
+      // A frame every 100 ms, each echoed back, until the socket ends.
+      await target.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        const ws = w.__p4ws as WebSocket;
+        let n = 0;
+        w.__p4sent = [] as Array<{ n: number; t: number }>;
+        w.__p4timer = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          n += 1;
+          ws.send(`b:${n}`);
+          (w.__p4sent as Array<{ n: number; t: number }>).push({
+            n,
+            t: Date.now(),
           });
-          await page.waitForTimeout(3_000);
-
-          const kind = surface === "frame" ? "iframe" : "tab";
-          const live = d1(
-            `SELECT id FROM storefront_preview_access_grants
-              WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
-            kind,
-            caseStart,
-          ) as Array<{ id: string }>;
-          expect(live.length, `this case's live ${kind} grant`).toBeGreaterThan(
-            0,
-          );
-
-          // R is not observed as one instant. The commit lies inside a
-          // window: for a push, between sending the sign-out and its answer
-          // (the after-hook revokes before the answer); for a lost notice,
-          // between just before the UPDATE and its return. Delays are judged
-          // from both ends of it (judge()).
-          let rWindow: { from: number; to: number };
-          let revokeDetail: Record<string, unknown>;
-          if (revocation === "pushed") {
-            const sentAt = Date.now();
-            const out = await page
-              .context()
-              .request.post("/api/auth/sign-out", {
-                headers: { origin: new URL(page.url()).origin },
-                data: {},
-              });
-            const answeredAt = Date.now();
-            expect(out.ok(), "sign-out").toBe(true);
-            const rows = d1(
-              `SELECT revoked_at FROM storefront_preview_access_grants WHERE id = ?`,
-              live[0]!.id,
-            ) as Array<{ revoked_at: string | null }>;
-            expect(
-              rows[0]?.revoked_at,
-              "sign-out revoked the grant",
-            ).toBeTruthy();
-            rWindow = { from: sentAt, to: answeredAt };
-            revokeDetail = {
-              // The Worker's stamp, taken before its write: not the commit.
-              revokedAtStampBeforeWrite: Date.parse(rows[0]!.revoked_at!),
-            };
-          } else {
-            const before = Date.now();
-            const stamp = new Date(before).toISOString();
-            const changed = d1(
-              `UPDATE storefront_preview_access_grants
-                  SET revoked_at = ?, updated_at = ?
-                WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
-              stamp,
-              stamp,
-              kind,
-              caseStart,
-            );
-            rWindow = { from: before, to: Date.now() };
-            revokeDetail = { grantsRevokedInD1Only: changed };
-          }
-
-          const closed = (await target.evaluate(() =>
-            Promise.race([
-              (window as unknown as { __p4closed: Promise<unknown> })
-                .__p4closed,
-              new Promise((r) =>
-                setTimeout(() => r({ timeout: true }), 75_000),
-              ),
-            ]),
-          )) as {
-            t?: number;
-            code?: number;
-            reason?: string;
-            timeout?: boolean;
-          };
-          const browserSide = (await target.evaluate(() => {
-            const w = window as unknown as {
-              __p4got: Array<{ t: number; data: unknown }>;
-              __p4sent: Array<{ n: number; t: number }>;
-              __p4timer: number;
-            };
-            clearInterval(w.__p4timer);
-            return {
-              sent: w.__p4sent.length,
-              lastSentAt: w.__p4sent.at(-1)?.t ?? null,
-              echoes: w.__p4got.length,
-              lastEchoAt: w.__p4got.at(-1)?.t ?? null,
-            };
-          })) as {
-            sent: number;
-            lastSentAt: number | null;
-            echoes: number;
-            lastEchoAt: number | null;
-          };
-          const atContainer = fixtureRecord(sock);
-          const lastReceivedAtContainer =
-            atContainer?.received.at(-1)?.t ?? null;
-          const dataLimit = LEASE_MS + SLACK_MS;
-          const closeLimit = LEASE_MS + TICK_MS + SLACK_MS;
-          const verdicts = {
-            dataAtContainer:
-              lastReceivedAtContainer === null
-                ? null
-                : judge(lastReceivedAtContainer, rWindow, dataLimit),
-            dataAtBrowser:
-              browserSide.lastEchoAt === null
-                ? null
-                : judge(browserSide.lastEchoAt, rWindow, dataLimit),
-            close:
-              closed.t === undefined
-                ? null
-                : judge(closed.t, rWindow, closeLimit),
-            closeWithinTarget:
-              closed.t === undefined
-                ? null
-                : judge(closed.t, rWindow, TARGET_MS),
-          };
-          const result = {
-            rWindow,
-            ...revokeDetail,
-            // When each endpoint received the last data frame. The relay's
-            // own forwarding moment is not observed; it is no later than
-            // these.
-            lastDataReceivedAtContainer: lastReceivedAtContainer,
-            lastEchoReceivedAtBrowser: browserSide.lastEchoAt,
-            // Closes, each side on its own.
-            browserClose: closed,
-            containerClose: atContainer
-              ? { t: atContainer.closedAt, code: atContainer.closeCode }
-              : null,
-            framesSent: browserSide.sent,
-            framesAtContainer: atContainer?.received.length ?? null,
-            echoes: browserSide.echoes,
-            // Each: the longest and shortest possible delay from R, and the
-            // verdict against its limit. closeWithinTarget is reported only.
-            verdicts,
-          };
-          record.cases ??= {} as Record<string, unknown>;
-          (record.cases as Record<string, unknown>)[caseName] = result;
-          save();
-
-          expect(closed.timeout, "the socket closed").toBeUndefined();
-          expect(closed.code, "closed as revoked").toBe(4401);
-          expect(atContainer, "the fixture's record was read").not.toBeNull();
-          expect(
-            browserSide.lastEchoAt,
-            "the browser received echoes",
-          ).not.toBeNull();
-          // Only a conservative pass passes; "uncertain" and "exceeded" fail
-          // under their own names.
-          expect(
-            verdicts.dataAtContainer?.verdict,
-            `data at the container within L + eps of R: ${JSON.stringify(verdicts.dataAtContainer)}`,
-          ).toBe("pass");
-          expect(
-            verdicts.dataAtBrowser?.verdict,
-            `data at the browser within L + eps of R: ${JSON.stringify(verdicts.dataAtBrowser)}`,
-          ).toBe("pass");
-          expect(
-            verdicts.close?.verdict,
-            `close within L + tick + eps of R: ${JSON.stringify(verdicts.close)}`,
-          ).toBe("pass");
-        } finally {
-          await page.context().close();
-        }
+        }, 100);
       });
+      await page.waitForTimeout(3_000);
+
+      const kind = surface === "frame" ? "iframe" : "tab";
+      const live = d1(
+        `SELECT id FROM storefront_preview_access_grants
+          WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
+        kind,
+        caseStart,
+      ) as Array<{ id: string }>;
+      expect(live.length, `this case's live ${kind} grant`).toBeGreaterThan(0);
+
+      // R is not observed as one instant. The commit lies inside a
+      // window: for a push, between sending the sign-out and its answer
+      // (the after-hook revokes before the answer); for a lost notice,
+      // between just before the UPDATE and its return. Delays are judged
+      // from both ends of it (judge()).
+      let rWindow: { from: number; to: number };
+      let revokeDetail: Record<string, unknown>;
+      if (revocation === "pushed") {
+        const sentAt = Date.now();
+        const out = await page.context().request.post("/api/auth/sign-out", {
+          headers: { origin: new URL(page.url()).origin },
+          data: {},
+        });
+        const answeredAt = Date.now();
+        expect(out.ok(), "sign-out").toBe(true);
+        const rows = d1(
+          `SELECT revoked_at FROM storefront_preview_access_grants WHERE id = ?`,
+          live[0]!.id,
+        ) as Array<{ revoked_at: string | null }>;
+        expect(rows[0]?.revoked_at, "sign-out revoked the grant").toBeTruthy();
+        rWindow = { from: sentAt, to: answeredAt };
+        revokeDetail = {
+          // The Worker's stamp, taken before its write: not the commit.
+          revokedAtStampBeforeWrite: Date.parse(rows[0]!.revoked_at!),
+        };
+      } else {
+        const before = Date.now();
+        const stamp = new Date(before).toISOString();
+        const changed = d1(
+          `UPDATE storefront_preview_access_grants
+              SET revoked_at = ?, updated_at = ?
+            WHERE kind = ? AND revoked_at IS NULL AND created_at >= ?`,
+          stamp,
+          stamp,
+          kind,
+          caseStart,
+        );
+        rWindow = { from: before, to: Date.now() };
+        revokeDetail = { grantsRevokedInD1Only: changed };
+      }
+
+      const closed = (await target.evaluate(() =>
+        Promise.race([
+          (window as unknown as { __p4closed: Promise<unknown> }).__p4closed,
+          new Promise((r) => setTimeout(() => r({ timeout: true }), 75_000)),
+        ]),
+      )) as {
+        t?: number;
+        code?: number;
+        reason?: string;
+        timeout?: boolean;
+      };
+      const browserSide = (await target.evaluate(() => {
+        const w = window as unknown as {
+          __p4got: Array<{ t: number; data: unknown }>;
+          __p4sent: Array<{ n: number; t: number }>;
+          __p4timer: number;
+        };
+        clearInterval(w.__p4timer);
+        return {
+          sent: w.__p4sent.length,
+          lastSentAt: w.__p4sent.at(-1)?.t ?? null,
+          echoes: w.__p4got.length,
+          lastEchoAt: w.__p4got.at(-1)?.t ?? null,
+        };
+      })) as {
+        sent: number;
+        lastSentAt: number | null;
+        echoes: number;
+        lastEchoAt: number | null;
+      };
+      const atContainer = fixtureRecord(sock);
+      const lastReceivedAtContainer = atContainer?.received.at(-1)?.t ?? null;
+      const dataLimit = LEASE_MS + SLACK_MS;
+      const closeLimit = LEASE_MS + TICK_MS + SLACK_MS;
+      const verdicts = {
+        dataAtContainer:
+          lastReceivedAtContainer === null
+            ? null
+            : judge(lastReceivedAtContainer, rWindow, dataLimit),
+        dataAtBrowser:
+          browserSide.lastEchoAt === null
+            ? null
+            : judge(browserSide.lastEchoAt, rWindow, dataLimit),
+        close:
+          closed.t === undefined ? null : judge(closed.t, rWindow, closeLimit),
+        closeWithinTarget:
+          closed.t === undefined ? null : judge(closed.t, rWindow, TARGET_MS),
+      };
+      const result = {
+        rWindow,
+        ...revokeDetail,
+        // When each endpoint received the last data frame. The relay's
+        // own forwarding moment is not observed; it is no later than
+        // these.
+        lastDataReceivedAtContainer: lastReceivedAtContainer,
+        lastEchoReceivedAtBrowser: browserSide.lastEchoAt,
+        // Closes, each side on its own.
+        browserClose: closed,
+        containerClose: atContainer
+          ? { t: atContainer.closedAt, code: atContainer.closeCode }
+          : null,
+        framesSent: browserSide.sent,
+        framesAtContainer: atContainer?.received.length ?? null,
+        echoes: browserSide.echoes,
+        // Each: the longest and shortest possible delay from R, and the
+        // verdict against its limit. closeWithinTarget is reported only.
+        verdicts,
+      };
+      record.cases ??= {} as Record<string, unknown>;
+      (record.cases as Record<string, unknown>)[caseName] = result;
+      save();
+
+      expect(closed.timeout, "the socket closed").toBeUndefined();
+      expect(closed.code, "closed as revoked").toBe(4401);
+      expect(atContainer, "the fixture's record was read").not.toBeNull();
+      expect(
+        browserSide.lastEchoAt,
+        "the browser received echoes",
+      ).not.toBeNull();
+      // Only a conservative pass passes; "uncertain" and "exceeded" fail
+      // under their own names.
+      expect(
+        verdicts.dataAtContainer?.verdict,
+        `data at the container within L + eps of R: ${JSON.stringify(verdicts.dataAtContainer)}`,
+      ).toBe("pass");
+      expect(
+        verdicts.dataAtBrowser?.verdict,
+        `data at the browser within L + eps of R: ${JSON.stringify(verdicts.dataAtBrowser)}`,
+      ).toBe("pass");
+      expect(
+        verdicts.close?.verdict,
+        `close within L + tick + eps of R: ${JSON.stringify(verdicts.close)}`,
+      ).toBe("pass");
+    } finally {
+      await page.context().close();
     }
   }
+
+  test("frame, pushed: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "frame", "pushed");
+  });
+
+  test("frame, notice-lost: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "frame", "notice-lost");
+  });
+
+  test("tab, pushed: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "tab", "pushed");
+  });
+
+  test("tab, notice-lost: the socket stops and closes 4401 within the lease", async ({
+    browser,
+  }) => {
+    await revocationCase(browser, "tab", "notice-lost");
+  });
 });
