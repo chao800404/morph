@@ -76,7 +76,7 @@ export function prepareChangedSourcesForLivePreview(
  * published site exactly as it does from the preview. The guard is applied
  * to the files as built (markers stripped), which are the files analysed.
  * Its version is part of the build's compiler identity
- * (`withThemeHideGuardIdentity`).
+ * (`withThemeStartBuildIdentity`).
  */
 export function prepareSourcesForBuild(
   files: readonly SourceFile[],

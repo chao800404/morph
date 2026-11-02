@@ -2535,9 +2535,14 @@ export type B1SlotUseAnalysis = Readonly<{
   loaderOrigin: boolean;
   /**
    * The declaration this module imports `content` from, if it does: its
-   * specifier, and where the declaration ends (for an added import beside it).
+   * specifier, where the declaration ends (for an added import beside it),
+   * and whether it ends with its own semicolon (a Theme may omit them).
    */
-  contentImport: Readonly<{ source: string; end: number }> | null;
+  contentImport: Readonly<{
+    source: string;
+    end: number;
+    semicolon: boolean;
+  }> | null;
   /** Capitalised JSX elements by start offset. */
   elements: ReadonlyMap<
     number,
@@ -3120,7 +3125,11 @@ export function analyzeB1SlotUses(
       ) {
         contentImport =
           typeof statement.end === "number"
-            ? { source: statement.source.value, end: statement.end }
+            ? {
+                source: statement.source.value,
+                end: statement.end,
+                semicolon: entry.content[statement.end - 1] === ";",
+              }
             : null;
       }
     }

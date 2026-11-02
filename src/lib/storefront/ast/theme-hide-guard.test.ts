@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parse as parseBabel } from "@babel/parser";
 import { livePreviewPlatformFiles } from "@/lib/test-utils/live-preview-render";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { injectPreviewBindings } from "./inject-preview-bindings";
@@ -19,6 +20,7 @@ import { planNativeStartBuild } from "../theme-framework/tanstack-start-native-b
  */
 
 const ROUTE = "src/routes/index.tsx";
+const LAYOUT = "src/layouts/StorefrontLayout.tsx";
 
 const HERO = `export const contentFields = {
   title: { type: "text", label: "Title" },
@@ -154,6 +156,73 @@ function Home() {
     expect(routeOut(on.files)).toContain(`__morphSectionHidden("h1") ? null :`);
     expect(on.hideGuarded).toEqual({ [ROUTE]: ["h1"] });
     expect(routeOut(off.files)).toBe(route);
+  });
+});
+
+describe("a Theme written without semicolons", () => {
+  const parses = (source: string) =>
+    parseBabel(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+  const route = `import { createFileRoute } from "@tanstack/react-router"
+import { content } from "../morph/content"
+import Hero from "../components/Hero"
+export const Route = createFileRoute("/")({ component: Home })
+function Home() {
+  return <main><Hero {...content("h1")} /><p className="note">after</p></main>
+}
+`;
+  const layout = `import type { ReactNode } from "react"
+import { content } from "../morph/content"
+import Hero from "../components/Hero"
+export default function StorefrontLayout({ children }: { children?: ReactNode }) {
+  return <div><Hero {...content("h6")} />{children}</div>
+}
+`;
+  const files = () =>
+    theme(route).map((file) =>
+      file.path === LAYOUT ? { ...file, content: layout } : file,
+    );
+  const out = (
+    result: ReadonlyArray<{ path: string; content: string }>,
+    path: string,
+  ) => result.find((file) => file.path === path)!.content;
+
+  it("the build's guarded route and layout still parse, and are guarded", () => {
+    const result = applyHideGuards(files());
+    expect(result.guarded).toEqual({ [ROUTE]: ["h1"], [LAYOUT]: ["h6"] });
+    for (const path of [ROUTE, LAYOUT]) {
+      expect(() => parses(out(result.files, path))).not.toThrow();
+    }
+    expect(out(result.files, ROUTE)).toContain(
+      `import { content } from "../morph/content"; import { isSectionHidden as __morphSectionHidden } from "../morph/content";`,
+    );
+  });
+
+  it("the preview's guarded route and layout still parse, and every data-morph-loc stays authored", () => {
+    const withGuard = injectPreviewBindings(files());
+    const without = injectPreviewBindings(files(), { hideGuards: false });
+    expect(withGuard.hideGuarded).toEqual({
+      [ROUTE]: ["h1"],
+      [LAYOUT]: ["h6"],
+    });
+    for (const path of [ROUTE, LAYOUT]) {
+      expect(() => parses(out(withGuard.files, path))).not.toThrow();
+      const locs = (content: string) =>
+        [...content.matchAll(/data-morph-loc="([^"]+)"/g)].map((m) => m[1]);
+      expect(locs(out(withGuard.files, path))).toEqual(
+        locs(out(without.files, path)),
+      );
+    }
+  });
+
+  it("reverse: the same two imports on one line without the semicolon do not parse", () => {
+    expect(() =>
+      parses(
+        `import { content } from "../morph/content" import { isSectionHidden as h } from "../morph/content";`,
+      ),
+    ).toThrow();
   });
 });
 

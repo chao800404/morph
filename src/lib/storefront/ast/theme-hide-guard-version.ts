@@ -1,6 +1,6 @@
 /**
  * The M3 Hide guard transform's version (`theme-hide-guard.ts`), folded into
- * a Start build's compiler identity (`withThemeHideGuardIdentity`), so a
+ * a Start build's compiler identity (`withThemeStartBuildIdentity`), so a
  * build records whether, and which, guard it carries. Change it whenever what
  * the guard emits, or which shapes the classifier supports, changes.
  *
