@@ -47,6 +47,12 @@ export type ThemeWorkerDeploymentPlan = Readonly<{
   scriptName: string;
   mainModule: string;
   modules: readonly ThemeWorkerModule[];
+  /**
+   * May be empty: a server-only build (an all-SSR Astro site with no
+   * `public/` files) has nothing to serve statically. The deployment still
+   * configures the assets directory, so the Worker's assets binding exists
+   * and answers 404.
+   */
   assets: readonly ThemeWorkerAsset[];
   compatibilityDate: string;
   compatibilityFlags: readonly string[];
@@ -226,6 +232,7 @@ export function planThemeWorkerDeployment(args: {
 
   const modules: ThemeWorkerModule[] = [];
   const assets: ThemeWorkerAsset[] = [];
+  let clientOutputWritten = false;
 
   for (const file of files) {
     const path = file.path.replace(/\\/g, "/");
@@ -244,6 +251,7 @@ export function planThemeWorkerDeployment(args: {
     }
 
     if (clientDirectory && path.startsWith(`${clientDirectory}/`)) {
+      clientOutputWritten = true;
       const servedPath = path.slice(clientDirectory.length + 1);
       if (ASSET_EXCLUSIONS.has(servedPath)) continue;
       assets.push({
@@ -262,10 +270,15 @@ export function planThemeWorkerDeployment(args: {
     );
   }
 
-  if (assets.length === 0) {
+  // An empty asset set is legitimate only when the build did write its client
+  // output and every file in it is one the platform never deploys (the
+  // adapter's `.assetsignore`, `_headers`, ...). An all-server-rendered Astro
+  // site with no `public/` files builds exactly that. A build that wrote no
+  // client output at all did not finish its client step, and is refused.
+  if (assets.length === 0 && !clientOutputWritten) {
     return fail(
       "MISSING_CLIENT_ASSETS",
-      `Build produced no client assets under "${clientDirectory}".`,
+      `Build wrote no client output under "${clientDirectory}".`,
     );
   }
 
