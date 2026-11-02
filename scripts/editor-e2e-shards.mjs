@@ -77,6 +77,7 @@ export const EDITOR_SHARDS = [
     "m1-container-lifecycle-acceptance.spec.ts",
     "preview-access-container.spec.ts",
     "start-container-content-sync.spec.ts",
+    "preview-socket-acceptance.spec.ts",
     "native-compat-published.spec.ts",
     "native-content-dependency.spec.ts",
     "native-publish-acceptance.spec.ts",
