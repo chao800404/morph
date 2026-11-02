@@ -127,6 +127,17 @@ describe("createMorph", () => {
 });
 
 describe("pages.get", () => {
+  it("never sends a render context: only the hosted entries carry the platform's", async () => {
+    const { fetch, calls } = fakeFetch(() => json({ slots: {}, hiddenSlots: [] }));
+    const morph = createMorph({ baseUrl: BASE, fetch });
+
+    await morph.pages.get("/");
+
+    expect(
+      new Headers(calls[0]!.init.headers).get("x-morph-render-context"),
+    ).toBeNull();
+  });
+
   it("reads the published content of one path", async () => {
     const { fetch, calls } = fakeFetch(() =>
       json({
