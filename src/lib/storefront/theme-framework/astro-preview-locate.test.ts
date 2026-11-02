@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { parse as babelParse } from "@babel/parser";
+import { transformSync } from "esbuild";
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -288,6 +289,31 @@ describe("the plugin on compiler-rs 0.5.1 (P1, P4, P6)", () => {
     ).toEqual(['<Layout><Hero slot="main" /></Layout>']);
   });
 
+  it("leaves the built-in Fragment built in under a type-only import of the name", async () => {
+    for (const binding of [
+      'import type Fragment from "../components/Fragment.astro";',
+      'import { type Fragment } from "../components/ui";',
+    ]) {
+      const source = `---\n${binding}\n---\n<Fragment><p>x</p></Fragment>\n`;
+      const { ast } = parseAstroInNode(source);
+      expect(
+        astroTopLevelBindingNames(
+          (ast.frontmatter as { program: { body: unknown[] } }).program.body,
+        ),
+      ).toEqual([]);
+      expect(markerIds((await annotate(source))!)).toEqual([]);
+    }
+    // A value import next to it still binds.
+    const { ast } = parseAstroInNode(
+      '---\nimport { type A, Fragment } from "x";\n---\n<p />\n',
+    );
+    expect(
+      astroTopLevelBindingNames(
+        (ast.frontmatter as { program: { body: unknown[] } }).program.body,
+      ),
+    ).toEqual(["Fragment"]);
+  });
+
   it("puts no marker in a file whose text already holds the reserved alias", async () => {
     const source = `---\nimport Hero from "../components/Hero.astro";\nconst note = "${ALIAS}";\n---\n<Hero title={note} />\n<p>x</p>\n`;
     const annotated = (await annotate(source))!;
@@ -385,6 +411,43 @@ describe("Q11: the Fragment preview distortion, before and after", () => {
       renderCalls(code).filter((call) => call === "Fragment -> Fragment");
     expect(authorCalls(raw)).toHaveLength(0);
     expect(authorCalls(v1)).toHaveLength(2);
+  });
+
+  it("counterexample, every Q5 sample: which ones the v1 shape distorts", () => {
+    // A v1 marker call `$$renderComponent(…, "Fragment", Fragment …)` is a
+    // distortion when `Fragment` is the author's binding in the module that
+    // runs. With an imported Fragment the compiler's output binds the name
+    // twice (O2); after esbuild's TS loader (what a type-stripping Vite
+    // pipeline runs) only the author's import is left (O3). Compiler output
+    // only: what the container's pipeline runs is U3.
+    const distorted: string[] = [];
+    for (const name of Object.keys(SAMPLES) as SampleName[]) {
+      const source = SAMPLES[name];
+      const raw = compileAstroInNode(source).code;
+      const v1 = transformSync(compileAstroInNode(v1Injection(source)).code, {
+        loader: "ts",
+        format: "esm",
+      }).code;
+      const runtimeFragment = v1
+        .split("\n")
+        .some(
+          (line) =>
+            line.includes('from "astro/runtime/server/index.js"') &&
+            /[{,]\s*Fragment\s*[,}]/.test(line),
+        );
+      const fragmentCalls = (code: string) =>
+        renderCalls(code).filter((call) => call === "Fragment -> Fragment")
+          .length;
+      if (fragmentCalls(v1) > fragmentCalls(raw) && !runtimeFragment) {
+        distorted.push(name);
+      }
+    }
+    expect(distorted).toEqual([
+      "importDefault",
+      "importAlias",
+      "importUnusedTag",
+      "localConst",
+    ]);
   });
 
   it("v2 renders every marker through the reserved alias and leaves the author's Fragment alone", async () => {

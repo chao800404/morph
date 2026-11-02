@@ -145,8 +145,9 @@ export function astroPreviewSourceHash(text: string): string {
 }
 
 /**
- * The names bound at the top level of a frontmatter program, once per
- * declaration (so a name declared twice is listed twice): import locals,
+ * The value names bound at the top level of a frontmatter program, once per
+ * declaration (so a name declared twice is listed twice): value import locals
+ * (not `import type X` or `import { type X }`),
  * `var`/`let`/`const` patterns, function, class and enum declarations, and
  * `import x = require()`. Reads compiler-rs's ESTree and Babel alike.
  *
@@ -194,8 +195,13 @@ export function astroTopLevelBindingNames(body: readonly unknown[]): string[] {
   for (const statement of body as Node[]) {
     if (!statement || typeof statement !== "object") continue;
     if (statement.type === "ImportDeclaration") {
+      // A type-only import binds no value: `import type Fragment` leaves
+      // the built-in `<Fragment>` built in.
+      if (statement.importKind === "type") continue;
       for (const specifier of (statement.specifiers as Node[]) ?? []) {
-        if (specifier) pattern(specifier.local as Node);
+        if (specifier && specifier.importKind !== "type") {
+          pattern(specifier.local as Node);
+        }
       }
     } else if (
       statement.type === "ExportNamedDeclaration" ||
@@ -208,6 +214,12 @@ export function astroTopLevelBindingNames(body: readonly unknown[]): string[] {
   }
   return names;
 }
+
+/**
+ * The largest offset a marker can carry (six digits). A candidate ending
+ * beyond it gets no marker, so Core treats it as unmarked.
+ */
+export const ASTRO_BOUNDARY_MAX_OFFSET = 999_999;
 
 /** One template element as the boundary rule reads it. */
 export type AstroBoundaryElement = Readonly<{
@@ -278,7 +290,7 @@ export function astroPreviewLocatePluginSource(nonce: string): string {
   const RULE = ${ASTRO_BOUNDARY_RULE_VERSION};
   const ALIAS = ${JSON.stringify(astroPreviewBoundaryAlias(nonce))};
   const ALIAS_IMPORT = "import { Fragment as " + ALIAS + " } from " + ${JSON.stringify(JSON.stringify(ASTRO_RUNTIME_SERVER_MODULE))} + ";";
-  const MAX_OFFSET = 999999;
+  const MAX_OFFSET = ${ASTRO_BOUNDARY_MAX_OFFSET};
   const RESERVED_ATTRIBUTES = new Set(["data-morph-loc", "data-morph-loc-v", "data-morph-loc-s"]);
   const SKIPPED_ELEMENTS = new Set(["script", "style", "slot", "head"]);
   const fnv32 = ${astroPreviewSourceHash.toString()};
