@@ -1,4 +1,14 @@
-// Types for the two imports the parser loader needs and that ship none.
+// Types for the imports the parser loader needs and that ship none.
+
+/**
+ * The compiler binding's manifest, for its version. Bundled as JSON by
+ * esbuild and Wrangler alike; declared here because the project does not
+ * enable `resolveJsonModule`.
+ */
+declare module "@astrojs/compiler-binding-wasm32-wasi/package.json" {
+  const manifest: { version: string };
+  export default manifest;
+}
 
 /**
  * The compiler's precompiled module, imported through Wrangler's

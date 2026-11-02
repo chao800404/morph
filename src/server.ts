@@ -332,6 +332,19 @@ export default {
         request = restored;
         args[0] = restored;
       }
+      // Test-only, and only where the parser binding exists (the local
+      // preview E2E environment); see astro-parser-binding-check.ts.
+      if (new URL(request.url).pathname.startsWith("/_morph/e2e/")) {
+        const [{ serveAstroParserBindingCheck }, { env }] = await Promise.all([
+          import("@/server/dev/astro-parser-binding-check"),
+          import("cloudflare:workers"),
+        ]);
+        const checked = await serveAstroParserBindingCheck(
+          request,
+          env as unknown as Record<string, unknown>,
+        );
+        if (checked) return checked;
+      }
     }
     const url = new URL(request.url);
 
