@@ -2,7 +2,8 @@
 import { parse as babelParse } from "@babel/parser";
 import { transformSync } from "esbuild";
 import crypto from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -704,7 +705,81 @@ describe("Q9: positions through the preview copy's source map", () => {
     expect(
       [...groups].filter((group) => !group.startsWith("fixtures/")),
     ).toEqual(["q5", "pri-smoke", "m2-case"]);
-    expect(golden.entries.length).toBeGreaterThanOrEqual(40);
+    // The exact sample set, by identity: none missing, none extra, none twice.
+    const ids = golden.entries.map((entry) => `${entry.group} ${entry.file}`);
+    expect(new Set(ids).size, "duplicate golden entries").toBe(ids.length);
+    expect([...ids].sort()).toEqual(
+      [
+        "q5 src/pages/q5-builtin.astro",
+        "q5 src/pages/q5-builtinSlot.astro",
+        "q5 src/pages/q5-importDefault.astro",
+        "q5 src/pages/q5-importAlias.astro",
+        "q5 src/pages/q5-importUnusedTag.astro",
+        "q5 src/pages/q5-localConst.astro",
+        "q5 src/pages/q5-member.astro",
+        "q5 src/pages/q5-nested.astro",
+        "pri-smoke src/pri-smoke-components/Hero.astro",
+        "pri-smoke src/pri-smoke-components/Card.astro",
+        "pri-smoke src/pri-smoke-components/Badge.astro",
+        "pri-smoke src/pri-smoke-components/Fragment.astro",
+        "pri-smoke src/pri-smoke-components/ui/Badge.astro",
+        "pri-smoke src/pri-smoke-components/ui/Fragment.astro",
+        "pri-smoke src/pages/pri-smoke-q5-builtin.astro",
+        "pri-smoke src/pages/pri-smoke-q5-builtin-slot.astro",
+        "pri-smoke src/pages/pri-smoke-q5-import-default.astro",
+        "pri-smoke src/pages/pri-smoke-q5-import-alias.astro",
+        "pri-smoke src/pages/pri-smoke-q5-import-unused-tag.astro",
+        "pri-smoke src/pages/pri-smoke-q5-local-const.astro",
+        "pri-smoke src/pages/pri-smoke-q5-member.astro",
+        "pri-smoke src/pages/pri-smoke-q5-nested.astro",
+        "pri-smoke src/pages/pri-smoke-page.astro",
+        "pri-smoke src/pages/pri-smoke-slotted.astro",
+        "pri-smoke src/pages/pri-smoke-err-fm.astro",
+        "pri-smoke src/pages/pri-smoke-err-nofm.astro",
+        "m2-case src/components/Hero.astro",
+        "m2-case src/pages/about.astro",
+        "m2-case src/pages/index.astro",
+        "fixtures/astro/adapter-compile-image-service src/pages/blog/[...slug].astro",
+        "fixtures/astro/adapter-sessions src/pages/cart.astro",
+        "fixtures/astro/adapter-sessions src/pages/index.astro",
+        "fixtures/astro/adapter-with-react src/pages/index.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/components/BaseHead.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/components/Footer.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/components/FormattedDate.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/components/Header.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/components/HeaderLink.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/layouts/BlogPost.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/pages/about.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/pages/blog/[...slug].astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/pages/blog/index.astro",
+        "fixtures/astro/cloudflare-astro-blog-starter src/pages/index.astro",
+      ].sort(),
+    );
+    // The Q5 entries are exactly this file's samples.
+    expect(
+      golden.entries
+        .filter((entry) => entry.group === "q5")
+        .map((entry) => entry.source)
+        .sort(),
+    ).toEqual([...Object.values(SAMPLES)].sort());
+    // The fixtures/ entries are exactly the .astro files under fixtures/astro,
+    // byte for byte, so a fixture added later is not silently left out.
+    const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    const onDisk = readdirSync(path.join(repoRoot, "fixtures/astro"), {
+      recursive: true,
+    })
+      .map(String)
+      .filter((file) => file.endsWith(".astro"))
+      .map((file) => [
+        `fixtures/astro/${file.split(path.sep).join("/")}`,
+        readFileSync(path.join(repoRoot, "fixtures/astro", file), "utf8"),
+      ]);
+    expect(
+      golden.entries
+        .filter((entry) => entry.group.startsWith("fixtures/"))
+        .map((entry) => [`${entry.group}/${entry.file}`, entry.source])
+        .sort(),
+    ).toEqual(onDisk.sort());
     const old = '"astro/runtime/server/index.js"';
     for (const entry of golden.entries) {
       const result = await annotateWithMap(entry.source, entry.file);
