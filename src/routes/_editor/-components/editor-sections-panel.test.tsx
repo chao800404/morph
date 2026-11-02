@@ -317,6 +317,29 @@ describe("EditorSectionsPanel visibility controls", () => {
     expect(onToggleSectionEnabled).toHaveBeenCalledWith("section-2", true);
   });
 
+  it("shows the interim notice only on hidden sections and keeps Show working", () => {
+    const notice =
+      "此區塊的隱藏效果尚未確認，預覽或發布結果可能仍顯示內容，或發生渲染錯誤。";
+    const { onToggleSectionEnabled } = renderPanel();
+
+    // Exactly one notice: section-2 (newsletter) is hidden, section-1 is not.
+    const notices = screen.getAllByText(notice);
+    expect(notices).toHaveLength(1);
+    const hiddenItem = screen
+      .getByRole("button", { name: "Show section newsletter" })
+      .closest("li");
+    const visibleItem = screen
+      .getByRole("button", { name: "Hide section hero" })
+      .closest("li");
+    expect(hiddenItem?.contains(notices[0] as Node)).toBe(true);
+    expect(visibleItem?.textContent).not.toContain(notice);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show section newsletter" }),
+    );
+    expect(onToggleSectionEnabled).toHaveBeenCalledWith("section-2", true);
+  });
+
   it("stops visibility-button clicks from selecting rows", () => {
     const onSearchChange = vi.fn();
     const { onToggleSectionEnabled } = renderPanel(vi.fn(), onSearchChange);
