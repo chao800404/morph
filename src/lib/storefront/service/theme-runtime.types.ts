@@ -80,6 +80,12 @@ export type ThemeRuntimeResult =
 export type ThemeRuntimeInvocation = Readonly<{
   request: Request;
   resolved: ResolvedStorefrontHost;
+  /**
+   * The signed render context Core issued for this page request
+   * (`storefront-render-context.ts`), sent to the Theme so its content reads
+   * stay on this request's release. Absent when Core has no signing secret.
+   */
+  renderContext?: string;
 }>;
 
 /**
