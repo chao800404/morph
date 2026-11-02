@@ -383,16 +383,24 @@ export type EditorToPreviewMessage =
 
 /** L1.5a (docs/astro-theme-plan.md 3.6.2.2). */
 export type PreviewSelectionBoundary = Readonly<{
+  /**
+   * The v2 boundary id (`<nonce>:<rule>:<route sha256>:<start>:<end>`, at
+   * most 99 characters), sent only to an editor that announced
+   * `astro-identity-v2`; otherwise null. A hint Core verifies, never trusted.
+   */
   marker: string | null;
   selectable: boolean;
   reason: string | null;
 }>;
 
+/** Bound of `previewBoundary.marker` (v1 was 40; a v2 id is at most 99). */
+const MAX_PREVIEW_BOUNDARY_MARKER = 128;
+
 function isNullablePreviewBoundary(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   if (!isRecord(value)) return false;
   return (
-    isNullableBoundedString(value.marker, 40) &&
+    isNullableBoundedString(value.marker, MAX_PREVIEW_BOUNDARY_MARKER) &&
     typeof value.selectable === "boolean" &&
     isNullableBoundedString(value.reason, 40)
   );
@@ -414,6 +422,14 @@ export type PreviewSelectionMessage = {
   sourceVersion?: string | null;
   /** L1.5a: the boundary candidate the element sits in. Never a binding. */
   previewBoundary?: PreviewSelectionBoundary | null;
+  /**
+   * P6 (M2 PR-I): the sha256 (64 hex) of the file the element's
+   * `sourceLocation` is in, as the preview transformed it
+   * (`data-morph-loc-s`). Sent only under `astro-identity-v2`. Design
+   * compares it with Core's snapshot; it is never write authority, and L1.5a
+   * keeps using `sourceVersion`.
+   */
+  sourceDigest?: string | null;
   /**
    * L1.5a: `enclosing` when the click landed where nothing is located
    * (inside an island) and the element around it was selected instead.
@@ -460,10 +476,13 @@ export type PreviewSelectionMessage = {
  * - `selection-field-section`: it reads the `sectionId` an
  *   `update-selection-field` post names, and applies the post only to that
  *   section while it is the one selected.
+ * - `astro-identity-v2` (M2 PR-I): it can report the v2 boundary id and
+ *   `sourceDigest`, and does so only once the editor names the same token.
  */
 export const PREVIEW_CAPABILITIES = [
   "selection-field-section",
   "code-default-selection",
+  "astro-identity-v2",
 ] as const;
 export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
 
@@ -471,9 +490,15 @@ export type PreviewCapability = (typeof PREVIEW_CAPABILITIES)[number];
  * What this editor can read back from a preview page. An editor names these
  * after every ready; a bridge that does not hear `code-default-selection`
  * reports a proven component default as the section it sits in, never as an
- * editable field.
+ * editable field. One that does not hear `astro-identity-v2` sends
+ * `previewBoundary.marker: null` and no `sourceDigest`, which an editor
+ * older than v2 accepts. The token only selects that format: neither the
+ * editor nor Core treats an identity as confirmed because of it.
  */
-export const EDITOR_CAPABILITIES = ["code-default-selection"] as const;
+export const EDITOR_CAPABILITIES = [
+  "code-default-selection",
+  "astro-identity-v2",
+] as const;
 export type EditorCapability = (typeof EDITOR_CAPABILITIES)[number];
 const MAX_PREVIEW_CAPABILITIES = 16;
 
@@ -1536,6 +1561,12 @@ export function parsePreviewToEditorMessage(
           !isNullableBoundedString(value.sourceVersion, 16)) ||
         !isNullablePreviewBoundary(value.previewBoundary) ||
         !(
+          value.sourceDigest === undefined ||
+          value.sourceDigest === null ||
+          (typeof value.sourceDigest === "string" &&
+            /^[0-9a-f]{64}$/.test(value.sourceDigest))
+        ) ||
+        !(
           value.locatedAt === undefined ||
           value.locatedAt === null ||
           value.locatedAt === "enclosing"
@@ -1594,6 +1625,9 @@ export function parsePreviewToEditorMessage(
               reason: (value.previewBoundary.reason as string | null) ?? null,
             }
           : null,
+        ...(typeof value.sourceDigest === "string"
+          ? { sourceDigest: value.sourceDigest }
+          : {}),
         elementKey: value.elementKey,
         fieldKey: value.fieldKey,
         field: value.field,

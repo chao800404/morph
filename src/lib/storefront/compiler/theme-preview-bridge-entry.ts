@@ -36,7 +36,7 @@ import {
   createSelectionFieldRefusalLog,
   PREVIEW_SOURCE_SECTION_PREFIX,
   previewSectionSelector,
-  previewSourceBoundaryOf,
+  previewSourceIdentityReport,
   selectionFieldRefusal,
   resolvePageStandIn,
   findPreviewSelectionRestoreElement,
@@ -82,6 +82,7 @@ import {
 const BRIDGE_CAPABILITIES: readonly PreviewCapability[] = [
   "selection-field-section",
   "code-default-selection",
+  "astro-identity-v2",
 ];
 
 const channel = documentPreviewRuntimeChannel();
@@ -148,6 +149,8 @@ const overlays = channel ? createPreviewSelectionOverlays() : null;
 let answeringFinishRequest = null;
 /** Set only by this document's editor; a new ready clears it. */
 let editorSupportsCodeDefault = false;
+/** Likewise: whether this document's editor reads the v2 identity. */
+let editorSupportsAstroIdentity = false;
 
 const inlineEditor = createInlineTextEditor({
   onCommit: (commit) => {
@@ -350,7 +353,9 @@ function sendSelectionReport(item) {
       sourceLocation: item.element.dataset.morphLoc ?? null,
       sourceVersion: item.element.dataset.morphLocV ?? null,
       locatedAt: item.locatedAt ?? null,
-      previewBoundary: previewSourceBoundaryOf(item.element),
+      // The v2 identity only to an editor that said it reads it; the format,
+      // not trust: Core verifies every identity itself.
+      ...previewSourceIdentityReport(item.element, editorSupportsAstroIdentity),
       nodeId:
         item.element.getAttribute("data-morph-node") ||
         item.element.dataset.morphNode ||
@@ -785,6 +790,7 @@ function reportReady() {
   // A capability belongs to the ready that carried it: a new document starts
   // without it until its editor names one again.
   editorSupportsCodeDefault = false;
+  editorSupportsAstroIdentity = false;
   const servedInstance = servedInstanceReport();
   // The capabilities say what this bridge reads: an editor posts a
   // selection field only to a page that says it reads the section it names.
@@ -1242,10 +1248,12 @@ if (channel) {
       reportStructure();
     }
     if (message?.type === "morph:storefront-preview-editor-capabilities") {
-      editorSupportsCodeDefault = acceptedEditorCapabilities(
+      const accepted = acceptedEditorCapabilities(
         message,
         documentPreviewIdentity(),
-      ).includes("code-default-selection");
+      );
+      editorSupportsCodeDefault = accepted.includes("code-default-selection");
+      editorSupportsAstroIdentity = accepted.includes("astro-identity-v2");
     }
     if (message?.type === "morph:storefront-preview-finish-inline-text") {
       // The author chose, in the editor, what happens to the open edit. The

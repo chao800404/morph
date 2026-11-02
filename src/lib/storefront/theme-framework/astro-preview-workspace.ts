@@ -218,7 +218,8 @@ function integrationSource(options: {
   locateNonce: string | null;
 }): string {
   return `// Written by Morph for this Live Preview (astro-preview-workspace.ts).
-import fs from "node:fs";
+${options.locateNonce ? `import crypto from "node:crypto";
+` : ""}import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
