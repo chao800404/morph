@@ -112,10 +112,12 @@ export function hideGuardInsertions(
           hiddenLocal = `__morphSectionHidden${suffix}`;
         }
         usedNames.add(hiddenLocal);
-        // On the import's own line, so no later line moves.
+        // On the import's own line, so no later line moves. A Theme written
+        // without semicolons ends the import at its specifier, so the
+        // statement is closed first: two imports on one line need one.
         insertions.push({
           at: site.contentImport.end,
-          text: ` import { isSectionHidden as ${hiddenLocal} } from ${JSON.stringify(site.contentImport.source)};`,
+          text: `${site.contentImport.semicolon ? "" : ";"} import { isSectionHidden as ${hiddenLocal} } from ${JSON.stringify(site.contentImport.source)};`,
         });
       }
       condition = `${hiddenLocal}(${JSON.stringify(site.slot)})`;

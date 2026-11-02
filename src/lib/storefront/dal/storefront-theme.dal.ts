@@ -2194,24 +2194,20 @@ export const storefrontThemeDal = {
                 document: sealed,
               };
             }),
-            resolveCallSite: ({
+            // Every route that serves the template, as the write judged it;
+            // a template no route serves renders nothing and is left alone.
+            resolveCallSites: ({
               templateType,
               templateRoutePath,
               sectionId,
-            }) => {
-              const resolved = resolveSectionSourceComponent({
+            }) =>
+              templateHideCallSites({
                 framework: template.framework,
                 templateType,
                 templateRoutePath,
                 sectionId,
                 files: textFiles,
-              });
-              if (resolved.kind === "confirmed") return resolved.callSitePath;
-              if (resolved.kind === "legacy") return null;
-              return resolved.notRendered
-                ? "not-rendered"
-                : { unconfirmed: resolved.reason };
-            },
+              }),
           }),
         );
       }

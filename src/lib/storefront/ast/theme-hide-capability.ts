@@ -80,9 +80,13 @@ export type HideGuardSite = Readonly<{
   position: "child" | "return" | "arrow-body" | "guarded";
   /**
    * For a `content` root: the declaration the module imports `content` from
-   * (its specifier, and where it ends).
+   * (its specifier, where it ends, and whether it ends with a semicolon).
    */
-  contentImport: Readonly<{ source: string; end: number }> | null;
+  contentImport: Readonly<{
+    source: string;
+    end: number;
+    semicolon: boolean;
+  }> | null;
   /** For a `loader` root: the local that holds the whole page. */
   pageLocal: string | null;
 }>;

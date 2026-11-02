@@ -147,15 +147,19 @@ export function findPublishHiddenSectionProblems(args: {
   buildGuardVersion: string | null;
   documents: readonly PublishHiddenSectionsDocument[];
   /**
-   * Where the revision renders one section: its call site; `null` for a
-   * legacy shell; `"not-rendered"` when the source does not render it; or
-   * why the source cannot confirm it.
+   * Where the revision renders one section, on every route that serves its
+   * template (`templateHideCallSites`): a call site; `null` for a legacy
+   * shell; `"not-rendered"` for a route that does not render it; or why the
+   * source cannot confirm it. No entry at all: no route serves the
+   * template, so nothing can show the section.
    */
-  resolveCallSite: (args: {
+  resolveCallSites: (args: {
     templateType: string;
     templateRoutePath: string | null;
     sectionId: string;
-  }) => string | null | "not-rendered" | Readonly<{ unconfirmed: string }>;
+  }) => ReadonlyArray<
+    string | null | "not-rendered" | Readonly<{ unconfirmed: string }>
+  >;
 }): {
   unsupported: PublishHiddenSectionProblem[];
   rebuild: PublishHiddenSectionProblem[];
@@ -174,37 +178,46 @@ export function findPublishHiddenSectionProblems(args: {
   const analyzer = createHideCapabilityAnalyzer(files);
   const guardCurrent = args.buildGuardVersion === THEME_HIDE_GUARD_VERSION;
   for (const { entry, sectionId } of hidden) {
-    const callSitePath = args.resolveCallSite({
+    // Every route that serves the template renders the section; the first
+    // one that cannot hide it decides.
+    let refusal: PublishHiddenSectionProblem | null = null;
+    let needsGuard = false;
+    for (const callSitePath of args.resolveCallSites({
       templateType: entry.templateType,
       templateRoutePath: entry.templateRoutePath,
       sectionId,
-    });
-    if (callSitePath === "not-rendered") continue;
-    if (callSitePath !== null && typeof callSitePath === "object") {
-      unsupported.push({
-        label: entry.label,
-        sectionId,
-        reason: "source-unconfirmed",
-        message: callSitePath.unconfirmed,
+    })) {
+      if (callSitePath === "not-rendered") continue;
+      if (callSitePath !== null && typeof callSitePath === "object") {
+        refusal = {
+          label: entry.label,
+          sectionId,
+          reason: "source-unconfirmed",
+          message: callSitePath.unconfirmed,
+        };
+        break;
+      }
+      const capability = analyzer.classify({
+        callSitePath,
+        slot: sectionId,
+        scope: entry.templateType === "layout" ? "layout" : "route",
       });
-      continue;
+      if (capability.kind === "unsupported") {
+        refusal = {
+          label: entry.label,
+          sectionId,
+          reason: capability.reason,
+          message: capability.message,
+        };
+        break;
+      }
+      if (capability.sites.some((site) => site.position !== "guarded")) {
+        needsGuard = true;
+      }
     }
-    const capability = analyzer.classify({
-      callSitePath,
-      slot: sectionId,
-      scope: entry.templateType === "layout" ? "layout" : "route",
-    });
-    if (capability.kind === "unsupported") {
-      unsupported.push({
-        label: entry.label,
-        sectionId,
-        reason: capability.reason,
-        message: capability.message,
-      });
-    } else if (
-      !guardCurrent &&
-      capability.sites.some((site) => site.position !== "guarded")
-    ) {
+    if (refusal) {
+      unsupported.push(refusal);
+    } else if (!guardCurrent && needsGuard) {
       rebuild.push({
         label: entry.label,
         sectionId,

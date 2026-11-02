@@ -5661,3 +5661,139 @@ ${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  r
     expect(result?.document.sections[0]).toMatchObject({ enabled: false });
   });
 });
+
+/**
+ * M3 Hide P4: a publish judges a hidden section on every route that serves
+ * its template, as the write does, and leaves a template no route serves
+ * alone: nothing renders it.
+ */
+describe("M3 Hide: publish judges every route of the template, and none when no route serves it", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const DRAFT = "dddddddd-1111-4111-8111-111111111111";
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  const productRoute = (routeId: string, early: boolean) =>
+    `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("${routeId}")({ component: Page });
+function Page() {
+${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  return <main><Hero {...content("hero")} heading={t} /></main>;` : `  return <main><Hero {...content("hero")} /></main>;`}
+}`;
+  const revision = (routes: ReadonlyArray<[string, string]>) => [
+    { path: "src/routes/__root.tsx", content: root },
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    { path: "src/components/Hero.tsx", content: hero },
+    ...routes.map(([path, content]) => ({ path, content })),
+  ];
+  const twoRoutes = (featuredEarly: boolean) =>
+    revision([
+      ["src/routes/products.$slug.tsx", productRoute("/products/$slug", false)],
+      [
+        "src/routes/products.featured.tsx",
+        productRoute("/products/featured", featuredEarly),
+      ],
+    ]);
+
+  function seed(template: { type: string; routePath: string | null }) {
+    const document = JSON.stringify({
+      version: 1,
+      sections: [
+        {
+          id: "hero",
+          type: "hero",
+          componentRef: "src/components/Hero.tsx",
+          enabled: false,
+          props: { heading: "Stored" },
+        },
+      ],
+    });
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, route_path, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-multi', 'theme-a', ?, 'T', ?, ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(template.type, template.routePath, document, DRAFT);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'template-multi', 1, ?, 'now')`,
+      )
+      .run(DRAFT, document);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', 1, 'Checkpoint', 'publish', '[]', 'now', 'now')`,
+      )
+      .run(SOURCE);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
+      )
+      .run(withThemeStartBuildIdentity("1.168.32"), BUILD);
+  }
+  const publish = (files: ReadonlyArray<{ path: string; content: string }>) =>
+    storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: async () => files,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-multi",
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: DRAFT,
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+  const releases = () =>
+    sqlite.prepare("SELECT id FROM storefront_releases").all();
+
+  it("refuses when another route of the template reads the hidden section early", async () => {
+    seed({ type: "product", routePath: null });
+    await expect(publish(twoRoutes(true))).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"hero" .*\(early-computation\)/,
+    );
+    expect(releases()).toEqual([]);
+  });
+
+  it("reverse: every route of the template can omit it, so it publishes", async () => {
+    seed({ type: "product", routePath: null });
+    await expect(publish(twoRoutes(false))).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  it("leaves alone a template no route serves: nothing can show its hidden section", async () => {
+    seed({ type: "product", routePath: null });
+    await expect(
+      publish(
+        revision([
+          [
+            "src/routes/index.tsx",
+            // The index template's own `hero`, not the product template's.
+            productRoute("/", true),
+          ],
+        ]),
+      ),
+    ).resolves.toMatchObject({ releaseId: expect.any(String) });
+  });
+
+  it("leaves alone a route document whose route is no longer in the Theme", async () => {
+    seed({ type: "page", routePath: "/aboutus" });
+    await expect(publish(twoRoutes(true))).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+});
