@@ -537,6 +537,29 @@ describe("reachability follows .astro imports", () => {
     ]);
   });
 
+  it("a reachable template-only .astro module is never read by Babel in place of its projection", async () => {
+    // `<main><slot name="main" /><slot /></main>` happens to be valid TSX, so
+    // a Babel fallback would read it as "no taint". Without its projection
+    // it must be unreadable, like any other .astro module.
+    const source =
+      '---\nimport Hero from "../components/Hero.astro";\nimport Layout from "../components/Layout.astro";\n' +
+      'import { morph } from "@morph/sdk/astro";\n' +
+      `${HOME}---\n<Layout><Hero {...hero} /></Layout>\n`;
+    const analysis = await analyzeAstro("src/pages/index.astro", source, {
+      skipProjection: ["src/components/Layout.astro"],
+    });
+    expect(analysis.taints).toEqual(expect.arrayContaining(["page:*"]));
+    expect(summarize(analysis)).toEqual([
+      { name: "Layout", section: null, claims: [] },
+      { name: "Hero", section: "hero", claims: [] },
+    ]);
+    const projected = await analyzeAstro("src/pages/index.astro", source);
+    expect(summarize(projected)).toEqual([
+      { name: "Layout", section: null, claims: [] },
+      HERO_BOTH,
+    ]);
+  });
+
   it("an .astro module that is not reachable needs no projection", async () => {
     const analysis = await analyzeAstro(
       "src/pages/index.astro",
