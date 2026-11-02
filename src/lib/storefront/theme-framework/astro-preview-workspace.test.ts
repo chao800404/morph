@@ -107,6 +107,19 @@ describe("an Astro Live Preview workspace", () => {
     expect(client).not.toContain("__morphPreviewRouter");
   });
 
+  it("tells the bridge it navigates as documents, before the bridge loads (D3)", () => {
+    const client = planned(astroThemeFiles()).file(
+      THEME_PREVIEW_START_CLIENT_PATH,
+    )!;
+    const declared = client.indexOf(
+      'globalThis.__morphPreviewNavigation = "document";',
+    );
+    expect(declared).toBeGreaterThan(-1);
+    expect(declared).toBeLessThan(
+      client.indexOf(`import("/${THEME_PREVIEW_BRIDGE_PATH}")`),
+    );
+  });
+
   it("guards imports, relays HMR over HTTP and states what the dev server may read", () => {
     const integration = planned(astroThemeFiles()).file(
       ASTRO_PREVIEW_INTEGRATION_PATH,
