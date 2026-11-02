@@ -393,7 +393,7 @@ describe("Themes that may have had the pages", () => {
   // The files cannot tell a Theme whose author removed both from one that
   // never had them, whatever version it records: both are offered, never
   // added unasked, and never said to be removed.
-  it.each([27, 28, CURRENT, null])(
+  it.each([27, 28, 29, CURRENT, null])(
     "recorded at %s and without both: offered, not created, not called missing",
     (storedVersion) => {
       const reviewed = reviewStarterThemeUpgrade(
@@ -411,7 +411,7 @@ describe("Themes that may have had the pages", () => {
     },
   );
 
-  it.each([26, 27, 28, CURRENT, null])(
+  it.each([26, 27, 28, 29, CURRENT, null])(
     "recorded at %s with one of them: the other is not offered, and not called missing",
     (storedVersion) => {
       const reviewed = reviewStarterThemeUpgrade(

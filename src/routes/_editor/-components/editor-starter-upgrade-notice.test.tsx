@@ -552,15 +552,16 @@ describe("EditorStarterUpgradeNotice", () => {
     it("on the current Starter: no notice, the review opens on request, and applies only the selected pages", async () => {
       const CURRENT_STATUS = {
         versionState: "current" as const,
-        storedVersion: 29,
-        currentVersion: 29,
+        storedVersion: 30,
+        currentVersion: 30,
         catalogPending: null,
       };
       fns.review.mockResolvedValue({
         success: true,
         data: reviewOf({
           versionState: "current",
-          storedVersion: 29,
+          storedVersion: 30,
+          currentVersion: 30,
           starter: { ...WITH_PAGES_OFFERED, changes: [] },
         }),
       });

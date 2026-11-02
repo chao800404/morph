@@ -383,7 +383,7 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
   與「作者刪除」。因此：
   - 只依檔案判定：Start 的 source-first workspace、兩頁都不存在、升級本身的計畫不會建立它們，
     就在既有審查中列出（`new-in-starter`），**預設不選、不自動建立、不寫成作者刪除**。記錄的版本
-    不參與判定（記到 29 之後照樣列出）；只有其中一頁存在時，另一頁不列出、不建立，以中立說明
+    不參與判定（記到目前版本之後照樣列出）；只有其中一頁存在時，另一頁不列出、不建立，以中立說明
     標示（`page-not-in-theme`），同樣不推定作者刪除。
   - 作者勾選才建立：勾選後是另一份計畫與 digest（`review.optional`），套用時送那份 digest，走同一條
     `applyReviewedStarterUpgrade`、同樣的 OCC 與 digest 檢查，不另開寫入路徑。
@@ -391,8 +391,9 @@ Manifest 只作為尚未遷移元件的相容來源。編輯器表單與伺服�
     「Theme: Review Starter Upgrade」開同一個審查再加入。不得為此加上反覆出現的提醒。
   - 計畫中新內容會加上指向這兩頁連結的檔案（例如 Header 的 `/account`），頁面在套用後不存在時保留
     原樣（`needs-route`），不讓升級產生指向不存在頁面的連結。
-  - 這條規則**沒有提升版本常數**：受影響的 Theme 記錄在 26／27，本來就看得到升級提醒；已在 29 的
-    Theme 透過上述 Command Palette 入口取得。提升版本只會讓所有 Theme 重新出現提醒。
+  - 這條規則**沒有提升版本常數**：受影響的 Theme 記錄在 26／27，本來就看得到升級提醒；在 29 時
+    不勾選的 Theme，Starter 30（content 模組的升級）讓提醒再出現一次，審查同樣再列出這兩頁；已記錄
+    目前版本的 Theme 透過上述 Command Palette 入口取得。為這條規則提升版本只會讓所有 Theme 重新出現提醒。
 - 平台擁有的 toolchain 版本（React、TanStack、Vite、Tailwind 等）必須**修正**，不是
   只在缺少時補上。build 契約以精確相等驗證，一個「存在但版本錯誤」的相依會讓 workspace
   永久無法 build，而純增量的升級救不回來。客戶自行加入的套件版本則必須保留。

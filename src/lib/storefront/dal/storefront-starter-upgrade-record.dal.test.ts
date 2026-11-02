@@ -12,6 +12,7 @@ import {
 } from "../default-storefront-document";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
 } from "../starter-theme-v3-files";
 import { starterThemeWorkspaceFiles } from "../starter-theme-files";
@@ -2352,5 +2353,162 @@ describe("the Starter's new pages on a Theme created without them", () => {
       sourceGeneration: 6,
     });
     expect(workspace.saveFilesBatch).not.toHaveBeenCalled();
+  });
+
+  describe("declined while Starter 29 was current, then reviewed for 30", () => {
+    const CONTENT = "src/morph/content.ts";
+    const v29 = JSON.parse(
+      readFileSync(
+        join(__dirname, "..", "__fixtures__", "starter-history", "v29.json"),
+        "utf8",
+      ),
+    ) as { starterVersion: number; files: { path: string; content: string }[] };
+
+    /**
+     * The Theme as a decline under Starter 29 left it: the review applied
+     * without the pages, the version recorded as 29. It is made with today's
+     * review, declined through the DAL, then `content.ts` is put back to the
+     * module 29 shipped (Starter 30's change to this Theme's files) and the
+     * record back to 29.
+     */
+    async function declinedAt29() {
+      const first = await review();
+      await expect(apply(5, first.review.digest)).resolves.toMatchObject({
+        status: "applied",
+        versionRecorded: true,
+      });
+      workspace.files.set(
+        THEME_ID,
+        files().map((file) =>
+          file.path === CONTENT
+            ? { ...file, content: LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE }
+            : file,
+        ),
+      );
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET metadata = json_set(metadata, '$.starterTemplateVersion', 29) WHERE id = ?",
+        )
+        .run(THEME_ID);
+      workspace.saveFilesBatch.mockClear();
+    }
+
+    it("is left without the pages, with its own Header and 29's content module, recorded at 29", async () => {
+      await declinedAt29();
+      for (const path of PAGES) expect(contentOf(path)).toBeUndefined();
+      expect(contentOf(HEADER)).toBe(originalHeader);
+      // The module this Theme keeps is the one a Theme 29 created has.
+      expect(
+        v29.files.find((file) => file.path === CONTENT)?.content,
+      ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE);
+      expect(contentOf(CONTENT)).toBe(
+        LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+      );
+      expect(storedRow().metadata.starterTemplateVersion).toBe(29);
+    });
+
+    it("the 30 notice shows; its review offers the pages again, unselected; declining again writes only the upgrade", async () => {
+      await declinedAt29();
+      // Starter 30 brings the notice back by itself: no Command Palette.
+      await expect(
+        storefrontDal.readStarterUpgradeStatus({
+          storefrontId: STOREFRONT_ID,
+          themeId: THEME_ID,
+        }),
+      ).resolves.toEqual({
+        versionState: "available",
+        storedVersion: 29,
+        currentVersion: CURRENT,
+        catalogPending: null,
+      });
+
+      const reviewed = await review();
+      expect(reviewed.versionState).toBe("available");
+      expect(reviewed.review.changes).toContainEqual({
+        path: CONTENT,
+        operation: "update",
+        before: LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
+        after: STARTER_THEME_CONTENT_MODULE_SOURCE,
+      });
+      // Of this Theme's files, 30 replaces only the untouched content module.
+      expect(reviewed.review.changes.map((change) => change.path)).toEqual([
+        CONTENT,
+      ]);
+      expect(reviewed.review.optional?.paths).toEqual(PAGES);
+      for (const path of PAGES) {
+        expect(reviewed.review.kept).toContainEqual({
+          path,
+          reason: "new-in-starter",
+        });
+        expect(reviewed.review.kept).not.toContainEqual({
+          path,
+          reason: "missing",
+        });
+      }
+      expect(reviewed.review.kept).toContainEqual({
+        path: HEADER,
+        reason: "needs-route",
+      });
+
+      await expect(
+        apply(reviewed.sourceGeneration, reviewed.review.digest),
+      ).resolves.toMatchObject({
+        status: "applied",
+        filesSaved: true,
+        starter: true,
+        versionRecorded: true,
+      });
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      const [, , writes] = workspace.saveFilesBatch.mock.calls[0]!;
+      const written = (writes as { path: string }[]).map((file) => file.path);
+      expect(written).toContain(CONTENT);
+      for (const path of [...PAGES, HEADER]) expect(written).not.toContain(path);
+      expect(contentOf(CONTENT)).toBe(STARTER_THEME_CONTENT_MODULE_SOURCE);
+      for (const path of PAGES) expect(contentOf(path)).toBeUndefined();
+      expect(contentOf(HEADER)).toBe(originalHeader);
+      expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+
+      // Declined twice, still not removed: the Command Palette's review
+      // offers them once more.
+      const again = await review();
+      expect(again.versionState).toBe("current");
+      expect(again.review.changes).toEqual([]);
+      expect(again.review.optional?.paths).toEqual(PAGES);
+    });
+
+    it("selecting them in the 30 review adds both, the Header and 30's content module, in one save", async () => {
+      await declinedAt29();
+      const reviewed = await review();
+      const selected = reviewed.review.optional!;
+      expect(selected.digest).not.toBe(reviewed.review.digest);
+
+      await expect(
+        apply(reviewed.sourceGeneration, selected.digest),
+      ).resolves.toMatchObject({
+        status: "applied",
+        starter: true,
+        versionRecorded: true,
+      });
+      expect(workspace.saveFilesBatch).toHaveBeenCalledTimes(1);
+      expect(workspace.saveFilesBatch).toHaveBeenCalledWith(
+        STOREFRONT_ID,
+        THEME_ID,
+        selected.plan.files,
+        expect.objectContaining({
+          expectedSourceGeneration: reviewed.sourceGeneration,
+          createRevision: true,
+        }),
+      );
+      const current = new Map(
+        starterThemeWorkspaceFiles().map((file) => [file.path, file.content]),
+      );
+      for (const path of [...PAGES, HEADER, CONTENT]) {
+        expect(contentOf(path), path).toBe(current.get(path));
+      }
+      expect(storedRow().metadata.starterTemplateVersion).toBe(CURRENT);
+      const settled = await review();
+      expect(settled.review.optional).toBeNull();
+      expect(settled.review.changes).toEqual([]);
+    });
   });
 });
