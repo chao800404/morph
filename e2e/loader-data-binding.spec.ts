@@ -226,8 +226,41 @@ async function storedProps(page: Page): Promise<Record<string, unknown> | null> 
   );
 }
 
-/** Hides or shows the slot's section, through the write the Sections panel makes. */
-async function setSectionEnabled(page: Page, enabled: boolean) {
+/** The slot's stored section (its `enabled` flag included), as the server holds it. */
+async function storedSection(
+  page: Page,
+): Promise<{ enabled?: boolean; props?: Record<string, unknown> } | null> {
+  const editor = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+    ...scope!,
+  })) as {
+    success: boolean;
+    data?: {
+      templates: Array<{
+        routePath: string | null;
+        document: {
+          sections: Array<{
+            id: string;
+            enabled?: boolean;
+            props?: Record<string, unknown>;
+          }>;
+        };
+      }>;
+    };
+  };
+  expect(editor.success, JSON.stringify(editor)).toBe(true);
+  const template = editor.data!.templates.find(
+    (candidate) => candidate.routePath === ROUTE_PATH,
+  );
+  return (
+    template?.document.sections.find((section) => section.id === SLOT) ?? null
+  );
+}
+
+/**
+ * Asks to hide or show the slot's section through the write the Sections
+ * panel makes, and returns the server's answer.
+ */
+async function requestSectionEnabled(page: Page, enabled: boolean) {
   const ensured = (await serverFn(
     page,
     THEMES,
@@ -248,8 +281,8 @@ async function setSectionEnabled(page: Page, enabled: boolean) {
       expectedSourceGeneration: await themeSourceGeneration(page, scope!),
       routePath: ROUTE_PATH,
     },
-  )) as { success: boolean };
-  expect(written.success, JSON.stringify(written)).toBe(true);
+  )) as { success: boolean; error?: string; reason?: string; message?: string };
+  return written;
 }
 
 const sectionWrapper = (page: Page) =>
@@ -430,39 +463,34 @@ test.describe("case B in the full Start preview", () => {
     }
   });
 
-  // A hidden section is not selectable (content binding contract §6). The
-  // route spreads `{...hero}` with no guard of its own, so a hidden section
-  // still renders, with the component's default. The preview marks it from
-  // the `_hidden` the server function returned, and a click on it selects
-  // nothing; shown again, the same heading selects `hero.title` again.
-  test("a hidden section shows its default and selects nothing, and is selectable once shown", async ({
+  // M3 Hide (P2): this route spreads the loader's `{...hero}`, a shape the
+  // first version cannot hide (D107 Q3: only content("x") spreads and member
+  // reads through the whole page). Hiding it would show the component's
+  // default, so the write is refused before anything is stored; the section
+  // stays shown, and selectable. The selection rule for a hidden section
+  // (#224) is covered where a section can be hidden: the editor's component
+  // tests (visual-editor-shell-hidden-section.test.tsx) and, with Morph's
+  // guard, the hidden-section tests of the full Start preview below.
+  test("hiding a section this route cannot hide is refused, and it stays shown and selectable", async ({
     page,
   }) => {
     test.setTimeout(240_000);
     await openRoute(page);
-    const storedTitle = (await storedProps(page))?.title;
+    const before = await storedSection(page);
+    const storedTitle = before?.props?.title;
     expect(storedTitle).toEqual(expect.any(String));
     const stored = storedTitle as string;
 
-    try {
-      await setSectionEnabled(page, false);
-      await openRoute(page);
-      // The server function read the Document and left the hidden slot out.
-      await expect(heading(page)).toHaveText(DEFAULT_TITLE);
-      await expect(sectionWrapper(page)).toHaveAttribute(
-        "data-morph-section-hidden",
-        "",
-      );
-      await clickHeading(page);
-      await settleSelection(page);
-      await expect(heading(page)).not.toHaveAttribute(
-        "data-storefront-editor-selected",
-        "true",
-      );
-      await expect(titleField(page)).toHaveCount(0);
-    } finally {
-      await setSectionEnabled(page, true);
-    }
+    const answer = await requestSectionEnabled(page, false);
+    if (answer.success) await requestSectionEnabled(page, true);
+    expect(answer, JSON.stringify(answer)).toMatchObject({
+      success: false,
+      error: "SECTION_HIDE_UNSUPPORTED",
+      reason: "unsupported-shape",
+    });
+    expect(answer.message).toMatch(/^Morph cannot hide this section yet/);
+    // Nothing was written.
+    expect(await storedSection(page)).toEqual(before);
 
     await openRoute(page);
     await expect(heading(page)).toHaveText(stored);
@@ -477,24 +505,21 @@ test.describe("case B in the full Start preview", () => {
     await expect(titleField(page)).toHaveValue(stored);
   });
 
-  // The same rule while the editor stays open: the author hides the section
-  // from the Sections panel, the editor saves, syncs the drafts into the
-  // running preview and refreshes it (A6b-2) — no reload of the editor or of
-  // the preview. The bridge also hides the wrapper at once, so the heading
-  // cannot be reached by pointer; the click is dispatched on it, which is the
-  // event the bridge's own capture listener reads.
-  test("hiding and showing from the Sections panel, without a reload, takes and gives back the selection", async ({
+  // The same refusal from the Sections panel while the editor stays open: the
+  // canvas hides the section at once, the server refuses the hide with its
+  // reason, and the editor shows the section again and keeps nothing to
+  // retry. No reload of the editor or of the preview.
+  test("hiding from the Sections panel is refused with its reason, without a reload, and the section stays selectable", async ({
     page,
   }) => {
     test.setTimeout(240_000);
     const treeNodes = page.locator(`[data-editor-tree-node-id^="${SLOT}:"]`);
     await openRoute(page);
-    const storedTitle = (await storedProps(page))?.title;
+    const before = await storedSection(page);
+    const storedTitle = before?.props?.title;
     expect(storedTitle).toEqual(expect.any(String));
     const stored = storedTitle as string;
     await expect(heading(page)).toHaveText(stored);
-    await selectHeading(page);
-    await expect(titleField(page)).toHaveValue(stored);
     await expect(treeNodes.first()).toBeAttached();
 
     // Neither document may be replaced while this runs.
@@ -535,72 +560,45 @@ test.describe("case B in the full Start preview", () => {
     const show = page.getByRole("button", {
       name: `Show section ${sectionType}`,
     });
-    await treeNodes.first().hover();
-    await hide.click();
-    try {
-      // Applied once the preview's server reads the synced draft: the loader
-      // runs again and returns the slot as hidden.
-      await expect(sectionWrapper(page)).toHaveAttribute(
-        "data-morph-section-hidden",
-        "",
-        { timeout: 30_000 },
-      );
-      await expect(heading(page)).toHaveText(DEFAULT_TITLE);
-      await expect(show).toBeVisible();
-
-      await heading(page).dispatchEvent("click");
-      await settleSelection(page);
-      await expect(heading(page)).not.toHaveAttribute(
-        "data-storefront-editor-selected",
-        "true",
-      );
-      await expect(titleField(page)).toHaveCount(0);
-      await expect(treeNodes).toHaveCount(0);
-
-      // The hidden section's own row still selects it, and opens no content.
-      const row = page.getByRole("button", { name: sectionType, exact: true });
-      await row.click();
-      await expect(row).toHaveAttribute("data-active", "true");
-      await openContentTab(page);
-      await expect(
-        page.getByRole("button", { name: "Content", exact: true }),
-      ).toHaveAttribute("aria-pressed", "true");
-      await expect(titleField(page)).toHaveCount(0);
-      await expect(show).toBeVisible();
-      await noReload();
-    } finally {
-      if (await show.isVisible().catch(() => false)) await show.click();
-    }
-
-    await expect(sectionWrapper(page)).not.toHaveAttribute(
-      "data-morph-section-hidden",
-      { timeout: 30_000 },
-    );
-    await expect(heading(page)).toHaveText(stored);
-    await expect(heading(page)).toBeVisible();
-    await expect(treeNodes.first()).toBeAttached();
-    await selectHeading(page);
-    await expect(heading(page)).toHaveAttribute(
-      "data-storefront-editor-selected",
-      "true",
-    );
-    await expect(titleField(page)).toHaveValue(stored);
-
-    // Reselected explicitly, it saves at the current baseline.
-    const edited = `Shown again ${Date.now()}`;
-    const saved = page.waitForResponse(
+    const refused = page.waitForResponse(
       (response) =>
         isServerFunctionCall(
           response.url(),
           "updateStorefrontThemeSectionProps",
-        ) && (response.request().postData() ?? "").includes(edited),
+        ),
       { timeout: 30_000 },
     );
-    await titleField(page).fill(edited);
-    await titleField(page).press("Tab");
-    expect(await (await saved).text()).not.toContain("SELECTION_SOURCE_CONFLICT");
-    await expect.poll(async () => (await storedProps(page))?.title).toBe(edited);
-    await noReload();
+    await treeNodes.first().hover();
+    await hide.click();
+    try {
+      expect(await (await refused).text()).toContain(
+        "SECTION_HIDE_UNSUPPORTED",
+      );
+      await expect(
+        page.getByText(/^Morph cannot hide this section yet/).first(),
+      ).toBeVisible();
+      // Shown again, and nothing held for a retry.
+      await expect(heading(page)).toHaveText(stored, { timeout: 15_000 });
+      await expect(heading(page)).toBeVisible();
+      await expect(sectionWrapper(page)).not.toHaveAttribute(
+        "data-morph-section-hidden",
+      );
+      await expect(show).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(
+        0,
+      );
+      expect(await storedSection(page)).toEqual(before);
+
+      await selectHeading(page);
+      await expect(heading(page)).toHaveAttribute(
+        "data-storefront-editor-selected",
+        "true",
+      );
+      await expect(titleField(page)).toHaveValue(stored);
+      await noReload();
+    } finally {
+      if (await show.isVisible().catch(() => false)) await show.click();
+    }
   });
 });
 
