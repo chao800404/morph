@@ -38,6 +38,7 @@ import {
 import { parseAstroTemplate } from "./astro-parser-client";
 import {
   astroBindingViewIdentities,
+  astroSameFileNestingRisk,
   astroSourceDigest,
   astroTemplateBoundaryElements,
   verifyAstroInstanceIdentity,
@@ -85,6 +86,7 @@ async function fixture(
   options: {
     routeFile?: string;
     replace?: readonly B1SourceFile[];
+    extra?: readonly B1SourceFile[];
   } = {},
 ): Promise<Fixture> {
   const routeFile = options.routeFile ?? INDEX;
@@ -96,6 +98,7 @@ async function fixture(
       path: file.path,
       content: replaced.get(file.path) ?? file.content,
     })),
+    ...(options.extra ?? []),
     { path: routeFile, content: routeSource },
   ];
   const projections = new Map<string, AstroProjection>();
@@ -605,6 +608,179 @@ describe("reverse checks: what the identity rules prevent (§12 item 12)", () =>
         ...changed,
       }),
     ).toMatchObject({ ok: false, reason: "source-stale" });
+  });
+});
+
+describe("same file is not same instance (review follow-up 1)", () => {
+  const SLOT_NESTED = astroPage(
+    HOME,
+    '<Card {...card}><Card slot="inner" title="x" /></Card>',
+  );
+
+  /** A click in the Card's file at the snapshot's version. */
+  const verifyCardClick = async (fx: Fixture, marker = fx.markers[0]) =>
+    verifyAstroInstanceIdentity({
+      marker,
+      selection: await clickIn(fx, CARD),
+      ...fx,
+    });
+
+  /** The guard's input for a fixture, as locateInstance builds it. */
+  const nestingInput = (fx: Fixture) => {
+    const elements = astroTemplateBoundaryElements(fx.route.template);
+    const statements = (
+      fx.route.projection.ast as unknown as { program: { body: object[] } }
+    ).program.body.filter((node) => !fx.route.projection.synthetic.has(node));
+    const boundNames = astroTopLevelBindingNames(statements);
+    return {
+      elements,
+      candidates: astroBoundaryCandidates(elements, boundNames),
+      boundNames,
+      statements: statements as never,
+      routeFile: INDEX,
+      contentByPath: new Map(
+        fx.snapshot.files.map((file) => [file.path, file.content]),
+      ),
+    };
+  };
+
+  it("refuses a Design selection when an unmarked slot= child renders the same component", async () => {
+    const fx = await fixture(SLOT_NESTED);
+    // The inner Card has slot=, so it has no marker: a click in it finds the
+    // outer marker, with Card.astro and Card.astro's digest.
+    expect(fx.markers).toHaveLength(1);
+    expect(await verifyCardClick(fx)).toMatchObject({
+      ok: true,
+      instance: { componentName: "Card", section: "card" },
+      designSelection: null,
+      designSelectionUnavailable: "same-file-nesting",
+    });
+  });
+
+  it("reverse check: without the guard the same click confirms the outer instance", async () => {
+    const fx = await fixture(SLOT_NESTED);
+    const result = await verifyCardClick(fx);
+    // Every other step passed: the guard runs last, after file and digest.
+    expect(result).toMatchObject({
+      ok: true,
+      designSelectionUnavailable: "same-file-nesting",
+    });
+    if (!result.ok) throw new Error("unreachable");
+    const outer = { start: result.identity.start, end: result.identity.end };
+    const input = nestingInput(fx);
+    expect(astroSameFileNestingRisk(input, outer, CARD)).toBe(true);
+    // The guard without the unmarked inner Card would let it through.
+    expect(
+      astroSameFileNestingRisk(
+        {
+          ...input,
+          elements: input.elements.filter((element) => !element.slotted),
+        },
+        outer,
+        CARD,
+      ),
+    ).toBe(false);
+    // A different component in the same place leaves the selection on.
+    const other = await fixture(
+      astroPage(HOME, '<Card {...card}><Hero slot="inner" title="x" /></Card>'),
+    );
+    expect(await verifyCardClick(other)).toMatchObject({
+      ok: true,
+      instance: { section: "card" },
+      designSelection: { componentPath: CARD },
+      designSelectionUnavailable: null,
+    });
+  });
+
+  it("refuses when a same-file candidate inside the range went unmarked (defence in depth)", async () => {
+    // With the six-digit limit a candidate inside a marked one cannot end
+    // past ASTRO_BOUNDARY_MAX_OFFSET; the guard still treats any candidate
+    // the plugin did not mark as unmarked.
+    const fx = await fixture(
+      astroPage(HOME, "<Card {...card}><Card title={card.title} /></Card>"),
+    );
+    expect(fx.markers).toHaveLength(2);
+    const outer = parseAstroInstanceIdentity(fx.markers[0])!;
+    const input = nestingInput(fx);
+    expect(astroSameFileNestingRisk(input, outer, CARD)).toBe(false);
+    expect(
+      astroSameFileNestingRisk(
+        {
+          ...input,
+          candidates: input.candidates.filter(
+            (candidate) => candidate.start === outer.start,
+          ),
+        },
+        outer,
+        CARD,
+      ),
+    ).toBe(true);
+    // Marked, the inner Card has its own nearer marker: the outer is safe.
+    expect(await verifyCardClick(fx)).toMatchObject({
+      ok: true,
+      designSelectionUnavailable: null,
+    });
+  });
+
+  it("refuses when the component renders itself (Astro.self, or an import cycle)", async () => {
+    for (const card of [
+      "---\nconst { title, depth = 0 } = Astro.props;\n---\n<article><h2>{title}</h2>{depth < 1 && <Astro.self depth={depth + 1} />}</article>\n",
+      '---\nimport Wrap from "./Wrap.astro";\nconst { title } = Astro.props;\n---\n<article><h2>{title}</h2><Wrap /></article>\n',
+    ]) {
+      const fx = await fixture(A6, {
+        replace: [{ path: CARD, content: card }],
+        extra: [
+          {
+            path: "src/components/Wrap.astro",
+            content:
+              '---\nimport Card from "./Card.astro";\n---\n<div><Card title="again" /></div>\n',
+          },
+        ],
+      });
+      expect(await verifyCardClick(fx, fx.markers[1])).toMatchObject({
+        ok: true,
+        instance: { section: "card" },
+        designSelection: null,
+        designSelectionUnavailable: "same-file-nesting",
+      });
+    }
+  });
+});
+
+describe("inputs bound to the snapshot (review follow-ups 2 and 3)", () => {
+  it("refuses a template answer of a same-length, one-character edit", async () => {
+    const fx = await fixture(A6);
+    const edited = A6.replace("{...card}", "{...cart}");
+    expect(edited).toHaveLength(A6.length);
+    const other = await fixture(edited);
+    expect(other.route.template.source.length).toBe(
+      fx.route.template.source.length,
+    );
+    expect(
+      await verifyAstroInstanceIdentity({
+        marker: fx.markers[0],
+        snapshot: fx.snapshot,
+        route: { ...fx.route, template: other.route.template },
+      }),
+    ).toMatchObject({ ok: false, reason: "analysis-inconsistent" });
+  });
+
+  it("refuses a snapshot that names one file under two paths, in every reader", async () => {
+    const fx = await fixture(A6);
+    const snapshot = {
+      files: [
+        ...fx.snapshot.files,
+        { path: `./${HERO}`, content: "<p>another Hero</p>\n" },
+      ],
+    };
+    expect(
+      await verifyAstroInstanceIdentity({
+        marker: fx.markers[0],
+        snapshot,
+        route: fx.route,
+      }),
+    ).toMatchObject({ ok: false, reason: "analysis-inconsistent" });
+    expect(await astroBindingViewIdentities(snapshot, fx.route)).toEqual([]);
   });
 });
 

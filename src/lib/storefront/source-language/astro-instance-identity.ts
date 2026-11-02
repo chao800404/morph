@@ -36,6 +36,10 @@
  *   instances, stale component digest, no identity: each refused with the
  *   template's document, draft generation and revision count read back
  *   unchanged).
+ * - Dynamic routes (`[slug].astro`): an identity names the source instance
+ *   in the route file, not a Document. Which page Document a write targets
+ *   comes from the editor's and the write's own context, never from the
+ *   identity (PR-E).
  */
 import type { AstroParseTemplate } from "@morph/astro-parser-worker/contract";
 
@@ -50,6 +54,7 @@ import type {
 } from "../ast/theme-content-provenance";
 import { parseThemeSourceLocation } from "../compiler/theme-source-location-plugin";
 import {
+  ASTRO_BOUNDARY_MAX_OFFSET,
   ASTRO_BOUNDARY_RULE_VERSION,
   astroBoundaryCandidates,
   astroTopLevelBindingNames,
@@ -138,10 +143,15 @@ export type AstroIdentityRefusal = Readonly<{
  * - `no-selection`: no clicked element was given;
  * - `cross-component`: the clicked element is in another file than the
  *   instance's component (a nested component, `slot=` content, the page);
- * - `no-source-digest`: the selection carries no `sourceDigest`.
+ * - `no-source-digest`: the selection carries no `sourceDigest`;
+ * - `same-file-nesting`: the instance may hold another rendering of its own
+ *   component file without a marker of its own (a `slot=` child, a
+ *   candidate past the marker's offset limit, `Astro.self`, an import
+ *   cycle), so the clicked element may not be this instance's
+ *   (`astroSameFileNestingRisk`).
  */
 export type AstroDesignSelectionUnavailable =
-  "no-selection" | "cross-component" | "no-source-digest";
+  "no-selection" | "cross-component" | "no-source-digest" | "same-file-nesting";
 
 export type AstroIdentityConfirmed = Readonly<{
   ok: true;
@@ -218,6 +228,7 @@ type Located = Readonly<{
   instance: B1Instance;
   componentPath: string;
   componentDigest: string;
+  nesting: AstroNestingInput;
 }>;
 
 /**
@@ -246,19 +257,29 @@ async function locateInstance(
   }
   // 3. The route file's version, after checking that every input is of this
   // snapshot.
+  const contentByPath = snapshotContents(snapshot);
+  if (!contentByPath) {
+    return refuse(
+      "analysis-inconsistent",
+      "the snapshot names one file under two paths",
+    );
+  }
   const routeFile = normalizeThemeSourcePath(route.routeFile);
-  const contentByPath = new Map(
-    snapshot.files.map((file) => [
-      normalizeThemeSourcePath(file.path),
-      file.content,
-    ]),
-  );
   const routeSource = contentByPath.get(routeFile);
+  const routeDigest =
+    routeSource === undefined ? null : await astroSourceDigest(routeSource);
+  // The template answer carries the digest of the bytes the parser read, so
+  // it is bound to this route text by content, not only by length. The
+  // projection holds its source text. The B1 analysis has no digest of its
+  // own: only its route path is checked here, and handing in an analysis of
+  // this very snapshot stays the caller's obligation (PR-D/PR-E read the
+  // snapshot once and analyse that).
   if (
     routeSource === undefined ||
     route.projection.source !== routeSource ||
     route.template.mode !== "template" ||
     route.template.source.length !== routeSource.length ||
+    route.template.source.sha256 !== routeDigest ||
     normalizeThemeSourcePath(route.analysis.routeFile) !== routeFile
   ) {
     return refuse(
@@ -266,7 +287,7 @@ async function locateInstance(
       `the analysis handed in is not of ${routeFile} in this snapshot`,
     );
   }
-  if (identity.src !== (await astroSourceDigest(routeSource))) {
+  if (identity.src !== routeDigest) {
     return refuse(
       "source-stale",
       `the preview's ${routeFile} is not the snapshot's version`,
@@ -333,7 +354,153 @@ async function locateInstance(
     instance,
     componentPath,
     componentDigest: await astroSourceDigest(componentSource),
+    nesting: {
+      elements,
+      candidates: astroBoundaryCandidates(elements, boundNames),
+      boundNames,
+      statements,
+      routeFile,
+      contentByPath,
+    },
   };
+}
+
+/**
+ * The snapshot's files by normalised path, or null when two entries
+ * normalise to one path: which content is "the" file is then unknown, so the
+ * snapshot is refused outright rather than read one way here and another
+ * way elsewhere.
+ */
+function snapshotContents(
+  snapshot: AstroIdentitySnapshot,
+): Map<string, string> | null {
+  const contentByPath = new Map<string, string>();
+  for (const file of snapshot.files) {
+    const path = normalizeThemeSourcePath(file.path);
+    if (contentByPath.has(path)) return null;
+    contentByPath.set(path, file.content);
+  }
+  return contentByPath;
+}
+
+/** What the same-file nesting check reads (design v2 §6 step 7). */
+export type AstroNestingInput = Readonly<{
+  elements: readonly AstroBoundaryElement[];
+  candidates: readonly { start: number; end: number }[];
+  boundNames: readonly string[];
+  statements: readonly AnyNode[];
+  routeFile: string;
+  contentByPath: ReadonlyMap<string, string>;
+}>;
+
+/**
+ * Whether a click in `componentPath` inside the instance at `[start, end)`
+ * could belong to another rendering of that same file, which the enclosing
+ * marker would then misname. True (refuse the Design selection) when:
+ *
+ * - inside the instance's range in the route, an element that has no marker
+ *   of its own (a `slot=` component, a candidate past
+ *   `ASTRO_BOUNDARY_MAX_OFFSET`, a built-in-looking tag Core cannot tell
+ *   apart) is a component tag that resolves, or may resolve, to
+ *   `componentPath`. Only a plain tag bound once by a value import that
+ *   resolves to another Theme file is known to be different;
+ * - or the component can render itself again: its text mentions
+ *   `Astro.self` or a dynamic `import(`, or `componentPath` is reachable
+ *   from its own imports (followed through every Theme file, by a textual
+ *   scan that over-approximates: a specifier it cannot place is followed if
+ *   it resolves, and doubt refuses).
+ *
+ * A marked candidate inside the range is safe: a click within it finds its
+ * own, nearer marker.
+ */
+export function astroSameFileNestingRisk(
+  nesting: AstroNestingInput,
+  instance: Readonly<{ start: number; end: number }>,
+  componentPath: string,
+): boolean {
+  const marked = new Set(
+    nesting.candidates
+      .filter((candidate) => candidate.end <= ASTRO_BOUNDARY_MAX_OFFSET)
+      .map((candidate) => `${candidate.start}:${candidate.end}`),
+  );
+  const filePaths = new Set(nesting.contentByPath.keys());
+  for (const element of nesting.elements) {
+    if (element.start < instance.start || element.end > instance.end) continue;
+    if (element.start === instance.start && element.end === instance.end) {
+      continue;
+    }
+    if (marked.has(`${element.start}:${element.end}`)) continue;
+    const tag = element.tag;
+    const lowerHost = /^[a-z]/.test(tag) && !tag.includes(".");
+    if (lowerHost || tag === "#fragment") continue;
+    if (tag === "Fragment" && !nesting.boundNames.includes("Fragment")) {
+      continue;
+    }
+    const resolved = importedFileOf(
+      tag,
+      nesting.boundNames,
+      nesting.statements,
+      nesting.routeFile,
+      filePaths,
+    );
+    if (resolved === null || resolved === componentPath) return true;
+  }
+  return componentRendersItself(componentPath, nesting.contentByPath);
+}
+
+/** The Theme file a plain tag's single value import resolves to, or null. */
+function importedFileOf(
+  tag: string,
+  boundNames: readonly string[],
+  statements: readonly AnyNode[],
+  routeFile: string,
+  filePaths: ReadonlySet<string>,
+): string | null {
+  if (!/^[A-Za-z_$][\w$]*$/.test(tag)) return null;
+  if (boundNames.filter((name) => name === tag).length !== 1) return null;
+  for (const statement of statements) {
+    if (statement.type !== "ImportDeclaration") continue;
+    const source = (statement.source as { value?: unknown } | undefined)?.value;
+    for (const specifier of (statement.specifiers as AnyNode[]) ?? []) {
+      const local = (specifier.local as { name?: unknown } | undefined)?.name;
+      if (local !== tag) continue;
+      return typeof source === "string"
+        ? resolveThemeSourceImport(routeFile, source, filePaths)
+        : null;
+    }
+  }
+  return null;
+}
+
+/** Specifiers of `import … from "x"`, `export … from "x"`, `import "x"`. */
+const STATIC_SPECIFIER = /\b(?:from|import)\s*["']([^"'\n]+)["']/g;
+
+function componentRendersItself(
+  componentPath: string,
+  contentByPath: ReadonlyMap<string, string>,
+): boolean {
+  const filePaths = new Set(contentByPath.keys());
+  const seen = new Set<string>();
+  const queue = [componentPath];
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    const text = contentByPath.get(path);
+    if (text === undefined) continue;
+    if (path === componentPath && /\bAstro\s*\.\s*self\b/.test(text)) {
+      return true;
+    }
+    if (/\bimport\s*\(/.test(text)) return true;
+    for (const match of text.matchAll(STATIC_SPECIFIER)) {
+      const next = resolveThemeSourceImport(path, match[1]!, filePaths);
+      if (next === null) continue;
+      if (next === componentPath) return true;
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
 }
 
 function componentImportMatches(args: {
@@ -430,6 +597,20 @@ export async function verifyAstroInstanceIdentity(args: {
       `the preview's ${located.componentPath} is not the snapshot's version`,
     );
   }
+  // Same file is not same instance: another rendering of this component
+  // inside the instance, with no marker of its own, would put its elements
+  // under this marker with this file and digest. Last on purpose: every
+  // other check has passed when this one decides (the reverse check relies
+  // on it).
+  if (
+    astroSameFileNestingRisk(
+      located.nesting,
+      located.identity,
+      located.componentPath,
+    )
+  ) {
+    return confirmed(null, "same-file-nesting");
+  }
   return confirmed(
     { componentPath: located.componentPath, sourceDigest: digest },
     null,
@@ -492,9 +673,9 @@ export async function astroBindingViewIdentities(
   // never reads it.
   const nonce = "0".repeat(16);
   const routeFile = normalizeThemeSourcePath(route.routeFile);
-  const routeSource = snapshot.files.find(
-    (file) => normalizeThemeSourcePath(file.path) === routeFile,
-  )?.content;
+  // Read as locateInstance reads it: a snapshot with two entries for one
+  // path has no identities at all.
+  const routeSource = snapshotContents(snapshot)?.get(routeFile);
   if (routeSource === undefined) return [];
   const src = await astroSourceDigest(routeSource);
   const candidates = astroBoundaryCandidates(
