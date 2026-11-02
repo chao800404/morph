@@ -71,7 +71,22 @@ export type ThemeRouteRecord = {
   componentName: string | null;
   /** Positively identified handler-only route; unknown options remain pages. */
   isServerOnly?: boolean;
+  /**
+   * An Astro endpoint (`src/pages/*.{js,ts}`): it answers with a Response,
+   * not a page. Kept apart from `isServerOnly`, which decides what a build
+   * prerenders, so marking one changes nothing a build does. Never set on a
+   * Start record.
+   */
+  isEndpoint?: boolean;
 };
+
+/**
+ * Whether a route is not a page the editor can show: a Start handler-only
+ * route or an Astro endpoint. Either opens as source only.
+ */
+export function isThemeEndpointRoute(route: ThemeRouteRecord): boolean {
+  return route.isServerOnly === true || route.isEndpoint === true;
+}
 
 export type ThemeRouteDiagnostic = {
   level: "error" | "warning";

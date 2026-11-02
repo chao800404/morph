@@ -31,7 +31,10 @@
  * name to its own copy written into the workspace (`.morph/sdk/`); the Theme
  * does not carry or own these files.
  */
-import { createMorphReader } from "../src/client";
+import {
+  createMorphReader,
+  MORPH_RENDER_CONTEXT_HEADER,
+} from "../src/client";
 import { MorphError } from "../src/index";
 import type {
   Morph,
@@ -81,7 +84,11 @@ export function morphForRequest(): Morph {
   return createMorphReader(
     { baseUrl: contentOriginFor(request) },
     // The hosted entry's mode, as `@morph/sdk/start`'s: see the comment above.
-    { mediaUrls: "relative" },
+    // The render context keeps this render's page reads on its release.
+    {
+      mediaUrls: "relative",
+      renderContext: request.headers.get(MORPH_RENDER_CONTEXT_HEADER),
+    },
   );
 }
 

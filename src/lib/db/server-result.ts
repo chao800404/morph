@@ -28,6 +28,11 @@ export interface ServerFailure {
   message: string;
   data: null;
   error?: string;
+  /**
+   * A more specific, stable code under `error`, where one exists — e.g.
+   * `MISSING_WORKER_ENTRY` under `RELEASE_DEPLOYMENT_FAILED`.
+   */
+  reason?: string;
   errors?: FieldErrors;
 }
 
@@ -45,7 +50,7 @@ export const ok = <TData>(
 
 export const fail = (
   message: string,
-  options: { error?: string; errors?: FieldErrors } = {},
+  options: { error?: string; reason?: string; errors?: FieldErrors } = {},
 ): ServerFailure => ({
   success: false,
   message,

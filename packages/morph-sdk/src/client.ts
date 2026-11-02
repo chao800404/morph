@@ -134,6 +134,12 @@ export function createMorph(options: MorphOptions): Morph {
   return createMorphReader(options, { mediaUrls: "absolute" });
 }
 
+/**
+ * The header the platform pins a page render's content reads with. Read from
+ * the request a hosted entry is serving, and sent back on its page reads.
+ */
+export const MORPH_RENDER_CONTEXT_HEADER = "x-morph-render-context";
+
 const MEDIA_URL_MODES: ReadonlySet<string> = new Set<MorphMediaUrls>([
   "absolute",
   "relative",
@@ -147,7 +153,16 @@ const MEDIA_URL_MODES: ReadonlySet<string> = new Set<MorphMediaUrls>([
  */
 export function createMorphReader(
   options: MorphOptions,
-  mode: Readonly<{ mediaUrls: MorphMediaUrls }>,
+  mode: Readonly<{
+    mediaUrls: MorphMediaUrls;
+    /**
+     * The platform's render context for the request being served, sent back
+     * unchanged on page reads so they stay on the release that request was
+     * resolved to. Only the hosted entries pass it, from the platform's own
+     * header; `createMorph` never does.
+     */
+    renderContext?: string | null;
+  }>,
 ): Morph {
   const mediaUrls = mode?.mediaUrls;
   if (typeof mediaUrls !== "string" || !MEDIA_URL_MODES.has(mediaUrls)) {
@@ -158,15 +173,18 @@ export function createMorphReader(
   const doFetch: MorphFetch =
     options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
+  const renderContext = mode.renderContext ?? null;
+
   async function request(
     url: string,
     resource: Exclude<MorphErrorResource, null>,
+    headers: Readonly<Record<string, string>> = {},
   ): Promise<Answer> {
     let response: Response;
     try {
       response = await doFetch(url, {
         method: "GET",
-        headers: { accept: "application/json" },
+        headers: { accept: "application/json", ...headers },
         credentials: "omit",
         // A redirect is not followed: the origin a site names is the only one
         // it reads from.
@@ -314,6 +332,9 @@ export function createMorphReader(
         const answer = await request(
           origin + "/_morph/content?path=" + encodeURIComponent(path),
           "page",
+          renderContext === null
+            ? {}
+            : { [MORPH_RENDER_CONTEXT_HEADER]: renderContext },
         );
         if (!answer.ok) throw refusal(answer, "page");
         return readPage(answer);
