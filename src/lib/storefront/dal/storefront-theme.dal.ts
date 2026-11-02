@@ -69,6 +69,7 @@ import {
   type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { templateSectionWriteBase } from "../content/template-section-write-base";
+import { assertSectionHideSupported } from "../content/section-hide-check";
 import {
   contentTargetForRoutePath,
   normalizeRoutePath,
@@ -2251,6 +2252,25 @@ export const storefrontThemeDal = {
         ) {
           b1Claims = b1ClaimsForSection(matchingInstances[0]!, data.sectionId);
         }
+      }
+
+      // M3 Hide: a section becomes hidden only where the saved source proves
+      // Morph can omit every place that reads it. Judged on the same source
+      // snapshot as the proof above, read between the two source-generation
+      // checks; the final batch repeats that precondition, so the verdict
+      // belongs to the generation that is written. Showing a section, and
+      // keeping a hidden one hidden, are never judged here. (An Astro page
+      // refuses every visibility write above.)
+      if (data.props.enabled === false && targetSection.enabled !== false) {
+        assertSectionHideSupported({
+          files: themeSourceFiles,
+          callSitePath:
+            sourceComponent.kind === "confirmed"
+              ? sourceComponent.callSitePath
+              : null,
+          slot: data.sectionId,
+          scope: template.type === "layout" ? "layout" : "route",
+        });
       }
     }
     if (!targetSection) return null;
