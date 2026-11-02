@@ -65,6 +65,7 @@ import {
   type ParsedThemeAst,
 } from "./theme-source-ast";
 import { isValidThemeContentSlotId } from "../theme-content-slots";
+import type { AstroProjection } from "../source-language/astro-source-language";
 
 export type B1SourceFile = Readonly<{ path: string; content: string }>;
 
@@ -233,6 +234,119 @@ const ROUTE_HOOKS_WITHOUT_DATA = new Set([
   "useNavigate",
 ]);
 const SCRIPT_FILE = /\.(tsx|jsx|ts|js|mjs|cjs)$/;
+
+/**
+ * What differs between the frameworks a route module is written for. The
+ * analysis itself (scope oracle, roots, taints, claims) is one and the same;
+ * a profile only says where its inputs come from and, for Astro, where it is
+ * deliberately stricter. Start's profile is exactly the behaviour this
+ * module had before profiles existed (its B1 tests are unchanged).
+ */
+type B1FrameworkProfile = Readonly<{
+  /** Whether `specifier`, imported by `fromPath`, is the trusted `morph`. */
+  isMorphSource: (
+    fromPath: string,
+    specifier: string,
+    filePaths: ReadonlySet<string>,
+  ) => boolean;
+  /** Whether `content` and `isSectionHidden` may come from `specifier`. */
+  isContentModuleSource: (
+    fromPath: string,
+    specifier: string,
+    filePaths: ReadonlySet<string>,
+  ) => boolean;
+  /**
+   * Start reads the route path from `createFileRoute("/…")`; Astro is given
+   * it by the caller, from the route registry (null: no static path).
+   */
+  routePath: Readonly<{ from: "createFileRoute" }> | Readonly<{ injected: string | null }>;
+  /** Where call sites are looked for in the route module. */
+  instanceRoot: (ast: ParsedThemeAst) => AnyNode;
+  /** A built-in element that is not a component instance. */
+  isBuiltInElement: (oracle: B1ScopeOracle, name: AnyNode) => boolean;
+  /** Whether a call site renders exactly once where it stands. */
+  isDirectPosition: (
+    ctx: ModuleContext,
+    element: AnyNode,
+    sourceSlots: readonly string[],
+  ) => boolean;
+  /** Modules whose imports reachability follows and whose taints count. */
+  isFollowedModule: (path: string) => boolean;
+  /** Modules mounted around every route without being imported. */
+  implicitModules: readonly string[];
+  /** The trusted content module, not itself scanned for taints. */
+  trustedContentModule: string | null;
+  /** Scan another module that imports `morph` but not `content`. */
+  scansMorphOnlyModules: boolean;
+}>;
+
+const START_B1_PROFILE: B1FrameworkProfile = {
+  isMorphSource: (fromPath, specifier, filePaths) =>
+    resolveThemeSourceImport(fromPath, specifier, filePaths) ===
+    CONTENT_MODULE_PATH,
+  isContentModuleSource: (fromPath, specifier, filePaths) =>
+    resolveThemeSourceImport(fromPath, specifier, filePaths) ===
+    CONTENT_MODULE_PATH,
+  routePath: { from: "createFileRoute" },
+  instanceRoot: (ast) => ast.program,
+  isBuiltInElement: () => false,
+  isDirectPosition: (ctx, element, sourceSlots) =>
+    isDirectPosition(ctx, element, sourceSlots),
+  isFollowedModule: (path) => SCRIPT_FILE.test(path),
+  implicitModules: ["src/routes/__root.tsx"],
+  trustedContentModule: CONTENT_MODULE_PATH,
+  scansMorphOnlyModules: false,
+};
+
+/**
+ * The only `morph` an Astro Theme's analysis trusts: the platform alias,
+ * by its exact bare name (theme-morph-sdk.ts). A relative import never is,
+ * whatever file it names, and neither is an author's `src/morph/content.ts`.
+ */
+export const ASTRO_TRUSTED_MORPH_SOURCE = "@morph/sdk/astro";
+
+const ASTRO_MODULE = /\.astro$/;
+
+function astroB1Profile(args: {
+  template: AnyNode;
+  routePath: string | null;
+}): B1FrameworkProfile {
+  return {
+    isMorphSource: (_fromPath, specifier) =>
+      specifier === ASTRO_TRUSTED_MORPH_SOURCE,
+    // `@morph/sdk/astro` exports neither; nothing else is the platform's.
+    isContentModuleSource: () => false,
+    routePath: { injected: args.routePath },
+    // Call sites are the template's. JSX in the frontmatter never renders
+    // where it stands.
+    instanceRoot: () => args.template,
+    // Astro's built-in `<Fragment>` is no component, but only while the name
+    // is not bound: an author's import or local named `Fragment` is that
+    // binding (the compiler emits the author's, M2 Fragment experiment O2/O3).
+    isBuiltInElement: (oracle, name) =>
+      name.type === "JSXIdentifier" &&
+      name.name === "Fragment" &&
+      oracle.bindingOf(name) === null,
+    // Stricter than Start, on purpose and only here (D90-3): a call site with
+    // any expression container among its ancestors (a conditional, a loop, an
+    // IIFE, a prop value) never claims a field. It still counts for its
+    // section and its taints.
+    isDirectPosition: (ctx, element, sourceSlots) => {
+      for (
+        let node = ctx.oracle.parentOf(element);
+        node !== null;
+        node = ctx.oracle.parentOf(node)
+      ) {
+        if (node.type === "JSXExpressionContainer") return false;
+      }
+      return isDirectPosition(ctx, element, sourceSlots);
+    },
+    isFollowedModule: (path) => SCRIPT_FILE.test(path) || ASTRO_MODULE.test(path),
+    implicitModules: [],
+    trustedContentModule: null,
+    scansMorphOnlyModules: true,
+  };
+}
 
 function parseModule(
   content: string,
@@ -407,6 +521,7 @@ type ModuleContext = {
 function contentImportBinding(
   ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
   filePaths: ReadonlySet<string>,
+  profile: B1FrameworkProfile = START_B1_PROFILE,
 ): { binding: B1Binding | null; aliases: number } {
   let found: B1Binding | null = null;
   let aliases = 0;
@@ -414,8 +529,7 @@ function contentImportBinding(
     if (
       statement.type !== "ImportDeclaration" ||
       statement.importKind === "type" ||
-      resolveThemeSourceImport(ctx.path, statement.source.value, filePaths) !==
-        CONTENT_MODULE_PATH
+      !profile.isContentModuleSource(ctx.path, statement.source.value, filePaths)
     ) {
       continue;
     }
@@ -440,14 +554,14 @@ function contentImportBinding(
 function morphImportBinding(
   ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
   filePaths: ReadonlySet<string>,
+  profile: B1FrameworkProfile = START_B1_PROFILE,
 ): B1Binding | null {
   const bindings: B1Binding[] = [];
   for (const statement of ctx.ast.program.body ?? []) {
     if (
       statement.type !== "ImportDeclaration" ||
       statement.importKind === "type" ||
-      resolveThemeSourceImport(ctx.path, statement.source.value, filePaths) !==
-        CONTENT_MODULE_PATH
+      !profile.isMorphSource(ctx.path, statement.source.value, filePaths)
     ) {
       continue;
     }
@@ -468,14 +582,14 @@ function morphImportBinding(
 function sectionHiddenImportBinding(
   ctx: Pick<ModuleContext, "ast" | "oracle" | "path">,
   filePaths: ReadonlySet<string>,
+  profile: B1FrameworkProfile = START_B1_PROFILE,
 ): B1Binding | null {
   const bindings: B1Binding[] = [];
   for (const statement of ctx.ast.program.body ?? []) {
     if (
       statement.type !== "ImportDeclaration" ||
       statement.importKind === "type" ||
-      resolveThemeSourceImport(ctx.path, statement.source.value, filePaths) !==
-        CONTENT_MODULE_PATH
+      !profile.isContentModuleSource(ctx.path, statement.source.value, filePaths)
     ) {
       continue;
     }
@@ -975,19 +1089,20 @@ function reachableThemeModules(
   files: readonly B1SourceFile[],
   filePaths: ReadonlySet<string>,
   parsedAstFor: (path: string, content: string) => ThemeSourceAstResult,
+  profile: B1FrameworkProfile = START_B1_PROFILE,
 ): ReachableThemeModules {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const paths = new Set<string>();
   const pending = [routeFile];
-  if (byPath.has("src/routes/__root.tsx")) {
-    pending.push("src/routes/__root.tsx");
+  for (const implicit of profile.implicitModules) {
+    if (byPath.has(implicit)) pending.push(implicit);
   }
   let unboundedDynamicImport = false;
   let unparseable = false;
 
   while (pending.length > 0) {
     const path = pending.pop()!;
-    if (paths.has(path) || !SCRIPT_FILE.test(path)) continue;
+    if (paths.has(path) || !profile.isFollowedModule(path)) continue;
     paths.add(path);
     const file = byPath.get(path);
     if (!file) continue;
@@ -1638,6 +1753,123 @@ export function analyzeB1Route(
     content: string,
   ) => ThemeSourceAstResult,
 ): B1RouteAnalysis {
+  return analyzeRouteModule(
+    files,
+    routeFile,
+    backend,
+    parsedModules,
+    sharedSourceParser,
+    START_B1_PROFILE,
+  );
+}
+
+/** The parts of a route registry record the Astro analysis takes. */
+export type B1AstroRoute = Readonly<{
+  /** The route's URL path (`astroRouteRegistry`), e.g. `/about`. */
+  path: string;
+  /** The page file, e.g. `src/pages/about.astro`. */
+  sourcePath: string;
+  dynamic: boolean;
+}>;
+
+/**
+ * Analyses one Astro page with the Astro profile: the same analysis as
+ * `analyzeB1Route`, on the parser projection of the page
+ * (`projectAstroTemplate`), with
+ *
+ * - `morph` trusted only from `@morph/sdk/astro` (`ASTRO_TRUSTED_MORPH_SOURCE`);
+ * - the route path the caller read from the route registry, not from the
+ *   source (a dynamic route has none, so no page Document field is claimed);
+ * - Astro's direct-position rule and built-in `<Fragment>` (see the profile).
+ *
+ * `projections` holds the page's and, keyed by path, those of the `.astro`
+ * modules it imports: reachability follows `.astro` imports, and an `.astro`
+ * module is read only through its projection. One that is reachable without
+ * a projection (or whose projection is of other content) cannot be read, so
+ * every root is tainted, exactly as for an unparseable script module.
+ */
+export function analyzeB1AstroRoute(args: {
+  files: readonly B1SourceFile[];
+  route: B1AstroRoute;
+  projections: ReadonlyMap<string, AstroProjection>;
+  backend?: B1ScopeBackend;
+}): B1RouteAnalysis {
+  const routeFile = normalizeThemeSourcePath(args.route.sourcePath);
+  const contentByPath = new Map(
+    args.files.map((file) => [normalizeThemeSourcePath(file.path), file.content]),
+  );
+  const parsedModules = new Map<string, ParsedThemeAst>();
+  for (const [path, projection] of args.projections) {
+    const normalized = normalizeThemeSourcePath(path);
+    if (contentByPath.get(normalized) === projection.source) {
+      parsedModules.set(normalized, projection.ast);
+    }
+  }
+  const routeProjection = [...args.projections].find(
+    ([path, projection]) =>
+      normalizeThemeSourcePath(path) === routeFile &&
+      parsedModules.get(routeFile) === projection.ast,
+  )?.[1];
+  if (!routeProjection) {
+    return {
+      routeFile,
+      instances: [],
+      taints: [],
+      loaderOrigin: false,
+      diagnostics: [`${routeFile} has no parser projection of its content`],
+    };
+  }
+  const routePath =
+    !args.route.dynamic && args.route.path.startsWith("/")
+      ? args.route.path
+      : null;
+  const fallback = createAnalysisSourceParser(
+    [...contentByPath].map(([path, content]) => ({ path, content })),
+    parsedModules,
+  );
+  const parser = (path: string, content: string): ThemeSourceAstResult => {
+    const normalized = normalizeThemeSourcePath(path);
+    if (ASTRO_MODULE.test(normalized)) {
+      const ast = parsedModules.get(normalized);
+      return ast && contentByPath.get(normalized) === content
+        ? { ok: true, ast }
+        : {
+            ok: false,
+            reason: "syntax",
+            message: `${normalized}: an .astro module is read only through its parser projection`,
+          };
+    }
+    return fallback(path, content);
+  };
+  const analysis = analyzeRouteModule(
+    args.files,
+    routeFile,
+    args.backend ?? buildHandScopeOracle,
+    parsedModules,
+    parser,
+    astroB1Profile({ template: routeProjection.template as AnyNode, routePath }),
+  );
+  return routePath === null
+    ? {
+        ...analysis,
+        diagnostics: [
+          ...analysis.diagnostics,
+          `${routeFile} has no static route path; page fields are not claimed`,
+        ],
+      }
+    : analysis;
+}
+
+function analyzeRouteModule(
+  files: readonly B1SourceFile[],
+  routeFile: string,
+  backend: B1ScopeBackend,
+  parsedModules: B1ParsedModules | undefined,
+  sharedSourceParser:
+    | ((path: string, content: string) => ThemeSourceAstResult)
+    | undefined,
+  profile: B1FrameworkProfile,
+): B1RouteAnalysis {
   const normalizedRoute = normalizeThemeSourcePath(routeFile);
   const normalizedFiles = files.map((file) => ({
     path: normalizeThemeSourcePath(file.path),
@@ -1698,11 +1930,23 @@ export function analyzeB1Route(
   const { binding: contentBinding, aliases } = contentImportBinding(
     partial,
     filePaths,
+    profile,
   );
   if (aliases > 1) diagnostics.push("content is imported more than once");
-  const morphBinding = morphImportBinding(partial, filePaths);
-  const sectionHiddenBinding = sectionHiddenImportBinding(partial, filePaths);
-  const route = routeBindingOf(partial);
+  const morphBinding = morphImportBinding(partial, filePaths, profile);
+  const sectionHiddenBinding = sectionHiddenImportBinding(
+    partial,
+    filePaths,
+    profile,
+  );
+  const route =
+    "injected" in profile.routePath
+      ? {
+          binding: null,
+          componentName: null,
+          routePath: profile.routePath.injected,
+        }
+      : routeBindingOf(partial);
   const routeName = route.binding?.name ?? null;
   const loaderOrigin =
     routeName !== null &&
@@ -1734,6 +1978,7 @@ export function analyzeB1Route(
     normalizedFiles.map(({ path, content }) => ({ path, content })),
     filePaths,
     parsedSourceFor,
+    profile,
   );
   if (reachable.unboundedDynamicImport || reachable.unparseable) {
     taints.add(taintKey("content", null));
@@ -1744,20 +1989,23 @@ export function analyzeB1Route(
     if (
       file.path === normalizedRoute ||
       !reachable.paths.has(file.path) ||
-      !SCRIPT_FILE.test(file.path)
+      !profile.isFollowedModule(file.path)
     ) {
       continue;
     }
-    if (file.path === CONTENT_MODULE_PATH) continue;
+    if (file.path === profile.trustedContentModule) continue;
     const otherAstResult = parsedSourceFor(file.path, file.content);
     const other = otherAstResult.ok ? otherAstResult.ast : null;
     if (!other) continue;
     const otherOracle = backend(other);
     const otherPartial = { ast: other, oracle: otherOracle, path: file.path };
-    const otherContent = contentImportBinding(otherPartial, filePaths);
-    const otherMorph = morphImportBinding(otherPartial, filePaths);
+    const otherContent = contentImportBinding(otherPartial, filePaths, profile);
+    const otherMorph = morphImportBinding(otherPartial, filePaths, profile);
     if (otherContent.aliases > 1) taints.add(taintKey("content", null));
-    if (otherContent.binding) {
+    if (
+      otherContent.binding ||
+      (profile.scansMorphOnlyModules && otherMorph)
+    ) {
       collectTaints(
         {
           ...otherPartial,
@@ -1794,7 +2042,11 @@ export function analyzeB1Route(
     if (node.type === "JSXElement") {
       const opening = node.openingElement;
       const name = opening?.name;
-      if (name?.type === "JSXIdentifier" && /^[A-Z]/.test(name.name)) {
+      if (
+        name?.type === "JSXIdentifier" &&
+        /^[A-Z]/.test(name.name) &&
+        !profile.isBuiltInElement(ctx.oracle, name)
+      ) {
         const nameIndex = nameCounts.get(name.name) ?? 0;
         nameCounts.set(name.name, nameIndex + 1);
         const target = componentTarget(ctx, opening, filePaths);
@@ -1867,7 +2119,9 @@ export function analyzeB1Route(
             taints,
             hasSuspensionOutsideNestedFunction(node),
           ),
-          direct: isDirectPosition(ctx, node, [...new Set(sourceSlots)]),
+          direct: profile.isDirectPosition(ctx, node, [
+            ...new Set(sourceSlots),
+          ]),
         });
       }
     }
@@ -1881,7 +2135,7 @@ export function analyzeB1Route(
       if (value && typeof value === "object") visit(value);
     }
   };
-  visit(ast.program);
+  visit(profile.instanceRoot(ast));
 
   // Sections: one slot per instance, one instance per slot.
   const slotUses = new Map<string, number>();
@@ -1952,7 +2206,7 @@ export function analyzeB1Route(
           };
         } else if (
           claim.sourceRoute !== undefined &&
-          claim.sourceRoute !== route.routePath
+          claim.sourceRoute !== ctx.routePath
         ) {
           claim = {
             kind: "none",
