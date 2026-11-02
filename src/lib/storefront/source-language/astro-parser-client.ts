@@ -81,6 +81,14 @@ export function astroParserBindingFrom(
   return null;
 }
 
+/**
+ * The detail of an `invalid-response` for a source with a leading UTF-8 BOM,
+ * a known limitation: the parser's decoder strips the BOM, so its answer's
+ * `source.length` (and every position) is one short of the string sent.
+ */
+export const SOURCE_BOM_DETAIL =
+  "source: leading UTF-8 BOM, which the parser's decoder strips (known limitation)";
+
 const unavailable = (
   code: AstroParserUnavailableCode,
   detail: string,
@@ -205,12 +213,16 @@ export async function parseAstroSource(
       sourceLength: source.length,
     });
     if (!check.ok) {
-      return unavailable(
-        check.reason === ASTRO_PARSE_CONTRACT_VERSION_REASON
-          ? "contract-mismatch"
-          : "invalid-response",
-        check.reason,
-      );
+      if (check.reason === ASTRO_PARSE_CONTRACT_VERSION_REASON)
+        return unavailable("contract-mismatch", check.reason);
+      // Known limitation (contract.ts, "leading UTF-8 BOM"): the parser's
+      // decoder strips a BOM, so its length is one short and the answer is
+      // not about this string. Still `invalid-response`, never the author's
+      // syntax; the source is not stripped here, which would move every
+      // offset and change the hash.
+      if (check.reason === "source" && source.charCodeAt(0) === 0xfeff)
+        return unavailable("invalid-response", SOURCE_BOM_DETAIL);
+      return unavailable("invalid-response", check.reason);
     }
 
     const answer = check.response;
@@ -360,11 +372,18 @@ function refused(
  *    and every index consistent;
  * 2. its `compiler` is `MORPH_ASTRO_COMPILER_RS_VERSION`, the version the
  *    Astro toolchain compiles with, since ranges from another compiler need
- *    not match what is built;
+ *    not match what is built. `compiler` is the version in the compiler
+ *    binding's own package.json, bundled with the `.wasm` the Worker loads;
+ *    the Wasm does not report a version at runtime;
  * 3. `diagnostics.total` is 0.
  *
  * In that order: an answer from another compiler is not trusted for its
  * diagnostics either. Anything else is `refused`, with its class.
+ *
+ * Known limitation: a source with a leading UTF-8 BOM is refused as
+ * `invalid-response` (`temporarily-unconfirmable`, detail
+ * `SOURCE_BOM_DETAIL`), never as `author-syntax`, and is not stripped here.
+ * See the BOM note in the contract.
  */
 export async function parseAstroTemplate(
   binding: AstroParserBinding | null | undefined,

@@ -22,6 +22,7 @@ import {
   classifyAstroParserRefusal,
   parseAstroSource,
   parseAstroTemplate,
+  SOURCE_BOM_DETAIL,
   type AstroParserBinding,
   type AstroTemplateRefusalCode,
 } from "./astro-parser-client";
@@ -529,6 +530,26 @@ describe("parseAstroSource through the local service binding", () => {
       status: "refused",
       class: "capability-limit",
       reason: "result-too-large",
+    });
+  });
+
+  it("refuses a source with a leading BOM as unconfirmable, not the author's syntax (known limitation)", async () => {
+    // Pins today's behaviour: the parser's decoder strips the BOM, so its
+    // length is one short of the string sent and the answer is not taken.
+    // If the parser ever keeps the BOM, this test should be changed to
+    // expect `confirmed`.
+    const body = "<p>café</p>";
+    expect((await parseAstroTemplate(parser.binding, body)).status).toBe(
+      "confirmed",
+    );
+    const bom = String.fromCharCode(0xfeff);
+    const outcome = await parseAstroTemplate(parser.binding, bom + body);
+    expect(outcome).toEqual({
+      status: "refused",
+      code: "invalid-response",
+      detail: SOURCE_BOM_DETAIL,
+      class: "temporarily-unconfirmable",
+      reason: "parser-invalid-response",
     });
   });
 

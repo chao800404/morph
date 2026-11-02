@@ -33,14 +33,25 @@
  * Worker passes them through unconverted; the tests pin this on CRLF, CJK,
  * emoji and other astral characters. Ranges are `[start, end)`.
  *
+ * Known limitation, a leading UTF-8 BOM: the Worker hashes and counts the
+ * bytes it received, BOM included, but its UTF-8 decoder strips the BOM, so
+ * `source.length` and every position are one short of the caller's string.
+ * A caller that checks `length` (Core does) refuses such an answer as not
+ * about its source. That is a platform limit, never the author's syntax, and
+ * the caller must not strip the BOM itself to get an answer: that changes the
+ * hash and every offset into the file it will write.
+ *
  * ## Contract v2
  *
  * Finalised by decision D90 (2026-11-02) from the M2 projection experiment.
  * The v1 modes `outline` and `at` are unchanged apart from `v`. The new mode
  * `template` (`AstroParseTemplate`) gives the ranges Core needs to project a
  * `.astro` file's frontmatter and template expressions into one module for
- * its own analysis, and the compiler version that produced them, so Core can
- * refuse an answer from any compiler but the one it is pinned to. Still no
+ * its own analysis, and a compiler version (`AstroParseTemplate.compiler`:
+ * the version in the compiler binding's own package.json, bundled with the
+ * `.wasm` the Worker loads, not a version the Wasm reports at runtime), so
+ * Core can refuse an answer from any compiler but the one it is pinned to.
+ * Still no
  * AST, and still at most `maxResponseBytes`, else `result-too-large`.
  * Whether an element is a component, or sits inside an expression, is not
  * in the answer: both follow from the tag and the ranges.
@@ -136,7 +147,11 @@ export interface AstroParseSource {
   /** SHA-256 of the UTF-8 bytes the Worker received, lowercase hex. */
   sha256: string;
   bytes: number;
-  /** UTF-16 length of the decoded source: every position is below it. */
+  /**
+   * UTF-16 length of the decoded source: every position is below it. One
+   * less than the caller's string for a source with a leading BOM, which the
+   * decoder strips (see the BOM note at the top).
+   */
   length: number;
 }
 
@@ -329,7 +344,13 @@ export type AstroTemplateExpression = [
  */
 export interface AstroParseTemplate extends AstroParseCommon {
   mode: "template";
-  /** The `@astrojs/compiler-rs` version the Worker loaded, e.g. `0.5.1`. */
+  /**
+   * The `version` field of the compiler binding's own package.json
+   * (`@astrojs/compiler-binding-wasm32-wasi`), bundled into the Worker with
+   * the `.wasm` it loads, e.g. `0.5.1`. Not reported by the Wasm at runtime:
+   * the binding exports no version. It changes exactly when the bundled
+   * module's package does.
+   */
   compiler: string;
   /**
    * The text strictly between the two `---` fences, so the opening line
