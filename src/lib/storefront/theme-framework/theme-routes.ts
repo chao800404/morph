@@ -1,6 +1,8 @@
 import { astroRouteRegistry } from "../compiler/astro-route-registry";
 import {
   buildThemeRouteRegistry,
+  isThemeEndpointRoute,
+  themeRoutePathAfterFileMoves,
   type ThemeRouteRegistry,
 } from "../compiler/theme-route-registry";
 import {
@@ -64,4 +66,49 @@ export function themeRoutesFor(
     framework,
     registry: THEME_FRAMEWORK_ROUTES[framework](files),
   };
+}
+
+/**
+ * The public path of one page source file, as its framework reads it, or null
+ * when the file is no page the editor can be on: not a route file, a dynamic
+ * pattern (`/blog/[slug]` is no page to stand on), an endpoint, or a name
+ * starting with `_`. Read through the same table as `themeRoutesFor`.
+ */
+function pagePathOfSourceFile(
+  framework: ThemeFrameworkId,
+  sourcePath: string,
+): string | null {
+  const [route] = THEME_FRAMEWORK_ROUTES[framework]([
+    { path: sourcePath, content: "" },
+  ]).routes;
+  if (!route || route.sourcePath !== sourcePath) return null;
+  if (route.dynamic || isThemeEndpointRoute(route)) return null;
+  return route.path;
+}
+
+/**
+ * Where the editor's current page is after files were moved in Code, or null
+ * when it did not move. Keeps the editor on the page it was on when its source
+ * file is renamed or moved, the way the recorded framework names pages: a
+ * `src/routes/*` file for TanStack Start (`themeRoutePathAfterFileMoves`), a
+ * `src/pages/*` file for Astro. A framework that is no id never moves it.
+ */
+export function themeRoutePathAfterFileMovesFor(
+  recorded: string | null | undefined,
+  currentRoutePath: string | undefined,
+  moves: ReadonlyArray<{ from: string; to: string }>,
+): string | null {
+  const id = recorded ?? UNRECORDED_THEME_FRAMEWORK;
+  if (!(THEME_FRAMEWORK_IDS as readonly string[]).includes(id)) return null;
+  const framework = id as ThemeFrameworkId;
+  if (framework === "tanstack-start") {
+    return themeRoutePathAfterFileMoves(currentRoutePath, moves);
+  }
+  if (!currentRoutePath) return null;
+  const moved = moves.find(
+    (move) => pagePathOfSourceFile(framework, move.from) === currentRoutePath,
+  );
+  if (!moved) return null;
+  const next = pagePathOfSourceFile(framework, moved.to);
+  return next && next !== currentRoutePath ? next : null;
 }

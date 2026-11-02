@@ -946,6 +946,7 @@ const EditorCodeWorkspaceContent = forwardRef<
                 ?.localContent ??
               file.content,
           })),
+          { startImportProtection: startRoutes },
         ),
       );
       next.push(

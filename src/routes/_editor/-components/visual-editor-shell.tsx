@@ -132,11 +132,13 @@ import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
 import {
   isThemeEndpointRoute,
-  themeRoutePathAfterFileMoves,
   type ThemeRouteRecord,
   type ThemeRouteRegistry,
 } from "@/lib/storefront/compiler/theme-route-registry";
-import { themeRoutesFor } from "@/lib/storefront/theme-framework/theme-routes";
+import {
+  themeRoutePathAfterFileMovesFor,
+  themeRoutesFor,
+} from "@/lib/storefront/theme-framework/theme-routes";
 import { previewNavigationFor } from "@/lib/storefront/theme-framework/theme-preview-navigation";
 import {
   PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS,
@@ -1247,13 +1249,14 @@ export function VisualEditorShell({
 
   const handleThemeFilesMoved = useCallback(
     (moves: ReadonlyArray<{ from: string; to: string }>) => {
-      const nextRoutePath = themeRoutePathAfterFileMoves(
+      const nextRoutePath = themeRoutePathAfterFileMovesFor(
+        context.theme.framework,
         currentSearchRoutePathRef.current,
         moves,
       );
       if (nextRoutePath) setPendingRoutePath(nextRoutePath);
     },
-    [],
+    [context.theme.framework],
   );
 
   useEffect(() => {
