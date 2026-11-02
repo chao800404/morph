@@ -212,6 +212,19 @@ export interface ThemeSourceStore {
     storefrontId: string,
     themeId: string,
   ): Promise<number | null>;
+
+  /**
+   * The source files and their generation as one consistent read, for a
+   * guard that judges a write and then saves it against that generation.
+   * Null when the Theme is not this storefront's.
+   */
+  getSourceSnapshot(
+    storefrontId: string,
+    themeId: string,
+  ): Promise<{
+    sourceGeneration: number;
+    files: StorefrontThemeFileDTO[];
+  } | null>;
 }
 
 /**

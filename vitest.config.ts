@@ -157,8 +157,9 @@ export default defineConfig({
           include: [
             "src/**/*.test.{ts,tsx}",
             "packages/*/src/**/*.test.ts",
-            // The SDK's framework entries, e.g. the Start thin entry.
+            // The SDK's framework entries: the Start and Astro thin entries.
             "packages/*/start/**/*.test.ts",
+            "packages/*/astro/**/*.test.ts",
           ],
           // Vitest's own defaults are spread back in: setting `exclude`
           // replaces them, and dropping `node_modules` would collect the

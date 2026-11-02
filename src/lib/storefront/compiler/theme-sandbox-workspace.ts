@@ -1,5 +1,6 @@
 import { svgIsolationVitePluginSource } from "../theme-svg-isolation";
 import {
+  PREVIEW_ADDRESS_PROBE_BODY,
   PREVIEW_ADDRESS_PROBE_PATH,
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
@@ -12,6 +13,7 @@ import {
 } from "./theme-start-toolchain";
 import { themePreviewServerStubPluginSource } from "./theme-preview-server-stub";
 import { themeStartStaticPreviewPluginSource } from "./theme-start-static-preview";
+import { themePreviewRequestTracePluginSource } from "./theme-preview-request-trace";
 import {
   previewDevInfrastructureGuardSource,
   SANDBOX_TOOLCHAIN_ROOT,
@@ -803,11 +805,14 @@ const previewHealthPlugin = isLivePreview && !isStartPreview ? {
       if (req.method !== "GET" && req.method !== "HEAD") {
         res.statusCode = 405;
         res.setHeader("Allow", "GET, HEAD");
-      } else {
-        res.statusCode = 204;
-        res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+        res.end();
+        return;
       }
-      res.end();
+      // A body, never an empty 204; see PREVIEW_ADDRESS_PROBE_BODY.
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.setHeader(${JSON.stringify(START_PREVIEW_ID_HEADER)}, ${JSON.stringify(buildId)});
+      res.end(req.method === "GET" ? ${JSON.stringify(PREVIEW_ADDRESS_PROBE_BODY)} : undefined);
     });
   },
 } : null;
@@ -821,6 +826,11 @@ const previewServerSourcePlugin = ${
 // the platform's isolation headers; see theme-svg-isolation.ts.
 const previewSvgIsolationPlugin = ${
     mode === "preview-server" ? svgIsolationVitePluginSource() : "null"
+  };
+// Inert unless the container acceptance job turns it on; see
+// theme-preview-request-trace.ts.
+const previewRequestTracePlugin = ${
+    mode === "preview-server" ? themePreviewRequestTracePluginSource() : "null"
   };
 // A Theme's root-path public/ URL (\`/images/hero.png\`) served from under the
 // preview's base, as the storefront serves it at the root; see
@@ -1031,6 +1041,7 @@ export default defineConfig({
     // preview's own middleware comes first so its endpoints answer before
     // the Worker does. No debugger port, no persisted state: the Worker has
     // no bindings to persist.
+    ...(previewRequestTracePlugin ? [previewRequestTracePlugin] : []),
     ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),
     ...(previewContentPlugin ? [previewContentPlugin] : []),
@@ -1050,6 +1061,7 @@ export default defineConfig({
     // Static Start artifacts use the native client compiler too, so local
     // .server implementations are removed. Only the legacy live preview
     // and non-Start Themes retain the shared server-module stubs.
+    ...(previewRequestTracePlugin ? [previewRequestTracePlugin] : []),
     ...(previewServerSourcePlugin ? [previewServerSourcePlugin] : []),
     ...(previewHealthPlugin ? [previewHealthPlugin] : []),
     ...(previewSvgIsolationPlugin ? [previewSvgIsolationPlugin] : []),

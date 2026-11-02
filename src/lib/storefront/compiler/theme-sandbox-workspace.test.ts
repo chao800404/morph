@@ -418,6 +418,22 @@ export const Route = createFileRoute('/helper')({ loader: () => fn() });`,
     expect(viteConfig).not.toContain('name: "morph-preview-root-public"');
   });
 
+  it("carries the inert request record in the Live Preview only, never in a build", async () => {
+    // The same config text whether or not the record is on: the container's
+    // environment turns it on, so no workspace file changes with it.
+    const preview = (await prepare("preview-server")).viteConfig;
+    expect(preview).toContain('name: "morph-preview-request-trace"');
+    expect(preview).toContain(
+      'process.env.MORPH_PREVIEW_REQUEST_TRACE !== "1"',
+    );
+    expect(preview).toContain(
+      "...(previewRequestTracePlugin ? [previewRequestTracePlugin] : []),",
+    );
+    const build = (await prepare("build")).viteConfig;
+    expect(build).toContain("const previewRequestTracePlugin = null;");
+    expect(build).not.toContain('name: "morph-preview-request-trace"');
+  });
+
   it("leaves authored route modules for the generated preview entry to accept", async () => {
     const written = new Map<string, string>();
     const result = await prepareThemeSandboxWorkspace({

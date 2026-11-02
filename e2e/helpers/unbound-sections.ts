@@ -9,7 +9,10 @@ import {
   themeSourceGeneration,
   writeThemeFiles,
 } from "../native-compat";
-import { recordedPreviewRuntimeSql } from "./recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./recorded-preview-runtime";
 
 export const UNBOUND_ROUTE = "/unbound-preservation";
 export const UNBOUND_TITLE = "Stored explicit-prop hero, not a default";
@@ -84,6 +87,7 @@ export async function unboundSectionsFixture(page: Page) {
     VALUES (${literal(scope.themeId)}, ${literal(scope.storefrontId)}, 'unbound-content', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`);
   expect(inserted.every((result) => result.success)).toBe(true);
+  verifyRecordedThemePreviewRuntime(scope);
   const initialized = (await serverFn(
     page,
     THEMES,

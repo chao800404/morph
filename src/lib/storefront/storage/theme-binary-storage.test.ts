@@ -161,6 +161,7 @@ beforeEach(() => {
       source_index_status text,
       source_index text,
       metadata text,
+      framework text,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       deleted_at text
@@ -1785,5 +1786,96 @@ describe("text in public/", () => {
         "revision-1",
       ),
     ).toThrow("PUBLIC_FILE_REFUSED");
+  });
+});
+
+describe("route collisions by the Theme's recorded framework", () => {
+  const seedText = (path: string, content: string) =>
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_files
+          (id, storefront_id, theme_id, path, content, mime_type, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'text/plain', 1, 'now', 'now')`,
+      )
+      .run(`text-${path}`, STORE, THEME, path, content);
+  const recordFramework = (framework: string | null) =>
+    sqlite
+      .prepare("UPDATE storefront_themes SET framework = ? WHERE id = ?")
+      .run(framework, THEME);
+  const START_ROUTE = `import { createFileRoute } from "@tanstack/react-router";
+export const Route = createFileRoute("/lookbook.png")({ component: () => null });`;
+  /** Astro's pages beside the Starter's leftover Start routes. */
+  const seedHybrid = () => {
+    seedSource();
+    seedText(
+      "src/routes/__root.tsx",
+      'import { createRootRoute } from "@tanstack/react-router"; export const Route = createRootRoute({});',
+    );
+    seedText("src/routes/lookbook[.]png.tsx", START_ROUTE);
+    seedText("astro.config.mjs", "export default {};");
+    seedText("src/pages/index.astro", "<h1>Home</h1>");
+    seedText("src/pages/og.png.ts", "export const GET = () => new Response();");
+  };
+
+  it("refuses on an Astro Theme an upload an Astro page would shadow, and writes nothing", async () => {
+    seedHybrid();
+    recordFramework("astro");
+    await expect(upload("public/og.png", png())).rejects.toThrow(
+      "THEME_PUBLIC_FILE_REFUSED: public/og.png: A page of the Theme already answers this URL.",
+    );
+    expect(r2.objects.size).toBe(0);
+    expect(fileRow("public/og.png")).toBeUndefined();
+    expect(generation()).toBe(1);
+
+    // Start's leftover route is not one of this Theme's pages.
+    await expect(upload("public/lookbook.png", png())).resolves.toMatchObject({
+      path: "public/lookbook.png",
+    });
+  });
+
+  it("refuses on an Astro Theme a copy onto an Astro page, and changes nothing", async () => {
+    seedHybrid();
+    recordFramework("astro");
+    const saved = await upload("public/images/hero.png", png());
+    const before = generation();
+    await expect(
+      d1ThemeSourceStore.saveFilesBatch(STORE, THEME, [], {
+        expectedSourceGeneration: before,
+        binaryCopies: [
+          {
+            from: "public/images/hero.png",
+            to: "public/og.png",
+            expectedFileId: saved.id,
+            expectedVersion: saved.version,
+          },
+        ],
+      }),
+    ).rejects.toThrow("THEME_PUBLIC_FILE_REFUSED: public/og.png");
+    expect(fileRow("public/og.png")).toBeUndefined();
+    expect(generation()).toBe(before);
+  });
+
+  it("keeps judging a Start Theme, recorded or not, by its Start routes only", async () => {
+    seedHybrid();
+    for (const framework of [null, "tanstack-start"]) {
+      recordFramework(framework);
+      await expect(upload("public/lookbook.png", png())).rejects.toThrow(
+        "A page of the Theme already answers this URL.",
+      );
+    }
+    // Astro's page is no route of a Start Theme.
+    await expect(upload("public/og.png", png())).resolves.toMatchObject({
+      path: "public/og.png",
+    });
+  });
+
+  it("refuses an upload to a Theme recorded with a framework Morph does not know", async () => {
+    seedSource();
+    recordFramework("nuxt");
+    await expect(upload("public/hero.png", png())).rejects.toThrow(
+      "THEME_FRAMEWORK_UNKNOWN",
+    );
+    expect(r2.objects.size).toBe(0);
+    expect(generation()).toBe(1);
   });
 });

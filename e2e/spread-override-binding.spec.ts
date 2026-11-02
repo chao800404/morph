@@ -24,7 +24,10 @@ import {
   writeThemeFiles,
   type ThemeScope,
 } from "./native-compat";
-import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 
 /**
  * A prop set at a section's call site next to its content spread, edited in
@@ -204,6 +207,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
       'spread-override-binding-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   ]);
+  verifyRecordedThemePreviewRuntime(created);
   return created;
 }
 

@@ -69,7 +69,8 @@ export type ThemeWorkspaceFileState = ThemeFileServerState & {
    * holds (see `confirmLostSave`); the author's next save does that first.
    *
    * Cleared once an answer is known: a save of this file landing, the server
-   * reporting a version conflict on it, or the edit being discarded.
+   * reporting a version conflict on it or refusing it (`markRefused`), or the
+   * edit being discarded.
    */
   unconfirmedContent?: string;
   /**
@@ -156,6 +157,12 @@ export interface ThemeWorkspaceStore {
     sourceGeneration?: number,
   ) => void;
   markError: (path: string, message: string, scope?: WorkspaceScope) => void;
+  /**
+   * Marks a save the server answered by refusing it: nothing was written,
+   * and that is known. Unlike `markError`, which may follow a save whose
+   * outcome is still unknown, it ends `unconfirmedContent`.
+   */
+  markRefused: (path: string, message: string, scope?: WorkspaceScope) => void;
   markConflict: (
     path: string,
     conflict: ThemeFileConflict,
@@ -859,6 +866,31 @@ export const useThemeWorkspaceStore = create<ThemeWorkspaceStore>(
             ...current,
             saveState: "error" as const,
             errorMessage: message,
+          },
+        };
+        const nextWorkspaces = { ...state.workspaces, [key]: next };
+        const isActive = state.activeWorkspaceKey === key;
+        return {
+          workspaces: nextWorkspaces,
+          files: isActive ? next : state.files,
+        };
+      });
+    },
+
+    markRefused: (path, message, scope) => {
+      set((state) => {
+        const { key, workspaceFiles } = getTargetWorkspace(state, scope);
+        const current = workspaceFiles[path];
+        if (!current) return state;
+
+        const next = {
+          ...workspaceFiles,
+          [path]: {
+            ...current,
+            saveState: "error" as const,
+            errorMessage: message,
+            // The server has answered: this save did not land.
+            unconfirmedContent: undefined,
           },
         };
         const nextWorkspaces = { ...state.workspaces, [key]: next };

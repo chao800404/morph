@@ -1,0 +1,159 @@
+import {
+  parseEditorToPreviewWindowEvent,
+  postPreviewToEditorMessage,
+  documentPreviewRuntimeChannel,
+} from "./preview/preview-protocol";
+import initialSnapshot from "./preview-content-snapshot";
+
+// A page keeps the snapshot it loaded with: the author's live edits are applied
+// to it, and replacing it would throw them away. A newer snapshot is written
+// when another tab starts this shared preview, and it is for pages loaded
+// after that — so the update is accepted here and deliberately not applied,
+// which also keeps it from reloading this page.
+const snapshot = initialSnapshot;
+if (import.meta.hot) {
+  import.meta.hot.accept("./preview-content-snapshot", () => {});
+}
+const previewChannel = documentPreviewRuntimeChannel();
+const pendingCatalogRequests = new Map();
+let nextCatalogRequestId = 0;
+
+function templateTypeForPath(pathname) {
+  const normalized = (pathname || "/").split("?")[0].replace(/\/+$/, "") || "/";
+  if (normalized === "/") return "index";
+  if (normalized.startsWith("/products/")) return "product";
+  if (normalized.startsWith("/collections/")) return "collection";
+  if (normalized.startsWith("/blogs/")) return "blog";
+  if (normalized.startsWith("/pages/")) return "page";
+  return null;
+}
+
+function pageHandleForPath(pathname) {
+  const normalized = (pathname || "/").split("?")[0].replace(/\/+$/, "") || "/";
+  if (!normalized.startsWith("/pages/")) return null;
+  const handle = normalized.slice("/pages/".length);
+  return handle && !handle.includes("/") ? decodeURIComponent(handle) : null;
+}
+
+export function previewContentForPath(pathname) {
+  const handle = pageHandleForPath(pathname);
+  if (handle && snapshot.pages[handle]) return snapshot.pages[handle];
+  const type = templateTypeForPath(pathname);
+  if (type) return snapshot.templates[type] || { slots: {}, hiddenSlots: [] };
+  const routes = snapshot.routes || (snapshot.routes = {});
+  const routePath = (pathname || "/").split("?")[0].replace(/\/+$/, "") || "/";
+  // Created per path from the shell, so a live edit on one route never leaks
+  // into another that has no document of its own.
+  if (!routes[routePath]) {
+    const shell = snapshot.shell || { slots: {}, hiddenSlots: [] };
+    routes[routePath] = { slots: { ...shell.slots }, hiddenSlots: [...shell.hiddenSlots] };
+  }
+  return routes[routePath];
+}
+
+export function updatePreviewContent(sectionId, props, enabled, resetKeys) {
+  const content = currentPreviewContent();
+  if (enabled === false) {
+    delete content.slots[sectionId];
+    if (!content.hiddenSlots.includes(sectionId)) content.hiddenSlots.push(sectionId);
+    return;
+  }
+  if (enabled === true) {
+    content.hiddenSlots = content.hiddenSlots.filter((id) => id !== sectionId);
+  } else if (content.hiddenSlots.includes(sectionId)) {
+    // A hidden slot is written only by a show: a late edit, a signed repost
+    // or a reset for it must not put its values back on this page.
+    return;
+  }
+  if (props) content.slots[sectionId] = { ...(content.slots[sectionId] || {}), ...props };
+  if (Array.isArray(resetKeys) && content.slots[sectionId]) {
+    const next = { ...content.slots[sectionId] };
+    for (const key of resetKeys) delete next[key];
+    content.slots[sectionId] = next;
+  }
+}
+
+// Below `updatePreviewContent`: the dev-server plugin copies the resolver
+// above it, and these read the browser's page.
+function currentPreviewContent() {
+  const pathname = window.__morphPreviewRouter?.state?.location?.pathname ||
+    (window.location.pathname.startsWith("/__morph-theme-preview__/") ? "/" : window.location.pathname) || "/";
+  return previewContentForPath(pathname);
+}
+
+/** The values this page's content holds for one slot, as it renders from them. */
+export function previewSlotContent(sectionId) {
+  return currentPreviewContent().slots[sectionId];
+}
+
+/**
+ * Whether this page holds a slot hidden: the list `updatePreviewContent`
+ * refuses value writes for. Anything else that puts a value on the page asks
+ * the same list.
+ */
+export function previewSlotHidden(sectionId) {
+  return currentPreviewContent().hiddenSlots.includes(sectionId);
+}
+
+const nativeFetch = window.fetch.bind(window);
+window.addEventListener("message", (event) => {
+  const message = parseEditorToPreviewWindowEvent(event);
+  if (message?.type !== "morph:storefront-preview-catalog-response") return;
+  const pending = pendingCatalogRequests.get(message.requestId);
+  if (!pending) return;
+  pendingCatalogRequests.delete(message.requestId);
+  window.clearTimeout(pending.timeout);
+  pending.resolve(new Response(JSON.stringify(message.body), {
+    status: message.status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  }));
+});
+
+window.fetch = (input, init) => {
+  const requestUrl = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+  const requestMethod = (init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (requestUrl.origin === window.location.origin && requestUrl.pathname === "/_morph/content") {
+    return Promise.resolve(new Response(JSON.stringify(previewContentForPath(requestUrl.searchParams.get("path") || "/")), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    }));
+  }
+  const catalogMatch = requestUrl.origin === window.location.origin
+    ? /^\/api\/store\/products(?:\/([^/]+))?\/?$/.exec(requestUrl.pathname)
+    : null;
+  if (catalogMatch && previewChannel && requestMethod === "GET") {
+    const pageValue = Number(requestUrl.searchParams.get("page") || "1");
+    const page = Number.isSafeInteger(pageValue) && pageValue >= 1 && pageValue <= 10_000 ? pageValue : 1;
+    let handle;
+    try {
+      handle = catalogMatch[1] ? decodeURIComponent(catalogMatch[1]) : undefined;
+    } catch {
+      return Promise.resolve(new Response(JSON.stringify({ error: "Invalid product handle" }), {
+        status: 400,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      }));
+    }
+    if (handle && handle.length > 200) {
+      return Promise.resolve(new Response(JSON.stringify({ error: "Invalid product handle" }), {
+        status: 400,
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      }));
+    }
+    nextCatalogRequestId = nextCatalogRequestId >= Number.MAX_SAFE_INTEGER ? 1 : nextCatalogRequestId + 1;
+    const requestId = nextCatalogRequestId;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        pendingCatalogRequests.delete(requestId);
+        reject(new Error("Catalog preview request timed out."));
+      }, 15_000);
+      pendingCatalogRequests.set(requestId, { resolve, reject, timeout });
+      postPreviewToEditorMessage({
+        type: "morph:storefront-preview-catalog-request",
+        requestId,
+        page,
+        ...(handle ? { handle } : {}),
+      }, previewChannel);
+    });
+  }
+  return nativeFetch(input, init);
+};

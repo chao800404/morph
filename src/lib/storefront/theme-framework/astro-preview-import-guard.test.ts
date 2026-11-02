@@ -58,6 +58,8 @@ beforeAll(async () => {
     updateConfig: (config: { vite: { plugins: Array<{ name: string }> } }) => {
       plugins = config.vite.plugins;
     },
+    // The SDK's middleware the integration adds; not this test's concern.
+    addMiddleware: () => {},
   } as never);
   guard = plugins.find(
     (plugin) => plugin.name === "morph:astro-preview-import-guard",

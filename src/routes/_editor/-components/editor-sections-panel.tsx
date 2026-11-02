@@ -46,7 +46,10 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
-import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  isThemeEndpointRoute,
+  type ThemeRouteRecord,
+} from "@/lib/storefront/compiler/theme-route-registry";
 import {
   EditorAddPageDialog,
   type AddPageResult,
@@ -196,6 +199,19 @@ export type EditorSectionsPanelProps = {
   onOpenThemeRoute?: (route: ThemeRouteRecord) => void;
   /** Explicit "show me the source" action on a page row. */
   onOpenThemeRouteCode?: (route: ThemeRouteRecord) => void;
+  /**
+   * The Theme's framework is not TanStack Start, whose route files and
+   * `content()` slots are what pages and sections are. The tree then shows
+   * an unavailable state instead of the stored Document's sections, and no
+   * page or section structure control is offered, whatever is passed.
+   */
+  sectionsUnavailableForFramework?: boolean;
+  /**
+   * The preview opens a page by its address (a document-navigating preview,
+   * D3). A dynamic route is a pattern with no address of its own, so it is
+   * listed but not opened; its source still opens.
+   */
+  dynamicRoutesNotOpenable?: boolean;
   onAddPage?: (routePath: string) => Promise<AddPageResult>;
   onDeletePage?: (route: ThemeRouteRecord) => Promise<AddPageResult>;
   sectionOptions?: readonly ThemeRouteSectionOption[];
@@ -235,11 +251,16 @@ type EditorSection =
 
 /** Shared empty tree; a new literal would defeat the identity checks below. */
 const NO_SECTIONS: EditorSection[] = [];
+const NO_UNBOUND: readonly EditorUnboundSection[] = [];
 const NO_EDITABLE_NODES: readonly PreviewEditableNode[] = [];
 const NO_LAYOUT_ROOTS: Readonly<{
   before: readonly string[];
   after: readonly string[];
 }> = { before: [], after: [] };
+
+/** Shown in the tree for a Theme whose framework is not TanStack Start. */
+export const SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
+  "Sections aren't available for this Theme's framework yet. Edit the source in Code mode.";
 
 type EditorDeleteCandidate =
   | { kind: "section"; sectionId: string; label: string }
@@ -842,25 +863,44 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
   onPrefetchThemeRoute,
   onOpenThemeRoute,
   onOpenThemeRouteCode,
-  onAddPage,
-  onDeletePage,
+  sectionsUnavailableForFramework = false,
+  dynamicRoutesNotOpenable = false,
+  onAddPage: onAddPageProp,
+  onDeletePage: onDeletePageProp,
   sectionOptions = [],
-  onAddSection,
-  unboundSectionCandidates = [],
-  onBindSection,
+  onAddSection: onAddSectionProp,
+  unboundSectionCandidates: unboundSectionCandidatesProp = NO_UNBOUND,
+  onBindSection: onBindSectionProp,
   onDeleteSection,
   detachableSectionIds,
   onDetachSection,
   onRenameSection,
   onDeleteEditableNode,
 }: EditorSectionsPanelProps) {
+  const structureOff = sectionsUnavailableForFramework;
+  const onAddPage = structureOff ? undefined : onAddPageProp;
+  const onDeletePage = structureOff ? undefined : onDeletePageProp;
+  const onAddSection = structureOff ? undefined : onAddSectionProp;
+  const onBindSection = structureOff ? undefined : onBindSectionProp;
+  const unboundSectionCandidates = structureOff
+    ? NO_UNBOUND
+    : unboundSectionCandidatesProp;
   const pageRoutes = useMemo(
-    () => themeRoutes.filter((route) => !route.isServerOnly),
+    () => themeRoutes.filter((route) => !isThemeEndpointRoute(route)),
     [themeRoutes],
   );
   const endpointRoutes = useMemo(
-    () => themeRoutes.filter((route) => route.isServerOnly),
+    () => themeRoutes.filter(isThemeEndpointRoute),
     [themeRoutes],
+  );
+  const routeOpenable = (route: ThemeRouteRecord) =>
+    !(dynamicRoutesNotOpenable && route.dynamic);
+  const openablePageRoutes = useMemo(
+    () =>
+      dynamicRoutesNotOpenable
+        ? pageRoutes.filter((route) => !route.dynamic)
+        : pageRoutes,
+    [dynamicRoutesNotOpenable, pageRoutes],
   );
   const activeTemplate = resolveEditorTemplate(context, search);
   const previewEditableNodes = editableNodes ?? NO_EDITABLE_NODES;
@@ -1373,7 +1413,7 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
 
           {themeRoutes.length > 0 ? (
             <EditorPagesSearch
-              routes={pageRoutes}
+              routes={openablePageRoutes}
               onPrefetchRoute={onPrefetchThemeRoute}
               onOpenRoute={onOpenThemeRoute}
             />
@@ -1427,21 +1467,38 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
                         key={`${route.sourcePath}:${route.path}`}
                         className="group/page"
                       >
-                        <SidebarMenuButton
-                          type="button"
-                          size="sm"
-                          className="cursor-pointer"
-                          isActive={(search.routePath ?? "/") === route.path}
-                          onMouseEnter={() => onPrefetchThemeRoute?.(route)}
-                          onFocus={() => onPrefetchThemeRoute?.(route)}
-                          onClick={() => onOpenThemeRoute?.(route)}
-                          title={`Preview ${route.path}`}
-                        >
-                          <FileCode2 aria-hidden="true" />
-                          <span>
-                            {route.path === "/" ? "Home /" : route.path}
-                          </span>
-                        </SidebarMenuButton>
+                        {routeOpenable(route) ? (
+                          <SidebarMenuButton
+                            type="button"
+                            size="sm"
+                            className="cursor-pointer"
+                            isActive={(search.routePath ?? "/") === route.path}
+                            onMouseEnter={() => onPrefetchThemeRoute?.(route)}
+                            onFocus={() => onPrefetchThemeRoute?.(route)}
+                            onClick={() => onOpenThemeRoute?.(route)}
+                            title={`Preview ${route.path}`}
+                          >
+                            <FileCode2 aria-hidden="true" />
+                            <span>
+                              {route.path === "/" ? "Home /" : route.path}
+                            </span>
+                          </SidebarMenuButton>
+                        ) : (
+                          // A pattern, listed for what it is: no address to
+                          // preview, and its source one click away.
+                          <SidebarMenuButton
+                            type="button"
+                            size="sm"
+                            disabled
+                            title={`${route.path} needs a concrete address to preview. Open its source instead.`}
+                          >
+                            <FileCode2 aria-hidden="true" />
+                            <span>{route.path}</span>
+                            <span className="ml-auto shrink-0 text-[10px]">
+                              Pattern
+                            </span>
+                          </SidebarMenuButton>
+                        )}
                         {/* Opening the source is a deliberate act, not what every
                             click on a page happens to do. */}
                         <SidebarMenuAction
@@ -1567,7 +1624,14 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
               </SidebarGroup>
             ) : null}
             <SidebarGroup className="border-0 p-2" aria-label="Theme structure">
-              {routeStructurePending ? (
+              {structureOff ? (
+                <div
+                  className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
+                  role="status"
+                >
+                  {SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE}
+                </div>
+              ) : routeStructurePending ? (
                 <div
                   className="m-1 rounded-md border border-dashed p-3 text-xs leading-relaxed text-muted-foreground"
                   role="status"
@@ -1757,44 +1821,46 @@ export const EditorSectionsPanel = memo(function EditorSectionsPanel({
             </SidebarGroup>
           </SidebarContent>
 
-          <SidebarFooter className="border-t p-3">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full"
-                  disabled={
-                    !onAddSection ||
-                    sectionOptions.length === 0 ||
-                    addMutation.isPending ||
-                    bindMutation.isPending ||
-                    reorderMutation.isPending
-                  }
-                >
-                  <Plus /> Add section
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start" className="w-64">
-                {/* Said before the choice, because the choice is where the
-                    copy stops following the library. */}
-                <DropdownMenuLabel className="text-[11px] font-normal leading-snug text-muted-foreground">
-                  Adds a copy this page owns. Later changes to the section
-                  library don&apos;t update it.
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {sectionOptions.map((option) => (
-                  <DropdownMenuItem
-                    key={option.componentRef}
-                    onSelect={() => addMutation.mutate(option)}
+          {structureOff ? null : (
+            <SidebarFooter className="border-t p-3">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    disabled={
+                      !onAddSection ||
+                      sectionOptions.length === 0 ||
+                      addMutation.isPending ||
+                      bindMutation.isPending ||
+                      reorderMutation.isPending
+                    }
                   >
-                    <Blocks aria-hidden="true" />
-                    <span>{option.sectionType}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarFooter>
+                    <Plus /> Add section
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" className="w-64">
+                  {/* Said before the choice, because the choice is where the
+                      copy stops following the library. */}
+                  <DropdownMenuLabel className="text-[11px] font-normal leading-snug text-muted-foreground">
+                    Adds a copy this page owns. Later changes to the section
+                    library don&apos;t update it.
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {sectionOptions.map((option) => (
+                    <DropdownMenuItem
+                      key={option.componentRef}
+                      onSelect={() => addMutation.mutate(option)}
+                    >
+                      <Blocks aria-hidden="true" />
+                      <span>{option.sectionType}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </SidebarFooter>
+          )}
         </Sidebar>
 
         {onAddPage ? (

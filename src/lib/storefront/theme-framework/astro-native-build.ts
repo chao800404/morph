@@ -1,3 +1,4 @@
+import { withThemeMorphSdkIdentity } from "../compiler/theme-morph-sdk";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   THEME_PRERENDER_CONTENT_FILE,
@@ -77,7 +78,12 @@ export function nativeAstroCompilerIdentity(): Readonly<{
   if (!version) {
     throw new Error("ASTRO_TOOLCHAIN_INCOMPLETE: the Astro toolchain has no astro.");
   }
-  return { id: NATIVE_ASTRO_COMPILER_ID, version };
+  // The SDK copy the build carries is platform-injected, so it names itself
+  // in the build's identity, as a Start build's does (theme-morph-sdk.ts).
+  return {
+    id: NATIVE_ASTRO_COMPILER_ID,
+    version: withThemeMorphSdkIdentity(version),
+  };
 }
 
 /**

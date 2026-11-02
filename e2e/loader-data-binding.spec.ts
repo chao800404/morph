@@ -19,7 +19,10 @@ import {
   type ThemeScope,
 } from "./native-compat";
 import { queryLocalD1 } from "./helpers/editor-writes-paused";
-import { recordedPreviewRuntimeSql } from "./helpers/recorded-preview-runtime";
+import {
+  recordedPreviewRuntimeSql,
+  verifyRecordedThemePreviewRuntime,
+} from "./helpers/recorded-preview-runtime";
 import { unboundSectionsFixture, UNBOUND_TITLE } from "./helpers/unbound-sections";
 
 /**
@@ -141,6 +144,7 @@ async function createThrowawayTheme(): Promise<ThemeScope> {
       'loader-data-binding-${created.themeId}', '{"starterTemplateVersion":1}',
       ${recordedPreviewRuntimeSql()}, '${now}', '${now}');`,
   ]);
+  verifyRecordedThemePreviewRuntime(created);
   return created;
 }
 

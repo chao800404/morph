@@ -58,14 +58,28 @@ describe("classifyPreviewAddressProbe", () => {
 
   it("requires a matching Start instance, not a Theme page or a redirect", () => {
     const matching = { expected: OWN.previewId, actual: OWN.previewId };
+    // 200 is what the endpoint answers now (with a body; workerd#7597);
+    // 204 is what a container started before that change still answers.
+    expect(classifyPreviewAddressProbe(200, null, matching)).toBe("serving");
     expect(classifyPreviewAddressProbe(204, null, matching)).toBe("serving");
-    for (const status of [200, 302, 404, 500]) {
+    for (const status of [201, 302, 304, 404, 500]) {
       expect(classifyPreviewAddressProbe(status, null, matching)).toBe(
         "unknown",
       );
     }
+    for (const status of [200, 204]) {
+      expect(
+        classifyPreviewAddressProbe(status, null, {
+          ...matching,
+          actual: null,
+        }),
+      ).toBe("unknown");
+    }
     expect(
-      classifyPreviewAddressProbe(204, null, { ...matching, actual: null }),
+      classifyPreviewAddressProbe(200, null, {
+        ...matching,
+        actual: "another-preview",
+      }),
     ).toBe("unknown");
     expect(
       classifyPreviewAddressProbe(204, null, {

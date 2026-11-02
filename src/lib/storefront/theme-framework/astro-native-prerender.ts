@@ -1,14 +1,16 @@
 import {
+  THEME_MORPH_SDK_ASTRO_MIDDLEWARE,
+  themeMorphSdkAliasesSource,
+  themeMorphSdkAstroMiddlewareFile,
+  themeMorphSdkFiles,
+} from "../compiler/theme-morph-sdk";
+import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
   NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
   THEME_PRERENDER_CONTENT_FILE,
   answerSealedContentRead,
   type NativePrerenderContent,
 } from "../compiler/theme-prerender-content";
-import type {
-  ThemeRouteRecord,
-  ThemeRouteRegistry,
-} from "../compiler/theme-route-registry";
 import { normalizeRoutePath } from "../theme-template-routes";
 import { nativeImportGuardPluginSource } from "./tanstack-start-native-wrapper";
 
@@ -119,6 +121,9 @@ export function astroPrerenderWorkspaceFiles(options: {
         options.prerenderContent ?? NATIVE_PRERENDER_WITHOUT_SNAPSHOT,
       ),
     },
+    // The SDK the Theme reads content with (@morph/sdk/astro).
+    ...themeMorphSdkFiles(),
+    themeMorphSdkAstroMiddlewareFile(),
   ];
 }
 
@@ -189,6 +194,9 @@ const answerSealedContentRead = (${answerSealedContentRead.toString()});
 const pageKey = (page) => normalizeRoutePath(new URL(String(page), "http://astro.invalid").pathname);
 
 const root = fs.realpathSync(process.cwd());
+// The platform's copy of the Morph SDK (.morph/sdk/), by its exact names.
+const MORPH_SDK_MIDDLEWARE = ${JSON.stringify(THEME_MORPH_SDK_ASTRO_MIDDLEWARE)};
+const morphSdkAliases = ${themeMorphSdkAliasesSource("root")};
 
 // Judged on where an import resolves, as Start's build judges it
 // (tanstack-start-native-wrapper.ts): inside the workspace, or inside an
@@ -318,9 +326,14 @@ export function morphAstroBuild() {
   return {
     name: "morph:astro-build",
     hooks: {
-      "astro:config:setup": ({ updateConfig }) => {
+      "astro:config:setup": ({ updateConfig, addMiddleware }) => {
+        // Each render, prerendered ones included, runs as its own request's,
+        // so @morph/sdk/astro reads the source the build names; before the
+        // author's own middleware.
+        addMiddleware({ order: "pre", entrypoint: path.join(root, MORPH_SDK_MIDDLEWARE) });
         updateConfig({
           vite: {
+            resolve: { alias: morphSdkAliases },
             cacheDir: buildViteCacheDir(),
             plugins: importGuard ? [importGuard, prerenderPlugin] : [prerenderPlugin],
           },
@@ -653,44 +666,6 @@ export function astroArtifactLeaks(
   return leaks;
 }
 
-const PAGE_EXTENSIONS = /\.(astro|md|mdx|html|js|ts)$/;
-
-/**
- * An Astro project's routes, from its `src/pages/` file names, in the shape
- * the sealed content is made from (`createNativePrerenderContent`).
- *
- * `[param]` and `[...rest]` are dynamic; a name starting with `_` is not a
- * route. Paths are URL paths — percent-encoded as `Astro.url.pathname` is —
- * and Core's content keys (`normalizeRoutePath`). Whether a page prerenders is
- * the page's own `prerender` export, which the build records; this says only
- * which paths exist.
- */
-export function astroRouteRegistry(
-  files: readonly Readonly<{ path: string }>[],
-): ThemeRouteRegistry {
-  const routes: ThemeRouteRecord[] = [];
-  for (const file of files) {
-    if (!file.path.startsWith("src/pages/") || !PAGE_EXTENSIONS.test(file.path))
-      continue;
-    const segments = file.path
-      .slice("src/pages/".length)
-      .replace(PAGE_EXTENSIONS, "")
-      .split("/");
-    if (segments.some((segment) => segment.startsWith("_"))) continue;
-    if (segments[segments.length - 1] === "index") segments.pop();
-    const dynamic = segments.some((segment) => /\[.+\]/.test(segment));
-    const path = normalizeRoutePath(
-      new URL(`/${segments.join("/")}`, "http://astro.invalid").pathname,
-    );
-    routes.push({
-      id: path,
-      path,
-      sourcePath: file.path,
-      kind: "route",
-      dynamic,
-      routeType: "route",
-      componentName: null,
-    });
-  }
-  return { valid: true, routes, diagnostics: [] };
-}
+// Moved to a pure, client-safe module so Core's route checks read the same
+// routes the build does; re-exported here so the build's imports stay.
+export { astroRouteRegistry } from "../compiler/astro-route-registry";

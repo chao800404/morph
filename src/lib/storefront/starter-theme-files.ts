@@ -24,6 +24,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
@@ -45,6 +46,10 @@ import {
   LEGACY_STARTER_THEME_IMAGE_WITH_TEXT_URL_FIELD_SOURCE,
   LEGACY_STARTER_THEME_LINK_MODULE_SOURCE,
 } from "./starter-theme-v3-files";
+import {
+  LEGACY_STARTER_THEME_HOME_ROUTE_DATA_MORPH_ATTRS_BYTE_SET,
+  legacyStarterThemeShippedSources,
+} from "./starter-theme-legacy-byte-sets";
 import {
   PREVIOUS_THEME_START_DEPENDENCY_VERSIONS,
   THEME_START_BUILD_DEPENDENCIES,
@@ -1416,7 +1421,10 @@ function planStarterThemeWorkspaceWrites(
       // Slot-bound but always visible: hiding a section in the editor still
       // published the component with its own defaults.
       existingHomeRoute?.content ===
-        LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE
+        LEGACY_STARTER_THEME_HOME_ROUTE_ALWAYS_VISIBLE_SOURCE ||
+      // The same route as shipped by v11/v12, with a data-morph-node on main.
+      existingHomeRoute?.content ===
+        LEGACY_STARTER_THEME_HOME_ROUTE_DATA_MORPH_ATTRS_BYTE_SET.content
     ) {
       deferred.homeRoute = {
         path: existingHomeRoute.path,
@@ -1468,7 +1476,10 @@ function planStarterThemeWorkspaceWrites(
           LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE ||
         // Before `morph.pages.get`.
         existingContentModule.content ===
-          LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE)
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE ||
+        // Before its server reads sent back the render context.
+        existingContentModule.content ===
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE)
     ) {
       upgrades.push({
         path: existingContentModule.path,
@@ -1631,6 +1642,7 @@ function planStarterThemeWorkspaceWrites(
         ...(legacyFieldMarkerSources.get("src/components/Hero.tsx")
           ? [legacyFieldMarkerSources.get("src/components/Hero.tsx")!]
           : []),
+        ...legacyStarterThemeShippedSources("src/components/Hero.tsx"),
       ],
       current: STARTER_THEME_FILES.find(
         (file) => file.path === "src/components/Hero.tsx",
@@ -1649,6 +1661,9 @@ function planStarterThemeWorkspaceWrites(
               )!,
             ]
           : []),
+        ...legacyStarterThemeShippedSources(
+          "src/components/CategoryShowcase.tsx",
+        ),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/CategoryShowcase.tsx",
@@ -1662,6 +1677,7 @@ function planStarterThemeWorkspaceWrites(
         ...(legacyFieldMarkerSources.get("src/components/ImageWithText.tsx")
           ? [legacyFieldMarkerSources.get("src/components/ImageWithText.tsx")!]
           : []),
+        ...legacyStarterThemeShippedSources("src/components/ImageWithText.tsx"),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/ImageWithText.tsx",
@@ -1673,6 +1689,9 @@ function planStarterThemeWorkspaceWrites(
         ...(legacyFieldMarkerSources.get("src/components/EditorialIntro.tsx")
           ? [legacyFieldMarkerSources.get("src/components/EditorialIntro.tsx")!]
           : []),
+        ...legacyStarterThemeShippedSources(
+          "src/components/EditorialIntro.tsx",
+        ),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/EditorialIntro.tsx",
@@ -1684,6 +1703,7 @@ function planStarterThemeWorkspaceWrites(
         ...(legacyFieldMarkerSources.get("src/components/Newsletter.tsx")
           ? [legacyFieldMarkerSources.get("src/components/Newsletter.tsx")!]
           : []),
+        ...legacyStarterThemeShippedSources("src/components/Newsletter.tsx"),
       ],
       current: STARTER_THEME_V3_NEW_FILES.find(
         (file) => file.path === "src/components/Newsletter.tsx",
@@ -1695,6 +1715,7 @@ function planStarterThemeWorkspaceWrites(
         ...(legacyFieldMarkerSources.get("src/components/Principles.tsx")
           ? [legacyFieldMarkerSources.get("src/components/Principles.tsx")!]
           : []),
+        ...legacyStarterThemeShippedSources("src/components/Principles.tsx"),
       ],
       current: STARTER_THEME_FILES.find(
         (file) => file.path === "src/components/Principles.tsx",
@@ -1722,6 +1743,7 @@ function planStarterThemeWorkspaceWrites(
         LEGACY_STARTER_THEME_HEADER_INDEXED_SPAN_SOURCE,
         LEGACY_STARTER_THEME_HEADER_INDEX_KEYED_SOURCE,
         LEGACY_STARTER_THEME_HEADER_ID_FALLBACK_SOURCE,
+        ...legacyStarterThemeShippedSources("src/components/Header.tsx"),
       ],
       current: STARTER_THEME_HEADER_SOURCE,
     },
@@ -1733,6 +1755,7 @@ function planStarterThemeWorkspaceWrites(
         LEGACY_STARTER_THEME_FOOTER_UNMARKED_SOURCE,
         LEGACY_STARTER_THEME_FOOTER_MARKED_LINK_SOURCE,
         LEGACY_STARTER_THEME_FOOTER_ID_FALLBACK_SOURCE,
+        ...legacyStarterThemeShippedSources("src/components/Footer.tsx"),
       ],
       current: STARTER_THEME_FOOTER_SOURCE,
     },

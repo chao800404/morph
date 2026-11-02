@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { startRequestTimeline } from "./request-timeline";
+import { assertPreviewedThemeVerified } from "./helpers/recorded-preview-runtime";
 import {
   hasMonacoModel,
   readMonacoModel,
@@ -23,8 +24,15 @@ export const SAMPLE_OFFSETS: ReadonlyArray<readonly [number, number]> = [
   [0.98, 0.5],
 ];
 
-/** The canvas is an iframe; everything rendered by the theme lives inside it. */
+/**
+ * The canvas is an iframe; everything rendered by the theme lives inside it.
+ *
+ * In record mode (`MORPH_E2E_RECORD_PREVIEW_RUNTIME`) it first refuses a Theme
+ * whose stored record was not verified, so no preview assertion reads a
+ * Theme served as the Worker's default instead of its record.
+ */
 export function previewFrame(page: Page) {
+  assertPreviewedThemeVerified(page);
   return page.frameLocator("iframe");
 }
 

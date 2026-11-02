@@ -1,3 +1,4 @@
+import { PREVIEW_SOURCE_SECTION_PREFIX } from "@/lib/storefront/editor/preview-dom";
 import type { StorefrontPageDocument } from "@/db/storefront.schema";
 import {
   advanceSelectionAfterTextPromotion,
@@ -130,10 +131,19 @@ import {
 import { ScrubbableNumberInput } from "@/components/ui/scrubbable-number-input";
 import { Separator } from "@/components/ui/separator";
 import {
-  buildThemeRouteRegistry,
+  isThemeEndpointRoute,
   themeRoutePathAfterFileMoves,
   type ThemeRouteRecord,
+  type ThemeRouteRegistry,
 } from "@/lib/storefront/compiler/theme-route-registry";
+import { themeRoutesFor } from "@/lib/storefront/theme-framework/theme-routes";
+import { previewNavigationFor } from "@/lib/storefront/theme-framework/theme-preview-navigation";
+import {
+  PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS,
+  initialPreviewDocumentNavigationState,
+  previewDocumentNavigationNotice,
+  reducePreviewDocumentNavigation,
+} from "@/lib/storefront/editor/preview-document-navigation";
 import {
   addThemeRouteSection,
   bindThemeRouteSection,
@@ -262,11 +272,12 @@ import {
   isDocumentWriteTarget,
   isPageStandInId,
 } from "@/lib/storefront/editor/page-stand-in";
+import { patchElementClassNameResult } from "@/lib/storefront/ast/theme-ast-transformer";
 import {
-  patchElementClassNameResult,
-  removeJsxElement,
-  swapSiblingMorphNodes,
-} from "@/lib/storefront/ast/theme-ast-transformer";
+  applyDesignElementOperation,
+  DESIGN_ELEMENT_UNSAVED_MESSAGE,
+  type DesignElementOperation,
+} from "@/lib/storefront/compiler/design-element-operation";
 import {
   patchThemeLinkBinding,
   patchThemeLinkElement,
@@ -391,7 +402,10 @@ import {
   type EditorAssistantPanelTab,
 } from "./editor-assistant-panel";
 import { EditorCanvasComments } from "./editor-canvas-comments";
-import { resolveCodeSelectionTarget } from "./editor-code-selection";
+import {
+  resolveCodeSelectionTarget,
+  resolveSourceLocatedTarget,
+} from "./editor-code-selection";
 import { EditorPathNavigator } from "./editor-path-navigator";
 import { EditorReleaseHistoryDialog } from "./editor-release-history";
 import {
@@ -462,6 +476,10 @@ import {
   canvasYToCenterElement,
 } from "./editor-canvas-geometry";
 import { previewSelectionTargetMatches } from "./preview-reveal-request";
+import {
+  createPendingDesignWrites,
+  saveOptionsForOrigin,
+} from "./pending-design-writes";
 import { createThemeFileSaveQueue } from "./theme-file-save-queue";
 import { useEditorCanvasTransform } from "./use-editor-canvas-transform";
 import { usePreviewSelection } from "./use-preview-selection";
@@ -545,8 +563,35 @@ export const HISTORY_OTHER_PAGE_MESSAGE =
  */
 export const CANVAS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE =
   "Canvas editing isn't available for this Theme's framework yet. Use the panel on the right or Code mode.";
+/**
+ * Said when an Astro canvas click names a source location the editor cannot
+ * open as given: another version of the file, or a place in it that is not
+ * the clicked element. Nothing is opened on a guess.
+ */
+export const SOURCE_LOCATION_STALE_MESSAGE =
+  "This element's source has changed since the preview showed it. Wait for the preview to update, then click it again.";
 export const PREVIEW_OTHER_PAGE_NOT_SAVED_MESSAGE =
   "Not saved: the preview is showing another page. Wait for it to finish loading, then try again.";
+/**
+ * Said when a canvas click arrives while a preview that navigates as
+ * documents has not confirmed the page the editor switched to (D3).
+ */
+export const PREVIEW_PAGE_OPENING_MESSAGE =
+  "The preview is still opening this page. Click again once it shows.";
+/**
+ * Said when a canvas click comes from a page the preview moved to by itself
+ * that is not one the editor lists (a 404, or an address of a dynamic
+ * route): the editor did not follow it there, so nothing on it is taken.
+ */
+export const PREVIEW_PAGE_NOT_EDITABLE_MESSAGE =
+  "The preview is showing a page the editor can't open. Open a page from the list to edit it.";
+/**
+ * Said when a page that has no address of its own is asked for in a preview
+ * that navigates as documents: a dynamic route needs concrete parameters,
+ * and the editor does not invent them.
+ */
+export const ROUTE_PATTERN_NOT_OPENABLE_MESSAGE =
+  "This page needs a concrete address (for example a slug) to open in the preview. Open its source in Code instead.";
 /**
  * Shown near the preview while its frame did not say, on its ready, that it
  * reads the section a field edit names (an older preview build): typing in
@@ -577,6 +622,44 @@ export const PREVIEW_RELOAD_DEFERRED_MESSAGE =
  */
 export const PREVIEW_RELOAD_CONTENT_UNREAD_MESSAGE =
   "The canvas was reloaded but your latest content could not be loaded into it, so it may show older content. Your changes are kept.";
+
+/**
+ * The server refused a Design element edit (it touches a section, its effect
+ * cannot be told, or it was computed on content the server does not hold).
+ * An answer, not an unknown outcome: nothing was written. See
+ * `handleUnifiedSaveFile` for when the edit is taken back.
+ */
+class DesignElementRefusedError extends Error {}
+
+/**
+ * Text that builds on a Design write not yet saved, from a sender that is
+ * not the author in Code; see `pending-design-writes`. Kept, not sent.
+ */
+export const PENDING_DESIGN_WRITE_HELD_MESSAGE =
+  "This change is kept but not saved: it builds on a Design change that is not saved yet, and would carry it unchecked. Save that change first, or edit the file in Code to save it as your own.";
+
+class PendingDesignWriteHeldError extends Error {}
+
+/**
+ * The server's structure guard refused a Design section structure write: an
+ * answer, not an unknown outcome; nothing was written.
+ */
+class DesignStructureRefusedError extends Error {}
+
+/** An undo or redo whose write did not land; the entry stays. */
+export const HISTORY_REPLAY_NOT_SAVED_MESSAGE =
+  "the change is not saved yet. It stays in the history; try again once the file is saved.";
+
+/**
+ * Whether a file may take a Design element edit now: the edit is judged on
+ * the stored file, so one with changes not yet saved (or a save running)
+ * would be judged on other content than the one shown.
+ */
+function hasUnsavedThemeFileChanges(
+  file: { dirty?: boolean; saveState?: string } | undefined,
+): boolean {
+  return Boolean(file && (file.dirty || file.saveState !== "clean"));
+}
 
 /** A route's own document before its first write: no sections stored yet. */
 const EMPTY_ROUTE_DOCUMENT: StorefrontPageDocument = {
@@ -893,6 +976,13 @@ type PublicationBuildDraft = NonNullable<
 
 const EMPTY_THEME_FILES: StorefrontThemeFileDTO[] = [];
 const EMPTY_THEME_TREE: StorefrontThemeFileTreeNode[] = [];
+/** A route with no Start `content()` structure: one of another framework. */
+const NO_ROUTE_STRUCTURE: ReturnType<typeof deriveThemeRouteSections> = {
+  sections: [],
+  unboundSections: [],
+  diagnostics: [],
+  hasContentImport: false,
+};
 
 const DEFAULT_LEFT_PANEL_WIDTH = 260;
 const MIN_LEFT_PANEL_WIDTH = 220;
@@ -3393,13 +3483,42 @@ export function VisualEditorShell({
         })),
     ];
   }, [context.storefront.id, context.theme.id, themeFiles, workspaceFiles]);
-  const themeRouteRegistry = useMemo(
-    () => buildThemeRouteRegistry(effectiveThemeFiles),
-    [effectiveThemeFiles],
+  /**
+   * The Theme's routes, read the way its recorded framework reads them
+   * (`themeRoutesFor`; NULL is TanStack Start), never from the file shape: a
+   * workspace can hold both Start's and Astro's. Read-only on any framework
+   * (D2); what may be written stays with Core. A framework the editor does
+   * not know has no routes here.
+   */
+  const themeRouteRegistry = useMemo<ThemeRouteRegistry>(() => {
+    const read = themeRoutesFor(context.theme.framework, effectiveThemeFiles);
+    return read.ok
+      ? read.registry
+      : { valid: false, routes: [], diagnostics: [] };
+  }, [context.theme.framework, effectiveThemeFiles]);
+  /**
+   * How the preview moves between pages, from the recorded framework
+   * (theme-preview-navigation.ts). `document` (Astro): a page switch loads
+   * another document in the frame, and nothing from the frame is taken until
+   * that document has answered for the page asked for. Never inferred from a
+   * missing router: a Start Theme without one keeps its one page.
+   */
+  const documentNavigation =
+    previewNavigationFor(context.theme.framework) === "document";
+  const documentNavigationRef = useRef(documentNavigation);
+  documentNavigationRef.current = documentNavigation;
+  const [documentNavigationState, dispatchDocumentNavigation] = useReducer(
+    reducePreviewDocumentNavigation,
+    initialPreviewDocumentNavigationState,
   );
   /** For the preview message handler, which is not rebuilt for it. */
   const themeRouteRegistryRef = useRef(themeRouteRegistry);
   themeRouteRegistryRef.current = themeRouteRegistry;
+  /** The files an Astro canvas location is checked against; see below. */
+  const effectiveThemeFilesRef = useRef(effectiveThemeFiles);
+  effectiveThemeFilesRef.current = effectiveThemeFiles;
+  const handleJumpToCodeRef = useRef(handleJumpToCode);
+  handleJumpToCodeRef.current = handleJumpToCode;
   /**
    * Whether this Theme's preview is proven to be one document; null until
    * the Theme's files are read.
@@ -3433,6 +3552,14 @@ export function VisualEditorShell({
   const canvasUnavailableForFrameworkRef = useRef(false);
   canvasUnavailableForFrameworkRef.current =
     (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
+  /**
+   * Pages and sections are TanStack Start structure: route files and their
+   * `content()` slots. On another framework the stored Document sections are
+   * not proven against anything it renders, and Core refuses every Design
+   * write (`designWritesUnavailableReason`), so the panel offers none of it.
+   */
+  const sectionsUnavailableForFramework =
+    (context.theme.framework ?? "tanstack-start") !== "tanstack-start";
   // Parse every source route once per workspace revision. Route switching then
   // reads from this derived cache instead of waiting for a second render or a
   // preview round-trip to rebuild the left-hand tree.
@@ -3442,14 +3569,22 @@ export function VisualEditorShell({
       ReturnType<typeof deriveThemeRouteSections>
     >();
     for (const route of themeRouteRegistry.routes) {
-      if (route.kind !== "route" || route.isServerOnly) continue;
+      if (route.kind !== "route" || isThemeEndpointRoute(route)) continue;
       cache.set(
         route.sourcePath,
-        deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
+        // `content()` slots are Start structure, read by parsing the route as
+        // TSX. Another framework's page is never parsed so: it has none here.
+        sectionsUnavailableForFramework
+          ? NO_ROUTE_STRUCTURE
+          : deriveThemeRouteSections(effectiveThemeFiles, route.sourcePath),
       );
     }
     return cache;
-  }, [effectiveThemeFiles, themeRouteRegistry.routes]);
+  }, [
+    effectiveThemeFiles,
+    sectionsUnavailableForFramework,
+    themeRouteRegistry.routes,
+  ]);
   const handlePrefetchThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
       // The editor and preview loaders already hydrate these queries in
@@ -3575,19 +3710,19 @@ export function VisualEditorShell({
   );
   const activeRouteStructure = useMemo(
     () =>
-      activeThemeRoute
+      activeThemeRoute && !sectionsUnavailableForFramework
         ? (themeRouteStructureCache.get(activeThemeRoute.sourcePath) ??
           deriveThemeRouteSections(
             effectiveThemeFiles,
             activeThemeRoute.sourcePath,
           ))
-        : {
-            sections: [],
-            unboundSections: [],
-            diagnostics: [],
-            hasContentImport: false,
-          },
-    [activeThemeRoute, effectiveThemeFiles, themeRouteStructureCache],
+        : NO_ROUTE_STRUCTURE,
+    [
+      activeThemeRoute,
+      effectiveThemeFiles,
+      sectionsUnavailableForFramework,
+      themeRouteStructureCache,
+    ],
   );
   const activeRouteSections = activeRouteStructure.sections;
   // A source-authored route is the structure owner even when it does not use
@@ -4017,8 +4152,16 @@ export function VisualEditorShell({
 
   const handleOpenThemeRoute = useCallback(
     (route: ThemeRouteRecord) => {
-      if (route.isServerOnly) {
+      if (isThemeEndpointRoute(route)) {
         handleJumpToCode(route.sourcePath, 1, 1);
+        return;
+      }
+      // A document-navigating preview opens an address, and a dynamic route
+      // is a pattern: its parameters are not known here and are not made up.
+      if (documentNavigationRef.current && route.dynamic) {
+        toast.info(ROUTE_PATTERN_NOT_OPENABLE_MESSAGE, {
+          id: "route-pattern-not-openable",
+        });
         return;
       }
       setPendingRouteSelection({
@@ -4044,7 +4187,12 @@ export function VisualEditorShell({
     (route: ThemeRouteRecord) => {
       // Endpoints have no Design page/template. Opening their source must not
       // navigate the canvas or create a content document for that URL.
-      if (!route.isServerOnly) handleOpenThemeRoute(route);
+      if (
+        !isThemeEndpointRoute(route) &&
+        !(documentNavigationRef.current && route.dynamic)
+      ) {
+        handleOpenThemeRoute(route);
+      }
       handleJumpToCode(route.sourcePath, 1, 1);
     },
     [handleJumpToCode, handleOpenThemeRoute],
@@ -4097,13 +4245,34 @@ export function VisualEditorShell({
   // can be stated as tests instead of reproduced by typing quickly.
   const saveQueueRef = useRef(createThemeFileSaveQueue());
   /**
-   * The route text each Design structure edit wrote, by path. A file whose
-   * unsaved content is still exactly that text holds a rewrite computed on
-   * an older Theme, and is checked against the newest one before it is sent
-   * again (`saveSourceConflicts`). Content the author changed since, in Code,
-   * no longer matches and is theirs to save.
+   * What each pending Design write of a file was, with the text it wrote; see
+   * `pending-design-writes`. A file whose unsaved content is still exactly
+   * that text holds that write, and sending it again sends the same
+   * operation: a section structure edit is checked against the newest Theme
+   * first (`saveSourceConflicts`); a Design element edit or a code default
+   * goes as itself, for the server to judge again.
    */
-  const designStructureEditsRef = useRef(new Map<string, string>());
+  const pendingDesignWritesRef = useRef(createPendingDesignWrites());
+  /** The save options that send `content` of `path` as the write it holds. */
+  const pendingDesignSaveOptions = useCallback(
+    (path: string, content: string) => {
+      const pending = pendingDesignWritesRef.current.get(path);
+      return pending && pending.content === content
+        ? saveOptionsForOrigin(pending.origin)
+        : {};
+    },
+    [],
+  );
+  /**
+   * Files Code mode must not save as its own while it saves everything
+   * unsaved: what it holds is still exactly a pending Design write. Each is
+   * left to the path that settles its own state (a source conflict, a
+   * pause, an unanswered save), whichever one is running now.
+   */
+  const pendingDesignWritesToLeave = useCallback(
+    () => pendingDesignWritesRef.current.texts(),
+    [],
+  );
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const previewHeartbeatRef = useRef<{
     key: string;
@@ -5238,10 +5407,16 @@ export function VisualEditorShell({
        * Theme is unanswered; anything else is held. See `unconfirmedContent`.
        */
       confirmed = false,
-      codeDefaultSave?: {
-        operation: "code-default";
-        codeDefault: CodeDefaultWriteProof;
-      },
+      operationSave?:
+        | {
+            operation: "code-default";
+            codeDefault: CodeDefaultWriteProof;
+          }
+        | {
+            operation: "design-element";
+            designElement: DesignElementOperation;
+          }
+        | { operation: "design-structure" },
     ): Promise<
       | { status: "saved"; file: StorefrontThemeFileDTO }
       | { status: "superseded" }
@@ -5321,6 +5496,7 @@ export function VisualEditorShell({
               });
               // What would be sent is what the server already holds.
               if (confirmed.file?.content === contentToSave) {
+                pendingDesignWritesRef.current.landed(filePath, targetRevision);
                 return { status: "saved", file: confirmed.file };
               }
               current = readCurrent();
@@ -5359,12 +5535,7 @@ export function VisualEditorShell({
                         content: contentToSave,
                         ...themeFileWritePrecondition(current),
                         expectedSourceGeneration: acceptedGeneration,
-                        ...(codeDefaultSave
-                          ? {
-                              operation: codeDefaultSave.operation,
-                              codeDefault: codeDefaultSave.codeDefault,
-                            }
-                          : {}),
+                        ...(operationSave ?? {}),
                       },
                     }),
               );
@@ -5452,6 +5623,28 @@ export function VisualEditorShell({
                   );
                 }
               }
+              if (
+                operationSave?.operation === "design-element" &&
+                res.error?.startsWith("DESIGN_ELEMENT_")
+              ) {
+                // Refused, and known to be: not an unknown outcome any more,
+                // whatever an earlier unanswered send of it left marked.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markRefused(filePath, res.message, workspaceScope);
+                throw new DesignElementRefusedError(res.message);
+              }
+              if (
+                operationSave?.operation === "design-structure" &&
+                res.error?.startsWith("DESIGN_STRUCTURE_")
+              ) {
+                // Refused by the structure guard: nothing was written, and
+                // that is known.
+                useThemeWorkspaceStore
+                  .getState()
+                  .markRefused(filePath, res.message, workspaceScope);
+                throw new DesignStructureRefusedError(res.message);
+              }
               throw new Error(res.message);
             }
 
@@ -5479,6 +5672,10 @@ export function VisualEditorShell({
               },
             );
 
+            // Landed: this send's pending Design write, if it recorded one,
+            // ends here, inside the queue, before anything queued behind it
+            // runs. A record a newer send of the file owns stays.
+            pendingDesignWritesRef.current.landed(filePath, targetRevision);
             return { status: "saved", file: res.data };
           } catch (error) {
             const afterError = useThemeWorkspaceStore
@@ -5554,8 +5751,11 @@ export function VisualEditorShell({
           fromHistory?: boolean;
           renderDocument?: boolean;
           preserveCanvasPosition?: boolean;
-          operation?: "code-default";
+          operation?: "code-default" | "design-element";
           codeDefault?: CodeDefaultWriteProof;
+          designElement?: DesignElementOperation;
+          historyReplay?: boolean;
+          structureEdit?: boolean;
         },
       ) => Promise<unknown>)
     | null
@@ -5571,19 +5771,64 @@ export function VisualEditorShell({
         preserveCanvasPosition?: boolean;
         /** The author asked for this save; see `saveThemeFileSequentially`. */
         confirmed?: boolean;
-        operation?: "code-default";
+        operation?: "code-default" | "design-element";
         codeDefault?: CodeDefaultWriteProof;
+        /**
+         * A Design element edit (delete, sibling reorder). The server
+         * recomputes and judges it rather than taking the content as is.
+         */
+        designElement?: DesignElementOperation;
         /**
          * A Design section structure edit (reorder, remove, bind) computed
          * on this tab's files. Recorded so that saving it again later, after
          * the Theme moved on, asks the structure lock again first.
          */
         structureEdit?: boolean;
+        /**
+         * The author takes the file over as theirs, in Code (Keep Mine): its
+         * text goes as a plain save even if a Design write wrote it, and that
+         * write is no longer pending.
+         */
+        codeOverwrite?: boolean;
+        /**
+         * Code mode saving text the author typed in this file; see
+         * `PendingDesignSender.codeEdit`.
+         */
+        codeEdit?: boolean;
+        /**
+         * An undo or redo replaying a recorded edit. Refused by the server, it
+         * is taken back like an edit is: the file returns to what it held
+         * before the replay. (A resend, also `fromHistory`, is not: its draft
+         * is the author's and is kept.)
+         */
+        historyReplay?: boolean;
       },
     ) => {
-      if (options?.structureEdit) {
-        designStructureEditsRef.current.set(filePath, content);
-      }
+      // What this write is. Named by the caller, or else the pending Design
+      // write whose very text this is, sent again by whoever asks (Code, a
+      // publish flush, a resend): the same write, judged the same way.
+      const sender = {
+        origin: options?.structureEdit
+          ? ({ kind: "structure-edit" } as const)
+          : options?.operation === "design-element" && options.designElement
+            ? ({
+                kind: "design-element",
+                designElement: options.designElement,
+              } as const)
+            : options?.operation === "code-default" && options.codeDefault
+              ? ({
+                  kind: "code-default",
+                  codeDefault: options.codeDefault,
+                } as const)
+              : null,
+        codeEdit: options?.codeEdit,
+        codeOverwrite: options?.codeOverwrite,
+      };
+      let verdict = pendingDesignWritesRef.current.verdict(
+        filePath,
+        content,
+        sender,
+      );
       // Recorded here rather than at each call site: reordering siblings,
       // reordering sections, adding one and saving in Code mode all write a
       // whole file through this one path, and each would otherwise need its own
@@ -5595,16 +5840,18 @@ export function VisualEditorShell({
       // through — swapping two elements twice takes two presses to undo. That
       // only holds while every write to the file records an entry; the two
       // places that write one without recording retire its history instead.
-      const before = options?.fromHistory
-        ? null
-        : (useThemeWorkspaceStore
-            .getState()
-            .getWorkspaceFiles(
-              workspaceScope.storefrontId,
-              workspaceScope.themeId,
-            )[filePath]?.localContent ??
-          themeFiles.find((file) => file.path === filePath)?.content ??
-          null);
+      const priorLocal =
+        useThemeWorkspaceStore
+          .getState()
+          .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+          filePath
+        ]?.localContent ??
+        themeFiles.find((file) => file.path === filePath)?.content ??
+        null;
+      const before = options?.fromHistory ? null : priorLocal;
+      // What a refused Design element write is taken back to: the text before
+      // an edit, or before an undo or redo replayed it.
+      const takeBackTo = before ?? (options?.historyReplay ? priorLocal : null);
       const opKey = getScopedOpKey(filePath);
       pendingSaveWritesRef.current.cancel(opKey);
 
@@ -5627,20 +5874,116 @@ export function VisualEditorShell({
         },
       );
 
-      const nextRevision = saveQueueRef.current.claimRevision(opKey);
+      if (verdict.kind === "held") {
+        // Other text on top of a Design write of this file not yet saved. That
+        // write may still be on its way: once the saves queued ahead have
+        // run, it has landed (and this is an ordinary save) or not — refused,
+        // or unanswered, and this stays held. A newer send or newer text of
+        // the file while this waited replaces it: it stops here, and does not
+        // claim a revision that would put older text after newer.
+        const claimedBefore = saveQueueRef.current.latestRevision(opKey);
+        await saveQueueRef.current
+          .pending(`${workspaceScope.storefrontId}:${workspaceScope.themeId}`)
+          ?.catch(() => {});
+        const replaced =
+          saveQueueRef.current.latestRevision(opKey) !== claimedBefore ||
+          useThemeWorkspaceStore
+            .getState()
+            .getWorkspaceFiles(
+              workspaceScope.storefrontId,
+              workspaceScope.themeId,
+            )[filePath]?.localContent !== content;
+        if (replaced) return null;
+        verdict = pendingDesignWritesRef.current.verdict(
+          filePath,
+          content,
+          sender,
+        );
+      }
+      if (verdict.kind === "held") {
+        // Sent as a plain save, it would carry the Design write's change
+        // unchecked. Kept here, unsaved and marked; nothing is sent.
+        markWorkspaceError(
+          filePath,
+          PENDING_DESIGN_WRITE_HELD_MESSAGE,
+          workspaceScope,
+        );
+        throw new PendingDesignWriteHeldError(
+          PENDING_DESIGN_WRITE_HELD_MESSAGE,
+        );
+      }
+      const origin = verdict.kind === "operation" ? verdict.origin : null;
 
-      const result = await saveThemeFileSequentially(
+      const nextRevision = saveQueueRef.current.claimRevision(opKey);
+      // Kept with its text and this send's revision for as long as the file
+      // holds it unsaved; the revision says which send owns the record.
+      pendingDesignWritesRef.current.sent(
         filePath,
         content,
+        verdict,
         nextRevision,
-        options?.confirmed ?? false,
-        options?.operation === "code-default" && options.codeDefault
-          ? {
-              operation: "code-default",
-              codeDefault: options.codeDefault,
-            }
-          : undefined,
       );
+
+      let result: Awaited<ReturnType<typeof saveThemeFileSequentially>>;
+      try {
+        result = await saveThemeFileSequentially(
+          filePath,
+          content,
+          nextRevision,
+          options?.confirmed ?? false,
+          origin?.kind === "code-default"
+            ? { operation: "code-default", codeDefault: origin.codeDefault }
+            : origin?.kind === "design-element"
+              ? {
+                  operation: "design-element",
+                  designElement: origin.designElement,
+                }
+              : origin?.kind === "structure-edit"
+                ? { operation: "design-structure" }
+                : undefined,
+        );
+      } catch (error) {
+        // A Design element edit the server refused is taken back, in the
+        // workspace and in the frame, while it is still the latest thing in
+        // this file: no later save of the file was asked for, and the file
+        // still holds this edit's content. An edit made while the refusal was
+        // on its way is the author's newest, and stays. Any other failure,
+        // an unanswered save above all, keeps the content as it is.
+        // A structure write the guard refused is the author's draft and is
+        // kept (no revert, no resend); only an undo or redo replaying one is
+        // taken back, as a replayed element edit is.
+        const takeBack =
+          takeBackTo !== null &&
+          (error instanceof DesignElementRefusedError ||
+            (error instanceof DesignStructureRefusedError &&
+              options?.historyReplay === true));
+        if (takeBack) {
+          const stillThisEdit =
+            saveQueueRef.current.latestRevision(opKey) === nextRevision &&
+            useThemeWorkspaceStore
+              .getState()
+              .getWorkspaceFiles(
+                workspaceScope.storefrontId,
+                workspaceScope.themeId,
+              )[filePath]?.localContent === content;
+          if (stillThisEdit && takeBackTo !== null) {
+            updateWorkspaceLocal(filePath, takeBackTo, workspaceScope);
+            postPreviewThemeFiles(
+              themeFiles.map((file) => ({
+                path: file.path,
+                content:
+                  useThemeWorkspaceStore
+                    .getState()
+                    .getWorkspaceFiles(
+                      workspaceScope.storefrontId,
+                      workspaceScope.themeId,
+                    )[file.path]?.localContent ?? file.content,
+              })),
+            );
+          }
+        }
+        throw error;
+      }
       if (
         result.status === "superseded" ||
         result.status === "source-conflict" ||
@@ -5648,7 +5991,6 @@ export function VisualEditorShell({
       ) {
         return null;
       }
-
       // Only a landed write is reversible, and only one that actually changed
       // something: recording a no-op would spend an undo press doing nothing.
       if (before !== null && before !== content) {
@@ -5656,12 +5998,44 @@ export function VisualEditorShell({
           options?.operation === "code-default" && options.codeDefault
             ? options.codeDefault
             : undefined;
+        // A Design element edit is replayed as itself (redo) or as its undo,
+        // for the server to judge again on the files as they are then
+        // (decision A, Q2). Never as a plain save of the recorded text.
+        const designElementEdit =
+          options?.operation === "design-element" &&
+          options.designElement &&
+          options.designElement.kind !== "undo"
+            ? options.designElement
+            : undefined;
+        // A section structure edit is replayed as one, both ways, for the
+        // structure guard to judge on the files as they are then.
+        const structureEdit = options?.structureEdit === true;
+        // A replay that did not land (superseded, a source conflict, a pause)
+        // has not reversed anything: it throws, so the entry stays where it
+        // is instead of the stack claiming a reversal storage never took.
+        const replay = async (
+          text: string,
+          replayOptions: Parameters<
+            NonNullable<typeof handleUnifiedSaveFileRef.current>
+          >[2],
+        ) => {
+          const saved = await handleUnifiedSaveFileRef.current?.(
+            filePath,
+            text,
+            replayOptions,
+          );
+          if (saved === null || saved === undefined) {
+            throw new Error(HISTORY_REPLAY_NOT_SAVED_MESSAGE);
+          }
+          return saved;
+        };
         history.record({
           label: `Edit · ${filePath.slice(filePath.lastIndexOf("/") + 1)}`,
           scope: themeFileHistoryScope(filePath),
           undo: () =>
-            handleUnifiedSaveFileRef.current?.(filePath, before, {
+            replay(before, {
               fromHistory: true,
+              historyReplay: true,
               renderDocument: true,
               ...(codeDefaultOption
                 ? {
@@ -5672,18 +6046,36 @@ export function VisualEditorShell({
                       value: codeDefaultOption.expectedCurrentDefault,
                     },
                   }
-                : {}),
+                : designElementEdit
+                  ? {
+                      operation: "design-element" as const,
+                      designElement: {
+                        kind: "undo" as const,
+                        edit: designElementEdit,
+                      },
+                    }
+                  : structureEdit
+                    ? { structureEdit: true }
+                    : {}),
             }),
           redo: () =>
-            handleUnifiedSaveFileRef.current?.(filePath, content, {
+            replay(content, {
               fromHistory: true,
+              historyReplay: true,
               renderDocument: true,
               ...(codeDefaultOption
                 ? {
                     operation: "code-default" as const,
                     codeDefault: codeDefaultOption,
                   }
-                : {}),
+                : designElementEdit
+                  ? {
+                      operation: "design-element" as const,
+                      designElement: designElementEdit,
+                    }
+                  : structureEdit
+                    ? { structureEdit: true }
+                    : {}),
             }),
         });
       }
@@ -5692,6 +6084,7 @@ export function VisualEditorShell({
     },
     [
       getScopedOpKey,
+      markWorkspaceError,
       saveThemeFileSequentially,
       themeFiles,
       updateWorkspaceLocal,
@@ -5816,38 +6209,49 @@ export function VisualEditorShell({
   const handleSwapThemeFileSiblings = useCallback(
     async (filePath: string, draggedNodeId: string, targetNodeId: string) => {
       if (refuseSectionTemplateWrite(filePath)) return;
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ];
       const currentSource =
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent ??
+        workspaceFile?.localContent ??
         themeFiles.find((file) => file.path === filePath)?.content;
       if (!currentSource) {
         toast.error(`Cannot reorder: source file ${filePath} is unavailable.`);
         return;
       }
 
-      const result = swapSiblingMorphNodes(
-        currentSource,
-        draggedNodeId,
-        targetNodeId,
-      );
-      if (!result.editable) {
-        const message = (() => {
-          switch (result.reason) {
-            case "not-siblings":
-              return "Only elements under the same source parent can be reordered.";
-            case "parse-error":
-              return `Cannot reorder because ${filePath} contains a syntax error.`;
-            case "same-node":
-              // Dropped where it already was. Nothing changed and nothing failed.
-              return null;
-            default:
-              return "This rendered element cannot be mapped to one unique source sibling.";
-          }
-        })();
+      // The frame names the file and the two elements; that is not trusted
+      // to mean an ordinary reorder. What the swap would move is judged here,
+      // and again by the server, against the sections the file renders.
+      const designElement = {
+        kind: "swap-siblings",
+        firstKey: draggedNodeId,
+        secondKey: targetNodeId,
+      } as const;
+      const result = hasUnsavedThemeFileChanges(workspaceFile)
+        ? null
+        : applyDesignElementOperation(
+            themeFiles,
+            filePath,
+            currentSource,
+            designElement,
+          );
+      if (result?.status !== "ok") {
+        const message =
+          result === null
+            ? DESIGN_ELEMENT_UNSAVED_MESSAGE
+            : result.status === "unchanged"
+              ? // Dropped where it already was. Nothing changed and nothing failed.
+                null
+              : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+                ? result.message
+                : result.reason === "not-siblings"
+                  ? "Only elements under the same source parent can be reordered."
+                  : result.reason === "parse-error"
+                    ? `Cannot reorder because ${filePath} contains a syntax error.`
+                    : "This rendered element cannot be mapped to one unique source sibling.";
         if (message) toast.warning(message);
         postPreviewThemeFiles(
           themeFiles.map((file) => ({
@@ -5865,23 +6269,19 @@ export function VisualEditorShell({
       }
 
       try {
-        await handleUnifiedSaveFile(filePath, result.code);
+        await handleUnifiedSaveFile(filePath, result.code, {
+          operation: "design-element",
+          designElement,
+        });
       } catch (error) {
-        updateWorkspaceLocal(filePath, currentSource, workspaceScope);
-        postPreviewThemeFiles(
-          themeFiles.map((file) => ({
-            path: file.path,
-            content:
-              file.path === filePath
-                ? currentSource
-                : (useThemeWorkspaceStore
-                    .getState()
-                    .getWorkspaceFiles(
-                      workspaceScope.storefrontId,
-                      workspaceScope.themeId,
-                    )[file.path]?.localContent ?? file.content),
-          })),
-        );
+        // Refused: `handleUnifiedSaveFile` has taken the edit back if it was
+        // still the latest. Anything else may have landed (an unanswered
+        // save is marked unconfirmed and asked about before anything else
+        // goes), so the reorder stays as it is.
+        if (error instanceof DesignElementRefusedError) {
+          toast.warning(error.message);
+          return;
+        }
         toast.error(
           `Failed to reorder source elements: ${error instanceof Error ? error.message : "Save failed"}`,
         );
@@ -5892,7 +6292,6 @@ export function VisualEditorShell({
       postPreviewThemeFiles,
       refuseSectionTemplateWrite,
       themeFiles,
-      updateWorkspaceLocal,
       workspaceScope,
     ],
   );
@@ -5945,7 +6344,7 @@ export function VisualEditorShell({
       ]?.localContent;
       if (local === undefined) return;
       toast.info(`Applying local version of ${filePath}...`);
-      await handleUnifiedSaveFile(filePath, local);
+      await handleUnifiedSaveFile(filePath, local, { codeOverwrite: true });
     },
     [
       context.storefront.id,
@@ -6445,50 +6844,110 @@ export function VisualEditorShell({
    * Accepting the newer generation only lets the saves be attempted; each
    * file is still written against the version this tab holds, so a file the
    * other side also changed comes back as a file conflict to resolve.
+   *
+   * A Design structure edit is sent only against a source the structure lock
+   * was judged on and the generation of that same read: one read of the
+   * newest Theme, made before anything is sent, and read again before such an
+   * edit if a save earlier in the run moved the generation on. Accepting
+   * whatever this tab had observed instead let a press during a read still in
+   * flight resend against the generation already refused, and a lock judged
+   * on this tab's older copies of files it never changed answer "not locked"
+   * for a route the newest Theme locks.
    */
   const saveSourceConflicts = useCallback(async () => {
     const readFiles = () =>
       useThemeWorkspaceStore
         .getState()
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
-    useThemeWorkspaceStore
-      .getState()
-      .acceptRemoteGeneration(undefined, workspaceScope);
+    const acceptedGeneration = () =>
+      useThemeWorkspaceStore
+        .getState()
+        .getAcceptedSourceGeneration(workspaceScope);
+    /**
+     * The newest stored Theme, its generation accepted to send against; null,
+     * with the author told, when it cannot be read, or reads older than a save
+     * this tab has already seen land.
+     */
+    const readNewest = async (): Promise<{
+      files: readonly StorefrontThemeFileDTO[];
+      sourceGeneration: number;
+    } | null> => {
+      const atLeast = acceptedGeneration();
+      try {
+        const read = await queryClient.fetchQuery({
+          ...storefrontThemeFileQueries.tree(
+            workspaceScope.storefrontId,
+            workspaceScope.themeId,
+          ),
+          staleTime: 0,
+        });
+        if (
+          Number.isInteger(read.sourceGeneration) &&
+          read.sourceGeneration >= atLeast
+        ) {
+          useThemeWorkspaceStore
+            .getState()
+            .acceptRemoteGeneration(read.sourceGeneration, workspaceScope);
+          return read;
+        }
+      } catch {
+        // Told below.
+      }
+      toast.error(
+        "Your changes were not saved: the latest version of the Theme could not be read. Your changes are kept; try again.",
+      );
+      return null;
+    };
     setIsSavingSourceConflicts(true);
     try {
+      // Nothing is sent, and nothing discarded, without it: the edits stay
+      // unsaved and marked.
+      let newest = await readNewest();
+      if (!newest) return;
+      // Design writes still exactly as Design wrote them. Code mode tracks
+      // every unsaved file, these included, so it is told to leave them all:
+      // the conflicted ones are sent below as the operation they were — a
+      // structure edit checked against the structure lock first, a Design
+      // element edit or a code default for the server to judge again — and
+      // the rest (held by a pause, or unanswered) wait for their own path.
+      // Only the author changing such a file in Code makes it theirs: then it
+      // no longer matches, and Code saves it. Code being open, or showing the
+      // file as unsaved, does not.
+      //
       // Code mode keeps its own drafts, and its own record of which are
       // unsaved; saving through it is what clears that record. Whatever it
       // did not cover — an edit made in Design mode — goes through the same
       // save path directly.
-      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      await editorCodeWorkspaceRef.current?.saveAll({
+        confirmed: true,
+        leave: pendingDesignWritesToLeave(),
+      });
       const files = readFiles();
-      // The newest stored Theme, asked for now: a Design structure edit was
-      // checked against the files this tab had, and the lock can change
-      // without its route file changing.
-      let newest: readonly StorefrontThemeFileDTO[] | null = null;
       for (const path of sourceConflictPaths(files)) {
         const content = files[path]?.localContent;
         if (content === undefined) continue;
-        if (designStructureEditsRef.current.get(path) === content) {
-          newest ??= (
-            await queryClient.fetchQuery({
-              ...storefrontThemeFileQueries.tree(
-                workspaceScope.storefrontId,
-                workspaceScope.themeId,
-              ),
-              staleTime: 0,
-            })
-          ).files;
-          // The route as stored, among every other file as this tab would
-          // now save it: is a structure edit on it still allowed?
+        const resendAs = pendingDesignSaveOptions(path, content);
+        if (resendAs.structureEdit) {
+          // A save in this run landed and moved the generation on: the read
+          // the lock would be judged on no longer matches what would be sent.
+          if (newest.sourceGeneration !== acceptedGeneration()) {
+            newest = await readNewest();
+            if (!newest) return;
+          }
+          // The route as stored, among the newest stored files, except where
+          // this tab holds an edit of its own not yet saved: is a structure
+          // edit on it still allowed? A file this tab never changed counts as
+          // stored, never as this tab's possibly older copy of it.
+          const current = readFiles();
           const locked = themeRouteStructureLock(
-            newest.map((file) => ({
-              ...file,
-              content:
-                file.path === path
-                  ? file.content
-                  : (files[file.path]?.localContent ?? file.content),
-            })),
+            newest.files.map((file) => {
+              const local = current[file.path];
+              return file.path !== path &&
+                local &&
+                (local.dirty || local.saveState !== "clean")
+                ? { ...file, content: local.localContent }
+                : file;
+            }),
             path,
           );
           if (locked) {
@@ -6501,6 +6960,7 @@ export function VisualEditorShell({
         await handleUnifiedSaveFile(path, content, {
           fromHistory: true,
           confirmed: true,
+          ...resendAs,
         });
       }
     } catch (error) {
@@ -6510,7 +6970,13 @@ export function VisualEditorShell({
     } finally {
       setIsSavingSourceConflicts(false);
     }
-  }, [handleUnifiedSaveFile, queryClient, workspaceScope]);
+  }, [
+    handleUnifiedSaveFile,
+    pendingDesignSaveOptions,
+    pendingDesignWritesToLeave,
+    queryClient,
+    workspaceScope,
+  ]);
 
   /**
    * Writes paused on who is signed in, and what getting them going again
@@ -7027,9 +7493,15 @@ export function VisualEditorShell({
         .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      // Pending Design writes are left to the paths that settle them: a held
+      // one to the loop below, which sends it as the operation it was.
+      await editorCodeWorkspaceRef.current?.saveAll({
+        confirmed: true,
+        leave: pendingDesignWritesToLeave(),
+      });
+      let unanswered = 0;
       for (const path of authPausedPaths(readFiles())) {
-        await settleHeldFile({
+        const settled = await settleHeldFile({
           readDraft: () => readFiles()[path],
           readLatest: async () => {
             const latest = await getStorefrontThemeFile({
@@ -7039,15 +7511,29 @@ export function VisualEditorShell({
                 path,
               },
             });
-            return latest.success && latest.data ? latest.data : null;
+            if (latest.success) return latest.data ?? null;
+            // Only the server saying the file is not there reads as absent.
+            // Any other failure is no answer: nothing is sent on a guess.
+            if (latest.error === "NOT_FOUND") return null;
+            throw new Error(latest.message);
           },
-          markLanded: (latest) => markWorkspaceSaved(latest, workspaceScope),
+          markLanded: (latest) => {
+            pendingDesignWritesRef.current.heldByServer(path, latest.content);
+            markWorkspaceSaved(latest, workspaceScope);
+          },
           save: (content) =>
             handleUnifiedSaveFile(path, content, {
               fromHistory: true,
               confirmed: true,
+              ...pendingDesignSaveOptions(path, content),
             }),
         });
+        if (settled === "unanswered") unanswered += 1;
+      }
+      if (unanswered > 0) {
+        toast.error(
+          `${unanswered === 1 ? "A file was" : `${unanswered} files were`} not saved: what the server holds could not be read. Your changes are kept; try again.`,
+        );
       }
       await settleUnconfirmedContent();
       for (const [key, entry] of Array.from(pendingPropsMapRef.current)) {
@@ -7068,6 +7554,8 @@ export function VisualEditorShell({
     commitSectionPending,
     handleUnifiedSaveFile,
     markWorkspaceSaved,
+    pendingDesignSaveOptions,
+    pendingDesignWritesToLeave,
     settleUnconfirmedContent,
     workspaceScope,
     writeGate.epoch,
@@ -7091,13 +7579,20 @@ export function VisualEditorShell({
     setIsCheckingUnconfirmed(true);
     try {
       // Code mode keeps its own drafts; its save goes through the same path.
-      await editorCodeWorkspaceRef.current?.saveAll({ confirmed: true });
+      // Pending Design writes are left to the paths that settle them: an
+      // unanswered one to the loop below, which sends it as the operation it
+      // was if it did not land.
+      await editorCodeWorkspaceRef.current?.saveAll({
+        confirmed: true,
+        leave: pendingDesignWritesToLeave(),
+      });
       for (const path of unconfirmedPaths(readFiles())) {
         const content = readFiles()[path]?.localContent;
         if (content === undefined) continue;
         await handleUnifiedSaveFile(path, content, {
           fromHistory: true,
           confirmed: true,
+          ...pendingDesignSaveOptions(path, content),
         });
       }
       await retryFailedContent();
@@ -7110,7 +7605,13 @@ export function VisualEditorShell({
     } finally {
       setIsCheckingUnconfirmed(false);
     }
-  }, [handleUnifiedSaveFile, retryFailedContent, workspaceScope]);
+  }, [
+    handleUnifiedSaveFile,
+    pendingDesignSaveOptions,
+    pendingDesignWritesToLeave,
+    retryFailedContent,
+    workspaceScope,
+  ]);
 
   const handleBuildPreview = useCallback(
     async (
@@ -8131,6 +8632,17 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!previewKey) return;
 
+    /** The frame answered the editor's latest route request, in `round`. */
+    const latestRouteRequestAnswered = (round: number) => {
+      const routeRequest = lastRouteRequestRef.current;
+      return (
+        routeRequest !== null &&
+        routeRequest.key === previewKey &&
+        routeRequest.round === round &&
+        routeRequest.id === routeRequestIdRef.current &&
+        routeRequest.answered
+      );
+    };
     /**
      * Whether what this frame sends is about the editor's page.
      *
@@ -8138,14 +8650,19 @@ export function VisualEditorShell({
      * route answer, its boot report included: it shows the editor's page
      * while the page it last named, in this ready round, is that page.
      *
+     * A frame that navigates as documents (Astro, D3) names its own path
+     * too, but shows the editor's page only once it has also answered the
+     * editor's latest route request in this round: until then it may be the
+     * page it is leaving.
+     *
      * A frame that names no page shows the editor's page only when that is
      * proven: the preview is one document (`previewIsSingleDocument`), and
      * the frame answered the editor's latest route request in this round
      * with no route, so the document on it is the one the editor last sent.
      *
      * Anything else is unknown — a frame just reloaded, one that never
-     * answers, one behind a newer request, an Astro or other page-to-page
-     * preview, a Theme whose files are not read — and unknown is not the
+     * answers, one behind a newer request, a page-to-page preview that names
+     * no page, a Theme whose files are not read — and unknown is not the
      * editor's page.
      */
     const frameShowsEditorPage = () => {
@@ -8153,6 +8670,9 @@ export function VisualEditorShell({
       const round = previewReadyRoundRef.current;
       const named =
         frame !== null && frame.key === previewKey && frame.round === round;
+      if (documentNavigationRef.current && !latestRouteRequestAnswered(round)) {
+        return false;
+      }
       if (named && frame.routePath !== null) {
         return previewStructureMatchesRoute(
           frame.routePath,
@@ -8163,14 +8683,7 @@ export function VisualEditorShell({
       // said so (no route) in answer to the editor's latest request, in this
       // round. Then the document it shows is the one the editor sent.
       if (previewIsSingleDocumentRef.current !== true || !named) return false;
-      const routeRequest = lastRouteRequestRef.current;
-      return (
-        routeRequest !== null &&
-        routeRequest.key === previewKey &&
-        routeRequest.round === round &&
-        routeRequest.id === routeRequestIdRef.current &&
-        routeRequest.answered
-      );
+      return latestRouteRequestAnswered(round);
     };
     /**
      * Whether the canvas is unavailable here, rather than on another page:
@@ -8542,6 +9055,13 @@ export function VisualEditorShell({
           routeRequest.id === message.routeRequestId
         ) {
           routeRequest.answered = true;
+          if (documentNavigationRef.current) {
+            dispatchDocumentNavigation({
+              type: "route-answered",
+              key: previewKey,
+              routePath: message.routePath,
+            });
+          }
         }
         return;
       }
@@ -8576,6 +9096,49 @@ export function VisualEditorShell({
       }
       if (message.type !== "morph:storefront-preview-select-section") return;
       reportAuthenticatedUserActivity();
+      // Astro (L1.5a, docs/astro-theme-plan.md 3.6.2): a click only locates.
+      // It opens the clicked element's source in Code, checked against the
+      // file the editor holds; it is never a Design selection, and nothing is
+      // written. The location is the preview's hint, not a write target.
+      if (
+        canvasUnavailableForFrameworkRef.current &&
+        message.sectionId.startsWith(PREVIEW_SOURCE_SECTION_PREFIX)
+      ) {
+        if (!previewSelection.isNewCanvasIntent(message)) return;
+        // Paused while a document-navigating frame has not answered for the
+        // editor's page (D3): the click may be on the page it is leaving.
+        // Answered from another page (a link the author followed to a page
+        // the editor does not list): off there.
+        if (documentNavigationRef.current && !frameShowsEditorPage()) {
+          if (latestRouteRequestAnswered(previewReadyRoundRef.current)) {
+            toast.info(PREVIEW_PAGE_NOT_EDITABLE_MESSAGE, {
+              id: "preview-page-not-editable",
+            });
+          } else {
+            toast.info(PREVIEW_PAGE_OPENING_MESSAGE, {
+              id: "preview-page-opening",
+            });
+          }
+          return;
+        }
+        const target = resolveSourceLocatedTarget({
+          selection: {
+            sectionId: message.sectionId,
+            sourceLocation: message.sourceLocation ?? null,
+            sourceVersion: message.sourceVersion ?? null,
+            tagName: message.tagName ?? null,
+          } as EditorSelectionDescriptor,
+          themeFiles: effectiveThemeFilesRef.current,
+        });
+        if (target) {
+          handleJumpToCodeRef.current(target.filePath, target.line, target.column);
+        } else {
+          toast.info(SOURCE_LOCATION_STALE_MESSAGE, {
+            id: "source-location-stale",
+          });
+        }
+        return;
+      }
       // An element of another page, or of a page not known yet: its slot id
       // may be one this page has too, and the Inspector would then edit this
       // page's copy of it.
@@ -8696,6 +9259,7 @@ export function VisualEditorShell({
         nodeId,
         sourceFilePath,
         sourceLocation: message.sourceLocation ?? null,
+        sourceVersion: message.sourceVersion ?? null,
         elementKey,
         fieldKey,
         fieldPath,
@@ -8777,6 +9341,52 @@ export function VisualEditorShell({
     });
     return routeRequestId;
   }, [activeTemplateId, postEditorToPreviewMessage, search.routePath]);
+  /**
+   * A route request sent to a document-navigating frame: the page switch the
+   * canvas now waits on (D3). Nothing for a Theme whose preview has a router.
+   */
+  const noteDocumentRouteSent = useCallback(
+    (key: string) => {
+      if (!documentNavigationRef.current) return;
+      dispatchDocumentNavigation({
+        type: "route-sent",
+        key,
+        routePath: search.routePath ?? "/",
+        at: Date.now(),
+      });
+    },
+    [search.routePath],
+  );
+  // Stops waiting on a page switch that does not answer, and says so. Ends
+  // the wait only; a late answer still opens the page.
+  useEffect(() => {
+    if (documentNavigationState.status !== "opening") return;
+    const { key, routePath, startedAt } = documentNavigationState;
+    const timer = window.setTimeout(
+      () =>
+        dispatchDocumentNavigation({
+          type: "timed-out",
+          key,
+          routePath,
+          startedAt,
+        }),
+      Math.max(
+        0,
+        startedAt + PREVIEW_DOCUMENT_NAVIGATION_TIMEOUT_MS - Date.now(),
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [documentNavigationState]);
+  const documentNavigationNotice = documentNavigation
+    ? previewDocumentNavigationNotice(
+        documentNavigationState,
+        previewKey,
+        // The pages the frame follow takes the editor to.
+        (framePath) =>
+          previewFrameNavigationRoute(framePath, themeRouteRegistry.routes) !==
+          null,
+      )
+    : null;
 
   useEffect(() => {
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
@@ -8790,6 +9400,7 @@ export function VisualEditorShell({
         id: routeRequestId,
         answered: false,
       };
+      noteDocumentRouteSent(previewKey);
       // A reloaded frame's content waits for the answer to this request
       // (`createInstanceContentReplay`); sending it is not the answer.
       instanceContentReplayRef.current?.routeSent(
@@ -8814,6 +9425,7 @@ export function VisualEditorShell({
     previewFrameReady?.sequence,
     previewKey,
     beginPreviewSizeMeasurement,
+    noteDocumentRouteSent,
     requestPreviewSize,
     syncPreviewRoute,
   ]);
@@ -8829,6 +9441,7 @@ export function VisualEditorShell({
       id: routeRequestId,
       answered: false,
     };
+    noteDocumentRouteSent(previewKey);
     instanceContentReplayRef.current?.routeSent(
       previewKey,
       previewReadyRoundRef.current,
@@ -9094,6 +9707,7 @@ export function VisualEditorShell({
                 .getAcceptedSourceGeneration(workspaceScope),
               createRevision: true,
               revisionMessage: `Create page-specific copy of ${componentPath}`,
+              operation: "design-structure",
             },
           }),
       );
@@ -9111,6 +9725,9 @@ export function VisualEditorShell({
         // retain the pre-detach route as a phantom dirty edit.
         updateWorkspaceLocal(saved.path, saved.content, workspaceScope);
         markWorkspaceSaved(saved, workspaceScope, result.data.sourceGeneration);
+        // Written outside the history: entries for it now hold text this
+        // batch moved past (decision B).
+        history.discardScope(themeFileHistoryScope(saved.path));
       }
 
       const previewFiles = effectiveThemeFiles.map((file) => ({
@@ -9199,34 +9816,51 @@ export function VisualEditorShell({
       const sourceFile = effectiveThemeFiles.find(
         (file) => file.path === filePath,
       );
-      const currentSource =
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[filePath]?.localContent ?? sourceFile?.content;
+      const workspaceFile = useThemeWorkspaceStore
+        .getState()
+        .getWorkspaceFiles(workspaceScope.storefrontId, workspaceScope.themeId)[
+        filePath
+      ];
+      const currentSource = workspaceFile?.localContent ?? sourceFile?.content;
       if (!sourceFile || currentSource === undefined) {
         return {
           success: false,
           message: `The source file ${filePath} is unavailable.`,
         };
       }
+      if (hasUnsavedThemeFileChanges(workspaceFile)) {
+        return { success: false, message: DESIGN_ELEMENT_UNSAVED_MESSAGE };
+      }
 
-      const result = removeJsxElement(currentSource, targetKey);
-      if (!result.editable) {
+      const designElement = {
+        kind: "remove-element",
+        targetKey,
+      } as const;
+      const result = applyDesignElementOperation(
+        effectiveThemeFiles,
+        filePath,
+        currentSource,
+        designElement,
+      );
+      if (result.status !== "ok") {
         const message =
-          result.reason === "parse-error"
-            ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
-            : result.reason === "not-direct-child"
-              ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
-              : "This element no longer maps to one unique source node. Refresh the preview and try again.";
+          result.status === "unchanged"
+            ? "This element no longer maps to one unique source node. Refresh the preview and try again."
+            : result.error !== "DESIGN_ELEMENT_NOT_APPLICABLE"
+              ? result.message
+              : result.reason === "parse-error"
+                ? `Cannot delete from ${filePath}: fix its TSX syntax in Code mode first.`
+                : result.reason === "not-direct-child"
+                  ? "This element is inside a dynamic expression and cannot be removed safely from the tree."
+                  : "This element no longer maps to one unique source node. Refresh the preview and try again.";
         return { success: false, message };
       }
 
       try {
         const saved = await handleUnifiedSaveFile(filePath, result.code, {
           preserveCanvasPosition: true,
+          operation: "design-element",
+          designElement,
         });
         if (saved === null) {
           return {
@@ -9235,6 +9869,10 @@ export function VisualEditorShell({
           };
         }
       } catch (error) {
+        // Refused: taken back by `handleUnifiedSaveFile` if still the latest.
+        if (error instanceof DesignElementRefusedError) {
+          return { success: false, message: error.message };
+        }
         return {
           success: false,
           message:
@@ -9392,6 +10030,7 @@ export function VisualEditorShell({
                     .getAcceptedSourceGeneration(workspaceScope),
                   createRevision: true,
                   revisionMessage: `Remove section ${sectionId}`,
+                  operation: "design-structure",
                 },
               }),
           );
@@ -9418,6 +10057,14 @@ export function VisualEditorShell({
           }
           for (const deletion of deletions) {
             discardWorkspaceLocal(deletion.path, workspaceScope);
+          }
+          // Written outside the history: entries for these files now hold
+          // text this batch moved past (decision B).
+          for (const path of [
+            ...(saved.data.files ?? []).map((savedFile) => savedFile.path),
+            ...deletions.map((deletion) => deletion.path),
+          ]) {
+            history.discardScope(themeFileHistoryScope(path));
           }
           await queryClient.invalidateQueries({
             queryKey: storefrontThemeFileQueries.tree(
@@ -11273,6 +11920,7 @@ export function VisualEditorShell({
                 .getAcceptedSourceGeneration(workspaceScope),
               createRevision: true,
               revisionMessage: `Add page-specific copy of ${option.componentSourcePath}`,
+              operation: "design-structure",
             },
           }),
       );
@@ -11288,6 +11936,9 @@ export function VisualEditorShell({
           workspaceScope,
           saved.data.sourceGeneration,
         );
+        // Written outside the history: entries for it now hold text this
+        // batch moved past (decision B).
+        history.discardScope(themeFileHistoryScope(savedFile.path));
       }
 
       const previewContents = new Map(
@@ -13041,6 +13692,7 @@ export function VisualEditorShell({
             onBuildPreview={() => void handleToolbarBuildPreview()}
             externalDiagnostics={buildDiagnostics}
             dependencySourceRevisionId={dependencySourceRevisionId}
+            framework={context.theme.framework}
           />
         </Suspense>
       </EditorCodeModeSurface>
@@ -13065,9 +13717,15 @@ export function VisualEditorShell({
           onSectionOrderChange={syncPreviewSectionOrder}
           onSaveStateChange={setDraftSaveState}
           onReorderSections={
-            activeThemeRoute ? handleReorderSections : undefined
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleReorderSections
+              : undefined
           }
-          onToggleSectionEnabled={handleSectionToggleEnabled}
+          onToggleSectionEnabled={
+            sectionsUnavailableForFramework
+              ? undefined
+              : handleSectionToggleEnabled
+          }
           activeRoute={activeThemeRoute}
           routeStructurePending={routeStructurePending}
           sharedSectionIds={sectionModel.sharedSectionIds}
@@ -13085,27 +13743,50 @@ export function VisualEditorShell({
           themeRoutes={themeRouteRegistry.routes.filter(
             (route) => route.kind === "route",
           )}
+          dynamicRoutesNotOpenable={documentNavigation}
           onPrefetchThemeRoute={handlePrefetchThemeRoute}
           onOpenThemeRoute={handleOpenThemeRoute}
           onOpenThemeRouteCode={handleOpenThemeRouteCode}
-          onAddPage={handleAddPage}
-          onDeletePage={handleDeletePage}
+          sectionsUnavailableForFramework={sectionsUnavailableForFramework}
+          onAddPage={
+            sectionsUnavailableForFramework ? undefined : handleAddPage
+          }
+          onDeletePage={
+            sectionsUnavailableForFramework ? undefined : handleDeletePage
+          }
           sectionOptions={routeSectionOptions}
-          onAddSection={activeThemeRoute ? handleAddSection : undefined}
+          onAddSection={
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleAddSection
+              : undefined
+          }
           unboundSectionCandidates={sectionModel.unboundSections}
           onBindSection={
-            activeThemeRoute || layoutStructure.unboundSections.length > 0
+            (activeThemeRoute || layoutStructure.unboundSections.length > 0) &&
+            !sectionsUnavailableForFramework
               ? handleBindSection
               : undefined
           }
           onDeleteSection={
-            activeThemeRoute && activeRouteSections.length > 0
+            activeThemeRoute &&
+            activeRouteSections.length > 0 &&
+            !sectionsUnavailableForFramework
               ? handleDeleteSection
               : undefined
           }
-          onDetachSection={activeThemeRoute ? handleDetachSection : undefined}
-          onRenameSection={handleRenameSection}
-          onDeleteEditableNode={handleDeleteEditableNode}
+          onDetachSection={
+            activeThemeRoute && !sectionsUnavailableForFramework
+              ? handleDetachSection
+              : undefined
+          }
+          onRenameSection={
+            sectionsUnavailableForFramework ? undefined : handleRenameSection
+          }
+          onDeleteEditableNode={
+            sectionsUnavailableForFramework
+              ? undefined
+              : handleDeleteEditableNode
+          }
         />
 
         {/* Left Panel Resizer */}
@@ -13412,6 +14093,45 @@ export function VisualEditorShell({
               </div>
             ) : null}
 
+            {documentNavigationNotice?.kind === "status" ? (
+              // A page switch in a preview that navigates as documents (D3):
+              // quiet while the other page loads.
+              <div
+                role="status"
+                data-testid="preview-document-navigation"
+                className="pointer-events-none absolute left-3 top-3 z-30 max-w-[min(22rem,calc(100%-1.5rem))] rounded-md border bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+              >
+                {documentNavigationNotice.message}
+              </div>
+            ) : null}
+
+            {documentNavigationNotice?.kind === "alert" &&
+            previewLifecycle.phase !== "failed" ? (
+              <div
+                role="alert"
+                data-testid="preview-document-navigation"
+                className="absolute left-1/2 top-16 z-50 flex max-w-md -translate-x-1/2 items-start gap-3 rounded-lg border border-amber-500/40 bg-background/95 p-3 text-sm shadow-lg backdrop-blur-sm"
+              >
+                <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="text-foreground">
+                    {documentNavigationNotice.message}
+                  </p>
+                  {documentNavigationNotice.retry ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={retryLivePreview}
+                    >
+                      Retry Preview
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
             {previewLifecycle.phase === "theme-error" &&
             previewLifecycle.compileFailure ? (
               <PreviewCompileErrorAlert
@@ -13450,7 +14170,10 @@ export function VisualEditorShell({
             onRouteIntent={handleRouteIntent}
             onPrefetchRoute={handlePrefetchThemeRoute}
             themeRoutes={themeRouteRegistry.routes.filter(
-              (route) => route.kind === "route",
+              (route) =>
+                route.kind === "route" &&
+                // The navigator only opens; a pattern has no address (D3).
+                !(documentNavigation && route.dynamic),
             )}
             isSelectionMode={isSelectionMode}
             onSelectionModeChange={(enabled) => {

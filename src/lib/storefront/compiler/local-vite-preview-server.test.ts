@@ -11,6 +11,7 @@ import {
 import { DEFAULT_APPROVED_DEPENDENCIES } from "./sandbox-vite-theme-build-runner.types";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "./theme-preview-dev-server";
 import {
+  PREVIEW_ADDRESS_PROBE_BODY,
   PREVIEW_ADDRESS_PROBE_PATH,
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
@@ -181,12 +182,17 @@ describe("the local Live Preview transport", () => {
         new URL(PREVIEW_ADDRESS_PROBE_PATH, started.url),
         { method },
       );
-      expect(health.status).toBe(method === "POST" ? 405 : 204);
+      // A body on GET, never an empty 204: a bodiless first response on a
+      // fresh container-port tunnel gets the next request closed
+      // (cloudflare/workerd#7597).
+      expect(health.status).toBe(method === "POST" ? 405 : 200);
       expect(health.headers.get("cache-control")).toBe("no-store");
       expect(health.headers.get(START_PREVIEW_ID_HEADER)).toBe(
         method === "POST" ? null : "theme-a-user-1",
       );
-      expect(await health.text()).toBe("");
+      expect(await health.text()).toBe(
+        method === "GET" ? PREVIEW_ADDRESS_PROBE_BODY : "",
+      );
     }
 
     expect(started.hoistedContentFields).toEqual([]);

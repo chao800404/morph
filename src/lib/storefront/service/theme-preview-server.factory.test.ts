@@ -55,6 +55,26 @@ describe("choosing the Live Preview transport", () => {
     expect(binding).not.toBe(observedPreviewNamespace(SANDBOX.Sandbox));
   });
 
+  it("turns the container-side request record on only for a non-production binding", () => {
+    const traced = (bindings: Record<string, unknown>) => {
+      const selection = createServerThemePreviewServer({
+        ...SANDBOX,
+        ...PREVIEW_HOST,
+        ...bindings,
+      });
+      expect(selection.enabled).toBe(true);
+      if (!selection.enabled) return null;
+      return (selection.server as unknown as { requestTrace: boolean })
+        .requestTrace;
+    };
+    expect(traced({})).toBe(false);
+    expect(traced({ MORPH_PREVIEW_REQUEST_TRACE: "0" })).toBe(false);
+    expect(traced({ MORPH_PREVIEW_REQUEST_TRACE: "1" })).toBe(true);
+    expect(
+      traced({ MORPH_PREVIEW_REQUEST_TRACE: "1", ENVIRONMENT: "production" }),
+    ).toBe(false);
+  });
+
   it("is refused when only Sandbox is bound, rather than run without the preview's policy", () => {
     const selection = createServerThemePreviewServer({
       Sandbox: SANDBOX.Sandbox,

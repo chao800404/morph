@@ -27,6 +27,7 @@ import {
   reviewStarterThemeUpgrade,
   STARTER_FILES_SHIPPED,
 } from "./starter-theme-upgrade-review";
+import { LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE } from "./starter-theme-v3-files";
 import { deriveThemeSourceContract } from "./theme-source-contract";
 
 type Fixture = {
@@ -38,7 +39,7 @@ type Fixture = {
 };
 type File = { id: string; path: string; content: string; version: number };
 
-const VERSIONS = [11, 15, 20, 26, 28] as const;
+const VERSIONS = [11, 15, 20, 26, 28, 29] as const;
 
 // Every test here is synchronous and CPU-bound, and in a full run the file
 // takes about a minute. Vitest's runner reaches no macrotask between
@@ -55,6 +56,7 @@ const SOURCE_COMMITS: Record<number, string> = {
   20: "63d8b5969bff731851b72729665a445e2ed53f38",
   26: "3007c63c10d53fe0593dbd1f2341aa6416a87d8f",
   28: "ca60a9d894c63045cde1d3a4690dbea360849801",
+  29: "e61823c4bd840c673787f7c21de245a0083aa9c1",
 };
 
 const fixtures = new Map<number, Fixture>(
@@ -221,13 +223,28 @@ describe("Starter history fixtures", () => {
     );
   });
 
-  it("v28 is the current Starter apart from the one file version 29 changed", () => {
+  it("v28 is the current Starter apart from the files versions 29 and 30 changed", () => {
     const { differs, extra, missing } = diffAgainstCurrent(workspace(28));
     expect({ differs, extra, missing }).toEqual({
-      differs: ["src/layouts/StorefrontLayout.tsx"],
+      differs: ["src/layouts/StorefrontLayout.tsx", "src/morph/content.ts"],
       extra: [],
       missing: [],
     });
+  });
+
+  it("v29 is the current Starter apart from the one file version 30 changed", () => {
+    const { differs, extra, missing } = diffAgainstCurrent(workspace(29));
+    expect({ differs, extra, missing }).toEqual({
+      differs: ["src/morph/content.ts"],
+      extra: [],
+      missing: [],
+    });
+    // The module version 30 replaces, kept word for word for the upgrade.
+    expect(
+      fixtures
+        .get(29)!
+        .files.find((file) => file.path === "src/morph/content.ts")!.content,
+    ).toBe(LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE);
   });
 });
 
@@ -243,36 +260,24 @@ describe("upgrading whole Starter workspaces from history", () => {
     // Flat components are the author's own location; the sections/ files that
     // the upgrade adds re-export them, so those differ from the current
     // Starter's real copies. The legacy manifest is kept and merged.
-    // Not recognised as a Starter copy (see the pinned tests below), so left
-    // as they were: src/routes/index.tsx, and with it no page-owned sections.
+    // Every version ends where v26 does: the v11 home route and flat
+    // components, and the v15/v20 Header and Footer, are recognised as the
+    // byte-sets those versions shipped (starter-theme-legacy-byte-sets.ts),
+    // so they are brought to the current Starter and v11 gets its page-owned
+    // sections.
     11: {
       extra: [MANIFEST, ...FLAT_COMPONENTS],
-      differs: ["package.json", ...SECTION_REEXPORTS, "src/routes/index.tsx"],
-      missing: PAGE_SECTIONS,
-    },
-    // The pristine v15 Header and Footer are not recognised: left as they were.
-    15: {
-      extra: [MANIFEST, ...FLAT_COMPONENTS],
-      differs: [
-        "package.json",
-        "src/components/Footer.tsx",
-        "src/components/Header.tsx",
-        ...SECTION_REEXPORTS,
-      ],
+      differs: ["package.json", ...SECTION_REEXPORTS],
       missing: [],
     },
-    // The pristine v20 Header and Footer are not recognised: left as they
-    // were. The categories page section is copied from the v20 flat
-    // CategoryShowcase, which stays at its v20 bytes.
+    15: {
+      extra: [MANIFEST, ...FLAT_COMPONENTS],
+      differs: ["package.json", ...SECTION_REEXPORTS],
+      missing: [],
+    },
     20: {
       extra: [MANIFEST, ...FLAT_COMPONENTS],
-      differs: [
-        "package.json",
-        "src/components/Footer.tsx",
-        "src/components/Header.tsx",
-        "src/components/page-sections/index/starter-categories/index.tsx",
-        ...SECTION_REEXPORTS,
-      ],
+      differs: ["package.json", ...SECTION_REEXPORTS],
       missing: [],
     },
     26: {
@@ -281,15 +286,19 @@ describe("upgrading whole Starter workspaces from history", () => {
       missing: [],
     },
     28: { extra: [], differs: [], missing: [] },
+    29: { extra: [], differs: [], missing: [] },
   };
 
   /** Passes that changed something before the workspace stopped changing. */
   const PASSES_TO_SETTLE: Record<number, number> = {
-    11: 1,
+    // 2 since v11's flat components are recognised: the manifest second pass
+    // that v15 and v20 already had (pinned below) now reaches v11 too.
+    11: 2,
     15: 2,
     20: 2,
     26: 1,
     28: 1,
+    29: 1,
   };
 
   describe.each(VERSIONS)("from Starter v%i", (v) => {
@@ -316,7 +325,8 @@ describe("upgrading whole Starter workspaces from history", () => {
     });
 
     // The claim: after the upgrade is applied, planning it again changes
-    // nothing. Versions 15 and 20 break it: the manifest is rewritten again.
+    // nothing. Versions 11, 15 and 20 break it: the manifest is rewritten
+    // again (a known gap, pinned below).
     (PASSES_TO_SETTLE[v] === 1 ? it : it.fails)(
       "plans nothing the second time",
       () => {
@@ -362,7 +372,7 @@ describe("upgrading whole Starter workspaces from history", () => {
       // workspace is refused until the upgrade corrects them.
       const old = () =>
         normalizeRevisionSnapshot(snapshot(workspace(v)), "rev");
-      if (v === 28) expect(old).not.toThrow();
+      if (v >= 28) expect(old).not.toThrow();
       else expect(old).toThrow(/INVALID_START_PACKAGE/);
     });
 
@@ -371,14 +381,18 @@ describe("upgrading whole Starter workspaces from history", () => {
       const pkg = settled.files.find((file) => file.path === "package.json")!;
       const current = currentStarter.get("package.json")!;
       expect(JSON.parse(pkg.content)).toEqual(JSON.parse(current));
-      if (v === 28) expect(pkg.content).toBe(current);
+      if (v >= 28) expect(pkg.content).toBe(current);
       // The upgrade serialises with a trailing newline; a new Theme has none.
       else expect(pkg.content).toBe(`${current}\n`);
     });
   });
 
-  describe("pinned: workspace files the upgrade does not recognise as Starter copies", () => {
-    const stays = (v: number, path: string) => {
+  describe("pristine Starter files of every shipped generation are recognised", () => {
+    // These pinned the old gap: the files below were the exact bytes their
+    // version shipped, yet were kept as author-changed. Since the T1 inventory
+    // (2026-10-29) those byte-sets are recognised, so the upgrade replaces
+    // them and the review no longer lists them as kept.
+    const upgraded = (v: number, path: string) => {
       const settled = upgradeToFixedPoint(workspace(v), v);
       const original = fixtures.get(v)!.files.find((f) => f.path === path)!;
       const result = settled.files.find((f) => f.path === path)!;
@@ -390,61 +404,67 @@ describe("upgrading whole Starter workspaces from history", () => {
       };
     };
 
-    it("a pristine v15 Header and Footer stay as they were and read as author-changed", () => {
+    it("a pristine v15 Header and Footer are upgraded and not listed as kept", () => {
       for (const path of [
         "src/components/Header.tsx",
         "src/components/Footer.tsx",
       ]) {
-        expect(stays(15, path), path).toEqual({
-          unchanged: true,
-          kept: "changed",
+        expect(upgraded(15, path), path).toEqual({
+          unchanged: false,
+          kept: undefined,
         });
       }
     });
 
-    it("a pristine v20 Header and Footer stay as they were and read as author-changed", () => {
+    it("a pristine v20 Header and Footer are upgraded and not listed as kept", () => {
       for (const path of [
         "src/components/Header.tsx",
         "src/components/Footer.tsx",
       ]) {
-        expect(stays(20, path), path).toEqual({
-          unchanged: true,
-          kept: "changed",
+        expect(upgraded(20, path), path).toEqual({
+          unchanged: false,
+          kept: undefined,
         });
       }
     });
 
-    it("a pristine v11 home route stays as it was, with no page-owned sections added", () => {
-      expect(stays(11, "src/routes/index.tsx")).toEqual({
-        unchanged: true,
-        kept: "markers-kept",
+    it("a pristine v11 home route is upgraded, with the page-owned sections added", () => {
+      expect(upgraded(11, "src/routes/index.tsx")).toEqual({
+        unchanged: false,
+        kept: undefined,
       });
-      expect(stays(11, "src/components/Hero.tsx").unchanged).toBe(true);
+      expect(upgraded(11, "src/components/Hero.tsx").unchanged).toBe(false);
+      const settled = upgradeToFixedPoint(workspace(11), 11);
+      const result = new Map(settled.files.map((f) => [f.path, f.content]));
+      for (const path of ["src/routes/index.tsx", ...PAGE_SECTIONS]) {
+        expect(result.get(path), path).toBe(currentStarter.get(path));
+      }
     });
 
     // The claim: a Starter file nobody touched is brought to the current
     // Starter, wherever it sits in the Starter's history.
-    it.fails(
-      "brings every pristine v15 and v20 Starter file to the current one",
-      () => {
-        for (const v of [15, 20]) {
-          const settled = upgradeToFixedPoint(workspace(v), v);
-          const result = new Map(settled.files.map((f) => [f.path, f.content]));
-          for (const path of [
-            "src/components/Header.tsx",
-            "src/components/Footer.tsx",
-          ]) {
-            expect(result.get(path), `v${v} ${path}`).toBe(
-              currentStarter.get(path),
-            );
-          }
+    it("brings every pristine v15 and v20 Starter file to the current one", () => {
+      for (const v of [15, 20]) {
+        const settled = upgradeToFixedPoint(workspace(v), v);
+        const result = new Map(settled.files.map((f) => [f.path, f.content]));
+        for (const path of [
+          "src/components/Header.tsx",
+          "src/components/Footer.tsx",
+        ]) {
+          expect(result.get(path), `v${v} ${path}`).toBe(
+            currentStarter.get(path),
+          );
         }
-      },
-    );
+      }
+    });
   });
 
-  describe("pinned: the manifest on versions 15 and 20 is rewritten on a second pass", () => {
-    it.each([15, 20])(
+  // Known gap, not fixed here: once a flat component reaches the Starter's
+  // bytes, the next pass drops its now-redundant contentFields fallback from
+  // the manifest. v11 joined 15 and 20 when its flat components became
+  // recognised (T1, 2026-10-29).
+  describe("pinned: the manifest on versions 11, 15 and 20 is rewritten on a second pass", () => {
+    it.each([11, 15, 20])(
       "v%i: pass two rewrites only morph.theme.json, pass three nothing",
       (v) => {
         const first = upgradeOnce(workspace(v), v);
@@ -539,7 +559,7 @@ describe("upgrading whole Starter workspaces from history", () => {
         );
         const settled = upgradeToFixedPoint(before, v);
         const pkg = settled.files.find((f) => f.path === "package.json")!;
-        if (v === 28) {
+        if (v >= 28) {
           // Pins are current: nothing to correct, so the bytes are the author's.
           expect(pkg.content).toBe(edited);
           expect(

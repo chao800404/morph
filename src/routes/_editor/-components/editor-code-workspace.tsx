@@ -253,8 +253,16 @@ type EditorCodeWorkspaceProps = {
   onSaveFile?: (
     path: string,
     content: string,
-    /** The author asked for this save; see `saveThemeFileSequentially`. */
-    options?: { confirmed?: boolean },
+    options?: {
+      /** The author asked for this save; see `saveThemeFileSequentially`. */
+      confirmed?: boolean;
+      /**
+       * The author typed in this file in Code since its last save of their
+       * own landed: the text is theirs. Code saving text it holds only
+       * because another part of the editor wrote it is not.
+       */
+      codeEdit?: boolean;
+    },
   ) => Promise<StorefrontThemeFileDTO | null>;
   /**
    * The author typed in a file. Called for their edits only, not for a
@@ -271,11 +279,29 @@ type EditorCodeWorkspaceProps = {
   onBuildPreview?: () => void;
   externalDiagnostics?: unknown;
   dependencySourceRevisionId?: string;
+  /**
+   * The Theme's recorded framework (`StorefrontThemeEditorDTO`; NULL reads
+   * as TanStack Start). TanStack Router's file routes — their Problems, the
+   * generated route tree and `Link to=` completion — are Start's alone: an
+   * Astro Theme has no `src/routes/__root.tsx` and never needs one.
+   */
+  framework?: string | null;
+};
+
+export type EditorCodeSaveAllOptions = {
+  confirmed?: boolean;
+  /**
+   * Files not to save, by path, while what Code holds for them is still
+   * exactly the given text: a Design structure edit the caller checks before
+   * sending (see the shell's `saveSourceConflicts`). Once the author changes
+   * such a file in Code, it no longer matches and is saved as theirs.
+   */
+  leave?: ReadonlyMap<string, string>;
 };
 
 export type EditorCodeWorkspaceHandle = {
   /** `confirmed`: the author asked for this save (see `onSaveFile`). */
-  saveAll: (options?: { confirmed?: boolean }) => Promise<boolean>;
+  saveAll: (options?: EditorCodeSaveAllOptions) => Promise<boolean>;
   /** Flushes Monaco drafts before a consumer changes authoring mode. */
   flushPendingChanges: () => Promise<boolean>;
   /**
@@ -521,10 +547,16 @@ const EditorCodeWorkspaceContent = forwardRef<
     onBuildPreview,
     externalDiagnostics,
     dependencySourceRevisionId,
+    framework = null,
   }: EditorCodeWorkspaceProps,
   ref,
 ) {
   const queryClient = useQueryClient();
+  /** Whether this Theme's routes are TanStack Router file routes. */
+  const startRoutes = (framework ?? "tanstack-start") === "tanstack-start";
+  /** For the completion provider, registered once per editor mount. */
+  const startRoutesRef = useRef(startRoutes);
+  startRoutesRef.current = startRoutes;
   const [openedPublicText, setOpenedPublicText] = useState<Record<string, StorefrontThemeFileDTO>>({});
   const files = useMemo(() => [
     ...sourceFiles,
@@ -733,6 +765,11 @@ const EditorCodeWorkspaceContent = forwardRef<
   const draftContentsRef = useRef<Record<string, string>>({});
   const draftDirtyRef = useRef<Record<string, boolean>>({});
   const draftRevisionRef = useRef<Record<string, number>>({});
+  /**
+   * Files the author typed in, here, since their last own save landed or
+   * their draft was dropped; see `onSaveFile`'s `codeEdit`.
+   */
+  const authorEditedPathsRef = useRef(new Set<string>());
   /** Saves sent and not yet answered; see `code-save-confirmation`. */
   const sentWritesRef = useRef(createSentCodeWrites());
   const autoSaveTimersRef = useRef(
@@ -889,18 +926,20 @@ const EditorCodeWorkspaceContent = forwardRef<
           severity,
         });
       }
-      next.push(
-        ...collectThemeRouteDiagnostics(
-          files.map((file) => ({
-            path: file.path,
-            content:
-              draftContentsRef.current[file.path] ??
-              useThemeWorkspaceStore.getState().files[file.path]
-                ?.localContent ??
-              file.content,
-          })),
-        ),
-      );
+      if (startRoutes) {
+        next.push(
+          ...collectThemeRouteDiagnostics(
+            files.map((file) => ({
+              path: file.path,
+              content:
+                draftContentsRef.current[file.path] ??
+                useThemeWorkspaceStore.getState().files[file.path]
+                  ?.localContent ??
+                file.content,
+            })),
+          ),
+        );
+      }
       next.push(
         ...collectThemeImportProtectionEditorDiagnostics(
           files.map((file) => ({
@@ -937,7 +976,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       });
       setDiagnostics(next);
     },
-    [files, workspaceScope],
+    [files, startRoutes, workspaceScope],
   );
 
   useEffect(() => {
@@ -965,9 +1004,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       );
       routeCompletionProviderRef.current?.dispose();
       routeCompletionProviderRef.current =
-        registerTanStackRouteCompletionProvider(
-          monaco,
-          () => themeRouteFilesRef.current,
+        registerTanStackRouteCompletionProvider(monaco, () =>
+          startRoutesRef.current ? themeRouteFilesRef.current : [],
         );
       jsxTagDecorationsRef.current?.dispose();
       jsxTagDecorationsRef.current = createJsxTagDecorations(editor);
@@ -1125,7 +1163,9 @@ const EditorCodeWorkspaceContent = forwardRef<
     const hasThemeRoutes = files.some((file) =>
       file.path.replace(/\\/g, "/").startsWith("src/routes/"),
     );
-    if (!hasThemeRoutes) return null;
+    // A non-Start Theme's leftover `src/routes/` is not a TanStack route
+    // tree: nothing generates one for it.
+    if (!startRoutes || !hasThemeRoutes) return null;
     const sourceFiles = files.map((file) => ({
       path: file.path,
       content:
@@ -1139,7 +1179,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       mimeType: "text/typescript",
       generated: true as const,
     };
-  }, [files, routeDiagnosticsRevision]);
+  }, [files, routeDiagnosticsRevision, startRoutes]);
 
   useEffect(() => {
     if (
@@ -1365,7 +1405,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       // Answered in `onSettled`, which receives this same object.
       sentWritesRef.current.sent(variables);
       markWorkspaceSaving(path, workspaceScope);
-      if (onSaveFile) return onSaveFile(path, content, { confirmed });
+      if (onSaveFile) {
+        return onSaveFile(path, content, {
+          confirmed,
+          codeEdit: authorEditedPathsRef.current.has(path),
+        });
+      }
 
       const state = useThemeWorkspaceStore
         .getState()
@@ -1419,6 +1464,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       });
       if (draft === "clean") {
         draftDirtyRef.current[saved.path] = false;
+        // What the author typed is saved, and nothing newer is waiting.
+        authorEditedPathsRef.current.delete(saved.path);
       } else if (draft === "dirty") {
         draftDirtyRef.current[saved.path] = true;
       }
@@ -1602,11 +1649,13 @@ const EditorCodeWorkspaceContent = forwardRef<
         delete draftContentsRef.current[path];
         delete draftDirtyRef.current[path];
         delete draftRevisionRef.current[path];
+        authorEditedPathsRef.current.delete(path);
       }
       for (const { path, content } of reset) {
         draftContentsRef.current[path] = content;
         draftDirtyRef.current[path] = false;
         delete draftRevisionRef.current[path];
+        authorEditedPathsRef.current.delete(path);
         const model = modelFor(path);
         if (model && model.getValue() !== content) {
           suppressModelChangeRef.current = true;
@@ -1752,6 +1801,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         draftContentsRef.current[saved.path] = saved.content;
         draftDirtyRef.current[saved.path] = false;
         delete draftRevisionRef.current[saved.path];
+        authorEditedPathsRef.current.delete(saved.path);
         for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
           const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
           if (
@@ -1838,6 +1888,7 @@ const EditorCodeWorkspaceContent = forwardRef<
       delete draftContentsRef.current[path];
       delete draftDirtyRef.current[path];
       delete draftRevisionRef.current[path];
+      authorEditedPathsRef.current.delete(path);
       discardWorkspaceLocal(path, workspaceScope);
       syncCombinedDirtyPaths(
         useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
@@ -2089,6 +2140,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         draftContentsRef.current[saved.path] = saved.content;
         draftDirtyRef.current[saved.path] = false;
         delete draftRevisionRef.current[saved.path];
+        authorEditedPathsRef.current.delete(saved.path);
         markWorkspaceSaved(saved, workspaceScope);
       }
       await queryClient.invalidateQueries({
@@ -2180,6 +2232,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           delete draftContentsRef.current[path];
           delete draftDirtyRef.current[path];
           delete draftRevisionRef.current[path];
+          authorEditedPathsRef.current.delete(path);
           discardWorkspaceLocal(path, workspaceScope);
         }
         syncCombinedDirtyPaths(
@@ -2422,6 +2475,7 @@ const EditorCodeWorkspaceContent = forwardRef<
         delete draftContentsRef.current[from];
         delete draftDirtyRef.current[from];
         delete draftRevisionRef.current[from];
+        authorEditedPathsRef.current.delete(from);
         discardWorkspaceLocal(from, workspaceScope);
         for (const model of monacoRef.current?.editor?.getModels?.() ?? []) {
           const modelPath = model.uri?.path?.replace(/^\/+/, "") ?? "";
@@ -2458,6 +2512,7 @@ const EditorCodeWorkspaceContent = forwardRef<
           draftContentsRef.current[saved.path] = saved.content;
           draftDirtyRef.current[saved.path] = false;
           delete draftRevisionRef.current[saved.path];
+          authorEditedPathsRef.current.delete(saved.path);
         } else {
           draftDirtyRef.current[saved.path] = true;
         }
@@ -2931,6 +2986,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     onAuthorInput?.();
 
     const path = activeFilePath;
+    authorEditedPathsRef.current.add(path);
     draftContentsRef.current[path] = value;
     draftRevisionRef.current[path] = (draftRevisionRef.current[path] ?? 0) + 1;
     const isDirty = value !== getFileBaseline(path);
@@ -2964,7 +3020,8 @@ const EditorCodeWorkspaceContent = forwardRef<
     if (
       isDirty &&
       !externalConflictFiles?.[path] &&
-      !hasUnconfirmedSave(workspaceScope)
+      !hasUnconfirmedSave(workspaceScope) &&
+      !isHeldFromAutoSave(workspaceScope, path)
     ) {
       autoSaveTimersRef.current.set(
         path,
@@ -3138,17 +3195,12 @@ const EditorCodeWorkspaceContent = forwardRef<
       // author's own save (or the notice's) does; this also ends an autosave
       // that was waiting behind that save.
       if (hasUnconfirmedSave(workspaceScope)) return;
-      // Refused for an earlier sign-in: only the author's own save sends it.
-      if (
-        useThemeWorkspaceStore
-          .getState()
-          .getWorkspaceFiles(
-            workspaceScope.storefrontId,
-            workspaceScope.themeId,
-          )[path]?.refusedEarlier
-      ) {
-        return;
-      }
+      // Refused for an earlier sign-in, or for a Theme that moved on since:
+      // only the author's own save sends it (for the latter, the source
+      // conflict notice's Save my changes, which reads the newest Theme
+      // first). Sent again on its own, it would carry the generation that
+      // was just refused.
+      if (isHeldFromAutoSave(workspaceScope, path)) return;
       if (saveInFlightRef.current || saveMutation.isPending) {
         autoSaveTimersRef.current.set(
           path,
@@ -3193,7 +3245,8 @@ const EditorCodeWorkspaceContent = forwardRef<
       if (
         draftDirtyRef.current[path] &&
         !externalConflictFiles?.[path] &&
-        !hasUnconfirmedSave(workspaceScope)
+        !hasUnconfirmedSave(workspaceScope) &&
+        !isHeldFromAutoSave(workspaceScope, path)
       ) {
         autoSaveTimersRef.current.set(
           path,
@@ -3215,7 +3268,7 @@ const EditorCodeWorkspaceContent = forwardRef<
   autoSaveFileRef.current = handleAutoSaveFile;
 
   const handleSaveAll = useCallback(
-    async (options?: { confirmed?: boolean }): Promise<boolean> => {
+    async (options?: EditorCodeSaveAllOptions): Promise<boolean> => {
       if (saveInFlightRef.current) {
         const pending = pendingSavePromiseRef.current;
         if (!pending) return false;
@@ -3235,8 +3288,14 @@ const EditorCodeWorkspaceContent = forwardRef<
       }
       autoSaveTimersRef.current.clear();
       const dirtyPaths = combinedDirtyPathsRef.current;
+      const leave = options?.leave;
       const paths = combinedDirtyPathsRef.current.filter(
-        (path) => !externalConflictFiles?.[path],
+        (path) =>
+          !externalConflictFiles?.[path] &&
+          !(
+            leave?.has(path) &&
+            leave.get(path) === getCurrentEditorContent(path)
+          ),
       );
       if (paths.length === 0) return dirtyPaths.length === 0;
 
@@ -3412,6 +3471,7 @@ const EditorCodeWorkspaceContent = forwardRef<
     delete draftContentsRef.current[path];
     delete draftDirtyRef.current[path];
     delete draftRevisionRef.current[path];
+    authorEditedPathsRef.current.delete(path);
     syncCombinedDirtyPaths(
       useThemeWorkspaceStore.getState().getDirtyFiles(workspaceScope),
     );
@@ -5254,4 +5314,19 @@ function hasUnconfirmedSave(scope: {
         .getWorkspaceFiles(scope.storefrontId, scope.themeId),
     ).length > 0
   );
+}
+
+/**
+ * Whether only the author may send this file again: its last save was
+ * refused for an earlier sign-in, or because the Theme moved on (a source
+ * conflict, resolved by the notice's Save my changes).
+ */
+function isHeldFromAutoSave(
+  scope: { storefrontId: string; themeId: string },
+  path: string,
+): boolean {
+  const file = useThemeWorkspaceStore
+    .getState()
+    .getWorkspaceFiles(scope.storefrontId, scope.themeId)[path];
+  return Boolean(file?.refusedEarlier || file?.sourceConflict);
 }

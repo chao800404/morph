@@ -29,6 +29,7 @@ describe("the catalog review", () => {
   it("offers to install the catalog routes, additively, with each file's text", () => {
     const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
       hasProducts: true,
+      framework: null,
     });
     expect(review.applies).toBe(true);
     expect(review.kind).toBe("install");
@@ -50,9 +51,39 @@ describe("the catalog review", () => {
     expect(review.digest).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("offers nothing to a Theme recorded as another framework, and says why", () => {
+    // The Starter's own files, which would otherwise be offered the catalog:
+    // the refusal is the record's, not a route conflict read from them.
+    for (const framework of ["astro", "nuxt"]) {
+      const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
+        hasProducts: true,
+        framework,
+      });
+      expect(review.applies, framework).toBe(false);
+      expect(review.unavailable, framework).toMatch(
+        /^THEME_FRAMEWORK_UNAVAILABLE: .* not offered to (astro|nuxt) Themes/,
+      );
+      expect(review.kind).toBeNull();
+      expect(review.changes).toEqual([]);
+      expect(review.plan.files).toEqual([]);
+      expect(review.kept).toEqual([]);
+    }
+    // NULL and Start itself are offered it, as before.
+    for (const framework of [null, undefined, "tanstack-start"]) {
+      const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
+        hasProducts: true,
+        framework,
+      });
+      expect(review.applies).toBe(true);
+      expect(review.unavailable).toBeNull();
+      expect(review.kind).toBe("install");
+    }
+  });
+
   it("offers nothing to a store whose channel has no products", () => {
     const review = reviewThemeCatalog(withIds(STARTER_THEME_FILES), {
       hasProducts: false,
+      framework: null,
     });
     expect(review.applies).toBe(false);
     expect(review.changes).toEqual([]);
@@ -62,7 +93,7 @@ describe("the catalog review", () => {
   it("keeps a products route of the author's own and installs nothing over it", () => {
     const review = reviewThemeCatalog(
       withIds([...STARTER_THEME_FILES, AUTHORED_PRODUCTS_ROUTE]),
-      { hasProducts: true },
+      { hasProducts: true, framework: null },
     );
     expect(review.changes).toEqual([]);
     expect(review.plan.files).toEqual([]);
@@ -80,7 +111,7 @@ describe("the catalog review", () => {
           content: "export default function Custom(){return null}",
         },
       ]),
-      { hasProducts: true },
+      { hasProducts: true, framework: null },
     );
     expect(review.changes).toEqual([]);
     expect(review.kept).toContainEqual({
@@ -102,7 +133,10 @@ describe("the catalog review", () => {
           : file,
       ),
     );
-    const review = reviewThemeCatalog(files, { hasProducts: true });
+    const review = reviewThemeCatalog(files, {
+      hasProducts: true,
+      framework: null,
+    });
     expect(review.kind).toBe("update");
     expect(review.changes).toEqual([
       {
@@ -119,7 +153,7 @@ describe("the catalog review", () => {
           ? { ...file, content: `${file.content}\n// author's note\n` }
           : file,
       ),
-      { hasProducts: true },
+      { hasProducts: true, framework: null },
     );
     expect(edited.changes).toEqual([]);
     expect(edited.kept).toContainEqual({
@@ -140,7 +174,7 @@ describe("the catalog review", () => {
           (file) => !removed.includes(file.path),
         ),
       ]),
-      { hasProducts: true },
+      { hasProducts: true, framework: null },
     );
     expect(review.kind).toBeNull();
     expect(review.changes).toEqual([]);
@@ -153,7 +187,7 @@ describe("the catalog review", () => {
   it("has nothing to do once every catalog file is current", () => {
     const review = reviewThemeCatalog(
       withIds([...STARTER_THEME_FILES, ...STARTER_THEME_CATALOG_FILES]),
-      { hasProducts: true },
+      { hasProducts: true, framework: null },
     );
     expect(review.kind).toBeNull();
     expect(review.changes).toEqual([]);

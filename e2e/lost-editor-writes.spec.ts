@@ -1,7 +1,7 @@
 // Kept away from the auth spec in file order so whole-file sharding can spread
 // the long write-recovery scenarios without parallel workers in one database.
 import { expect, test } from "@playwright/test";
-import { EDITOR_PATH, openEditor } from "./helpers";
+import { EDITOR_PATH, decodeServerFnResult, openEditor } from "./helpers";
 
 import {
   restoreHero,
@@ -147,30 +147,90 @@ test.describe("unsaved work when the signed-in account changes", () => {
 
       // The next save. This tab did not take the Theme's source generation
       // from the check, so it may meet the source-conflict notice once; it
-      // must go through on that press and overwrite nothing.
+      // must go through on that press and overwrite nothing. Which of the
+      // two happened is the save's own answer, not what the page shows a
+      // fixed time later: a conflict answered after that time (3.3 s in CI
+      // run 41023540723) was read as saved directly. The answer is held
+      // back 4 s here, past where that wait ended, so a late answer is what
+      // every run decides on.
       const before = saves.sent;
+      const nextMarker = `${MARKER} next`;
+      const isNextSave = (url: string, body: string) =>
+        isFileSave(url, body, hero) && body.includes(nextMarker);
+      let held = false;
+      await page.route("**/_serverFn/**", async (route) => {
+        const request = route.request();
+        if (held || !isNextSave(request.url(), request.postData() ?? "")) {
+          return route.fallback();
+        }
+        held = true;
+        const response = await route.fetch();
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
+        await route.fulfill({ response });
+      });
+      const answered = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          isNextSave(
+            response.request().url(),
+            response.request().postData() ?? "",
+          ),
+        { timeout: 30_000 },
+      );
       await editAndSave(
         page,
         hero,
-        `${await readSource(page, hero)}\n/* ${MARKER} next */`,
+        `${await readSource(page, hero)}\n/* ${nextMarker} */`,
       );
       await expect.poll(() => saves.sent, { timeout: 15_000 }).toBe(before + 1);
+      const answer = await answered;
+      expect(answer.ok()).toBe(true);
+      const decoded = decodeServerFnResult(await answer.text());
+      expect(
+        typeof decoded === "object" &&
+          decoded !== null &&
+          !Array.isArray(decoded),
+        `the next save's answer is an object (got ${decoded === null ? "null" : typeof decoded})`,
+      ).toBe(true);
+      const result = decoded as { success?: unknown; error?: unknown };
       const sourceConflict = page.getByText(
         "Remote source changes detected in this theme",
       );
-      await page.waitForTimeout(3_000);
-      const metConflict = (await sourceConflict.count()) > 0;
-      test.info().annotations.push({
-        type: "next-save",
-        description: metConflict ? "source-conflict-once" : "saved-directly",
-      });
-      if (metConflict) {
+      if (result.success === true) {
+        test.info().annotations.push({
+          type: "next-save",
+          description: "saved-directly",
+        });
+        await expect(sourceConflict).toHaveCount(0);
+      } else {
+        const code =
+          typeof result.error === "string" &&
+          /^[A-Z][A-Z0-9_]{0,63}$/.test(result.error)
+            ? result.error
+            : `(${typeof result.error})`;
+        // The one refusal this step allows; anything else fails here.
+        expect(code, "the next save was refused for another reason").toBe(
+          "SOURCE_GENERATION_CONFLICT",
+        );
+        test.info().annotations.push({
+          type: "next-save",
+          description: "source-conflict-once",
+        });
+        await expect(sourceConflict).toBeVisible({ timeout: 30_000 });
+        // Nothing goes again until the author says so.
+        expect(saves.sent).toBe(before + 1);
         await page
           .getByRole("status")
           .filter({ hasText: "Remote source changes detected" })
           .getByRole("button", { name: "Save my changes" })
           .click();
         await expect(sourceConflict).toHaveCount(0, { timeout: 30_000 });
+        // Sent once more, on that press, and only once.
+        await expect
+          .poll(() => saves.sent, { timeout: 15_000 })
+          .toBe(before + 2);
+        await page.waitForTimeout(2_000);
+        expect(saves.sent).toBe(before + 2);
       }
       const after = await sharedEditor(browser);
       try {

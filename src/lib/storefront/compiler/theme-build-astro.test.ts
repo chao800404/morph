@@ -8,6 +8,7 @@ import { astroThemeFiles } from "../theme-framework/astro-native-prerender.fixtu
 import { themeToolchainForFramework } from "../theme-framework/theme-toolchains";
 import { nativeBuildResult } from "./native-build-result";
 import { materializeThemeBuildInput } from "./theme-build-materializer";
+import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
 
 // docs/astro-theme-plan.md A4: Astro is built natively, only where the
 // server's switch is given, and its artifact is refused at build time for
@@ -100,7 +101,10 @@ describe("materializing an Astro build", () => {
       framework: "astro",
       buildMode: "native",
       compilerId: "astro-native",
-      compilerVersion: ASTRO.directDependencies.astro,
+      // Astro's own version, naming the SDK copy the build carries.
+      compilerVersion: withThemeMorphSdkIdentity(
+        ASTRO.directDependencies.astro!,
+      ),
       toolchainId: ASTRO.id,
       inputHashFormat: 2,
       entry: "src/pages/index.astro",
@@ -174,13 +178,21 @@ describe("an Astro artifact (docs/astro-theme-plan.md 5.2)", () => {
       { previews: { kv_namespaces: [{ binding: "SESSION" }] } },
       "ASTRO_SESSION_BINDING_UNSUPPORTED",
     ],
-    ["an Images binding", { images: { binding: "IMAGES" } }, "ASTRO_IMAGES_BINDING_UNSUPPORTED"],
+    [
+      "an Images binding",
+      { images: { binding: "IMAGES" } },
+      "ASTRO_IMAGES_BINDING_UNSUPPORTED",
+    ],
     [
       "an Images binding under previews",
       { previews: { images: { binding: "IMAGES" } } },
       "ASTRO_IMAGES_BINDING_UNSUPPORTED",
     ],
-    ["the Worker's own cache", { cache: { enabled: true } }, "ASTRO_WORKER_CACHE_UNSUPPORTED"],
+    [
+      "the Worker's own cache",
+      { cache: { enabled: true } },
+      "ASTRO_WORKER_CACHE_UNSUPPORTED",
+    ],
   ];
   for (const [name, worker, code] of refusals) {
     it(`is refused with ${name}`, () => {
@@ -193,7 +205,11 @@ describe("an Astro artifact (docs/astro-theme-plan.md 5.2)", () => {
   it("accepts the settings the plan names as the way out", () => {
     expect(() =>
       collectNativeAstroArtifact(
-        astroOutputs({ kv_namespaces: [], previews: {}, cache: { enabled: false } }),
+        astroOutputs({
+          kv_namespaces: [],
+          previews: {},
+          cache: { enabled: false },
+        }),
       ),
     ).not.toThrow();
   });
@@ -201,7 +217,10 @@ describe("an Astro artifact (docs/astro-theme-plan.md 5.2)", () => {
   it("is refused with anything of the prerender machinery in it", () => {
     for (const extra of <Record<string, string>[]>[
       { "dist/server/.prerender/entry.mjs": "x" },
-      { "dist/server/chunk.mjs": 'const m = "__MORPH_ASTRO_PRERENDER_WRAPPER__";' },
+      {
+        "dist/server/chunk.mjs":
+          'const m = "__MORPH_ASTRO_PRERENDER_WRAPPER__";',
+      },
       { "dist/client/.morph/prerender-stamped.ndjson": "{}" },
     ]) {
       expect(() => collectNativeAstroArtifact(astroOutputs({}, extra))).toThrow(
@@ -237,8 +256,10 @@ describe("an Astro build's result", () => {
       ...extra,
     });
   const pages = (...paths: string[]) =>
-    [...paths.map((path) => enc({ nonce: NONCE, path })), enc({ nonce: NONCE, done: true })]
-      .join("\n") + "\n";
+    [
+      ...paths.map((path) => enc({ nonce: NONCE, path })),
+      enc({ nonce: NONCE, done: true }),
+    ].join("\n") + "\n";
 
   it("is refused without the switch", () => {
     const refused = result(astroOutputs({}), { frameworks: {} });
@@ -250,10 +271,13 @@ describe("an Astro build's result", () => {
 
   it("succeeds when every prerendered page has its stamp", () => {
     const built = result(
-      astroOutputs({}, {
-        ".morph/prerender-pages.ndjson": pages("/"),
-        ".morph/prerender-stamped.ndjson": `${enc({ nonce: NONCE, path: "/", reads: 0, failures: 0 })}\n`,
-      }),
+      astroOutputs(
+        {},
+        {
+          ".morph/prerender-pages.ndjson": pages("/"),
+          ".morph/prerender-stamped.ndjson": `${enc({ nonce: NONCE, path: "/", reads: 0, failures: 0 })}\n`,
+        },
+      ),
     );
     expect(built.success).toBe(true);
     if (built.success) {
@@ -275,10 +299,13 @@ describe("an Astro build's result", () => {
     });
     // Without the pass's nonce nothing is accepted.
     const noNonce = result(
-      astroOutputs({}, {
-        ".morph/prerender-pages.ndjson": pages("/"),
-        ".morph/prerender-stamped.ndjson": `${enc({ nonce: NONCE, path: "/", reads: 0, failures: 0 })}\n`,
-      }),
+      astroOutputs(
+        {},
+        {
+          ".morph/prerender-pages.ndjson": pages("/"),
+          ".morph/prerender-stamped.ndjson": `${enc({ nonce: NONCE, path: "/", reads: 0, failures: 0 })}\n`,
+        },
+      ),
       { nonce: undefined },
     );
     expect(noNonce.success).toBe(false);
@@ -292,7 +319,9 @@ describe("an Astro build's result", () => {
           `${enc({ nonce: NONCE, path: "/about", reason: "NATIVE_PRERENDER_NO_CONTENT_SNAPSHOT" })}\n`,
         ],
       ]),
-      { buildFailure: { stage: "compiler", message: "NATIVE_BUILD_FAILED: x" } },
+      {
+        buildFailure: { stage: "compiler", message: "NATIVE_BUILD_FAILED: x" },
+      },
     );
     expect(stopped).toMatchObject({
       success: false,
@@ -306,7 +335,9 @@ describe("an Astro build's result", () => {
           `${enc({ nonce: "c".repeat(32), path: "/about", reason: "x" })}\n`,
         ],
       ]),
-      { buildFailure: { stage: "compiler", message: "NATIVE_BUILD_FAILED: x" } },
+      {
+        buildFailure: { stage: "compiler", message: "NATIVE_BUILD_FAILED: x" },
+      },
     );
     expect(foreign).toMatchObject({
       success: false,

@@ -1,4 +1,13 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { test, type Page } from "@playwright/test";
+import {
+  RECORD_VERIFIED_FILE,
+  WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR,
+  previewedThemeRefusal,
+  recordedThemeRefusal,
+} from "../../scripts/e2e-preview-runtime-guard.mjs";
 
 /**
  * The Live Preview runtime the Themes a run uses should record (R-0, R1),
@@ -10,6 +19,14 @@ import { execFileSync } from "node:child_process";
  * Theme's record alone selects the full Start preview: the Start specs still
  * read `MORPH_E2E_PREVIEW_RUNTIME=start` for what to expect, and nothing
  * else in them changes.
+ *
+ * Record mode is checked twice, so a Theme that did not take the record
+ * cannot pass on the Worker's default instead: the runner refuses a run
+ * whose declared record does not resolve to the specs' runtime, or that
+ * selects a spec outside `RECORD_MODE_SPECS`; and here, every Theme a
+ * record-mode spec creates or records is read back and resolved with the
+ * Worker's rule (`verifyRecordedThemePreviewRuntime`), and `previewFrame`
+ * refuses to read the preview of a Theme that was not.
  */
 export const RECORDED_PREVIEW_RUNTIME = ((): "client" | "start" | null => {
   const value = process.env.MORPH_E2E_RECORD_PREVIEW_RUNTIME;
@@ -58,6 +75,79 @@ function d1(sql: string): Array<Record<string, unknown>> {
   );
 }
 
+function sqlId(value: string): string {
+  if (!/^[0-9a-f-]{36}$/.test(value)) {
+    throw new Error(`Not an id: ${value}`);
+  }
+  return value;
+}
+
+function verifiedFile(): string {
+  const stateDir = process.env.MORPH_E2E_STATE_DIR;
+  if (!stateDir) {
+    throw new Error("Record mode needs MORPH_E2E_STATE_DIR.");
+  }
+  return path.join(stateDir, RECORD_VERIFIED_FILE);
+}
+
+function verifiedThemeIds(): string[] {
+  try {
+    return JSON.parse(readFileSync(verifiedFile(), "utf8")) as string[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * In record mode, reads a Theme's stored record back and resolves it with
+ * the Worker's own rule and the Worker's actual default; throws unless it is
+ * the declared record and resolves, from that record, to the runtime the
+ * specs expect. Call it right after creating or recording a Theme, before
+ * its preview is read; `previewFrame` refuses a Theme it has not passed.
+ * Without record mode it does nothing.
+ */
+export function verifyRecordedThemePreviewRuntime(scope: {
+  storefrontId: string;
+  themeId: string;
+}): void {
+  if (!RECORDED_PREVIEW_RUNTIME) return;
+  const themeId = sqlId(scope.themeId);
+  const storefrontId = sqlId(scope.storefrontId);
+  const refusal = recordedThemeRefusal({
+    themeId,
+    rows: d1(
+      `SELECT preview_runtime FROM storefront_themes WHERE id = '${themeId}' AND storefront_id = '${storefrontId}'`,
+    ),
+    declared: RECORDED_PREVIEW_RUNTIME,
+    workerDefault: process.env[WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR],
+    specValue: process.env.MORPH_E2E_PREVIEW_RUNTIME,
+  });
+  if (refusal) throw new Error(refusal);
+  const ids = verifiedThemeIds();
+  if (!ids.includes(themeId)) {
+    writeFileSync(verifiedFile(), JSON.stringify([...ids, themeId]));
+  }
+}
+
+/**
+ * In record mode, throws unless the editor page names a Theme that
+ * `verifyRecordedThemePreviewRuntime` passed. `previewFrame` calls it, so a
+ * record-mode spec cannot read a preview served as the Worker's default.
+ * The precondition projects (`setup`, `preview-transport`) are exempt; see
+ * `previewedThemeRefusal`. Without record mode it does nothing.
+ */
+export function assertPreviewedThemeVerified(page: Page): void {
+  if (!RECORDED_PREVIEW_RUNTIME) return;
+  let project = "";
+  try {
+    project = test.info().project.name;
+  } catch {
+    // Outside a test nothing names a project, so nothing is exempt.
+  }
+  const refusal = previewedThemeRefusal(page.url(), verifiedThemeIds(), project);
+  if (refusal) throw new Error(refusal);
+}
+
 /**
  * Makes an existing Theme record `RECORDED_PREVIEW_RUNTIME` (or none), and
  * reads it back: a Theme that is missing, or did not take the value, fails
@@ -67,14 +157,8 @@ export function recordThemePreviewRuntime(scope: {
   storefrontId: string;
   themeId: string;
 }): void {
-  const ids = (value: string) => {
-    if (!/^[0-9a-f-]{36}$/.test(value)) {
-      throw new Error(`Not an id: ${value}`);
-    }
-    return value;
-  };
-  const themeId = ids(scope.themeId);
-  const storefrontId = ids(scope.storefrontId);
+  const themeId = sqlId(scope.themeId);
+  const storefrontId = sqlId(scope.storefrontId);
   d1(
     `UPDATE storefront_themes SET preview_runtime = ${recordedPreviewRuntimeSql()} WHERE id = '${themeId}' AND storefront_id = '${storefrontId}'`,
   );
@@ -87,4 +171,5 @@ export function recordThemePreviewRuntime(scope: {
       `The Theme ${themeId} records ${JSON.stringify(stored)} (${rows.length} row(s)), not ${JSON.stringify(RECORDED_PREVIEW_RUNTIME)}.`,
     );
   }
+  verifyRecordedThemePreviewRuntime(scope);
 }

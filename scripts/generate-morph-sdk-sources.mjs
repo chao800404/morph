@@ -35,7 +35,7 @@ import { writeFileIfChanged } from "./write-if-changed.mjs";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PACKAGE = "packages/morph-sdk";
 /** Directories copied, each by its name under the workspace's SDK root. */
-const DIRECTORIES = ["src", "start"];
+const DIRECTORIES = ["src", "start", "astro"];
 /** Where the copy lives in a workspace. Platform-owned, see theme-morph-sdk.ts. */
 const WORKSPACE_ROOT = ".morph/sdk";
 /** Bare imports the copy may make: the Start runtime the thin entry wraps. */
@@ -97,7 +97,7 @@ const sourceHash = createHash("sha256")
 
 const output = `/* eslint-disable */
 // GENERATED FILE. DO NOT EDIT BY HAND.
-// Produced by scripts/generate-morph-sdk-sources.mjs from packages/morph-sdk/{src,start}.
+// Produced by scripts/generate-morph-sdk-sources.mjs from packages/morph-sdk/{src,start,astro}.
 // After changing the SDK, run: pnpm generate:morph-sdk
 // morph-sdk-sources-freshness.test.ts fails while this file is stale.
 // prettier-ignore

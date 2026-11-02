@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import {
+  PREVIEW_ADDRESS_PROBE_BODY,
   START_PREVIEW_ADDRESS_PROBE_PATH,
   START_PREVIEW_ID_HEADER,
 } from "../service/preview-address-probe";
@@ -214,12 +215,17 @@ describe("a Start Live Preview workspace (prototype)", () => {
             { method },
           ),
         );
-        expect(response.status).toBe(204);
+        // A body on GET, never an empty 204: a bodiless first response on a
+        // fresh container-port tunnel gets the next request closed
+        // (cloudflare/workerd#7597).
+        expect(response.status).toBe(200);
         expect(response.headers.get(START_PREVIEW_ID_HEADER)).toBe(
           "instance-123",
         );
         expect(response.headers.get("cache-control")).toBe("no-store");
-        expect(await response.text()).toBe("");
+        expect(await response.text()).toBe(
+          method === "GET" ? PREVIEW_ADDRESS_PROBE_BODY : "",
+        );
       }
       expect(
         (

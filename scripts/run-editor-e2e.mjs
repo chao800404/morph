@@ -38,6 +38,15 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { editorShardArguments } from "./editor-e2e-shards.mjs";
+import {
+  RECORD_PREVIEW_RUNTIME_VAR,
+  WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR,
+  previewRuntimeRefusal,
+  readRecordedPreviewRuntime,
+  readSpecPreviewRuntime,
+  readWorkerPreviewRuntime,
+  recordModeSelectionRefusal,
+} from "./e2e-preview-runtime-guard.mjs";
 import { createSidecarRecorder } from "./sidecar-observe-record.mjs";
 import {
   DEFAULT_LOCK_FILE,
@@ -211,6 +220,17 @@ const started = [];
  */
 const buildTimings = [];
 let stateDir = null;
+/**
+ * This run's own sidecar workspaces, under `.morph-previews/` (gitignored) and
+ * removed by the teardown. The sidecar's default is `.morph-previews/` itself,
+ * which outlives a run while the database does not: the fixed seed ids give
+ * every run the same preview id, so a run met the content snapshot an earlier
+ * run left there, under a ticket its fresh database had not reached yet, and
+ * every content sync it sent was refused as superseded by that older content.
+ * Inside the checkout rather than the temporary directory, because a Theme
+ * workspace resolves packages from the directories above it.
+ */
+let previewWorkspaces = null;
 /**
  * The machine's one E2E slot (`e2e-machine-lock.mjs`), held from before the
  * port check until teardown is done, so the next run starts on a machine this
@@ -541,7 +561,7 @@ async function stop({ name, child, exited }) {
   // that matters and the part with no event to listen for.
   if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
     log(`stopped ${name}`);
-    return;
+    return true;
   }
   signalGroup(child, "SIGKILL");
   // Waited for too, and not because SIGKILL can fail — it cannot be caught or
@@ -551,9 +571,10 @@ async function stop({ name, child, exited }) {
   // whatever runs next a port this run had already killed.
   if (await groupEmpties(child, STOP_TIMEOUT_MS)) {
     log(`stopped ${name} (SIGKILL after ${STOP_TIMEOUT_MS} ms)`);
-    return;
+    return true;
   }
   log(`could not stop ${name}; something may still be running`);
+  return false;
 }
 
 /** Resolves `true` if `promise` settles within `ms`, `false` if it does not. */
@@ -602,7 +623,9 @@ function cleanUp() {
 async function runTeardown() {
   // Signalled together and awaited together. The children are independent, so
   // stopping them in sequence would make each one wait out the others' budgets.
-  await Promise.all(started.map((entry) => stop(entry)));
+  const stoppedAll = (
+    await Promise.all(started.map((entry) => stop(entry)))
+  ).every(Boolean);
   started.length = 0;
   // After the children are gone, so a container a stopping dev server was about
   // to release is not counted as leaked. That ordering was only a comment
@@ -619,6 +642,25 @@ async function runTeardown() {
     } catch (error) {
       log(`could not keep ${to}: ${error instanceof Error ? error.message : error}`);
     }
+  }
+  // Only once every child has stopped, so nothing is still writing in it; and
+  // only this run's directory: anything else in `.morph-previews/` is not this
+  // run's. A directory that could not be removed is reported and left, and the
+  // rest of the teardown still runs.
+  if (previewWorkspaces) {
+    if (!stoppedAll) {
+      log(`kept ${previewWorkspaces}: a process this run started may still be using it`);
+    } else {
+      try {
+        await rm(previewWorkspaces, { recursive: true, force: true });
+        log(`removed ${previewWorkspaces}`);
+      } catch (error) {
+        log(
+          `could not remove ${previewWorkspaces}: ${error instanceof Error ? error.message : error}`,
+        );
+      }
+    }
+    previewWorkspaces = null;
   }
   if (stateDir) {
     await rm(stateDir, { recursive: true, force: true });
@@ -892,6 +934,45 @@ async function main() {
     );
   }
 
+  // The Worker and the specs read the Live Preview runtime from two different
+  // settings; a run where they disagree is evidence for neither runtime. The
+  // credentials above are checked across every file that might hold one, which
+  // is the safe reading for a secret; the runtime is read the way Wrangler
+  // actually builds the Worker's bindings, because the question here is what
+  // the Worker will serve. See `e2e-preview-runtime-guard.mjs`.
+  const workerRuntime = await readWorkerPreviewRuntime({
+    cloudflareEnv: WRANGLER_ENV,
+  });
+  const specRuntime = readSpecPreviewRuntime(process.env);
+  // Record mode (`MORPH_E2E_RECORD_PREVIEW_RUNTIME`, never in CI): the run's
+  // Themes record a runtime the Worker serves ahead of its default. Accepted
+  // here only for spec files whose every previewed Theme goes through the
+  // record helper, which then verifies each Theme's stored record and resolved
+  // runtime before its preview is read; see `RECORD_MODE_SPECS`.
+  const recordRuntime = readRecordedPreviewRuntime(process.env);
+  const runtimeRefusal =
+    previewRuntimeRefusal(workerRuntime, specRuntime, recordRuntime) ??
+    (recordRuntime ? recordModeSelectionRefusal(extra) : null);
+  if (runtimeRefusal) throw new Error(runtimeRefusal);
+  if (recordRuntime) {
+    process.env[WORKER_PREVIEW_RUNTIME_FOR_SPECS_VAR] = workerRuntime.value ?? "";
+    log(
+      `record mode: Themes record "${recordRuntime.value}" and specs expect "${specRuntime.runtime}", accepted over the Worker's ${workerRuntime.runtime} default only because ${RECORD_PREVIEW_RUNTIME_VAR} is declared; each Theme's stored record and resolved runtime are verified before its preview is read`,
+    );
+  }
+  const shellWorkerRuntime = process.env.MORPH_THEME_PREVIEW_RUNTIME;
+  if (
+    shellWorkerRuntime !== undefined &&
+    shellWorkerRuntime !== workerRuntime.value
+  ) {
+    log(
+      `note: MORPH_THEME_PREVIEW_RUNTIME="${shellWorkerRuntime}" in the shell does not reach the Worker: Wrangler passes the shell on only when no .dev.vars file exists and CLOUDFLARE_INCLUDE_PROCESS_ENV is set`,
+    );
+  }
+  log(
+    `preview runtime ${workerRuntime.runtime}: Worker ${workerRuntime.value === undefined ? "default" : `"${workerRuntime.value}"`} (${workerRuntime.source}), specs ${specRuntime.value === undefined ? "default" : `"${specRuntime.value}"`}`,
+  );
+
   // After every check that needs nothing shared, so a run that is refused
   // anyway does not wait for a slot first; before the port check, which would
   // otherwise refuse a run because the one ahead of it is still using it.
@@ -989,6 +1070,9 @@ async function main() {
         process.env.E2E_PASSWORD,
       ],
     });
+    await mkdir(".morph-previews", { recursive: true });
+    previewWorkspaces = await mkdtemp(path.resolve(".morph-previews", "e2e-run-"));
+    log(`sidecar workspaces in ${previewWorkspaces}`);
     const sidecar = start(
       "sidecar",
       "node",
@@ -996,7 +1080,10 @@ async function main() {
         `--env-file-if-exists=${SIDECAR_ENV_FILE}`,
         "scripts/theme-preview-sidecar.mjs",
       ],
-      { MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1" },
+      {
+        MORPH_LOCAL_PREVIEW_SIDECAR_OBSERVE: "1",
+        MORPH_LOCAL_PREVIEW_WORKSPACES_ROOT: previewWorkspaces,
+      },
       (line, stream) => sidecarRecorder.line(line, stream),
     );
     sidecarRecorder.started(sidecar.pid);

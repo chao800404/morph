@@ -1,7 +1,15 @@
 import type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
+import {
+  THEME_PREVIEW_RUNTIMES,
+  deploymentThemePreviewRuntime,
+  isThemePreviewRuntime,
+  recordedThemePreviewRuntime,
+  resolveThemePreviewRuntime,
+} from "./theme-preview-runtime-default.mjs";
 import { UNRECORDED_THEME_FRAMEWORK } from "./theme-framework/theme-framework.types";
 
 export type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
+export type { ThemePreviewRuntimeResolution } from "./theme-preview-runtime-default.mjs";
 
 /**
  * Which Live Preview runtime a Theme is served with (R-0, R1).
@@ -11,62 +19,20 @@ export type { ThemePreviewRuntime } from "./compiler/theme-sandbox-workspace";
  * exactly as every Theme was before it could record one, so recording one is
  * the only way a Theme's preview changes. Nothing here switches a Theme on
  * its own.
+ *
+ * The runtimes, the deployment's default and the "recorded first, else the
+ * deployment's" resolution are defined in `theme-preview-runtime-default.mjs`,
+ * which the E2E runner and the E2E record helper read too, so they and the
+ * Worker share one rule.
  */
-export const THEME_PREVIEW_RUNTIMES = [
-  "client",
-  "start",
-] as const satisfies readonly ThemePreviewRuntime[];
-
-export function isThemePreviewRuntime(
-  value: unknown,
-): value is ThemePreviewRuntime {
-  return (
-    typeof value === "string" &&
-    (THEME_PREVIEW_RUNTIMES as readonly string[]).includes(value)
-  );
-}
-
-/**
- * The runtime a Theme records, or null when it records none. A stored value
- * that names no runtime is only possible by hand; it is read as none, so the
- * Theme is previewed as the deployment says rather than as a guess.
- */
-export function recordedThemePreviewRuntime(
-  stored: string | null | undefined,
-): ThemePreviewRuntime | null {
-  return isThemePreviewRuntime(stored) ? stored : null;
-}
-
-/**
- * The deployment's runtime, from `MORPH_THEME_PREVIEW_RUNTIME`, read as it
- * always was: exactly `start` is the full Start preview, anything else the
- * client-only one.
- */
-export function deploymentThemePreviewRuntime(
-  envValue: unknown,
-): ThemePreviewRuntime {
-  return envValue === "start" ? "start" : "client";
-}
-
-export type ThemePreviewRuntimeResolution = Readonly<{
-  runtime: ThemePreviewRuntime;
-  /** `theme`: the Theme records it. `deployment`: inherited from the env. */
-  source: "theme" | "deployment";
-}>;
-
-/** The Theme's recorded runtime if it has one, else the deployment's. */
-export function resolveThemePreviewRuntime(input: {
-  recorded: string | null | undefined;
-  deploymentEnvValue: unknown;
-}): ThemePreviewRuntimeResolution {
-  const recorded = recordedThemePreviewRuntime(input.recorded);
-  return recorded
-    ? { runtime: recorded, source: "theme" }
-    : {
-        runtime: deploymentThemePreviewRuntime(input.deploymentEnvValue),
-        source: "deployment",
-      };
-}
+export {
+  THEME_PREVIEW_RUNTIMES,
+  deploymentThemePreviewRuntime,
+  isThemePreviewRuntime,
+  recordedThemePreviewRuntime,
+  resolveThemePreviewRuntime,
+};
+THEME_PREVIEW_RUNTIMES satisfies readonly ThemePreviewRuntime[];
 
 /**
  * Whether a Theme of this recorded framework (NULL is TanStack Start) may
@@ -83,10 +49,14 @@ export function themeFrameworkAllowsPreviewRuntime(
 
 /**
  * The first Starter version whose new Themes record the full Start preview.
- * Starter v30's route layer reads content through the SDK on the server, so
+ * That Starter's route layer reads content through the SDK on the server, so
  * a Theme created from it needs `start` to preview at all (R-0).
+ *
+ * It was 30 until Starter 30 shipped for another reason: its content module
+ * sends the render context back (G3b) and leaves preview as 29 did. The route
+ * layer that needs `start` is now planned as Starter 31.
  */
-export const FIRST_STARTER_VERSION_RECORDING_START_PREVIEW = 30;
+export const FIRST_STARTER_VERSION_RECORDING_START_PREVIEW = 31;
 
 /**
  * What a Theme created from this Starter version records. Null below

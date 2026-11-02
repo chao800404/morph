@@ -137,6 +137,27 @@ function deriveTemplateRouteStructure(args: {
   return deriveThemeRouteSections(args.files, route.sourcePath);
 }
 
+/**
+ * Why Design may not write this Theme's sections at all, or null when it may.
+ *
+ * Every Design write is judged against the Theme's source, and Morph reads
+ * only TanStack Start's: `src/routes/`, `content(slot)`, the B1 call sites.
+ * An Astro Theme's pages are `.astro` files, which nothing here parses yet
+ * (L1.5b). Judged as Start source, such a Theme would have no route files,
+ * and so fall into the legacy path that lets the stored Document stand in
+ * for the source; a Theme that also carries Start's files would be judged
+ * against files that framework never renders. So any recorded framework but
+ * Start is refused here, before the files are looked at. NULL is a Theme
+ * from before frameworks were recorded, which is Start (storefront.schema.ts).
+ */
+export function designWritesUnavailableReason(
+  framework: string | null | undefined,
+): string | null {
+  if (framework === null || framework === undefined) return null;
+  if (framework === "tanstack-start") return null;
+  return `Design cannot change ${framework} Themes yet. Edit the source in Code mode.`;
+}
+
 type SectionSourceComponent =
   /** The source confirms which component renders the section. */
   | Readonly<{
@@ -175,6 +196,8 @@ type SectionSourceComponent =
  * among routes the saved source declares; it never names a file to read.
  */
 export function resolveSectionSourceComponent(args: {
+  /** The Theme's recorded framework; see `designWritesUnavailableReason`. */
+  framework: string | null;
   templateType: string;
   /** Set for a document one route owns. */
   templateRoutePath?: string | null;
@@ -217,6 +240,9 @@ export function resolveSectionSourceComponent(args: {
       callSitePath: section.routeSourcePath,
     };
   };
+
+  const unavailable = designWritesUnavailableReason(args.framework);
+  if (unavailable) return { kind: "unconfirmed", reason: unavailable };
 
   if (args.templateType === "layout") {
     return fromSections(deriveThemeLayoutSections(args.files), "The layout");
@@ -1050,7 +1076,9 @@ export const storefrontThemeDal = {
     const template = context?.templates.find(
       (item) => item.id === data.templateId,
     );
-    if (!template) return null;
+    if (!context || !template) return null;
+    // Refused, as every section write is, on a framework Design cannot judge.
+    if (designWritesUnavailableReason(context.theme.framework)) return null;
 
     // The editor cannot choose a position for content it cannot bind. Refuse
     // the whole reorder, without writing, rather than moving or losing it.
@@ -1143,7 +1171,8 @@ export const storefrontThemeDal = {
     const template = context?.templates.find(
       (item) => item.id === data.templateId,
     );
-    if (!template) return null;
+    if (!context || !template) return null;
+    if (designWritesUnavailableReason(context.theme.framework)) return null;
     const baseDocument = templateSectionWriteBase(template, data.sectionId);
     if (!baseDocument.sections.some((s) => s.id === data.sectionId)) {
       return null;
@@ -1228,7 +1257,10 @@ export const storefrontThemeDal = {
 
     const db = await getDb();
     const [theme] = await db
-      .select({ id: storefrontThemes.id })
+      .select({
+        id: storefrontThemes.id,
+        framework: storefrontThemes.framework,
+      })
       .from(storefrontThemes)
       .innerJoin(storefronts, eq(storefrontThemes.storefrontId, storefronts.id))
       .where(
@@ -1241,6 +1273,10 @@ export const storefrontThemeDal = {
       )
       .limit(1);
     if (!theme) return { ok: false, reason: "Theme not found." };
+    // A route document is checked against Start's route files, which another
+    // framework's Theme does not render (or does not have).
+    const unavailable = designWritesUnavailableReason(theme.framework);
+    if (unavailable) return { ok: false, reason: unavailable };
 
     const registry = buildThemeRouteRegistry(
       await listThemeSourceFiles(data.storefrontId, data.themeId),
@@ -1340,7 +1376,7 @@ export const storefrontThemeDal = {
     const template = context?.templates.find(
       (item) => item.id === data.templateId,
     );
-    if (!template) return null;
+    if (!context || !template) return null;
 
     // This is the selection's generation, not whatever a refetch last saw.
     // The final document batch repeats this precondition atomically, so a
@@ -1365,6 +1401,7 @@ export const storefrontThemeDal = {
       data.themeId,
     );
     const sourceComponent = resolveSectionSourceComponent({
+      framework: context.theme.framework,
       templateType: template.type,
       templateRoutePath: template.routePath ?? null,
       sectionId: data.sectionId,

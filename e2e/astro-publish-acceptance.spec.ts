@@ -21,7 +21,7 @@ import {
   signedInPage,
   storefrontFetcher,
   storefrontHarness,
-  writeDraftField,
+  writeDraftFieldRecordedAsStart,
   type Fetcher,
 } from "./native-acceptance";
 import {
@@ -256,7 +256,14 @@ test.describe("an Astro site, from Code to a rolled-back storefront", () => {
     expect(cleared.success, JSON.stringify(cleared)).toBe(true);
     const saved = await writeThemeFiles(page, scope!, themeFiles(v1));
     expect(saved.success, JSON.stringify(saved)).toBe(true);
-    await writeDraftField(page, scope!, await heroDraft(page), contentA);
+    await writeDraftFieldRecordedAsStart(
+      page,
+      scope!,
+      await heroDraft(page),
+      contentA,
+      harness!,
+      "astro",
+    );
     await savedField(page, scope!, contentA);
     await openEditor(page);
 
@@ -353,11 +360,13 @@ test.describe("an Astro site, from Code to a rolled-back storefront", () => {
 
     // 4. Draft B, not built. Build A's preview, opened again, still shows
     //    A: a stale build's preview does not read the newer draft.
-    await writeDraftField(
+    await writeDraftFieldRecordedAsStart(
       page,
       scope!,
       await savedField(page, scope!, contentA),
       contentB,
+      harness!,
+      "astro",
     );
     const reopened = (await serverFn(page, BUILD_PREVIEW, "openBuildPreview", {
       ...scope!,
@@ -431,11 +440,13 @@ test.describe("an Astro site, from Code to a rolled-back storefront", () => {
     //    builds anew. Before that publish request reaches Core, another
     //    writer changes the draft to D; the final draft check (OCC on the
     //    draft generation) refuses it, and nothing is written.
-    await writeDraftField(
+    await writeDraftFieldRecordedAsStart(
       page,
       scope!,
       await savedField(page, scope!, contentB),
       contentC,
+      harness!,
+      "astro",
     );
     await openEditor(page);
     const writer = await signedInPage(browser);
@@ -447,11 +458,13 @@ test.describe("an Astro site, from Code to a rolled-back storefront", () => {
     await page.route(isPublish, async (route) => {
       if (route.request().method() === "POST" && intercepted === 0) {
         intercepted += 1;
-        await writeDraftField(
+        await writeDraftFieldRecordedAsStart(
           writer,
           scope!,
           await savedField(writer, scope!, contentC),
           contentD,
+          harness!,
+          "astro",
         );
       }
       await route.continue();

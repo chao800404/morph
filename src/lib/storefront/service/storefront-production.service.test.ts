@@ -915,6 +915,37 @@ describe("ThemeRuntime transports", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("forwards only the render context Core issued, never one a client sent, on any transport", async () => {
+    const seen: (string | null)[] = [];
+    const theme = async (request: Request) => {
+      seen.push(request.headers.get("x-morph-render-context"));
+      return new Response("ok");
+    };
+    const spoofed = (renderContext?: string) => ({
+      ...invocation,
+      renderContext,
+      request: new Request(`https://${HOST}/about?x=1`, {
+        headers: { "x-morph-render-context": "v1.chosen-by-visitor.sig" },
+      }),
+    });
+    const transports = [
+      new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      new DispatchNamespaceThemeRuntime({ get: () => ({ fetch: theme }) }),
+      new LocalDirectThemeRuntime("http://127.0.0.1:8788", (async (
+        input: RequestInfo | URL,
+      ) => theme(input as Request)) as typeof fetch),
+    ];
+
+    for (const transport of transports) {
+      expect((await transport.handle(spoofed("v1.issued.sig"))).success).toBe(
+        true,
+      );
+      expect((await transport.handle(spoofed())).success).toBe(true);
+    }
+
+    expect(seen).toEqual(transports.flatMap(() => ["v1.issued.sig", null]));
+  });
+
   it("a forged content origin never reaches the SDK's Start thin entry, on any transport", async () => {
     const scope = new AsyncLocalStorage<Request>();
     themeRequest.scope = scope;
@@ -1557,5 +1588,239 @@ describe("published content endpoint", () => {
     expect(res.headers.get("Content-Disposition")).toBe("attachment");
     expect(res.headers.get("Content-Security-Policy")).toContain("sandbox");
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+});
+
+/**
+ * M1 source isolation, G3: one page render reads one release.
+ *
+ * A page request is resolved to the active release and handed to that
+ * release's Theme build, with a signed render context naming the release and
+ * its ContentPublication. The Theme's content reads (`/_morph/content`) are
+ * separate requests; they carry the context back, and are served from the
+ * release it names even if a publish or rollback has made another one active
+ * since (user decision, 2026-11-01). A new page request is resolved afresh.
+ */
+describe("a page render during a release change (G3)", () => {
+  const SECRET = "g3-render-context-secret";
+  const releases = [
+    { id: "rel_1", contentPublicationId: "pub_1" },
+    { id: "rel_2", contentPublicationId: "pub_2" },
+  ];
+
+  /**
+   * A storefront whose active release the test switches, served end to end:
+   * the Theme reads through the SDK's Start thin entry, and its reads are
+   * answered by the same service, as on a real merchant host.
+   */
+  function storefront(options: { secret?: string } = {}) {
+    const state = { active: 0, reads: [] as string[] };
+    const base = resolverDeps();
+    const scope = new AsyncLocalStorage<Request>();
+    // The Theme reads twice while rendering one page; a publish lands between.
+    const theme = async (request: Request) =>
+      scope.run(request, async () => {
+        const first = await startMorph.pages.get("/");
+        state.active = 1;
+        const second = await startMorph.pages.get("/");
+        return Response.json({
+          release: request.headers.get("x-morph-release-id"),
+          headings: [first, second].map(
+            (page) => (page["starter-hero"] as { heading: string }).heading,
+          ),
+        });
+      });
+    const service = new StorefrontProductionService({
+      runtime: new ServiceBindingThemeRuntime(() => ({ fetch: theme })),
+      r2Bucket: r2(),
+      renderContextSecret: options.secret,
+      resolverDeps: {
+        ...base,
+        releaseDal: {
+          getActive: async () => ({
+            ...(await base.releaseDal!.getActive("sf_1" as never))!,
+            ...releases[state.active]!,
+          }),
+        },
+      },
+      contentPorts: {
+        getPublishedDocument: vi.fn(
+          async (input: { publicationId: string }) => {
+            state.reads.push(input.publicationId);
+            return {
+              sections: [
+                {
+                  id: "starter-hero",
+                  enabled: true,
+                  props: { heading: input.publicationId },
+                },
+              ],
+            };
+          },
+        ),
+      } as never,
+    });
+    return {
+      state,
+      service,
+      /** Serves a page, with the Theme's content reads routed back to Core. */
+      async page(path: string) {
+        themeRequest.scope = scope;
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+            service.handleRequest(new Request(input, init)),
+          ),
+        );
+        try {
+          return await service.handleRequest(req(path));
+        } finally {
+          vi.unstubAllGlobals();
+          themeRequest.scope = null;
+        }
+      },
+    };
+  }
+
+  /** The render context Core sends the Theme with a page request. */
+  async function issuedContext(secret: string): Promise<string | null> {
+    let captured: string | null = null;
+    const capture = new StorefrontProductionService({
+      runtime: new ServiceBindingThemeRuntime(() => ({
+        fetch: async (request: Request) => {
+          captured = request.headers.get("x-morph-render-context");
+          return new Response("ok");
+        },
+      })),
+      r2Bucket: r2(),
+      renderContextSecret: secret,
+      resolverDeps: resolverDeps(),
+    });
+    await capture.handleRequest(req("/"));
+    return captured;
+  }
+
+  it("keeps every content read of one render on the release its page was resolved to", async () => {
+    const site = storefront({ secret: SECRET });
+
+    const res = await site.page("/");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      release: "rel_1",
+      headings: ["pub_1", "pub_1"],
+    });
+    expect(site.state.reads.length).toBeGreaterThan(0);
+    expect(new Set(site.state.reads)).toEqual(new Set(["pub_1"]));
+  });
+
+  it("serves the new release from the next page request on", async () => {
+    const site = storefront({ secret: SECRET });
+    await site.page("/");
+    site.state.reads.length = 0;
+
+    const res = await site.page("/");
+
+    expect(await res.json()).toEqual({
+      release: "rel_2",
+      headings: ["pub_2", "pub_2"],
+    });
+    expect(site.state.reads.length).toBeGreaterThan(0);
+    expect(new Set(site.state.reads)).toEqual(new Set(["pub_2"]));
+  });
+
+  it("marks a pinned answer as one render's, never to be cached for other reads", async () => {
+    const site = storefront({ secret: SECRET });
+    const context = await issuedContext(SECRET);
+    expect(context).toEqual(expect.any(String));
+    site.state.active = 1;
+
+    const res = await site.service.handleRequest(
+      req("/_morph/content?path=/", {
+        headers: { "x-morph-render-context": context! },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      slots: { "starter-hero": { heading: "pub_1" } },
+      hiddenSlots: [],
+    });
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")).toBe("x-morph-render-context");
+    expect(res.headers.get("ETag")).toContain("rel_1");
+  });
+
+  it("reads the active release when a read names no render, as a browser's navigation does", async () => {
+    const site = storefront({ secret: SECRET });
+    site.state.active = 1;
+
+    const res = await site.service.handleRequest(req("/_morph/content?path=/"));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      slots: { "starter-hero": { heading: "pub_2" } },
+      hiddenSlots: [],
+    });
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, max-age=60, must-revalidate",
+    );
+    expect(res.headers.get("Vary")).toBe("x-morph-render-context");
+    expect(res.headers.get("ETag")).toContain("rel_2");
+  });
+
+  it("refuses a context signed with another secret without reading any content", async () => {
+    const site = storefront({ secret: SECRET });
+    const foreign = await issuedContext("another-secret");
+
+    const res = await site.service.handleRequest(
+      req("/_morph/content?path=/", {
+        headers: { "x-morph-render-context": foreign! },
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("RENDER_CONTEXT_INVALID");
+    expect(site.state.reads).toEqual([]);
+  });
+
+  it("refuses a malformed context without reading any content", async () => {
+    const site = storefront({ secret: SECRET });
+
+    const res = await site.service.handleRequest(
+      req("/_morph/content?path=/", {
+        headers: { "x-morph-render-context": "not-a-context" },
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(site.state.reads).toEqual([]);
+  });
+
+  it("refuses a context it cannot check, rather than reading the active release", async () => {
+    const site = storefront();
+    const context = await issuedContext(SECRET);
+
+    const res = await site.service.handleRequest(
+      req("/_morph/content?path=/", {
+        headers: { "x-morph-render-context": context! },
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(site.state.reads).toEqual([]);
+  });
+
+  it("without a signing secret, issues no context, and a straddling render reads each release as it is active", async () => {
+    const site = storefront();
+    expect(await issuedContext("")).toBeNull();
+
+    const res = await site.page("/");
+
+    // Stated, not hidden: this is the unpinned behaviour G3 removes.
+    expect(await res.json()).toEqual({
+      release: "rel_1",
+      headings: ["pub_1", "pub_2"],
+    });
   });
 });

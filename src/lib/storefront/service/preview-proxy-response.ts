@@ -4,6 +4,41 @@ import { withoutPlatformCookies } from "./preview-proxy-credentials";
 import { previewRuntimeInterruptedResponse } from "./preview-runtime-interruption";
 
 /**
+ * The two request headers that make Vite answer a module read with an empty
+ * 304. Only these: `If-Match`, `If-Unmodified-Since` and `If-Range` are not a
+ * cache shortcut (dropping `If-Range` while `Range` stays would change what a
+ * partial read returns), and they are never removed.
+ */
+const MODULE_REVALIDATION_HEADERS = ["if-none-match", "if-modified-since"];
+
+/**
+ * A module read sent on to the container without its revalidation headers,
+ * so Vite answers 200 with the body rather than an empty 304.
+ *
+ * workerd pools the tunnels behind `getTcpPort().fetch`; when a fresh
+ * tunnel's first response has no body, the next request on it is closed right
+ * after it is written ("Container port connection closed unexpectedly";
+ * cloudflare/workerd#7597, open, reported on our workerd 1.20261001.1). Every
+ * proxy rejection in CI run 41169951961 was the second request on a tunnel
+ * whose first answer was a 304 or a 204: a strong candidate, not a proven
+ * cause. The cost: a browser revalidating a module now gets the full module
+ * instead of a 304. Vite's hashed dependencies are immutable and never
+ * revalidated, so this is the Theme's own sources and Vite's client modules.
+ *
+ * Module GETs only (`moduleRead` below). The Theme's own routes, pages and
+ * files keep every condition they were sent with; a HEAD is bodiless whatever
+ * it is sent with, so this does nothing for HEAD.
+ */
+function withoutModuleRevalidation(request: Request): Request {
+  if (!MODULE_REVALIDATION_HEADERS.some((name) => request.headers.has(name))) {
+    return request;
+  }
+  const headers = new Headers(request.headers);
+  for (const name of MODULE_REVALIDATION_HEADERS) headers.delete(name);
+  return new Request(request, { headers });
+}
+
+/**
  * The SDK catches a runtime interruption and returns this exact, opaque 500.
  * A failed ESM import poisons that document's module graph even if the runtime
  * is healthy again a moment later. Retry only reads of Vite's module assets,
@@ -46,8 +81,9 @@ export async function proxyPreviewModuleRequest(
         path.startsWith("/node_modules/.vite/") ||
         path.startsWith("/@id/")) &&
         /\.(?:[cm]?[jt]sx?|css)$/.test(path)));
+  const forwarded = moduleRead ? withoutModuleRevalidation(request) : request;
   for (let attempt = 0; ; attempt++) {
-    const response = await proxy(request);
+    const response = await proxy(forwarded);
     if (!moduleRead || response?.status !== 500) return response;
     // Only inspect a bounded text body. The SDK uses a short plain-text
     // response, but the container can also return arbitrary 500 bodies.

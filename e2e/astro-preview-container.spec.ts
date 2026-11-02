@@ -8,7 +8,7 @@ import {
   openEditor,
   serverFn,
   storefrontHarness,
-  writeDraftField,
+  writeDraftFieldRecordedAsStart,
 } from "./native-acceptance";
 import {
   removeThemeFiles,
@@ -66,7 +66,18 @@ const slots = await homeSlots(Astro.request);
 ---
 <html><head><title>astro-live</title></head><body><main data-home-content={JSON.stringify(slots)} /></body></html>
 `;
-const OWN_PATHS = ["astro.config.mjs", "src/morph/astro-live.ts", `src/pages${ROUTE}.astro`];
+/** Two plain pages the page-switch case moves between (D3); A links to B. */
+const NAV_ROUTE = "/astro-nav";
+const NAV_ROUTE_B = "/astro-nav-b";
+const navPage = (marker: string, link = "") =>
+  `<html><head><title>${marker}</title></head><body><main data-astro-nav="${marker}">${marker}${link}</main></body></html>\n`;
+const OWN_PATHS = [
+  "astro.config.mjs",
+  "src/morph/astro-live.ts",
+  `src/pages${ROUTE}.astro`,
+  `src/pages${NAV_ROUTE}.astro`,
+  `src/pages${NAV_ROUTE_B}.astro`,
+];
 
 type Answer = { success: boolean; error?: string; message?: string; data?: { ticket: number } };
 
@@ -82,8 +93,23 @@ async function heroDraft(page: Page) {
   throw new Error("no template has a hero section");
 }
 
-const setDraft = async (page: Page, value: string) =>
-  writeDraftField(page, scope!, await heroDraft(page), value);
+/**
+ * The hero's draft. Design writes are refused on an Astro Theme, so the
+ * harness records it as Start for this write (writeDraftFieldRecordedAsStart).
+ */
+const setDraft = async (
+  page: Page,
+  value: string,
+  harness: Parameters<typeof writeDraftFieldRecordedAsStart>[4],
+) =>
+  writeDraftFieldRecordedAsStart(
+    page,
+    scope!,
+    await heroDraft(page),
+    value,
+    harness,
+    "astro",
+  );
 
 const sync = (page: Page) =>
   serverFn(page, PREVIEW, "syncThemePreviewContent", scope) as Promise<Answer>;
@@ -158,7 +184,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
       { path: `src/pages${ROUTE}.astro`, content: PAGE },
     ]);
     expect(saved.success, JSON.stringify(saved)).toBe(true);
-    await setDraft(page, a);
+    await setDraft(page, a, harness!);
 
     // 1. The editor starts the Live Preview: astro dev in the container,
     //    serving the draft it was started with.
@@ -167,7 +193,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     await expect.poll(async () => (await shown(frame)).body, { timeout: 120_000 }).toContain(a);
 
     // 2. B, written and synced: confirmed by the Worker, and then shown.
-    await setDraft(page, b);
+    await setDraft(page, b, harness!);
     const synced = await sync(page);
     expect(synced, JSON.stringify(synced)).toMatchObject({ success: true });
     const ticketB = synced.data!.ticket;
@@ -190,9 +216,9 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     //    too (preview-write-fence-sandbox.test.ts), but here the next page
     //    request was then interrupted by the platform in 2 of 2 runs (0 of 2
     //    one after the other); docs/astro-theme-plan.md 6.7, not located.
-    await setDraft(page, c);
+    await setDraft(page, c, harness!);
     const resultC = await sync(page);
-    await setDraft(page, d);
+    await setDraft(page, d, harness!);
     const resultD = await sync(page);
     expect(resultD, JSON.stringify(resultD)).toMatchObject({ success: true });
     expect(
@@ -207,7 +233,7 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
 
     // 5. The preview stopped and started again: a new dev server, the
     //    latest draft, and tickets that keep counting.
-    await setDraft(page, e);
+    await setDraft(page, e, harness!);
     const stopped = (await serverFn(page, PREVIEW, "stopThemePreviewServer", scope)) as Answer;
     expect(stopped.success, JSON.stringify(stopped)).toBe(true);
     await openEditor(page);
@@ -217,5 +243,67 @@ test.describe("an Astro site's Live Preview in the container (A6c)", () => {
     expect(afterRestart, JSON.stringify(afterRestart)).toMatchObject({ success: true });
     expect(afterRestart.data!.ticket).toBeGreaterThan(resultD.data!.ticket);
     expect((await shown(frame)).body).toContain(e);
+  });
+
+  test("switches pages from the page list as documents, keeping the preview channel (D3)", async ({
+    page,
+  }) => {
+    const marker = `d3-${randomUUID()}`;
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await harness!.writeD1(
+      "UPDATE storefront_themes SET framework = 'astro' WHERE id = ?1 AND storefront_id = ?2",
+      scope!.themeId,
+      scope!.storefrontId,
+    );
+    const saved = await writeThemeFiles(page, scope!, [
+      { path: "astro.config.mjs", content: astroConfig() },
+      {
+        path: `src/pages${NAV_ROUTE}.astro`,
+        content: navPage(
+          marker,
+          `<a href="${NAV_ROUTE_B}" data-astro-nav-link="${marker}">B</a>`,
+        ),
+      },
+      { path: `src/pages${NAV_ROUTE_B}.astro`, content: navPage(`${marker}-b`) },
+    ]);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+
+    await openEditor(page);
+    const frame = await liveFrame(page);
+    const iframeSrc = new URL(
+      (await page.locator("iframe").first().getAttribute("src"))!,
+    );
+
+    // The list is the Astro site's own pages, not the Starter's Start routes.
+    const pages = page.getByRole("list", { name: "Theme pages" });
+    await pages.getByRole("button", { name: NAV_ROUTE, exact: true }).click();
+
+    // The frame loads the other page as a document, with the channel query.
+    await expect
+      .poll(() => new URL(frame.url()).pathname, { timeout: 120_000 })
+      .toBe(NAV_ROUTE);
+    expect(new URL(frame.url()).search).toBe(iframeSrc.search);
+    await expect(frame.locator(`[data-astro-nav="${marker}"]`)).toBeVisible({
+      timeout: 120_000,
+    });
+    // The editor resumes once that document answered for the page.
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(0, {
+      timeout: 60_000,
+    });
+
+    // A link the author follows inside the preview (interact mode, the
+    // default): the editor follows the new document to B, and the frame
+    // is not sent back.
+    await frame.locator(`a[data-astro-nav-link="${marker}"]`).click();
+    await expect
+      .poll(() => new URL(frame.url()).pathname, { timeout: 120_000 })
+      .toBe(NAV_ROUTE_B);
+    await expect(
+      pages.getByRole("button", { name: NAV_ROUTE_B, exact: true }),
+    ).toHaveAttribute("data-active", "true", { timeout: 60_000 });
+    // Still there a moment later: nothing loaded the old page again.
+    await page.waitForTimeout(3_000);
+    expect(new URL(frame.url()).pathname).toBe(NAV_ROUTE_B);
+    await expect(page.getByTestId("preview-document-navigation")).toHaveCount(0);
   });
 });

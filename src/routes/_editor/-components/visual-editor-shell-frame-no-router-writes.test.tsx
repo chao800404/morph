@@ -1,15 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE } from "./editor-sections-panel";
 import type { StorefrontThemeEditorDTO } from "@/lib/storefront/dto/storefront-theme.dto";
 import { postEditorToPreviewMessage } from "@/lib/storefront/editor/preview-protocol";
 import { useEditorWriteGateStore } from "@/lib/storefront/store/editor-write-gate-store";
@@ -725,10 +720,11 @@ describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
 );
 
 /**
- * The limit, said, and nothing else changed. On a Theme of another framework
- * the canvas is not available: every click and every edit from it is
- * refused with a notice that says so, never "wait". The panel, Code mode and
- * the preview itself work as on any Theme.
+ * The limit, said. On a Theme of another framework the canvas is not
+ * available: every click and every edit from it is refused with a notice
+ * that says so, never "wait". The panel offers no section to edit either:
+ * Core refuses every Design write on such a Theme (#346), so it says so in
+ * place of the sections. Code mode and the preview work as on any Theme.
  */
 describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
   "the canvas of a Theme recorded as %s",
@@ -827,66 +823,18 @@ describe.each([["astro"], ["a-framework-the-editor-does-not-know"]])(
       ).toEqual(new Set(["canvas-unavailable-for-framework"]));
     });
 
-    it("leaves the panel as it was: a section picked there is edited and written, quietly", async () => {
+    it("offers no section in the panel: it says why, and nothing is written", async () => {
       renderRouted(homeSearch, { framework });
       await frameUp(true);
-      const row = screen.getAllByTitle("Select Hero; drag to reorder")[0]!;
-      act(() => row.click());
-      await tick(0);
-      // The frame answers the panel's request with its element, as the
-      // bridge does; set aside, and nothing said about the canvas.
-      const ask = log
-        .filter(
-          (message) => message.type === "morph:storefront-preview-set-section",
-        )
-        .at(-1);
-      fromPreview({
-        type: "morph:storefront-preview-select-section",
-        sectionId: "hero",
-        componentType: "Hero",
-        kind: "section",
-        nodeId: "hero",
-        sourceFilePath: "src/hero/Hero.tsx",
-        sourceLocation: null,
-        elementKey: null,
-        fieldKey: null,
-        field: null,
-        fieldPath: null,
-        descendantFields: [],
-        tagName: "section",
-        role: null,
-        inputType: null,
-        styleRevision: latestStyleRevision(),
-        className: "",
-        isSection: true,
-        inspectorOverride: null,
-        computedStyle: null,
-        parentComputedStyle: null,
-        sectionComputedStyle: null,
-        selectionRevision: ask?.selectionRevision ?? 0,
-      });
-      await tick(0);
-      expect(unavailableSaid()).toEqual([]);
-      act(() => screen.getByRole("button", { name: /^Content$/ }).click());
-      await tick(0);
-      const field = screen.getByDisplayValue(SAME);
-      fireEvent.focus(field);
-      fireEvent.input(field, { target: { value: "Panel edit" } });
-      fireEvent.blur(field);
-      await tick(400);
-      expect(writtenTemplates()).toEqual(["template-1"]);
-      expect(unavailableSaid()).toEqual([]);
-      expect(noticed()).toBe(false);
-      // And the preview is refreshed with it, as on any Theme.
       expect(
-        log.some(
-          (message) =>
-            message.type === "morph:storefront-preview-update-section-props" &&
-            message.sectionId === "hero" &&
-            (message as { props?: { heading?: string } }).props?.heading ===
-              "Panel edit",
-        ),
-      ).toBe(true);
+        screen.getByText(SECTIONS_UNAVAILABLE_FOR_FRAMEWORK_MESSAGE),
+      ).toBeTruthy();
+      expect(screen.queryAllByTitle("Select Hero; drag to reorder")).toEqual(
+        [],
+      );
+      await tick(400);
+      expect(writtenTemplates()).toEqual([]);
+      expect(unavailableSaid()).toEqual([]);
     });
 
     it("leaves the preview and Code mode as they were", async () => {
