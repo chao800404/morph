@@ -80,6 +80,91 @@ const REAL_WORKER_CONFIG = {
   queues: { producers: [], consumers: [] },
 };
 
+/**
+ * The file list of build 1b5fbcd9 (astro-native 7.3.5, framework astro),
+ * copied from the `getThemeBuild` response in the M2 case E2E run of
+ * 2026-11-02 (`handoff/2026-11-02/m2-astro-case-e2e-b86a72d-run2`). The
+ * Theme is two server-rendered pages and a Hero: no `public/`, no islands,
+ * no prerendered pages, so the client directory holds only the adapter's
+ * `_headers` and `.assetsignore`. Its publish was refused with
+ * RELEASE_DEPLOYMENT_FAILED and no reason.
+ */
+const ASTRO_SSR_ONLY_FILES: Array<[string, string, number]> = [
+  ["runtime/server/entry.mjs", "application/javascript", 5085],
+  ["runtime/server/virtual_astro_middleware.mjs", "application/javascript", 554],
+  ["runtime/server/chunks/sequence_DTSdHy0I.mjs", "application/javascript", 45907],
+  ["runtime/server/chunks/rolldown-runtime_D7vh-g_o.mjs", "application/javascript", 418],
+  ["runtime/server/chunks/index_DjbXKkUC.mjs", "application/javascript", 1092],
+  ["runtime/server/chunks/remote_C4g_SDQC.mjs", "application/javascript", 24528],
+  ["runtime/server/chunks/static-image-collection_B7a_3QHU.mjs", "application/javascript", 2568],
+  ["runtime/server/chunks/path_Dip7U3GC.mjs", "application/javascript", 17132],
+  ["runtime/server/chunks/noop-entrypoint_BYLrzUxc.mjs", "application/javascript", 157],
+  ["runtime/server/chunks/image-passthrough-endpoint_B7Pm3YhY.mjs", "application/javascript", 2318],
+  ["runtime/server/chunks/console_B6RZXqok.mjs", "application/javascript", 297980],
+  ["runtime/server/chunks/_virtual_astro_server-island-manifest_q0HM18kM.mjs", "application/javascript", 275],
+  ["runtime/server/chunks/about_CSe0sutn.mjs", "application/javascript", 1123],
+  ["runtime/server/chunks/astro_D3q60h5k.mjs", "application/javascript", 16737],
+  ["runtime/server/chunks/Hero_C5-F9J1l.mjs", "application/javascript", 743],
+  ["runtime/server/chunks/compiler_ieHWJfig.mjs", "application/javascript", 1247],
+  ["runtime/server/chunks/noop_CsmV5BFc.mjs", "application/javascript", 704],
+  ["runtime/server/chunks/_virtual_astro_session-driver_DIk1nzQP.mjs", "application/javascript", 223],
+  ["runtime/server/chunks/entrypoints_Dx0rolSO.mjs", "application/javascript", 170896],
+  ["runtime/server/chunks/service_DUAfAxsp.mjs", "application/javascript", 43763],
+  ["runtime/client/_headers", "application/octet-stream", 63],
+  ["runtime/client/.assetsignore", "application/octet-stream", 24],
+  ["runtime/server/wrangler.json", "application/json; charset=utf-8", 1579],
+];
+
+function astroSsrOnlyManifest(
+  files: Array<[string, string, number]> = ASTRO_SSR_ONLY_FILES,
+): CanonicalThemeBuildManifest {
+  return manifest({
+    compilerId: "astro-native",
+    compilerVersion: "7.3.5+morph-sdk.a262c1272c6303b4",
+    sourceEntry: "src/pages/index.astro",
+    artifactEntry: "runtime/server/entry.mjs",
+    runtime: {
+      kind: "cloudflare-worker",
+      workerEntry: "runtime/server/entry.mjs",
+      clientAssetsDirectory: "runtime/client",
+    },
+    filesCount: files.length,
+    files: files.map(([path, contentType, sizeBytes]) => ({
+      path,
+      contentType,
+      sizeBytes,
+      sha256: "0".repeat(64),
+    })),
+  });
+}
+
+/**
+ * The shape the Astro Cloudflare adapter writes (see
+ * `astro-native-build.test.ts`). The run's own 1579-byte config was not
+ * captured; only its file list was.
+ */
+const ASTRO_WORKER_CONFIG = {
+  main: "entry.mjs",
+  compatibility_date: "2026-03-24",
+  compatibility_flags: ["nodejs_compat"],
+  assets: { binding: "ASSETS", directory: "../client" },
+  kv_namespaces: [],
+};
+
+describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", () => {
+  it("is refused today with MISSING_CLIENT_ASSETS", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: astroSsrOnlyManifest(),
+      workerConfig: ASTRO_WORKER_CONFIG,
+    });
+    expect(result).toMatchObject({
+      success: false,
+      reason: "MISSING_CLIENT_ASSETS",
+    });
+  });
+});
+
 describe("planThemeWorkerDeployment", () => {
   it("plans a deployable Worker from a real build artifact", () => {
     const result = planThemeWorkerDeployment({
