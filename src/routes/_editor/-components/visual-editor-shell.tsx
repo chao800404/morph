@@ -1121,6 +1121,9 @@ export function VisualEditorShell({
     nodes: readonly PreviewEditableNode[];
   } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  /** For the page-list open, which reads the mode it was asked in. */
+  const isSelectionModeRef = useRef(isSelectionMode);
+  isSelectionModeRef.current = isSelectionMode;
   const [spacingOverlayMode, setSpacingOverlayMode] =
     useState<PreviewSpacingOverlayMode>("off");
   const [assistantPanelTab, setAssistantPanelTab] =
@@ -4164,10 +4167,23 @@ export function VisualEditorShell({
         });
         return;
       }
-      setPendingRouteSelection({
-        routePath: route.path,
-        sectionId: route.path,
-      });
+      // Selecting the page root is a selection request, and a selection
+      // request turns select mode on (handleSectionsSearchChange). A
+      // document-navigating preview (Astro, D92) only switches the page and
+      // keeps the author's mode: in interact mode its links stay links. In
+      // select mode the page root is selected as before. Start is unchanged.
+      // The selection the page left behind is let go by the context reset
+      // (useEditorContextReset) once the route changes; one still waiting for
+      // a page opened in select mode is dropped here, or a later open of that
+      // page would take it and turn select mode on (D93-1).
+      if (!documentNavigationRef.current || isSelectionModeRef.current) {
+        setPendingRouteSelection({
+          routePath: route.path,
+          sectionId: route.path,
+        });
+      } else {
+        setPendingRouteSelection(null);
+      }
       setPendingRoutePath(route.path);
       const routeTemplate =
         templateForRoute(context.templates, route.path) ??
@@ -9510,6 +9526,17 @@ export function VisualEditorShell({
   useEffect(() => {
     const pending = pendingRouteSelection;
     if (!pending) return;
+    // A document-navigating preview (Astro) queued it only because the author
+    // was in select mode, for the page then being opened (D94-2). A page the
+    // editor is no longer on or going to never takes it.
+    if (
+      documentNavigationRef.current &&
+      (search.routePath ?? "/") !== pending.routePath &&
+      pendingRoutePathRef.current !== pending.routePath
+    ) {
+      setPendingRouteSelection(null);
+      return;
+    }
     if ((search.routePath ?? "/") !== pending.routePath) return;
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
     if (
@@ -9520,6 +9547,9 @@ export function VisualEditorShell({
     }
 
     setPendingRouteSelection(null);
+    // A late answer never turns select mode back on after the author turned
+    // it off while the page was opening.
+    if (documentNavigationRef.current && !isSelectionModeRef.current) return;
     handleSectionsSearchChange({ section: pending.sectionId });
   }, [
     handleSectionsSearchChange,
