@@ -3,11 +3,13 @@
  * one call over the `ASTRO_PARSER` service binding, and an answer Core can
  * trust or a typed refusal. Never an exception.
  *
- * Fail-closed by construction. No binding, a binding that throws, a payload
- * that is not the contract's, a result about some other source: all of them
- * are `unavailable`, and an unavailable parse gives no Design capability. The
- * parser's own refusals arrive as codes in its payload, because an error that
- * crosses a binding keeps only its message.
+ * Fail-closed by construction. No binding (`binding-missing`), a binding
+ * that throws or answers without the JSON type (`binding-failed`), a JSON
+ * answer that is malformed, not the contract's or about some other source
+ * (`invalid-response`): all of them are `unavailable`, and an unavailable
+ * parse gives no Design capability. The parser's own refusals arrive as
+ * codes in its payload, because an error that crosses a binding keeps only
+ * its message.
  *
  * `parseAstroTemplate` is the entry for analysis (contract v2 `template`):
  * it accepts an answer only from the pinned compiler and only for a source
@@ -49,10 +51,13 @@ export type AstroParserUnavailableCode =
   | AstroParserErrorCode
   /** The environment has no `ASTRO_PARSER` binding. */
   | "binding-missing"
-  /** The call itself failed: nothing is running behind the binding, or the
-   * connection broke. */
+  /** The binding is there but nothing answered in the protocol: the call
+   * threw (the connection broke), or the reply is not typed as JSON, such
+   * as the dev registry's HTTP 503 page when no parser is running behind the
+   * binding. */
   | "binding-failed"
-  /** An answer that is not the contract's, or not about the source sent. */
+  /** A JSON-typed answer that is malformed, not the contract's, or not about
+   * the source sent. */
   | "invalid-response"
   /** An answer from a Worker on another contract version. */
   | "contract-mismatch";
@@ -80,6 +85,14 @@ export function astroParserBindingFrom(
   }
   return null;
 }
+
+/**
+ * The detail of an `invalid-response` for a source with a leading UTF-8 BOM,
+ * a known limitation: the parser's decoder strips the BOM, so its answer's
+ * `source.length` (and every position) is one short of the string sent.
+ */
+export const SOURCE_BOM_DETAIL =
+  "source: leading UTF-8 BOM, which the parser's decoder strips (known limitation)";
 
 const unavailable = (
   code: AstroParserUnavailableCode,
@@ -179,6 +192,22 @@ export async function parseAstroSource(
       );
     }
 
+    // Every answer the parser sends, refusals included, is JSON with this
+    // type. Anything else did not come from the parser's protocol: when no
+    // parser runs behind the binding, the local dev registry answers HTTP
+    // 503 with a plain-text page. That is the binding failing, not a
+    // malformed answer.
+    const contentType = (response.headers.get("content-type") ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== "application/json") {
+      await response.body?.cancel().catch(() => {});
+      return unavailable(
+        "binding-failed",
+        `not a parser answer (HTTP ${response.status}, content-type "${contentType}")`,
+      );
+    }
     const text = await readCapped(
       response,
       ASTRO_PARSER_LIMITS.maxResponseBytes,
@@ -205,12 +234,16 @@ export async function parseAstroSource(
       sourceLength: source.length,
     });
     if (!check.ok) {
-      return unavailable(
-        check.reason === ASTRO_PARSE_CONTRACT_VERSION_REASON
-          ? "contract-mismatch"
-          : "invalid-response",
-        check.reason,
-      );
+      if (check.reason === ASTRO_PARSE_CONTRACT_VERSION_REASON)
+        return unavailable("contract-mismatch", check.reason);
+      // Known limitation (contract.ts, "leading UTF-8 BOM"): the parser's
+      // decoder strips a BOM, so its length is one short and the answer is
+      // not about this string. Still `invalid-response`, never the author's
+      // syntax; the source is not stripped here, which would move every
+      // offset and change the hash.
+      if (check.reason === "source" && source.charCodeAt(0) === 0xfeff)
+        return unavailable("invalid-response", SOURCE_BOM_DETAIL);
+      return unavailable("invalid-response", check.reason);
     }
 
     const answer = check.response;
@@ -291,7 +324,9 @@ export interface AstroParserFailure {
 export function classifyAstroParserRefusal(
   code: AstroTemplateRefusalCode,
 ): AstroParserFailure {
-  const temporarily = (reason: AstroParserFailureReason): AstroParserFailure => ({
+  const temporarily = (
+    reason: AstroParserFailureReason,
+  ): AstroParserFailure => ({
     class: "temporarily-unconfirmable",
     reason,
   });
@@ -358,11 +393,18 @@ function refused(
  *    and every index consistent;
  * 2. its `compiler` is `MORPH_ASTRO_COMPILER_RS_VERSION`, the version the
  *    Astro toolchain compiles with, since ranges from another compiler need
- *    not match what is built;
+ *    not match what is built. `compiler` is the version in the compiler
+ *    binding's own package.json, bundled with the `.wasm` the Worker loads;
+ *    the Wasm does not report a version at runtime;
  * 3. `diagnostics.total` is 0.
  *
  * In that order: an answer from another compiler is not trusted for its
  * diagnostics either. Anything else is `refused`, with its class.
+ *
+ * Known limitation: a source with a leading UTF-8 BOM is refused as
+ * `invalid-response` (`temporarily-unconfirmable`, detail
+ * `SOURCE_BOM_DETAIL`), never as `author-syntax`, and is not stripped here.
+ * See the BOM note in the contract.
  */
 export async function parseAstroTemplate(
   binding: AstroParserBinding | null | undefined,

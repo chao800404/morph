@@ -163,7 +163,11 @@ describe("checking a template answer", () => {
       (p) => (p.frontmatterInner = null),
       "frontmatter-inner",
     ],
-    ["a missing table", (p) => delete (p as Record<string, unknown>).expressions, "template"],
+    [
+      "a missing table",
+      (p) => delete (p as Record<string, unknown>).expressions,
+      "template",
+    ],
     ["a wrong element count", (p) => (p.elementCount = 3), "element-count"],
     [
       "an element past the end of the source",
@@ -195,7 +199,11 @@ describe("checking a template answer", () => {
       (p) => (p.elements[1] = [0, 4, 1, 0]),
       "element-nesting-1",
     ],
-    ["an element deeper than maxDepth", (p) => (p.maxDepth = 0), "element-depth-1"],
+    [
+      "an element deeper than maxDepth",
+      (p) => (p.maxDepth = 0),
+      "element-depth-1",
+    ],
     [
       "an element tuple of the wrong length",
       (p) => p.elements[0].push(0),
@@ -313,7 +321,12 @@ describe("checking a template answer", () => {
     payload.diagnostics = {
       total: 1,
       first: [
-        { severity: "error", text: "Unexpected token", byteStart: 0, byteEnd: 1 },
+        {
+          severity: "error",
+          text: "Unexpected token",
+          byteStart: 0,
+          byteEnd: 1,
+        },
       ],
     };
     expect(reasonOf(payload)).toBe("ok");
