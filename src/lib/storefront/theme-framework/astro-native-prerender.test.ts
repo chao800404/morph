@@ -63,6 +63,26 @@ describe("Astro prerender content keys", () => {
       ["/feed.xml", false],
     ]);
   });
+
+  it("mark a .js or .ts file as an endpoint, and leave every page record as it was", () => {
+    const registry = astroRouteRegistry([
+      { path: "src/pages/index.astro" },
+      { path: "src/pages/blog/index.md" },
+      { path: "src/pages/feed.xml.ts" },
+      { path: "src/pages/api/ping.js" },
+    ]);
+    expect(
+      registry.routes.map((route) => [route.path, route.isEndpoint]),
+    ).toEqual([
+      ["/", undefined],
+      ["/blog", undefined],
+      ["/feed.xml", true],
+      ["/api/ping", true],
+    ]);
+    // Not `isServerOnly`: that decides what a build prerenders.
+    expect(registry.routes.some((route) => route.isServerOnly)).toBe(false);
+    expect(Object.keys(registry.routes[0]!)).not.toContain("isEndpoint");
+  });
 });
 
 describe("Astro prerender workspace files", () => {

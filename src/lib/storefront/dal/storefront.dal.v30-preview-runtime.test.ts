@@ -62,6 +62,8 @@ function createNewStorefrontDb() {
     select: vi.fn(() => {
       const chain = {
         from: vi.fn(() => chain),
+        // ensureDefault reads the active Theme's framework with the storefront.
+        leftJoin: vi.fn(() => chain),
         where: vi.fn(() => chain),
         limit: vi.fn(async () => results.shift() ?? []),
       };

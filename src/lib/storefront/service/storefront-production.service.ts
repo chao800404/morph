@@ -19,6 +19,11 @@ import {
   resolveStorefrontContent,
   type ContentRuntimePorts,
 } from "./storefront-content-runtime";
+import {
+  signStorefrontRenderContext,
+  STOREFRONT_RENDER_CONTEXT_HEADER,
+  verifyStorefrontRenderContext,
+} from "./storefront-render-context";
 import type {
   ThemeRuntime,
   ThemeRuntimeFailure,
@@ -178,6 +183,15 @@ export type StorefrontProductionServiceOptions = Readonly<{
     orderId: string,
     action: "accept" | "decline",
   ) => Promise<Response | null>;
+  /**
+   * Signs the render context that pins a page render's content reads to the
+   * release its page request resolved (G3). Without it no context is issued,
+   * and a content read that carries one is refused, since it cannot be
+   * checked.
+   */
+  renderContextSecret?: string;
+  /** Milliseconds since the epoch; a test clock. */
+  now?: () => number;
 }>;
 
 /**
@@ -195,6 +209,10 @@ export type StorefrontProductionServiceOptions = Readonly<{
  */
 export class StorefrontProductionService {
   constructor(private readonly options: StorefrontProductionServiceOptions) {}
+
+  private now(): number {
+    return this.options.now ? this.options.now() : Date.now();
+  }
 
   async handleRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -329,6 +347,18 @@ export class StorefrontProductionService {
     const runtimeResult = await this.options.runtime.handle({
       request,
       resolved,
+      renderContext: this.options.renderContextSecret
+        ? await signStorefrontRenderContext({
+            pin: {
+              storefrontId: resolved.storefrontId,
+              hostname: resolved.hostname,
+              releaseId: resolved.releaseId,
+              contentPublicationId: resolved.contentPublicationId,
+            },
+            secret: this.options.renderContextSecret,
+            now: this.now(),
+          })
+        : undefined,
     });
     if (!runtimeResult.success) {
       return themeRuntimeFailureResponse(
@@ -366,8 +396,38 @@ export class StorefrontProductionService {
       return errorResponse(400, "Invalid content path.");
     }
 
+    // A read made while rendering a page names the release that page was
+    // resolved to (G3). It is served from that release even if another one
+    // has gone live since; a context that does not verify is refused rather
+    // than read as the active release. A read without one — a browser's own
+    // navigation fetch — is a new request, and gets the active release.
+    const renderContext = request.headers.get(STOREFRONT_RENDER_CONTEXT_HEADER);
+    let pinned: { releaseId: string; publicationId: string | null } | null =
+      null;
+    if (renderContext !== null) {
+      const verification = this.options.renderContextSecret
+        ? await verifyStorefrontRenderContext({
+            token: renderContext,
+            secret: this.options.renderContextSecret,
+            now: this.now(),
+            storefrontId: resolved.storefrontId,
+            hostname: resolved.hostname,
+          })
+        : null;
+      if (!verification?.ok) {
+        return errorResponse(
+          409,
+          "RENDER_CONTEXT_INVALID: this content read's render context cannot be verified.",
+        );
+      }
+      pinned = {
+        releaseId: verification.pin.releaseId,
+        publicationId: verification.pin.contentPublicationId,
+      };
+    }
+
     const content = await resolveStorefrontContent({
-      publicationId: resolved.contentPublicationId,
+      publicationId: pinned ? pinned.publicationId : resolved.contentPublicationId,
       pathname: requestedPath,
       ports: this.options.contentPorts,
     });
@@ -377,8 +437,15 @@ export class StorefrontProductionService {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
         // Content is immutable within a release; the release id is the version.
-        "Cache-Control": "public, max-age=60, must-revalidate",
-        ETag: `"${resolved.releaseId}:${requestedPath}"`,
+        // A pinned read answers for one render, not for the URL: it must not
+        // be stored and served to a read naming no release, or another one.
+        "Cache-Control": pinned
+          ? "private, no-store"
+          : "public, max-age=60, must-revalidate",
+        ETag: `"${pinned ? pinned.releaseId : resolved.releaseId}:${requestedPath}"`,
+        // Both answers depend on the render-context header: a cache keyed on
+        // the URL alone must not answer a pinned read with the active one.
+        Vary: STOREFRONT_RENDER_CONTEXT_HEADER,
         "X-Content-Type-Options": "nosniff",
       },
     });
