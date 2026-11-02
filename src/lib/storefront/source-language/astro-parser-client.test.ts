@@ -192,8 +192,6 @@ describe("parseAstroSource fails closed", () => {
       }),
       "text/plain;charset=UTF-8",
     ],
-    ["a JSON type with a body that is not JSON", 503, "<html>", undefined],
-    ["a JSON type with an empty body", 502, "", undefined],
   ])("takes %s for a failed binding", async (_, status, body, contentType) => {
     expect(
       await parseAstroSource(answering(status, body, contentType), "<p/>", {
@@ -224,6 +222,9 @@ describe("parseAstroSource fails closed", () => {
       new Uint8Array([0x7b, 0xff, 0x7d]),
     ],
     ["a JSON value that is not an answer", 200, "[]"],
+    // Typed as JSON, so it claims to be the parser's answer: a malformed one.
+    ["a JSON type with a body that is not JSON", 503, "<html>"],
+    ["a JSON type with an empty body", 502, ""],
   ])("does not take %s for an answer", async (_, status, body) => {
     expect(
       await parseAstroSource(answering(status, body), "<p/>", {

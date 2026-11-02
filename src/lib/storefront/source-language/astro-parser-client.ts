@@ -4,12 +4,12 @@
  * trust or a typed refusal. Never an exception.
  *
  * Fail-closed by construction. No binding (`binding-missing`), a binding
- * that throws or answers with something other than JSON (`binding-failed`),
- * a JSON payload that is not the contract's or is about some other source
+ * that throws or answers without the JSON type (`binding-failed`), a JSON
+ * answer that is malformed, not the contract's or about some other source
  * (`invalid-response`): all of them are `unavailable`, and an unavailable
- * parse gives no Design capability. The
- * parser's own refusals arrive as codes in its payload, because an error that
- * crosses a binding keeps only its message.
+ * parse gives no Design capability. The parser's own refusals arrive as
+ * codes in its payload, because an error that crosses a binding keeps only
+ * its message.
  *
  * `parseAstroTemplate` is the entry for analysis (contract v2 `template`):
  * it accepts an answer only from the pinned compiler and only for a source
@@ -52,11 +52,12 @@ export type AstroParserUnavailableCode =
   /** The environment has no `ASTRO_PARSER` binding. */
   | "binding-missing"
   /** The binding is there but nothing answered in the protocol: the call
-   * threw (the connection broke), or the reply is not a JSON answer at all,
-   * such as the dev registry's HTTP 503 page when no parser is running
-   * behind the binding. */
+   * threw (the connection broke), or the reply is not typed as JSON, such
+   * as the dev registry's HTTP 503 page when no parser is running behind the
+   * binding. */
   | "binding-failed"
-  /** A JSON answer that is not the contract's, or not about the source sent. */
+  /** A JSON-typed answer that is malformed, not the contract's, or not about
+   * the source sent. */
   | "invalid-response"
   /** An answer from a Worker on another contract version. */
   | "contract-mismatch";
@@ -222,8 +223,8 @@ export async function parseAstroSource(
       payload = JSON.parse(text);
     } catch {
       return unavailable(
-        "binding-failed",
-        `not a parser answer (HTTP ${response.status}, body not JSON)`,
+        "invalid-response",
+        `not JSON (HTTP ${response.status})`,
       );
     }
     const check = checkAstroParseResponse(payload, {
