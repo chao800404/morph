@@ -400,6 +400,17 @@ export async function startLocalPreviewSidecar(
       });
     });
   });
+  // Never be the side that closes an idle kept-alive connection. workerd pools
+  // its connections here and drops them itself after 5 s idle; Node's default
+  // (5 s + a 1 s buffer) would close first whenever the Worker's event loop is
+  // busy past that point, and the Worker's next request then reuses the dead
+  // socket and fails with "Network connection lost." before reaching us.
+  // Reproduced in handoff/2026-11-02/sidecar-keepalive-diagnosis.md; the same
+  // choice as miniflare's own loopback server (cloudflare/workers-sdk#14850).
+  // Only the keep-alive idle timeout is off: headersTimeout, requestTimeout,
+  // the token check and what each operation does are unchanged, and close()
+  // still reclaims every connection.
+  server.keepAliveTimeout = 0;
   const observer = options.observe
     ? observeLocalPreviewSidecar(server, options.observe)
     : null;
