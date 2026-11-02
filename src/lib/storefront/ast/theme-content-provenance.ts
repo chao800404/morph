@@ -954,7 +954,7 @@ function otherModuleReachesLoaderData(
   return false;
 }
 
-type ReachableThemeModules = Readonly<{
+export type ReachableThemeModules = Readonly<{
   paths: ReadonlySet<string>;
   /** An unresolved dynamic import could execute any local Theme module. */
   unboundedDynamicImport: boolean;
@@ -970,11 +970,14 @@ type ReachableThemeModules = Readonly<{
  * around every route even though the generated route tree is not authored
  * source and therefore is not in this import graph.
  */
-function reachableThemeModules(
+export function reachableThemeModules(
   routeFile: string,
   files: readonly B1SourceFile[],
-  filePaths: ReadonlySet<string>,
-  parsedAstFor: (path: string, content: string) => ThemeSourceAstResult,
+  filePaths: ReadonlySet<string> = new Set(files.map((file) => file.path)),
+  parsedAstFor: (
+    path: string,
+    content: string,
+  ) => ThemeSourceAstResult = createAnalysisSourceParser(files),
 ): ReachableThemeModules {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const paths = new Set<string>();
@@ -1624,6 +1627,60 @@ function claimFor(value: B1PropValue): B1Claim {
 }
 
 /**
+ * The bindings and loader proof of one route (or layout) module. Shared by
+ * the field-provenance analysis and the slot-use analysis, so both read the
+ * same `content`, `morph`, `isSectionHidden` and `Route` bindings.
+ */
+function createRouteModuleContext(args: {
+  ast: ParsedThemeAst;
+  backend: B1ScopeBackend;
+  path: string;
+  files: readonly B1SourceFile[];
+  filePaths: ReadonlySet<string>;
+  parsedSourceFor: (path: string, content: string) => ThemeSourceAstResult;
+}): {
+  ctx: ModuleContext;
+  route: ReturnType<typeof routeBindingOf>;
+  contentAliases: number;
+} {
+  const oracle = args.backend(args.ast);
+  const partial = { ast: args.ast, oracle, path: args.path };
+  const { binding: contentBinding, aliases } = contentImportBinding(
+    partial,
+    args.filePaths,
+  );
+  const morphBinding = morphImportBinding(partial, args.filePaths);
+  const sectionHiddenBinding = sectionHiddenImportBinding(
+    partial,
+    args.filePaths,
+  );
+  const route = routeBindingOf(partial);
+  const routeName = route.binding?.name ?? null;
+  const loaderOrigin =
+    routeName !== null &&
+    provenLoaderOrigin(
+      partial,
+      args.files,
+      routeName,
+      route.componentName,
+      args.parsedSourceFor,
+    );
+  return {
+    ctx: {
+      ...partial,
+      contentBinding,
+      morphBinding,
+      sectionHiddenBinding,
+      routeBinding: route.binding,
+      loaderOrigin,
+      routePath: route.routePath,
+    },
+    route,
+    contentAliases: aliases,
+  };
+}
+
+/**
  * Analyses one route module of a Theme.
  *
  * `backend` picks the scope oracle; the result must not depend on it (tested).
@@ -1693,35 +1750,17 @@ export function analyzeB1Route(
       diagnostics: [parseMessage ?? `${normalizedRoute} could not be parsed`],
     };
   }
-  const oracle = backend(ast);
-  const partial = { ast, oracle, path: normalizedRoute };
-  const { binding: contentBinding, aliases } = contentImportBinding(
-    partial,
+  const { ctx, route, contentAliases } = createRouteModuleContext({
+    ast,
+    backend,
+    path: normalizedRoute,
+    files: normalizedFiles,
     filePaths,
-  );
-  if (aliases > 1) diagnostics.push("content is imported more than once");
-  const morphBinding = morphImportBinding(partial, filePaths);
-  const sectionHiddenBinding = sectionHiddenImportBinding(partial, filePaths);
-  const route = routeBindingOf(partial);
-  const routeName = route.binding?.name ?? null;
-  const loaderOrigin =
-    routeName !== null &&
-    provenLoaderOrigin(
-      partial,
-      normalizedFiles,
-      routeName,
-      route.componentName,
-      parsedSourceFor,
-    );
-  const ctx: ModuleContext = {
-    ...partial,
-    contentBinding,
-    morphBinding,
-    sectionHiddenBinding,
-    routeBinding: route.binding,
-    loaderOrigin,
-    routePath: route.routePath,
-  };
+    parsedSourceFor,
+  });
+  const { loaderOrigin } = ctx;
+  if (contentAliases > 1)
+    diagnostics.push("content is imported more than once");
 
   // Taints from this route and the modules it can actually reach. A separate
   // route's `content("hero")` call is a different request-root object; a
@@ -2158,4 +2197,662 @@ export function componentPropElements(
   };
   visit(fn.body);
   return { elements, threadable, fn };
+}
+
+// ---------------------------------------------------------------------------
+// Slot uses: where a section's stored value is evaluated (M3 Hide).
+
+/**
+ * One place a module evaluates a section's value.
+ *
+ * Unlike a claim this is not about which prop shows which field: it answers
+ * "does anything read this section, and where". Hiding a section removes its
+ * values from what the page receives, so every place listed here would read
+ * `undefined` while it is hidden.
+ */
+export type B1SlotUse = Readonly<{
+  slot: string;
+  root: B1Root;
+  /** Source range of the expression (or declarator) that reads it. */
+  start: number;
+  end: number;
+  line: number;
+  /** Lexically inside a JSX element or fragment. */
+  inJsx: boolean;
+  /**
+   * How the value is reached:
+   * - `content-call`: `content("slot")` itself;
+   * - `page-member`: `<page>.slot`, on a local that holds the whole page;
+   * - `member`: a member read below one of those;
+   * - `alias`: bound to a local or a destructuring pattern, or read through one;
+   * - `spread`: spread into a JSX element.
+   */
+  via: "content-call" | "page-member" | "member" | "alias" | "spread";
+  /**
+   * The local holding the whole page this read went through, for `page-member`
+   * and `member` reads that never passed through an alias of the section.
+   */
+  pageLocal: string | null;
+}>;
+
+/** A root (or one section of it) handed to code this analysis does not follow. */
+export type B1RootEscape = Readonly<{
+  root: B1Root;
+  /** The section that escapes, or null when the whole root does. */
+  slot: string | null;
+  start: number;
+  end: number;
+  line: number;
+  reason: string;
+}>;
+
+/** Where a capitalised JSX element stands in its parent. */
+export type B1ElementPosition =
+  | "child"
+  | "return"
+  | "arrow-body"
+  /** `!isSectionHidden("slot") && <El/>`, the Starter's own guard. */
+  | "guarded"
+  | "other";
+
+export type B1SlotUseAnalysis = Readonly<{
+  moduleFile: string;
+  uses: readonly B1SlotUse[];
+  escapes: readonly B1RootEscape[];
+  loaderOrigin: boolean;
+  /** The specifier this module imports `content` from, if it does. */
+  contentImportSource: string | null;
+  /** Capitalised JSX elements by start offset. */
+  elements: ReadonlyMap<
+    number,
+    Readonly<{
+      end: number;
+      position: B1ElementPosition;
+      guardSlot: string | null;
+    }>
+  >;
+  diagnostics: readonly string[];
+}>;
+
+function enclosingFunction(
+  oracle: B1ScopeOracle,
+  node: AnyNode,
+): AnyNode | null {
+  for (let at = oracle.parentOf(node); at; at = oracle.parentOf(at)) {
+    if (FUNCTION_SCOPE_NODE_TYPES.has(at.type)) return at;
+  }
+  return null;
+}
+
+/**
+ * Whether `node` is what the route's own (proven) loader returns: the body of
+ * a `createServerFn().handler(fn)` function, or of the `loader` option itself.
+ * Only asked once the product's loader proof holds; the loader data is then
+ * followed from `Route.useLoaderData()` instead.
+ */
+function isLoaderReturn(oracle: B1ScopeOracle, node: AnyNode): boolean {
+  const parent = oracle.parentOf(node);
+  const returned =
+    parent?.type === "ReturnStatement" ||
+    (parent?.type === "ArrowFunctionExpression" && parent.body === node);
+  if (!returned) return false;
+  const fn = enclosingFunction(oracle, node);
+  if (!fn) return false;
+  const holder = oracle.parentOf(fn);
+  if (
+    isCall(holder) &&
+    holder.arguments?.[0] === fn &&
+    isMember(holder.callee) &&
+    staticKey(holder.callee) === "handler"
+  ) {
+    return true;
+  }
+  return (
+    holder?.type === "ObjectProperty" &&
+    holder.value === fn &&
+    !holder.computed &&
+    moduleExportName(holder.key) === "loader"
+  );
+}
+
+function topLevelPatternKey(pattern: AnyNode, target: AnyNode): string | null {
+  if (pattern?.type !== "ObjectPattern") return null;
+  for (const property of pattern.properties ?? []) {
+    if (property.type === "RestElement") continue;
+    if (!patternPathTo(property.value, target)) continue;
+    if (property.computed) {
+      return property.key?.type === "StringLiteral" ? property.key.value : null;
+    }
+    return moduleExportName(property.key);
+  }
+  return null;
+}
+
+function collectSlotUses(
+  ctx: ModuleContext,
+  uses: B1SlotUse[],
+  escapes: B1RootEscape[],
+): void {
+  const { oracle } = ctx;
+  const lineOf = (node: AnyNode) => node.loc?.start.line ?? 0;
+  const insideJsx = (node: AnyNode) => {
+    for (let at = oracle.parentOf(node); at; at = oracle.parentOf(at)) {
+      if (at.type === "JSXElement" || at.type === "JSXFragment") return true;
+    }
+    return false;
+  };
+  const skipTs = (start: AnyNode) => {
+    let cursor = start;
+    let parent = oracle.parentOf(cursor);
+    while (
+      parent &&
+      isTransparentExpression(parent) &&
+      parent.expression === cursor
+    ) {
+      cursor = parent;
+      parent = oracle.parentOf(cursor);
+    }
+    return { node: cursor, parent };
+  };
+  const escape = (
+    node: AnyNode,
+    root: B1Root,
+    slot: string | null,
+    reason: string,
+  ) => {
+    if (typeof node.start !== "number" || typeof node.end !== "number") return;
+    escapes.push({
+      root,
+      slot,
+      start: node.start,
+      end: node.end,
+      line: lineOf(node),
+      reason,
+    });
+  };
+  const use = (
+    node: AnyNode,
+    root: B1Root,
+    path: readonly string[],
+    via: B1SlotUse["via"],
+    pageLocal: string | null,
+  ) => {
+    if (path.length === 0) return;
+    if (typeof node.start !== "number" || typeof node.end !== "number") return;
+    uses.push({
+      slot: path[0]!,
+      root,
+      start: node.start,
+      end: node.end,
+      line: lineOf(node),
+      inJsx: insideJsx(node),
+      via,
+      pageLocal: via === "page-member" || via === "member" ? pageLocal : null,
+    });
+  };
+
+  const visited = new Set<AnyNode>();
+  /**
+   * Follows the value `start` evaluates to. `pageLocal` is the local holding
+   * the whole root when `start` is a reference to it; `via` is how `start`
+   * itself was reached.
+   */
+  const follow = (
+    start: AnyNode,
+    root: B1Root,
+    path: readonly string[],
+    via: B1SlotUse["via"],
+    pageLocal: string | null,
+  ): void => {
+    if (visited.has(start)) return;
+    visited.add(start);
+    use(start, root, path, via, pageLocal);
+    const slot = path[0] ?? null;
+    const { node, parent } = skipTs(start);
+    if (!parent) return escape(node, root, slot, "no parent");
+    switch (parent.type) {
+      case "MemberExpression":
+      case "OptionalMemberExpression": {
+        // A computed key: the value is read, not handed on.
+        if (parent.object !== node) return;
+        const key = staticKey(parent);
+        if (key === null) {
+          if (path.length === 0) {
+            return escape(parent, root, null, "a computed member key");
+          }
+          return use(parent, root, path, "member", pageLocal);
+        }
+        const child = [...path, key];
+        // Below an alias stays an alias; below `content("x")` or a page
+        // member it is a member read of the same chain.
+        const childVia: B1SlotUse["via"] =
+          via === "alias" || via === "spread"
+            ? "alias"
+            : via === "content-call"
+              ? "member"
+              : path.length === 0
+                ? "page-member"
+                : "member";
+        const grand = oracle.parentOf(parent);
+        if (
+          (grand?.type === "AssignmentExpression" && grand.left === parent) ||
+          grand?.type === "UpdateExpression" ||
+          (grand?.type === "UnaryExpression" && grand.operator === "delete") ||
+          ((grand?.type === "ForInStatement" ||
+            grand?.type === "ForOfStatement") &&
+            grand.left === parent)
+        ) {
+          // Written, not read; still a place that touches the section.
+          return use(parent, root, child, childVia, pageLocal);
+        }
+        if (isCall(grand) && grand.callee === parent) {
+          if (path.length === 0) {
+            return escape(parent, root, null, "a method is called on it");
+          }
+          return use(parent, root, child, childVia, pageLocal);
+        }
+        return follow(parent, root, child, childVia, pageLocal);
+      }
+      case "VariableDeclarator": {
+        if (parent.init !== node) return escape(node, root, slot, "declared");
+        const pattern = parent.id;
+        if (pattern?.type === "Identifier") {
+          const binding = oracle.bindingOf(pattern);
+          if (!binding || binding.violations.length > 0) {
+            return escape(
+              parent,
+              root,
+              slot,
+              "assigned to a local that changes",
+            );
+          }
+          use(parent, root, path, "alias", null);
+          for (const reference of binding.references) {
+            follow(
+              reference,
+              root,
+              path,
+              path.length === 0 ? "member" : "alias",
+              path.length === 0 ? pattern.name : null,
+            );
+          }
+          return;
+        }
+        if (pattern?.type !== "ObjectPattern") {
+          return escape(parent, root, slot, "destructured as an array");
+        }
+        const ids: AnyNode[] = [];
+        const collect = (value: AnyNode | null | undefined) => {
+          if (!value) return;
+          if (value.type === "Identifier") ids.push(value);
+          else if (value.type === "ObjectPattern")
+            for (const p of value.properties ?? [])
+              collect(p.type === "RestElement" ? p.argument : p.value);
+          else if (value.type === "ArrayPattern")
+            for (const e of value.elements ?? []) collect(e);
+          else if (value.type === "AssignmentPattern") collect(value.left);
+          else if (value.type === "RestElement") collect(value.argument);
+        };
+        collect(pattern);
+        for (const id of ids) {
+          const located = patternPathTo(pattern, id);
+          if (!located || "reason" in located) {
+            escape(
+              parent,
+              root,
+              slot ?? topLevelPatternKey(pattern, id),
+              located && "reason" in located
+                ? located.reason
+                : "not found in its pattern",
+            );
+            continue;
+          }
+          const full = [...path, ...located.keys];
+          const binding = oracle.bindingOf(id);
+          if (!binding || binding.violations.length > 0) {
+            escape(
+              parent,
+              root,
+              full[0] ?? null,
+              "destructured into a local that changes",
+            );
+            continue;
+          }
+          use(parent, root, full, "alias", null);
+          for (const reference of binding.references) {
+            follow(
+              reference,
+              root,
+              full,
+              full.length === 0 ? "member" : "alias",
+              full.length === 0 && id.type === "Identifier" ? id.name : null,
+            );
+          }
+        }
+        return;
+      }
+      case "JSXSpreadAttribute":
+        if (path.length === 0) {
+          return escape(
+            node,
+            root,
+            null,
+            "the whole page is spread into an element",
+          );
+        }
+        return use(node, root, path, "spread", null);
+      case "SpreadElement":
+        return escape(node, root, slot, "copied into another value");
+      case "JSXExpressionContainer":
+        if (path.length === 0) {
+          return escape(
+            node,
+            root,
+            null,
+            "the whole page is handed to an element",
+          );
+        }
+        return;
+      case "TemplateLiteral":
+      case "BinaryExpression":
+      case "UnaryExpression":
+      case "IfStatement":
+      case "WhileStatement":
+      case "DoWhileStatement":
+      case "SwitchStatement":
+      case "SwitchCase":
+      case "ExpressionStatement":
+        return;
+      case "LogicalExpression":
+      case "AwaitExpression":
+        return follow(parent, root, path, via, pageLocal);
+      case "ConditionalExpression":
+        return parent.test === node
+          ? undefined
+          : follow(parent, root, path, via, pageLocal);
+      case "SequenceExpression": {
+        const last = parent.expressions?.[parent.expressions.length - 1];
+        return last === node
+          ? follow(parent, root, path, via, pageLocal)
+          : undefined;
+      }
+      default:
+        // A call argument, a return, an array element, a property value…:
+        // the value reaches code this analysis does not follow. A field
+        // value read this way is already listed where it is read; a whole
+        // page or a whole section cannot be followed any further.
+        if (path.length === 0) {
+          if (
+            root === "page" &&
+            ctx.loaderOrigin &&
+            isLoaderReturn(oracle, node)
+          ) {
+            return;
+          }
+          return escape(
+            node,
+            root,
+            null,
+            "handed to code Morph does not follow",
+          );
+        }
+        if (path.length === 1) {
+          return escape(
+            node,
+            root,
+            slot,
+            "the section is handed to code Morph does not follow",
+          );
+        }
+        return;
+    }
+  };
+
+  if (ctx.contentBinding) {
+    for (const reference of ctx.contentBinding.references) {
+      const parent = oracle.parentOf(reference);
+      const args = isCall(parent) ? (parent.arguments ?? []) : [];
+      if (
+        isCall(parent) &&
+        parent.callee === reference &&
+        args.length === 1 &&
+        args[0]?.type === "StringLiteral"
+      ) {
+        follow(parent, "content", [args[0].value], "content-call", null);
+      } else {
+        escape(
+          reference,
+          "content",
+          null,
+          "content() is used other than with one literal slot",
+        );
+      }
+    }
+  }
+  if (ctx.morphBinding) {
+    for (const reference of ctx.morphBinding.references) {
+      const pages = oracle.parentOf(reference);
+      const get = pages ? oracle.parentOf(pages) : null;
+      const call = get ? oracle.parentOf(get) : null;
+      const args = isCall(call) ? (call.arguments ?? []) : [];
+      if (
+        isMember(pages) &&
+        pages.object === reference &&
+        staticKey(pages) === "pages" &&
+        isMember(get) &&
+        get.object === pages &&
+        staticKey(get) === "get" &&
+        isCall(call) &&
+        call.callee === get &&
+        args.length === 1 &&
+        args[0]?.type === "StringLiteral"
+      ) {
+        follow(call, "page", [], "member", null);
+      } else {
+        escape(
+          reference,
+          "page",
+          null,
+          'morph is used other than as morph.pages.get("/path")',
+        );
+      }
+    }
+  }
+  if (ctx.routeBinding && ctx.loaderOrigin) {
+    for (const reference of ctx.routeBinding.references) {
+      const parent = oracle.parentOf(reference);
+      const grand = parent ? oracle.parentOf(parent) : null;
+      const hook =
+        isMember(parent) && parent.object === reference
+          ? staticKey(parent)
+          : null;
+      if (
+        hook === "useLoaderData" &&
+        isCall(grand) &&
+        grand.callee === parent
+      ) {
+        if ((grand.arguments ?? []).length === 0) {
+          follow(grand, "loader", [], "member", null);
+        } else {
+          escape(grand, "loader", null, "useLoaderData() with a selector");
+        }
+      } else if (
+        hook &&
+        ROUTE_HOOKS_WITHOUT_DATA.has(hook) &&
+        isCall(grand) &&
+        grand.callee === parent
+      ) {
+        continue;
+      } else {
+        escape(
+          reference,
+          "loader",
+          null,
+          "Route is used other than for its hooks",
+        );
+      }
+    }
+  }
+}
+
+function elementPositions(ctx: ModuleContext): B1SlotUseAnalysis["elements"] {
+  const { oracle } = ctx;
+  const out = new Map<
+    number,
+    { end: number; position: B1ElementPosition; guardSlot: string | null }
+  >();
+  const guardSlotOf = (
+    parent: AnyNode | null,
+    element: AnyNode,
+  ): string | null => {
+    if (
+      parent?.type !== "LogicalExpression" ||
+      parent.operator !== "&&" ||
+      parent.right !== element ||
+      !ctx.sectionHiddenBinding
+    ) {
+      return null;
+    }
+    let guard = unwrapTs(parent.left);
+    if (guard.type !== "UnaryExpression" || guard.operator !== "!") return null;
+    guard = unwrapTs(guard.argument);
+    if (
+      !isCall(guard) ||
+      guard.callee?.type !== "Identifier" ||
+      oracle.bindingOf(guard.callee) !== ctx.sectionHiddenBinding ||
+      (guard.arguments ?? []).length !== 1 ||
+      guard.arguments[0]?.type !== "StringLiteral"
+    ) {
+      return null;
+    }
+    return guard.arguments[0].value;
+  };
+  const visit = (node: AnyNode) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (
+      node.type === "JSXElement" &&
+      node.openingElement?.name?.type === "JSXIdentifier" &&
+      /^[A-Z]/.test(node.openingElement.name.name) &&
+      typeof node.start === "number" &&
+      typeof node.end === "number"
+    ) {
+      // Parentheses are not nodes in this AST. A type wrapper around an
+      // element leaves it "other".
+      const parent = oracle.parentOf(node);
+      const guardSlot = guardSlotOf(parent, node);
+      const position: B1ElementPosition =
+        parent?.type === "JSXElement" || parent?.type === "JSXFragment"
+          ? "child"
+          : parent?.type === "ReturnStatement"
+            ? "return"
+            : parent?.type === "ArrowFunctionExpression" && parent.body === node
+              ? "arrow-body"
+              : guardSlot !== null
+                ? "guarded"
+                : "other";
+      out.set(node.start, { end: node.end, position, guardSlot });
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (
+        key === "loc" ||
+        key === "leadingComments" ||
+        key === "trailingComments" ||
+        key === "innerComments"
+      ) {
+        continue;
+      }
+      if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(ctx.ast.program);
+  return out;
+}
+
+/**
+ * Every place one module evaluates a section's value, through the same roots
+ * and bindings as `analyzeB1Route` (`content("slot")`, the proven loader's
+ * `Route.useLoaderData()`, `morph.pages.get("/path")`), and every place a
+ * root is handed to code this analysis does not follow.
+ *
+ * Read-only and conservative: it never says a use is safe, only where it is.
+ * The Hide capability (`theme-hide-capability.ts`) decides from it.
+ */
+export function analyzeB1SlotUses(
+  files: readonly B1SourceFile[],
+  moduleFile: string,
+  options: Readonly<{
+    backend?: B1ScopeBackend;
+    sharedSourceParser?: (
+      path: string,
+      content: string,
+    ) => ThemeSourceAstResult;
+  }> = {},
+): B1SlotUseAnalysis {
+  const normalizedModule = normalizeThemeSourcePath(moduleFile);
+  const normalizedFiles = files.map((file) => ({
+    path: normalizeThemeSourcePath(file.path),
+    content: file.content,
+  }));
+  const filePaths = new Set(normalizedFiles.map((file) => file.path));
+  const parsedSourceFor =
+    options.sharedSourceParser ?? createAnalysisSourceParser(normalizedFiles);
+  const entry = normalizedFiles.find((file) => file.path === normalizedModule);
+  const parsed = entry ? parsedSourceFor(entry.path, entry.content) : null;
+  if (!entry || !parsed?.ok) {
+    return {
+      moduleFile: normalizedModule,
+      uses: [],
+      escapes: [],
+      loaderOrigin: false,
+      contentImportSource: null,
+      elements: new Map(),
+      diagnostics: [
+        parsed && !parsed.ok
+          ? parsed.message
+          : `${normalizedModule} could not be parsed`,
+      ],
+    };
+  }
+  const { ctx, contentAliases } = createRouteModuleContext({
+    ast: parsed.ast,
+    backend: options.backend ?? buildHandScopeOracle,
+    path: normalizedModule,
+    files: normalizedFiles,
+    filePaths,
+    parsedSourceFor,
+  });
+  const diagnostics: string[] = [];
+  if (contentAliases > 1) {
+    diagnostics.push("content is imported more than once");
+  }
+  if (ctx.oracle.hasDirectEval) diagnostics.push("direct eval");
+  const uses: B1SlotUse[] = [];
+  const escapes: B1RootEscape[] = [];
+  collectSlotUses(ctx, uses, escapes);
+
+  let contentImportSource: string | null = null;
+  if (ctx.contentBinding) {
+    for (const statement of parsed.ast.program.body ?? []) {
+      if (
+        statement.type === "ImportDeclaration" &&
+        (statement.specifiers ?? []).some(
+          (specifier: AnyNode) =>
+            specifier.type === "ImportSpecifier" &&
+            ctx.oracle.bindingOf(specifier.local) === ctx.contentBinding,
+        )
+      ) {
+        contentImportSource = statement.source.value;
+      }
+    }
+  }
+  return {
+    moduleFile: normalizedModule,
+    uses,
+    escapes,
+    loaderOrigin: ctx.loaderOrigin,
+    contentImportSource,
+    elements: elementPositions(ctx),
+    diagnostics,
+  };
 }
