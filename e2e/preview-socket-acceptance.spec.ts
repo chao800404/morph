@@ -31,6 +31,10 @@ import { themeScopeFromEditorPath, writeThemeFiles } from "./native-compat";
  *    frame | tab  x  pushed (sign-out, P2d) | notice lost (the grant revoked
  *    in D1 only, so no push reaches the Durable Object and only the lease
  *    can end the socket).
+ *    Each opens its socket on a preview that has finished loading: the
+ *    frame's document ready as the editor received it, the tab's own bridge
+ *    ready event. Revocation while a page is still loading is a different
+ *    case and is not this one.
  *    Recorded separately for each: the window R lies in (the commit is not
  *    observed as one instant: for a push, sign-out sent to answered; for a
  *    lost notice, just before the UPDATE to its return), when the container
@@ -346,6 +350,153 @@ function socketBase(target: Target): string {
   return url.pathname.startsWith(DEV_BASE) ? DEV_BASE : "/";
 }
 
+/**
+ * Installed in every document of a case's context before the editor
+ * navigates; it only listens. The editor keeps each preview-ready message
+ * with the window that sent it, and a preview document keeps when its own
+ * bridge fired its in-page ready event. Hero visible is server-rendered
+ * HTML, not a page that has finished loading (A7 diagnosis, 2026-11-02).
+ */
+function recordReadiness() {
+  performance.setResourceTimingBufferSize(10_000);
+  const w = window as unknown as Record<string, unknown>;
+  const ready: Array<Record<string, unknown>> = [];
+  w.__p4ready = ready;
+  window.addEventListener("message", (event) => {
+    const data = event.data as Record<string, unknown> | null;
+    if (!data || data.type !== "morph:storefront-preview-ready") return;
+    ready.push({
+      t: Date.now(),
+      source: event.source,
+      origin: event.origin,
+      previewSession: data.previewSession,
+      previewDocument: data.previewDocument,
+    });
+  });
+  window.addEventListener("morph:storefront-preview-bridge-ready", () => {
+    w.__p4bridgeReadyAt ??= Date.now();
+  });
+}
+
+/**
+ * The document now in `frame`: its id and session, read from the protocol
+ * module its own page loaded (the same URL, so the same instance).
+ */
+async function documentInFrame(
+  frame: Frame,
+): Promise<{ previewDocument: string; previewSession: string } | null> {
+  return frame
+    .evaluate(async () => {
+      const url = performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .find((name) => name.includes("/morph/preview/preview-protocol"));
+      if (!url) return null;
+      const protocol = (await import(/* @vite-ignore */ url)) as {
+        documentPreviewIdentity?: () => string;
+        documentPreviewRuntimeChannel?: () => { previewSession: string } | null;
+      };
+      const channel = protocol.documentPreviewRuntimeChannel?.() ?? null;
+      const previewDocument = protocol.documentPreviewIdentity?.() ?? null;
+      return channel && previewDocument
+        ? { previewDocument, previewSession: channel.previewSession }
+        : null;
+    })
+    .catch(() => null);
+}
+
+/**
+ * Waits until the editor has the ready of the document now in the frame:
+ * sent by that iframe's window, from its origin, on its session, naming its
+ * document. A ready from an earlier document in the same frame names another
+ * document and does not count.
+ */
+async function frameDocumentReady(page: Page, frame: Frame) {
+  const origin = new URL(frame.url()).origin;
+  const iframe = await frame.frameElement();
+  let matched: { t: number; previewDocument: string } | null = null;
+  await expect
+    .poll(
+      async () => {
+        const current = await documentInFrame(frame);
+        if (!current) return null;
+        matched = await page.evaluate(
+          ({ iframe, origin, current }) => {
+            const ready = ((window as unknown as Record<string, unknown>)
+              .__p4ready ?? []) as Array<Record<string, unknown>>;
+            const hit = ready.find(
+              (message) =>
+                message.source === (iframe as HTMLIFrameElement).contentWindow &&
+                message.origin === origin &&
+                message.previewSession === current.previewSession &&
+                message.previewDocument === current.previewDocument,
+            );
+            return hit
+              ? { t: hit.t as number, previewDocument: current.previewDocument }
+              : null;
+          },
+          { iframe, origin, current },
+        );
+        return matched;
+      },
+      {
+        timeout: 120_000,
+        message: "the editor has the ready of the document now in the frame",
+      },
+    )
+    .not.toBeNull();
+  return { signal: "editor-received-ready", ...matched! };
+}
+
+/**
+ * A tab has no editor behind it: its bridge posts ready to `window.parent`,
+ * which in a tab is itself, on the editor's origin, so nothing receives it.
+ * Its own in-page ready event is what it has; recorded by this document's
+ * init script, so an earlier document's cannot count. Whether any ready
+ * reached the editor or the tab is recorded beside it.
+ */
+async function tabDocumentReady(page: Page, tab: Page) {
+  let readyAt: number | null = null;
+  await expect
+    .poll(
+      async () => {
+        readyAt = await tab
+          .evaluate(
+            () =>
+              ((window as unknown as Record<string, unknown>)
+                .__p4bridgeReadyAt ?? null) as number | null,
+          )
+          .catch(() => null);
+        return readyAt;
+      },
+      {
+        timeout: 120_000,
+        message: "the tab's own bridge said its document is ready",
+      },
+    )
+    .not.toBeNull();
+  const readyMessagesAtEditorNotFromAFrame = await page.evaluate(() => {
+    const frames = Array.from(document.querySelectorAll("iframe")).map(
+      (element) => element.contentWindow,
+    );
+    const ready = ((window as unknown as Record<string, unknown>).__p4ready ??
+      []) as Array<Record<string, unknown>>;
+    return ready.filter((message) => !frames.includes(message.source as Window))
+      .length;
+  });
+  const readyMessagesAtTab = await tab.evaluate(
+    () =>
+      (((window as unknown as Record<string, unknown>).__p4ready ?? []) as unknown[])
+        .length,
+  );
+  return {
+    signal: "tab-bridge-ready-event",
+    t: readyAt!,
+    readyMessagesAtEditorNotFromAFrame,
+    readyMessagesAtTab,
+  };
+}
+
 test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
   test.describe.configure({ mode: "serial" });
   test.setTimeout(10 * 60_000);
@@ -471,10 +622,17 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
     const caseStart = new Date().toISOString();
     const page = await ownSessionPage(browser);
     try {
+      // Before any navigation, so no ready can be missed.
+      await page.context().addInitScript(recordReadiness);
       await openEditor(page);
       const frame = await previewFrame(page);
       await expect(frame.locator(HERO)).toBeVisible({ timeout: 120_000 });
+      // The case is a socket on a preview that has finished loading: wait
+      // for the target document's own ready, never a fixed delay.
+      let readiness: Record<string, unknown> | null =
+        surface === "frame" ? await frameDocumentReady(page, frame) : null;
       let target: Target = frame;
+
       if (surface === "tab") {
         const framedHost = new URL(frame.url()).hostname;
         const [tab] = await Promise.all([
@@ -488,8 +646,12 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
           { timeout: 90_000 },
         );
         await expect(tab.locator(HERO)).toBeVisible({ timeout: 90_000 });
+        readiness = await tabDocumentReady(page, tab);
         target = tab;
       }
+      record.readiness ??= {} as Record<string, unknown>;
+      (record.readiness as Record<string, unknown>)[caseName] = readiness;
+      save();
       const sock = `${caseName}-${Date.now()}`;
       await openSocket(target, sock);
       // A frame every 100 ms, each echoed back, until the socket ends.
@@ -609,6 +771,7 @@ test.describe("A7: a Theme WebSocket relayed under its preview grant", () => {
           closed.t === undefined ? null : judge(closed.t, rWindow, TARGET_MS),
       };
       const result = {
+        readiness,
         rWindow,
         ...revokeDetail,
         // When each endpoint received the last data frame. The relay's
