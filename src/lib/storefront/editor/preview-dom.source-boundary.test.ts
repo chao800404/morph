@@ -9,10 +9,12 @@ import {
 
 const NONCE = "0123456789abcdef";
 const OTHER = "fedcba9876543210";
-const open = (n: number, nonce = NONCE) =>
-  `<!--morph:s ${nonce}:aaaaaaaa:${n}-->`;
-const close = (n: number, nonce = NONCE) =>
-  `<!--/morph:s ${nonce}:aaaaaaaa:${n}-->`;
+const SRC = "a".repeat(64);
+/** The v2 id of candidate `n` (any distinct range will do here). */
+const id = (n: number, nonce = NONCE) =>
+  `${nonce}:2:${SRC}:${n * 10}:${n * 10 + 5}`;
+const open = (n: number, nonce = NONCE) => `<!--morph:s2 ${id(n, nonce)}-->`;
+const close = (n: number, nonce = NONCE) => `<!--/morph:s2 ${id(n, nonce)}-->`;
 
 beforeEach(() => {
   (globalThis as Record<string, unknown>).__morphPreviewSourceSelection = {
@@ -34,7 +36,7 @@ describe("a preview boundary candidate", () => {
     expect(
       at(`${open(0)}<section><h2 id="target">a</h2></section>${close(0)}`),
     ).toEqual({
-      marker: `${NONCE}:aaaaaaaa:0`,
+      marker: id(0),
       selectable: true,
       reason: null,
     });
@@ -45,11 +47,11 @@ describe("a preview boundary candidate", () => {
       at(
         `${open(0)}<div>${open(1)}<header></header><footer id="target"></footer>${close(1)}</div>${close(0)}`,
       )?.marker,
-    ).toBe(`${NONCE}:aaaaaaaa:1`);
+    ).toBe(id(1));
     expect(
       at(`${open(0)}<a></a>${close(0)}${open(1)}<b id="target"></b>${close(1)}`)
         ?.marker,
-    ).toBe(`${NONCE}:aaaaaaaa:1`);
+    ).toBe(id(1));
   });
 
   it("is not selectable when the browser moved one end (split)", () => {
@@ -69,7 +71,7 @@ describe("a preview boundary candidate", () => {
       `${open(0)}<main><p>${open(1)}</p><div id="target"></div>${close(1)}<p></p></main>${close(0)}`,
     );
     expect(result).toEqual({
-      marker: `${NONCE}:aaaaaaaa:0`,
+      marker: id(0),
       selectable: false,
       reason: "split-inside",
     });
@@ -110,7 +112,22 @@ describe("a preview boundary candidate", () => {
       at(
         `${open(0)}${open(1, OTHER)}<p id="target"></p>${close(1, OTHER)}${close(0)}`,
       )?.marker,
-    ).toBe(`${NONCE}:aaaaaaaa:0`);
+    ).toBe(id(0));
+  });
+
+  it("reads the v2 id only: a v1 marker is no boundary, the longest v2 id is one", () => {
+    expect(
+      at(
+        `<!--morph:s ${NONCE}:aaaaaaaa:0--><p id="target"></p><!--/morph:s ${NONCE}:aaaaaaaa:0-->`,
+      ),
+    ).toEqual({ marker: null, selectable: false, reason: "outside" });
+    const longest = `${NONCE}:999:${"f".repeat(64)}:999998:999999`;
+    expect(longest).toHaveLength(99);
+    expect(
+      at(
+        `<!--morph:s2 ${longest}--><p id="target"></p><!--/morph:s2 ${longest}-->`,
+      ),
+    ).toEqual({ marker: longest, selectable: true, reason: null });
   });
 
   it("is not reported at all outside the source-selection preview", () => {
