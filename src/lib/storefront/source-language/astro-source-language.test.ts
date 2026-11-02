@@ -397,3 +397,96 @@ describe("what the projection refuses", () => {
     expect(checkPositions(source, projection).mismatches).toEqual([]);
   });
 });
+
+/** The answer without attribute `index` (and its expression, if any). */
+function withoutAttribute(
+  answer: AstroParseTemplate,
+  index: number,
+): AstroParseTemplate {
+  return {
+    ...answer,
+    attributes: answer.attributes.filter((_, i) => i !== index),
+    expressions: answer.expressions
+      .filter((expression) => expression[5] !== index)
+      .map((expression) =>
+        expression[5] > index
+          ? [
+              expression[0],
+              expression[1],
+              expression[2],
+              expression[3],
+              expression[4],
+              expression[5] - 1,
+              expression[6],
+            ]
+          : expression,
+      ),
+  };
+}
+
+describe("defence in depth: an answer that silently omits something", () => {
+  it("an omitted spread before a claimed prop: opening-tag-unrecognised", async () => {
+    // Were `{...other}` dropped, `title` would look like the last word.
+    const source = astroPage(
+      "const other = {};\n",
+      '<Hero {...other} title="a" />',
+    );
+    const answer = await confirmed(source);
+    expect(ok(projectAstroTemplate(source, answer)).ok).toBe(true);
+    const spread = answer.attributes.findIndex(
+      (entry) => entry[1] === "spread",
+    );
+    expect(
+      projectAstroTemplate(source, withoutAttribute(answer, spread)),
+    ).toMatchObject({
+      ok: false,
+      class: "capability-limit",
+      reason: "opening-tag-unrecognised",
+    });
+  });
+
+  it("an omitted last attribute: opening-tag-unrecognised", async () => {
+    const source = astroPage(
+      "const other = {};\n",
+      '<Hero title="a" {...other} />',
+    );
+    const answer = await confirmed(source);
+    const spread = answer.attributes.findIndex(
+      (entry) => entry[1] === "spread",
+    );
+    expect(
+      projectAstroTemplate(source, withoutAttribute(answer, spread)),
+    ).toMatchObject({
+      ok: false,
+      reason: "opening-tag-unrecognised",
+    });
+  });
+
+  it("an omitted element in template text: template-text-unrecognised", async () => {
+    const source = "<section><p>x</p><b>y</b></section>\n";
+    const answer = await confirmed(source);
+    expect(answer.elements).toHaveLength(3);
+    const tampered: AstroParseTemplate = {
+      ...answer,
+      elements: answer.elements.slice(0, 2),
+      elementCount: 2,
+    };
+    expect(projectAstroTemplate(source, tampered)).toMatchObject({
+      ok: false,
+      class: "capability-limit",
+      reason: "template-text-unrecognised",
+    });
+  });
+
+  it("tags inside comments, raw-text elements and is:raw are not elements", async () => {
+    const source =
+      "<!DOCTYPE html>\n<!-- <Hero {...hero} /> -->\n" +
+      '<script>const s = "<div>x</div>";</script>\n' +
+      "<style>a::after { content: '<b>'; }</style>\n" +
+      "<pre is:raw><b>not an element</b></pre>\n<p>a < b</p>\n";
+    const projection = ok(
+      projectAstroTemplate(source, await confirmed(source)),
+    );
+    expect(checkPositions(source, projection).mismatches).toEqual([]);
+  });
+});

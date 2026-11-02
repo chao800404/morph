@@ -72,7 +72,22 @@ export type AstroProjectionFailure =
   | Readonly<{
       ok: false;
       class: "capability-limit";
-      reason: "fragment-unparsed";
+      /**
+       * - `fragment-unparsed`: Babel cannot read a delimited fragment.
+       * - `opening-tag-unrecognised`: an opening tag holds text that is
+       *   neither whitespace nor one of the answer's attributes.
+       * - `template-text-unrecognised`: template text (outside raw-text
+       *   elements and HTML comments) holds what looks like a tag the
+       *   answer does not list as an element.
+       *
+       * The last two are defence in depth against an answer that silently
+       * omits an attribute or an element: a spread the projection never saw
+       * could override a prop it would otherwise claim.
+       */
+      reason:
+        | "fragment-unparsed"
+        | "opening-tag-unrecognised"
+        | "template-text-unrecognised";
       detail: string;
     }>
   | Readonly<{
@@ -90,13 +105,28 @@ class ProjectionRefusal extends Error {
   }
 }
 
-const unparsed = (detail: string) =>
+const unparsed = (
+  detail: string,
+  reason:
+    | "fragment-unparsed"
+    | "opening-tag-unrecognised"
+    | "template-text-unrecognised" = "fragment-unparsed",
+) =>
   new ProjectionRefusal({
     ok: false,
     class: "capability-limit",
-    reason: "fragment-unparsed",
+    reason,
     detail,
   });
+
+/**
+ * Elements whose content is raw text, not template: what looks like a tag
+ * in them is not one. `is:raw` makes any element's content raw.
+ */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title"]);
+
+/** `<` starting a tag or a closing tag, once HTML comments are removed. */
+const TAG_START = /<[A-Za-z/>]/;
 
 const inconsistent = (detail: string) =>
   new ProjectionRefusal({
@@ -510,6 +540,14 @@ class Projector {
       if ((node.start as number) < cursor) {
         throw inconsistent(`attribute ${attribute} overlaps what precedes it`);
       }
+      // Only whitespace between the name and an attribute or between two:
+      // anything else is an attribute the answer did not list.
+      if (this.skipWhitespace(cursor) < (node.start as number)) {
+        throw unparsed(
+          `<${tag}> at ${start}: unrecognised text before attribute ${attribute}`,
+          "opening-tag-unrecognised",
+        );
+      }
       cursor = node.end as number;
       return node;
     });
@@ -525,6 +563,7 @@ class Projector {
     } else {
       throw unparsed(
         `<${tag}> at ${start}: unrecognised text in the opening tag`,
+        "opening-tag-unrecognised",
       );
     }
     if (openingEnd > end || (selfClosing && openingEnd !== end)) {
@@ -592,6 +631,7 @@ class Projector {
         return { start, end, make: () => this.container(index) };
       }),
     ].sort((a, b) => a.start - b.start);
+    const raw = owner >= 0 && this.isRawText(owner);
     const out: Node[] = [];
     let cursor = from;
     for (const item of items) {
@@ -600,17 +640,43 @@ class Projector {
           `a child at ${item.start} lies outside its parent's content [${from}, ${to})`,
         );
       }
-      if (item.start > cursor) out.push(this.text(cursor, item.start));
+      if (item.start > cursor) out.push(this.text(cursor, item.start, raw));
       out.push(item.make());
       cursor = item.end;
     }
-    if (to > cursor) out.push(this.text(cursor, to));
+    if (to > cursor) out.push(this.text(cursor, to, raw));
     return out;
   }
 
-  /** Text between children: written verbatim, HTML comments included. */
-  private text(start: number, end: number): Node {
+  private isRawText(element: number): boolean {
+    const tag = this.answer.tags[this.answer.elements[element]![2]]!;
+    return (
+      RAW_TEXT_ELEMENTS.has(tag.toLowerCase()) ||
+      (this.attributesOf.get(element) ?? []).some(
+        (attribute) => this.answer.attributes[attribute]![2] === "is:raw",
+      )
+    );
+  }
+
+  /**
+   * Text between children: written verbatim, HTML comments included. Outside
+   * raw-text content, text with a tag in it (comments aside) means the
+   * answer left an element out, so it is refused rather than read as text.
+   */
+  private text(start: number, end: number, rawContent: boolean): Node {
     const raw = this.source.slice(start, end);
+    if (!rawContent) {
+      const visible = raw
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(/<!--[\s\S]*$/, "");
+      const tag = TAG_START.exec(visible);
+      if (tag) {
+        throw unparsed(
+          `template text at ${start} holds a tag the answer does not list`,
+          "template-text-unrecognised",
+        );
+      }
+    }
     return this.at(
       { type: "JSXText", value: raw, extra: { raw, rawValue: raw } },
       start,
