@@ -35,6 +35,7 @@ import {
   deployReleaseArtifact,
   deployWithRecovery,
 } from "@/lib/storefront/service/storefront-release-reconciler";
+import { describeReleaseDeploymentFailure } from "@/lib/storefront/service/release-deployment-failure";
 import { withDeploymentLease } from "@/lib/storefront/service/deployment-lease";
 import { assertPublishPublicFiles } from "@/lib/storefront/service/publish-public-files-check";
 import {
@@ -711,17 +712,19 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                 }),
             });
             if (!deployed.success) {
-              return fail(
-                "deploymentDrift" in deployed && deployed.deploymentDrift
-                  ? "Deployment failed and the previous activation could not be restored. The storefront requires reconciliation."
-                  : "Deployment failed. The previous activation was restored; reload and retry publishing.",
-                {
-                  error:
-                    "deploymentDrift" in deployed && deployed.deploymentDrift
-                      ? "RELEASE_DEPLOYMENT_DRIFT"
-                      : "RELEASE_DEPLOYMENT_FAILED",
-                },
+              // The specific reason (a plan rule or the deployer's) travels
+              // with the failure, so the editor can say why rather than
+              // "retry", and it is logged: the response used to be the only
+              // trace, and it carried no reason.
+              const described = describeReleaseDeploymentFailure(deployed);
+              console.error(
+                `Publish deployment failed: ${described.error}/${described.reason}:`,
+                deployed.message,
               );
+              return fail(described.message, {
+                error: described.error,
+                reason: described.reason,
+              });
             }
 
             // Recorded only now, so a failed deploy above leaves no trace that

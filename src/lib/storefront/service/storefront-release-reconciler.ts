@@ -1,7 +1,13 @@
 import type { R2BucketLike } from "../compiler/cloudflare-r2-theme-build-artifact-store";
 import type { CanonicalThemeBuildManifest } from "../compiler/theme-build-artifact-store.types";
-import { planThemeWorkerDeployment } from "./theme-worker-deployment-plan";
-import type { ThemeWorkerDeployer } from "./theme-worker-deployer.types";
+import {
+  planThemeWorkerDeployment,
+  type ThemeWorkerDeploymentPlanFailureReason,
+} from "./theme-worker-deployment-plan";
+import type {
+  ThemeWorkerDeployer,
+  ThemeWorkerDeploymentFailureReason,
+} from "./theme-worker-deployer.types";
 
 /**
  * Path of the Worker config the build toolchain generates inside the artifact.
@@ -53,6 +59,15 @@ export type ReleaseActivationFailureReason =
   | "DEPLOY_FAILED"
   | "ACTIVATION_CONFLICT";
 
+/**
+ * Which rule refused, under PLAN_REJECTED, or what the deployer reported,
+ * under DEPLOY_FAILED. Kept so a publish can name the reason instead of a
+ * generic failure.
+ */
+export type ReleaseDeploymentFailureDetail =
+  | ThemeWorkerDeploymentPlanFailureReason
+  | ThemeWorkerDeploymentFailureReason;
+
 export type ReleaseActivationResult =
   | {
       success: true;
@@ -63,6 +78,7 @@ export type ReleaseActivationResult =
   | {
       success: false;
       reason: ReleaseActivationFailureReason;
+      detail?: ReleaseDeploymentFailureDetail;
       message: string;
       /**
        * True when the Theme Worker was replaced but D1 was not updated, so the
@@ -151,6 +167,7 @@ export type ReleaseDeploymentOutcome =
   | {
       success: false;
       reason: Exclude<ReleaseActivationFailureReason, "ACTIVATION_CONFLICT">;
+      detail?: ReleaseDeploymentFailureDetail;
       message: string;
     };
 
@@ -219,6 +236,7 @@ export async function deployReleaseArtifact(args: {
     return {
       success: false,
       reason: "PLAN_REJECTED",
+      detail: planned.reason,
       message: planned.message,
     };
   }
@@ -234,6 +252,7 @@ export async function deployReleaseArtifact(args: {
     return {
       success: false,
       reason: "DEPLOY_FAILED",
+      detail: deployed.reason,
       message: deployed.message,
     };
   }
@@ -371,6 +390,7 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
     return {
       success: false,
       reason: "PLAN_REJECTED",
+      detail: planned.reason,
       message: planned.message,
     };
   }
@@ -418,6 +438,8 @@ async function activateReleaseWithDeploymentUnsynchronised(args: {
     return {
       success: false,
       reason: "DEPLOY_FAILED",
+      // Absent when the deployer threw rather than reporting a reason.
+      ...("reason" in deployed ? { detail: deployed.reason } : {}),
       message: deployed.message ?? "Deployment failed.",
       ...("deploymentDrift" in deployed && deployed.deploymentDrift
         ? { deploymentDrift: true }
