@@ -91,25 +91,77 @@ const REAL_WORKER_CONFIG = {
  */
 const ASTRO_SSR_ONLY_FILES: Array<[string, string, number]> = [
   ["runtime/server/entry.mjs", "application/javascript", 5085],
-  ["runtime/server/virtual_astro_middleware.mjs", "application/javascript", 554],
-  ["runtime/server/chunks/sequence_DTSdHy0I.mjs", "application/javascript", 45907],
-  ["runtime/server/chunks/rolldown-runtime_D7vh-g_o.mjs", "application/javascript", 418],
+  [
+    "runtime/server/virtual_astro_middleware.mjs",
+    "application/javascript",
+    554,
+  ],
+  [
+    "runtime/server/chunks/sequence_DTSdHy0I.mjs",
+    "application/javascript",
+    45907,
+  ],
+  [
+    "runtime/server/chunks/rolldown-runtime_D7vh-g_o.mjs",
+    "application/javascript",
+    418,
+  ],
   ["runtime/server/chunks/index_DjbXKkUC.mjs", "application/javascript", 1092],
-  ["runtime/server/chunks/remote_C4g_SDQC.mjs", "application/javascript", 24528],
-  ["runtime/server/chunks/static-image-collection_B7a_3QHU.mjs", "application/javascript", 2568],
+  [
+    "runtime/server/chunks/remote_C4g_SDQC.mjs",
+    "application/javascript",
+    24528,
+  ],
+  [
+    "runtime/server/chunks/static-image-collection_B7a_3QHU.mjs",
+    "application/javascript",
+    2568,
+  ],
   ["runtime/server/chunks/path_Dip7U3GC.mjs", "application/javascript", 17132],
-  ["runtime/server/chunks/noop-entrypoint_BYLrzUxc.mjs", "application/javascript", 157],
-  ["runtime/server/chunks/image-passthrough-endpoint_B7Pm3YhY.mjs", "application/javascript", 2318],
-  ["runtime/server/chunks/console_B6RZXqok.mjs", "application/javascript", 297980],
-  ["runtime/server/chunks/_virtual_astro_server-island-manifest_q0HM18kM.mjs", "application/javascript", 275],
+  [
+    "runtime/server/chunks/noop-entrypoint_BYLrzUxc.mjs",
+    "application/javascript",
+    157,
+  ],
+  [
+    "runtime/server/chunks/image-passthrough-endpoint_B7Pm3YhY.mjs",
+    "application/javascript",
+    2318,
+  ],
+  [
+    "runtime/server/chunks/console_B6RZXqok.mjs",
+    "application/javascript",
+    297980,
+  ],
+  [
+    "runtime/server/chunks/_virtual_astro_server-island-manifest_q0HM18kM.mjs",
+    "application/javascript",
+    275,
+  ],
   ["runtime/server/chunks/about_CSe0sutn.mjs", "application/javascript", 1123],
   ["runtime/server/chunks/astro_D3q60h5k.mjs", "application/javascript", 16737],
   ["runtime/server/chunks/Hero_C5-F9J1l.mjs", "application/javascript", 743],
-  ["runtime/server/chunks/compiler_ieHWJfig.mjs", "application/javascript", 1247],
+  [
+    "runtime/server/chunks/compiler_ieHWJfig.mjs",
+    "application/javascript",
+    1247,
+  ],
   ["runtime/server/chunks/noop_CsmV5BFc.mjs", "application/javascript", 704],
-  ["runtime/server/chunks/_virtual_astro_session-driver_DIk1nzQP.mjs", "application/javascript", 223],
-  ["runtime/server/chunks/entrypoints_Dx0rolSO.mjs", "application/javascript", 170896],
-  ["runtime/server/chunks/service_DUAfAxsp.mjs", "application/javascript", 43763],
+  [
+    "runtime/server/chunks/_virtual_astro_session-driver_DIk1nzQP.mjs",
+    "application/javascript",
+    223,
+  ],
+  [
+    "runtime/server/chunks/entrypoints_Dx0rolSO.mjs",
+    "application/javascript",
+    170896,
+  ],
+  [
+    "runtime/server/chunks/service_DUAfAxsp.mjs",
+    "application/javascript",
+    43763,
+  ],
   ["runtime/client/_headers", "application/octet-stream", 63],
   ["runtime/client/.assetsignore", "application/octet-stream", 24],
   ["runtime/server/wrangler.json", "application/json; charset=utf-8", 1579],
@@ -284,9 +336,9 @@ describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", ()
       ]),
       workerConfig: ASTRO_WORKER_CONFIG,
     });
-    expect(result.success && result.plan.assets.map((a) => a.servedPath)).toEqual(
-      ["/robots.txt"],
-    );
+    expect(
+      result.success && result.plan.assets.map((a) => a.servedPath),
+    ).toEqual(["/robots.txt"]);
   });
 });
 

@@ -22,8 +22,7 @@ const EXPLANATIONS: Record<ReleaseDeploymentFailureCode, string> = {
   MISSING_WORKER_ENTRY:
     "the build has no Worker entry the storefront could run",
   MISSING_CLIENT_ASSETS: "the build wrote no client output",
-  INVALID_WORKER_CONFIG:
-    "the build's Worker config is missing or incomplete",
+  INVALID_WORKER_CONFIG: "the build's Worker config is missing or incomplete",
   FORBIDDEN_BINDING:
     "the build's Worker config asks for a binding the platform does not provide",
   INVALID_SCRIPT_NAME: "this storefront's id cannot name a Theme Worker",

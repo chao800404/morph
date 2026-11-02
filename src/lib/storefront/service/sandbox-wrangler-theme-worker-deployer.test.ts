@@ -402,7 +402,10 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     const config = JSON.parse(
       written.get("/workspace/deploy/server/wrangler.json") ?? "null",
     );
-    expect(config.assets).toEqual({ directory: "../client", binding: "ASSETS" });
+    expect(config.assets).toEqual({
+      directory: "../client",
+      binding: "ASSETS",
+    });
     expect(config.main).toBe("index.js");
     expect(session.exec).toHaveBeenCalledOnce();
   });

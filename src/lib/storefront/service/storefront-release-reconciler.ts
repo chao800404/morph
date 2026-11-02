@@ -65,8 +65,7 @@ export type ReleaseActivationFailureReason =
  * generic failure.
  */
 export type ReleaseDeploymentFailureDetail =
-  | ThemeWorkerDeploymentPlanFailureReason
-  | ThemeWorkerDeploymentFailureReason;
+  ThemeWorkerDeploymentPlanFailureReason | ThemeWorkerDeploymentFailureReason;
 
 export type ReleaseActivationResult =
   | {
