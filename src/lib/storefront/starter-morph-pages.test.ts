@@ -304,6 +304,112 @@ describe("morph.pages.get in the browser", () => {
   });
 });
 
+describe("the render context a page request carries", () => {
+  const CONTEXT = "v1.render-context.signature";
+  const platform = {
+    "x-morph-content-origin": "https://core.example",
+    "x-morph-render-context": CONTEXT,
+  };
+  /** A fresh answer per call: these tests read more than once. */
+  const respond = () =>
+    vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json(published),
+    );
+  /** The render context header each call sent, or null for none. */
+  const sentContexts = (fetcher: ReturnType<typeof respond>) =>
+    fetcher.mock.calls.map(([, init]) =>
+      new Headers(init?.headers).get("x-morph-render-context"),
+    );
+  type Exports = {
+    loadContentSlots: (pathname: string) => Promise<unknown>;
+  };
+
+  it("sends it back on morph.pages.get's server read", async () => {
+    const fetcher = respond();
+    const { morph } = loadMorph({
+      branch: "server",
+      fetcher,
+      requestHeaders: platform,
+    });
+
+    await morph.pages.get("/home");
+
+    expect(sentContexts(fetcher)).toEqual([CONTEXT]);
+    expect(
+      new Headers(fetcher.mock.calls[0]![1]?.headers).get("accept"),
+    ).toBe("application/json");
+  });
+
+  it("sends it back on loadContentSlots' server read", async () => {
+    const fetcher = respond();
+    const loaded = loadMorph({
+      branch: "server",
+      fetcher,
+      requestHeaders: platform,
+    }) as unknown as Exports;
+
+    await loaded.loadContentSlots("/home");
+
+    expect(fetcher.mock.calls[0]![0]).toBe(
+      "https://core.example/_morph/content?path=%2Fhome",
+    );
+    expect(sentContexts(fetcher)).toEqual([CONTEXT]);
+  });
+
+  it("sends none on a server read when the request has none", async () => {
+    const fetcher = respond();
+    const requestHeaders = { "x-morph-content-origin": "https://core.example" };
+    const { morph } = loadMorph({ branch: "server", fetcher, requestHeaders });
+    const loaded = loadMorph({
+      branch: "server",
+      fetcher,
+      requestHeaders,
+    }) as unknown as Exports;
+
+    await morph.pages.get("/home");
+    await loaded.loadContentSlots("/home");
+
+    expect(sentContexts(fetcher)).toEqual([null, null]);
+  });
+
+  it("never sends it to a local MORPH_CONTENT_ORIGIN", async () => {
+    vi.stubEnv("MORPH_CONTENT_ORIGIN", "https://store.example");
+    const fetcher = respond();
+    const { morph } = loadMorph({
+      branch: "server",
+      fetcher,
+      requestHeaders: { "x-morph-render-context": CONTEXT },
+    });
+
+    await morph.pages.get("/home");
+
+    expect(fetcher.mock.calls[0]![0]).toBe(
+      "https://store.example/_morph/content?path=%2Fhome",
+    );
+    expect(sentContexts(fetcher)).toEqual([null]);
+  });
+
+  it("is never sent by the browser branch, which is a new request", async () => {
+    const fetcher = respond();
+    const { morph } = loadMorph({
+      branch: "client",
+      fetcher,
+      requestHeaders: platform,
+    });
+    const loaded = loadMorph({
+      branch: "client",
+      fetcher,
+      requestHeaders: platform,
+    }) as unknown as Exports;
+
+    await morph.pages.get("/home");
+    await loaded.loadContentSlots("/home");
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sentContexts(fetcher)).toEqual([null, null]);
+  });
+});
+
 describe("the content module a workspace starts with", () => {
   it("starts a new workspace on the module with pages", () => {
     expect(
