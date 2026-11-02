@@ -458,6 +458,70 @@ describe("the route path comes from the registry", () => {
       ]);
     }
   });
+
+  /** One page analysed against a handwritten route record. */
+  async function withRecord(
+    record: { path: string; dynamic: boolean },
+    pagePath: string,
+  ) {
+    const sourcePath = "src/pages/post.astro";
+    const source =
+      '---\nimport Hero from "../components/Hero.astro";\nimport { morph } from "@morph/sdk/astro";\n' +
+      `const post = await morph.pages.get(${JSON.stringify(pagePath)});\n---\n<Hero {...post.intro} />\n`;
+    const files = [...ASTRO_FIXTURE, { path: sourcePath, content: source }];
+    return analyzeB1AstroRoute({
+      files,
+      route: { ...record, sourcePath },
+      projections: new Map([
+        ...fixtureProjections,
+        [sourcePath, await project(source)] as const,
+      ]),
+    });
+  }
+
+  it("a bracket path claims nothing even when the record says it is static", async () => {
+    const analysis = await withRecord(
+      { path: "/blog/[slug]", dynamic: false },
+      "/blog/[slug]",
+    );
+    expect(summarize(analysis)).toEqual([
+      { name: "Hero", section: "intro", claims: [] },
+    ]);
+    expect(analysis.diagnostics).toEqual([
+      "src/pages/post.astro has no static route path; page fields are not claimed",
+    ]);
+    // Control: the same page under a static record does claim.
+    const control = await withRecord(
+      { path: "/blog/first", dynamic: false },
+      "/blog/first",
+    );
+    expect(summarize(control)).toEqual([
+      { name: "Hero", section: "intro", claims: ["intro.desc", "intro.title"] },
+    ]);
+  });
+
+  it("dynamic is authoritative, and the injected path is normalised like pages.get's", async () => {
+    expect(
+      summarize(
+        await withRecord({ path: "/blog/first", dynamic: true }, "/blog/first"),
+      ),
+    ).toEqual([{ name: "Hero", section: "intro", claims: [] }]);
+    expect(
+      summarize(
+        await withRecord(
+          { path: "/blog/first/", dynamic: false },
+          "/blog/first",
+        ),
+      ),
+    ).toEqual([
+      { name: "Hero", section: "intro", claims: ["intro.desc", "intro.title"] },
+    ]);
+    expect(
+      summarize(
+        await withRecord({ path: "blog/first", dynamic: false }, "/blog/first"),
+      ),
+    ).toEqual([{ name: "Hero", section: "intro", claims: [] }]);
+  });
 });
 
 describe("reachability follows .astro imports", () => {

@@ -1819,10 +1819,14 @@ export function analyzeB1AstroRoute(args: {
       diagnostics: [`${routeFile} has no parser projection of its content`],
     };
   }
+  // `dynamic` is authoritative, and the path goes through the same
+  // normalisation as `morph.pages.get()`'s argument. A bracket is an Astro
+  // route parameter whatever the record says, so it never names a static
+  // page here (Astro only: Start's `normalizePagePath` is left as it is, Q6).
   const routePath =
-    !args.route.dynamic && args.route.path.startsWith("/")
-      ? args.route.path
-      : null;
+    args.route.dynamic || /[[\]]/.test(args.route.path)
+      ? null
+      : normalizePagePath(args.route.path);
   const fallback = createAnalysisSourceParser(
     [...contentByPath].map(([path, content]) => ({ path, content })),
     parsedModules,
