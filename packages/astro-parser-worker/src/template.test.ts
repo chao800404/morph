@@ -143,7 +143,13 @@ describe("mode=template", () => {
       inner: `\n${ROADMAP_FRONTMATTER}`,
       elements: [{ tag: "Hero", text: "<Hero {...hero} />", parent: -1 }],
       attributes: [
-        { element: 0, kind: "spread", name: "...", nameText: null, value: "hero" },
+        {
+          element: 0,
+          kind: "spread",
+          name: "...",
+          nameText: null,
+          value: "hero",
+        },
       ],
       expressions: [
         { text: "{...hero}", inner: "hero", owner: 0, attribute: 0, jsx: [] },
@@ -178,16 +184,64 @@ describe("mode=template", () => {
       },
     ]);
     expect(attributes).toEqual([
-      { element: 0, kind: "expression", name: "title", nameText: "title", value: "{about.intro.title}" },
-      { element: 0, kind: "expression", name: "desc", nameText: "desc", value: "{about.intro.desc}" },
-      { element: 1, kind: "expression", name: "title", nameText: "title", value: "{about.team.title}" },
-      { element: 1, kind: "expression", name: "desc", nameText: "desc", value: "{about.team.desc}" },
+      {
+        element: 0,
+        kind: "expression",
+        name: "title",
+        nameText: "title",
+        value: "{about.intro.title}",
+      },
+      {
+        element: 0,
+        kind: "expression",
+        name: "desc",
+        nameText: "desc",
+        value: "{about.intro.desc}",
+      },
+      {
+        element: 1,
+        kind: "expression",
+        name: "title",
+        nameText: "title",
+        value: "{about.team.title}",
+      },
+      {
+        element: 1,
+        kind: "expression",
+        name: "desc",
+        nameText: "desc",
+        value: "{about.team.desc}",
+      },
     ]);
     expect(expressions).toEqual([
-      { text: "{about.intro.title}", inner: "about.intro.title", owner: 0, attribute: 0, jsx: [] },
-      { text: "{about.intro.desc}", inner: "about.intro.desc", owner: 0, attribute: 1, jsx: [] },
-      { text: "{about.team.title}", inner: "about.team.title", owner: 1, attribute: 2, jsx: [] },
-      { text: "{about.team.desc}", inner: "about.team.desc", owner: 1, attribute: 3, jsx: [] },
+      {
+        text: "{about.intro.title}",
+        inner: "about.intro.title",
+        owner: 0,
+        attribute: 0,
+        jsx: [],
+      },
+      {
+        text: "{about.intro.desc}",
+        inner: "about.intro.desc",
+        owner: 0,
+        attribute: 1,
+        jsx: [],
+      },
+      {
+        text: "{about.team.title}",
+        inner: "about.team.title",
+        owner: 1,
+        attribute: 2,
+        jsx: [],
+      },
+      {
+        text: "{about.team.desc}",
+        inner: "about.team.desc",
+        owner: 1,
+        attribute: 3,
+        jsx: [],
+      },
     ]);
   });
 
@@ -230,7 +284,13 @@ describe("mode=template", () => {
           attribute: -1,
           jsx: [1],
         },
-        { text: "{item.title}", inner: "item.title", owner: 2, attribute: 0, jsx: [] },
+        {
+          text: "{item.title}",
+          inner: "item.title",
+          owner: 2,
+          attribute: 0,
+          jsx: [],
+        },
       ],
     });
   });
@@ -264,18 +324,66 @@ describe("mode=template", () => {
     const answer = await template(source);
     const { attributes, expressions } = view(source, answer);
     expect(attributes).toEqual([
-      { element: 0, kind: "expression", name: "class:list", nameText: "class:list", value: '{["a", { b: on }]}' },
-      { element: 0, kind: "expression", name: "set:html", nameText: "set:html", value: "{html}" },
+      {
+        element: 0,
+        kind: "expression",
+        name: "class:list",
+        nameText: "class:list",
+        value: '{["a", { b: on }]}',
+      },
+      {
+        element: 0,
+        kind: "expression",
+        name: "set:html",
+        nameText: "set:html",
+        value: "{html}",
+      },
       // Shorthand: the compiler reads the name from inside the braces.
-      { element: 0, kind: "expression", name: "title", nameText: "title", value: "{title}" },
+      {
+        element: 0,
+        kind: "expression",
+        name: "title",
+        nameText: "title",
+        value: "{title}",
+      },
       // Backtick: a container without braces, the template literal itself.
-      { element: 0, kind: "expression", name: "data-x", nameText: "data-x", value: "`t-${a}`" },
-      { element: 0, kind: "boolean", name: "hidden", nameText: "hidden", value: null },
-      { element: 0, kind: "literal", name: "lang", nameText: "lang", value: '"zh"' },
-      { element: 0, kind: "spread", name: "...", nameText: null, value: "rest" },
+      {
+        element: 0,
+        kind: "expression",
+        name: "data-x",
+        nameText: "data-x",
+        value: "`t-${a}`",
+      },
+      {
+        element: 0,
+        kind: "boolean",
+        name: "hidden",
+        nameText: "hidden",
+        value: null,
+      },
+      {
+        element: 0,
+        kind: "literal",
+        name: "lang",
+        nameText: "lang",
+        value: '"zh"',
+      },
+      {
+        element: 0,
+        kind: "spread",
+        name: "...",
+        nameText: null,
+        value: "rest",
+      },
     ]);
     expect(expressions).toEqual([
-      { text: '{["a", { b: on }]}', inner: '["a", { b: on }]', owner: 0, attribute: 0, jsx: [] },
+      {
+        text: '{["a", { b: on }]}',
+        inner: '["a", { b: on }]',
+        owner: 0,
+        attribute: 0,
+        jsx: [],
+      },
       { text: "{html}", inner: "html", owner: 0, attribute: 1, jsx: [] },
       { text: "{title}", inner: "title", owner: 0, attribute: 2, jsx: [] },
       { text: "`t-${a}`", inner: "`t-${a}`", owner: 0, attribute: 3, jsx: [] },
@@ -284,7 +392,9 @@ describe("mode=template", () => {
     // The shorthand's name lies inside its value; the backtick container
     // starts where its expression does.
     const shorthand = answer.attributes[2];
-    expect(shorthand[3]! > shorthand[5]! && shorthand[4]! < shorthand[6]!).toBe(true);
+    expect(shorthand[3]! > shorthand[5]! && shorthand[4]! < shorthand[6]!).toBe(
+      true,
+    );
     expect(answer.expressions[3][0]).toBe(answer.expressions[3][2]);
   });
 
@@ -299,8 +409,20 @@ describe("mode=template", () => {
         { tag: "i", text: "<i/>", parent: 0 },
       ],
       attributes: [
-        { element: 0, kind: "element", name: "slot", nameText: "slot", value: "<b/>" },
-        { element: 0, kind: "expression", name: "c", nameText: "c", value: "{<i/>}" },
+        {
+          element: 0,
+          kind: "element",
+          name: "slot",
+          nameText: "slot",
+          value: "<b/>",
+        },
+        {
+          element: 0,
+          kind: "expression",
+          name: "c",
+          nameText: "c",
+          value: "{<i/>}",
+        },
       ],
       expressions: [
         { text: "{<i/>}", inner: "<i/>", owner: 0, attribute: 1, jsx: [2] },
@@ -321,7 +443,13 @@ describe("mode=template", () => {
       attributes: [],
       expressions: [
         // The compiler's empty expression spans the comment.
-        { text: "{/* jsx comment */}", inner: "/* jsx comment */", owner: 0, attribute: -1, jsx: [] },
+        {
+          text: "{/* jsx comment */}",
+          inner: "/* jsx comment */",
+          owner: 0,
+          attribute: -1,
+          jsx: [],
+        },
         { text: "{a}", inner: "a", owner: 0, attribute: -1, jsx: [] },
       ],
     });
@@ -347,16 +475,37 @@ describe("mode=template", () => {
       elements: [
         {
           tag: "section",
-          text: source.slice(source.indexOf("<section"), source.lastIndexOf("\r\n")),
+          text: source.slice(
+            source.indexOf("<section"),
+            source.lastIndexOf("\r\n"),
+          ),
           parent: -1,
         },
         { tag: "h1", text: "<h1>{標題}</h1>", parent: 0 },
         { tag: "Hero", text: '<Hero alt="🎉" {...hero} />', parent: 0 },
       ],
       attributes: [
-        { element: 0, kind: "literal", name: "title", nameText: "title", value: '"中文 😀"' },
-        { element: 2, kind: "literal", name: "alt", nameText: "alt", value: '"🎉"' },
-        { element: 2, kind: "spread", name: "...", nameText: null, value: "hero" },
+        {
+          element: 0,
+          kind: "literal",
+          name: "title",
+          nameText: "title",
+          value: '"中文 😀"',
+        },
+        {
+          element: 2,
+          kind: "literal",
+          name: "alt",
+          nameText: "alt",
+          value: '"🎉"',
+        },
+        {
+          element: 2,
+          kind: "spread",
+          name: "...",
+          nameText: null,
+          value: "hero",
+        },
       ],
       expressions: [
         { text: "{標題}", inner: "標題", owner: 1, attribute: -1, jsx: [] },
@@ -428,7 +577,8 @@ describe("mode=template", () => {
         expect(text.endsWith(">")).toBe(true);
       }
       for (const [, kind, name, nameStart, nameEnd] of answer.attributes) {
-        if (kind !== "spread") expect(cut(source, nameStart, nameEnd)).toBe(name);
+        if (kind !== "spread")
+          expect(cut(source, nameStart, nameEnd)).toBe(name);
       }
       for (const [start, end, innerStart] of answer.expressions) {
         const text = source.slice(start, end);

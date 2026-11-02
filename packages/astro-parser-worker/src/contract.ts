@@ -364,7 +364,9 @@ export type AstroParseRequest =
 
 export function astroParseRequestPath(request: AstroParseRequest): string {
   const query =
-    request.mode === "at" ? `mode=at&offset=${request.offset}` : `mode=${request.mode}`;
+    request.mode === "at"
+      ? `mode=at&offset=${request.offset}`
+      : `mode=${request.mode}`;
   return `${ASTRO_PARSER_PARSE_PATH}?${query}`;
 }
 
@@ -486,8 +488,7 @@ function checkTemplate(
   const depths: number[] = [];
   for (let i = 0; i < elements.length; i++) {
     const element = elements[i] as unknown;
-    if (!Array.isArray(element) || element.length !== 4)
-      return `element-${i}`;
+    if (!Array.isArray(element) || element.length !== 4) return `element-${i}`;
     const [start, end, tag, parent] = element;
     if (!checkRange(start, end, length)) return `element-range-${i}`;
     if (!isCount(tag) || tag >= tags.length) return `element-tag-${i}`;

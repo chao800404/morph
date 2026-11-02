@@ -291,7 +291,9 @@ export interface AstroParserFailure {
 export function classifyAstroParserRefusal(
   code: AstroTemplateRefusalCode,
 ): AstroParserFailure {
-  const temporarily = (reason: AstroParserFailureReason): AstroParserFailure => ({
+  const temporarily = (
+    reason: AstroParserFailureReason,
+  ): AstroParserFailure => ({
     class: "temporarily-unconfirmable",
     reason,
   });

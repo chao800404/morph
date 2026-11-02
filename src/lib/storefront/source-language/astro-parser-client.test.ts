@@ -206,9 +206,13 @@ describe("parseAstroSource fails closed", () => {
     "tells %s from another contract version apart",
     async (_, status, body) => {
       expect(
-        await parseAstroSource(answering(status, JSON.stringify(body)), "<p/>", {
-          mode: "outline",
-        }),
+        await parseAstroSource(
+          answering(status, JSON.stringify(body)),
+          "<p/>",
+          {
+            mode: "outline",
+          },
+        ),
       ).toEqual({
         status: "unavailable",
         code: "contract-mismatch",
@@ -281,7 +285,12 @@ describe("parseAstroTemplate", () => {
     const diagnostics = {
       total: 1,
       first: [
-        { severity: "error", text: "Unexpected token", byteStart: 4, byteEnd: 5 },
+        {
+          severity: "error",
+          text: "Unexpected token",
+          byteStart: 4,
+          byteEnd: 5,
+        },
       ],
     };
     const answer = await templateOf(P, { diagnostics });
@@ -325,15 +334,24 @@ describe("parseAstroTemplate", () => {
   it.each([
     ["an element past the end", { elements: [[0, P.length + 1, 0, -1]] }],
     ["a negative position", { elements: [[-1, P.length, 0, -1]] }],
-    ["an expression outside its owner", { expressions: [[0, 3, 1, 2, 1, -1, []]] }],
-    ["an unknown attribute kind", {
-      attributes: [[0, "shorthand", "a", 4, 5, 3, 6]],
-    }],
+    [
+      "an expression outside its owner",
+      { expressions: [[0, 3, 1, 2, 1, -1, []]] },
+    ],
+    [
+      "an unknown attribute kind",
+      {
+        attributes: [[0, "shorthand", "a", 4, 5, 3, 6]],
+      },
+    ],
     ["no compiler", { compiler: undefined }],
-    ["an outline under the template's name", {
-      mode: "outline",
-      nodes: [0, P.length, 0, 0, 0],
-    }],
+    [
+      "an outline under the template's name",
+      {
+        mode: "outline",
+        nodes: [0, P.length, 0, 0, 0],
+      },
+    ],
   ])("refuses %s as an invalid response", async (_, overrides) => {
     const answer = await templateOf(P, overrides);
     expect(
@@ -398,9 +416,21 @@ describe("classifyAstroParserRefusal", () => {
   it.each<[AstroTemplateRefusalCode, string, string]>([
     ["binding-missing", "temporarily-unconfirmable", "parser-binding-missing"],
     ["binding-failed", "temporarily-unconfirmable", "parser-binding-failed"],
-    ["invalid-response", "temporarily-unconfirmable", "parser-invalid-response"],
-    ["contract-mismatch", "temporarily-unconfirmable", "parser-contract-mismatch"],
-    ["version-mismatch", "temporarily-unconfirmable", "parser-version-mismatch"],
+    [
+      "invalid-response",
+      "temporarily-unconfirmable",
+      "parser-invalid-response",
+    ],
+    [
+      "contract-mismatch",
+      "temporarily-unconfirmable",
+      "parser-contract-mismatch",
+    ],
+    [
+      "version-mismatch",
+      "temporarily-unconfirmable",
+      "parser-version-mismatch",
+    ],
     ["parser-busy", "temporarily-unconfirmable", "parser-busy"],
     ["parser-wait-timeout", "temporarily-unconfirmable", "parser-wait-timeout"],
     ["parser-trapped", "temporarily-unconfirmable", "parser-trapped"],

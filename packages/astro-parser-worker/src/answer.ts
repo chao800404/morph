@@ -187,18 +187,14 @@ function outermostJsx(expression: unknown): Node[] {
  * program lies between them. Null if any of that does not hold, which the
  * contract allows only with diagnostics.
  */
-function frontmatterInner(
-  text: string,
-  fm: Node,
-): [number, number] | null {
+function frontmatterInner(text: string, fm: Node): [number, number] | null {
   const start = fm.start ?? -1;
   const end = fm.end ?? -1;
   const open = text.indexOf("---", start);
   if (open < 0 || text.slice(start, open).trim() !== "") return null;
   const innerStart = open + 3;
   const innerEnd = end - 3;
-  if (innerEnd < innerStart || text.slice(innerEnd, end) !== "---")
-    return null;
+  if (innerEnd < innerStart || text.slice(innerEnd, end) !== "---") return null;
   const program = fm.program as Node | undefined;
   if (
     program &&
