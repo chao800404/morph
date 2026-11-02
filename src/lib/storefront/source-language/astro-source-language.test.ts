@@ -16,7 +16,10 @@ import {
   startLocalAstroParser,
   type LocalAstroParser,
 } from "@morph/astro-parser-worker/testing";
-import { buildHandScopeOracle, type AnyNode } from "@/lib/storefront/ast/b1-scope";
+import {
+  buildHandScopeOracle,
+  type AnyNode,
+} from "@/lib/storefront/ast/b1-scope";
 import {
   ASTRO_B1_SAMPLES,
   ASTRO_SAMPLES_ENDING_AT_NESTED_JSX,
@@ -48,11 +51,17 @@ async function confirmed(source: string): Promise<AstroParseTemplate> {
 }
 
 function ok(result: AstroProjectionResult): AstroProjection {
-  if (!result.ok) throw new Error(`projection refused: ${result.reason} ${result.detail}`);
+  if (!result.ok)
+    throw new Error(`projection refused: ${result.reason} ${result.detail}`);
   return result;
 }
 
-type Loose = { type: string; start?: number; end?: number; [key: string]: unknown };
+type Loose = {
+  type: string;
+  start?: number;
+  end?: number;
+  [key: string]: unknown;
+};
 
 function walk(root: unknown, visit: (node: Loose) => void) {
   const seen = new Set<object>();
@@ -85,10 +94,14 @@ function checkPositions(source: string, projection: AstroProjection) {
     checked += 1;
     const fail = (problem: string) =>
       mismatches.push(`${node.type} ${start}-${end}: ${problem}`);
-    if (start < 0 || end > source.length || start > end) return fail("out of bounds");
+    if (start < 0 || end > source.length || start > end)
+      return fail("out of bounds");
     const text = source.slice(start, end);
     const loc = node.loc as
-      | { start: { line: number; column: number }; end: { line: number; column: number } }
+      | {
+          start: { line: number; column: number };
+          end: { line: number; column: number };
+        }
       | undefined;
     if (!loc) fail("no loc");
     else {
@@ -100,7 +113,9 @@ function checkPositions(source: string, projection: AstroProjection) {
         loc.end.line !== b.line ||
         loc.end.column !== b.column
       ) {
-        fail(`loc ${loc.start.line}:${loc.start.column}-${loc.end.line}:${loc.end.column}`);
+        fail(
+          `loc ${loc.start.line}:${loc.start.column}-${loc.end.line}:${loc.end.column}`,
+        );
       }
     }
     for (const placeholder of projection.placeholders) {
@@ -108,14 +123,20 @@ function checkPositions(source: string, projection: AstroProjection) {
         offset > placeholder.start && offset < placeholder.end;
       const within = start >= placeholder.start && end <= placeholder.end;
       if (!within && (inside(start) || inside(end))) {
-        fail(`boundary inside placeholder ${placeholder.start}-${placeholder.end}`);
+        fail(
+          `boundary inside placeholder ${placeholder.start}-${placeholder.end}`,
+        );
       }
     }
     const extra = node.extra as { raw?: string } | undefined;
     switch (node.type) {
       case "Identifier": {
         const name = node.name as string;
-        if (text !== name && !text.startsWith(`${name}:`) && !text.startsWith(`${name}?`)) {
+        if (
+          text !== name &&
+          !text.startsWith(`${name}:`) &&
+          !text.startsWith(`${name}?`)
+        ) {
           fail(`slice ${JSON.stringify(text)} is not ${name}`);
         }
         break;
@@ -126,17 +147,20 @@ function checkPositions(source: string, projection: AstroProjection) {
       case "StringLiteral":
       case "NumericLiteral":
       case "JSXText":
-        if (text !== extra?.raw) fail(`slice ${JSON.stringify(text)} is not raw`);
+        if (text !== extra?.raw)
+          fail(`slice ${JSON.stringify(text)} is not raw`);
         break;
       case "JSXElement": {
         const opening = node.openingElement as Loose;
         const name = opening.name as Loose;
         const tag = source.slice(name.start, name.end);
-        if (!text.startsWith(`<${tag}`) || !text.endsWith(">")) fail("element slice");
+        if (!text.startsWith(`<${tag}`) || !text.endsWith(">"))
+          fail("element slice");
         break;
       }
       case "JSXFragment":
-        if (!text.startsWith("<") || !text.endsWith(">")) fail("fragment slice");
+        if (!text.startsWith("<") || !text.endsWith(">"))
+          fail("fragment slice");
         break;
       case "JSXExpressionContainer":
         if (
@@ -147,10 +171,12 @@ function checkPositions(source: string, projection: AstroProjection) {
         }
         break;
       case "JSXSpreadAttribute":
-        if (!/^\{\s*\.\.\./.test(text) || !text.endsWith("}")) fail("spread slice");
+        if (!/^\{\s*\.\.\./.test(text) || !text.endsWith("}"))
+          fail("spread slice");
         break;
       case "TemplateLiteral":
-        if (!text.startsWith("`") || !text.endsWith("`")) fail("template literal slice");
+        if (!text.startsWith("`") || !text.endsWith("`"))
+          fail("template literal slice");
         break;
       case "CommentLine":
         if (text !== `//${node.value as string}`) fail("comment slice");
@@ -165,17 +191,22 @@ function checkPositions(source: string, projection: AstroProjection) {
   return { checked, mismatches };
 }
 
-const PROJECTED = ASTRO_B1_SAMPLES.filter((sample) => sample.expected !== "refused");
+const PROJECTED = ASTRO_B1_SAMPLES.filter(
+  (sample) => sample.expected !== "refused",
+);
 const answers = new Map<string, AstroParseTemplate>();
 
 beforeAll(async () => {
-  for (const sample of PROJECTED) answers.set(sample.id, await confirmed(sample.source));
+  for (const sample of PROJECTED)
+    answers.set(sample.id, await confirmed(sample.source));
 }, 60_000);
 
 describe("projectAstroTemplate positions", () => {
   for (const sample of PROJECTED) {
     it(`${sample.id}: every projected node slices the source to its own text`, () => {
-      const projection = ok(projectAstroTemplate(sample.source, answers.get(sample.id)!));
+      const projection = ok(
+        projectAstroTemplate(sample.source, answers.get(sample.id)!),
+      );
       const { checked, mismatches } = checkPositions(sample.source, projection);
       expect(mismatches).toEqual([]);
       expect(checked).toBeGreaterThan(20);
@@ -185,7 +216,9 @@ describe("projectAstroTemplate positions", () => {
   it("lines and columns are the source's on CRLF, Chinese and emoji (U1), in UTF-16 units", () => {
     const sample = PROJECTED.find((entry) => entry.id === "U1")!;
     expect(sample.source).toContain("\r\n");
-    const projection = ok(projectAstroTemplate(sample.source, answers.get("U1")!));
+    const projection = ok(
+      projectAstroTemplate(sample.source, answers.get("U1")!),
+    );
     const elements: Loose[] = [];
     walk(projection.ast, (node) => {
       if (node.type === "JSXElement") elements.push(node);
@@ -201,7 +234,9 @@ describe("projectAstroTemplate positions", () => {
     expect(loc.start.column).toBe(lines[lines.length - 1]!.length);
     expect(sample.source.slice(card.start, card.start! + 5)).toBe("<Card");
     // The offset is not a UTF-8 byte offset: emoji and CJK come before it.
-    expect(new TextEncoder().encode(before).length).toBeGreaterThan(card.start!);
+    expect(new TextEncoder().encode(before).length).toBeGreaterThan(
+      card.start!,
+    );
   });
 });
 
@@ -210,7 +245,11 @@ describe("D90-1 reverse check: without the ancestor-range restore", () => {
     it(`${id}: positions are wrong`, () => {
       const sample = PROJECTED.find((entry) => entry.id === id)!;
       const naive = ok(
-        projectAstroTemplateReverseCheck(sample.source, answers.get(id)!, "no-ancestor-restore"),
+        projectAstroTemplateReverseCheck(
+          sample.source,
+          answers.get(id)!,
+          "no-ancestor-restore",
+        ),
       );
       const { mismatches } = checkPositions(sample.source, naive);
       expect(mismatches.length).toBeGreaterThan(0);
@@ -221,7 +260,11 @@ describe("D90-1 reverse check: without the ancestor-range restore", () => {
     for (const id of ["A1", "S2", "F5"]) {
       const sample = PROJECTED.find((entry) => entry.id === id)!;
       const naive = ok(
-        projectAstroTemplateReverseCheck(sample.source, answers.get(id)!, "no-ancestor-restore"),
+        projectAstroTemplateReverseCheck(
+          sample.source,
+          answers.get(id)!,
+          "no-ancestor-restore",
+        ),
       );
       expect(checkPositions(sample.source, naive).mismatches, id).toEqual([]);
     }
@@ -230,7 +273,9 @@ describe("D90-1 reverse check: without the ancestor-range restore", () => {
   it("N1: the restored LogicalExpression ends at the element's end, not the placeholder's name", () => {
     const sample = PROJECTED.find((entry) => entry.id === "N1")!;
     const answer = answers.get("N1")!;
-    const hero = answer.elements.find((element) => answer.tags[element[2]] === "Hero")!;
+    const hero = answer.elements.find(
+      (element) => answer.tags[element[2]] === "Hero",
+    )!;
     const logical = (projection: AstroProjection) => {
       let found: Loose | null = null;
       walk(projection.ast, (node) => {
@@ -241,7 +286,13 @@ describe("D90-1 reverse check: without the ancestor-range restore", () => {
     const restored = logical(ok(projectAstroTemplate(sample.source, answer)));
     expect(restored.end).toBe(hero[1]);
     const naive = logical(
-      ok(projectAstroTemplateReverseCheck(sample.source, answer, "no-ancestor-restore")),
+      ok(
+        projectAstroTemplateReverseCheck(
+          sample.source,
+          answer,
+          "no-ancestor-restore",
+        ),
+      ),
     );
     expect(naive.end).toBe(hero[0] + 2);
   });
@@ -263,12 +314,18 @@ describe("in-place grafting", () => {
       }
     });
     const element = card! as Loose;
-    const range = answer.elements.find((entry) => answer.tags[entry[2]] === "Card")!;
+    const range = answer.elements.find(
+      (entry) => answer.tags[entry[2]] === "Card",
+    )!;
     expect([element.start, element.end]).toEqual([range[0], range[1]]);
     const arrow = oracle.parentOf(element as unknown as AnyNode)!;
     expect(arrow.type).toBe("ArrowFunctionExpression");
-    expect(oracle.parentOf(oracle.parentOf(arrow)!)!.type).toBe("JSXExpressionContainer");
-    const spread = ((element.openingElement as Loose).attributes as Loose[])[0]!;
+    expect(oracle.parentOf(oracle.parentOf(arrow)!)!.type).toBe(
+      "JSXExpressionContainer",
+    );
+    const spread = (
+      (element.openingElement as Loose).attributes as Loose[]
+    )[0]!;
     const binding = oracle.bindingOf(spread.argument as unknown as AnyNode)!;
     expect(binding.kind).toBe("param");
     expect(binding.declaration).toBe(arrow);
@@ -276,13 +333,16 @@ describe("in-place grafting", () => {
 
   it("F1: a comment-only container is an empty expression, and comments keep their text", () => {
     const sample = PROJECTED.find((entry) => entry.id === "F1")!;
-    const projection = ok(projectAstroTemplate(sample.source, answers.get("F1")!));
+    const projection = ok(
+      projectAstroTemplate(sample.source, answers.get("F1")!),
+    );
     const empty: Loose[] = [];
     walk(projection.ast, (node) => {
       if (node.type === "JSXEmptyExpression") empty.push(node);
     });
     expect(empty).toHaveLength(1);
-    const comments = (projection.ast as unknown as { comments: Loose[] }).comments;
+    const comments = (projection.ast as unknown as { comments: Loose[] })
+      .comments;
     expect(comments.map((comment) => comment.value)).toEqual([
       " 註解 line comment",
       " block\n comment ",
@@ -294,7 +354,7 @@ describe("in-place grafting", () => {
 describe("what the projection refuses", () => {
   it("a template that is not JavaScript Babel can read: capability limit, not author syntax", async () => {
     const source = astroPage(
-      'const hero = {};\n',
+      "const hero = {};\n",
       "{(() => { return<Hero {...hero} /> })()}",
     );
     const result = projectAstroTemplate(source, await confirmed(source));
@@ -311,7 +371,9 @@ describe("what the projection refuses", () => {
     const shifted: AstroParseTemplate = {
       ...answer,
       elements: answer.elements.map((element, index) =>
-        index === 1 ? [element[0] + 1, element[1], element[2], element[3]] : element,
+        index === 1
+          ? [element[0] + 1, element[1], element[2], element[3]]
+          : element,
       ),
     };
     expect(projectAstroTemplate(source, shifted)).toMatchObject({
@@ -328,7 +390,9 @@ describe("what the projection refuses", () => {
 
   it("reads `---` in the template as text and a page without frontmatter as template only", async () => {
     const source = "<p>--- not a fence ---</p>\n<hr />\n";
-    const projection = ok(projectAstroTemplate(source, await confirmed(source)));
+    const projection = ok(
+      projectAstroTemplate(source, await confirmed(source)),
+    );
     expect(projection.ast.program.body).toHaveLength(1);
     expect(checkPositions(source, projection).mismatches).toEqual([]);
   });

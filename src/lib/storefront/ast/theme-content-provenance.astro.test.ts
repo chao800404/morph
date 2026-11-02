@@ -58,7 +58,8 @@ async function project(source: string, variant: Variant = "in-place") {
     variant === "in-place"
       ? projectAstroTemplate(source, outcome.result)
       : projectAstroTemplateReverseCheck(source, outcome.result, variant);
-  if (!result.ok) throw new Error(`projection refused: ${result.reason} ${result.detail}`);
+  if (!result.ok)
+    throw new Error(`projection refused: ${result.reason} ${result.detail}`);
   return result;
 }
 
@@ -107,7 +108,11 @@ async function analyzeAstro(
   }
   projections.set(routeFile, await project(source, options.variant));
   for (const path of options.skipProjection ?? []) projections.delete(path);
-  return analyzeB1AstroRoute({ files, route: routeOf(files, routeFile), projections });
+  return analyzeB1AstroRoute({
+    files,
+    route: routeOf(files, routeFile),
+    projections,
+  });
 }
 
 function summarize(analysis: B1RouteAnalysis): AstroB1Summary[] {
@@ -115,13 +120,18 @@ function summarize(analysis: B1RouteAnalysis): AstroB1Summary[] {
     name: instance.componentName,
     section: instance.section,
     claims: Object.values(instance.claims)
-      .flatMap((claim) => (claim.kind === "claim" ? [`${claim.slot}.${claim.field}`] : []))
+      .flatMap((claim) =>
+        claim.kind === "claim" ? [`${claim.slot}.${claim.field}`] : [],
+      )
       .sort(),
   }));
 }
 
 function analyzeStart(source: string, routeFile: string) {
-  return analyzeB1Route([...START_FIXTURE, { path: routeFile, content: source }], routeFile);
+  return analyzeB1Route(
+    [...START_FIXTURE, { path: routeFile, content: source }],
+    routeFile,
+  );
 }
 
 const startRouteOf = (routeFile: string) =>
@@ -149,8 +159,12 @@ describe("the experiment's samples under the Astro profile", () => {
 describe("Astro equals Start on every TSX twin, except where Astro is stricter", () => {
   for (const sample of ASTRO_B1_SAMPLES.filter((entry) => entry.twin)) {
     it(sample.id, async () => {
-      const astro = summarize(await analyzeAstro(sample.routeFile, sample.source));
-      const start = summarize(analyzeStart(sample.twin!, startRouteOf(sample.routeFile)));
+      const astro = summarize(
+        await analyzeAstro(sample.routeFile, sample.source),
+      );
+      const start = summarize(
+        analyzeStart(sample.twin!, startRouteOf(sample.routeFile)),
+      );
       const stricter = ASTRO_STRICTER_THAN_START[sample.id];
       if (stricter) {
         // Start claims here (its rule, unchanged); Astro does not (D90-3).
@@ -159,7 +173,9 @@ describe("Astro equals Start on every TSX twin, except where Astro is stricter",
         expect(astro.map(({ name, section }) => ({ name, section }))).toEqual(
           start.map(({ name, section }) => ({ name, section })),
         );
-        expect(astro.every((instance) => instance.claims.length === 0)).toBe(true);
+        expect(astro.every((instance) => instance.claims.length === 0)).toBe(
+          true,
+        );
       } else {
         expect(astro).toEqual(start);
       }
@@ -167,7 +183,11 @@ describe("Astro equals Start on every TSX twin, except where Astro is stricter",
   }
 
   it("the stricter samples are exactly N3, N4 and N5", () => {
-    expect(Object.keys(ASTRO_STRICTER_THAN_START).sort()).toEqual(["N3", "N4", "N5"]);
+    expect(Object.keys(ASTRO_STRICTER_THAN_START).sort()).toEqual([
+      "N3",
+      "N4",
+      "N5",
+    ]);
   });
 
   it("the stricter rule names its reason on the claim", async () => {
@@ -182,27 +202,46 @@ describe("Astro equals Start on every TSX twin, except where Astro is stricter",
 });
 
 describe("D90-1 reverse check: hoisting nested JSX outward binds wrongly", () => {
-  const sampleById = (id: string) => ASTRO_B1_SAMPLES.find((entry) => entry.id === id)!;
+  const sampleById = (id: string) =>
+    ASTRO_B1_SAMPLES.find((entry) => entry.id === id)!;
 
   it("N1: a conditional instance hoisted to the top claims fields it must not", async () => {
     const sample = sampleById("N1");
-    expect(summarize(await analyzeAstro(sample.routeFile, sample.source, { variant: "hoist" })))
-      .toEqual([HERO_BOTH]);
+    expect(
+      summarize(
+        await analyzeAstro(sample.routeFile, sample.source, {
+          variant: "hoist",
+        }),
+      ),
+    ).toEqual([HERO_BOTH]);
   });
 
   it("S1: a map parameter named hero, hoisted out of its scope, takes the page's hero", async () => {
     const sample = sampleById("S1");
-    expect(summarize(await analyzeAstro(sample.routeFile, sample.source, { variant: "hoist" })))
-      .toEqual([
-        { name: "Hero", section: null, claims: [] },
-        { name: "Card", section: null, claims: [] },
-      ]);
+    expect(
+      summarize(
+        await analyzeAstro(sample.routeFile, sample.source, {
+          variant: "hoist",
+        }),
+      ),
+    ).toEqual([
+      { name: "Hero", section: null, claims: [] },
+      { name: "Card", section: null, claims: [] },
+    ]);
   });
 
   it("S3: a parameter named morph, hoisted out of its scope, becomes the trusted morph", async () => {
     const sample = sampleById("S3");
-    expect(summarize(await analyzeAstro(sample.routeFile, sample.source, { variant: "hoist" })))
-      .toEqual([HERO_BOTH, { name: "Card", section: "card", claims: ["card.title"] }]);
+    expect(
+      summarize(
+        await analyzeAstro(sample.routeFile, sample.source, {
+          variant: "hoist",
+        }),
+      ),
+    ).toEqual([
+      HERO_BOTH,
+      { name: "Card", section: "card", claims: ["card.title"] },
+    ]);
   });
 
   it("in-place grafting gives the expected result where hoisting differs", async () => {
@@ -210,17 +249,23 @@ describe("D90-1 reverse check: hoisting nested JSX outward binds wrongly", () =>
     for (const sample of ASTRO_B1_SAMPLES) {
       if (sample.expected === "refused") continue;
       const hoisted = summarize(
-        await analyzeAstro(sample.routeFile, sample.source, { variant: "hoist" }),
+        await analyzeAstro(sample.routeFile, sample.source, {
+          variant: "hoist",
+        }),
       );
-      if (JSON.stringify(hoisted) !== JSON.stringify(sample.expected)) changed.push(sample.id);
+      if (JSON.stringify(hoisted) !== JSON.stringify(sample.expected))
+        changed.push(sample.id);
     }
-    expect(changed).toEqual(expect.arrayContaining(["N1", "N3", "N4", "N5", "S1", "S2", "S3"]));
+    expect(changed).toEqual(
+      expect.arrayContaining(["N1", "N3", "N4", "N5", "S1", "S2", "S3"]),
+    );
   });
 });
 
 describe("the trusted morph is the platform alias only", () => {
   const TEMPLATE = "<Hero {...hero} />";
-  const body = 'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
+  const body =
+    'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
   const page = (morphImport: string) =>
     `---\nimport Hero from "../components/Hero.astro";\n${morphImport}\n${body}---\n${TEMPLATE}\n`;
   const UNTRUSTED = [{ name: "Hero", section: null, claims: [] }];
@@ -235,7 +280,10 @@ describe("the trusted morph is the platform alias only", () => {
 
   it("an author's own src/morph/content.ts is not, on Astro (it is Start's trusted module)", async () => {
     const extraFiles = [
-      { path: "src/morph/content.ts", content: 'export { morph } from "@morph/sdk/astro";\n' },
+      {
+        path: "src/morph/content.ts",
+        content: 'export { morph } from "@morph/sdk/astro";\n',
+      },
     ];
     const analysis = await analyzeAstro(
       "src/pages/index.astro",
@@ -247,7 +295,10 @@ describe("the trusted morph is the platform alias only", () => {
 
   it("a local module named like the SDK is not", async () => {
     const extraFiles = [
-      { path: "src/@morph/sdk/astro.ts", content: "export const morph = { pages: { get: async () => ({}) } };\n" },
+      {
+        path: "src/@morph/sdk/astro.ts",
+        content: "export const morph = { pages: { get: async () => ({}) } };\n",
+      },
     ];
     const analysis = await analyzeAstro(
       "src/pages/index.astro",
@@ -259,7 +310,10 @@ describe("the trusted morph is the platform alias only", () => {
 
   it("a relative path to the platform's own copy (.morph/sdk/astro) is not", async () => {
     const extraFiles = [
-      { path: ".morph/sdk/astro/index.ts", content: "export const morph = {};\n" },
+      {
+        path: ".morph/sdk/astro/index.ts",
+        content: "export const morph = {};\n",
+      },
     ];
     const analysis = await analyzeAstro(
       "src/pages/index.astro",
@@ -274,7 +328,10 @@ describe("the trusted morph is the platform alias only", () => {
       'import type { morph } from "@morph/sdk/astro";',
       'import * as morph from "@morph/sdk/astro";',
     ]) {
-      const analysis = await analyzeAstro("src/pages/index.astro", page(morphImport));
+      const analysis = await analyzeAstro(
+        "src/pages/index.astro",
+        page(morphImport),
+      );
       expect(summarize(analysis), morphImport).toEqual(UNTRUSTED);
     }
   });
@@ -287,15 +344,22 @@ describe("the trusted morph is the platform alias only", () => {
       'import Hero from "../components/Hero";\n' +
       'export const Route = createFileRoute("/")({ component: Page });\n' +
       `async function Page() {\n${body}return <Hero {...hero} />;\n}\n`;
-    expect(summarize(analyzeStart(twin('import { morph } from "../morph/content";'), route)))
-      .toEqual([HERO_BOTH]);
-    expect(summarize(analyzeStart(twin('import { morph } from "@morph/sdk/astro";'), route)))
-      .toEqual(UNTRUSTED);
+    expect(
+      summarize(
+        analyzeStart(twin('import { morph } from "../morph/content";'), route),
+      ),
+    ).toEqual([HERO_BOTH]);
+    expect(
+      summarize(
+        analyzeStart(twin('import { morph } from "@morph/sdk/astro";'), route),
+      ),
+    ).toEqual(UNTRUSTED);
   });
 });
 
 describe("<Fragment> by resolved identity (D90-5)", () => {
-  const HOME = 'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
+  const HOME =
+    'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
 
   it("the built-in Fragment is no instance; what it wraps is", async () => {
     const analysis = await analyzeAstro(
@@ -325,7 +389,9 @@ describe("<Fragment> by resolved identity (D90-5)", () => {
       "src/pages/index.astro",
       astroPage(`${HOME}const Fragment = Hero;\n`, "<Fragment {...hero} />"),
     );
-    expect(analysis.instances.map((instance) => instance.componentName)).toEqual(["Fragment"]);
+    expect(
+      analysis.instances.map((instance) => instance.componentName),
+    ).toEqual(["Fragment"]);
     expect(analysis.instances[0]!.componentPath).toBeNull();
   });
 });
@@ -341,7 +407,9 @@ describe("the route path comes from the registry", () => {
       { name: "Hero", section: "intro", claims: ["intro.desc", "intro.title"] },
     ]);
     const other = await analyzeAstro("src/pages/contact.astro", ABOUT);
-    expect(summarize(other)).toEqual([{ name: "Hero", section: "intro", claims: [] }]);
+    expect(summarize(other)).toEqual([
+      { name: "Hero", section: "intro", claims: [] },
+    ]);
   });
 
   it("a createFileRoute written in the frontmatter does not name the route", async () => {
@@ -349,25 +417,35 @@ describe("the route path comes from the registry", () => {
       "const about",
       'import { createFileRoute } from "@tanstack/react-router";\nexport const Route = createFileRoute("/contact")({});\nconst about',
     );
-    expect(summarize(await analyzeAstro("src/pages/about.astro", source))).toEqual([
+    expect(
+      summarize(await analyzeAstro("src/pages/about.astro", source)),
+    ).toEqual([
       { name: "Hero", section: "intro", claims: ["intro.desc", "intro.title"] },
     ]);
   });
 
   it("a dynamic route claims no page field, and says why", async () => {
     const analysis = await analyzeAstro("src/pages/[slug].astro", ABOUT);
-    expect(summarize(analysis)).toEqual([{ name: "Hero", section: "intro", claims: [] }]);
+    expect(summarize(analysis)).toEqual([
+      { name: "Hero", section: "intro", claims: [] },
+    ]);
     expect(analysis.diagnostics).toEqual([
       "src/pages/[slug].astro has no static route path; page fields are not claimed",
     ]);
   });
 
   it("a page without a projection of its own content is not analysed", async () => {
-    const files = [...ASTRO_FIXTURE, { path: "src/pages/about.astro", content: ABOUT }];
+    const files = [
+      ...ASTRO_FIXTURE,
+      { path: "src/pages/about.astro", content: ABOUT },
+    ];
     const stale = await project(ABOUT.replace("intro", "team"));
     for (const projections of [
       new Map(fixtureProjections),
-      new Map([...fixtureProjections, ["src/pages/about.astro", stale] as const]),
+      new Map([
+        ...fixtureProjections,
+        ["src/pages/about.astro", stale] as const,
+      ]),
     ]) {
       const analysis = analyzeB1AstroRoute({
         files,
@@ -383,7 +461,8 @@ describe("the route path comes from the registry", () => {
 });
 
 describe("reachability follows .astro imports", () => {
-  const HOME = 'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
+  const HOME =
+    'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
   const MUTATE =
     'import { morph } from "@morph/sdk/astro";\n' +
     'const page = await morph.pages.get("/");\npage.hero.title = "changed";\n';
@@ -394,15 +473,22 @@ describe("reachability follows .astro imports", () => {
   const READ_ONLY = MUTATE.replace('page.hero.title = "changed";\n', "");
 
   it("an imported script module that changes the page through the alias taints it", async () => {
-    const page = astroPage(`import "../lib/mutate";\n${HOME}`, "<Hero {...hero} />");
+    const page = astroPage(
+      `import "../lib/mutate";\n${HOME}`,
+      "<Hero {...hero} />",
+    );
     const analysis = await analyzeAstro("src/pages/index.astro", page, {
-      extraFiles: [{ path: "src/lib/mutate.ts", content: `${MUTATE}export {};\n` }],
+      extraFiles: [
+        { path: "src/lib/mutate.ts", content: `${MUTATE}export {};\n` },
+      ],
     });
     expect(summarize(analysis)).toEqual(TAINTED);
     expect(analysis.taints).toContain("set|page:hero.title");
     // Control: the same module, reading only.
     const control = await analyzeAstro("src/pages/index.astro", page, {
-      extraFiles: [{ path: "src/lib/mutate.ts", content: `${READ_ONLY}export {};\n` }],
+      extraFiles: [
+        { path: "src/lib/mutate.ts", content: `${READ_ONLY}export {};\n` },
+      ],
     });
     expect(summarize(control)).toEqual([HERO_BOTH]);
   });
@@ -414,7 +500,10 @@ describe("reachability follows .astro imports", () => {
     );
     const analysis = await analyzeAstro("src/pages/index.astro", page, {
       extraFiles: [
-        { path: "src/components/Mutator.astro", content: `---\n${MUTATE}---\n<i>m</i>\n` },
+        {
+          path: "src/components/Mutator.astro",
+          content: `---\n${MUTATE}---\n<i>m</i>\n`,
+        },
       ],
     });
     expect(summarize(analysis)).toEqual([
@@ -424,7 +513,10 @@ describe("reachability follows .astro imports", () => {
     expect(analysis.taints).toContain("set|page:hero.title");
     const control = await analyzeAstro("src/pages/index.astro", page, {
       extraFiles: [
-        { path: "src/components/Mutator.astro", content: `---\n${READ_ONLY}---\n<i>m</i>\n` },
+        {
+          path: "src/components/Mutator.astro",
+          content: `---\n${READ_ONLY}---\n<i>m</i>\n`,
+        },
       ],
     });
     expect(summarize(control)).toEqual([
@@ -440,7 +532,9 @@ describe("reachability follows .astro imports", () => {
       { skipProjection: ["src/components/Card.astro"] },
     );
     expect(analysis.taints).toEqual(expect.arrayContaining(["page:*"]));
-    expect(summarize(analysis)).toEqual([{ name: "Hero", section: "hero", claims: [] }]);
+    expect(summarize(analysis)).toEqual([
+      { name: "Hero", section: "hero", claims: [] },
+    ]);
   });
 
   it("an .astro module that is not reachable needs no projection", async () => {
@@ -448,7 +542,12 @@ describe("reachability follows .astro imports", () => {
       "src/pages/index.astro",
       '---\nimport Hero from "../components/Hero.astro";\nimport { morph } from "@morph/sdk/astro";\n' +
         `${HOME}---\n<Hero {...hero} />\n`,
-      { skipProjection: ["src/components/Card.astro", "src/components/Layout.astro"] },
+      {
+        skipProjection: [
+          "src/components/Card.astro",
+          "src/components/Layout.astro",
+        ],
+      },
     );
     expect(summarize(analysis)).toEqual([HERO_BOTH]);
   });

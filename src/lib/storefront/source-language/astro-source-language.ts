@@ -40,11 +40,7 @@
  * never an author error and never "controlled by code". An answer whose
  * ranges do not fit the source is the parser's (`parser-invalid-response`).
  */
-import {
-  parse,
-  parseExpression,
-  type ParserOptions,
-} from "@babel/parser";
+import { parse, parseExpression, type ParserOptions } from "@babel/parser";
 import {
   ASTRO_TEMPLATE_FRAGMENT_TAG,
   type AstroParseTemplate,
@@ -248,7 +244,10 @@ class Projector {
         throw inconsistent("frontmatter without its inner range");
       }
       const [from, to] = answer.frontmatterInner;
-      let file: { program: { body: unknown[]; directives: unknown[] }; comments?: unknown[] };
+      let file: {
+        program: { body: unknown[]; directives: unknown[] };
+        comments?: unknown[];
+      };
       try {
         file = parse(source.slice(from, to), {
           ...this.babelOptions(from),
@@ -280,7 +279,9 @@ class Projector {
     }
     for (let i = 0; i < answer.expressions.length; i += 1) {
       if (!this.usedExpressions.has(i)) {
-        throw inconsistent(`expression ${i} is not reachable from the template`);
+        throw inconsistent(
+          `expression ${i} is not reachable from the template`,
+        );
       }
     }
 
@@ -327,7 +328,8 @@ class Projector {
             element[1] === attribute[6] &&
             element[3] === attribute[0],
         );
-        if (value < 0) throw inconsistent(`attribute ${i} has no element value`);
+        if (value < 0)
+          throw inconsistent(`attribute ${i} has no element value`);
         this.elementOfAttribute.set(i, value);
       }
     });
@@ -434,7 +436,11 @@ class Projector {
         start + text.length,
       );
     }
-    return this.at({ type: "JSXIdentifier", name: text }, start, start + text.length);
+    return this.at(
+      { type: "JSXIdentifier", name: text },
+      start,
+      start + text.length,
+    );
   }
 
   /**
@@ -452,7 +458,10 @@ class Projector {
     if (at < contentStart) return null;
     const inner = this.source.slice(at + 2, end - 1);
     if (inner.trim() !== name) return null;
-    return { start: at, nameStart: at + 2 + (inner.length - inner.trimStart().length) };
+    return {
+      start: at,
+      nameStart: at + 2 + (inner.length - inner.trimStart().length),
+    };
   }
 
   private element(index: number): Node {
@@ -477,8 +486,16 @@ class Projector {
       return this.at(
         {
           type: "JSXFragment",
-          openingFragment: this.at({ type: "JSXOpeningFragment" }, start, openingEnd),
-          closingFragment: this.at({ type: "JSXClosingFragment" }, closing.start, end),
+          openingFragment: this.at(
+            { type: "JSXOpeningFragment" },
+            start,
+            openingEnd,
+          ),
+          closingFragment: this.at(
+            { type: "JSXClosingFragment" },
+            closing.start,
+            end,
+          ),
           children: this.children(index, openingEnd, closing.start),
         },
         start,
@@ -506,7 +523,9 @@ class Projector {
       openingEnd = cursor + 1;
       selfClosing = false;
     } else {
-      throw unparsed(`<${tag}> at ${start}: unrecognised text in the opening tag`);
+      throw unparsed(
+        `<${tag}> at ${start}: unrecognised text in the opening tag`,
+      );
     }
     if (openingEnd > end || (selfClosing && openingEnd !== end)) {
       throw inconsistent(`<${tag}> at ${start}: opening tag past the element`);
@@ -517,18 +536,29 @@ class Projector {
       openingEnd,
     );
     if (selfClosing) {
-      if ((this.childElementsOf.get(index)?.length ?? 0) > 0 ||
-        (this.childExpressionsOf.get(index)?.length ?? 0) > 0) {
+      if (
+        (this.childElementsOf.get(index)?.length ?? 0) > 0 ||
+        (this.childExpressionsOf.get(index)?.length ?? 0) > 0
+      ) {
         throw inconsistent(`<${tag}/> at ${start} has children`);
       }
       return this.at(
-        { type: "JSXElement", openingElement: opening, closingElement: null, children: [] },
+        {
+          type: "JSXElement",
+          openingElement: opening,
+          closingElement: null,
+          children: [],
+        },
         start,
         end,
       );
     }
     const closing = this.closingOf(tag, openingEnd, end);
-    const children = this.children(index, openingEnd, closing ? closing.start : end);
+    const children = this.children(
+      index,
+      openingEnd,
+      closing ? closing.start : end,
+    );
     return this.at(
       {
         type: "JSXElement",
@@ -616,11 +646,19 @@ class Projector {
     }
     switch (kind) {
       case "boolean":
-        return this.at({ type: "JSXAttribute", name: nameNode, value: null }, nameStart, nameEnd);
+        return this.at(
+          { type: "JSXAttribute", name: nameNode, value: null },
+          nameStart,
+          nameEnd,
+        );
       case "literal": {
         const raw = this.source.slice(valueStart!, valueEnd!);
         const quote = raw[0];
-        if (raw.length < 2 || (quote !== '"' && quote !== "'") || raw[raw.length - 1] !== quote) {
+        if (
+          raw.length < 2 ||
+          (quote !== '"' && quote !== "'") ||
+          raw[raw.length - 1] !== quote
+        ) {
           throw inconsistent(`attribute ${index}: literal value is not quoted`);
         }
         const value = raw.slice(1, -1);
@@ -647,7 +685,11 @@ class Projector {
         // then the whole attribute.
         const shorthand = nameStart >= valueStart!;
         return this.at(
-          { type: "JSXAttribute", name: nameNode, value: this.container(expressionIndex) },
+          {
+            type: "JSXAttribute",
+            name: nameNode,
+            value: this.container(expressionIndex),
+          },
           shorthand ? valueStart! : nameStart,
           valueEnd!,
         );
@@ -655,7 +697,11 @@ class Projector {
       case "element": {
         const element = this.elementOfAttribute.get(index)!;
         return this.at(
-          { type: "JSXAttribute", name: nameNode, value: this.element(element) },
+          {
+            type: "JSXAttribute",
+            name: nameNode,
+            value: this.element(element),
+          },
           nameStart,
           valueEnd!,
         );
@@ -674,13 +720,19 @@ class Projector {
     const expression: AstroTemplateExpression = this.answer.expressions[index]!;
     const [start, end, innerStart, , , , jsx] = expression;
     const braced = start !== innerStart;
-    if (braced && (this.source[start] !== "{" || this.source[end - 1] !== "}")) {
+    if (
+      braced &&
+      (this.source[start] !== "{" || this.source[end - 1] !== "}")
+    ) {
       throw inconsistent(`expression ${index} is not braced`);
     }
     const from = braced ? start + 1 : start;
     const to = braced ? end - 1 : end;
     return this.at(
-      { type: "JSXExpressionContainer", expression: this.fragment(from, to, jsx, braced) },
+      {
+        type: "JSXExpressionContainer",
+        expression: this.fragment(from, to, jsx, braced),
+      },
       start,
       end,
     );
@@ -698,14 +750,23 @@ class Projector {
   ): Node {
     const { source } = this;
     const nested = jsx
-      .map((index) => ({ index, start: this.answer.elements[index]![0], end: this.answer.elements[index]![1] }))
+      .map((index) => ({
+        index,
+        start: this.answer.elements[index]![0],
+        end: this.answer.elements[index]![1],
+      }))
       .sort((a, b) => a.start - b.start);
     let fed = "";
     let cursor = from;
-    const names = new Map<number, { name: string; index: number; end: number }>();
+    const names = new Map<
+      number,
+      { name: string; index: number; end: number }
+    >();
     nested.forEach((entry, ordinal) => {
       if (entry.start < cursor || entry.end > to) {
-        throw inconsistent(`nested JSX at ${entry.start} is outside its expression`);
+        throw inconsistent(
+          `nested JSX at ${entry.start} is outside its expression`,
+        );
       }
       const name = `$${ordinal.toString(36)}`;
       const original = source.slice(entry.start, entry.end);
@@ -713,7 +774,9 @@ class Projector {
         original.length < name.length ||
         hasLineTerminator(original.slice(0, name.length))
       ) {
-        throw unparsed(`nested JSX at ${entry.start} is too short for a placeholder`);
+        throw unparsed(
+          `nested JSX at ${entry.start} is too short for a placeholder`,
+        );
       }
       const before = entry.start > from ? source[entry.start - 1]! : "";
       if (before !== "" && isIdentifierPart(before)) {
@@ -736,7 +799,10 @@ class Projector {
 
     let expression: Node;
     try {
-      expression = parseExpression(fed, this.babelOptions(from)) as unknown as Node;
+      expression = parseExpression(
+        fed,
+        this.babelOptions(from),
+      ) as unknown as Node;
     } catch (error) {
       if (mayBeEmpty && nested.length === 0) {
         const empty = this.emptyExpression(fed, from, to);
@@ -770,7 +836,10 @@ class Projector {
           ancestor.end = entry.end;
           const loc = ancestor.loc as { start: unknown } | undefined;
           if (loc) {
-            ancestor.loc = { ...loc, end: astroPositionAt(this.starts, entry.end) };
+            ancestor.loc = {
+              ...loc,
+              end: astroPositionAt(this.starts, entry.end),
+            };
           }
         }
       }
@@ -788,7 +857,8 @@ class Projector {
     const walk = (node: Node): void => {
       ancestors.push(node);
       for (const key of Object.keys(node)) {
-        if (key === "loc" || key === "extra" || key.endsWith("Comments")) continue;
+        if (key === "loc" || key === "extra" || key.endsWith("Comments"))
+          continue;
         const value = node[key];
         if (Array.isArray(value)) {
           value.forEach((child, i) => {
@@ -818,7 +888,10 @@ class Projector {
    * program with no statements. Anything else is not empty.
    */
   private emptyExpression(fed: string, from: number, to: number): Node | null {
-    let file: { program: { body: unknown[]; directives: unknown[] }; comments?: unknown[] };
+    let file: {
+      program: { body: unknown[]; directives: unknown[] };
+      comments?: unknown[];
+    };
     try {
       file = parse(fed, this.babelOptions(from)) as unknown as typeof file;
     } catch {

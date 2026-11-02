@@ -72,7 +72,11 @@ const CARD_BOTH: AstroB1Summary = {
   section: "card",
   claims: ["card.title"],
 };
-const CARD_UNBOUND: AstroB1Summary = { name: "Card", section: null, claims: [] };
+const CARD_UNBOUND: AstroB1Summary = {
+  name: "Card",
+  section: null,
+  claims: [],
+};
 
 const INDEX = "src/pages/index.astro";
 const COND = "const cond = Math.random() > 0.5;\n";
@@ -99,7 +103,10 @@ export const MANIFEST = JSON.stringify({
 });
 
 /** The Astro Theme around the page under test. No `src/morph/content.ts`. */
-export const ASTRO_FIXTURE: readonly Readonly<{ path: string; content: string }>[] = [
+export const ASTRO_FIXTURE: readonly Readonly<{
+  path: string;
+  content: string;
+}>[] = [
   { path: "morph.theme.json", content: MANIFEST },
   {
     path: "src/components/Hero.astro",
@@ -108,7 +115,8 @@ export const ASTRO_FIXTURE: readonly Readonly<{ path: string; content: string }>
   },
   {
     path: "src/components/Card.astro",
-    content: "---\nconst { title } = Astro.props;\n---\n<article><h2>{title}</h2></article>\n",
+    content:
+      "---\nconst { title } = Astro.props;\n---\n<article><h2>{title}</h2></article>\n",
   },
   {
     path: "src/components/Fragment.astro",
@@ -126,7 +134,10 @@ export const ASTRO_FIXTURE: readonly Readonly<{ path: string; content: string }>
 ];
 
 /** The equivalent Start Theme, for the TSX twins. */
-export const START_FIXTURE: readonly Readonly<{ path: string; content: string }>[] = [
+export const START_FIXTURE: readonly Readonly<{
+  path: string;
+  content: string;
+}>[] = [
   { path: "src/morph/content.ts", content: "export const morph = {} as any;" },
   {
     path: "src/components/Hero.tsx",
@@ -179,7 +190,8 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
   },
   {
     id: "A3",
-    title: "/about per-field props, two instances of one component, no cross-claim",
+    title:
+      "/about per-field props, two instances of one component, no cross-claim",
     routeFile: "src/pages/about.astro",
     source: astroPage(
       'const about = await morph.pages.get("/about");\n',
@@ -256,9 +268,15 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
     id: "N4",
     title: "loop with a host wrapper: {items.map(() => <div><Hero/></div>)}",
     routeFile: INDEX,
-    source: astroPage(HOME + ITEMS, "{items.map(() => <div><Hero {...hero} /></div>)}"),
+    source: astroPage(
+      HOME + ITEMS,
+      "{items.map(() => <div><Hero {...hero} /></div>)}",
+    ),
     expected: [HERO_NONE],
-    twin: startTwin(HOME + ITEMS, "{items.map(() => <div><Hero {...hero} /></div>)}"),
+    twin: startTwin(
+      HOME + ITEMS,
+      "{items.map(() => <div><Hero {...hero} /></div>)}",
+    ),
   },
   {
     id: "N5",
@@ -272,9 +290,15 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
     id: "S1",
     title: "hero shadowed by a map parameter",
     routeFile: INDEX,
-    source: astroPage(HOME + ITEMS, "<Hero {...hero} />\n{items.map((hero) => <Card {...hero} />)}"),
+    source: astroPage(
+      HOME + ITEMS,
+      "<Hero {...hero} />\n{items.map((hero) => <Card {...hero} />)}",
+    ),
     expected: [HERO_BOTH, CARD_UNBOUND],
-    twin: startTwin(HOME + ITEMS, "<Hero {...hero} />{items.map((hero) => <Card {...hero} />)}"),
+    twin: startTwin(
+      HOME + ITEMS,
+      "<Hero {...hero} />{items.map((hero) => <Card {...hero} />)}",
+    ),
   },
   {
     id: "S2",
@@ -316,22 +340,32 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
     id: "S5",
     title: "hero.title assigned inside a template expression",
     routeFile: INDEX,
-    source: astroPage(HOME, '{(hero.title = "changed", "")}\n<Hero {...hero} />'),
+    source: astroPage(
+      HOME,
+      '{(hero.title = "changed", "")}\n<Hero {...hero} />',
+    ),
     expected: [HERO_NONE],
     twin: startTwin(HOME, '{(hero.title = "changed", "")}<Hero {...hero} />'),
   },
   {
     id: "S6",
-    title: "Astro shadowed by a frontmatter function parameter (no Astro root on a page)",
+    title:
+      "Astro shadowed by a frontmatter function parameter (no Astro root on a page)",
     routeFile: INDEX,
-    source: astroPage(HOME + "function pick(Astro) { return Astro.props; }\n", "<Hero {...hero} />"),
+    source: astroPage(
+      HOME + "function pick(Astro) { return Astro.props; }\n",
+      "<Hero {...hero} />",
+    ),
     expected: [HERO_BOTH],
   },
   {
     id: "S6b",
     title: "Astro redeclared at frontmatter level",
     routeFile: INDEX,
-    source: astroPage(HOME + "const Astro = { props: {} };\n", "<Hero {...hero} />"),
+    source: astroPage(
+      HOME + "const Astro = { props: {} };\n",
+      "<Hero {...hero} />",
+    ),
     expected: [HERO_BOTH],
   },
   {
@@ -362,9 +396,15 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
     id: "F2",
     title: "multiple root elements",
     routeFile: INDEX,
-    source: astroPage(HOME, "<header>h</header>\n<Hero {...hero} />\n<footer>f</footer>"),
+    source: astroPage(
+      HOME,
+      "<header>h</header>\n<Hero {...hero} />\n<footer>f</footer>",
+    ),
     expected: [HERO_BOTH],
-    twin: startTwin(HOME, "<header>h</header><Hero {...hero} /><footer>f</footer>"),
+    twin: startTwin(
+      HOME,
+      "<header>h</header><Hero {...hero} /><footer>f</footer>",
+    ),
   },
   {
     id: "F3",
@@ -437,13 +477,20 @@ export const ASTRO_B1_SAMPLES: readonly AstroB1Sample[] = [
       HOME,
       '<UI.Badge />\n<Layout>\n<Hero {...hero} slot="main" />\n<Card {...card} />\n</Layout>',
     ),
-    expected: [{ name: "Layout", section: null, claims: [] }, HERO_BOTH, CARD_BOTH],
+    expected: [
+      { name: "Layout", section: null, claims: [] },
+      HERO_BOTH,
+      CARD_BOTH,
+    ],
   },
   {
     id: "I2",
     title: "member component before two instances of one component",
     routeFile: INDEX,
-    source: astroPage(HOME, "<UI.Badge />\n<Hero {...hero} />\n<Hero {...card} />"),
+    source: astroPage(
+      HOME,
+      "<UI.Badge />\n<Hero {...hero} />\n<Hero {...card} />",
+    ),
     expected: [
       HERO_BOTH,
       { name: "Hero", section: "card", claims: ["card.desc", "card.title"] },
