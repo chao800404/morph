@@ -106,19 +106,17 @@ export const ASTRO_PREVIEW_DEV_SERVER = {
 } as const;
 
 /** Source of the client module every Astro Live Preview page loads. */
-export function astroPreviewClientSource(
-  locateNonce: string | null = null,
-): string {
+export function astroPreviewClientSource(locateNonce: string | null = null): string {
   return `import { documentPreviewRuntimeChannel } from "/src/morph/preview/preview-protocol.ts";
 ${
-  locateNonce
-    ? `
+    locateNonce
+      ? `
 // L1.5a (docs/astro-theme-plan.md 3.6.2.2): elements are selected by
 // their source location, and boundary markers carry this preview's nonce.
 globalThis.__morphPreviewSourceSelection = { nonce: ${JSON.stringify(locateNonce)} };
 `
-    : ""
-}
+      : ""
+  }
 // Read first, before anything can navigate away from the query the editor's
 // channel is carried in.
 documentPreviewRuntimeChannel();
@@ -220,18 +218,10 @@ function integrationSource(options: {
   locateNonce: string | null;
 }): string {
   return `// Written by Morph for this Live Preview (astro-preview-workspace.ts).
-${
-  options.locateNonce
-    ? `import crypto from "node:crypto";
-`
-    : ""
-}import fs from "node:fs";
-${
-  options.locateNonce
-    ? `import { createRequire } from "node:module";
-`
-    : ""
-}import path from "node:path";
+${options.locateNonce ? `import crypto from "node:crypto";
+` : ""}import fs from "node:fs";
+${options.locateNonce ? `import { createRequire } from "node:module";
+` : ""}import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workspaceRoot = fs.realpathSync(fileURLToPath(new URL("..", import.meta.url)));
@@ -254,9 +244,7 @@ const previewContentPlugin = ${themePreviewContentPluginSource()};
 const previewHttpHmrPlugin = ${previewHttpHmrPluginSource()};
 // The platform's copy of the Morph SDK (.morph/sdk/), by its exact names.
 const morphSdkAliases = ${themeMorphSdkAliasesSource("workspaceRoot")};
-${
-  options.locateNonce
-    ? `// The locate plugin maps its edits with magic-string as the astro package
+${options.locateNonce ? `// The locate plugin maps its edits with magic-string as the astro package
 // itself resolves it: Astro's own dependency, pinned by the toolchain, no path
 // assumed. Loaded by the plugin when the dev server starts; a failure stops
 // the preview (ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP).
@@ -267,9 +255,7 @@ const loadMagicString = () => {
   return loaded.default ?? loaded.MagicString ?? loaded;
 };
 const previewLocatePlugin = ${astroPreviewLocatePluginSource(options.locateNonce)};
-`
-    : ""
-}
+` : ""}
 export function morphAstroPreview() {
   return {
     name: "morph:astro-preview",
@@ -421,10 +407,7 @@ export function planAstroPreviewWorkspace(
       path: module.path,
       content: module.content,
     })),
-    {
-      path: THEME_PREVIEW_BRIDGE_PATH,
-      content: themePreviewBridgeEntrySource(),
-    },
+    { path: THEME_PREVIEW_BRIDGE_PATH, content: themePreviewBridgeEntrySource() },
     {
       path: THEME_PREVIEW_CONTENT_MODULE_PATH,
       content: themePreviewContentModuleSource(),
