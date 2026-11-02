@@ -15,6 +15,11 @@ import {
   toStorefrontPageSummaryDTO,
 } from "../mapper/storefront-page.mapper";
 import { storefrontPageDocumentSchema } from "@/lib/validations/storefront-page";
+import {
+  PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE,
+  sectionHideRefusal,
+  sectionsNewlyHidden,
+} from "../content/section-hide-check";
 
 const activeStorefront = async () => {
   const db = await getDb();
@@ -186,6 +191,20 @@ export const storefrontPageDal = {
     createdBy: string;
     storefrontId: string;
   }) {
+    // M3 Hide: a Page section is not hidden until Morph can prove where its
+    // route renders it (`section-hide-check.ts`). Judged against the draft
+    // this write replaces; showing a section is always allowed. Restoring a
+    // revision does not come through here and is never refused.
+    const current = await storefrontPageDal.findDetail(
+      data.id,
+      data.storefrontId,
+    );
+    if (sectionsNewlyHidden(current?.document ?? null, data.document).length) {
+      throw sectionHideRefusal(
+        "no-call-site",
+        PAGE_SECTION_HIDE_UNSUPPORTED_MESSAGE,
+      );
+    }
     const db = await getDb();
     const [versionRow] = await db
       .select({ value: max(storefrontPageRevisions.version) })

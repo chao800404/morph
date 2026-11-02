@@ -329,6 +329,35 @@ export function acknowledgeContentFields(
 }
 
 /**
+ * Drops one top-level field from what a section holds pending, and nothing
+ * else: other input staged with it stays to be sent. Returns whether the
+ * entry is gone entirely. For an intent the server answered with a refusal
+ * that no retry can change (a hide the source cannot carry out).
+ */
+export function dropPendingContentField(
+  pending: Map<string, PendingContentEntry>,
+  key: string,
+  field: string,
+): boolean {
+  const now = pending.get(key);
+  if (!now) return true;
+  const props = { ...now.props };
+  delete props[field];
+  const fields = now.fields ? { ...now.fields } : undefined;
+  if (fields) {
+    for (const path of Object.keys(fields)) {
+      if (path === field || path.startsWith(`${field}.`)) delete fields[path];
+    }
+  }
+  if (Object.keys(props).length === 0) {
+    pending.delete(key);
+    return true;
+  }
+  pending.set(key, { ...now, props, ...(fields ? { fields } : {}) });
+  return false;
+}
+
+/**
  * A rejected content write, carrying the server's own failure code.
  *
  * The code is what tells a conflicted write from one that never arrived. They

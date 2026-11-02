@@ -1,5 +1,6 @@
 import { fail, failure, ok, parseInput } from "@/lib/db/server-result";
 import {
+  SECTION_HIDE_UNSUPPORTED,
   SECTION_SOURCE_UNCONFIRMED,
   SELECTION_SOURCE_CONFLICT,
   SELECTION_SOURCE_CONFLICT_MESSAGE,
@@ -7,6 +8,7 @@ import {
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
+import { readSectionHideRefusal } from "@/lib/storefront/content/section-hide-check";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
   createReleasePreviewQueueMessage,
@@ -434,6 +436,16 @@ export const updateStorefrontThemeSectionProps = createServerFn({
         return fail("Template draft was modified concurrently.", {
           error: TEMPLATE_DRAFT_CONFLICT,
         });
+      }
+      // A hide the source cannot carry out, refused before anything was
+      // written. Said with its reason, so Design can tell the author why
+      // the section stays shown; retrying would be refused the same way.
+      const hideRefusal = readSectionHideRefusal(message);
+      if (hideRefusal) {
+        return fail(
+          hideRefusal.message || "Morph cannot hide this section yet.",
+          { error: SECTION_HIDE_UNSUPPORTED, reason: hideRefusal.reason },
+        );
       }
       if (message.includes(SECTION_SOURCE_UNCONFIRMED)) {
         return fail(

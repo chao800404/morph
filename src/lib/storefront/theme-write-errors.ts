@@ -29,6 +29,16 @@ export const TEMPLATE_DRAFT_GENERATION_MISMATCH =
  */
 export const SECTION_SOURCE_UNCONFIRMED = "SECTION_SOURCE_UNCONFIRMED";
 
+/**
+ * A hide the saved source cannot carry out (M3 Hide).
+ *
+ * The section would stay visible, show its component's defaults, or crash the
+ * page while hidden, because something reads its content where Morph cannot
+ * omit it. Refused before anything is written; showing a section is never
+ * refused with it. See `theme-hide-capability.ts`.
+ */
+export const SECTION_HIDE_UNSUPPORTED = "SECTION_HIDE_UNSUPPORTED";
+
 /** The source used for a visual selection is no longer the saved source. */
 export const SELECTION_SOURCE_CONFLICT = "SELECTION_SOURCE_CONFLICT";
 export const SELECTION_SOURCE_CONFLICT_MESSAGE =

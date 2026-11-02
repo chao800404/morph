@@ -826,3 +826,75 @@ describe("the Inspector's class list on a hidden section", () => {
     expect(onPropsChange).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * M3 Hide P2: a hide the saved source cannot carry out is refused by the
+ * server before anything is written. The editor says why, shows the section
+ * again where the canvas already hid it, and does not hold the hide for a
+ * retry the same source would refuse again.
+ */
+describe("a hide the source cannot carry out", () => {
+  const SECTION_PROPS = "morph:storefront-preview-update-section-props";
+  const REASON =
+    "Morph cannot hide this section yet: the page uses its content before rendering the section, and that would still run while the section is hidden. (src/routes/index.tsx:6)";
+  const lastHeroPost = () =>
+    [...posted]
+      .reverse()
+      .find(
+        (message) =>
+          message.type === SECTION_PROPS && message.sectionId === "hero",
+      );
+
+  it("is shown with its reason, and the section stays shown with nothing left to retry", async () => {
+    const toastError = vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      error: "SECTION_HIDE_UNSUPPORTED",
+      reason: "early-computation",
+      message: REASON,
+    });
+    const shell = renderShell();
+    await flushFrames();
+
+    fireEvent.click(hideButton());
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    expect(request(0).props).toEqual({ enabled: false });
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(REASON));
+    // The canvas hid it at once; it is shown again.
+    expect(
+      posted.some(
+        (message) =>
+          message.type === SECTION_PROPS &&
+          message.sectionId === "hero" &&
+          message.enabled === false,
+      ),
+    ).toBe(true);
+    await waitFor(() => expect(lastHeroPost()?.enabled).toBe(true));
+
+    shell.storedAs(SHOWN);
+    await flushFrames();
+    expect(
+      screen.getAllByRole("button", { name: "Hide section hero" }),
+    ).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(updateSectionProps).toHaveBeenCalledTimes(1);
+  });
+
+  it("reverse: any other refused hide is still held for a retry", async () => {
+    vi.spyOn(toast, "error").mockImplementation(() => "");
+    updateSectionProps.mockResolvedValue({
+      success: false,
+      error: "UPDATE_FAILED",
+      message: "Failed to update section props",
+    });
+    const shell = renderShell();
+    await flushFrames();
+
+    fireEvent.click(hideButton());
+    await waitFor(() => expect(updateSectionProps).toHaveBeenCalledTimes(1));
+    shell.storedAs(SHOWN);
+    await flushFrames();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+});

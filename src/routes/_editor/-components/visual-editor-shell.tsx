@@ -24,6 +24,7 @@ import {
   sameContent,
   sectionContentLanded,
   rebaseFieldBasis,
+  dropPendingContentField,
   type PendingContentEntry,
 } from "@/lib/storefront/editor/pending-content-write";
 import {
@@ -95,7 +96,10 @@ import {
   heldContentMessage,
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
-import { TEMPLATE_DRAFT_CONFLICT } from "@/lib/storefront/theme-write-errors";
+import {
+  SECTION_HIDE_UNSUPPORTED,
+  TEMPLATE_DRAFT_CONFLICT,
+} from "@/lib/storefront/theme-write-errors";
 import type { ServerResult } from "@/lib/db/server-result";
 import {
   AlertDialog,
@@ -11500,6 +11504,30 @@ export function VisualEditorShell({
       try {
         await commitSectionPending(templateId, key, false);
       } catch (error) {
+        if (
+          !enabled &&
+          (error as { code?: string }).code === SECTION_HIDE_UNSUPPORTED
+        ) {
+          // Refused before anything was written, and the same source would
+          // refuse it again: the hide is not held for a retry. The section
+          // is shown again where the canvas already hid it; the reason was
+          // shown with the refusal. Anything else typed stays pending.
+          if (
+            dropPendingContentField(pendingPropsMapRef.current, key, "enabled")
+          ) {
+            pendingPropsBaselineRef.current.delete(key);
+            failedContentKeysRef.current.delete(key);
+            if (
+              !Array.from(failedContentKeysRef.current).some((failed) =>
+                pendingPropsMapRef.current.has(failed),
+              )
+            ) {
+              setDraftSaveState("idle");
+            }
+          }
+          syncContentWritesRef.current();
+          reconcilePreviewSection(sectionId);
+        }
         if (historyGeneration !== undefined) throw error;
         return;
       }

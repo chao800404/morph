@@ -2224,10 +2224,12 @@ export type B1SlotUse = Readonly<{
    * - `content-call`: `content("slot")` itself;
    * - `page-member`: `<page>.slot`, on a local that holds the whole page;
    * - `member`: a member read below one of those;
-   * - `alias`: bound to a local or a destructuring pattern, or read through one;
+   * - `binding`: bound to a local or a destructuring pattern (the declarator);
+   * - `alias`: read through such a local;
    * - `spread`: spread into a JSX element.
    */
-  via: "content-call" | "page-member" | "member" | "alias" | "spread";
+  via:
+    "content-call" | "page-member" | "member" | "binding" | "alias" | "spread";
   /**
    * The local holding the whole page this read went through, for `page-member`
    * and `member` reads that never passed through an alias of the section.
@@ -2466,7 +2468,7 @@ function collectSlotUses(
               "assigned to a local that changes",
             );
           }
-          use(parent, root, path, "alias", null);
+          use(parent, root, path, "binding", null);
           for (const reference of binding.references) {
             follow(
               reference,
@@ -2518,7 +2520,7 @@ function collectSlotUses(
             );
             continue;
           }
-          use(parent, root, full, "alias", null);
+          use(parent, root, full, "binding", null);
           for (const reference of binding.references) {
             follow(
               reference,

@@ -17,6 +17,7 @@ import { env as workerEnv } from "cloudflare:workers";
 import { createThemePreviewContentSnapshot } from "../compiler/theme-preview-content";
 import { resolveStorefrontContent } from "../service/storefront-content-runtime";
 import { mergeDocumentWithRouteSections } from "../compiler/theme-route-sections";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../starter-theme-v3-files";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -5120,5 +5121,215 @@ export default function Entries({ items = [{ title: "One" }, { title: "Two" }] }
       [one!.id, "One edited"],
       [two!.id, "Two edited"],
     ]);
+  });
+});
+
+/**
+ * M3 Hide P2: the write boundary refuses a hide the saved source cannot carry
+ * out (`section-hide-check.ts`), judged on the same source snapshot the write
+ * compares-and-sets on. Showing a section is never refused by it.
+ */
+describe("M3 Hide: the write boundary checks a hide against the source it writes on", () => {
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  /** `hero` is a plain spread; `early` is read before the JSX. */
+  const route = (
+    earlySlot = "early",
+  ) => `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  const early = String(content("${earlySlot}").heading ?? "").toUpperCase();
+  return (
+    <main>
+      <Hero {...content("hero")} />
+      <Hero {...content("early")} heading={early} />
+    </main>
+  );
+}`;
+  const sections = (enabled: { hero?: boolean; early?: boolean } = {}) => [
+    {
+      id: "hero",
+      type: "hero",
+      componentRef: "src/components/Hero.tsx",
+      enabled: enabled.hero ?? true,
+      props: { heading: "Stored hero" },
+    },
+    {
+      id: "early",
+      type: "hero",
+      componentRef: "src/components/Hero.tsx",
+      enabled: enabled.early ?? true,
+      props: { heading: "Stored early" },
+    },
+  ];
+
+  function seed(
+    options: {
+      enabled?: { hero?: boolean; early?: boolean };
+      contentModule?: string;
+      templateType?: "index" | "layout";
+    } = {},
+  ) {
+    const insert = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    insert.run("f-root", "src/routes/__root.tsx", root);
+    insert.run(
+      "f-content",
+      "src/morph/content.ts",
+      options.contentModule ?? STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    insert.run("f-hero", "src/components/Hero.tsx", hero);
+    insert.run("f-route", "src/routes/index.tsx", route());
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-hide', 'theme-a', ?, 'Home', ?, 'now', 'now')`,
+      )
+      .run(
+        options.templateType ?? "index",
+        JSON.stringify({ version: 1, sections: sections(options.enabled) }),
+      );
+  }
+
+  const write = (
+    sectionId: string,
+    props: Record<string, unknown>,
+    expectedSourceGeneration = 1,
+  ) =>
+    storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-hide",
+      sectionId,
+      props,
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration,
+      createdBy: "user-1",
+      routePath: "/",
+    });
+
+  /** Everything a refused write must leave as it was. */
+  const storedState = () => ({
+    templates: sqlite.prepare("SELECT * FROM storefront_theme_templates").all(),
+    revisions: sqlite
+      .prepare("SELECT * FROM storefront_theme_template_revisions")
+      .all(),
+    files: sqlite
+      .prepare("SELECT path, content FROM storefront_theme_files ORDER BY path")
+      .all(),
+  });
+
+  it("hides a section whose every read Morph can omit, and keeps its props", async () => {
+    seed();
+    const result = await write("hero", { enabled: false });
+    const saved = result?.document.sections.find(
+      (section) => section.id === "hero",
+    );
+    expect(saved).toMatchObject({
+      enabled: false,
+      props: { heading: "Stored hero" },
+    });
+  });
+
+  it("refuses a hide when the value is computed before the page renders it, writing nothing", async () => {
+    seed();
+    const before = storedState();
+    await expect(write("early", { enabled: false })).rejects.toThrow(
+      /SECTION_HIDE_UNSUPPORTED:early-computation: Morph cannot hide this section yet/,
+    );
+    expect(storedState()).toEqual(before);
+  });
+
+  it("always allows Show, even for a section it could not hide", async () => {
+    seed({ enabled: { early: false } });
+    const result = await write("early", { enabled: true });
+    expect(
+      result?.document.sections.find((section) => section.id === "early"),
+    ).toMatchObject({ enabled: true, props: { heading: "Stored early" } });
+  });
+
+  it("judges only the transition: a section already hidden stays writable as hidden", async () => {
+    seed({ enabled: { early: false } });
+    await expect(write("early", { enabled: false })).resolves.not.toBeNull();
+  });
+
+  it("refuses a hide on a stale source generation before judging it, writing nothing", async () => {
+    seed();
+    const before = storedState();
+    await expect(write("hero", { enabled: false }, 0)).rejects.toThrow(
+      "SELECTION_SOURCE_CONFLICT",
+    );
+    expect(storedState()).toEqual(before);
+  });
+
+  it("a source save that lands between the check and the write wins; the hide does not", async () => {
+    seed();
+    const batch = workerEnv.DATABASE.batch;
+    // The source changes after this write judged it, before its batch runs:
+    // `hero` is now read before the JSX, which this write never saw.
+    workerEnv.DATABASE.batch = (async (statements: unknown[]) => {
+      workerEnv.DATABASE.batch = batch;
+      sqlite
+        .prepare(
+          "UPDATE storefront_theme_files SET content = ? WHERE path = 'src/routes/index.tsx'",
+        )
+        .run(route("hero"));
+      sqlite
+        .prepare(
+          "UPDATE storefront_themes SET source_generation = 2 WHERE id = 'theme-a'",
+        )
+        .run();
+      return batch(statements as never);
+    }) as typeof batch;
+    const templatesBefore = sqlite
+      .prepare("SELECT * FROM storefront_theme_templates")
+      .all();
+    try {
+      await expect(write("hero", { enabled: false })).rejects.toThrow(
+        "SELECTION_SOURCE_CONFLICT",
+      );
+    } finally {
+      workerEnv.DATABASE.batch = batch;
+    }
+    expect(
+      sqlite.prepare("SELECT * FROM storefront_theme_templates").all(),
+    ).toEqual(templatesBefore);
+    // On the generation that was written, the same hide is judged again and
+    // refused: the verdict belongs to that source, not the one first read.
+    await expect(write("hero", { enabled: false }, 2)).rejects.toThrow(
+      "SECTION_HIDE_UNSUPPORTED:early-computation",
+    );
+  });
+
+  it("A6: refuses a content() hide when the content module cannot be confirmed", async () => {
+    seed({
+      contentModule: STARTER_THEME_CONTENT_MODULE_SOURCE.replace(
+        "export function isSectionHidden(",
+        "function isSectionHidden(",
+      ),
+    });
+    const before = storedState();
+    await expect(write("hero", { enabled: false })).rejects.toThrow(
+      "SECTION_HIDE_UNSUPPORTED:content-module-unconfirmed",
+    );
+    expect(storedState()).toEqual(before);
+  });
+
+  it("refuses hiding a layout section the layout source never reads", async () => {
+    seed({ templateType: "layout" });
+    await expect(write("hero", { enabled: false })).rejects.toThrow(
+      "SECTION_HIDE_UNSUPPORTED:legacy-shell",
+    );
   });
 });
