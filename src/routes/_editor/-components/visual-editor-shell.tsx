@@ -9519,6 +9519,17 @@ export function VisualEditorShell({
   useEffect(() => {
     const pending = pendingRouteSelection;
     if (!pending) return;
+    // A document-navigating preview (Astro) queued it only because the author
+    // was in select mode, for the page then being opened (D94-2). A page the
+    // editor is no longer on or going to never takes it.
+    if (
+      documentNavigationRef.current &&
+      (search.routePath ?? "/") !== pending.routePath &&
+      pendingRoutePathRef.current !== pending.routePath
+    ) {
+      setPendingRouteSelection(null);
+      return;
+    }
     if ((search.routePath ?? "/") !== pending.routePath) return;
     if (!previewKey || previewFrameReady?.key !== previewKey) return;
     if (
@@ -9529,6 +9540,9 @@ export function VisualEditorShell({
     }
 
     setPendingRouteSelection(null);
+    // A late answer never turns select mode back on after the author turned
+    // it off while the page was opening.
+    if (documentNavigationRef.current && !isSelectionModeRef.current) return;
     handleSectionsSearchChange({ section: pending.sectionId });
   }, [
     handleSectionsSearchChange,

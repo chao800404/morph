@@ -607,6 +607,8 @@ describe("switching pages in a preview that navigates as documents (D3)", () => 
 describe("following a link the author clicks inside an Astro preview", () => {
   let searchChanges: Partial<StorefrontThemeEditorSearch>[] = [];
   let currentSearch = (): Partial<StorefrontThemeEditorSearch> => ({});
+  /** The address changing from outside the editor (Back, Forward). */
+  let navigateTo = (_next: Partial<StorefrontThemeEditorSearch>) => {};
 
   /** The editor at `routePath`, whose route follows its own requests. */
   async function routed(
@@ -643,6 +645,7 @@ describe("following a link the author clicks inside an Astro preview", () => {
         viewport: "desktop",
       } as StorefrontThemeEditorSearch);
       currentSearch = () => search;
+      navigateTo = (next) => setSearch((current) => ({ ...current, ...next }));
       return (
         <VisualEditorShell
           context={themeContext}
@@ -966,6 +969,102 @@ describe("following a link the author clicks inside an Astro preview", () => {
             .slice(before)
             .filter((message) => message.enabled === true),
         ).toEqual([]);
+      });
+
+      /** A page-list click whose frame answer is held back. */
+      function clickInList(name: string) {
+        act(() => {
+          within(pagesList()).getByRole("button", { name }).click();
+        });
+        return tick();
+      }
+      /** The held answer: a new document on `routePath`, answering. */
+      async function lateAnswer(routePath: string) {
+        reloadFrameDocument();
+        documentReady();
+        await tick();
+        frameAnswers(routePath);
+        report(routePath);
+        await tick();
+        await tick();
+      }
+
+      /** D94-2: a late answer never reopens select mode the author left. */
+      it("on Astro, a late answer after select mode was turned off selects nothing", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/about");
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+        const before = modeMessages().length;
+
+        await lateAnswer("/about");
+
+        expect(currentSearch().routePath).toBe("/about");
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(
+          modeMessages()
+            .slice(before)
+            .filter((message) => message.enabled === true),
+        ).toEqual([]);
+
+        // Nothing is left waiting: back in select mode, another answer for
+        // the page selects nothing either.
+        act(() => selectionToggle().click());
+        await tick();
+        frameAnswers("/about");
+        report("/about");
+        await tick();
+        await tick();
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+      });
+
+      it("on Astro, a selection queued for a page the editor has left is dropped", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/about");
+        // Before the frame answers, the address goes back to / (the browser's
+        // Back button), and the frame answers there.
+        act(() => navigateTo({ routePath: "/", section: undefined }));
+        await tick();
+        await lateAnswer("/");
+        expect(currentSearch().routePath).toBe("/");
+        expect(currentSearch().section).toBeUndefined();
+
+        // Forward to /about again, still in select mode: the selection queued
+        // for the earlier open is not taken.
+        act(() => navigateTo({ routePath: "/about", section: undefined }));
+        await tick();
+        await lateAnswer("/about");
+        expect(currentSearch().routePath).toBe("/about");
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+      });
+
+      it("on TanStack Start, a late answer still selects the page root and enters select mode, as before", async () => {
+        await routed("/", startContext);
+        act(() => selectionToggle().click());
+        await tick();
+        await clickInList("/guard");
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+
+        frameAnswers("/guard");
+        report("/guard");
+        await tick();
+        await tick();
+
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBe("/guard");
+        expect(modeMessages().at(-1)?.restoreTarget?.sectionId).toBe("/guard");
       });
     });
 
