@@ -54,6 +54,8 @@ export function startPreviewFilesForShard(shard) {
 export const START_PREVIEW_EXCLUDED = {
   "m1-container-lifecycle-acceptance.spec.ts":
     "The M1 container lifecycle acceptance runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
+  "start-container-content-sync.spec.ts":
+    "The Start content sync check runs under the container transport (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the full Start job runs on the local-sidecar transport.",
   "public-svg.spec.ts":
     "Reads the variable only inside a test that plants a file in a Sandbox container (MORPH_E2E_TRANSPORT=cloudflare-sandbox); the rest of the file is not Start-gated and runs on the shards.",
 };
