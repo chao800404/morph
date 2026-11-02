@@ -83,6 +83,9 @@ export const EDITOR_SHARDS = [
     "publish.spec.ts",
     "source-asset-publish.spec.ts",
     "preview-start-bridge-interruption.spec.ts",
+    // Container transport only, so it skips on every shard. Its exact tests
+    // are listed in scripts/container-acceptance-targets/.
+    "starter-upgrade-publish-acceptance.spec.ts",
   ],
   [
     "session-editor-writes.spec.ts",

@@ -647,10 +647,16 @@ test.describe("Starter upgrade, reviewed by the author", () => {
   }) => {
     test.skip(!CONTAINERS, "Builds run in containers.");
     await openEditor(page);
-    const pkg = JSON.parse((await workspace(page))[PACKAGE]!);
+    const files = await workspace(page);
+    const pkg = JSON.parse(files[PACKAGE]!);
     // What the Starter wrote between 2026-09-23 and 2026-10-03.
     pkg.devDependencies["@cloudflare/vite-plugin"] = "1.50.0";
-    await save(page, [{ path: PACKAGE, content: JSON.stringify(pkg, null, 2) }]);
+    await save(page, [
+      // The probe the Build Preview check reads. A saves it too; E saves its
+      // own so it also runs alone, as the container job runs it.
+      ...(files[PROBE_ROUTE] === PROBE_FILE.content ? [] : [PROBE_FILE]),
+      { path: PACKAGE, content: JSON.stringify(pkg, null, 2) },
+    ]);
 
     // On the current version nothing offers to upgrade it.
     setStarterVersion(STOREFRONT_STARTER_TEMPLATE_VERSION);
