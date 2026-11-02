@@ -40,10 +40,23 @@ async function sha256Hex(text: string): Promise<string> {
     .join("");
 }
 
-/** A binding that answers every call with `status` and `body`. */
-function answering(status: number, body: string): AstroParserBinding {
+/**
+ * A binding that answers every call with `status` and `body`, typed as the
+ * parser types every answer unless `contentType` says otherwise (null: no
+ * content-type header at all).
+ */
+function answering(
+  status: number,
+  body: string | Uint8Array<ArrayBuffer>,
+  contentType: string | null = "application/json; charset=utf-8",
+): AstroParserBinding {
   return {
-    fetch: vi.fn(async () => new Response(body, { status })),
+    fetch: vi.fn(async () => {
+      const response = new Response(body, { status });
+      if (contentType === null) response.headers.delete("content-type");
+      else response.headers.set("content-type", contentType);
+      return response;
+    }),
   };
 }
 
@@ -123,7 +136,73 @@ describe("parseAstroSource fails closed", () => {
   });
 
   it.each([
-    ["not JSON", 200, "<html>"],
+    "parser-busy",
+    "parser-wait-timeout",
+    "parser-trapped",
+    "source-read-timeout",
+  ] as const)(
+    "keeps the reason a valid answer gives for its own failure: %s",
+    async (code) => {
+      const body = JSON.stringify({
+        v: 2,
+        ok: false,
+        error: { code, detail: "from the parser" },
+      });
+      expect(
+        await parseAstroSource(
+          answering(ASTRO_PARSER_ERROR_STATUS[code], body),
+          "<p/>",
+          { mode: "outline" },
+        ),
+      ).toEqual({ status: "unavailable", code, detail: "from the parser" });
+    },
+  );
+
+  // The measured case: Core started without the parser. The binding exists,
+  // the dev registry finds no session for it and answers HTTP 503 in plain
+  // text. Nothing in the protocol answered, so the binding failed.
+  it("takes the dev registry's 503 page for a failed binding, not a malformed answer", async () => {
+    expect(
+      await parseAstroSource(
+        answering(
+          503,
+          'Couldn\'t find a local dev session for the default entrypoint of service "morph-astro-parser" to proxy to',
+          "text/plain;charset=UTF-8",
+        ),
+        "<p/>",
+        { mode: "outline" },
+      ),
+    ).toEqual({
+      status: "unavailable",
+      code: "binding-failed",
+      detail: 'not a parser answer (HTTP 503, content-type "text/plain")',
+    });
+  });
+
+  it.each([
+    ["an HTML page", 200, "<html>", "text/html"],
+    ["no content-type", 200, "{}", null],
+    [
+      "a JSON body under another type",
+      503,
+      JSON.stringify({
+        v: 2,
+        ok: false,
+        error: { code: "parser-busy", detail: "" },
+      }),
+      "text/plain;charset=UTF-8",
+    ],
+    ["a JSON type with a body that is not JSON", 503, "<html>", undefined],
+    ["a JSON type with an empty body", 502, "", undefined],
+  ])("takes %s for a failed binding", async (_, status, body, contentType) => {
+    expect(
+      await parseAstroSource(answering(status, body, contentType), "<p/>", {
+        mode: "outline",
+      }),
+    ).toMatchObject({ status: "unavailable", code: "binding-failed" });
+  });
+
+  it.each([
     [
       "an unknown error code",
       500,
@@ -139,6 +218,12 @@ describe("parseAstroSource fails closed", () => {
       }),
     ],
     ["an answer over the response cap", 200, "x".repeat(262_145)],
+    [
+      "a JSON answer that is not UTF-8",
+      200,
+      new Uint8Array([0x7b, 0xff, 0x7d]),
+    ],
+    ["a JSON value that is not an answer", 200, "[]"],
   ])("does not take %s for an answer", async (_, status, body) => {
     expect(
       await parseAstroSource(answering(status, body), "<p/>", {
@@ -409,6 +494,16 @@ describe("parseAstroTemplate", () => {
       status: "refused",
       class: "temporarily-unconfirmable",
       reason: "parser-binding-missing",
+    });
+  });
+
+  it("is temporarily unconfirmable when nothing serves the binding", async () => {
+    const binding = answering(503, "no session", "text/plain;charset=UTF-8");
+    expect(await parseAstroTemplate(binding, P)).toMatchObject({
+      status: "refused",
+      class: "temporarily-unconfirmable",
+      reason: "parser-binding-failed",
+      code: "binding-failed",
     });
   });
 });

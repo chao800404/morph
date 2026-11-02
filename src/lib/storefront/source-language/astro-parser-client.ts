@@ -3,9 +3,11 @@
  * one call over the `ASTRO_PARSER` service binding, and an answer Core can
  * trust or a typed refusal. Never an exception.
  *
- * Fail-closed by construction. No binding, a binding that throws, a payload
- * that is not the contract's, a result about some other source: all of them
- * are `unavailable`, and an unavailable parse gives no Design capability. The
+ * Fail-closed by construction. No binding (`binding-missing`), a binding
+ * that throws or answers with something other than JSON (`binding-failed`),
+ * a JSON payload that is not the contract's or is about some other source
+ * (`invalid-response`): all of them are `unavailable`, and an unavailable
+ * parse gives no Design capability. The
  * parser's own refusals arrive as codes in its payload, because an error that
  * crosses a binding keeps only its message.
  *
@@ -49,10 +51,12 @@ export type AstroParserUnavailableCode =
   | AstroParserErrorCode
   /** The environment has no `ASTRO_PARSER` binding. */
   | "binding-missing"
-  /** The call itself failed: nothing is running behind the binding, or the
-   * connection broke. */
+  /** The binding is there but nothing answered in the protocol: the call
+   * threw (the connection broke), or the reply is not a JSON answer at all,
+   * such as the dev registry's HTTP 503 page when no parser is running
+   * behind the binding. */
   | "binding-failed"
-  /** An answer that is not the contract's, or not about the source sent. */
+  /** A JSON answer that is not the contract's, or not about the source sent. */
   | "invalid-response"
   /** An answer from a Worker on another contract version. */
   | "contract-mismatch";
@@ -187,6 +191,22 @@ export async function parseAstroSource(
       );
     }
 
+    // Every answer the parser sends, refusals included, is JSON with this
+    // type. Anything else did not come from the parser's protocol: when no
+    // parser runs behind the binding, the local dev registry answers HTTP
+    // 503 with a plain-text page. That is the binding failing, not a
+    // malformed answer.
+    const contentType = (response.headers.get("content-type") ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== "application/json") {
+      await response.body?.cancel().catch(() => {});
+      return unavailable(
+        "binding-failed",
+        `not a parser answer (HTTP ${response.status}, content-type "${contentType}")`,
+      );
+    }
     const text = await readCapped(
       response,
       ASTRO_PARSER_LIMITS.maxResponseBytes,
@@ -202,8 +222,8 @@ export async function parseAstroSource(
       payload = JSON.parse(text);
     } catch {
       return unavailable(
-        "invalid-response",
-        `not JSON (HTTP ${response.status})`,
+        "binding-failed",
+        `not a parser answer (HTTP ${response.status}, body not JSON)`,
       );
     }
     const check = checkAstroParseResponse(payload, {
