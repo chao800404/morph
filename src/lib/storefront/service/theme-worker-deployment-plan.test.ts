@@ -152,16 +152,141 @@ const ASTRO_WORKER_CONFIG = {
 };
 
 describe("an all-SSR Astro build with no client files (M2 case, 2026-11-02)", () => {
-  it("is refused today with MISSING_CLIENT_ASSETS", () => {
+  // Before D92-C this build was refused with MISSING_CLIENT_ASSETS (see the
+  // reproduction commit). The refusal was wrong for it: a server-rendered
+  // site with no static files is a complete Worker, and the client
+  // directory it wrote holds only files the platform never deploys.
+  it("is planned with an empty asset set, its whole module graph and its assets binding", () => {
     const result = planThemeWorkerDeployment({
       storefrontId: "sf_1",
       manifest: astroSsrOnlyManifest(),
+      workerConfig: ASTRO_WORKER_CONFIG,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.plan.assets).toEqual([]);
+    expect(result.plan.mainModule).toBe("entry.mjs");
+    expect(result.plan.modules.map((m) => m.modulePath)).toHaveLength(20);
+    expect(result.plan.modules.map((m) => m.modulePath)).not.toContain(
+      "wrangler.json",
+    );
+    expect(result.plan.assetsBinding).toBe("ASSETS");
+  });
+
+  const without = (path: string) =>
+    ASTRO_SSR_ONLY_FILES.filter(([p]) => p !== path);
+
+  it("still refuses it when the client output is missing altogether", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: astroSsrOnlyManifest(
+        ASTRO_SSR_ONLY_FILES.filter(([p]) => !p.startsWith("runtime/client/")),
+      ),
       workerConfig: ASTRO_WORKER_CONFIG,
     });
     expect(result).toMatchObject({
       success: false,
       reason: "MISSING_CLIENT_ASSETS",
     });
+  });
+
+  it("still refuses it when the Worker entry is missing from the files", () => {
+    expect(
+      planThemeWorkerDeployment({
+        storefrontId: "sf_1",
+        manifest: astroSsrOnlyManifest(without("runtime/server/entry.mjs")),
+        workerConfig: ASTRO_WORKER_CONFIG,
+      }),
+    ).toMatchObject({ success: false, reason: "MISSING_WORKER_ENTRY" });
+  });
+
+  it("still refuses it when no Worker entry is declared", () => {
+    const base = astroSsrOnlyManifest();
+    expect(
+      planThemeWorkerDeployment({
+        storefrontId: "sf_1",
+        manifest: { ...base, runtime: undefined },
+        workerConfig: ASTRO_WORKER_CONFIG,
+      }),
+    ).toMatchObject({ success: false, reason: "MISSING_WORKER_ENTRY" });
+  });
+
+  it("still refuses it when the entry has no server directory, so no module graph", () => {
+    const base = astroSsrOnlyManifest([
+      ["entry.mjs", "application/javascript", 5085],
+      ...ASTRO_SSR_ONLY_FILES.filter(([p]) => p.startsWith("runtime/client/")),
+    ]);
+    expect(
+      planThemeWorkerDeployment({
+        storefrontId: "sf_1",
+        manifest: {
+          ...base,
+          runtime: { ...base.runtime!, workerEntry: "entry.mjs" },
+        },
+        workerConfig: ASTRO_WORKER_CONFIG,
+      }),
+    ).toMatchObject({ success: false, reason: "MISSING_WORKER_ENTRY" });
+  });
+
+  it("still refuses it when the entry is excluded from the module graph", () => {
+    // The entry names a file the module graph never takes.
+    const base = astroSsrOnlyManifest();
+    expect(
+      planThemeWorkerDeployment({
+        storefrontId: "sf_1",
+        manifest: {
+          ...base,
+          runtime: {
+            ...base.runtime!,
+            workerEntry: "runtime/server/wrangler.json",
+          },
+        },
+        workerConfig: ASTRO_WORKER_CONFIG,
+      }),
+    ).toMatchObject({ success: false, reason: "MISSING_WORKER_ENTRY" });
+  });
+
+  it("still refuses it when the Worker config is missing or incomplete", () => {
+    for (const workerConfig of [
+      null,
+      "{}",
+      { ...ASTRO_WORKER_CONFIG, compatibility_date: undefined },
+    ]) {
+      expect(
+        planThemeWorkerDeployment({
+          storefrontId: "sf_1",
+          manifest: astroSsrOnlyManifest(),
+          workerConfig,
+        }),
+      ).toMatchObject({ success: false, reason: "INVALID_WORKER_CONFIG" });
+    }
+  });
+
+  it("still refuses it when the Worker config requests a platform binding", () => {
+    expect(
+      planThemeWorkerDeployment({
+        storefrontId: "sf_1",
+        manifest: astroSsrOnlyManifest(),
+        workerConfig: {
+          ...ASTRO_WORKER_CONFIG,
+          kv_namespaces: [{ binding: "SESSION", id: "x" }],
+        },
+      }),
+    ).toMatchObject({ success: false, reason: "FORBIDDEN_BINDING" });
+  });
+
+  it("deploys a real client file as an asset once there is one", () => {
+    const result = planThemeWorkerDeployment({
+      storefrontId: "sf_1",
+      manifest: astroSsrOnlyManifest([
+        ...ASTRO_SSR_ONLY_FILES,
+        ["runtime/client/robots.txt", "text/plain", 20],
+      ]),
+      workerConfig: ASTRO_WORKER_CONFIG,
+    });
+    expect(result.success && result.plan.assets.map((a) => a.servedPath)).toEqual(
+      ["/robots.txt"],
+    );
   });
 });
 
@@ -320,7 +445,7 @@ describe("planThemeWorkerDeployment", () => {
     expect(result.reason).toBe("MISSING_WORKER_ENTRY");
   });
 
-  it("refuses a build that produced no client assets", () => {
+  it("refuses a build that wrote no client output at all", () => {
     const base = manifest();
     const result = planThemeWorkerDeployment({
       storefrontId: "sf_1",

@@ -357,4 +357,53 @@ describe("SandboxWranglerThemeWorkerDeployer", () => {
     expect(content).toContain("sandbox");
     expect(content).toContain("X-Content-Type-Options: nosniff");
   });
+
+  // An all-SSR Astro build plans no assets. The assets directory is still
+  // configured: Astro's entry falls back to env.ASSETS for paths it does
+  // not route, and the binding only exists with it. The directory then holds
+  // only the platform `_headers`, which wrangler never uploads as an asset
+  // (its default ignore list), so the manifest wrangler submits is `{}`.
+  it("deploys a plan with no client assets: modules only, the assets binding kept", async () => {
+    const written = new Map<string, string>();
+    const session = {
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async (path: string, content: any) => {
+        written.set(path, String(content));
+      }),
+      readFile: vi.fn(),
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        success: true,
+        stdout: "",
+        stderr: "",
+      })),
+      destroy: vi.fn(async () => {}),
+    };
+    const bucket = r2();
+
+    const result = await deployer(session, { r2Bucket: bucket }).deploy({
+      ...request,
+      plan: { ...request.plan, assets: [], assetsBinding: "ASSETS" },
+    });
+
+    expect(result.success).toBe(true);
+    // Only the two modules are read; nothing is asked of R2 for assets.
+    expect(bucket.get.mock.calls.map(([key]: [string]) => key)).toEqual([
+      "themes/th_1/builds/bld_1/runtime/server/index.js",
+      "themes/th_1/builds/bld_1/runtime/server/assets/worker-entry.js",
+    ]);
+    expect(session.mkdir).toHaveBeenCalledWith("/workspace/deploy/client", {
+      recursive: true,
+    });
+    const clientFiles = [...written.keys()].filter((path) =>
+      path.startsWith("/workspace/deploy/client/"),
+    );
+    expect(clientFiles).toEqual(["/workspace/deploy/client/_headers"]);
+    const config = JSON.parse(
+      written.get("/workspace/deploy/server/wrangler.json") ?? "null",
+    );
+    expect(config.assets).toEqual({ directory: "../client", binding: "ASSETS" });
+    expect(config.main).toBe("index.js");
+    expect(session.exec).toHaveBeenCalledOnce();
+  });
 });
