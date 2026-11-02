@@ -24,6 +24,7 @@ import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V12_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE,
   LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE,
+  LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   LEGACY_STARTER_THEME_INDEX_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_MARKED_SOURCE,
   LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE,
@@ -1471,7 +1472,10 @@ function planStarterThemeWorkspaceWrites(
           LEGACY_STARTER_THEME_CONTENT_MODULE_V13_SOURCE ||
         // Before `morph.pages.get`.
         existingContentModule.content ===
-          LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE)
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V14_SOURCE ||
+        // Before its server reads sent back the render context.
+        existingContentModule.content ===
+          LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE)
     ) {
       upgrades.push({
         path: existingContentModule.path,
