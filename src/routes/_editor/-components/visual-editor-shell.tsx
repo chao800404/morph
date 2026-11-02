@@ -4165,11 +4165,17 @@ export function VisualEditorShell({
       // document-navigating preview (Astro, D92) only switches the page and
       // keeps the author's mode: in interact mode its links stay links. In
       // select mode the page root is selected as before. Start is unchanged.
+      // The selection the page left behind is let go by the context reset
+      // (useEditorContextReset) once the route changes; one still waiting for
+      // a page opened in select mode is dropped here, or a later open of that
+      // page would take it and turn select mode on (D93-1).
       if (!documentNavigationRef.current || isSelectionModeRef.current) {
         setPendingRouteSelection({
           routePath: route.path,
           sectionId: route.path,
         });
+      } else {
+        setPendingRouteSelection(null);
       }
       setPendingRoutePath(route.path);
       const routeTemplate =

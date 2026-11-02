@@ -606,6 +606,7 @@ describe("switching pages in a preview that navigates as documents (D3)", () => 
  */
 describe("following a link the author clicks inside an Astro preview", () => {
   let searchChanges: Partial<StorefrontThemeEditorSearch>[] = [];
+  let currentSearch = (): Partial<StorefrontThemeEditorSearch> => ({});
 
   /** The editor at `routePath`, whose route follows its own requests. */
   async function routed(
@@ -641,6 +642,7 @@ describe("following a link the author clicks inside an Astro preview", () => {
         routePath,
         viewport: "desktop",
       } as StorefrontThemeEditorSearch);
+      currentSearch = () => search;
       return (
         <VisualEditorShell
           context={themeContext}
@@ -868,6 +870,103 @@ describe("following a link the author clicks inside an Astro preview", () => {
             message.restoreTarget?.sectionId === "/guard",
         ),
       ).toBe(true);
+    });
+
+    /**
+     * D93-1: whatever the mode, the page left behind takes its selection with
+     * it. The Inspector and the page list never keep showing it.
+     */
+    describe("the selection of the page left behind", () => {
+      /** The Inspector's Content tab, as the author would read it. */
+      const inspector = () => {
+        const tab = screen.queryByRole("button", { name: /^Content$/ });
+        if (tab) act(() => tab.click());
+        return (
+          document.querySelector<HTMLElement>("[data-editor-inspector-panel]")
+            ?.textContent ?? ""
+        );
+      };
+      const selectionShown = () => !inspector().includes("Select a component");
+      const selectionNamed = () =>
+        modeMessages().at(-1)?.restoreTarget?.sectionId;
+
+      /** Select mode on, /about opened and its page root selected. */
+      async function aboutSelected() {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        await openFromList("/about", "/about", { newDocument: true });
+        expect(currentSearch().section).toBe("/about");
+        expect(selectionShown()).toBe(true);
+        expect(selectionNamed()).toBe("/about");
+      }
+
+      it("on Astro in interact mode, is cleared and nothing is selected in its place", async () => {
+        await aboutSelected();
+        act(() => selectionToggle().click());
+        await tick();
+        expect(isSelecting()).toBe(false);
+        // Turning select mode off leaves the selection where it was.
+        expect(inspector()).toContain("page/about");
+        const before = modeMessages().length;
+
+        await openFromList("Home /", "/", { newDocument: true });
+
+        expect(routeRequests().at(-1)?.routePath).toBe("/");
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(inspector()).not.toContain("/about");
+        const sent = modeMessages().slice(before);
+        expect(sent.filter((message) => message.enabled === true)).toEqual([]);
+        expect(
+          sent.some((message) => message.restoreTarget?.sectionId === "/about"),
+        ).toBe(false);
+      });
+
+      it("on Astro in select mode, is replaced by the new page's root", async () => {
+        await aboutSelected();
+        const before = modeMessages().length;
+
+        await openFromList("Home /", "/", { newDocument: true });
+
+        expect(isSelecting()).toBe(true);
+        expect(currentSearch().section).toBe("/");
+        expect(inspector()).toContain("page/");
+        expect(inspector()).not.toContain("/about");
+        const sent = modeMessages().slice(before);
+        expect(sent.at(-1)?.restoreTarget?.sectionId).toBe("/");
+        expect(
+          sent.some((message) => message.restoreTarget?.sectionId === "/about"),
+        ).toBe(false);
+      });
+
+      it("on Astro, a page-root selection still waiting for its page is not taken later in interact mode", async () => {
+        await routed("/");
+        act(() => selectionToggle().click());
+        await tick();
+        // Opened in select mode; its frame has not answered yet.
+        act(() => {
+          within(pagesList()).getByRole("button", { name: "/about" }).click();
+        });
+        await tick();
+        act(() => selectionToggle().click());
+        await tick();
+        await openFromList("Home /", "/", { newDocument: true });
+        expect(isSelecting()).toBe(false);
+        const before = modeMessages().length;
+
+        await openFromList("/about", "/about", { newDocument: true });
+
+        expect(isSelecting()).toBe(false);
+        expect(currentSearch().section).toBeUndefined();
+        expect(selectionShown()).toBe(false);
+        expect(
+          modeMessages()
+            .slice(before)
+            .filter((message) => message.enabled === true),
+        ).toEqual([]);
+      });
     });
 
     /** The frame, on `from`, follows a link to `to`: a new document there. */
