@@ -5565,3 +5565,99 @@ function Home() {
     ).rejects.toThrow("PUBLISH_HIDDEN_SECTION_UNSUPPORTED");
   });
 });
+
+/**
+ * M3 Hide: a template served by several routes is hidden only when every one
+ * of them can omit the section, whichever route the editor shows.
+ */
+describe("M3 Hide: a hide is judged on every route that serves the template", () => {
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  const productRoute = (routeId: string, early: boolean) =>
+    `import { createFileRoute } from "@tanstack/react-router";
+import { content } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("${routeId}")({ component: Page });
+function Page() {
+${early ? `  const t = String(content("hero").heading ?? "").toUpperCase();\n  return <main><Hero {...content("hero")} heading={t} /></main>;` : `  return <main><Hero {...content("hero")} /></main>;`}
+}`;
+
+  function seed(featuredEarly: boolean) {
+    const insert = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    insert.run("f-root", "src/routes/__root.tsx", root);
+    insert.run(
+      "f-content",
+      "src/morph/content.ts",
+      STARTER_THEME_CONTENT_MODULE_SOURCE,
+    );
+    insert.run("f-hero", "src/components/Hero.tsx", hero);
+    insert.run(
+      "f-detail",
+      "src/routes/products.$slug.tsx",
+      productRoute("/products/$slug", false),
+    );
+    insert.run(
+      "f-list",
+      "src/routes/products.featured.tsx",
+      productRoute("/products/featured", featuredEarly),
+    );
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, created_at, updated_at)
+        VALUES ('template-product-hide', 'theme-a', 'product', 'Product', ?, 'now', 'now')`,
+      )
+      .run(
+        JSON.stringify({
+          version: 1,
+          sections: [
+            {
+              id: "hero",
+              type: "hero",
+              componentRef: "src/components/Hero.tsx",
+              enabled: true,
+              props: { heading: "Stored" },
+            },
+          ],
+        }),
+      );
+  }
+  const hide = (routePath: string) =>
+    storefrontThemeDal.updateSectionProps({
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-product-hide",
+      sectionId: "hero",
+      props: { enabled: false },
+      expectedDraftGeneration: 1,
+      expectedSourceGeneration: 1,
+      createdBy: "user-1",
+      routePath,
+    });
+  const stored = () =>
+    sqlite.prepare("SELECT * FROM storefront_theme_templates").all();
+
+  it("refuses a hide asked on a supported route when another route of the template reads the section early", async () => {
+    seed(true);
+    const before = stored();
+    await expect(hide("/products/$slug")).rejects.toThrow(
+      /SECTION_HIDE_UNSUPPORTED:early-computation: .*products\.featured\.tsx/,
+    );
+    expect(stored()).toEqual(before);
+  });
+
+  it("reverse: with every route able to omit it, the same hide is written", async () => {
+    seed(false);
+    const result = await hide("/products/$slug");
+    expect(result?.document.sections[0]).toMatchObject({ enabled: false });
+  });
+});
