@@ -470,8 +470,8 @@ test.describe("case B in the full Start preview", () => {
   // default, so the write is refused before anything is stored; the section
   // stays shown, and selectable. The selection rule for a hidden section
   // (#224) is covered where a section can be hidden: the editor's component
-  // tests (visual-editor-shell-hidden-section.test.tsx) and, with Morph's
-  // guard, the hidden-section tests of the full Start preview below.
+  // tests (visual-editor-shell-hidden-section.test.tsx); the M3 P3+P4 line,
+  // where Morph's guard exists, adds a full Start check on a shape it hides.
   test("hiding a section this route cannot hide is refused, and it stays shown and selectable", async ({
     page,
   }) => {
