@@ -48,7 +48,10 @@ import {
   type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { templateSectionWriteBase } from "../content/template-section-write-base";
-import { assertSectionHideSupported } from "../content/section-hide-check";
+import {
+  assertSectionHideSupported,
+  sectionHideRefusal,
+} from "../content/section-hide-check";
 import {
   contentTargetForRoutePath,
   routeTemplatePathForRequest,
@@ -173,8 +176,11 @@ type SectionSourceComponent =
    * here may the ref the Document stored stand in for the source.
    */
   | Readonly<{ kind: "legacy" }>
-  /** The source owns this structure and cannot vouch for the section. */
-  | Readonly<{ kind: "unconfirmed"; reason: string }>;
+  /**
+   * The source owns this structure and cannot vouch for the section.
+   * `notRendered`: the source is fine but renders no such section.
+   */
+  | Readonly<{ kind: "unconfirmed"; reason: string; notRendered?: true }>;
 
 /**
  * The component the saved source renders for one section.
@@ -226,6 +232,7 @@ export function resolveSectionSourceComponent(args: {
       return {
         kind: "unconfirmed",
         reason: `${owner} does not render section "${args.sectionId}".`,
+        notRendered: true,
       };
     }
     if (section.missingComponentSourcePath) {
@@ -305,6 +312,69 @@ export function resolveSectionSourceComponent(args: {
     deriveThemeRouteSections(args.files, route.sourcePath),
     route.sourcePath,
   );
+}
+
+/**
+ * Where one section of a template is rendered, on every route that serves
+ * the template (M3 Hide). A template can sit behind several routes, and a
+ * hide is only safe when each of them can omit the section, so a hide is
+ * judged on all of them, never on the one the editor happens to show.
+ *
+ * Each entry is a call site to classify; `null` for a source with no say
+ * (a legacy shell); `"not-rendered"` for a route that does not render the
+ * section, which nothing can then show; or why the source cannot confirm it.
+ * A template no route serves gives no entry: nothing renders it.
+ */
+export type TemplateHideCallSite =
+  string | null | "not-rendered" | Readonly<{ unconfirmed: string }>;
+
+export function templateHideCallSites(args: {
+  framework: string | null;
+  templateType: string;
+  templateRoutePath?: string | null;
+  sectionId: string;
+  files: readonly { path: string; content: string }[];
+}): TemplateHideCallSite[] {
+  const site = (resolved: SectionSourceComponent): TemplateHideCallSite =>
+    resolved.kind === "confirmed"
+      ? resolved.callSitePath
+      : resolved.kind === "legacy"
+        ? null
+        : resolved.notRendered
+          ? "not-rendered"
+          : { unconfirmed: resolved.reason };
+  const resolve = (routePath?: string) =>
+    site(
+      resolveSectionSourceComponent({
+        framework: args.framework,
+        templateType: args.templateType,
+        templateRoutePath: args.templateRoutePath ?? null,
+        sectionId: args.sectionId,
+        files: args.files,
+        ...(routePath !== undefined ? { routePath } : {}),
+      }),
+    );
+  if (
+    args.templateType === "layout" ||
+    designWritesUnavailableReason(args.framework) !== null ||
+    !args.files.some((file) => file.path.startsWith("src/routes/"))
+  ) {
+    return [resolve()];
+  }
+  const registry = buildThemeRouteRegistry(args.files);
+  if (!registry.valid) return [resolve()];
+  if (args.templateRoutePath) {
+    return findBoundTemplateRoute(registry, args.templateRoutePath)
+      ? [resolve()]
+      : [];
+  }
+  return registry.routes
+    .filter(
+      (route) =>
+        route.kind === "route" &&
+        templateTypeForRoutePath(route.path) === args.templateType,
+    )
+    .map((route) => resolve(route.path));
 }
 
 async function listThemeSourceFiles(storefrontId: string, themeId: string) {
@@ -1554,16 +1624,31 @@ export const storefrontThemeDal = {
     // checks; the final batch repeats that precondition, so the verdict
     // belongs to the generation that is written. Showing a section, and
     // keeping a hidden one hidden, are never judged here.
+    // Every route that serves this template is judged, not only the one
+    // the editor shows: each of them renders the hidden section.
     if (propEnabled === false && targetSection.enabled !== false) {
-      assertSectionHideSupported({
+      const callSites = templateHideCallSites({
+        framework: context.theme.framework,
+        templateType: template.type,
+        templateRoutePath: template.routePath ?? null,
+        sectionId: data.sectionId,
         files: themeSourceFiles,
-        callSitePath:
-          sourceComponent.kind === "confirmed"
-            ? sourceComponent.callSitePath
-            : null,
-        slot: data.sectionId,
-        scope: template.type === "layout" ? "layout" : "route",
       });
+      for (const callSite of callSites) {
+        if (callSite === "not-rendered") continue;
+        if (callSite !== null && typeof callSite === "object") {
+          throw sectionHideRefusal(
+            "source-unconfirmed",
+            `Morph cannot hide this section yet: ${callSite.unconfirmed}`,
+          );
+        }
+        assertSectionHideSupported({
+          files: themeSourceFiles,
+          callSitePath: callSite,
+          slot: data.sectionId,
+          scope: template.type === "layout" ? "layout" : "route",
+        });
+      }
     }
     if (b1ProofRequired) {
       const b1Failure = findB1WriteProvenanceFailure({
