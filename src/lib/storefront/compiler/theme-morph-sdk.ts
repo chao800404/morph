@@ -1,3 +1,4 @@
+import { THEME_HIDE_GUARD_VERSION } from "../ast/theme-hide-guard-version";
 import {
   GENERATED_MORPH_SDK_SOURCES,
   MORPH_SDK_SOURCE_HASH,
@@ -114,6 +115,36 @@ export function withThemeMorphSdkIdentity(toolchainVersion: string): string {
     0,
     THEME_MORPH_SDK_IDENTITY_HEX_LENGTH,
   )}`;
+}
+
+/**
+ * A TanStack Start build's compiler version: the toolchain, the injected SDK,
+ * and the M3 Hide guard the build's sources carry (`prepareSourcesForBuild`),
+ * as one more build-metadata identifier: `<toolchain>+morph-sdk.<hex>.hide-1`.
+ *
+ * The guard is compiled into the artifact, so a build without it, or with an
+ * older one, cannot hide a section the way the preview does. Recording it in
+ * the identity every Start build already freezes is how publish tells such a
+ * build apart (`buildHideGuardVersion`) with no new column. Astro builds do
+ * not carry the guard and do not use this.
+ */
+export function withThemeStartBuildIdentity(toolchainVersion: string): string {
+  return `${withThemeMorphSdkIdentity(toolchainVersion)}.${THEME_HIDE_GUARD_VERSION}`;
+}
+
+/**
+ * The hide guard version a build records in its compiler version, or null
+ * when it records none (a build from before the guard, or not a Start build).
+ */
+export function buildHideGuardVersion(
+  compilerVersion: string | null | undefined,
+): string | null {
+  const metadata = compilerVersion?.split("+")[1];
+  if (!metadata) return null;
+  return (
+    metadata.split(".").find((identifier) => /^hide-\d+$/.test(identifier)) ??
+    null
+  );
 }
 
 /** The SDK files a workspace carries, at paths relative to its root. */

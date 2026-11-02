@@ -24,6 +24,7 @@ import {
   verifyRecordedThemePreviewRuntime,
 } from "./helpers/recorded-preview-runtime";
 import { unboundSectionsFixture, UNBOUND_TITLE } from "./helpers/unbound-sections";
+import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../src/lib/storefront/starter-theme-v3-files";
 
 /**
  * Case B of the content binding contract, in the full Start preview: content
@@ -1796,5 +1797,153 @@ export const getRetryPage = createServerFn().handler(() =>
       "banner",
       "hero",
     ]);
+  });
+});
+
+/**
+ * M3 Hide P3+P4 in the full Start preview: a loader section the first version
+ * can hide — member reads through the whole page at the call site — is
+ * omitted by Morph's compiled guard. Nothing of it renders, defaults
+ * included, the page around it still does, no entry opens its content
+ * (#224), and shown again it renders its stored values.
+ *
+ * On a Theme of its own, with the Starter's current content module written
+ * explicitly: a loader hide is confirmed only against a byte-matched Starter
+ * module (D107 Q4(a)), whatever module a new Theme happens to start with.
+ */
+test.describe("Morph's hide guard in the full Start preview", () => {
+  test.describe.configure({ mode: "serial" });
+
+  const GUARDED_ROUTE = "/loader-binding-guarded";
+  const GUARDED_TITLE = "Guarded loader stored title";
+  const PAGE_MARK = "Guarded page renders";
+  let guardScope: ThemeScope | null = null;
+  let guardEditorPath: string | null = null;
+
+  const GUARD_FILES = [
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    FILES[1]!,
+    {
+      path: "src/routes/loader-binding-guarded.tsx",
+      content: `import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { morph } from "../morph/content";
+import LoaderHero from "../components/LoaderHero";
+
+const getPage = createServerFn().handler(() => morph.pages.get("${GUARDED_ROUTE}"));
+
+export const Route = createFileRoute("${GUARDED_ROUTE}")({
+  loader: () => getPage(),
+  component: GuardedRoute,
+});
+
+function GuardedRoute() {
+  const page = Route.useLoaderData();
+  return (
+    <main>
+      <p>${PAGE_MARK}</p>
+      <LoaderHero title={page.${SLOT}.title} />
+    </main>
+  );
+}
+`,
+    },
+  ];
+
+  /** The section write the Sections panel makes, on this Theme's route. */
+  async function writeGuarded(page: Page, props: Record<string, unknown>) {
+    const ensured = (await serverFn(
+      page,
+      THEMES,
+      "ensureStorefrontThemeRouteTemplate",
+      { ...guardScope!, routePath: GUARDED_ROUTE },
+    )) as { success: boolean; data?: { id: string; draftGeneration: number } };
+    expect(ensured.success, JSON.stringify(ensured)).toBe(true);
+    return (await serverFn(page, THEMES, "updateStorefrontThemeSectionProps", {
+      ...guardScope!,
+      templateId: ensured.data!.id,
+      sectionId: SLOT,
+      props,
+      expectedDraftGeneration: ensured.data!.draftGeneration,
+      expectedSourceGeneration: await themeSourceGeneration(page, guardScope!),
+      routePath: GUARDED_ROUTE,
+    })) as { success: boolean };
+  }
+
+  async function openGuarded(page: Page, section?: string) {
+    const url = new URL(guardEditorPath!, "http://placeholder");
+    url.searchParams.set("routePath", GUARDED_ROUTE);
+    if (section) url.searchParams.set("section", section);
+    await page.goto(`${url.pathname}${url.search}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect(page.getByRole("button", { name: /^Publish$/ })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(previewFrame(page).getByText(PAGE_MARK)).toBeVisible({
+      timeout: 90_000,
+    });
+  }
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await signedInPage(browser);
+    await page.goto(EDITOR_PATH!, { waitUntil: "domcontentloaded" });
+    guardScope = await createThrowawayTheme();
+    const result = (await serverFn(page, THEMES, "getStorefrontThemeEditor", {
+      ...guardScope,
+    })) as {
+      success: boolean;
+      data?: { templates: Array<{ id: string; type: string }> };
+    };
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    const home = result.data!.templates.find(
+      (template) => template.type === "index",
+    );
+    expect(home).toBeDefined();
+    guardEditorPath = `/store/${guardScope.storefrontId}/themes/${guardScope.themeId}/editor?templateId=${home!.id}`;
+    const saved = await writeThemeFiles(page, guardScope, GUARD_FILES);
+    expect(saved.success, JSON.stringify(saved)).toBe(true);
+    const stored = await writeGuarded(page, { title: GUARDED_TITLE });
+    expect(stored.success, JSON.stringify(stored)).toBe(true);
+    await page.context().close();
+  });
+
+  test("a hidden supported section renders nothing, opens no content, and comes back with its values", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+    const section = previewFrame(page).locator(
+      `[data-storefront-section-id="${SLOT}"]`,
+    );
+    await openGuarded(page);
+    await expect(
+      previewFrame(page).getByRole("heading", { name: GUARDED_TITLE }),
+    ).toBeVisible();
+
+    const hidden = await writeGuarded(page, { enabled: false });
+    expect(hidden.success, JSON.stringify(hidden)).toBe(true);
+    try {
+      await openGuarded(page);
+      // Omitted by the guard: no wrapper, no stored value, no default; the
+      // page around it renders (deep access never ran, so nothing crashed).
+      await expect(section).toHaveCount(0);
+      await expect(previewFrame(page).getByText(GUARDED_TITLE)).toHaveCount(0);
+      await expect(previewFrame(page).getByText(DEFAULT_TITLE)).toHaveCount(0);
+      // Named in the URL, it opens no content field.
+      await openGuarded(page, SLOT);
+      await openContentTab(page).catch(() => undefined);
+      await expect(titleField(page)).toHaveCount(0);
+    } finally {
+      const shown = await writeGuarded(page, { enabled: true });
+      expect(shown.success, JSON.stringify(shown)).toBe(true);
+    }
+
+    await openGuarded(page);
+    await expect(
+      previewFrame(page).getByRole("heading", { name: GUARDED_TITLE }),
+    ).toBeVisible();
   });
 });

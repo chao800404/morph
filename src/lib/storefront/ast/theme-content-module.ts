@@ -72,15 +72,20 @@ type ModuleShapes = Readonly<{
   hasExportAll: boolean;
 }>;
 
-function readModuleShapes(source: string): ModuleShapes | null {
-  let ast: any;
-  try {
-    ast = parse(source, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return null;
+function readModuleShapes(
+  source: string,
+  parsedAst?: unknown,
+): ModuleShapes | null {
+  let ast: any = parsedAst ?? null;
+  if (!ast) {
+    try {
+      ast = parse(source, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      });
+    } catch {
+      return null;
+    }
   }
 
   // Top-level bindings, so `export { read as content }` can be followed to
@@ -244,6 +249,8 @@ export function confirmThemeContentModuleFunctionExport(
   files: readonly ThemeSourceFile[],
   exportName: string,
   purpose: string,
+  /** The module's AST, when the caller already parsed it (same options). */
+  parsedAst?: unknown,
 ): ThemeContentModuleFunctionExportCheck {
   const file = files.find(
     (candidate) =>
@@ -256,7 +263,7 @@ export function confirmThemeContentModuleFunctionExport(
       message: `Cannot ${purpose}: ${THEME_CONTENT_MODULE_PATH} is missing, and Design binds sections through its ${exportName}(). Restore it in Code mode with "${RESTORE_THEME_CONTENT_MODULE_COMMAND}" from the Command Palette, then try again.`,
     };
   }
-  const shapes = readModuleShapes(file.content ?? "");
+  const shapes = readModuleShapes(file.content ?? "", parsedAst);
   if (!shapes) {
     return {
       ok: false,

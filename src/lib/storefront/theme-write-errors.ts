@@ -39,6 +39,20 @@ export const SECTION_SOURCE_UNCONFIRMED = "SECTION_SOURCE_UNCONFIRMED";
  */
 export const SECTION_HIDE_UNSUPPORTED = "SECTION_HIDE_UNSUPPORTED";
 
+/**
+ * A publish refused because a hidden section in it cannot be hidden by the
+ * build's source revision (M3 Hide); the message lists each with its reason.
+ */
+export const PUBLISH_HIDDEN_SECTION_UNSUPPORTED =
+  "PUBLISH_HIDDEN_SECTION_UNSUPPORTED";
+
+/**
+ * A publish whose build was made before Morph's hide guard, with a hidden
+ * section that guard would hide: it needs a rebuild, which only the author's
+ * explicit "Rebuild and publish" starts.
+ */
+export const PUBLISH_HIDE_REBUILD_REQUIRED = "PUBLISH_HIDE_REBUILD_REQUIRED";
+
 /** The source used for a visual selection is no longer the saved source. */
 export const SELECTION_SOURCE_CONFLICT = "SELECTION_SOURCE_CONFLICT";
 export const SELECTION_SOURCE_CONFLICT_MESSAGE =

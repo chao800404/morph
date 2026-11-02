@@ -3,7 +3,7 @@ import { THEME_FRAMEWORK_ROUTES } from "./theme-routes";
 import { THEME_START_TOOLCHAIN } from "../compiler/theme-start-toolchain";
 import { THEME_PREVIEW_SERVER_BASE_PATH } from "../compiler/theme-preview-dev-server";
 import { planThemeSandboxWorkspace } from "../compiler/theme-sandbox-workspace";
-import { withThemeMorphSdkIdentity } from "../compiler/theme-morph-sdk";
+import { withThemeStartBuildIdentity } from "../compiler/theme-morph-sdk";
 import { deriveThemeSourceRouterFramework } from "../theme-source-runtime-contract";
 import type { ThemeFrameworkAdapter } from "./theme-framework.types";
 import {
@@ -82,11 +82,12 @@ export const tanstackStartFramework: ThemeFrameworkAdapter = {
           }
         : undefined,
     native: {
-      // The pinned Start version and the Morph SDK the build injects
-      // (theme-morph-sdk.ts): either changing must change the identity.
+      // The pinned Start version, the Morph SDK the build injects and the
+      // hide guard it compiles in (theme-morph-sdk.ts): any changing must
+      // change the identity.
       compilerIdentity: () => ({
         id: NATIVE_START_COMPILER_ID,
-        version: withThemeMorphSdkIdentity(THEME_START_TOOLCHAIN.reactStart),
+        version: withThemeStartBuildIdentity(THEME_START_TOOLCHAIN.reactStart),
       }),
       routeRegistry: (files) => {
         const registry = THEME_FRAMEWORK_ROUTES["tanstack-start"](files);

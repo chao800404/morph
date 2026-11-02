@@ -203,8 +203,12 @@ function compileWithTypeScript(source: string, sourcePath: string): string {
     );
 }
 
-function prepare(files: readonly ThemeSourceFile[], previewPass = true) {
-  const prepared = prepareSourcesForLivePreview(files);
+function prepare(
+  files: readonly ThemeSourceFile[],
+  previewPass = true,
+  hideGuards = true,
+) {
+  const prepared = prepareSourcesForLivePreview(files, { hideGuards });
   const loader = createThemeModuleLoader(
     (previewPass ? prepared.files : files).map((file) => ({
       path: file.path,
@@ -281,11 +285,20 @@ export async function renderLivePreviewRoute(args: {
   respond?: LivePreviewRequestHandler;
   /** See `renderLivePreviewComponent`. */
   previewPass?: boolean;
+  /**
+   * `false` leaves out only Morph's hide guard (`theme-hide-guard.ts`), so a
+   * test can show what the page does without it.
+   */
+  hideGuards?: boolean;
 }): Promise<LivePreviewRender> {
   const routeFile = args.routeFile ?? "src/routes/index.tsx";
   const path = args.path ?? "/";
   const pathname = args.pathname ?? path;
-  const { prepared, loader } = prepare(args.files, args.previewPass);
+  const { prepared, loader } = prepare(
+    args.files,
+    args.previewPass,
+    args.hideGuards,
+  );
 
   const html = await withPreviewContent(
     args.documents ?? {},

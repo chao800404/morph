@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
 import { STARTER_THEME_FILES } from "@/lib/storefront/starter-theme-files";
 import { STARTER_THEME_CATALOG_FILES } from "@/lib/storefront/starter-theme-catalog-files";
 import { LocalViteThemeBuildRunner } from "./local-vite-theme-build-runner";
@@ -43,7 +43,7 @@ describe("LocalViteThemeBuildRunner (Phase 4B-5)", { timeout: 60_000 }, () => {
     entry: "src/pages/index.tsx",
     inputHash: "a".repeat(64),
     compilerId: "tailwind-v4-build",
-    compilerVersion: withThemeMorphSdkIdentity(TAILWIND_VERSION),
+    compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
     toolchainId: START_TOOLCHAIN.id,
     files: files as any,
     ...overrides,
@@ -658,7 +658,7 @@ describe(
         entry: "src/routes/index.tsx",
         inputHash: "a".repeat(64),
         compilerId: "tailwind-v4-build",
-        compilerVersion: withThemeMorphSdkIdentity(TAILWIND_VERSION),
+        compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
         toolchainId: START_TOOLCHAIN.id,
         files: STARTER_THEME_FILES as never,
       } as never);

@@ -1,6 +1,7 @@
 import { hoistColocatedContentFieldsForPreview } from "../ast/hoist-colocated-content-fields";
 import { injectPreviewBindings } from "../ast/inject-preview-bindings";
 import { stripEditorMarkers } from "../ast/strip-editor-markers";
+import { applyHideGuards } from "../ast/theme-hide-guard";
 
 /**
  * The TSX/JSX file-language layer: what Morph does to a Theme's source files,
@@ -28,8 +29,11 @@ type SourceFile = Readonly<{ path: string; content: string }>;
  * way round, every row field would be judged undeclared and nothing repeated
  * would be editable.
  */
-export function prepareSourcesForLivePreview(files: readonly SourceFile[]) {
-  const bindings = injectPreviewBindings(files);
+export function prepareSourcesForLivePreview(
+  files: readonly SourceFile[],
+  options: Readonly<{ hideGuards?: boolean }> = {},
+) {
+  const bindings = injectPreviewBindings(files, options);
   const hoist = hoistColocatedContentFieldsForPreview(bindings.files);
   return { bindings, hoist, files: hoist.files };
 }
@@ -66,7 +70,20 @@ export function prepareChangedSourcesForLivePreview(
  * A build ships none of the editor's attributes. The Theme's stored source
  * keeps them — that is where a hand-written marker is doing its job — but a
  * shopper has no use for them.
+ *
+ * It does ship Morph's hide guard (M3 Hide, `theme-hide-guard.ts`), the same
+ * one the Live Preview runs, so a hidden section disappears from the
+ * published site exactly as it does from the preview. The guard is applied
+ * to the files as built (markers stripped), which are the files analysed.
+ * Its version is part of the build's compiler identity
+ * (`withThemeStartBuildIdentity`).
  */
-export function prepareSourcesForBuild(files: readonly SourceFile[]) {
-  return stripEditorMarkers(files);
+export function prepareSourcesForBuild(
+  files: readonly SourceFile[],
+  options: Readonly<{ hideGuards?: boolean }> = {},
+) {
+  const stripped = stripEditorMarkers(files);
+  if (options.hideGuards === false) return { ...stripped, hideGuarded: {} };
+  const guarded = applyHideGuards(stripped.files);
+  return { ...stripped, files: guarded.files, hideGuarded: guarded.guarded };
 }

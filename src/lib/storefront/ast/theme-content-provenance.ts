@@ -2262,8 +2262,16 @@ export type B1SlotUseAnalysis = Readonly<{
   uses: readonly B1SlotUse[];
   escapes: readonly B1RootEscape[];
   loaderOrigin: boolean;
-  /** The specifier this module imports `content` from, if it does. */
-  contentImportSource: string | null;
+  /**
+   * The declaration this module imports `content` from, if it does: its
+   * specifier, where the declaration ends (for an added import beside it),
+   * and whether it ends with its own semicolon (a Theme may omit them).
+   */
+  contentImport: Readonly<{
+    source: string;
+    end: number;
+    semicolon: boolean;
+  }> | null;
   /** Capitalised JSX elements by start offset. */
   elements: ReadonlyMap<
     number,
@@ -2807,7 +2815,7 @@ export function analyzeB1SlotUses(
       uses: [],
       escapes: [],
       loaderOrigin: false,
-      contentImportSource: null,
+      contentImport: null,
       elements: new Map(),
       diagnostics: [
         parsed && !parsed.ok
@@ -2833,7 +2841,7 @@ export function analyzeB1SlotUses(
   const escapes: B1RootEscape[] = [];
   collectSlotUses(ctx, uses, escapes);
 
-  let contentImportSource: string | null = null;
+  let contentImport: B1SlotUseAnalysis["contentImport"] = null;
   if (ctx.contentBinding) {
     for (const statement of parsed.ast.program.body ?? []) {
       if (
@@ -2844,7 +2852,14 @@ export function analyzeB1SlotUses(
             ctx.oracle.bindingOf(specifier.local) === ctx.contentBinding,
         )
       ) {
-        contentImportSource = statement.source.value;
+        contentImport =
+          typeof statement.end === "number"
+            ? {
+                source: statement.source.value,
+                end: statement.end,
+                semicolon: entry.content[statement.end - 1] === ";",
+              }
+            : null;
       }
     }
   }
@@ -2853,7 +2868,7 @@ export function analyzeB1SlotUses(
     uses,
     escapes,
     loaderOrigin: ctx.loaderOrigin,
-    contentImportSource,
+    contentImport,
     elements: elementPositions(ctx),
     diagnostics,
   };

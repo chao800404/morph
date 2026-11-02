@@ -81,9 +81,11 @@ function layoutDocument(hidden: readonly string[]): StorefrontPageDocument {
 async function renderHome(
   hidden: readonly string[],
   files: readonly File[] = workspace(),
+  hideGuards = true,
 ) {
   const { html } = await renderLivePreviewRoute({
     files: files.map((file) => ({ path: file.path, content: file.content })),
+    hideGuards,
     documents: {
       index: createDefaultStorefrontHomeDocument(),
       layout: layoutDocument(hidden),
@@ -124,16 +126,31 @@ describe("a hidden layout section in real React", () => {
 
   it("the always-visible layout is the bug: a hidden Header renders with its defaults", async () => {
     // Reverse check. If this stops failing the way it does, the tests above
-    // no longer prove the guard is what hides the Header.
+    // no longer prove the guard is what hides the Header. Without Morph's
+    // own hide guard (M3), which now hides it too: see the next test.
     const html = await renderHome(
       [STOREFRONT_LAYOUT_HEADER_SLOT_ID],
       workspace(
         setContent(LAYOUT, LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE),
       ),
+      false,
     );
     expect(html).toContain("Cart (0)");
     expect(html).toContain("Online Store");
     expect(html).not.toContain(AUTHORED_STORE_NAME);
+  });
+
+  it("Morph's hide guard (M3) hides it in the always-visible layout too, with no source change", async () => {
+    const files = workspace(
+      setContent(LAYOUT, LEGACY_STARTER_THEME_LAYOUT_ALWAYS_VISIBLE_SOURCE),
+    );
+    const before = JSON.stringify(files);
+    const html = await renderHome([STOREFRONT_LAYOUT_HEADER_SLOT_ID], files);
+    expect(html).not.toContain("<header");
+    expect(html).not.toContain("Cart (0)");
+    expect(html).not.toContain(AUTHORED_STORE_NAME);
+    expect(html).toContain(AUTHORED_COPYRIGHT);
+    expect(JSON.stringify(files)).toBe(before);
   });
 });
 

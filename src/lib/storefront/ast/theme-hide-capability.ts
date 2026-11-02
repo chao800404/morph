@@ -9,7 +9,10 @@ import {
   type B1SlotUseAnalysis,
   type B1SourceFile,
 } from "./theme-content-provenance";
-import { createThemeSourceAstReader } from "./theme-source-ast";
+import {
+  createThemeSourceAstReader,
+  type ThemeSourceAstReader,
+} from "./theme-source-ast";
 import {
   LEGACY_STARTER_THEME_CONTENT_MODULE_V29_SOURCE,
   STARTER_THEME_CONTENT_MODULE_SOURCE,
@@ -75,8 +78,15 @@ export type HideGuardSite = Readonly<{
    * the Starter's own `!isSectionHidden("slot") && <El/>`, left as it is.
    */
   position: "child" | "return" | "arrow-body" | "guarded";
-  /** For a `content` root: the specifier the module imports `content` from. */
-  contentImportSource: string | null;
+  /**
+   * For a `content` root: the declaration the module imports `content` from
+   * (its specifier, where it ends, and whether it ends with a semicolon).
+   */
+  contentImport: Readonly<{
+    source: string;
+    end: number;
+    semicolon: boolean;
+  }> | null;
   /** For a `loader` root: the local that holds the whole page. */
   pageLocal: string | null;
 }>;
@@ -141,6 +151,8 @@ function refuse(
 }
 
 export type HideCapabilityAnalyzer = Readonly<{
+  /** The sections B1 identifies in one module, in source order. */
+  sectionsIn(path: string): readonly string[];
   classify(args: {
     callSitePath: string | null;
     slot: string;
@@ -154,12 +166,16 @@ export type HideCapabilityAnalyzer = Readonly<{
  */
 export function createHideCapabilityAnalyzer(
   sourceFiles: readonly B1SourceFile[],
+  options: Readonly<{
+    /** The operation's shared parse, so no module is parsed twice. */
+    reader?: ThemeSourceAstReader;
+  }> = {},
 ): HideCapabilityAnalyzer {
   const files = sourceFiles.map((file) => ({
     path: normalizeThemeSourcePath(file.path),
     content: file.content,
   }));
-  const reader = createThemeSourceAstReader(files);
+  const reader = options.reader ?? createThemeSourceAstReader(files);
   const routeAnalyses = new Map<string, B1RouteAnalysis>();
   const slotUseAnalyses = new Map<string, B1SlotUseAnalysis>();
   const routeAnalysis = (path: string) => {
@@ -183,11 +199,19 @@ export function createHideCapabilityAnalyzer(
   const contentModule = files.find(
     (file) => file.path === THEME_CONTENT_MODULE_PATH,
   );
-  const sectionHiddenCheck = confirmThemeContentModuleFunctionExport(
-    files,
-    THEME_SECTION_HIDDEN_HELPER,
-    "hide this section",
-  );
+  // Asked only when a content() site needs it, from the shared parse.
+  let sectionHiddenConfirmed: boolean | null = null;
+  const sectionHiddenOk = () => {
+    sectionHiddenConfirmed ??= confirmThemeContentModuleFunctionExport(
+      files,
+      THEME_SECTION_HIDDEN_HELPER,
+      "hide this section",
+      contentModule
+        ? (reader.ast(contentModule.path, contentModule.content) ?? undefined)
+        : undefined,
+    ).ok;
+    return sectionHiddenConfirmed;
+  };
   const pageModuleConfirmed =
     contentModule !== undefined &&
     STARTER_PAGE_MODULE_SOURCES.includes(contentModule.content);
@@ -205,7 +229,12 @@ export function createHideCapabilityAnalyzer(
             reachableCache ??= new Map();
             let paths = reachableCache.get(callSitePath);
             if (paths === undefined) {
-              const reachable = reachableThemeModules(callSitePath, files);
+              const reachable = reachableThemeModules(
+                callSitePath,
+                files,
+                undefined,
+                reader.read,
+              );
               paths =
                 reachable.unboundedDynamicImport || reachable.unparseable
                   ? null
@@ -358,7 +387,7 @@ export function createHideCapabilityAnalyzer(
         slot,
         root: contentSite ? "content" : "loader",
         position,
-        contentImportSource: contentSite ? uses.contentImportSource : null,
+        contentImport: contentSite ? uses.contentImport : null,
         pageLocal: loaderSite ? [...pageLocals][0]! : null,
       });
     }
@@ -396,10 +425,7 @@ export function createHideCapabilityAnalyzer(
     if (sites.length === 0) return refuse(slot, "no-call-site");
 
     // A6: the guard reads the hidden list from the author's content module.
-    if (
-      sites.some((site) => site.root === "content") &&
-      !sectionHiddenCheck.ok
-    ) {
+    if (sites.some((site) => site.root === "content") && !sectionHiddenOk()) {
       return refuse(slot, "content-module-unconfirmed", {
         file: THEME_CONTENT_MODULE_PATH,
         line: 0,
@@ -414,7 +440,15 @@ export function createHideCapabilityAnalyzer(
     return { kind: "supported", slot, sites };
   };
 
-  return { classify };
+  const sectionsIn: HideCapabilityAnalyzer["sectionsIn"] = (path) => [
+    ...new Set(
+      routeAnalysis(normalizeThemeSourcePath(path))
+        .instances.map((instance) => instance.section)
+        .filter((section): section is string => section !== null),
+    ),
+  ];
+
+  return { classify, sectionsIn };
 }
 
 /** One section, one snapshot; see `createHideCapabilityAnalyzer`. */

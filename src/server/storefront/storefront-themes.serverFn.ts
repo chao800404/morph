@@ -8,7 +8,11 @@ import {
   TEMPLATE_DRAFT_GENERATION_MISMATCH,
 } from "@/lib/storefront/theme-write-errors";
 import { parseRejectedContentField } from "@/lib/storefront/theme-content-capabilities";
-import { readSectionHideRefusal } from "@/lib/storefront/content/section-hide-check";
+import {
+  PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
+  PUBLISH_HIDE_REBUILD_REQUIRED,
+  readSectionHideRefusal,
+} from "@/lib/storefront/content/section-hide-check";
 import { storefrontThemeDal } from "@/lib/storefront/dal/storefront-theme.dal";
 import {
   createReleasePreviewQueueMessage,
@@ -639,6 +643,17 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
                 },
                 sourceRevisionId,
               ),
+            readSourceRevisionFiles: async (sourceRevisionId) =>
+              (
+                await themeRevisionStore.materializeRevision(
+                  data.storefrontId,
+                  data.themeId,
+                  sourceRevisionId,
+                )
+              ).snapshot.map((file) => ({
+                path: file.path,
+                content: file.encoding === "binary" ? null : file.content,
+              })),
           });
           if (!result) {
             return fail("Theme template or draft revision not found", {
@@ -796,6 +811,20 @@ export const publishStorefrontThemeTemplate = createServerFn({ method: "POST" })
           `These public/ files cannot be published: ${message.slice(message.indexOf("PUBLISH_PUBLIC_FILE_REFUSED:") + "PUBLISH_PUBLIC_FILE_REFUSED:".length).trim()}`,
           { error: "PUBLISH_PUBLIC_FILE_REFUSED" },
         );
+      }
+      // M3 Hide: said with the sections and reasons, because the author has
+      // to show them again, change the code, or ask for the rebuild; the
+      // live site is unchanged either way.
+      for (const code of [
+        PUBLISH_HIDDEN_SECTION_UNSUPPORTED,
+        PUBLISH_HIDE_REBUILD_REQUIRED,
+      ]) {
+        if (message.includes(`${code}:`)) {
+          return fail(
+            message.slice(message.indexOf(`${code}:`) + code.length + 1).trim(),
+            { error: code },
+          );
+        }
       }
       if (message.includes("PUBLISH_BUILD_CONTENT_MISMATCH")) {
         return fail(

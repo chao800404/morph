@@ -3,7 +3,7 @@
 // which the runner's byte reader (`instanceof Uint8Array`) does not take.
 import { describe, expect, it, vi } from "vitest";
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
 import { START_TOOLCHAIN, answerToolchainCommand } from "./sandbox-toolchain.test-support";
 
 vi.mock("cloudflare:workers", () => ({ env: {} }));
@@ -39,7 +39,9 @@ const input = (): ThemeBuildRunnerInput =>
     entry: "src/index.tsx",
     inputHash: "c".repeat(64),
     compilerId: NATIVE_START_COMPILER_ID,
-    compilerVersion: withThemeMorphSdkIdentity(THEME_START_TOOLCHAIN.reactStart),
+    compilerVersion: withThemeStartBuildIdentity(
+      THEME_START_TOOLCHAIN.reactStart,
+    ),
     toolchainId: START_TOOLCHAIN.id,
     buildMode: "native",
     files: [
@@ -341,7 +343,7 @@ describe("the Sandbox runner's native build", () => {
     const result = await runner.run({
       ...input(),
       compilerId: "tailwind-v4-build",
-      compilerVersion: withThemeMorphSdkIdentity(TAILWIND_VERSION),
+      compilerVersion: withThemeStartBuildIdentity(TAILWIND_VERSION),
     });
     expect(result).toMatchObject({
       success: false,
