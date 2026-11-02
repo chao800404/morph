@@ -760,8 +760,9 @@ function deriveDocumentLayoutPathFromRoute(
  */
 export function deriveThemeDocumentLayoutPath(
   files: readonly ThemeSourceFile[],
+  sourceAstReader = createThemeSourceAstReader(files),
 ): string | null {
-  return readDocumentLayoutPath(files, createThemeSourceAstReader(files));
+  return readDocumentLayoutPath(files, sourceAstReader);
 }
 
 function readDocumentLayoutPath(

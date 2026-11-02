@@ -2,7 +2,7 @@ import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
 import {
   themeMorphSdkAliases,
   themeMorphSdkFiles,
-  withThemeMorphSdkIdentity,
+  withThemeStartBuildIdentity,
 } from "./theme-morph-sdk";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -128,7 +128,7 @@ export class LocalViteThemeBuildRunner implements ThemeBuildRunner {
 
   readonly compilerId = "tailwind-v4-build";
   /** Tailwind plus the injected Morph SDK; see theme-morph-sdk.ts. */
-  readonly compilerVersion = withThemeMorphSdkIdentity(TAILWIND_VERSION);
+  readonly compilerVersion = withThemeStartBuildIdentity(TAILWIND_VERSION);
 
   private readonly maxDurationMs: number;
   private readonly maxSourceFiles: number;

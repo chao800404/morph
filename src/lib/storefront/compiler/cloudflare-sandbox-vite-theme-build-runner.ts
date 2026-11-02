@@ -1,5 +1,5 @@
 import { TAILWIND_VERSION } from "./tailwind-builtin-stylesheets";
-import { withThemeMorphSdkIdentity } from "./theme-morph-sdk";
+import { withThemeStartBuildIdentity } from "./theme-morph-sdk";
 import type { Sandbox } from "@cloudflare/sandbox";
 import {
   NATIVE_PRERENDER_REFUSED_READS_PATH,
@@ -244,7 +244,7 @@ export class CloudflareSandboxViteThemeBuildRunner implements ThemeBuildRunner {
 
   readonly compilerId = "tailwind-v4-build";
   /** Tailwind plus the injected Morph SDK; see theme-morph-sdk.ts. */
-  readonly compilerVersion = withThemeMorphSdkIdentity(TAILWIND_VERSION);
+  readonly compilerVersion = withThemeStartBuildIdentity(TAILWIND_VERSION);
 
   private readonly maxDurationMs: number;
   private readonly maxSourceFiles: number;

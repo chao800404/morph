@@ -97,6 +97,7 @@ import {
   rebaseContentProps,
 } from "@/lib/storefront/editor/content-rebase";
 import {
+  PUBLISH_HIDE_REBUILD_REQUIRED,
   SECTION_HIDE_UNSUPPORTED,
   TEMPLATE_DRAFT_CONFLICT,
 } from "@/lib/storefront/theme-write-errors";
@@ -1436,6 +1437,10 @@ export function VisualEditorShell({
     },
     [context.storefront.id, context.theme.id],
   );
+  /** The note of the last publish, for "Rebuild and publish" to repeat. */
+  const lastPublishNoteRef = useRef<string | undefined>(undefined);
+  /** Set once `handlePublish` exists; see the rebuild-required refusal. */
+  const rebuildAndPublishRef = useRef<() => Promise<void>>(async () => {});
   const publishMutation = useMutation({
     mutationFn: (variables: {
       templateId: string;
@@ -1468,7 +1473,21 @@ export function VisualEditorShell({
     },
     onSuccess: async (result, variables) => {
       if (!result.success) {
-        toast.error(result.message);
+        if (result.error === PUBLISH_HIDE_REBUILD_REQUIRED) {
+          // The build predates Morph's hide guard (M3). Rebuilding is the
+          // author's call, made here with its reason in front of them; a
+          // publish never rebuilds onto other source for this by itself.
+          toast.error(result.message, {
+            id: "publish-hide-rebuild",
+            duration: Infinity,
+            action: {
+              label: "Rebuild and publish",
+              onClick: () => void rebuildAndPublishRef.current(),
+            },
+          });
+        } else {
+          toast.error(result.message);
+        }
         await queryClient.invalidateQueries({
           queryKey: storefrontThemeQueries.detail(
             context.storefront.id,
@@ -6532,7 +6551,16 @@ export function VisualEditorShell({
   );
 
   const handlePublish = useCallback(
-    async (note?: string) => {
+    async (
+      note?: string,
+      /**
+       * `rebuild`: the author asked for a new build of this source after a
+       * publish said its build cannot hide a section (M3 Hide). Nothing else
+       * about the publish changes.
+       */
+      options: Readonly<{ rebuild?: boolean }> = {},
+    ) => {
+      lastPublishNoteRef.current = note;
       const publishTarget = publishTargetRef.current;
       // Publishing is not asking to save: whatever is unanswered is checked
       // and saved first, through Check and save, or nothing is published.
@@ -6667,7 +6695,9 @@ export function VisualEditorShell({
       // preparing whenever the build is not just stale content, so the draft
       // is prepared once.
       const preparedForSeal =
-        requiresContentBuild || buildPlan(true).action === "build";
+        requiresContentBuild ||
+        options.rebuild === true ||
+        buildPlan(true).action === "build";
       const prepared = await prepareContentDraftForBuild({
         currentGeneration,
         verb: "publish",
@@ -6712,7 +6742,9 @@ export function VisualEditorShell({
                 layoutTemplate.draftRevisionId ??
                 null)
               : null));
-      const plan = buildPlan(buildContentCurrent);
+      const plan: ReturnType<typeof buildPlan> = options.rebuild
+        ? { action: "build" }
+        : buildPlan(buildContentCurrent);
 
       let publishBuild = activeBuildPreview;
       if (plan.action === "build") {
@@ -6843,6 +6875,9 @@ export function VisualEditorShell({
       workspaceScope,
     ],
   );
+
+  rebuildAndPublishRef.current = () =>
+    handlePublish(lastPublishNoteRef.current, { rebuild: true });
 
   const confirmPublish = useCallback(async () => {
     // Closed first: the run reports itself on the toolbar button, and leaving

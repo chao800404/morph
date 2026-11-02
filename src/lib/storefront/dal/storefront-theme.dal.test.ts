@@ -18,6 +18,10 @@ import { createThemePreviewContentSnapshot } from "../compiler/theme-preview-con
 import { resolveStorefrontContent } from "../service/storefront-content-runtime";
 import { mergeDocumentWithRouteSections } from "../compiler/theme-route-sections";
 import { STARTER_THEME_CONTENT_MODULE_SOURCE } from "../starter-theme-v3-files";
+import {
+  withThemeMorphSdkIdentity,
+  withThemeStartBuildIdentity,
+} from "../compiler/theme-morph-sdk";
 
 vi.mock("cloudflare:workers", () => ({
   env: {
@@ -160,6 +164,8 @@ beforeEach(() => {
       theme_id text NOT NULL,
       source_revision_id text NOT NULL,
       status text NOT NULL,
+      compiler_id text,
+      compiler_version text,
       artifact_prefix text,
       manifest_json text,
       content_publication_id text,
@@ -242,6 +248,16 @@ afterEach(() => {
 
 /** The source revision check `publishTemplate` requires, accepting. */
 const acceptRevision = async () => {};
+/**
+ * The source revision's files `publishTemplate` requires. These tests build
+ * from the workspace they seed, so the revision holds the same files.
+ */
+const workspaceRevisionFiles = async () =>
+  sqlite
+    .prepare(
+      "SELECT path, content FROM storefront_theme_files WHERE deleted_at IS NULL",
+    )
+    .all() as Array<{ path: string; content: string }>;
 
 describe("stored content survives unproven route bindings", () => {
   const revisionId = "abaaaaaa-1111-4111-8111-111111111111";
@@ -892,6 +908,7 @@ describe("storefront theme DAL", () => {
           expectedDraftRevisionId: saved!.draftRevisionId,
           expectedDraftGeneration: 2,
           expectedReleaseGeneration: 1,
+          readSourceRevisionFiles: workspaceRevisionFiles,
           verifySourceRevision: acceptRevision,
         }),
       ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
@@ -981,6 +998,7 @@ describe("storefront theme DAL", () => {
           expectedDraftRevisionId: saved!.draftRevisionId,
           expectedDraftGeneration: 2,
           expectedReleaseGeneration: 1,
+          readSourceRevisionFiles: workspaceRevisionFiles,
           verifySourceRevision: acceptRevision,
         }),
       ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
@@ -1044,6 +1062,7 @@ describe("storefront theme DAL", () => {
         expectedDraftRevisionId: saved!.draftRevisionId,
         expectedDraftGeneration: 2,
         expectedReleaseGeneration: 1,
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
       });
       if (mismatch) {
@@ -1120,6 +1139,7 @@ describe("storefront theme DAL", () => {
         expectedDraftRevisionId: saved!.draftRevisionId,
         expectedDraftGeneration: 2,
         expectedReleaseGeneration: 1,
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
       });
 
@@ -1200,6 +1220,7 @@ describe("storefront theme DAL", () => {
         expectedDraftRevisionId: saved!.draftRevisionId,
         expectedDraftGeneration: 2,
         expectedReleaseGeneration: 1,
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: async () => {
           const changed = await storefrontThemeDal.updateRenderPolicy({
             ...policyWrite(),
@@ -1295,6 +1316,7 @@ describe("storefront theme DAL", () => {
         expectedDraftRevisionId: "home-revision",
         expectedDraftGeneration: 1,
         expectedReleaseGeneration: 1,
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
       }),
     ).rejects.toThrow("PUBLISH_RENDER_POLICY_NOT_READY");
@@ -2476,6 +2498,7 @@ export default function Hero() { return <h1 />; }`;
         expectedDraftRevisionId: draft!.draftRevisionId,
         expectedDraftGeneration: draft!.draftGeneration,
         expectedReleaseGeneration: 1,
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
       });
       expect(published).toMatchObject({ releaseCreated: true });
@@ -2712,6 +2735,7 @@ export default function SiteHeader() { return <header />; }`;
 
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -2777,6 +2801,7 @@ export default function SiteHeader() { return <header />; }`;
     const verified: string[] = [];
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: async (revisionId) => {
           verified.push(revisionId);
         },
@@ -2821,6 +2846,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -2841,6 +2867,7 @@ export default function SiteHeader() { return <header />; }`;
     );
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -2888,6 +2915,7 @@ export default function SiteHeader() { return <header />; }`;
     const verified: string[] = [];
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: async (revisionId) => {
           verified.push(revisionId);
           throw new Error(
@@ -2962,6 +2990,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -3011,6 +3040,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -3049,6 +3079,7 @@ export default function SiteHeader() { return <header />; }`;
     `);
 
     const res = await storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -3114,6 +3145,7 @@ export default function SiteHeader() { return <header />; }`;
     // Non-existent sourceRevisionId should fail the CAS guard
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -3129,6 +3161,7 @@ export default function SiteHeader() { return <header />; }`;
     // Mismatched expectedReleaseGeneration should fail the CAS guard with RELEASE_GENERATION_CONFLICT
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -3167,6 +3200,7 @@ export default function SiteHeader() { return <header />; }`;
 
     await expect(
       storefrontThemeDal.publishTemplate({
+        readSourceRevisionFiles: workspaceRevisionFiles,
         verifySourceRevision: acceptRevision,
         storefrontId: "storefront-a",
         themeId: "theme-a",
@@ -4061,6 +4095,7 @@ describe("preparing an untouched template for its first publish", () => {
       expectedDraftRevisionId: draft!.draftRevisionId,
       expectedDraftGeneration: draft!.draftGeneration,
       expectedReleaseGeneration: 1,
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
     });
     expect(result).toMatchObject({
@@ -4182,6 +4217,7 @@ describe("publish build resolution", () => {
 
   const publish = () =>
     storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -4269,6 +4305,7 @@ describe("publish build resolution", () => {
     `);
 
     const result = await storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -4821,6 +4858,7 @@ describe("publishing seals a complete snapshot", () => {
     `);
 
     await storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -4895,6 +4933,7 @@ describe("publishing after a rollback", () => {
 
   const publishB = () =>
     storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles: workspaceRevisionFiles,
       verifySourceRevision: acceptRevision,
       storefrontId: "storefront-a",
       themeId: "theme-a",
@@ -5331,5 +5370,198 @@ function Home() {
     await expect(write("hero", { enabled: false })).rejects.toThrow(
       "SECTION_HIDE_UNSUPPORTED:legacy-shell",
     );
+  });
+});
+
+/**
+ * M3 Hide P4: a publish judges every hidden section it seals against the
+ * build's own source revision and the guard that build carries; a historical
+ * release is never rebuilt or rewritten by it.
+ */
+describe("M3 Hide: publish judges hidden sections by the build's revision and guard", () => {
+  const SOURCE = "22222222-2222-4222-8222-222222222222";
+  const BUILD = "33333333-3333-4333-8333-333333333333";
+  const DRAFT = "cccccccc-1111-4111-8111-111111111111";
+  const root = `import { Outlet, createRootRoute } from "@tanstack/react-router";
+export const Route = createRootRoute({ component: Root });
+function Root() { return <Outlet />; }`;
+  const hero = `export const contentFields = {
+  heading: { type: "text", label: "Heading" },
+} as const;
+export default function Hero({ heading = "HERO-DEFAULT" }) { return <h1>{heading}</h1>; }`;
+  /** `hero` is a plain spread; `early` is read before the JSX. */
+  const route = (
+    options: { earlySlot?: string; starterGuard?: boolean } = {},
+  ) =>
+    `import { createFileRoute } from "@tanstack/react-router";
+import { content, isSectionHidden } from "../morph/content";
+import Hero from "../components/Hero";
+export const Route = createFileRoute("/")({ component: Home });
+function Home() {
+  const early = String(content("${options.earlySlot ?? "early"}").heading ?? "").toUpperCase();
+  return (
+    <main>
+      ${options.starterGuard ? `{!isSectionHidden("hero") && <Hero {...content("hero")} />}` : `<Hero {...content("hero")} />`}
+      <Hero {...content("early")} heading={early} />
+    </main>
+  );
+}`;
+  const files = (routeSource: string) => [
+    { path: "src/routes/__root.tsx", content: root },
+    {
+      path: "src/morph/content.ts",
+      content: STARTER_THEME_CONTENT_MODULE_SOURCE,
+    },
+    { path: "src/components/Hero.tsx", content: hero },
+    { path: "src/routes/index.tsx", content: routeSource },
+  ];
+
+  function seed(options: {
+    hidden: readonly string[];
+    compilerVersion: string | null;
+    workspaceRoute?: string;
+  }) {
+    const insert = sqlite.prepare(`
+      INSERT INTO storefront_theme_files
+        (id, storefront_id, theme_id, path, content, created_at, updated_at)
+      VALUES (?, 'storefront-a', 'theme-a', ?, ?, 'now', 'now')
+    `);
+    for (const file of files(options.workspaceRoute ?? route())) {
+      insert.run(`f-${file.path}`, file.path, file.content);
+    }
+    const document = JSON.stringify({
+      version: 1,
+      sections: ["hero", "early"].map((id) => ({
+        id,
+        type: "hero",
+        componentRef: "src/components/Hero.tsx",
+        enabled: !options.hidden.includes(id),
+        props: { heading: `Stored ${id}` },
+      })),
+    });
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_templates
+          (id, theme_id, type, name, document, draft_revision_id, published_revision_id, draft_generation, created_at, updated_at)
+        VALUES ('template-hide-pub', 'theme-a', 'index', 'Home', ?, ?, NULL, 1, 'now', 'now')`,
+      )
+      .run(document, DRAFT);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_template_revisions
+          (id, template_id, version, document, created_at)
+        VALUES (?, 'template-hide-pub', 1, ?, 'now')`,
+      )
+      .run(DRAFT, document);
+    sqlite
+      .prepare(
+        `INSERT INTO storefront_theme_revisions
+          (id, storefront_id, theme_id, revision_number, message, source, snapshot, created_at, updated_at)
+        VALUES (?, 'storefront-a', 'theme-a', 1, 'Checkpoint', 'publish', '[]', 'now', 'now')`,
+      )
+      .run(SOURCE);
+    sqlite
+      .prepare(
+        "UPDATE storefront_theme_builds SET compiler_version = ? WHERE id = ?",
+      )
+      .run(options.compilerVersion, BUILD);
+  }
+
+  const publish = (
+    readSourceRevisionFiles: (
+      revisionId: string,
+    ) => Promise<
+      readonly { path: string; content: string | null }[]
+    > = workspaceRevisionFiles,
+  ) =>
+    storefrontThemeDal.publishTemplate({
+      readSourceRevisionFiles,
+      verifySourceRevision: acceptRevision,
+      storefrontId: "storefront-a",
+      themeId: "theme-a",
+      templateId: "template-hide-pub",
+      sourceRevisionId: SOURCE,
+      themeBuildId: BUILD,
+      expectedDraftRevisionId: DRAFT,
+      expectedDraftGeneration: 1,
+      expectedReleaseGeneration: 1,
+    });
+  const released = () => ({
+    releases: sqlite.prepare("SELECT id FROM storefront_releases").all(),
+    active: sqlite
+      .prepare(
+        "SELECT active_release_id AS id FROM storefronts WHERE id = 'storefront-a'",
+      )
+      .get(),
+    template: sqlite
+      .prepare(
+        "SELECT published_revision_id AS id FROM storefront_theme_templates WHERE id = 'template-hide-pub'",
+      )
+      .get(),
+  });
+  const guarded = withThemeStartBuildIdentity("1.168.32");
+  const preGuard = withThemeMorphSdkIdentity("1.168.32");
+
+  it("publishes a hidden section the revision can hide, with a build that carries the guard", async () => {
+    seed({ hidden: ["hero"], compilerVersion: guarded });
+    const result = await publish();
+    expect(result?.releaseId).toBeTruthy();
+    expect(released().releases).toHaveLength(1);
+  });
+
+  it("refuses a hidden section the revision cannot hide, naming it and why, and writes nothing", async () => {
+    seed({ hidden: ["early"], compilerVersion: guarded });
+    const before = released();
+    await expect(publish()).rejects.toThrow(
+      /^PUBLISH_HIDDEN_SECTION_UNSUPPORTED: .*"early" on the index page \(early-computation\)/,
+    );
+    expect(released()).toEqual(before);
+  });
+
+  it("asks for a rebuild when the build was made before the guard, and writes nothing", async () => {
+    seed({ hidden: ["hero"], compilerVersion: preGuard });
+    const before = released();
+    await expect(publish()).rejects.toThrow(
+      /^PUBLISH_HIDE_REBUILD_REQUIRED: .*"hero" on the index page/,
+    );
+    expect(released()).toEqual(before);
+  });
+
+  it("needs no rebuild for a section the Starter's own guard already hides", async () => {
+    seed({
+      hidden: ["hero"],
+      compilerVersion: preGuard,
+      workspaceRoute: route({ starterGuard: true }),
+    });
+    await expect(publish()).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  it("does not judge a publish with nothing hidden, whatever its build", async () => {
+    seed({ hidden: [], compilerVersion: preGuard });
+    await expect(publish()).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  it("judges the build's revision, never the workspace", async () => {
+    // The workspace now reads `hero` before the JSX; the revision built and
+    // published does not.
+    seed({
+      hidden: ["hero"],
+      compilerVersion: guarded,
+      workspaceRoute: route({ earlySlot: "hero" }),
+    });
+    await expect(publish(async () => files(route()))).resolves.toMatchObject({
+      releaseId: expect.any(String),
+    });
+  });
+
+  it("reverse: the same publish, its revision reading `hero` early, is refused", async () => {
+    seed({ hidden: ["hero"], compilerVersion: guarded });
+    await expect(
+      publish(async () => files(route({ earlySlot: "hero" }))),
+    ).rejects.toThrow("PUBLISH_HIDDEN_SECTION_UNSUPPORTED");
   });
 });

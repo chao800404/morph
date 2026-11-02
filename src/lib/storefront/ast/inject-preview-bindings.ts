@@ -20,6 +20,11 @@ import {
   type LoaderSlotPage,
 } from "./theme-content-binding";
 import { MORPH_SOURCE_LOCATION_ATTRIBUTE } from "@/lib/storefront/compiler/theme-source-location-plugin";
+import {
+  hideGuardInsertions,
+  planHideGuards,
+  type HideGuardPlan,
+} from "./theme-hide-guard";
 import type { ThemeContentFieldDefinition } from "@/lib/storefront/theme-content-capabilities";
 import {
   resolveLocalModulePathFromFiles,
@@ -103,6 +108,8 @@ export type PreviewBindingsResult = Readonly<{
   skipped: ReadonlyArray<{ path: string; reason: string }>;
   /** Things that still work but will surprise the author. */
   warnings: ReadonlyArray<{ path: string; message: string }>;
+  /** Slot ids given Morph's hide guard, per file (`theme-hide-guard.ts`). */
+  hideGuarded: Readonly<Record<string, readonly string[]>>;
 }>;
 
 /**
@@ -121,7 +128,7 @@ type Insertion = {
   }>;
 };
 
-type WrapperKind = "row" | "section" | "content" | "evaluation";
+type WrapperKind = "hide" | "row" | "section" | "content" | "evaluation";
 
 /**
  * Which wrapper goes outside when two enclose exactly the same element. A row
@@ -131,6 +138,9 @@ type WrapperKind = "row" | "section" | "content" | "evaluation";
  * place here so the order never rests on which was recorded first.
  */
 const WRAPPER_NESTING: Readonly<Record<WrapperKind, number>> = {
+  // Morph's hide guard (`theme-hide-guard.ts`) decides whether anything at
+  // all renders there, so it is outside every wrapper the element has.
+  hide: -1,
   row: 0,
   section: 1,
   content: 2,
@@ -1080,8 +1090,13 @@ export function findIndexKeyedContentArrayMaps(file: {
 
 export function injectPreviewBindings(
   files: readonly PreviewBindingFile[],
+  options: Readonly<{
+    /** Off only to show, in a test, what a page does without the guard. */
+    hideGuards?: boolean;
+  }> = {},
 ): PreviewBindingsResult {
   const annotated: Record<string, number> = {};
+  const hideGuarded: Record<string, readonly string[]> = {};
   const sections: Record<string, readonly string[]> = {};
   const skipped: Array<{ path: string; reason: string }> = [];
   const warnings: Array<{ path: string; message: string }> = [];
@@ -1089,6 +1104,13 @@ export function injectPreviewBindings(
   const filePaths = new Set(contentByPath.keys());
   const sourceAstReader = createThemeSourceAstReader(files);
   const parsedAstFor = sourceAstReader.ast;
+  // The call sites Morph can hide, from the same snapshot every other pass
+  // here reads. Their guards are spliced in with everything else, at the
+  // authored offsets, so no `data-morph-loc` below moves.
+  const hidePlan: HideGuardPlan =
+    options.hideGuards === false
+      ? new Map()
+      : planHideGuards(files, { reader: sourceAstReader });
   /**
    * Per component, every declared field proven at once. The proof shares the
    * injector's bounded AST reader, so it does not parse the workspace again
@@ -1620,6 +1642,24 @@ export function injectPreviewBindings(
       b1Instances,
     } = sectionReaderFor(file.path, ast);
     const insertions: Insertion[] = [];
+    const hideSites = hidePlan.get(file.path) ?? [];
+    for (const insertion of hideGuardInsertions(
+      hideSites,
+      usedIdentifierNames,
+    )) {
+      insertions.push(
+        insertion.wrapper
+          ? {
+              at: insertion.at,
+              text: insertion.text,
+              wrapper: { ...insertion.wrapper, kind: "hide" },
+            }
+          : { at: insertion.at, text: insertion.text },
+      );
+    }
+    if (hideSites.length > 0) {
+      hideGuarded[file.path] = [...new Set(hideSites.map((site) => site.slot))];
+    }
 
     // The `_hidden` list of the page a loader slot came from, as an expression
     // the slot's call site can read. A page held whole is already in scope; a
@@ -2296,5 +2336,5 @@ export function injectPreviewBindings(
     return { path: file.path, content };
   });
 
-  return { files: out, annotated, sections, skipped, warnings };
+  return { files: out, annotated, sections, skipped, warnings, hideGuarded };
 }

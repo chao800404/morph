@@ -48,7 +48,12 @@ import {
   type ThemeRouteSectionResult,
 } from "@/lib/storefront/compiler/theme-route-sections";
 import { templateSectionWriteBase } from "../content/template-section-write-base";
-import { assertSectionHideSupported } from "../content/section-hide-check";
+import {
+  assertPublishHiddenSections,
+  assertSectionHideSupported,
+  findPublishHiddenSectionProblems,
+} from "../content/section-hide-check";
+import { buildHideGuardVersion } from "../compiler/theme-morph-sdk";
 import {
   contentTargetForRoutePath,
   routeTemplatePathForRequest,
@@ -173,8 +178,11 @@ type SectionSourceComponent =
    * here may the ref the Document stored stand in for the source.
    */
   | Readonly<{ kind: "legacy" }>
-  /** The source owns this structure and cannot vouch for the section. */
-  | Readonly<{ kind: "unconfirmed"; reason: string }>;
+  /**
+   * The source owns this structure and cannot vouch for the section.
+   * `notRendered`: the source is fine but renders no such section.
+   */
+  | Readonly<{ kind: "unconfirmed"; reason: string; notRendered?: true }>;
 
 /**
  * The component the saved source renders for one section.
@@ -226,6 +234,7 @@ export function resolveSectionSourceComponent(args: {
       return {
         kind: "unconfirmed",
         reason: `${owner} does not render section "${args.sectionId}".`,
+        notRendered: true,
       };
     }
     if (section.missingComponentSourcePath) {
@@ -1723,6 +1732,16 @@ export const storefrontThemeDal = {
      * published. See `assertPublishPublicFiles`.
      */
     verifySourceRevision: (sourceRevisionId: string) => Promise<void>;
+    /**
+     * The files of the source revision this publish resolved (text content,
+     * or null for a binary file). Required for the same reason as
+     * `verifySourceRevision`: the hidden sections being sealed are judged
+     * against the revision the build was made from, never the workspace
+     * (M3 Hide, `findPublishHiddenSectionProblems`).
+     */
+    readSourceRevisionFiles: (
+      sourceRevisionId: string,
+    ) => Promise<readonly { path: string; content: string | null }[]>;
   }) {
     const releaseMetadata = withReleaseNote(null, data.note);
     const db = await getDb();
@@ -1734,6 +1753,7 @@ export const storefrontThemeDal = {
         publishedSourceRevisionId: storefrontThemes.publishedSourceRevisionId,
         releaseGeneration: storefrontThemes.releaseGeneration,
         sourceGeneration: storefrontThemes.sourceGeneration,
+        framework: storefrontThemes.framework,
         activeReleaseId: storefronts.activeReleaseId,
       })
       .from(storefrontThemeTemplates)
@@ -1819,6 +1839,7 @@ export const storefrontThemeDal = {
         manifestJson: storefrontThemeBuilds.manifestJson,
         contentPublicationId: storefrontThemeBuilds.contentPublicationId,
         contentDependency: storefrontThemeBuilds.contentDependency,
+        compilerVersion: storefrontThemeBuilds.compilerVersion,
       })
       .from(storefrontThemeBuilds)
       .where(
@@ -2044,6 +2065,76 @@ export const storefrontThemeDal = {
             "PUBLISH_BUILD_CONTENT_MISMATCH: Build is bound to a different content snapshot. Rebuild for the selected content before publishing.",
           );
         }
+      }
+
+      // M3 Hide: every hidden section being sealed, judged against this
+      // build's own source revision and the guard the build carries. Start
+      // only; another framework's Hide is a later phase (P5).
+      const hiddenTemplates = publicationDocuments.filter(
+        ({ item, document: sealed }) =>
+          item.itemType === "template" &&
+          sealed.sections.some((section) => section.enabled === false),
+      );
+      if (
+        hiddenTemplates.length > 0 &&
+        designWritesUnavailableReason(template.framework) === null
+      ) {
+        const templateRows = new Map(
+          (
+            await db
+              .select({
+                id: storefrontThemeTemplates.id,
+                type: storefrontThemeTemplates.type,
+                routePath: storefrontThemeTemplates.routePath,
+              })
+              .from(storefrontThemeTemplates)
+              .where(eq(storefrontThemeTemplates.themeId, data.themeId))
+          ).map((row) => [row.id, row]),
+        );
+        const revisionFiles =
+          await data.readSourceRevisionFiles(sourceRevisionId);
+        const textFiles = revisionFiles.filter(
+          (file): file is { path: string; content: string } =>
+            typeof file.content === "string",
+        );
+        assertPublishHiddenSections(
+          findPublishHiddenSectionProblems({
+            files: revisionFiles,
+            buildGuardVersion: buildHideGuardVersion(build.compilerVersion),
+            documents: hiddenTemplates.map(({ item, document: sealed }) => {
+              const row = templateRows.get(item.contentId);
+              const templateType =
+                item.metadata?.templateType ?? row?.type ?? "page";
+              return {
+                label:
+                  templateType === "layout"
+                    ? "the layout"
+                    : `the ${row?.routePath ?? templateType} page`,
+                templateType,
+                templateRoutePath: row?.routePath ?? null,
+                document: sealed,
+              };
+            }),
+            resolveCallSite: ({
+              templateType,
+              templateRoutePath,
+              sectionId,
+            }) => {
+              const resolved = resolveSectionSourceComponent({
+                framework: template.framework,
+                templateType,
+                templateRoutePath,
+                sectionId,
+                files: textFiles,
+              });
+              if (resolved.kind === "confirmed") return resolved.callSitePath;
+              if (resolved.kind === "legacy") return null;
+              return resolved.notRendered
+                ? "not-rendered"
+                : { unconfirmed: resolved.reason };
+            },
+          }),
+        );
       }
     }
 

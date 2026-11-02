@@ -2262,8 +2262,11 @@ export type B1SlotUseAnalysis = Readonly<{
   uses: readonly B1SlotUse[];
   escapes: readonly B1RootEscape[];
   loaderOrigin: boolean;
-  /** The specifier this module imports `content` from, if it does. */
-  contentImportSource: string | null;
+  /**
+   * The declaration this module imports `content` from, if it does: its
+   * specifier, and where the declaration ends (for an added import beside it).
+   */
+  contentImport: Readonly<{ source: string; end: number }> | null;
   /** Capitalised JSX elements by start offset. */
   elements: ReadonlyMap<
     number,
@@ -2807,7 +2810,7 @@ export function analyzeB1SlotUses(
       uses: [],
       escapes: [],
       loaderOrigin: false,
-      contentImportSource: null,
+      contentImport: null,
       elements: new Map(),
       diagnostics: [
         parsed && !parsed.ok
@@ -2833,7 +2836,7 @@ export function analyzeB1SlotUses(
   const escapes: B1RootEscape[] = [];
   collectSlotUses(ctx, uses, escapes);
 
-  let contentImportSource: string | null = null;
+  let contentImport: B1SlotUseAnalysis["contentImport"] = null;
   if (ctx.contentBinding) {
     for (const statement of parsed.ast.program.body ?? []) {
       if (
@@ -2844,7 +2847,10 @@ export function analyzeB1SlotUses(
             ctx.oracle.bindingOf(specifier.local) === ctx.contentBinding,
         )
       ) {
-        contentImportSource = statement.source.value;
+        contentImport =
+          typeof statement.end === "number"
+            ? { source: statement.source.value, end: statement.end }
+            : null;
       }
     }
   }
@@ -2853,7 +2859,7 @@ export function analyzeB1SlotUses(
     uses,
     escapes,
     loaderOrigin: ctx.loaderOrigin,
-    contentImportSource,
+    contentImport,
     elements: elementPositions(ctx),
     diagnostics,
   };

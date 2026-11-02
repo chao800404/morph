@@ -147,7 +147,7 @@ describe("classifyHideCapability: supported v1 shapes", () => {
           file: ROUTE,
           root: "content",
           position: "child",
-          contentImportSource: "../morph/content",
+          contentImport: { source: "../morph/content" },
           pageLocal: null,
         },
       ],

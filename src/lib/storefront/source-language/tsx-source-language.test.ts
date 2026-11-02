@@ -44,8 +44,16 @@ describe("the TSX file-language layer", () => {
     expect(after.bindings).toEqual(injectPreviewBindings(files));
   });
 
-  it("prepares a build exactly as the marker strip did", () => {
-    expect(prepareSourcesForBuild(files)).toEqual(stripEditorMarkers(files));
+  it("prepares a build as the marker strip did, then adds Morph's hide guard", () => {
+    // Nothing here is a section call site, so the guard adds nothing.
+    expect(prepareSourcesForBuild(files)).toEqual({
+      ...stripEditorMarkers(files),
+      hideGuarded: {},
+    });
+    expect(prepareSourcesForBuild(files, { hideGuards: false })).toEqual({
+      ...stripEditorMarkers(files),
+      hideGuarded: {},
+    });
   });
 
   it("uses the complete source graph to prepare a changed route but returns only that route", () => {
