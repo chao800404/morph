@@ -38,23 +38,38 @@
  * renders the author's component (O3, the distortion v1 had). A file whose
  * text already contains the alias gets no markers.
  *
- * The alias import is the one insertion that adds lines (Q9). Morph's own
- * positions are unaffected: every location and every marker offset is
- * computed on the unmodified source and all edits are applied in one pass,
- * so an insertion never shifts a later location (experiment 3 found exactly
- * that when the passes were chained). Only Astro's own diagnostics for the
- * preview copy are off, after the insertion point:
+ * The alias names `astro/compiler-runtime`, the entry Astro's own compile
+ * hands the compiler (`internalURL`, astro/dist/core/compile/compile.js) and
+ * from which every compiled page already imports the built-in `Fragment` and
+ * its render helpers, so the alias adds no module the page does not import
+ * anyway (PR-I smoke run 1: `astro/runtime/server/index.js` was a second,
+ * re-export-only pre-bundled entry).
  *
- * - with a frontmatter, the import goes on its own line before the closing
- *   fence: one line;
- * - without one, a whole frontmatter block is added at the top
- *   (`---`, the import, `---`): three lines.
+ * Positions (Q9, revised after smoke run 1). Morph's own positions are
+ * computed on the unmodified source and all edits are applied in one pass, so
+ * an insertion never shifts a later location (experiment 3 found exactly that
+ * when the passes were chained). The edits change the text Astro compiles: the
+ * alias import adds a line before the closing fence (a three-line block at the
+ * top without a frontmatter), and the attributes and markers lengthen lines.
+ * `load` therefore returns a source map of its edits (MagicString, as Astro
+ * itself resolves it), which Vite puts first in the module's map chain:
+ *
+ * - a stack frame the compiler maps into the route file names the author's
+ *   own line and column, as for the file without Morph;
+ * - a frame the compiler leaves unmapped stays a position in the generated
+ *   module, without and with Morph alike, and the alias import's lines move
+ *   it; it is not an author position;
+ * - known limit: Astro's `CompilerError` locations come from the compiler's
+ *   diagnostics on the text it was given and do not pass through source maps.
+ *   A file the plugin cannot parse is handed over unannotated, so syntax
+ *   errors are the author's; a compile-only diagnostic on an annotated copy
+ *   would name the copy's position.
  *
  * Not verified by these unit tests (container smoke test, U3): that a real
  * `astro dev` emits the alias markers and the rest of the page unchanged,
- * that the extra runtime module listed in `$$metadata.modules` has no side
- * effect, and whether a page importing its own `Fragment` compiles in the
- * container's pipeline at all (O2).
+ * that the alias import's module is one the page imports anyway, that error
+ * frames map as above, and whether a page importing its own `Fragment`
+ * compiles in the container's pipeline at all (O2).
  *
  * Astro compiles `.astro` in its own early transform, so this runs at `load`.
  * Only module ids without a query are handled: Astro serves a file's style and
@@ -121,8 +136,17 @@ export function formatAstroInstanceIdentity(
   return `${identity.nonce}:${identity.rule}:${identity.src}:${identity.start}:${identity.end}`;
 }
 
-/** The runtime module Astro's own `Fragment` comes from. */
-export const ASTRO_RUNTIME_SERVER_MODULE = "astro/runtime/server/index.js";
+/**
+ * The module the alias import names: the runtime entry the compiler's own
+ * output imports `Fragment` and its render helpers from. Astro's compile sets
+ * it as the compiler's `internalURL` (astro/dist/core/compile/compile.js:
+ * `internalURL: "astro/compiler-runtime"`, Astro 7.3.5), an export of the
+ * `astro` package. It is not a documented public API, but every compiled
+ * `.astro` page already depends on it, so a toolchain without it fails on
+ * every page, not only on the markers. `astro/runtime/server/index.js`, used
+ * before, resolved to a second pre-bundled entry of the same runtime.
+ */
+export const ASTRO_COMPILER_RUNTIME_MODULE = "astro/compiler-runtime";
 
 /** The reserved local name the markers render through. */
 export function astroPreviewBoundaryAlias(nonce: string): string {
@@ -280,16 +304,37 @@ export function astroPreviewMarkerNonce(buildId: string): string {
 
 /**
  * The Vite plugin, as source text for the preview integration. Runs in the
- * container with the workspace's toolchain; `fs`, `path`, `crypto` (Node's)
- * and `workspaceRoot` are defined by the integration around it.
+ * container with the workspace's toolchain; `fs`, `path`, `crypto` (Node's),
+ * `workspaceRoot` and `loadMagicString` (returns the `magic-string` class as
+ * the `astro` package resolves it) are defined by the integration around it.
+ *
+ * MagicString is loaded when the dev server starts (`buildStart`) and before
+ * the first annotation, outside the error handling that leaves a file
+ * unannotated: if it cannot be loaded the preview fails with
+ * `ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP`, never runs without a map.
  */
 export function astroPreviewLocatePluginSource(nonce: string): string {
   if (!/^[0-9a-f]{16}$/.test(nonce)) throw new Error("Invalid marker nonce.");
   return `(() => {
+  let MagicString = null;
+  const requireMagicString = () => {
+    if (MagicString) return MagicString;
+    let loaded;
+    try {
+      loaded = loadMagicString();
+    } catch (error) {
+      throw new Error("ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP: magic-string could not be loaded through the astro package, so the preview locate plugin cannot map its edits: " + (error instanceof Error ? error.message : String(error)));
+    }
+    if (typeof loaded !== "function") {
+      throw new Error("ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP: magic-string, loaded through the astro package, exports no MagicString class.");
+    }
+    MagicString = loaded;
+    return MagicString;
+  };
   const NONCE = ${JSON.stringify(nonce)};
   const RULE = ${ASTRO_BOUNDARY_RULE_VERSION};
   const ALIAS = ${JSON.stringify(astroPreviewBoundaryAlias(nonce))};
-  const ALIAS_IMPORT = "import { Fragment as " + ALIAS + " } from " + ${JSON.stringify(JSON.stringify(ASTRO_RUNTIME_SERVER_MODULE))} + ";";
+  const ALIAS_IMPORT = "import { Fragment as " + ALIAS + " } from " + ${JSON.stringify(JSON.stringify(ASTRO_COMPILER_RUNTIME_MODULE))} + ";";
   const MAX_OFFSET = ${ASTRO_BOUNDARY_MAX_OFFSET};
   const RESERVED_ATTRIBUTES = new Set(["data-morph-loc", "data-morph-loc-v", "data-morph-loc-s"]);
   const SKIPPED_ELEMENTS = new Set(["script", "style", "slot", "head"]);
@@ -344,7 +389,9 @@ export function astroPreviewLocatePluginSource(nonce: string): string {
     return { at, end: at, order: -1, text: lineBreak + ALIAS_IMPORT + "\\n" };
   };
 
-  function annotate(parse, source, relativePath) {
+  // The annotated copy and the source map of its edits back to the file
+  // \`sourceId\` names, or null for a file the compiler cannot parse.
+  function annotate(parse, source, relativePath, sourceId) {
     const { ast, diagnostics } = parse(source);
     if ((diagnostics || []).some((diagnostic) => diagnostic.severity === "error" || diagnostic.severity === 1)) {
       return null;
@@ -427,25 +474,36 @@ export function astroPreviewLocatePluginSource(nonce: string): string {
       }
       if (marked > 0) edits.push(importEdit);
     }
-    // Descending, so earlier offsets stay valid. At one offset an opening
-    // marker goes in before a closing one, which reads ...A<close><open>B...,
-    // and the alias import (order -1) before both.
-    edits.sort((a, b) => b.at - a.at || b.order - a.order);
-    let out = source;
-    for (const edit of edits) out = out.slice(0, edit.at) + edit.text + out.slice(edit.end);
-    return out;
+    // Every edit is on the unmodified source's offsets, applied through one
+    // MagicString so its map follows each of them. Removals first; then, at
+    // one offset, insertions in ascending order, each appended after the
+    // last: the alias import (order -1), a closing marker (0), an opening
+    // one (1), a location (3), which reads ...A<close><open>B..., the text
+    // the descending string splice before it produced byte for byte.
+    const text = new MagicString(source);
+    for (const edit of edits) if (edit.end > edit.at) text.remove(edit.at, edit.end);
+    const inserts = edits.filter((edit) => edit.text !== "").sort((a, b) => a.at - b.at || a.order - b.order);
+    for (const edit of inserts) text.appendLeft(edit.at, edit.text);
+    return {
+      code: text.toString(),
+      map: text.generateMap({ hires: true, source: sourceId, includeContent: true }),
+    };
   }
 
   let compiler = null;
   return {
     name: "morph:astro-preview-locate",
     enforce: "pre",
+    buildStart() {
+      requireMagicString();
+    },
     async load(id) {
       if (id.includes("?") || !id.endsWith(".astro")) return null;
       const relative = path.relative(workspaceRoot, id);
       if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
       const segments = relative.split(path.sep);
       if (segments[0] !== "src" || segments.includes("node_modules")) return null;
+      requireMagicString();
       let source;
       try {
         source = await fs.promises.readFile(id, "utf8");
@@ -454,7 +512,9 @@ export function astroPreviewLocatePluginSource(nonce: string): string {
       }
       try {
         compiler ??= await import("@astrojs/compiler-rs");
-        return annotate(compiler.parse, source, segments.join("/"));
+        // { code, map }: Vite starts the module's map chain with this map,
+        // so Astro's compile map composes onto the author's file.
+        return annotate(compiler.parse, source, segments.join("/"), id);
       } catch {
         // The preview still runs unannotated; Astro reports its own errors.
         return null;

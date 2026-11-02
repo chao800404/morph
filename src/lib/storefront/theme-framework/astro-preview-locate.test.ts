@@ -2,6 +2,8 @@
 import { parse as babelParse } from "@babel/parser";
 import { transformSync } from "esbuild";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   ASTRO_BOUNDARY_RULE_VERSION,
@@ -21,8 +23,12 @@ import { PREVIEW_BOUNDARY_MARKER } from "../editor/preview-dom";
 import {
   astroCompilerVersion,
   compileAstroInNode,
+  compileAstroWithMapInNode,
+  loadMagicStringForTests,
   parseAstroInNode,
   runAstroPreviewLocatePlugin,
+  runAstroPreviewLocatePluginWithMap,
+  startAstroPreviewLocatePlugin,
 } from "@/lib/test-utils/astro-compiler-node";
 
 // L1.5a (docs/astro-theme-plan.md 3.6.2.2) and instance identity v2 (M2
@@ -46,7 +52,7 @@ const markerIds = (text: string) =>
 /** Every Morph insertion removed again: must give back the author's text. */
 function withoutInsertions(annotated: string): string {
   const aliasImport =
-    'import \\{ Fragment as MorphBoundary\\$[0-9a-f]{16} \\} from "astro/runtime/server/index\\.js";\\n';
+    'import \\{ Fragment as MorphBoundary\\$[0-9a-f]{16} \\} from "astro/compiler-runtime";\\n';
   return annotated
     .replace(new RegExp(`^---\\n${aliasImport}---\\n`), "")
     .replace(new RegExp(aliasImport), "")
@@ -473,7 +479,7 @@ describe("Q11: the Fragment preview distortion, before and after", () => {
         renderCalls(raw.code).filter((call) => call === "Fragment -> Fragment"),
       );
       expect(v2.code, name).toContain(
-        `import { Fragment as ${ALIAS} } from "astro/runtime/server/index.js";`,
+        `import { Fragment as ${ALIAS} } from "astro/compiler-runtime";`,
       );
       // Module validity is what it was without Morph (an imported Fragment
       // is a duplicate binding in the compiler's own output, O2).
@@ -482,41 +488,270 @@ describe("Q11: the Fragment preview distortion, before and after", () => {
   });
 });
 
-describe("Q9: the alias import moves Astro's diagnostics, never Morph's positions", () => {
+/**
+ * A v3 source map's `mappings`, decoded: per generated line, segments of
+ * `[generated column, source, original line, original column]`, 0-based.
+ */
+function decodeMappings(mappings: string): number[][][] {
+  const BASE64 =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lines: number[][][] = [];
+  let source = 0;
+  let originalLine = 0;
+  let originalColumn = 0;
+  for (const lineText of mappings.split(";")) {
+    const segments: number[][] = [];
+    let column = 0;
+    for (const segmentText of lineText.split(",")) {
+      if (!segmentText) continue;
+      const values: number[] = [];
+      let value = 0;
+      let shift = 0;
+      for (const char of segmentText) {
+        const digit = BASE64.indexOf(char);
+        value += (digit & 31) << shift;
+        if (digit & 32) {
+          shift += 5;
+        } else {
+          values.push(value & 1 ? -(value >>> 1) : value >>> 1);
+          value = 0;
+          shift = 0;
+        }
+      }
+      column += values[0]!;
+      if (values.length < 4) continue;
+      source += values[1]!;
+      originalLine += values[2]!;
+      originalColumn += values[3]!;
+      segments.push([column, source, originalLine, originalColumn]);
+    }
+    lines.push(segments);
+  }
+  return lines;
+}
+
+type Position = { line: number; column: number };
+
+/**
+ * The original position of a generated one (1-based line and column), as a
+ * stack trace mapper reads it: the closest segment at or before the column on
+ * that line; null when the line has none there.
+ */
+function originalPosition(
+  map: { mappings: string },
+  { line, column }: Position,
+): Position | null {
+  const segments = decodeMappings(map.mappings)[line - 1] ?? [];
+  let found: number[] | null = null;
+  for (const segment of segments) {
+    if (segment[0]! <= column - 1) found = segment;
+    else break;
+  }
+  if (!found) return null;
+  return {
+    line: found[2]! + 1,
+    column: found[3]! + (column - 1 - found[0]!) + 1,
+  };
+}
+
+/** 1-based position of the `nth` occurrence of `token` in `text`. */
+function positionOf(text: string, token: string, nth = 0): Position {
+  let at = -1;
+  for (let index = 0; index <= nth; index++) at = text.indexOf(token, at + 1);
+  if (at < 0) throw new Error(`no ${token}`);
+  const before = text.slice(0, at).split("\n");
+  return { line: before.length, column: before.at(-1)!.length + 1 };
+}
+
+/**
+ * For each author token, whether the annotated copy's position, read through
+ * `map` (or taken as it is when the map is left out), is the token's own
+ * position in the author's file.
+ */
+function positionProblems(
+  source: string,
+  annotated: string,
+  map: { mappings: string } | null,
+  tokens: readonly string[],
+): string[] {
+  return tokens.flatMap((token) => {
+    const generated = positionOf(annotated, token);
+    const original = positionOf(source, token);
+    const read = map ? originalPosition(map, generated) : generated;
+    return read?.line === original.line && read.column === original.column
+      ? []
+      : [
+          `${token}: ${JSON.stringify(read)} is not ${JSON.stringify(original)}`,
+        ];
+  });
+}
+
+describe("Q9: positions through the preview copy's source map", () => {
+  const annotateWithMap = (source: string, file = "src/pages/index.astro") =>
+    runAstroPreviewLocatePluginWithMap(source, file, NONCE);
   const lineOf = (text: string, token: string) =>
     text.slice(0, text.indexOf(token)).split("\n").length;
 
-  it("with a frontmatter: one line, from the closing fence on", async () => {
+  it("with a frontmatter: every author token maps back across the import, the markers and the attributes", async () => {
     const source =
-      '---\nimport Hero from "../components/Hero.astro";\n---\n<p>before</p>\n<Hero title="x" />\n<p>after</p>\n';
-    const annotated = (await annotate(source))!;
-    expect(lineOf(annotated, "<p") - lineOf(source, "<p")).toBe(1);
-    expect(lineOf(annotated, "after") - lineOf(source, "after")).toBe(1);
-    expect(lineOf(annotated, "import Hero")).toBe(
-      lineOf(source, "import Hero"),
+      '---\nimport Hero from "../components/Hero.astro";\nconst title = "x";\n---\n<p class="lead">before</p>\n<Hero title={title} />\n<main><p>after</p></main>\n';
+    const result = (await annotateWithMap(source))!;
+    // The copy's text moves: the alias import adds a line before the fence,
+    // the location attributes and markers lengthen lines.
+    expect(lineOf(result.code, "before") - lineOf(source, "before")).toBe(1);
+    expect(result.map.sources).toEqual(["/ws/src/pages/index.astro"]);
+    expect(result.map.sourcesContent).toEqual([source]);
+    const tokens = [
+      "import Hero",
+      "const title",
+      "---\n<p",
+      'class="lead"',
+      "before",
+      "title={title}",
+      "<main",
+      "after",
+      "</main>",
+    ];
+    expect(positionProblems(source, result.code, result.map, tokens)).toEqual(
+      [],
+    );
+    // Reverse check: without the map, every token the edits moved is read
+    // at the copy's position, and the check fails on each of them.
+    const moved = tokens.filter(
+      (token) =>
+        JSON.stringify(positionOf(result.code, token)) !==
+        JSON.stringify(positionOf(source, token)),
+    );
+    expect(moved).toEqual(expect.arrayContaining(['class="lead"', "after"]));
+    expect(positionProblems(source, result.code, null, tokens)).toHaveLength(
+      moved.length,
     );
     // Morph's own location and range still name the original file.
-    expect(annotated).toContain('data-morph-loc="src/pages/index.astro:4:1"');
-    expect(annotated).toContain('data-morph-loc="src/pages/index.astro:6:1"');
-    const [id] = markerIds(annotated);
+    expect(result.code).toContain('data-morph-loc="src/pages/index.astro:5:1"');
+    const [id] = markerIds(result.code);
     const { start, end } = parseAstroInstanceIdentity(id)!;
-    expect(source.slice(start, end)).toBe('<Hero title="x" />');
+    expect(source.slice(start, end)).toBe("<Hero title={title} />");
   });
 
-  it("without a frontmatter: a whole block, three lines", async () => {
-    const source = '<p>before</p>\n<UI.Hero title="x" />\n<p>after</p>\n';
-    const annotated = (await annotate(source))!;
-    expect(annotated.startsWith(`---\nimport { Fragment as ${ALIAS} }`)).toBe(
+  it("without a frontmatter: the added block maps to nothing, every author token maps back", async () => {
+    const source =
+      '<p class="a">before</p>\n<UI.Hero title="x" />\n<p>after</p>\n';
+    const result = (await annotateWithMap(source))!;
+    expect(result.code.startsWith(`---\nimport { Fragment as ${ALIAS} }`)).toBe(
       true,
     );
-    expect(lineOf(annotated, "before") - lineOf(source, "before")).toBe(3);
-    expect(lineOf(annotated, "after") - lineOf(source, "after")).toBe(3);
-    expect(annotated).toContain('data-morph-loc="src/pages/index.astro:1:1"');
-    expect(annotated).toContain('data-morph-loc="src/pages/index.astro:3:1"');
-    const [id] = markerIds(annotated);
-    const { start, end } = parseAstroInstanceIdentity(id)!;
-    expect(source.slice(start, end)).toBe('<UI.Hero title="x" />');
-    expect(withoutInsertions(annotated)).toBe(source);
-    expect(compileAstroInNode(annotated).diagnostics).toEqual([]);
+    expect(lineOf(result.code, "before") - lineOf(source, "before")).toBe(3);
+    const tokens = ['class="a"', "before", 'title="x"', "after"];
+    expect(positionProblems(source, result.code, result.map, tokens)).toEqual(
+      [],
+    );
+    expect(positionProblems(source, result.code, null, tokens)).toHaveLength(
+      tokens.length,
+    );
+    // The inserted import names no author position.
+    expect(
+      originalPosition(result.map, positionOf(result.code, "import {")),
+    ).toBeNull();
+    expect(withoutInsertions(result.code)).toBe(source);
+    expect(compileAstroInNode(result.code).diagnostics).toEqual([]);
+  });
+
+  it("composed with the compiler's map, a frame in the route file is the unannotated file's", async () => {
+    // Astro's compile maps its module to the text it was given; Vite puts
+    // the plugin's map first, so the two compose. The throw is the frame
+    // smoke run 1 found at 6:186 (twin 5:20) without the plugin's map.
+    const source =
+      '---\nimport Hero from "../components/Hero.astro";\n---\n<Hero title="before" />\n<p>{(() => { throw new Error("PROBE"); })()}</p>\n';
+    const result = (await annotateWithMap(source))!;
+    const throwSite = (code: string) => positionOf(code, "new Error");
+    const raw = compileAstroWithMapInNode(source);
+    const copy = compileAstroWithMapInNode(result.code);
+    const author = originalPosition(JSON.parse(raw.map), throwSite(raw.code));
+    expect(author).toEqual(positionOf(source, "new Error"));
+    const inCopy = originalPosition(
+      JSON.parse(copy.map),
+      throwSite(copy.code),
+    )!;
+    expect(inCopy).toEqual(positionOf(result.code, "new Error"));
+    // Reverse check: the copy's position alone is run 1's shifted frame.
+    expect(inCopy).not.toEqual(author);
+    expect(originalPosition(result.map, inCopy)).toEqual(author);
+  });
+
+  it("produces the bytes the string splice before it produced, alias specifier aside", async () => {
+    // Golden: fd2141c's plugin (string splice, alias from
+    // "astro/runtime/server/index.js") on the Q5 samples, the PR-I smoke
+    // Theme's files, the M2 case and every fixtures/astro .astro file.
+    const golden = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            "./__fixtures__/astro-preview-locate-splice-golden.json",
+            import.meta.url,
+          ),
+        ),
+        "utf8",
+      ),
+    ) as {
+      entries: {
+        group: string;
+        file: string;
+        source: string;
+        annotated: string | null;
+      }[];
+    };
+    const groups = new Set(golden.entries.map((entry) => entry.group));
+    expect(
+      [...groups].filter((group) => !group.startsWith("fixtures/")),
+    ).toEqual(["q5", "pri-smoke", "m2-case"]);
+    expect(golden.entries.length).toBeGreaterThanOrEqual(40);
+    const old = '"astro/runtime/server/index.js"';
+    for (const entry of golden.entries) {
+      const result = await annotateWithMap(entry.source, entry.file);
+      const expected =
+        entry.annotated === null
+          ? null
+          : entry.annotated.split(old).join('"astro/compiler-runtime"');
+      expect(result?.code ?? null, `${entry.group} ${entry.file}`).toBe(
+        expected,
+      );
+      if (!result) continue;
+      // Each copy's map sends every author line's first character home.
+      const lines = entry.source.split("\n");
+      for (const [index, line] of lines.entries()) {
+        const token = line.trim().slice(0, 12);
+        if (token.length < 4 || entry.source.split(token).length !== 2)
+          continue;
+        if (result.code.split(token).length !== 2) continue;
+        expect(
+          positionProblems(entry.source, result.code, result.map, [token]),
+          `${entry.group} ${entry.file}:${index + 1}`,
+        ).toEqual([]);
+      }
+    }
+  });
+
+  it("refuses to run without magic-string, when the dev server starts and on load", async () => {
+    const nonce = NONCE;
+    const missing = () => {
+      throw new Error("Cannot find module 'magic-string'");
+    };
+    expect(() => startAstroPreviewLocatePlugin(nonce, missing)).toThrow(
+      /^ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP: .*Cannot find module 'magic-string'/,
+    );
+    expect(() => startAstroPreviewLocatePlugin(nonce, () => ({}))).toThrow(
+      /^ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP: /,
+    );
+    await expect(
+      runAstroPreviewLocatePluginWithMap(
+        "<p>x</p>\n",
+        "src/pages/index.astro",
+        nonce,
+        missing,
+      ),
+    ).rejects.toThrow(/^ASTRO_PREVIEW_LOCATE_NO_SOURCE_MAP: /);
+    expect(() =>
+      startAstroPreviewLocatePlugin(nonce, loadMagicStringForTests),
+    ).not.toThrow();
   });
 });

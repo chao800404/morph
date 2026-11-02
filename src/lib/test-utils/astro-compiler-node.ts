@@ -111,30 +111,100 @@ export function parseAstroInNode(source: string): {
 }
 
 /**
+ * `magic-string` for the plugin in tests. The product loads it through the
+ * `astro` package (astro-preview-workspace.ts); this repository has no
+ * `astro`, so it is loaded through `vitest`, which also depends on it. Same
+ * API (`remove`, `appendLeft`, `toString`, `generateMap`); the toolchain's
+ * version is Astro's.
+ */
+export function loadMagicStringForTests(): unknown {
+  const require = createRequire(
+    createRequire(import.meta.url).resolve("vitest/package.json"),
+  );
+  const loaded = require("magic-string") as {
+    default?: unknown;
+    MagicString?: unknown;
+  };
+  return loaded.default ?? loaded.MagicString ?? loaded;
+}
+
+export type AstroPreviewLocateResult = {
+  code: string;
+  map: {
+    version: number;
+    sources: string[];
+    sourcesContent?: (string | null)[];
+    mappings: string;
+    names: string[];
+  };
+};
+
+/** The plugin's `load` hook, created exactly as the integration creates it. */
+function previewLocatePlugin(
+  source: string,
+  nonce: string,
+  loadMagicString: () => unknown,
+): {
+  buildStart(): void;
+  load(id: string): Promise<AstroPreviewLocateResult | null>;
+} {
+  const text = astroPreviewLocatePluginSource(nonce);
+  const needle = 'await import("@astrojs/compiler-rs")';
+  if (!text.includes(needle))
+    throw new Error("the plugin's compiler import moved");
+  return new Function(
+    "path",
+    "fs",
+    "crypto",
+    "workspaceRoot",
+    "loadMagicString",
+    "__compiler",
+    `return ${text.replace(needle, "__compiler")};`,
+  )(
+    path.posix,
+    { promises: { readFile: async () => source } },
+    crypto,
+    "/ws",
+    loadMagicString,
+    { parse: parseAstroInNode },
+  ) as ReturnType<typeof previewLocatePlugin>;
+}
+
+/**
  * The product preview locate plugin (`astroPreviewLocatePluginSource`) run on
  * one source, unchanged except that its `import("@astrojs/compiler-rs")` is
- * given this compiler. `file` is workspace-relative.
+ * given this compiler: what `load` returns, the annotated code and the map of
+ * its edits (the map's source is `/ws/<file>`). `file` is workspace-relative.
  */
+export async function runAstroPreviewLocatePluginWithMap(
+  source: string,
+  file: string,
+  nonce: string,
+  loadMagicString: () => unknown = loadMagicStringForTests,
+): Promise<AstroPreviewLocateResult | null> {
+  return previewLocatePlugin(source, nonce, loadMagicString).load(
+    `/ws/${file}`,
+  );
+}
+
+/** As `runAstroPreviewLocatePluginWithMap`, the annotated code only. */
 export async function runAstroPreviewLocatePlugin(
   source: string,
   file: string,
   nonce: string,
 ): Promise<string | null> {
-  const text = astroPreviewLocatePluginSource(nonce);
-  const needle = 'await import("@astrojs/compiler-rs")';
-  if (!text.includes(needle))
-    throw new Error("the plugin's compiler import moved");
-  const plugin = new Function(
-    "path",
-    "fs",
-    "crypto",
-    "workspaceRoot",
-    "__compiler",
-    `return ${text.replace(needle, "__compiler")};`,
-  )(path.posix, { promises: { readFile: async () => source } }, crypto, "/ws", {
-    parse: parseAstroInNode,
-  }) as { load(id: string): Promise<string | null> };
-  return plugin.load(`/ws/${file}`);
+  return (
+    (await runAstroPreviewLocatePluginWithMap(source, file, nonce))?.code ??
+    null
+  );
+}
+
+/** The plugin's `buildStart`, for its refusal without magic-string. */
+export function startAstroPreviewLocatePlugin(
+  nonce: string,
+  loadMagicString: () => unknown,
+): void {
+  previewLocatePlugin("", nonce, loadMagicString).buildStart();
 }
 
 /** A full compile of one `.astro` source to its JavaScript module. */
@@ -143,4 +213,19 @@ export function compileAstroInNode(
   filename = "src/pages/index.astro",
 ): { code: string; diagnostics: CompilerDiagnostic[] } {
   return load().compileAstroSync(source, { filename });
+}
+
+/**
+ * A compile as Astro's own runs it in dev for this purpose: the module and
+ * its source map, `sourcemap: "external"` (Astro passes `"both"`; the map is
+ * the same, here not inlined).
+ */
+export function compileAstroWithMapInNode(
+  source: string,
+  filename = "src/pages/index.astro",
+): { code: string; map: string; diagnostics: CompilerDiagnostic[] } {
+  return load().compileAstroSync(source, {
+    filename,
+    sourcemap: "external",
+  }) as { code: string; map: string; diagnostics: CompilerDiagnostic[] };
 }
