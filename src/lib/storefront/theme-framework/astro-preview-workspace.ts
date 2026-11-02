@@ -41,6 +41,10 @@ import { ASTRO_PRERENDER_ENTRY } from "./astro-native-prerender";
 import { nativeAstroAllowedPackages } from "./astro-native-build";
 import { themeToolchainForFramework } from "./theme-toolchains";
 import {
+  PREVIEW_NAVIGATION_GLOBAL,
+  THEME_FRAMEWORK_PREVIEW_NAVIGATION,
+} from "./theme-preview-navigation";
+import {
   astroPreviewLocatePluginSource,
   astroPreviewMarkerNonce,
 } from "./astro-preview-locate";
@@ -123,7 +127,9 @@ documentPreviewRuntimeChannel();
 
 // An Astro page is server-rendered HTML with islands; nothing hydrates the
 // document as a whole, so the bridge loads once the document is parsed. No
-// router is handed to it: an Astro page navigates as a document.
+// router is handed to it: an Astro page navigates as a document, and the
+// bridge is told so before it loads (theme-preview-navigation.ts).
+globalThis.${PREVIEW_NAVIGATION_GLOBAL} = ${JSON.stringify(THEME_FRAMEWORK_PREVIEW_NAVIGATION.astro)};
 if (document.readyState === "loading") {
   await new Promise((resolve) =>
     document.addEventListener("DOMContentLoaded", resolve, { once: true }),
