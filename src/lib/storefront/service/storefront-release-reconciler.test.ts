@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   activateReleaseWithDeployment,
   deployReleaseArtifact,
+  deployWithRecovery,
 } from "./storefront-release-reconciler";
+import { describeReleaseDeploymentFailure } from "./release-deployment-failure";
 import { UnavailableThemeWorkerDeployer } from "./theme-worker-deployer.types";
 import type { ReleaseReconcilerPorts } from "./storefront-release-reconciler";
 
@@ -149,6 +151,7 @@ describe("activateReleaseWithDeployment", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.reason).toBe("DEPLOY_FAILED");
+    expect(result.detail).toBe("DEPLOYER_NOT_CONFIGURED");
     expect(result.deploymentDrift).toBeUndefined();
     expect(calls).toEqual([
       { releaseId: "rel_1", expected: "rel_OLD" },
@@ -272,6 +275,7 @@ describe("activateReleaseWithDeployment", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.reason).toBe("PLAN_REJECTED");
+    expect(result.detail).toBe("FORBIDDEN_BINDING");
     expect(result.message).toContain("d1_databases");
     expect(deployer.deploy).not.toHaveBeenCalled();
   });
@@ -560,5 +564,149 @@ describe("concurrent activation (REL-01)", () => {
     expect(second.success).toBe(true);
     expect(store.deployed).toEqual(["rel_first", "rel_second"]);
     expect(store.activeReleaseId()).toBe("rel_second");
+  });
+});
+
+/**
+ * The publish path: `publishTemplate` has already moved activation, so
+ * `deployReleaseArtifact` runs inside `deployWithRecovery`, whose `restore`
+ * is `restoreFailedPublish`. The restore must still run on any failure, and
+ * the failure must keep the reason the editor is shown.
+ */
+describe("publish deployment of a server-only build (D92-C)", () => {
+  const ssrManifest = (clientFiles: string[]) => ({
+    artifactEntry: "runtime/server/entry.mjs",
+    runtime: {
+      kind: "cloudflare-worker",
+      workerEntry: "runtime/server/entry.mjs",
+      clientAssetsDirectory: "runtime/client",
+    },
+    files: [
+      { path: "runtime/server/entry.mjs", contentType: "application/javascript", sizeBytes: 5085, sha256: "0" },
+      { path: "runtime/server/chunks/Hero_C5-F9J1l.mjs", contentType: "application/javascript", sizeBytes: 743, sha256: "0" },
+      { path: "runtime/server/wrangler.json", contentType: "application/json", sizeBytes: 1579, sha256: "0" },
+      ...clientFiles.map((path) => ({ path, contentType: "application/octet-stream", sizeBytes: 24, sha256: "0" })),
+    ],
+  });
+  const astroConfig = {
+    main: "entry.mjs",
+    compatibility_date: "2026-03-24",
+    compatibility_flags: ["nodejs_compat"],
+    assets: { binding: "ASSETS", directory: "../client" },
+  };
+  const buildWith = (manifestJson: unknown) => async () => ({
+    id: "bld_1",
+    storefrontId: "sf_1",
+    status: "succeeded",
+    artifactPrefix: "themes/th_1/builds/bld_1",
+    manifestJson,
+  });
+
+  it("deploys it with no assets and leaves the activation in place", async () => {
+    const deployer = okDeployer();
+    const restore = vi.fn(async () => ({}));
+    const result = await deployWithRecovery({
+      deploy: () =>
+        deployReleaseArtifact({
+          releaseId: "rel_1",
+          deployer,
+          r2Bucket: r2(astroConfig),
+          ports: {
+            getRelease: ports().getRelease,
+            getBuild: buildWith(
+              ssrManifest(["runtime/client/_headers", "runtime/client/.assetsignore"]),
+            ),
+          },
+        }),
+      restore,
+    });
+
+    expect(result.success).toBe(true);
+    expect(restore).not.toHaveBeenCalled();
+    const [{ plan }] = deployer.deploy.mock.calls[0] as unknown as [
+      { plan: { assets: unknown[]; mainModule: string; assetsBinding?: string } },
+    ];
+    expect(plan.assets).toEqual([]);
+    expect(plan.mainModule).toBe("entry.mjs");
+    expect(plan.assetsBinding).toBe("ASSETS");
+  });
+
+  it("restores the previous activation when the plan still refuses, keeping the reason", async () => {
+    const deployer = okDeployer();
+    const restore = vi.fn(async () => ({}));
+    const result = await deployWithRecovery({
+      deploy: () =>
+        deployReleaseArtifact({
+          releaseId: "rel_1",
+          deployer,
+          r2Bucket: r2(astroConfig),
+          // No client output at all: still refused.
+          ports: { getRelease: ports().getRelease, getBuild: buildWith(ssrManifest([])) },
+        }),
+      restore,
+    });
+
+    expect(restore).toHaveBeenCalledOnce();
+    expect(deployer.deploy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      success: false,
+      reason: "PLAN_REJECTED",
+      detail: "MISSING_CLIENT_ASSETS",
+      deploymentDrift: false,
+    });
+    if (result.success) throw new Error("expected a failure");
+    expect(describeReleaseDeploymentFailure(result)).toMatchObject({
+      error: "RELEASE_DEPLOYMENT_FAILED",
+      reason: "MISSING_CLIENT_ASSETS",
+    });
+  });
+
+  it("restores the previous activation when the deployer fails, keeping its reason", async () => {
+    const restore = vi.fn(async () => ({}));
+    const result = await deployWithRecovery({
+      deploy: () =>
+        deployReleaseArtifact({
+          releaseId: "rel_1",
+          deployer: new UnavailableThemeWorkerDeployer(),
+          r2Bucket: r2(astroConfig),
+          ports: {
+            getRelease: ports().getRelease,
+            getBuild: buildWith(ssrManifest(["runtime/client/.assetsignore"])),
+          },
+        }),
+      restore,
+    });
+
+    expect(restore).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      success: false,
+      reason: "DEPLOY_FAILED",
+      detail: "DEPLOYER_NOT_CONFIGURED",
+      deploymentDrift: false,
+    });
+  });
+
+  it("reports drift, with the reason, when the restore itself fails", async () => {
+    const result = await deployWithRecovery({
+      deploy: () =>
+        deployReleaseArtifact({
+          releaseId: "rel_1",
+          deployer: okDeployer(),
+          r2Bucket: r2({ ...astroConfig, main: undefined, compatibility_date: "" }),
+          ports: {
+            getRelease: ports().getRelease,
+            getBuild: buildWith(ssrManifest(["runtime/client/.assetsignore"])),
+          },
+        }),
+      restore: async () => {
+        throw new Error("CAS");
+      },
+    });
+
+    if (result.success) throw new Error("expected a failure");
+    expect(describeReleaseDeploymentFailure(result)).toMatchObject({
+      error: "RELEASE_DEPLOYMENT_DRIFT",
+      reason: "INVALID_WORKER_CONFIG",
+    });
   });
 });

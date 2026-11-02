@@ -1,4 +1,7 @@
-import type { ThemeRouteRecord } from "@/lib/storefront/compiler/theme-route-registry";
+import {
+  isThemeEndpointRoute,
+  type ThemeRouteRecord,
+} from "@/lib/storefront/compiler/theme-route-registry";
 
 function normalizeRoutePattern(path: string): string {
   return path.replace(/\/+$/, "") || "/";
@@ -35,9 +38,9 @@ export function previewStructureMatchesRoute(
  *
  * Only a static page that exactly one registry record names: a dynamic route
  * would need the address the author opened, which a report does not carry,
- * and a layout, a pathless layout or a handler-only route is not a page the
- * editor can show. Compared as `previewStructureMatchesRoute` compares, so an
- * index route's trailing slash still names its page.
+ * and a layout, a pathless layout, a handler-only route or an endpoint is
+ * not a page the editor can show. Compared as `previewStructureMatchesRoute`
+ * compares, so an index route's trailing slash still names its page.
  */
 export function previewFrameNavigationRoute(
   reportedRoutePath: string,
@@ -50,7 +53,7 @@ export function previewFrameNavigationRoute(
       !route.dynamic &&
       !route.isPathless &&
       route.routeType !== "layout" &&
-      !route.isServerOnly &&
+      !isThemeEndpointRoute(route) &&
       normalizeRoutePattern(route.path) === reported,
   );
   return matches.length === 1 ? matches[0]! : null;

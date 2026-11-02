@@ -41,7 +41,10 @@
 import { createServerOnlyFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 
-import { createMorphReader } from "../src/client";
+import {
+  createMorphReader,
+  MORPH_RENDER_CONTEXT_HEADER,
+} from "../src/client";
 import { MorphError } from "../src/index";
 import type {
   Morph,
@@ -96,10 +99,15 @@ export function contentOriginFor(
  * kept: the next call, from this request or another, reads the header again.
  */
 export const morphForRequest = createServerOnlyFn((): Morph => {
+  const request = getRequest();
   return createMorphReader(
-    { baseUrl: contentOriginFor(getRequest()) },
+    { baseUrl: contentOriginFor(request) },
     // The hosted entry's mode, fixed here: see the comment at the top.
-    { mediaUrls: "relative" },
+    // The render context keeps this request's page reads on its release.
+    {
+      mediaUrls: "relative",
+      renderContext: request.headers.get(MORPH_RENDER_CONTEXT_HEADER),
+    },
   );
 });
 

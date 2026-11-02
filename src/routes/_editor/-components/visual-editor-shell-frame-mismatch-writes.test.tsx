@@ -498,12 +498,23 @@ async function settled(
       instance: { session: SESSION, serial: 1 },
     },
   });
-  await tick(0);
-  const request = latestRequest();
-  // Precondition: the frame was sent the route on screen.
-  expect(request?.routePath ?? "/").toBe(initial.routePath ?? "/");
-  applied(request?.routeRequestId, initial.routePath ?? "/");
-  report(initial.routePath ?? "/");
+  // Precondition: the frame was sent the route on screen. Wait for that
+  // request itself, with its id, rather than reading the log one tick after
+  // ready: under load the request can arrive later, and an absent request
+  // read as "/" looked like a navigation home.
+  const expected = initial.routePath ?? "/";
+  let request: ReturnType<typeof latestRequest>;
+  await waitFor(() => {
+    request = latestRequest();
+    expect(
+      request,
+      "the editor's route request reached the frame",
+    ).toBeDefined();
+    expect(request!.routePath ?? "/").toBe(expected);
+    expect(Number.isSafeInteger(request!.routeRequestId)).toBe(true);
+  });
+  applied(request!.routeRequestId, expected);
+  report(expected);
   await tick(0);
   return harness;
 }

@@ -259,7 +259,9 @@ type B1FrameworkProfile = Readonly<{
    * Start reads the route path from `createFileRoute("/…")`; Astro is given
    * it by the caller, from the route registry (null: no static path).
    */
-  routePath: Readonly<{ from: "createFileRoute" }> | Readonly<{ injected: string | null }>;
+  routePath:
+    | Readonly<{ from: "createFileRoute" }>
+    | Readonly<{ injected: string | null }>;
   /** Where call sites are looked for in the route module. */
   instanceRoot: (ast: ParsedThemeAst) => AnyNode;
   /** A built-in element that is not a component instance. */
@@ -341,7 +343,8 @@ function astroB1Profile(args: {
       }
       return isDirectPosition(ctx, element, sourceSlots);
     },
-    isFollowedModule: (path) => SCRIPT_FILE.test(path) || ASTRO_MODULE.test(path),
+    isFollowedModule: (path) =>
+      SCRIPT_FILE.test(path) || ASTRO_MODULE.test(path),
     implicitModules: [],
     trustedContentModule: null,
     scansMorphOnlyModules: true,
@@ -529,7 +532,11 @@ function contentImportBinding(
     if (
       statement.type !== "ImportDeclaration" ||
       statement.importKind === "type" ||
-      !profile.isContentModuleSource(ctx.path, statement.source.value, filePaths)
+      !profile.isContentModuleSource(
+        ctx.path,
+        statement.source.value,
+        filePaths,
+      )
     ) {
       continue;
     }
@@ -589,7 +596,11 @@ function sectionHiddenImportBinding(
     if (
       statement.type !== "ImportDeclaration" ||
       statement.importKind === "type" ||
-      !profile.isContentModuleSource(ctx.path, statement.source.value, filePaths)
+      !profile.isContentModuleSource(
+        ctx.path,
+        statement.source.value,
+        filePaths,
+      )
     ) {
       continue;
     }
@@ -1796,7 +1807,10 @@ export function analyzeB1AstroRoute(args: {
 }): B1RouteAnalysis {
   const routeFile = normalizeThemeSourcePath(args.route.sourcePath);
   const contentByPath = new Map(
-    args.files.map((file) => [normalizeThemeSourcePath(file.path), file.content]),
+    args.files.map((file) => [
+      normalizeThemeSourcePath(file.path),
+      file.content,
+    ]),
   );
   const parsedModules = new Map<string, ParsedThemeAst>();
   for (const [path, projection] of args.projections) {
@@ -1851,7 +1865,10 @@ export function analyzeB1AstroRoute(args: {
     args.backend ?? buildHandScopeOracle,
     parsedModules,
     parser,
-    astroB1Profile({ template: routeProjection.template as AnyNode, routePath }),
+    astroB1Profile({
+      template: routeProjection.template as AnyNode,
+      routePath,
+    }),
   );
   return routePath === null
     ? {
@@ -1870,8 +1887,7 @@ function analyzeRouteModule(
   backend: B1ScopeBackend,
   parsedModules: B1ParsedModules | undefined,
   sharedSourceParser:
-    | ((path: string, content: string) => ThemeSourceAstResult)
-    | undefined,
+    ((path: string, content: string) => ThemeSourceAstResult) | undefined,
   profile: B1FrameworkProfile,
 ): B1RouteAnalysis {
   const normalizedRoute = normalizeThemeSourcePath(routeFile);
@@ -2006,10 +2022,7 @@ function analyzeRouteModule(
     const otherContent = contentImportBinding(otherPartial, filePaths, profile);
     const otherMorph = morphImportBinding(otherPartial, filePaths, profile);
     if (otherContent.aliases > 1) taints.add(taintKey("content", null));
-    if (
-      otherContent.binding ||
-      (profile.scansMorphOnlyModules && otherMorph)
-    ) {
+    if (otherContent.binding || (profile.scansMorphOnlyModules && otherMorph)) {
       collectTaints(
         {
           ...otherPartial,
