@@ -524,6 +524,44 @@ describe("the route path comes from the registry", () => {
   });
 });
 
+describe("Start keeps its own reachability and morph-only scan", () => {
+  // A Start route that reaches (a) a module importing only `morph` that
+  // changes its own `pages.get` result and (b) an `.astro` file. Start does
+  // not scan the first (no `content` import) and does not follow the second
+  // (not a script). So the analysis must equal that of the same route with
+  // neither file present: any drift of Start's profile toward Astro's fails.
+  const ROUTE = "src/routes/index.tsx";
+  const route =
+    'import { createFileRoute } from "@tanstack/react-router";\n' +
+    'import { morph } from "../morph/content";\n' +
+    'import "../lib/mutate";\n' +
+    'import Widget from "../components/Widget.astro";\n' +
+    'import Hero from "../components/Hero";\n' +
+    'export const Route = createFileRoute("/")({ component: Page });\n' +
+    'async function Page() {\nconst home = await morph.pages.get("/");\nconst { hero } = home;\n' +
+    "return <Hero {...hero} />;\n}\n";
+  const reached: B1SourceFile[] = [
+    {
+      path: "src/lib/mutate.ts",
+      content:
+        'import { morph } from "../morph/content";\n' +
+        'const page = await morph.pages.get("/");\npage.hero.title = "changed";\nexport {};\n',
+    },
+    {
+      path: "src/components/Widget.astro",
+      content: "---\nconst { a } = Astro.props;\n---\n<i>{a}</i>\n",
+    },
+  ];
+
+  it("the analysis is identical with and without those modules", () => {
+    const base = [...START_FIXTURE, { path: ROUTE, content: route }];
+    const without = analyzeB1Route(base, ROUTE);
+    const withModules = analyzeB1Route([...base, ...reached], ROUTE);
+    expect(summarize(without)).toEqual([HERO_BOTH]);
+    expect(withModules).toEqual(without);
+  });
+});
+
 describe("reachability follows .astro imports", () => {
   const HOME =
     'const home = await morph.pages.get("/");\nconst { hero } = home;\n';
