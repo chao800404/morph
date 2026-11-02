@@ -389,6 +389,32 @@ describe("CloudflareSandboxVitePreviewServer", () => {
     ).toMatchObject({ contentTicket: 3, previewInstance: instance });
   });
 
+  it("stamps a full Start preview's server too, so a content sync can be written and confirmed", async () => {
+    const harness = createSession("ready");
+    const result = await startWith(harness, {
+      previewRuntime: "start",
+      previewContent: { templates: {}, pages: {}, contentTicket: 3 },
+    });
+    expect(result.ok, !result.ok ? result.errorMessage : "").toBe(true);
+    const instance = harness.written.get("/tmp/morph-preview-instance");
+    expect(instance).toMatch(/^[0-9a-f-]{36}$/);
+    expect(
+      JSON.parse(harness.written.get("/workspace/.morph-preview-content.json")!),
+    ).toMatchObject({ contentTicket: 3, previewInstance: instance });
+  });
+
+  it("stamps nothing for the client-only preview, which reads no snapshot on a server", async () => {
+    const harness = createSession("ready");
+    const result = await startWith(harness, {
+      previewContent: { templates: {}, pages: {}, contentTicket: 3 },
+    });
+    expect(result.ok, !result.ok ? result.errorMessage : "").toBe(true);
+    expect(harness.written.has("/tmp/morph-preview-instance")).toBe(false);
+    expect(
+      JSON.parse(harness.written.get("/workspace/.morph-preview-content.json")!),
+    ).not.toHaveProperty("previewInstance");
+  });
+
   it("starts the preview with its framework's toolchain from the registry", async () => {
     const harness = createSession("ready");
     expect((await startWith(harness)).ok).toBe(true);
