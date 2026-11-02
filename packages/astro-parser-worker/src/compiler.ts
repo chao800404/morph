@@ -14,12 +14,22 @@
  * Instantiated on first use, not at load, and at most once per isolate. A
  * trap poisons the isolate for good (see `parse`).
  */
+import compilerPackage from "@astrojs/compiler-binding-wasm32-wasi/package.json";
 import wasmModule from "@astrojs/compiler-binding-wasm32-wasi/astro.wasm32-wasi.wasm";
 import {
   getDefaultContext,
   instantiateNapiModuleSync,
   WASI,
 } from "@napi-rs/wasm-runtime";
+
+/**
+ * The compiler-rs version of the `.wasm` this isolate runs: the `version` of
+ * the package the module above is imported from, bundled with it. The Wasm
+ * binding exports no version of its own, so this is the closest record of
+ * what was loaded, and it changes exactly when the bundled module's package
+ * does. Reported in every `template` answer.
+ */
+export const COMPILER_VERSION: string = compilerPackage.version;
 
 /** The `.wasm`'s declared minimum, 61.3 MiB. */
 const INITIAL_PAGES = 981;

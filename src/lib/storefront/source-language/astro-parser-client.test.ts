@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { experimental_readRawConfig } from "wrangler";
 
 import {
+  ASTRO_PARSER_ERROR_STATUS,
   ASTRO_PARSER_LIMITS,
   ASTRO_PARSER_WORKER_NAME,
 } from "@morph/astro-parser-worker/contract";
@@ -14,11 +15,15 @@ import {
   type LocalAstroParser,
 } from "@morph/astro-parser-worker/testing";
 
+import { MORPH_ASTRO_COMPILER_RS_VERSION } from "./astro-compiler-version";
 import {
   ASTRO_PARSER_BINDING,
   astroParserBindingFrom,
+  classifyAstroParserRefusal,
   parseAstroSource,
+  parseAstroTemplate,
   type AstroParserBinding,
+  type AstroTemplateRefusalCode,
 } from "./astro-parser-client";
 
 const FIXTURE =
@@ -43,7 +48,7 @@ function answering(status: number, body: string): AstroParserBinding {
 
 async function outlineOf(source: string) {
   return {
-    v: 1,
+    v: 2,
     ok: true,
     mode: "outline",
     source: {
@@ -103,7 +108,7 @@ describe("parseAstroSource fails closed", () => {
 
   it("passes the parser's refusal code through", async () => {
     const body = JSON.stringify({
-      v: 1,
+      v: 2,
       ok: false,
       error: { code: "parser-unavailable", detail: "poisoned" },
     });
@@ -118,17 +123,16 @@ describe("parseAstroSource fails closed", () => {
 
   it.each([
     ["not JSON", 200, "<html>"],
-    ["another contract version", 200, JSON.stringify({ v: 2, ok: true })],
     [
       "an unknown error code",
       500,
-      JSON.stringify({ v: 1, ok: false, error: { code: "oops", detail: "" } }),
+      JSON.stringify({ v: 2, ok: false, error: { code: "oops", detail: "" } }),
     ],
     [
       "a refusal under the wrong status",
       200,
       JSON.stringify({
-        v: 1,
+        v: 2,
         ok: false,
         error: { code: "parser-busy", detail: "" },
       }),
@@ -190,6 +194,238 @@ describe("parseAstroSource fails closed", () => {
       headers: { "x-morph-request-id": id },
     });
   });
+
+  it.each([
+    ["an answer", 200, { v: 1, ok: true }],
+    [
+      "a refusal",
+      503,
+      { v: 1, ok: false, error: { code: "parser-busy", detail: "" } },
+    ],
+  ])(
+    "tells %s from another contract version apart",
+    async (_, status, body) => {
+      expect(
+        await parseAstroSource(answering(status, JSON.stringify(body)), "<p/>", {
+          mode: "outline",
+        }),
+      ).toEqual({
+        status: "unavailable",
+        code: "contract-mismatch",
+        detail: "contract-version",
+      });
+    },
+  );
+});
+
+/** A correct template answer for `<p>{a}</p>`, from `compiler`. */
+async function templateOf(
+  source: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    v: 2,
+    ok: true,
+    mode: "template",
+    compiler: MORPH_ASTRO_COMPILER_RS_VERSION,
+    source: {
+      sha256: await sha256Hex(source),
+      bytes: new TextEncoder().encode(source).byteLength,
+      length: source.length,
+    },
+    frontmatter: null,
+    frontmatterInner: null,
+    tags: ["p"],
+    elements: [[0, source.length, 0, -1]],
+    attributes: [],
+    expressions: [[3, 6, 4, 5, 0, -1, []]],
+    elementCount: 1,
+    maxDepth: 0,
+    diagnostics: { total: 0, first: [] },
+    ...overrides,
+  };
+}
+
+const P = "<p>{a}</p>";
+
+describe("parseAstroTemplate", () => {
+  it("takes a template answer from the pinned compiler without diagnostics", async () => {
+    const answer = await templateOf(P);
+    const binding = answering(200, JSON.stringify(answer));
+    expect(await parseAstroTemplate(binding, P)).toEqual({
+      status: "confirmed",
+      result: answer,
+    });
+    expect(vi.mocked(binding.fetch).mock.calls[0][0]).toBe(
+      "https://astro-parser/parse/v1?mode=template",
+    );
+  });
+
+  it("refuses an answer from another compiler, before reading its diagnostics", async () => {
+    const answer = await templateOf(P, {
+      compiler: "0.5.2",
+      diagnostics: { total: 1, first: [] },
+    });
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(answer)), P),
+    ).toEqual({
+      status: "refused",
+      class: "temporarily-unconfirmable",
+      reason: "parser-version-mismatch",
+      code: "version-mismatch",
+      detail: `compiler 0.5.2; Morph is pinned to ${MORPH_ASTRO_COMPILER_RS_VERSION}`,
+    });
+  });
+
+  it("refuses a source with diagnostics as the author's syntax, with them", async () => {
+    const diagnostics = {
+      total: 1,
+      first: [
+        { severity: "error", text: "Unexpected token", byteStart: 4, byteEnd: 5 },
+      ],
+    };
+    const answer = await templateOf(P, { diagnostics });
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(answer)), P),
+    ).toEqual({
+      status: "refused",
+      class: "author-syntax",
+      reason: "author-syntax",
+      code: "author-syntax",
+      detail: "1 diagnostic(s)",
+      diagnostics,
+    });
+  });
+
+  it("refuses a source over the size limit as a capability limit, unsent", async () => {
+    const binding = answering(200, "{}");
+    const source = "a".repeat(ASTRO_PARSER_LIMITS.maxSourceBytes + 1);
+    expect(await parseAstroTemplate(binding, source)).toMatchObject({
+      status: "refused",
+      class: "capability-limit",
+      reason: "source-too-large",
+    });
+    expect(binding.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses an answer over the result limit as a capability limit", async () => {
+    const body = JSON.stringify({
+      v: 2,
+      ok: false,
+      error: { code: "result-too-large", detail: "result over 262144 bytes" },
+    });
+    expect(await parseAstroTemplate(answering(422, body), P)).toMatchObject({
+      status: "refused",
+      class: "capability-limit",
+      reason: "result-too-large",
+      code: "result-too-large",
+    });
+  });
+
+  it.each([
+    ["an element past the end", { elements: [[0, P.length + 1, 0, -1]] }],
+    ["a negative position", { elements: [[-1, P.length, 0, -1]] }],
+    ["an expression outside its owner", { expressions: [[0, 3, 1, 2, 1, -1, []]] }],
+    ["an unknown attribute kind", {
+      attributes: [[0, "shorthand", "a", 4, 5, 3, 6]],
+    }],
+    ["no compiler", { compiler: undefined }],
+    ["an outline under the template's name", {
+      mode: "outline",
+      nodes: [0, P.length, 0, 0, 0],
+    }],
+  ])("refuses %s as an invalid response", async (_, overrides) => {
+    const answer = await templateOf(P, overrides);
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(answer)), P),
+    ).toMatchObject({
+      status: "refused",
+      class: "temporarily-unconfirmable",
+      reason: "parser-invalid-response",
+      code: "invalid-response",
+    });
+  });
+
+  // The checks hold ranges to the source's UTF-16 length, so an answer in
+  // bytes is caught when it runs past the end, as here. They cannot tell a
+  // consistent answer in code points from one in UTF-16 units: that the
+  // Worker answers in UTF-16 units is pinned on the real compiler in
+  // packages/astro-parser-worker/src/template.test.ts.
+  it("takes UTF-16 ranges past an astral character and refuses bytes past the end", async () => {
+    // "😀" is two UTF-16 units and four UTF-8 bytes.
+    const source = "😀<p>{a}</p>";
+    const start = source.indexOf("<p>");
+    expect(start).toBe(2);
+    const units = await templateOf(source, {
+      elements: [[start, source.length, 0, -1]],
+      expressions: [[start + 3, start + 6, start + 4, start + 5, 0, -1, []]],
+    });
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(units)), source),
+    ).toMatchObject({ status: "confirmed" });
+    // In bytes everything sits two further on, and the element runs past the
+    // end of the source.
+    const bytes = await templateOf(source, {
+      elements: [[start + 2, source.length + 2, 0, -1]],
+      expressions: [[start + 5, start + 8, start + 6, start + 7, 0, -1, []]],
+    });
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(bytes)), source),
+    ).toMatchObject({ code: "invalid-response", detail: "element-range-0" });
+  });
+
+  it("refuses an answer from another contract version", async () => {
+    const answer = await templateOf(P, { v: 1 });
+    expect(
+      await parseAstroTemplate(answering(200, JSON.stringify(answer)), P),
+    ).toMatchObject({
+      class: "temporarily-unconfirmable",
+      reason: "parser-contract-mismatch",
+      code: "contract-mismatch",
+    });
+  });
+
+  it("is temporarily unconfirmable without a binding", async () => {
+    expect(await parseAstroTemplate(null, P)).toMatchObject({
+      status: "refused",
+      class: "temporarily-unconfirmable",
+      reason: "parser-binding-missing",
+    });
+  });
+});
+
+describe("classifyAstroParserRefusal", () => {
+  it.each<[AstroTemplateRefusalCode, string, string]>([
+    ["binding-missing", "temporarily-unconfirmable", "parser-binding-missing"],
+    ["binding-failed", "temporarily-unconfirmable", "parser-binding-failed"],
+    ["invalid-response", "temporarily-unconfirmable", "parser-invalid-response"],
+    ["contract-mismatch", "temporarily-unconfirmable", "parser-contract-mismatch"],
+    ["version-mismatch", "temporarily-unconfirmable", "parser-version-mismatch"],
+    ["parser-busy", "temporarily-unconfirmable", "parser-busy"],
+    ["parser-wait-timeout", "temporarily-unconfirmable", "parser-wait-timeout"],
+    ["parser-trapped", "temporarily-unconfirmable", "parser-trapped"],
+    ["parser-unavailable", "temporarily-unconfirmable", "parser-unavailable"],
+    ["internal", "temporarily-unconfirmable", "parser-fault"],
+    ["invalid-request", "temporarily-unconfirmable", "parser-fault"],
+    ["not-found", "temporarily-unconfirmable", "parser-fault"],
+    ["source-not-utf8", "temporarily-unconfirmable", "parser-fault"],
+    ["source-read-timeout", "temporarily-unconfirmable", "parser-fault"],
+    ["source-too-large", "capability-limit", "source-too-large"],
+    ["result-too-large", "capability-limit", "result-too-large"],
+    ["author-syntax", "author-syntax", "author-syntax"],
+  ])("puts %s in %s as %s", (code, failureClass, reason) => {
+    expect(classifyAstroParserRefusal(code)).toEqual({
+      class: failureClass,
+      reason,
+    });
+  });
+
+  it("covers every code the Worker can send", () => {
+    for (const code of Object.keys(ASTRO_PARSER_ERROR_STATUS))
+      expect(
+        classifyAstroParserRefusal(code as AstroTemplateRefusalCode).class,
+      ).toBeDefined();
+  });
 });
 
 describe("parseAstroSource through the local service binding", () => {
@@ -231,6 +467,39 @@ describe("parseAstroSource through the local service binding", () => {
         mode: "outline",
       }),
     ).toMatchObject({ status: "unavailable", code: "result-too-large" });
+  });
+
+  it("confirms a real page's template from the pinned compiler", async () => {
+    const source = readFileSync(FIXTURE, "utf8");
+    const outcome = await parseAstroTemplate(parser.binding, source);
+    if (outcome.status !== "confirmed")
+      throw new Error(`refused: ${JSON.stringify(outcome)}`);
+    expect(outcome.result.compiler).toBe(MORPH_ASTRO_COMPILER_RS_VERSION);
+    const header = outcome.result.elements.find(
+      ([, , tag]) => outcome.result.tags[tag] === "Header",
+    );
+    expect(header?.[0]).toBe(source.indexOf("<Header"));
+  });
+
+  it("refuses a real compiler's diagnostics as the author's syntax", async () => {
+    expect(
+      await parseAstroTemplate(parser.binding, "<p>{a + }</p>"),
+    ).toMatchObject({
+      status: "refused",
+      class: "author-syntax",
+      reason: "author-syntax",
+      diagnostics: { total: 1 },
+    });
+  });
+
+  it("refuses a real template over the result cap as a capability limit", async () => {
+    expect(
+      await parseAstroTemplate(parser.binding, "<i/>".repeat(25_250)),
+    ).toMatchObject({
+      status: "refused",
+      class: "capability-limit",
+      reason: "result-too-large",
+    });
   });
 
   it("is unavailable once nothing runs behind the binding", async () => {

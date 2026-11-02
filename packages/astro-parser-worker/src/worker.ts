@@ -26,6 +26,7 @@
  */
 import { answer, ResultTooLarge } from "./answer";
 import {
+  COMPILER_VERSION,
   CompilerPoisoned,
   CompilerTrapped,
   compilerMemoryBytes,
@@ -182,7 +183,7 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function readRequest(url: URL): AstroParseRequest {
   const mode = url.searchParams.get("mode");
-  if (mode === "outline") return { mode };
+  if (mode === "outline" || mode === "template") return { mode };
   if (mode === "at") {
     const raw = url.searchParams.get("offset") ?? "";
     const offset = /^\d{1,7}$/.test(raw) ? Number(raw) : NaN;
@@ -190,7 +191,10 @@ function readRequest(url: URL): AstroParseRequest {
       throw new Refusal("invalid-request", "offset must be a small integer");
     return { mode, offset };
   }
-  throw new Refusal("invalid-request", 'mode must be "outline" or "at"');
+  throw new Refusal(
+    "invalid-request",
+    'mode must be "outline", "at" or "template"',
+  );
 }
 
 function respond(body: string, status: number): Response {
@@ -250,7 +254,7 @@ async function handleParse(request: Request, env: Env): Promise<Response> {
     const parseStarted = Date.now();
     const parsed = parse(text);
     const parseMs = Date.now() - parseStarted;
-    const body = answer(parsed, parseRequest, source);
+    const body = answer(parsed, parseRequest, source, text, COMPILER_VERSION);
     log({
       status: 200,
       mode: parseRequest.mode,

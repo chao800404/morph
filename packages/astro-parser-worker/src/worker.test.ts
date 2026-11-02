@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_startWorker } from "wrangler";
 
 import {
+  ASTRO_PARSER_CONTRACT_VERSION,
   ASTRO_PARSER_ERROR_STATUS,
   ASTRO_PARSER_LIMITS,
   checkAstroParseResponse,
@@ -85,7 +86,11 @@ function expectRefusal(
   code: AstroParserErrorCode,
 ) {
   const failure = result.payload as AstroParseFailure;
-  expect(failure).toMatchObject({ v: 1, ok: false, error: { code } });
+  expect(failure).toMatchObject({
+    v: ASTRO_PARSER_CONTRACT_VERSION,
+    ok: false,
+    error: { code },
+  });
   expect(typeof failure.error.detail).toBe("string");
   expect(result.status).toBe(ASTRO_PARSER_ERROR_STATUS[code]);
 }
